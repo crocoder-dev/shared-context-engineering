@@ -1,0 +1,10 @@
+import "../generation-contract-check.pkl" as contract
+
+local documents = new Mapping {
+  ["config/.opencode/skills/sce-next-task/references/plan-review.md"] = "Resolve one task."
+}
+
+result = if (
+  contract.assertPlanReviewSyncDebtRecovery.apply(documents)
+) "negative fixture unexpectedly accepted a plan-review reference missing sync-debt recovery wording"
+else throw("plan-review reference must state sync-debt recovery and legacy-migration-failure behavior")

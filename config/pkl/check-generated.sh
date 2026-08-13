@@ -113,7 +113,11 @@ expect_pkl_fixture_failure \
   "OpenCode skill permission names a missing generated workflow artifact"
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/layout-reference-check.pkl" \
-  "generated workflow layout citation does not match a heading in its references/output.md"
+  "generated workflow layout citation does not match a heading in \`config/.opencode/skills/sce-next-task/references/output.md\`"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/wrong-file-layout-reference-check.pkl" \
+  "generated workflow layout citation does not match a heading in \`config/.opencode/skills/sce-next-task/references/wrong-file.md\`"
+pkl eval config/pkl/renderers/fixtures/correct-file-layout-reference-check.pkl >/dev/null
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/package-local-reference-check.pkl" \
   "generated package-local reference points to a missing document"
@@ -135,6 +139,9 @@ expect_pkl_fixture_failure \
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/stale-sync-debt-check.pkl" \
   "generated file contains the stale synchronization-loss wording"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/next-task-sync-debt-recovery-check.pkl" \
+  "plan-review reference must state sync-debt recovery and legacy-migration-failure behavior"
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/validation-repair-check.pkl" \
   "final validation must not instruct the agent to repair implementation"

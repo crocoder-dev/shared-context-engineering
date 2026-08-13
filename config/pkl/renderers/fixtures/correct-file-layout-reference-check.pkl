@@ -1,0 +1,15 @@
+import "../generation-contract-check.pkl" as contract
+
+local skillPath = "config/.opencode/skills/sce-next-task/SKILL.md"
+local correctFilePath = "config/.opencode/skills/sce-next-task/references/correct-file.md"
+
+local documents = new Mapping {
+  for (path, text in contract.workflowDocuments) {
+    [path] = if (path == skillPath)
+      "\(text)\nRender the **Completion** layout from `references/correct-file.md`."
+    else text
+  }
+  [correctFilePath] = "# Correct file\n\n## Completion\n\nThis document has the matching heading."
+}
+
+result = contract.assertLayoutReferences.apply(documents)
