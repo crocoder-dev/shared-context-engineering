@@ -605,6 +605,74 @@ hidden assertPlanReviewSyncDebtRecovery = (documents: Mapping) ->
   ) "sce-next-task plan-review reference: sync-debt recovery and legacy-migration wording present"
   else throw("plan-review reference must state sync-debt recovery and legacy-migration-failure behavior")
 
+local requiredHandoffIdentityPlanTemplateTokens = new Listing {
+  "Plan path: {path}; Task ID: {id}; Task title: {title}"
+}
+
+local requiredHandoffIdentityContextSyncTokens = new Listing {
+  "carries its own `Plan path` field"
+  "carries its own `Task ID` and `Task title` fields"
+}
+
+hidden assertHandoffIdentityFields = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      (
+        !path.endsWith("/skills/sce-change-to-plan/references/plan-template.md")
+        || requiredHandoffIdentityPlanTemplateTokens.every((token) -> text.contains(token))
+      )
+      && (
+        !path.endsWith("/skills/sce-next-task/references/context-sync.md")
+        || requiredHandoffIdentityContextSyncTokens.every((token) -> text.contains(token))
+      )
+    )
+  ) "generated handoff identity: plan path and task identity present in the template and required at context-sync validation"
+  else throw("persisted handoff must carry Plan path, Task ID, and Task title, and context-sync validation must require them from the handoff itself")
+
+hidden assertSyncDebtRecoveryBranch = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      !path.endsWith("/skills/sce-next-task/SKILL.md")
+      || (
+        text.contains("`sync_debt` ->")
+        && let (branch = text.drop(text.indexOf("`sync_debt` ->")))
+          let (paragraph = if (branch.contains("\n\n")) branch.take(branch.indexOf("\n\n")) else branch)
+            paragraph.contains("references/context-sync.md")
+            && paragraph.contains("Task context synchronization phase")
+            && paragraph.indexOf("references/context-sync.md") < paragraph.indexOf("Task context synchronization phase")
+      )
+    )
+  ) "generated sce-next-task SKILL.md: sync-debt recovery cites context-sync.md before invoking the phase"
+  else throw("sce-next-task SKILL.md sync-debt recovery branch must cite references/context-sync.md before invoking the Task context synchronization phase")
+
+hidden assertPlanReviewAllTasksScope = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      !path.endsWith("/skills/sce-next-task/references/plan-review.md")
+      || (
+        text.contains("every completed task")
+        && !text.contains("earlier completed task")
+      )
+    )
+  ) "sce-next-task plan-review reference: synchronization-debt scan covers every completed task"
+  else throw("sce-next-task plan-review reference must state the synchronization-debt scan covers every completed task, with no earlier-completed-task position-relative wording remaining")
+
+hidden assertSyncDebtBlockedRouting = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      !path.endsWith("/skills/sce-next-task/SKILL.md")
+      || (
+        text.contains("`sync_debt` ->")
+        && let (branch = text.drop(text.indexOf("`sync_debt` ->")))
+          branch.contains("Branch on the outcome:")
+          && let (outcome = branch.drop(branch.indexOf("Branch on the outcome:")))
+            let (matches = layoutReferencesIn.apply(outcome))
+              !matches.isEmpty && matches[0].groups[1].value == "Context synchronization blocked"
+      )
+    )
+  ) "generated sce-next-task SKILL.md: sync-debt recovery routes its blocked outcome to the Context synchronization blocked layout"
+  else throw("sce-next-task SKILL.md sync-debt recovery blocked outcome must route to the Context synchronization blocked layout, not Review blocked")
+
 hidden assertValidationIsObservational = (documents: Mapping) ->
   let (forbidden = new Listing {
     "Repair application code during final validation"
@@ -656,5 +724,9 @@ contractChecks {
   ["target-neutral-references"] = assertTargetNeutralReferences.apply(workflowDocuments)
   ["no-stale-sync-debt-text"] = assertNoStaleSyncDebtText.apply(generatedArtifacts)
   ["plan-review-sync-debt-recovery"] = assertPlanReviewSyncDebtRecovery.apply(workflowDocuments)
+  ["handoff-identity-fields"] = assertHandoffIdentityFields.apply(workflowDocuments)
+  ["sync-debt-recovery-branch"] = assertSyncDebtRecoveryBranch.apply(workflowDocuments)
+  ["plan-review-all-tasks-scope"] = assertPlanReviewAllTasksScope.apply(workflowDocuments)
+  ["sync-debt-blocked-routing"] = assertSyncDebtBlockedRouting.apply(workflowDocuments)
   ["validation-observational"] = assertValidationIsObservational.apply(workflowDocuments)
 }

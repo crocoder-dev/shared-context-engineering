@@ -1,0 +1,11 @@
+import "../generation-contract-check.pkl" as contract
+
+local documents = new Mapping {
+  ["config/.opencode/skills/sce-next-task/references/plan-review.md"] =
+    "Inspect every earlier completed task's Context synchronization field."
+}
+
+result = if (
+  contract.assertPlanReviewAllTasksScope.apply(documents)
+) "negative fixture unexpectedly accepted position-scoped earlier-completed-task wording"
+else throw("sce-next-task plan-review reference must state the synchronization-debt scan covers every completed task, with no earlier-completed-task position-relative wording remaining")

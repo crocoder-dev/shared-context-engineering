@@ -695,7 +695,7 @@ checkbox and status:
 - [x] T01: `{title}` (status:done)
   - {authored fields, unchanged}
   - Context synchronization: pending | synced | blocked
-  - Context synchronization handoff: Changed files: {paths}; Implementation summary: {summary}; Verification: {commands and outcomes}; Done checks: {status of each done check}; Context impact: {durable context this change affects, or none}
+  - Context synchronization handoff: Plan path: {path}; Task ID: {id}; Task title: {title}; Changed files: {paths}; Implementation summary: {summary}; Verification: {commands and outcomes}; Done checks: {status of each done check}; Context impact: {durable context this change affects, or none}
   - Context synchronization blocker: {present only when status is blocked} Blocker: {problem}; Required action: {action}; Retry condition: {condition}
   - Completed: {YYYY-MM-DD}
   - Files changed: {paths}
@@ -2217,7 +2217,7 @@ local renderPlanTemplate = (mode: model.WorkflowRenderMode) -> """
     - [x] T01: `{title}` (status:done)
       - {authored fields, unchanged}
       - Context synchronization: pending | synced | blocked
-      - Context synchronization handoff: Changed files: {paths}; Implementation summary: {summary}; Verification: {commands and outcomes}; Done checks: {status of each done check}; Context impact: {durable context this change affects, or none}
+      - Context synchronization handoff: Plan path: {path}; Task ID: {id}; Task title: {title}; Changed files: {paths}; Implementation summary: {summary}; Verification: {commands and outcomes}; Done checks: {status of each done check}; Context impact: {durable context this change affects, or none}
       - Context synchronization blocker: {present only when status is blocked} Blocker: {problem}; Required action: {action}; Retry condition: {condition}
       - Completed: {YYYY-MM-DD}
       - Files changed: {paths}

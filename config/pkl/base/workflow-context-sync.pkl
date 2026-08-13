@@ -197,8 +197,14 @@ local taskRoleData = new SyncRole {
     - A live execution result has `status` exactly `complete`; a persisted
       retry handoff has no `status` field to check and is authoritative by its
       presence in the plan.
-    - A `plan` object with a `path` is present.
-    - Exactly one completed task is identified.
+    - A `plan` object with a `path` is present; a persisted retry handoff
+      instead carries its own `Plan path` field, so this requirement is met by
+      the handoff text itself, not by an out-of-band value supplied by the
+      caller.
+    - Exactly one completed task is identified; a persisted retry handoff
+      instead carries its own `Task ID` and `Task title` fields, so this
+      requirement is met by the handoff text itself, not by an out-of-band
+      value supplied by the caller.
     - `changes.files_changed`, or the persisted handoff's `Changed files`
       field on retry, is present as the pre-edit-baseline-relative changed-file
       list.
@@ -418,11 +424,12 @@ local taskRoleData = new SyncRole {
     context could not be synchronized safely.
 
     A `blocked` report always writes a `Context synchronization handoff`
-    section (changed files, implementation summary, verification, done checks,
-    context impact) and a `Context synchronization blocker` section (blocker,
-    required action, retry condition), using the same field names the plan's
-    completion record uses, so the plan-review recovery step can persist them
-    verbatim.
+    section (plan path, task ID, task title, changed files, implementation
+    summary, verification, done checks, context impact) and a `Context
+    synchronization blocker` section (blocker, required action, retry
+    condition), using the same field names the plan's completion record uses,
+    so the plan-review recovery step can persist them verbatim and a future
+    retry can validate the handoff without an out-of-band plan or task value.
 
     \(returnOnlyMarkdownReport.render.apply(mode)). Do not add explanatory prose before or after
     it.
@@ -967,6 +974,9 @@ local taskReport = new SyncReportRole {
   blockedHandoffSection = (mode: workflow.WorkflowRenderMode) -> """
     ## Context synchronization handoff
 
+    - Plan path: {plan path}
+    - Task ID: {task id}
+    - Task title: {task title}
     - Changed files: {list each changed file from the handoff except paths
       under `context/`; state `None.` when no files remain}
     - Implementation summary: {summary}
@@ -1181,8 +1191,13 @@ Confirm that:
 - A live execution result has `status` exactly `complete`; a persisted retry
   handoff has no `status` field to check and is authoritative by its presence
   in the plan.
-- A `plan` object with a `path` is present.
-- Exactly one completed task is identified.
+- A `plan` object with a `path` is present; a persisted retry handoff instead
+  carries its own `Plan path` field, so this requirement is met by the handoff
+  text itself, not by an out-of-band value supplied by the caller.
+- Exactly one completed task is identified; a persisted retry handoff instead
+  carries its own `Task ID` and `Task title` fields, so this requirement is
+  met by the handoff text itself, not by an out-of-band value supplied by the
+  caller.
 - Changed files and an implementation summary are present.
 - Verification evidence is present.
 - Done-check evidence is present.
@@ -1435,10 +1450,12 @@ existing context was checked and no edit was warranted. `blocked` means context
 could not be synchronized safely.
 
 A `blocked` report always writes a `Context synchronization handoff` section
-(changed files, implementation summary, verification, done checks, context
-impact) and a `Context synchronization blocker` section (blocker, required
-action, retry condition), using the same field names the plan's completion
-record uses, so the plan-review recovery step can persist them verbatim.
+(plan path, task ID, task title, changed files, implementation summary,
+verification, done checks, context impact) and a `Context synchronization
+blocker` section (blocker, required action, retry condition), using the same
+field names the plan's completion record uses, so the plan-review recovery
+step can persist them verbatim and a future retry can validate the handoff
+without an out-of-band plan or task value.
 
 Record only the Markdown report. Do not add explanatory prose before or after it.
 
