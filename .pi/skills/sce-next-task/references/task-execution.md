@@ -21,9 +21,26 @@ workflow. It suppresses the approval question and the wait. It never suppresses
 the gate. Only the workflow entrypoint may set it, and only from an explicit
 user-supplied approval token. Never infer it.
 
-If required handoff information is absent or stale, still show the gate using
-what is known, clearly identify the handoff problem, and do not edit files. After
-the user responds, set internal status `blocked`.
+If required handoff information is absent, stale, or contradictory, still show the
+gate using what is known, clearly identify the handoff problem, and do not edit
+files. With the `approve` flag supplied, do not treat pre-approval as permission
+to repair or reinterpret the handoff: after showing the gate, set internal status
+`blocked` deterministically. Without the flag, wait for the user's response and
+then set internal status `blocked`; do not retry the handoff in the same phase.
+
+A successful `complete` handoff must explicitly contain all of these fields:
+
+- The resolved `plan` object, including its path and completion counts.
+- The selected `task` identity, including its ID and title.
+- `changes.files_changed`, the implementation's baseline-relative changed-file list.
+- `changes.summary`, a concise implementation summary.
+- `verification`, with every reported outcome marked `passed` and its evidence.
+- `done_checks`, pairing every done check with evidence.
+- `plan_update`, proving the selected task was marked complete and evidence recorded.
+- `context_impact`, including classification, affected areas, and reason.
+
+Do not omit, invent, or reconstruct any of these fields when handing off to context
+synchronization.
 
 ## 2.1 Validate the handoff without editing
 
@@ -80,7 +97,21 @@ If those constraints materially contradict the reviewed task, set internal statu
 
 ## 2.4 Prepare the implementation
 
-Before editing:
+Before editing, capture a Git baseline. Record the current `HEAD` commit, the
+staged and unstaged patch/content state, and every untracked path/content state
+using equivalent `git status`, `git diff`, and `git diff --cached` views. If the
+baseline cannot be captured reliably, stop before editing and set internal status
+`blocked`.
+
+After implementation, capture the same views again. Compute
+`changes.files_changed` by comparing the post-edit snapshot with the pre-edit
+baseline, not by listing the whole working tree or by diffing only against
+`HEAD`. Include each path whose state or content changed during this task once;
+exclude paths unchanged from the baseline, including unrelated pre-existing
+staged, unstaged, and untracked changes. A path already dirty at baseline is
+included only when this task changed its state or content.
+
+Then:
 
 - Read the relevant files supplied by plan review.
 - Inspect nearby code and tests when needed.
@@ -145,6 +176,13 @@ Never report a check as passed unless it ran successfully.
 Only after successful implementation and task-level verification:
 
 - Mark only the selected task complete.
+- Write the task's `Context synchronization handoff` subsection into the
+  completion record: changed files, implementation summary, verification,
+  done checks, and context impact, using the same field set task-context-sync
+  consumes rather than duplicating the entire execution result.
+- Set that task's `Context synchronization` field to `pending` in the plan file
+  before returning `complete`; this write must happen after the handoff
+  subsection above and before the synchronization phase is invoked.
 - Record concise implementation evidence.
 - Record verification commands and outcomes.
 - Record material deviations or approved assumptions.
@@ -172,6 +210,14 @@ Set internal status `blocked` for every other non-successful outcome, including:
 
 Do not determine whether the plan is complete. The `/next-task` workflow owns
 that decision after context synchronization.
+
+Before determining terminal status for a `complete` result, verify that the
+handoff contains the resolved plan, task identity, baseline-relative changed
+files, implementation summary, verification evidence, done-check evidence, plan
+update, and context-impact classification listed above. The mandatory five-root-
+file context pass remains required for every completed task, regardless of the
+reported context-impact classification, because it is cheap, deterministic, and
+load-bearing for context accuracy; `context_impact` must not be used to waive it.
 
 ## 2.9 Return internal state
 

@@ -45,8 +45,12 @@ constraint involving at least one of:
 
 Routine implementation details, local refactors, naming and formatting choices,
 temporary experiments, and easily reversible choices do not qualify. When the
-request does not demonstrate the threshold, return `blocked`; do not create an
-ADR merely because context synchronization occurred.
+request does not demonstrate the threshold, return `not_qualified` (or
+`skipped` when the caller deliberately skips the gate); do not create an ADR
+merely because context synchronization occurred. A nonqualifying or skipped
+result is non-blocking, so the invoking synchronization phase continues
+normally. Reserve `blocked` for missing, contradictory, or otherwise unsafe
+decision input or history.
 
 ## Workflow
 
@@ -57,20 +61,24 @@ path, references sufficient to make the record traceable, and no unresolved
 material contradiction. If it contains several decisions, require the caller to
 submit one request per decision.
 
-Allowed statuses are exactly `Proposed`, `Accepted`, `Rejected`, `Deprecated`,
-and `Superseded`. Use the explicitly requested allowed status; otherwise default
-to `Accepted`. Reject any other status rather than guessing.
+Allowed statuses for a newly written ADR are exactly `Proposed`, `Accepted`,
+`Rejected`, `Deprecated`, and `Superseded`. Use the explicitly requested allowed
+status; otherwise default to `Accepted`. `Deprecated` and `Superseded` remain
+distinct creation-time-only statuses: use them to describe the record when it is
+created, but never mutate an existing ADR into or out of either status. Reject any
+other status rather than guessing.
 
 ### 2. Inspect existing decision history
 
 Read `context/decisions/` and the supplied related ADR paths before writing.
 
-- Reuse an existing ADR when it already records the same decision; return its
-  path without creating a duplicate.
-- Never edit an ADR whose status is `Accepted`.
-- A correction, reversal, or changed decision creates a new dated ADR that
-  references and supersedes the accepted record.
-- Do not overwrite any existing ADR or silently change its status.
+- Reuse an existing ADR only when it records an equivalent decision and has an
+  active status: `Proposed` or `Accepted`. Return its path without creating a
+  duplicate. Never reuse a `Rejected`, `Deprecated`, or `Superseded` ADR.
+- Existing ADRs are immutable regardless of status. Never edit an ADR whose status is `Accepted`; do not edit, overwrite, or silently change the status of any existing record.
+- A correction, reversal, or any changed decision always creates a new dated ADR;
+  it references and supersedes the prior record when applicable, rather than
+  modifying that record.
 
 If `context/` or `context/decisions/` is absent, or history cannot be interpreted
 without inventing facts, return `blocked` without creating directories.
@@ -118,8 +126,11 @@ Return exactly one internal handoff:
 - `written`: include `status`, `adr_path`, `decision`, `decision_status`,
   `created` (`true` for a new ADR and `false` for reuse), `supersedes`, and
   concise verification evidence.
+- `not_qualified` or `skipped`: include `status`, the reason the decision gate
+  did not produce an ADR, and concise supporting evidence. These results are
+  non-blocking; the invoking synchronization phase continues normally.
 - `blocked`: include `status`, the specific `problem`, its `impact`, and the
-  `required_action`.
+  `required_action`. Use this only when decision writing cannot proceed safely.
 
 Use stable field names and repository-relative paths. Return no prose before or
 after the handoff. The invoking synchronization phase owns all user-visible

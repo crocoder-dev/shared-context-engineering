@@ -5,7 +5,7 @@ The Markdown section `sce-validation` appends to the plan file when returning
 under exactly one `## Validation Report` heading.
 
 This is plan-file content. The result returned to the workflow is defined
-separately in `references/validation-result.md`.
+separately in `references/validation.md`.
 
 Do not author this section while planning. Only `/validate` through `sce-validation`
 writes it.
@@ -22,11 +22,6 @@ writes it.
 
 - `{command}` -> exit {code} ({concise outcome summary})
 - `{command}` -> exit {code} ({concise outcome summary})
-
-### Scaffolding removed
-
-- `{path}` — {why it was temporary}
-- None.
 
 ### Success-criteria verification
 
@@ -66,11 +61,9 @@ After repairs, rerun:
 - Mark each acceptance criterion checkbox in the plan's `## Acceptance criteria`
   section to match the evidence. Do not mark a criterion met unless the check
   ran successfully or the inspection named by `Validate:` confirms it.
-- Under **Scaffolding removed**, list only temporary debug code, intermediate
-  artifacts, or throwaway files introduced during the change. Write `None.` when
-  nothing temporary remained.
-- Under **Failed checks and follow-ups**, record the failing check and its
-  evidence only. Do not describe code or test edits made during validation;
+- Under **Failed checks and follow-ups**, record every failing check and its
+  evidence, including leftover debug-only flags, temporary artifacts, or local
+  scaffolding. Do not describe code or test edits made during validation;
   validation does not modify tests or product code to clear failures. Write
   `None.` when status is `validated`.
 - When status is `failed`, always include **Retry** with the exact
