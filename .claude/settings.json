@@ -1,32 +1,42 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-show-install-guidance.sh\" sce policy bash"
-          }
-        ]
-      }
-    ],
     "PostToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
         "hooks": [
           {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-show-install-guidance.sh\" sce hooks diff-trace"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-show-install-guidance.sh\" sce hooks diff-trace",
+            "type": "command"
           }
-        ]
+        ],
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit"
       },
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-show-install-guidance.sh\" sce hooks conversation-trace"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-show-install-guidance.sh\" sce hooks conversation-trace",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-show-install-guidance.sh\" sce policy bash",
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash"
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-show-install-guidance.sh\" sce hooks conversation-trace",
+            "type": "command"
           }
         ]
       }
@@ -35,18 +45,8 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-show-install-guidance.sh\" sce hooks conversation-trace"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-show-install-guidance.sh\" sce hooks conversation-trace"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-show-install-guidance.sh\" sce hooks conversation-trace",
+            "type": "command"
           }
         ]
       }

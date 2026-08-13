@@ -10,18 +10,18 @@ compatibility: opencode
 ## Purpose
 
 Write exactly one architecture decision record for one qualifying system-wide
-important decision during successful task or plan context synchronization. Return
+important decision during successful task context synchronization. Return
 a deterministic internal handoff to the invoking synchronization phase. Do not
 render an independent user-visible response.
 
 ## Input
 
-Accept one structured decision request from `sce-next-task` or `sce-validate`
-context synchronization. It must identify:
+Accept one structured decision request from `sce-next-task` task context
+synchronization. It must identify:
 
 - One decision stated as a single durable choice.
 - Why it qualifies under the decision gate.
-- The implementation or validation evidence establishing the decision.
+- The implementation / task-verification evidence establishing the decision.
 - The resolved plan path and relevant task IDs, when applicable.
 - Related current-state context and existing ADR paths.
 - An optional requested status.
@@ -141,7 +141,7 @@ reporting.
 Do not:
 
 - Write more than one ADR per request.
-- Run outside successful task or plan context synchronization.
+- Run outside successful task context synchronization.
 - Create a command, prompt, context root, or decisions directory.
 - Modify application code, tests, plans, current-state context, or existing
   accepted ADRs.
