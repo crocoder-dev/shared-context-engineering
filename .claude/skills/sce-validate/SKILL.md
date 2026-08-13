@@ -1,7 +1,7 @@
 ---
 name: sce-validate
 description: >
-  Validate one completed SCE plan and synchronize its durable context
+  Validate one completed SCE plan and record final validation evidence
 compatibility: claude
 ---
 

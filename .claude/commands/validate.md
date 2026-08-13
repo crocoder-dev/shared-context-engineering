@@ -1,5 +1,5 @@
 ---
-description: "Validate one completed SCE plan and synchronize its durable context"
+description: "Validate one completed SCE plan and record final validation evidence"
 argument-hint: "<plan-name>"
 allowed-tools: Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash
 ---
