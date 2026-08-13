@@ -46,9 +46,8 @@ wrap one in an added preamble, commentary, summary, or extra section.
 
 Keep phase results as internal state and continue immediately whenever the
 canonical workflow says to continue. Stop only at a user wait or terminal branch.
-Approval, clarification, revision, failed-validation repair, and bootstrap waits
-resume this same skill in the same session. Never expose an internal phase result
-as the workflow's final response.
+Any workflow-defined user wait resumes this same skill in the same session.
+Never expose an internal phase result as the workflow's final response.
 
 Relevant non-SCE skills may be used as helper capabilities during the active step.
 They are not workflow handoffs: when a helper returns, control returns to the active
@@ -92,6 +91,12 @@ Branch on `status`:
 
 Do not reconstruct, summarize, or reinterpret the reviewed task before passing it.
 
+The review must inspect every earlier completed task's `Context synchronization`
+field in the plan before allowing a new implementation task to start. A missing
+field or any value other than `synced` is unresolved synchronization debt and
+blocks implementation until the plan records the blocker, required action, and
+retry condition. Never infer `synced` from conversation history.
+
 ### 2. Execute the task
 
 Read `references/task-execution.md`, then run the **Task execution phase** with
@@ -133,9 +138,14 @@ Do not restate, summarize, or reconstruct any part of the execution result.
 This phase verifies the five root context files on every invocation, whatever the
 change's reported impact, so it is never correct to skip it as unnecessary.
 
+Before branching on the synchronization result, write the completed task's
+lifecycle to the plan file: `synced` for `synced` or `no_context_change`, and
+`blocked` with the report's blocker, required action, and retry condition for
+`blocked`. If that lifecycle write fails, treat synchronization as `blocked`.
+
 Branch on the synchronization result.
 
-`blocked` -> The task itself succeeded and is already marked complete in the plan. Render the **Context synchronization blocked** layout from `references/output.md`. Nothing records the skipped synchronization, so it is lost once this session ends.
+`blocked` -> The task itself succeeded and is already marked complete in the plan. Render the **Context synchronization blocked** layout from `references/output.md`. The plan's task lifecycle record contains the blocker, required action, and retry condition.
 
 Do not select another task. Stop.
 

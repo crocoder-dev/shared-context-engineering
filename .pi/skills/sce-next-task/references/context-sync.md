@@ -5,23 +5,37 @@ Run this phase for step 3 of the workflow, and only when task execution returned
 session inherits what this task established. It never touches code, tests, or
 plan state.
 
-Input: the complete `complete` result from the task execution phase, passed
-verbatim. It is the authoritative handoff, and this phase owns reading the plan,
-task, changed files, verification evidence, and reported context impact out of
-it.
+Input: either the complete `complete` result from the task execution phase
+(same-session), passed verbatim, or the persisted `Context synchronization
+handoff` — and, when retrying a `blocked` task, its `Context synchronization
+blocker` — subsection that a plan-review recovery step loaded from the plan
+(cross-session retry). Whichever was supplied is the authoritative handoff,
+and this phase owns reading the plan, task, changed files, verification
+evidence, and reported context impact out of it.
 
-Do not restate, summarize, or reconstruct any part of the execution result. Do
-not reconstruct a missing execution result from conversation history.
+Do not restate, summarize, or reconstruct any part of the handoff. Do not
+reconstruct a missing handoff — live or persisted — from conversation history.
 
-The execution result must have:
+A live execution result must have:
 
 ```text
 status: complete
 ```
 
-Treat the execution result as the authoritative handoff for:
+A persisted retry handoff carries the same field set; its presence in the
+plan, loaded by plan review, is itself the authoritative signal, and it has no
+separate `status` field to check.
+
+Use the report format in:
+
+`references/sync-report.md`
+
+Treat whichever handoff was supplied — live or persisted — as the
+authoritative source for:
 
 - The resolved plan and completed task.
+- `changes.files_changed`, or the persisted handoff's `Changed files` field on
+  retry, already attributed relative to the pre-edit Git baseline.
 - Files changed by implementation.
 - Implementation summary.
 - Verification evidence.
@@ -31,11 +45,13 @@ Treat the execution result as the authoritative handoff for:
 This phase must not be run for `declined`, `blocked`, or `incomplete` execution
 results.
 
-## 3.1 Validate the execution handoff
+## 3.1 Validate the handoff
 
 Confirm that:
 
-- `status` is exactly `complete`.
+- A live execution result has `status` exactly `complete`; a persisted retry
+  handoff has no `status` field to check and is authoritative by its presence
+  in the plan.
 - A `plan` object with a `path` is present.
 - Exactly one completed task is identified.
 - Changed files and an implementation summary are present.
@@ -288,6 +304,12 @@ Set exactly one report status:
 `synced` means context files were updated and verified. `no_context_change` means
 existing context was checked and no edit was warranted. `blocked` means context
 could not be synchronized safely.
+
+A `blocked` report always writes a `Context synchronization handoff` section
+(changed files, implementation summary, verification, done checks, context
+impact) and a `Context synchronization blocker` section (blocker, required
+action, retry condition), using the same field names the plan's completion
+record uses, so the plan-review recovery step can persist them verbatim.
 
 Record only the Markdown report. Do not add explanatory prose before or after it.
 
