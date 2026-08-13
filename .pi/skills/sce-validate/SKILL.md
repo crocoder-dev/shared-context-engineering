@@ -45,8 +45,9 @@ wrap one in an added preamble, commentary, summary, or extra section.
 
 Keep phase results as internal state and continue immediately whenever the
 canonical workflow says to continue. Stop only at a user wait or terminal branch.
-Any workflow-defined user wait resumes this same skill in the same session.
-Never expose an internal phase result as the workflow's final response.
+Approval, clarification, revision, failed-validation repair, and bootstrap waits
+resume this same skill in the same session. Never expose an internal phase result
+as the workflow's final response.
 
 Relevant non-SCE skills may be used as helper capabilities during the active step.
 They are not workflow handoffs: when a helper returns, control returns to the active
@@ -84,21 +85,12 @@ application code, or configuration to make a failing check pass. That property i
 load-bearing, so reach it through the reference rather than acting from this
 summary.
 
-A plan is not finishable while any completed task's `Context synchronization`
-field is missing or not `synced`; synchronization debt is a durable plan blocker,
-not a session-only warning.
-
 Do not write the Validation Report yourself.
 
 Branch on the report's `Status:`.
 
 `blocked` -> Do not run context synchronization. Print the blocked Markdown
 report as returned. Do not rephrase it into a different layout. Stop.
-
-Before returning `validated`, write the plan-level context synchronization field
-as `pending` in the plan file. This durable transition must happen before the
-plan context synchronization phase is invoked; if it cannot be written, return
-`blocked` instead.
 
 `failed` -> Do not run context synchronization. Print the failed Markdown
 report as returned. It is already a session handoff: self-contained, actionable,
@@ -135,17 +127,12 @@ This phase verifies the five root context files on every invocation, whatever th
 reported impact, and must account for every path in the plan's `Context sync`
 section, so it is never correct to skip it as unnecessary.
 
-Before branching on the synchronization result, write the plan-level lifecycle to
-the plan file: `synced` for `synced` or `no_context_change`, and `blocked` with
-the report's blocker, required action, and retry condition for `blocked`. If that
-lifecycle write fails, treat synchronization as `blocked`.
-
 Branch on the synchronization result.
 
 `blocked` -> Validation itself succeeded and is already recorded in the plan.
 Render the **Context synchronization blocked** layout from
-`references/output.md`. The plan-level lifecycle record contains the blocker,
-required action, and retry condition.
+`references/output.md`. Nothing records the skipped synchronization, so it is
+lost once this session ends.
 
 Stop.
 

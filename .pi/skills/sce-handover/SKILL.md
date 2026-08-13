@@ -25,8 +25,8 @@ wrap one in an added preamble, commentary, summary, or extra section.
 
 Keep phase results as internal state and continue immediately whenever the
 canonical workflow says to continue. Stop only at a user wait or terminal branch.
-Any workflow-defined user wait resumes this same skill in the same session.
-Never expose an internal phase result
+Approval, clarification, revision, failed-validation repair, and bootstrap waits
+resume this same skill in the same session. Never expose an internal phase result
 as the workflow's final response.
 
 Relevant non-SCE skills may be used as helper capabilities during the active step.
@@ -61,8 +61,7 @@ blockers.
 
 Ground those facts against repository state:
 
-- `git status`, `git diff`, and `git diff --cached` for uncommitted work,
-  including both unstaged and staged changes.
+- `git status` and `git diff` for uncommitted work.
 - `context/plans/*.md` for the active plan and task, when one is being worked.
 - Recent commits, when they clarify what just landed.
 
@@ -85,9 +84,8 @@ timestamp segment, rather than overwriting it.
 
 #### 3. Compose the handover document
 
-Read `references/handover-template.md` before composing. It defines the
-persisted-document format and is the only template authority. Populate all
-four required sections:
+Use the **Persisted-document format: Handover document** section embedded in
+this file. Populate all four required sections:
 
 - `Current Task State`
 - `Decisions Made`
@@ -137,15 +135,10 @@ and stop.
 
 Read the file and confirm it contains all four required sections:
 `Current Task State`, `Decisions Made`, `Open Questions / Blockers`, and
-`Next Recommended Step`. For each section, inspect the content up to the
-next required heading (or the end of the file): it must contain non-whitespace
-content, and it must not consist only of an empty list marker, a template
-placeholder such as `{What is being worked on...}`, or other unreplaced
-`{...}` scaffolding. Explicit statements such as `None identified.` are real
-content and are valid.
+`Next Recommended Step`.
 
-When any required section is missing, empty, or placeholder-only, render the
-**Loader blocked** layout (invalid handover) and stop.
+When any required section is missing, render the **Loader blocked** layout
+(invalid handover) and stop.
 
 #### 3. Present for continuation
 
@@ -170,3 +163,53 @@ guidance is the entire loader contract.
   loadable handover.
 - Never create the `context/` root; `sce setup --bootstrap-context` owns that.
 - Do not begin, plan, or automate the loaded handover's recommended next step.
+
+## Internal persisted-document format: Handover document
+
+The Markdown document writer mode creates under
+`context/handovers/{name}.md`. This is the persisted file's content, distinct
+from the terminal response defined in `references/output.md`.
+
+### Layout
+
+```markdown
+# Handover: {plan name or short session topic}
+
+Date: {YYYY-MM-DD}
+Plan: `{context/plans/plan-name.md}` (omit when no plan applies)
+Task: `{task-id}` (omit when no single task applies)
+
+## Current Task State
+
+{What is being worked on, what is complete, what is in progress. Cite files,
+commands, or plan/task references where they ground the statement.}
+
+## Decisions Made
+
+- {Decision and its rationale, or `None made this session.`}
+
+## Open Questions / Blockers
+
+- {Unresolved question or blocker, or `None identified.`}
+
+## Next Recommended Step
+
+{The single most useful next action for the following session, concrete
+enough to act on directly.}
+
+## Assumptions
+
+- {Any detail above that was inferred rather than directly evidenced, or
+  `None.`}
+```
+
+### Rules
+
+- Include `Plan` and `Task` only when the session was working one identifiable
+  plan task; omit them rather than guessing.
+- Every one of the four required sections must appear, in this order, even
+  when its content is `None identified.` or an equivalent.
+- Keep `Assumptions` scoped to details actually labeled as inferred elsewhere
+  in the document; do not duplicate confirmed facts here.
+- Describe durable state useful to a future session, not a transcript of this
+  one.

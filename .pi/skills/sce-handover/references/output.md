@@ -32,6 +32,28 @@ No file was written.
 
 **Path:** `{written path}`
 
+## Current Task State
+
+{same content written to the file}
+
+## Decisions Made
+
+- {as written}
+
+## Open Questions / Blockers
+
+- {as written}
+
+## Next Recommended Step
+
+{as written}
+
+## Assumptions
+
+- {as written, or `None.`}
+
+---
+
 To continue from this handover in another session:
 
 `/handover {written path}`
