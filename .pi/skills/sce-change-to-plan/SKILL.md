@@ -44,8 +44,8 @@ wrap one in an added preamble, commentary, summary, or extra section.
 
 Keep phase results as internal state and continue immediately whenever the
 canonical workflow says to continue. Stop only at a user wait or terminal branch.
-Any workflow-defined user wait resumes this same skill in the same session.
-Never expose an internal phase result
+Approval, clarification, revision, failed-validation repair, and bootstrap waits
+resume this same skill in the same session. Never expose an internal phase result
 as the workflow's final response.
 
 Relevant non-SCE skills may be used as helper capabilities during the active step.
@@ -118,12 +118,7 @@ Render the `plan_ready` result as the summary defined by the **Plan authoring ph
 
 Take the next task from `next_task`. A `plan_ready` result always names one. Do not evaluate its dependencies; the **Plan review phase** checks them when the emitted command runs and returns `blocked` if they are unmet.
 
-The workflow carries one of two explicit continuation shapes across a same-session wait:
-
-- **Initial-clarification continuation:** `original_request`, `clarification_answers`, and `loaded_context_brief`. `original_request` is the unchanged request from step 1; preserve it with the answers and never ask the user to provide it again.
-- **Existing-plan revision continuation:** `plan_path`, `correction`, and `loaded_context_brief`. `plan_path` identifies the plan already written, and `correction` contains the user's requested revision.
-
-The plan was written from one prose request, so its assumptions are guesses about what the user meant, its scope is one reading of the request, and its task boundaries are the author's judgement. The user has seen none of it until now, and every one of those is cheaper to correct here than after a task has been built on it. A user who does not know revision is on the table will implement a plan they would have changed.
+The continuation invites revision. The plan was written from one prose request, so its assumptions are guesses about what the user meant, its scope is one reading of the request, and its task boundaries are the author's judgement. The user has seen none of it until now, and every one of those is cheaper to correct here than after a task has been built on it. A user who does not know revision is on the table will implement a plan they would have changed.
 
 Write `task` rather than `tasks` when `total_tasks` is 1.
 
@@ -135,13 +130,13 @@ Then stop and wait. Do not implement, and do not run the handoff yourself.
 
 ### 4. Revise the plan on request
 
-When the user answers clarification questions from step 2, resume the **Initial-clarification continuation** with `original_request`, `clarification_answers`, and the same `loaded_context_brief` from step 1. Preserve `original_request` unchanged and never ask the user for the original change request again. When the user answers open questions listed in the summary or requests changes to an already-written plan, resume the **Existing-plan revision continuation** with `plan_path`, `correction`, and the same `loaded_context_brief`. Do not ask them to rerun `/change-to-plan`.
+When the user answers clarification questions from step 2, answers open questions listed in the summary, or answers with changes to the plan, revise it in this session. Do not ask them to rerun `/change-to-plan`, and do not ask for the original change request again.
 
-Run the **Plan authoring phase** with the applicable continuation fields. The brief still holds; durable context did not change because the user disagreed with a task boundary. Do not reload it.
+Run the **Plan authoring phase** with their answer or correction and the same `loaded` brief from step 1. The brief still holds; durable context did not change because the user disagreed with a task boundary. Do not reload it.
 
 An answer that resolves a doubt removes that open question. An answer that does not resolve it leaves the question standing; do not drop it because the user replied to it. If the reply raises a new doubt, the revised plan carries a new open question.
 
-Pass `clarification_answers` or `correction` as written. Do not restate, soften, or pre-scope it. The **Plan authoring phase** owns resolving it against the existing plan, and owns preserving completed tasks and their evidence.
+Pass the correction as written. Do not restate, soften, or pre-scope it. The **Plan authoring phase** owns resolving it against the existing plan, and owns preserving completed tasks and their evidence.
 
 Branch on `status` exactly as in step 2. A revision may legitimately return `needs_clarification` or `blocked`.
 
