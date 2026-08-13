@@ -13,6 +13,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use anyhow::Context;
+use chrono::{DateTime, SecondsFormat, Utc};
 use tokio::runtime::Runtime;
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
@@ -56,6 +57,72 @@ pub struct StreamSyncReport {
     pub batches: usize,
 }
 
+/// Supplies timestamps for one trace-sync invocation.
+pub trait SyncProgressClock {
+    fn now(&self) -> DateTime<Utc>;
+}
+
+/// Uses the system UTC clock for production sync invocations.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemSyncProgressClock;
+
+impl SyncProgressClock for SystemSyncProgressClock {
+    fn now(&self) -> DateTime<Utc> {
+        Utc::now()
+    }
+}
+
+fn timestamp<C>(clock: &C) -> String
+where
+    C: SyncProgressClock,
+{
+    clock.now().to_rfc3339_opts(SecondsFormat::AutoSi, true)
+}
+
+/// Progress emitted while the four trace streams are synchronized.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SyncProgressEvent {
+    Started {
+        timestamp: String,
+    },
+    BatchAccepted {
+        stream: &'static str,
+        batch_rows: usize,
+        uploaded: usize,
+        cursor: i64,
+    },
+    StreamCompleted {
+        stream: &'static str,
+        uploaded: usize,
+        cursor: i64,
+        batches: usize,
+    },
+    Finished {
+        timestamp: String,
+    },
+}
+
+/// Receives deterministic sync progress events.
+pub trait SyncProgressSink {
+    fn report(&mut self, event: SyncProgressEvent);
+}
+
+impl<F> SyncProgressSink for F
+where
+    F: FnMut(SyncProgressEvent),
+{
+    fn report(&mut self, event: SyncProgressEvent) {
+        self(event);
+    }
+}
+
+/// Discards sync progress for callers that only need the final report.
+pub struct NoopSyncProgressSink;
+
+impl SyncProgressSink for NoopSyncProgressSink {
+    fn report(&mut self, _event: SyncProgressEvent) {}
+}
+
 /// Terminal failure of `sce trace sync`.
 #[derive(Debug)]
 pub enum TraceSyncError {
@@ -86,7 +153,51 @@ impl std::error::Error for TraceSyncError {}
 /// `ContextWithRepoRoot`/`AgentTraceStorageContext`/`resolve_agent_trace_storage`
 /// path `sce trace status` uses) and control-plane configuration, then
 /// synchronizes all four capture streams.
+#[allow(dead_code)]
 pub fn run_current_sync(repo_root: &Path) -> Result<AgentTraceSyncReport, TraceSyncError> {
+    let mut progress = NoopSyncProgressSink;
+    run_current_sync_with_progress(repo_root, &mut progress)
+}
+
+/// Production entry point with an injectable progress sink.
+pub fn run_current_sync_with_progress<S>(
+    repo_root: &Path,
+    progress: &mut S,
+) -> Result<AgentTraceSyncReport, TraceSyncError>
+where
+    S: SyncProgressSink,
+{
+    let clock = SystemSyncProgressClock;
+    run_current_sync_with_progress_and_clock(repo_root, progress, &clock)
+}
+
+/// Production sync entry point with injectable progress sink and clock.
+pub fn run_current_sync_with_progress_and_clock<S, C>(
+    repo_root: &Path,
+    progress: &mut S,
+    clock: &C,
+) -> Result<AgentTraceSyncReport, TraceSyncError>
+where
+    S: SyncProgressSink,
+    C: SyncProgressClock,
+{
+    progress.report(SyncProgressEvent::Started {
+        timestamp: timestamp(clock),
+    });
+    let result = run_current_sync_without_progress(repo_root, progress);
+    progress.report(SyncProgressEvent::Finished {
+        timestamp: timestamp(clock),
+    });
+    result
+}
+
+fn run_current_sync_without_progress<S>(
+    repo_root: &Path,
+    progress: &mut S,
+) -> Result<AgentTraceSyncReport, TraceSyncError>
+where
+    S: SyncProgressSink,
+{
     let storage_config = config::resolve_agent_trace_storage_runtime_config(repo_root)
         .map_err(|error| TraceSyncError::Runtime(format!("{error:#}")))?;
     let context = AgentTraceStorageContext {
@@ -106,23 +217,85 @@ pub fn run_current_sync(repo_root: &Path) -> Result<AgentTraceSyncReport, TraceS
         auth_config.workos_client_id.value.unwrap_or_default(),
     );
 
-    run_sync_against(
+    run_sync_against_without_progress(
         &storage.metadata.repository_id,
         &storage.metadata.source_instance_id,
         &storage.db,
         &client,
+        progress,
     )
 }
 
 /// Testable core: synchronizes all four streams given an already-resolved
 /// repository identity, an open Agent Trace database, and a configured
 /// control-plane client (production or test-double).
+#[cfg(test)]
 pub(crate) fn run_sync_against(
     repository_id: &str,
     source_instance_id: &str,
     db: &RepositoryAgentTraceDb,
     client: &AuthenticatedControlPlaneClient,
 ) -> Result<AgentTraceSyncReport, TraceSyncError> {
+    let mut progress = NoopSyncProgressSink;
+    run_sync_against_with_progress(repository_id, source_instance_id, db, client, &mut progress)
+}
+
+#[cfg(test)]
+pub(crate) fn run_sync_against_with_progress<S>(
+    repository_id: &str,
+    source_instance_id: &str,
+    db: &RepositoryAgentTraceDb,
+    client: &AuthenticatedControlPlaneClient,
+    progress: &mut S,
+) -> Result<AgentTraceSyncReport, TraceSyncError>
+where
+    S: SyncProgressSink,
+{
+    let clock = SystemSyncProgressClock;
+    run_sync_against_with_progress_and_clock(
+        repository_id,
+        source_instance_id,
+        db,
+        client,
+        progress,
+        &clock,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn run_sync_against_with_progress_and_clock<S, C>(
+    repository_id: &str,
+    source_instance_id: &str,
+    db: &RepositoryAgentTraceDb,
+    client: &AuthenticatedControlPlaneClient,
+    progress: &mut S,
+    clock: &C,
+) -> Result<AgentTraceSyncReport, TraceSyncError>
+where
+    S: SyncProgressSink,
+    C: SyncProgressClock,
+{
+    progress.report(SyncProgressEvent::Started {
+        timestamp: timestamp(clock),
+    });
+    let result =
+        run_sync_against_without_progress(repository_id, source_instance_id, db, client, progress);
+    progress.report(SyncProgressEvent::Finished {
+        timestamp: timestamp(clock),
+    });
+    result
+}
+
+fn run_sync_against_without_progress<S>(
+    repository_id: &str,
+    source_instance_id: &str,
+    db: &RepositoryAgentTraceDb,
+    client: &AuthenticatedControlPlaneClient,
+    progress: &mut S,
+) -> Result<AgentTraceSyncReport, TraceSyncError>
+where
+    S: SyncProgressSink,
+{
     let runtime = shared_runtime()?;
     let reader = AgentTraceExportReader::new(db);
 
@@ -144,6 +317,7 @@ pub(crate) fn run_sync_against(
         "messages",
         |cursor, limit| reader.read_messages_after(cursor, limit),
         |request| runtime.block_on(client.ingest_messages(request)),
+        progress,
     )?;
     let parts = sync_one_stream(
         runtime,
@@ -155,6 +329,7 @@ pub(crate) fn run_sync_against(
         "parts",
         |cursor, limit| reader.read_parts_after(cursor, limit),
         |request| runtime.block_on(client.ingest_parts(request)),
+        progress,
     )?;
     let diff_traces = sync_one_stream(
         runtime,
@@ -166,6 +341,7 @@ pub(crate) fn run_sync_against(
         "diff_traces",
         |cursor, limit| reader.read_diff_traces_after(cursor, limit),
         |request| runtime.block_on(client.ingest_diff_traces(request)),
+        progress,
     )?;
     let agent_traces = sync_one_stream(
         runtime,
@@ -177,6 +353,7 @@ pub(crate) fn run_sync_against(
         "agent_traces",
         |cursor, limit| reader.read_agent_traces_after(cursor, limit),
         |request| runtime.block_on(client.ingest_agent_traces(request)),
+        progress,
     )?;
 
     Ok(AgentTraceSyncReport {
@@ -207,6 +384,7 @@ fn sync_one_stream<T, ReadFn, IngestFn>(
     stream_label: &'static str,
     mut read_after: ReadFn,
     mut ingest: IngestFn,
+    progress: &mut impl SyncProgressSink,
 ) -> Result<StreamSyncReport, TraceSyncError>
 where
     T: AgentTraceExportRow + Clone,
@@ -216,6 +394,7 @@ where
     ) -> Result<AgentTraceIngestionBatchResponse, ControlPlaneError>,
 {
     let terminal: RefCell<Option<ControlPlaneError>> = RefCell::new(None);
+    let uploaded = RefCell::new(0usize);
 
     let outcome = sync_stream(
         initial_cursor,
@@ -232,10 +411,25 @@ where
                 rows: rows.to_vec(),
             };
             match ingest(&request) {
-                Ok(response) => BatchAttemptOutcome::Accepted {
-                    accepted: response.accepted,
-                    cursor: response.cursor,
-                },
+                Ok(response) => {
+                    let last_row_id = rows
+                        .last()
+                        .expect("rows checked non-empty above")
+                        .source_row_id();
+                    if response.accepted == rows.len() && response.cursor == last_row_id {
+                        *uploaded.borrow_mut() += rows.len();
+                        progress.report(SyncProgressEvent::BatchAccepted {
+                            stream: stream_label,
+                            batch_rows: rows.len(),
+                            uploaded: *uploaded.borrow(),
+                            cursor: response.cursor,
+                        });
+                    }
+                    BatchAttemptOutcome::Accepted {
+                        accepted: response.accepted,
+                        cursor: response.cursor,
+                    }
+                }
                 Err(ControlPlaneError::Conflict(_)) => BatchAttemptOutcome::Conflict,
                 Err(error) if is_stream_terminal(&error) => {
                     *terminal.borrow_mut() = Some(error);
@@ -264,12 +458,20 @@ where
         source,
     })?;
 
-    Ok(StreamSyncReport {
+    let report = StreamSyncReport {
         uploaded: outcome.uploaded,
         initial_cursor: outcome.initial_cursor,
         final_cursor: outcome.final_cursor,
         batches: outcome.batches,
-    })
+    };
+    progress.report(SyncProgressEvent::StreamCompleted {
+        stream: stream_label,
+        uploaded: report.uploaded,
+        cursor: report.final_cursor,
+        batches: report.batches,
+    });
+
+    Ok(report)
 }
 
 /// A control-plane failure that cannot be resolved by reconciling with
@@ -320,6 +522,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use chrono::{DateTime, Utc};
     use serde_json::json;
 
     use super::*;
@@ -426,6 +629,21 @@ mod tests {
         .expect("seed agent_trace");
     }
 
+    fn seed_messages(db: &RepositoryAgentTraceDb, count: usize) {
+        db.insert_messages(
+            (1..=count)
+                .map(|index| InsertMessageInsert {
+                    session_id: "sess-progress".to_string(),
+                    message_id: format!("msg-progress-{index}"),
+                    role: MessageRole::User,
+                    generated_at_unix_ms: 1_700_000_000_000
+                        + i64::try_from(index).expect("test message count fits in i64"),
+                })
+                .collect(),
+        )
+        .expect("seed progress messages");
+    }
+
     fn state_response(
         messages: i64,
         parts: i64,
@@ -444,6 +662,134 @@ mod tests {
 
     fn batch_response(cursor: i64) -> serde_json::Value {
         json!({ "accepted": 1, "cursor": cursor })
+    }
+
+    struct FixedProgressClock {
+        timestamps: RefCell<Vec<DateTime<Utc>>>,
+    }
+
+    impl SyncProgressClock for FixedProgressClock {
+        fn now(&self) -> DateTime<Utc> {
+            self.timestamps.borrow_mut().remove(0)
+        }
+    }
+
+    fn fixed_progress_clock() -> FixedProgressClock {
+        FixedProgressClock {
+            timestamps: RefCell::new(vec![
+                DateTime::parse_from_rfc3339("2026-01-02T03:04:05Z")
+                    .expect("valid start timestamp")
+                    .with_timezone(&Utc),
+                DateTime::parse_from_rfc3339("2026-01-02T03:04:06Z")
+                    .expect("valid end timestamp")
+                    .with_timezone(&Utc),
+            ]),
+        }
+    }
+
+    #[test]
+    fn progress_events_cover_batches_empty_streams_and_fixed_order() {
+        let db_path = unique_test_db_path("progress-events");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let metadata = db
+            .verify_or_initialize_repository_metadata("repo-progress-events")
+            .expect("metadata should initialize");
+        seed_messages(&db, 201);
+
+        let server = TestHttpServer::start();
+        server.queue_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
+        server.queue_response(CannedResponse::json(
+            200,
+            &json!({
+                "accepted": 100,
+                "cursor": 100,
+            }),
+        ));
+        server.queue_response(CannedResponse::json(
+            200,
+            &json!({
+                "accepted": 100,
+                "cursor": 200,
+            }),
+        ));
+        server.queue_response(CannedResponse::json(
+            200,
+            &json!({
+                "accepted": 1,
+                "cursor": 201,
+            }),
+        ));
+        let client = test_client(&server);
+        let events = RefCell::new(Vec::new());
+        let clock = fixed_progress_clock();
+
+        let report = run_sync_against_with_progress_and_clock(
+            &metadata.repository_id,
+            &metadata.source_instance_id,
+            &db,
+            &client,
+            &mut |event| events.borrow_mut().push(event),
+            &clock,
+        )
+        .expect("sync should succeed");
+
+        assert_eq!(report.streams.messages.uploaded, 201);
+        assert_eq!(report.streams.messages.batches, 3);
+        assert_eq!(
+            events.into_inner(),
+            vec![
+                SyncProgressEvent::Started {
+                    timestamp: "2026-01-02T03:04:05Z".to_string(),
+                },
+                SyncProgressEvent::BatchAccepted {
+                    stream: "messages",
+                    batch_rows: 100,
+                    uploaded: 100,
+                    cursor: 100,
+                },
+                SyncProgressEvent::BatchAccepted {
+                    stream: "messages",
+                    batch_rows: 100,
+                    uploaded: 200,
+                    cursor: 200,
+                },
+                SyncProgressEvent::BatchAccepted {
+                    stream: "messages",
+                    batch_rows: 1,
+                    uploaded: 201,
+                    cursor: 201,
+                },
+                SyncProgressEvent::StreamCompleted {
+                    stream: "messages",
+                    uploaded: 201,
+                    cursor: 201,
+                    batches: 3,
+                },
+                SyncProgressEvent::StreamCompleted {
+                    stream: "parts",
+                    uploaded: 0,
+                    cursor: 0,
+                    batches: 0,
+                },
+                SyncProgressEvent::StreamCompleted {
+                    stream: "diff_traces",
+                    uploaded: 0,
+                    cursor: 0,
+                    batches: 0,
+                },
+                SyncProgressEvent::StreamCompleted {
+                    stream: "agent_traces",
+                    uploaded: 0,
+                    cursor: 0,
+                    batches: 0,
+                },
+                SyncProgressEvent::Finished {
+                    timestamp: "2026-01-02T03:04:06Z".to_string(),
+                },
+            ]
+        );
+
+        remove_test_db(&db_path);
     }
 
     #[test]
@@ -616,6 +962,50 @@ mod tests {
             "a terminal /batch status must fail immediately with no /state refetch and no resend"
         );
 
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn progress_events_end_after_terminal_failure() {
+        let db_path = unique_test_db_path("progress-failure");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let metadata = db
+            .verify_or_initialize_repository_metadata("repo-progress-failure")
+            .expect("metadata should initialize");
+        seed_one_row_per_stream(&db);
+
+        let server = TestHttpServer::start();
+        server.queue_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
+        server.queue_response(CannedResponse::json(
+            404,
+            &json!({"message": "unknown ingestion route"}),
+        ));
+        let client = test_client(&server);
+        let events = RefCell::new(Vec::new());
+        let clock = fixed_progress_clock();
+
+        let error = run_sync_against_with_progress_and_clock(
+            &metadata.repository_id,
+            &metadata.source_instance_id,
+            &db,
+            &client,
+            &mut |event| events.borrow_mut().push(event),
+            &clock,
+        )
+        .expect_err("terminal batch failure should be reported");
+
+        assert!(matches!(error, TraceSyncError::Stream { .. }));
+        assert_eq!(
+            events.into_inner(),
+            vec![
+                SyncProgressEvent::Started {
+                    timestamp: "2026-01-02T03:04:05Z".to_string(),
+                },
+                SyncProgressEvent::Finished {
+                    timestamp: "2026-01-02T03:04:06Z".to_string(),
+                },
+            ]
+        );
         remove_test_db(&db_path);
     }
 

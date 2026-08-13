@@ -106,8 +106,8 @@ pub struct AgentTraceIngestionBatchResponse {
 const STATE_PATH: &str = "agent-trace/ingestion/state";
 const BATCH_PATH: &str = "agent-trace/ingestion/batch";
 
-const STATE_RETRY_MAX_ATTEMPTS: u32 = 3;
-const STATE_RETRY_TIMEOUT_MS: u64 = 10_000;
+const STATE_RETRY_MAX_ATTEMPTS: u32 = 1;
+const STATE_RETRY_TIMEOUT_MS: u64 = 60_000;
 const STATE_RETRY_INITIAL_BACKOFF_MS: u64 = 250;
 const STATE_RETRY_MAX_BACKOFF_MS: u64 = 2_000;
 
@@ -265,9 +265,9 @@ impl AuthenticatedControlPlaneClient {
         }
     }
 
-    /// Calls `POST /agent-trace/ingestion/state`, retrying transient
-    /// `500`/`503`/transport failures via the existing sync resilience retry
-    /// policy. `400`/`403`/post-refresh-`401` are terminal and never retried.
+    /// Calls `POST /agent-trace/ingestion/state` with a single attempt and a
+    /// 60-second timeout. `400`/`403`/post-refresh-`401` are terminal and never
+    /// retried.
     pub async fn ingestion_state(
         &self,
         request: &AgentTraceIngestionStateRequest,
@@ -996,6 +996,19 @@ mod tests {
             requests[0].headers.get("authorization").map(String::as_str),
             Some("Bearer valid-access-token")
         );
+    }
+
+    #[test]
+    fn transient_state_failure_fails_after_one_http_attempt() {
+        let server = TestHttpServer::start();
+        server.queue_response(CannedResponse::json(503, &json!({"error": "unavailable"})));
+        let store = FakeCredentialStore::with_tokens(valid_stored_tokens("valid-access-token"));
+        let client = client_with(&server, store);
+
+        let error = block_on(client.ingestion_state(&sample_state_request())).unwrap_err();
+
+        assert!(matches!(error, ControlPlaneError::ServerError(_)));
+        assert_eq!(server.call_count(), 1);
     }
 
     #[test]

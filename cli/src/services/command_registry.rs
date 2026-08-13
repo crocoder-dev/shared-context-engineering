@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::io::Write;
 
 use crate::app::{ContextWithRepoRoot, HasLogger};
 use crate::services;
@@ -53,9 +54,23 @@ impl RuntimeCommand {
         }
     }
 
+    #[allow(dead_code)]
     pub fn execute<C>(&self, context: &C) -> Result<String, ClassifiedError>
     where
         C: HasLogger + ContextWithRepoRoot,
+    {
+        let mut stderr = std::io::sink();
+        self.execute_with_stderr(context, &mut stderr)
+    }
+
+    pub fn execute_with_stderr<C, W>(
+        &self,
+        context: &C,
+        stderr: &mut W,
+    ) -> Result<String, ClassifiedError>
+    where
+        C: HasLogger + ContextWithRepoRoot,
+        W: Write,
     {
         match self {
             Self::Help(_) => Ok(services::help::help_text()),
@@ -68,7 +83,7 @@ impl RuntimeCommand {
             Self::Policy(command) => command.execute(),
             Self::Version(command) => command.execute(context),
             Self::Completion(command) => Ok(command.execute(context)),
-            Self::Trace(command) => command.execute(context),
+            Self::Trace(command) => command.execute_with_stderr(context, stderr),
         }
     }
 }

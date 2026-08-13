@@ -28,7 +28,7 @@ flowchart LR
 - **Credential runtime boundary:** `AuthenticatedControlPlaneClient` keeps the synchronous `CredentialStore` behind an `Arc` and runs every token-storage `load`/`save` through `tokio::task::spawn_blocking`. The underlying encrypted auth DB and Linux Secret Service/zbus APIs are blocking and may create their own Tokio runtime, so they must never execute directly inside the async control-plane request future. Token refresh and HTTP requests remain asynchronous; only credential persistence crosses the blocking boundary.
 - **control plane** is the sole source of cursor truth: every invocation starts from `POST /agent-trace/ingestion/state`, uploads via `POST /agent-trace/ingestion/batch`, and advances a stream's cursor only from a validated batch response (`accepted == rows.len()` and `cursor == rows.last().sourceRowId`), never by inferring `cursor + rows.len()`.
 
-The four streams (`messages`, `parts`, `diff_traces`, `agent_traces`) are independent and synchronized in that fixed order within one invocation.
+The four streams (`messages`, `parts`, `diff_traces`, `agent_traces`) are independent and synchronized in that fixed order within one invocation. Text mode reports a UTC RFC3339 start timestamp before the first control-plane request, each validated accepted batch's size, cumulative uploaded rows, and current cursor, stream completion, and a terminal UTC RFC3339 end timestamp after success or failure through deterministic newline-delimited flushed lines on `stderr`; an empty stream reports that no new rows were uploaded. The timestamps come from an injectable clock for deterministic tests and do not alter the sync protocol or error classification. JSON mode uses a no-op progress sink and retains its JSON-only output contract without progress or lifecycle timestamps.
 
 ## No-local-persistence invariants
 
@@ -58,3 +58,4 @@ Because every invocation starts from the control plane's authoritative `/state` 
 - [agent-trace-storage.md](agent-trace-storage.md) — the repository-scoped storage resolver sync reuses from `sce trace status`.
 - [agent-trace-export-readers.md](../sce/agent-trace-export-readers.md) — the read-only local export boundary sync reads through.
 - [auth-db.md](../sce/auth-db.md) — encrypted WorkOS credential storage sync authenticates through.
+- [Trace-sync progress stream contract](../decisions/2026-08-13-trace-sync-progress-stream-contract.md) — stderr progress/timestamps and stdout/JSON compatibility boundary.
