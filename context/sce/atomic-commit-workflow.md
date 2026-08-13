@@ -69,14 +69,16 @@ user runs the commits they accept.
 Single-message, command-committed. The command first checks that staged content
 exists and stops with `No staged changes. Stage changes before commit.` when
 nothing is staged. It then requests exactly one message covering all staged
-files, writes that message verbatim to a temporary message file, and runs
-`git commit -F <message-file>` exactly once. The multiline message is never
-interpolated into shell source or a shell command.
+files, creates a temporary message file outside the repository working tree,
+writes that message verbatim to it, and runs `git commit -F <message-file>`
+exactly once. The multiline message is never interpolated into shell source or a
+shell command.
 
 Only after the commit succeeds does the command retrieve the hash explicitly
 from `git rev-parse --verify HEAD^{commit}`; it never parses Git's human-readable
 output. On failure it reports the failure and stops — no retry, amend, additional
-staging, fallback commit, or fabricated hash.
+staging, fallback commit, or fabricated hash. Either way, the command deletes the
+temp file after the commit attempt, including on failure, where practical.
 
 Bypass mode relaxes three regular-mode rules: no split proposals, no
 context-file guidance gating, and plan citations are best-effort rather than
@@ -101,8 +103,11 @@ about staging.
 
 Staged changes are the only input describing what is being committed. Neither
 document reads unstaged or untracked changes, and neither stages, unstages, or
-otherwise modifies files. Supplied commit context refines wording but never
-overrides the diff and never adds a claim the diff does not support.
+otherwise modifies repository or worktree files. The bypass commit-message temp
+file is the sole exception to that mutation rule: it lives outside the working
+tree, so writing and later deleting it is not a repository or worktree
+modification. Supplied commit context refines wording but never overrides the
+diff and never adds a claim the diff does not support.
 
 ## Plan citations
 

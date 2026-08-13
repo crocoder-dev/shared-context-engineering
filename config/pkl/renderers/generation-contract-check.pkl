@@ -483,20 +483,24 @@ hidden packageReferencesIn = (text: String) ->
 """#).findMatchesIn(text)
 
 hidden assertLayoutReferences = (documents: Mapping) ->
-  if (
-    documents.every((path, text) ->
-      !path.endsWith("/SKILL.md")
-      || path.contains("/skills/sce-decision/")
-      || (
-        let (outputPath = path.dropLast("SKILL.md".length) + "references/output.md")
-          documents.containsKey(outputPath)
-          && layoutReferencesIn.apply(text).every((match) ->
-            documents[outputPath].contains("## \(match.groups[1].value)")
+  let (violations = documents.toMap().entries
+    .filter((entry) -> entry.key.endsWith("/SKILL.md") && !entry.key.contains("/skills/sce-decision/"))
+    .flatMap((entry) ->
+      let (path = entry.key)
+        layoutReferencesIn.apply(entry.value)
+          .flatMap((match) ->
+            let (referencePath = path.dropLast("SKILL.md".length) + match.groups[2].value)
+              if (
+                !documents.containsKey(referencePath)
+                || !documents[referencePath].contains("## \(match.groups[1].value)")
+              )
+                List(referencePath)
+              else List()
           )
-      )
-    )
-  ) "generated output layouts: every citation resolves to a heading"
-  else throw("generated workflow layout citation does not match a heading in its references/output.md")
+    ))
+    if (violations.isEmpty)
+      "generated output layouts: every citation resolves to a heading in its cited references document"
+    else throw("generated workflow layout citation does not match a heading in `\(violations[0])`")
 
 hidden assertPackageLocalReferences = (documents: Mapping) ->
   if (
@@ -589,6 +593,18 @@ hidden assertNoStaleSyncDebtText = (artifacts: Mapping) ->
   ) "generated files: no stale synchronization-loss wording"
   else throw("generated file contains the stale synchronization-loss wording")
 
+hidden assertPlanReviewSyncDebtRecovery = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      !path.endsWith("/skills/sce-next-task/references/plan-review.md")
+      || (
+        text.contains("do not attempt a reconstructed retry")
+        && text.contains("migrate the plan")
+      )
+    )
+  ) "sce-next-task plan-review reference: sync-debt recovery and legacy-migration wording present"
+  else throw("plan-review reference must state sync-debt recovery and legacy-migration-failure behavior")
+
 hidden assertValidationIsObservational = (documents: Mapping) ->
   let (forbidden = new Listing {
     "Repair application code during final validation"
@@ -639,5 +655,6 @@ contractChecks {
   ["next-task-report-ownership"] = assertNextTaskReportOwnership.apply(workflowDocuments)
   ["target-neutral-references"] = assertTargetNeutralReferences.apply(workflowDocuments)
   ["no-stale-sync-debt-text"] = assertNoStaleSyncDebtText.apply(generatedArtifacts)
+  ["plan-review-sync-debt-recovery"] = assertPlanReviewSyncDebtRecovery.apply(workflowDocuments)
   ["validation-observational"] = assertValidationIsObservational.apply(workflowDocuments)
 }

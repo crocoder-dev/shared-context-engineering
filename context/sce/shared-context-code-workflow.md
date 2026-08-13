@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The implementation lifecycle executes at most one reviewed task per `/next-task` invocation, synchronizes durable context only after successful task execution, and runs final plan validation separately through `/validate`. Task- and plan-level context synchronization lifecycle state is persisted in each plan as `pending`, `synced`, or `blocked` with blocker, required-action, and retry-condition details for blocked transitions. The generated OpenCode Code agent only routes to these commands. Every target keeps each complete lifecycle in `sce-next-task` or `sce-validate`; each `SKILL.md` owns control flow and reads a package-local reference before running the applicable phase. The phases below are internal to those skills, not separate generated packages.
+The implementation lifecycle executes at most one reviewed task per `/next-task` invocation, synchronizes durable context only after successful task execution, and runs final plan validation separately through `/validate`. Task- and plan-level context synchronization lifecycle state is persisted in each plan as `pending`, `synced`, or `blocked` with blocker, required-action, and retry-condition details for blocked transitions. A completed task also carries a durable "Context synchronization handoff" (changed files, implementation summary, verification, done checks, context impact), so a later session can retry or repair synchronization for that task from the plan alone, without reconstructing it from conversation history. The generated OpenCode Code agent only routes to these commands. Every target keeps each complete lifecycle in `sce-next-task` or `sce-validate`; each `SKILL.md` owns control flow and reads a package-local reference before running the applicable phase. The phases below are internal to those skills, not separate generated packages.
 
 ## `/next-task` entrypoint
 
@@ -19,7 +19,7 @@ Phase names below identify canonical modules in `config/pkl/base/workflow-next-t
 
 1. `sce-plan-review`
    - Resolves exactly one plan and at most one task.
-   - Refuses to start a new task when an earlier completed task has missing or non-`synced` context lifecycle state.
+   - When an earlier completed task's context lifecycle is `pending` or `blocked`, loads that task's durable "Context synchronization handoff" (and, if blocked, "Context synchronization blocker") from the plan and retries synchronization for it before selecting or starting any new task; on success it persists `synced` and clears blocker fields before continuing, on a renewed block it persists the refreshed blocker and stops, and a legacy plan with debt but no durable handoff structure fails explicitly with migration guidance rather than a reconstructed retry.
    - Selects the requested task or the first incomplete task whose declared dependencies are complete.
    - Returns `ready`, `blocked`, or `plan_complete`.
 2. `sce-task-execution`

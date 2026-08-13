@@ -1,0 +1,21 @@
+import "../generation-contract-check.pkl" as contract
+
+local skillPath = "config/.opencode/skills/sce-next-task/SKILL.md"
+local outputPath = "config/.opencode/skills/sce-next-task/references/output.md"
+local wrongFilePath = "config/.opencode/skills/sce-next-task/references/wrong-file.md"
+
+local documents = new Mapping {
+  for (path, text in contract.workflowDocuments) {
+    [path] = if (path == skillPath)
+      "\(text)\nRender the **Completion** layout from `references/wrong-file.md`."
+    else if (path == outputPath)
+      "\(text)\n## Completion\n"
+    else text
+  }
+  [wrongFilePath] = "# Wrong file\n\nThis document has no matching heading."
+}
+
+result = if (
+  contract.assertLayoutReferences.apply(documents)
+) "negative fixture unexpectedly accepted a layout citation resolved against the wrong file"
+else throw("generated workflow layout citation does not match a heading in `\(wrongFilePath)`")

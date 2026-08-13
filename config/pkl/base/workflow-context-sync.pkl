@@ -35,7 +35,9 @@ class SyncReportRole {
   noContextChangeSummary: (workflow.WorkflowRenderMode) -> String
   noContextChangeVerification: (workflow.WorkflowRenderMode) -> String
   blockedIdentity: (workflow.WorkflowRenderMode) -> String
-  retryCondition: (workflow.WorkflowRenderMode) -> String
+  blockedHandoffSection: (workflow.WorkflowRenderMode) -> String
+  blockedBlockerSection: (workflow.WorkflowRenderMode) -> String
+  blockedRetrySection: (workflow.WorkflowRenderMode) -> String
   rules: (workflow.WorkflowRenderMode) -> String
 }
 
@@ -149,14 +151,23 @@ local taskRoleData = new SyncRole {
     \(packageOnlyBlock.apply("""
     ## Input
 
-    The complete result returned by the task-execution phase.
-    """).render.apply(mode))The execution result must have:
+    Either the complete result returned by the task-execution phase
+    (same-session), or the persisted `Context synchronization handoff` — and,
+    when retrying a `blocked` task, its `Context synchronization blocker` —
+    subsection that a plan-review recovery step loaded from the plan
+    (cross-session retry).
+    """).render.apply(mode))A live execution result must have:
 
     ```\(yamlFence.render.apply(mode))
     status: complete
     ```
 
-    Treat the execution result as the authoritative handoff for:
+    A persisted retry handoff carries the same field set; its presence in the
+    plan, loaded by plan review, is itself the authoritative signal, and it has
+    no separate `status` field to check.
+
+    Treat whichever handoff was supplied — live or persisted — as the
+    authoritative source for:
 
     - The resolved plan and completed task.
     - Files changed by implementation.
@@ -165,28 +176,32 @@ local taskRoleData = new SyncRole {
     - Done-check evidence.
     - Reported context impact.
 
-    Treat `changes.files_changed` as the execution phase's authoritative,
-    pre-edit-baseline-relative attribution. Use that list when reconciling the
-    implementation; do not replace it with a whole-working-tree scan or a fresh
-    diff against `HEAD`. If it is absent, not baseline-relative, or contradictory
-    with the rest of the handoff, return a `blocked` Markdown report without
-    modifying context.
+    Treat `changes.files_changed`, or the persisted handoff's `Changed files`
+    field on retry, as the authoritative, pre-edit-baseline-relative
+    attribution. Use that list when reconciling the implementation; do not
+    replace it with a whole-working-tree scan or a fresh diff against `HEAD`.
+    If it is absent, not baseline-relative, or contradictory with the rest of
+    the handoff, return a `blocked` Markdown report without modifying context.
 
     This phase must not be \(invokedFor.render.apply(mode)) `declined`, `blocked`, or `incomplete`
     execution results.
 
-    Do not reconstruct a missing execution result from conversation history.
+    Do not reconstruct a missing handoff — live or persisted — from
+    conversation history.
     """
   workflow = (mode: workflow.WorkflowRenderMode) -> """
-    \(packageOnlyBlock.apply("## Workflow").render.apply(mode))\(outer.headings.stepHeading.apply(mode, 1, "Validate the execution handoff"))
+    \(packageOnlyBlock.apply("## Workflow").render.apply(mode))\(outer.headings.stepHeading.apply(mode, 1, "Validate the handoff"))
 
     Confirm that:
 
-    - `status` is exactly `complete`.
+    - A live execution result has `status` exactly `complete`; a persisted
+      retry handoff has no `status` field to check and is authoritative by its
+      presence in the plan.
     - A `plan` object with a `path` is present.
     - Exactly one completed task is identified.
-    - `changes.files_changed` is present as the execution phase's
-      pre-edit-baseline-relative changed-file list.
+    - `changes.files_changed`, or the persisted handoff's `Changed files`
+      field on retry, is present as the pre-edit-baseline-relative changed-file
+      list.
     - Changed files and an implementation summary are present.
     - Verification evidence is present.
     - Done-check evidence is present.
@@ -401,6 +416,13 @@ local taskRoleData = new SyncRole {
     `synced` means context files were updated and verified. `no_context_change`
     means existing context was checked and no edit was warranted. `blocked` means
     context could not be synchronized safely.
+
+    A `blocked` report always writes a `Context synchronization handoff`
+    section (changed files, implementation summary, verification, done checks,
+    context impact) and a `Context synchronization blocker` section (blocker,
+    required action, retry condition), using the same field names the plan's
+    completion record uses, so the plan-review recovery step can persist them
+    verbatim.
 
     \(returnOnlyMarkdownReport.render.apply(mode)). Do not add explanatory prose before or after
     it.
@@ -856,11 +878,7 @@ local blockedReport = (role: SyncReportRole, mode: workflow.WorkflowRenderMode) 
     **Status:** blocked\("  ")
     \(role.blockedIdentity.apply(mode))
 
-    ## Blocker
-
-    **Problem:** {specific synchronization blocker}\("  ")
-    **Impact:** {why context cannot be made authoritative safely}\("  ")
-    **Required action:** {decision or correction required}
+    \(if (role.blockedHandoffSection.apply(mode).isEmpty) "" else role.blockedHandoffSection.apply(mode) + "\n\n")\(role.blockedBlockerSection.apply(mode))
 
     ## Context changes
 
@@ -869,11 +887,7 @@ local blockedReport = (role: SyncReportRole, mode: workflow.WorkflowRenderMode) 
     ## Architecture decisions
 
     - `{ADR path written or reused before the blocker}` — {decision and status}
-    - None written or reused before the blocker.
-
-    ## Retry condition
-
-    \(role.retryCondition.apply(mode))
+    - None written or reused before the blocker.\(if (role.blockedRetrySection.apply(mode).isEmpty) "" else "\n\n" + role.blockedRetrySection.apply(mode))
     """
 
 local reportRules = (role: SyncReportRole, mode: workflow.WorkflowRenderMode) -> """
@@ -949,22 +963,37 @@ local taskReport = new SyncReportRole {
   blockedIdentity = (mode: workflow.WorkflowRenderMode) -> """
     **Plan:** `{plan path}`\("  ")
     **Task:** `{task id} — {task title}`
-
-    ## Updated files
-
-    - {List each changed file from the execution handoff except paths under
-      `context/`; state `None.` when no files remain.}
     """
-  retryCondition = (mode: workflow.WorkflowRenderMode) -> """
-    {State the concrete condition under which context synchronization should run
-    again.}
+  blockedHandoffSection = (mode: workflow.WorkflowRenderMode) -> """
+    ## Context synchronization handoff
+
+    - Changed files: {list each changed file from the handoff except paths
+      under `context/`; state `None.` when no files remain}
+    - Implementation summary: {summary}
+    - Verification: {commands and outcomes}
+    - Done checks: {status of each done check}
+    - Context impact: {durable context this change affects, or none}
     """
+  blockedBlockerSection = (mode: workflow.WorkflowRenderMode) -> """
+    ## Context synchronization blocker
+
+    - Blocker: {specific synchronization blocker}
+    - Required action: {decision or correction required}
+    - Retry condition: {concrete condition under which context synchronization
+      should run again}
+    """
+  blockedRetrySection = (mode: workflow.WorkflowRenderMode) -> ""
   rules = (mode: workflow.WorkflowRenderMode) -> """
-    - Under **Updated files**, list every changed file from the execution handoff
-      except paths under `context/`.
+    - Under **Updated files** (synced and no-context-change reports) or **Changed
+      files** (blocked reports), list every changed file from the execution
+      handoff except paths under `context/`.
     - Report the missing context root as `blocked`, with `sce setup
       --bootstrap-context` as the required action and the existence of `context/` as
       the retry condition.
+    - In a blocked report, write the `Context synchronization handoff` and
+      `Context synchronization blocker` subsections using the same field names
+      the plan's completion record uses, so plan review can persist them
+      verbatim.
     - Omit **Feature existence** only when the task implemented no feature.
     - Describe durable truth, not implementation-session chronology.
     - Keep evidence concise and factual.
@@ -1050,7 +1079,17 @@ local planReport = new SyncReportRole {
   blockedIdentity = (mode: workflow.WorkflowRenderMode) -> """
     **Plan:** `{plan path}`
     """
-  retryCondition = (mode: workflow.WorkflowRenderMode) -> """
+  blockedHandoffSection = (mode: workflow.WorkflowRenderMode) -> ""
+  blockedBlockerSection = (mode: workflow.WorkflowRenderMode) -> """
+    ## Blocker
+
+    **Problem:** {specific synchronization blocker}\("  ")
+    **Impact:** {why context cannot be made authoritative safely}\("  ")
+    **Required action:** {decision or correction required}
+    """
+  blockedRetrySection = (mode: workflow.WorkflowRenderMode) -> """
+    ## Retry condition
+
     {State the concrete condition under which plan context synchronization should
     run again.}
     """
@@ -1095,28 +1134,37 @@ Run this phase for step 3 of the workflow, and only when task execution returned
 session inherits what this task established. It never touches code, tests, or
 plan state.
 
-Input: the complete `complete` result from the task execution phase, passed
-verbatim. It is the authoritative handoff, and this phase owns reading the plan,
-task, changed files, verification evidence, and reported context impact out of
-it.
+Input: either the complete `complete` result from the task execution phase
+(same-session), passed verbatim, or the persisted `Context synchronization
+handoff` — and, when retrying a `blocked` task, its `Context synchronization
+blocker` — subsection that a plan-review recovery step loaded from the plan
+(cross-session retry). Whichever was supplied is the authoritative handoff,
+and this phase owns reading the plan, task, changed files, verification
+evidence, and reported context impact out of it.
 
-Do not restate, summarize, or reconstruct any part of the execution result. Do
-not reconstruct a missing execution result from conversation history.
+Do not restate, summarize, or reconstruct any part of the handoff. Do not
+reconstruct a missing handoff — live or persisted — from conversation history.
 
-The execution result must have:
+A live execution result must have:
 
 ```text
 status: complete
 ```
 
+A persisted retry handoff carries the same field set; its presence in the
+plan, loaded by plan review, is itself the authoritative signal, and it has no
+separate `status` field to check.
+
 Use the report format in:
 
 `references/sync-report.md`
 
-Treat the execution result as the authoritative handoff for:
+Treat whichever handoff was supplied — live or persisted — as the
+authoritative source for:
 
 - The resolved plan and completed task.
-- `changes.files_changed`, already attributed relative to the pre-edit Git baseline.
+- `changes.files_changed`, or the persisted handoff's `Changed files` field on
+  retry, already attributed relative to the pre-edit Git baseline.
 - Files changed by implementation.
 - Implementation summary.
 - Verification evidence.
@@ -1126,11 +1174,13 @@ Treat the execution result as the authoritative handoff for:
 This phase must not be run for `declined`, `blocked`, or `incomplete` execution
 results.
 
-## 3.1 Validate the execution handoff
+## 3.1 Validate the handoff
 
 Confirm that:
 
-- `status` is exactly `complete`.
+- A live execution result has `status` exactly `complete`; a persisted retry
+  handoff has no `status` field to check and is authoritative by its presence
+  in the plan.
 - A `plan` object with a `path` is present.
 - Exactly one completed task is identified.
 - Changed files and an implementation summary are present.
@@ -1383,6 +1433,12 @@ Set exactly one report status:
 `synced` means context files were updated and verified. `no_context_change` means
 existing context was checked and no edit was warranted. `blocked` means context
 could not be synchronized safely.
+
+A `blocked` report always writes a `Context synchronization handoff` section
+(changed files, implementation summary, verification, done checks, context
+impact) and a `Context synchronization blocker` section (blocker, required
+action, retry condition), using the same field names the plan's completion
+record uses, so the plan-review recovery step can persist them verbatim.
 
 Record only the Markdown report. Do not add explanatory prose before or after it.
 
