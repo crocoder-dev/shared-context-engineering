@@ -231,6 +231,7 @@ pub struct AuthenticatedControlPlaneClient {
     workos_api_base_url: String,
     workos_client_id: String,
     credential_store: Arc<dyn CredentialStore>,
+    refresh_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AuthenticatedControlPlaneClient {
@@ -262,6 +263,7 @@ impl AuthenticatedControlPlaneClient {
             workos_api_base_url: workos_api_base_url.into(),
             workos_client_id: workos_client_id.into(),
             credential_store: Arc::from(credential_store),
+            refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -379,7 +381,7 @@ impl AuthenticatedControlPlaneClient {
             return Ok(response);
         }
 
-        let refreshed_token = self.force_refresh_access_token().await?;
+        let refreshed_token = self.force_refresh_access_token(&token).await?;
         let retried = build(&refreshed_token)
             .send()
             .await
@@ -408,25 +410,40 @@ impl AuthenticatedControlPlaneClient {
             return Ok(stored.access_token);
         }
 
-        let token = auth::renew_stored_token_from_refresh_token(
-            &self.http,
-            &self.workos_api_base_url,
-            &self.workos_client_id,
-            &stored.refresh_token,
-        )
-        .await?;
-        self.save_credentials(&token).await?;
-
-        Ok(token.access_token)
-    }
-
-    /// Unconditionally refreshes the stored token via its refresh token and
-    /// saves the result, used for the unexpected-`401` retry path.
-    async fn force_refresh_access_token(&self) -> Result<String, ControlPlaneError> {
+        let _refresh_guard = self.refresh_lock.lock().await;
         let stored = self
             .load_credentials()
             .await?
             .ok_or(ControlPlaneError::MissingCredentials)?;
+
+        if !auth::is_stored_token_expired(&stored)? {
+            return Ok(stored.access_token);
+        }
+
+        self.refresh_and_save(&stored).await
+    }
+
+    /// Refreshes the stored token while holding the client-wide single-flight
+    /// guard. Callers that observed the same rejected token can reuse a token
+    /// saved by an earlier caller instead of issuing another refresh.
+    async fn force_refresh_access_token(
+        &self,
+        rejected_access_token: &str,
+    ) -> Result<String, ControlPlaneError> {
+        let _refresh_guard = self.refresh_lock.lock().await;
+        let stored = self
+            .load_credentials()
+            .await?
+            .ok_or(ControlPlaneError::MissingCredentials)?;
+
+        if stored.access_token != rejected_access_token {
+            return Ok(stored.access_token);
+        }
+
+        self.refresh_and_save(&stored).await
+    }
+
+    async fn refresh_and_save(&self, stored: &StoredTokens) -> Result<String, ControlPlaneError> {
         let token = auth::renew_stored_token_from_refresh_token(
             &self.http,
             &self.workos_api_base_url,
@@ -554,8 +571,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier, Mutex};
+    use std::thread;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::*;
     use crate::services::agent_trace_db::MessageRole;
@@ -912,6 +931,54 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct ConcurrentCredentialStore {
+        tokens: Arc<Mutex<Option<StoredTokens>>>,
+        initial_loads: Arc<AtomicUsize>,
+        initial_load_barrier: Arc<Barrier>,
+        save_calls: Arc<Mutex<Vec<TokenResponse>>>,
+    }
+
+    impl ConcurrentCredentialStore {
+        fn with_tokens(tokens: StoredTokens) -> Self {
+            Self {
+                tokens: Arc::new(Mutex::new(Some(tokens))),
+                initial_loads: Arc::new(AtomicUsize::new(0)),
+                initial_load_barrier: Arc::new(Barrier::new(4)),
+                save_calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn save_call_count(&self) -> usize {
+            self.save_calls.lock().unwrap().len()
+        }
+    }
+
+    impl CredentialStore for ConcurrentCredentialStore {
+        fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
+            let load_number = self.initial_loads.fetch_add(1, Ordering::SeqCst);
+            if load_number < 4 {
+                thread::sleep(Duration::from_millis(10));
+                self.initial_load_barrier.wait();
+            }
+            Ok(self.tokens.lock().unwrap().clone())
+        }
+
+        fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
+            self.save_calls.lock().unwrap().push(token.clone());
+            let stored = StoredTokens {
+                access_token: token.access_token.clone(),
+                token_type: token.token_type.clone(),
+                expires_in: token.expires_in,
+                refresh_token: token.refresh_token.clone(),
+                scope: token.scope.clone(),
+                stored_at_unix_seconds: now_unix_seconds(),
+            };
+            *self.tokens.lock().unwrap() = Some(stored.clone());
+            Ok(stored)
+        }
+    }
+
     struct RuntimeCheckingCredentialStore;
 
     impl CredentialStore for RuntimeCheckingCredentialStore {
@@ -1046,6 +1113,63 @@ mod tests {
             requests[1].headers.get("authorization").map(String::as_str),
             Some("Bearer refreshed-token")
         );
+    }
+
+    #[test]
+    fn concurrent_expired_tokens_share_one_refresh_and_save() {
+        let server = TestHttpServer::start();
+        server.queue_response(CannedResponse::json(
+            200,
+            &token_response_json("refreshed-token"),
+        ));
+        for _ in 0..4 {
+            server.queue_response(CannedResponse::json(200, &state_response_json()));
+        }
+        let store = ConcurrentCredentialStore::with_tokens(expired_stored_tokens("stale-token"));
+        let store_handle = store.clone();
+        let client = Arc::new(AuthenticatedControlPlaneClient::with_credential_store(
+            test_http_client(),
+            server.base_url.clone(),
+            server.base_url.clone(),
+            "test-client-id",
+            Box::new(store),
+        ));
+        let results = block_on(async {
+            let handles = (0..4)
+                .map(|_| {
+                    let client = Arc::clone(&client);
+                    tokio::spawn(
+                        async move { client.ingestion_state(&sample_state_request()).await },
+                    )
+                })
+                .collect::<Vec<_>>();
+            let mut results = Vec::new();
+            for handle in handles {
+                results.push(handle.await.expect("concurrent state request task"));
+            }
+            results
+        });
+
+        assert!(results.iter().all(Result::is_ok));
+        assert_eq!(store_handle.save_call_count(), 1);
+        let requests = server.captured_requests();
+        assert_eq!(requests.len(), 5);
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.path == "/oauth2/token")
+                .count(),
+            1
+        );
+        let state_requests = requests
+            .iter()
+            .filter(|request| request.path == "/agent-trace/ingestion/state")
+            .collect::<Vec<_>>();
+        assert_eq!(state_requests.len(), 4);
+        assert!(state_requests.iter().all(|request| {
+            request.headers.get("authorization").map(String::as_str)
+                == Some("Bearer refreshed-token")
+        }));
     }
 
     #[test]

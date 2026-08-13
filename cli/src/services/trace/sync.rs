@@ -9,8 +9,11 @@
 
 use std::cell::RefCell;
 use std::fmt;
+use std::future::{poll_fn, Future};
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::OnceLock;
+use std::task::Poll;
 
 use anyhow::Context;
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -25,7 +28,7 @@ use crate::services::agent_trace_sync::control_plane::{
     IngestionStream,
 };
 use crate::services::agent_trace_sync::{
-    sync_stream, AgentTraceExportRow, BatchAttemptOutcome, StreamSyncError,
+    sync_stream, AgentTraceExportRow, BatchAttemptOutcome, StreamSyncError, SyncFuture,
 };
 use crate::services::auth;
 use crate::services::config;
@@ -299,62 +302,98 @@ where
     let runtime = shared_runtime()?;
     let reader = AgentTraceExportReader::new(db);
 
+    runtime.block_on(run_sync_async(
+        repository_id,
+        source_instance_id,
+        &reader,
+        client,
+        progress,
+    ))
+}
+
+async fn run_sync_async<'a, S>(
+    repository_id: &'a str,
+    source_instance_id: &'a str,
+    reader: &'a AgentTraceExportReader<'a>,
+    client: &'a AuthenticatedControlPlaneClient,
+    progress: &'a mut S,
+) -> Result<AgentTraceSyncReport, TraceSyncError>
+where
+    S: SyncProgressSink + 'a,
+{
     let state_request = AgentTraceIngestionStateRequest {
         repository_id: repository_id.to_string(),
         source_instance_id: source_instance_id.to_string(),
     };
-    let state = runtime
-        .block_on(client.ingestion_state(&state_request))
+    let state = client
+        .ingestion_state(&state_request)
+        .await
         .map_err(TraceSyncError::ControlPlane)?;
+    let progress = Rc::new(RefCell::new(progress));
 
-    let messages = sync_one_stream(
-        runtime,
-        client,
-        repository_id,
-        source_instance_id,
-        IngestionStream::Messages,
-        state.cursors.messages,
-        "messages",
-        |cursor, limit| reader.read_messages_after(cursor, limit),
-        |request| runtime.block_on(client.ingest_messages(request)),
-        progress,
-    )?;
-    let parts = sync_one_stream(
-        runtime,
-        client,
-        repository_id,
-        source_instance_id,
-        IngestionStream::Parts,
-        state.cursors.parts,
-        "parts",
-        |cursor, limit| reader.read_parts_after(cursor, limit),
-        |request| runtime.block_on(client.ingest_parts(request)),
-        progress,
-    )?;
-    let diff_traces = sync_one_stream(
-        runtime,
-        client,
-        repository_id,
-        source_instance_id,
-        IngestionStream::DiffTraces,
-        state.cursors.diff_traces,
-        "diff_traces",
-        |cursor, limit| reader.read_diff_traces_after(cursor, limit),
-        |request| runtime.block_on(client.ingest_diff_traces(request)),
-        progress,
-    )?;
-    let agent_traces = sync_one_stream(
-        runtime,
-        client,
-        repository_id,
-        source_instance_id,
-        IngestionStream::AgentTraces,
-        state.cursors.agent_traces,
-        "agent_traces",
-        |cursor, limit| reader.read_agent_traces_after(cursor, limit),
-        |request| runtime.block_on(client.ingest_agent_traces(request)),
-        progress,
-    )?;
+    let (messages, parts, diff_traces, agent_traces) = try_join_four(
+        sync_one_stream(
+            client,
+            repository_id,
+            source_instance_id,
+            IngestionStream::Messages,
+            state.cursors.messages,
+            "messages",
+            |cursor, limit| reader.read_messages_after(cursor, limit),
+            |request| Box::pin(async move { client.ingest_messages(&request).await }),
+            Rc::clone(&progress),
+        ),
+        sync_one_stream(
+            client,
+            repository_id,
+            source_instance_id,
+            IngestionStream::Parts,
+            state.cursors.parts,
+            "parts",
+            |cursor, limit| reader.read_parts_after(cursor, limit),
+            |request| Box::pin(async move { client.ingest_parts(&request).await }),
+            Rc::clone(&progress),
+        ),
+        sync_one_stream(
+            client,
+            repository_id,
+            source_instance_id,
+            IngestionStream::DiffTraces,
+            state.cursors.diff_traces,
+            "diff_traces",
+            |cursor, limit| reader.read_diff_traces_after(cursor, limit),
+            |request| Box::pin(async move { client.ingest_diff_traces(&request).await }),
+            Rc::clone(&progress),
+        ),
+        sync_one_stream(
+            client,
+            repository_id,
+            source_instance_id,
+            IngestionStream::AgentTraces,
+            state.cursors.agent_traces,
+            "agent_traces",
+            |cursor, limit| reader.read_agent_traces_after(cursor, limit),
+            |request| Box::pin(async move { client.ingest_agent_traces(&request).await }),
+            Rc::clone(&progress),
+        ),
+    )
+    .await?;
+
+    for (stream, report) in [
+        ("messages", messages),
+        ("parts", parts),
+        ("diff_traces", diff_traces),
+        ("agent_traces", agent_traces),
+    ] {
+        progress
+            .borrow_mut()
+            .report(SyncProgressEvent::StreamCompleted {
+                stream,
+                uploaded: report.uploaded,
+                cursor: report.final_cursor,
+                batches: report.batches,
+            });
+    }
 
     Ok(AgentTraceSyncReport {
         repository_id: repository_id.to_string(),
@@ -368,41 +407,114 @@ where
     })
 }
 
+async fn try_join_four<A, B, C, D, OA, OB, OC, OD, E>(
+    a: A,
+    b: B,
+    c: C,
+    d: D,
+) -> Result<(OA, OB, OC, OD), E>
+where
+    A: Future<Output = Result<OA, E>>,
+    B: Future<Output = Result<OB, E>>,
+    C: Future<Output = Result<OC, E>>,
+    D: Future<Output = Result<OD, E>>,
+{
+    let mut a = Box::pin(a);
+    let mut b = Box::pin(b);
+    let mut c = Box::pin(c);
+    let mut d = Box::pin(d);
+    let mut a_output = None;
+    let mut b_output = None;
+    let mut c_output = None;
+    let mut d_output = None;
+
+    poll_fn(|context| {
+        if a_output.is_none() {
+            if let Poll::Ready(result) = a.as_mut().poll(context) {
+                a_output = Some(result?);
+            }
+        }
+        if b_output.is_none() {
+            if let Poll::Ready(result) = b.as_mut().poll(context) {
+                b_output = Some(result?);
+            }
+        }
+        if c_output.is_none() {
+            if let Poll::Ready(result) = c.as_mut().poll(context) {
+                c_output = Some(result?);
+            }
+        }
+        if d_output.is_none() {
+            if let Poll::Ready(result) = d.as_mut().poll(context) {
+                d_output = Some(result?);
+            }
+        }
+
+        match (
+            a_output.take(),
+            b_output.take(),
+            c_output.take(),
+            d_output.take(),
+        ) {
+            (Some(a), Some(b), Some(c), Some(d)) => Poll::Ready(Ok((a, b, c, d))),
+            (a, b, c, d) => {
+                a_output = a;
+                b_output = b;
+                c_output = c;
+                d_output = d;
+                Poll::Pending
+            }
+        }
+    })
+    .await
+}
+
 /// Synchronizes one stream via the T04 engine. Genuine `409`/`5xx`/transport
 /// ambiguity reconciles through a real `/state` refetch; a terminal
 /// control-plane failure (missing/invalid auth, `400`, `403`) short-circuits
 /// the reconciliation closure with that failure instead of issuing another
 /// network call, so a `403` never mutates local state or retries.
 #[allow(clippy::too_many_arguments)]
-fn sync_one_stream<T, ReadFn, IngestFn>(
-    runtime: &Runtime,
-    client: &AuthenticatedControlPlaneClient,
-    repository_id: &str,
-    source_instance_id: &str,
+async fn sync_one_stream<'a, T, ReadFn, IngestFn, S>(
+    client: &'a AuthenticatedControlPlaneClient,
+    repository_id: &'a str,
+    source_instance_id: &'a str,
     stream: IngestionStream,
     initial_cursor: i64,
     stream_label: &'static str,
     mut read_after: ReadFn,
     mut ingest: IngestFn,
-    progress: &mut impl SyncProgressSink,
+    progress: Rc<RefCell<&'a mut S>>,
 ) -> Result<StreamSyncReport, TraceSyncError>
 where
-    T: AgentTraceExportRow + Clone,
-    ReadFn: FnMut(i64, usize) -> anyhow::Result<Vec<T>>,
+    T: AgentTraceExportRow + Clone + 'a,
+    S: SyncProgressSink + 'a,
+    ReadFn: FnMut(i64, usize) -> anyhow::Result<Vec<T>> + 'a,
     IngestFn: FnMut(
-        &AgentTraceIngestionBatchRequest<T>,
-    ) -> Result<AgentTraceIngestionBatchResponse, ControlPlaneError>,
+            AgentTraceIngestionBatchRequest<T>,
+        )
+            -> SyncFuture<'a, Result<AgentTraceIngestionBatchResponse, ControlPlaneError>>
+        + 'a,
 {
-    let terminal: RefCell<Option<ControlPlaneError>> = RefCell::new(None);
-    let uploaded = RefCell::new(0usize);
+    let terminal: Rc<RefCell<Option<ControlPlaneError>>> = Rc::new(RefCell::new(None));
+    let uploaded = Rc::new(RefCell::new(0usize));
 
     let outcome = sync_stream(
         initial_cursor,
         AGENT_TRACE_EXPORT_BATCH_SIZE,
         |cursor, limit| {
-            read_after(cursor, limit).map_err(|error| StreamSyncError::Read(format!("{error:#}")))
+            let result = read_after(cursor, limit)
+                .map_err(|error| StreamSyncError::Read(format!("{error:#}")));
+            Box::pin(std::future::ready(result))
         },
         |cursor, rows: &[T]| {
+            let terminal = Rc::clone(&terminal);
+            let uploaded = Rc::clone(&uploaded);
+            let row_count = rows.len();
+            let last_row_id = rows
+                .last()
+                .expect("rows checked non-empty above")
+                .source_row_id();
             let request = AgentTraceIngestionBatchRequest {
                 repository_id: repository_id.to_string(),
                 source_instance_id: source_instance_id.to_string(),
@@ -410,68 +522,68 @@ where
                 expected_cursor: cursor,
                 rows: rows.to_vec(),
             };
-            match ingest(&request) {
-                Ok(response) => {
-                    let last_row_id = rows
-                        .last()
-                        .expect("rows checked non-empty above")
-                        .source_row_id();
-                    if response.accepted == rows.len() && response.cursor == last_row_id {
-                        *uploaded.borrow_mut() += rows.len();
-                        progress.report(SyncProgressEvent::BatchAccepted {
-                            stream: stream_label,
-                            batch_rows: rows.len(),
-                            uploaded: *uploaded.borrow(),
+            let ingest_future = ingest(request);
+            let progress = Rc::clone(&progress);
+            Box::pin(async move {
+                match ingest_future.await {
+                    Ok(response) => {
+                        if response.accepted == row_count && response.cursor == last_row_id {
+                            *uploaded.borrow_mut() += row_count;
+                            progress
+                                .borrow_mut()
+                                .report(SyncProgressEvent::BatchAccepted {
+                                    stream: stream_label,
+                                    batch_rows: row_count,
+                                    uploaded: *uploaded.borrow(),
+                                    cursor: response.cursor,
+                                });
+                        }
+                        BatchAttemptOutcome::Accepted {
+                            accepted: response.accepted,
                             cursor: response.cursor,
-                        });
+                        }
                     }
-                    BatchAttemptOutcome::Accepted {
-                        accepted: response.accepted,
-                        cursor: response.cursor,
+                    Err(ControlPlaneError::Conflict(_)) => BatchAttemptOutcome::Conflict,
+                    Err(error) if is_stream_terminal(&error) => {
+                        *terminal.borrow_mut() = Some(error);
+                        BatchAttemptOutcome::Ambiguous
                     }
+                    Err(_) => BatchAttemptOutcome::Ambiguous,
                 }
-                Err(ControlPlaneError::Conflict(_)) => BatchAttemptOutcome::Conflict,
-                Err(error) if is_stream_terminal(&error) => {
-                    *terminal.borrow_mut() = Some(error);
-                    BatchAttemptOutcome::Ambiguous
-                }
-                Err(_) => BatchAttemptOutcome::Ambiguous,
-            }
+            })
         },
         || {
             if let Some(error) = terminal.borrow_mut().take() {
-                return Err(StreamSyncError::Refresh(error.to_string()));
+                return Box::pin(std::future::ready(Err(StreamSyncError::Refresh(
+                    error.to_string(),
+                ))));
             }
 
             let state_request = AgentTraceIngestionStateRequest {
                 repository_id: repository_id.to_string(),
                 source_instance_id: source_instance_id.to_string(),
             };
-            let response = runtime
-                .block_on(client.ingestion_state(&state_request))
-                .map_err(|error| StreamSyncError::Refresh(error.to_string()))?;
-            Ok(cursor_for_stream(&response.cursors, stream))
+            Box::pin(async move {
+                let response = client
+                    .ingestion_state(&state_request)
+                    .await
+                    .map_err(|error| StreamSyncError::Refresh(error.to_string()))?;
+                Ok(cursor_for_stream(&response.cursors, stream))
+            })
         },
     )
+    .await
     .map_err(|source| TraceSyncError::Stream {
         stream: stream_label,
         source,
     })?;
 
-    let report = StreamSyncReport {
+    Ok(StreamSyncReport {
         uploaded: outcome.uploaded,
         initial_cursor: outcome.initial_cursor,
         final_cursor: outcome.final_cursor,
         batches: outcome.batches,
-    };
-    progress.report(SyncProgressEvent::StreamCompleted {
-        stream: stream_label,
-        uploaded: report.uploaded,
-        cursor: report.final_cursor,
-        batches: report.batches,
-    });
-
-    Ok(report)
+    })
 }
 
 /// A control-plane failure that cannot be resolved by reconciling with
@@ -520,7 +632,7 @@ fn shared_runtime() -> Result<&'static Runtime, TraceSyncError> {
 mod tests {
     use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use chrono::{DateTime, Utc};
     use serde_json::json;
@@ -531,7 +643,9 @@ mod tests {
         PartType, PAYLOAD_TYPE_PATCH,
     };
     use crate::services::agent_trace_sync::control_plane::CredentialStore;
-    use crate::services::agent_trace_sync::test_http_server::{CannedResponse, TestHttpServer};
+    use crate::services::agent_trace_sync::test_http_server::{
+        CannedResponse, ConcurrentBatchTestServer, TestHttpServer,
+    };
     use crate::services::auth::TokenResponse;
     use crate::services::token_storage::StoredTokens;
 
@@ -579,14 +693,18 @@ mod tests {
     }
 
     fn test_client(server: &TestHttpServer) -> AuthenticatedControlPlaneClient {
+        test_client_at(&server.base_url)
+    }
+
+    fn test_client_at(base_url: &str) -> AuthenticatedControlPlaneClient {
         let http = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
             .build()
             .expect("build test reqwest client");
         AuthenticatedControlPlaneClient::with_credential_store(
             http,
-            server.base_url.clone(),
-            server.base_url.clone(),
+            base_url.to_string(),
+            base_url.to_string(),
             "test-client-id",
             Box::new(AlwaysValidCredentialStore),
         )
@@ -883,6 +1001,116 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_sync_overlaps_all_four_stream_batches_after_one_state_request() {
+        let db_path = unique_test_db_path("concurrent-overlap");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let metadata = db
+            .verify_or_initialize_repository_metadata("repo-concurrent-overlap")
+            .expect("metadata should initialize");
+        seed_one_row_per_stream(&db);
+
+        let server = ConcurrentBatchTestServer::start(Duration::from_millis(100));
+        server.queue_state_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
+        for stream in ["messages", "parts", "diff_traces", "agent_traces"] {
+            server.queue_batch_response(stream, 0, CannedResponse::json(200, &batch_response(1)));
+        }
+        let client = test_client_at(&server.base_url);
+
+        let report = run_sync_against(
+            &metadata.repository_id,
+            &metadata.source_instance_id,
+            &db,
+            &client,
+        )
+        .expect("concurrent sync should succeed");
+
+        assert_eq!(server.state_request_count(), 1);
+        assert_eq!(server.captured_requests().len(), 5);
+        assert_eq!(server.max_in_flight(), 4);
+        for stream in ["messages", "parts", "diff_traces", "agent_traces"] {
+            assert_eq!(server.max_in_flight_for(stream), 1, "stream {stream}");
+            assert_eq!(server.expected_cursors_for(stream), vec![0]);
+        }
+        for stream in [
+            report.streams.messages,
+            report.streams.parts,
+            report.streams.diff_traces,
+            report.streams.agent_traces,
+        ] {
+            assert_eq!(stream.uploaded, 1);
+            assert_eq!(stream.final_cursor, 1);
+            assert_eq!(stream.batches, 1);
+        }
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn concurrent_sync_keeps_batches_sequential_within_one_stream() {
+        let db_path = unique_test_db_path("concurrent-ordering");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let metadata = db
+            .verify_or_initialize_repository_metadata("repo-concurrent-ordering")
+            .expect("metadata should initialize");
+        seed_messages(&db, 201);
+
+        let server = ConcurrentBatchTestServer::start(Duration::from_millis(50));
+        server.queue_state_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
+        server.queue_batch_response(
+            "messages",
+            0,
+            CannedResponse::json(
+                200,
+                &json!({
+                    "accepted": 100,
+                    "cursor": 100,
+                }),
+            ),
+        );
+        server.queue_batch_response(
+            "messages",
+            100,
+            CannedResponse::json(
+                200,
+                &json!({
+                    "accepted": 100,
+                    "cursor": 200,
+                }),
+            ),
+        );
+        server.queue_batch_response(
+            "messages",
+            200,
+            CannedResponse::json(
+                200,
+                &json!({
+                    "accepted": 1,
+                    "cursor": 201,
+                }),
+            ),
+        );
+        let client = test_client_at(&server.base_url);
+
+        let report = run_sync_against(
+            &metadata.repository_id,
+            &metadata.source_instance_id,
+            &db,
+            &client,
+        )
+        .expect("ordered multi-batch sync should succeed");
+
+        assert_eq!(server.state_request_count(), 1);
+        assert_eq!(server.max_in_flight(), 1);
+        assert_eq!(server.max_in_flight_for("messages"), 1);
+        assert_eq!(server.expected_cursors_for("messages"), vec![0, 100, 200]);
+        assert_eq!(report.streams.messages.uploaded, 201);
+        assert_eq!(report.streams.messages.final_cursor, 201);
+        assert_eq!(report.streams.messages.batches, 3);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
     fn invalid_state_cursor_fails_before_any_batch_request() {
         let db_path = unique_test_db_path("invalid-cursor");
         let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
@@ -932,10 +1160,12 @@ mod tests {
 
         let server = TestHttpServer::start();
         server.queue_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
-        server.queue_response(CannedResponse::json(
-            404,
-            &json!({"message": "unknown ingestion route"}),
-        ));
+        for _ in 0..4 {
+            server.queue_response(CannedResponse::json(
+                404,
+                &json!({"message": "unknown ingestion route"}),
+            ));
+        }
         let client = test_client(&server);
 
         let error = run_sync_against(
@@ -956,10 +1186,22 @@ mod tests {
             ),
             "unexpected error: {error:?}"
         );
+        let requests = server.captured_requests();
         assert_eq!(
-            server.call_count(),
-            2,
-            "a terminal /batch status must fail immediately with no /state refetch and no resend"
+            requests
+                .iter()
+                .filter(|request| request.path == "/agent-trace/ingestion/state")
+                .count(),
+            1,
+            "terminal /batch statuses must not trigger a /state refetch"
+        );
+        let batch_count = requests
+            .iter()
+            .filter(|request| request.path == "/agent-trace/ingestion/batch")
+            .count();
+        assert!(
+            (1..=4).contains(&batch_count),
+            "terminal /batch statuses must not resend batches; observed {batch_count}"
         );
 
         remove_test_db(&db_path);
@@ -976,10 +1218,12 @@ mod tests {
 
         let server = TestHttpServer::start();
         server.queue_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
-        server.queue_response(CannedResponse::json(
-            404,
-            &json!({"message": "unknown ingestion route"}),
-        ));
+        for _ in 0..4 {
+            server.queue_response(CannedResponse::json(
+                404,
+                &json!({"message": "unknown ingestion route"}),
+            ));
+        }
         let client = test_client(&server);
         let events = RefCell::new(Vec::new());
         let clock = fixed_progress_clock();
@@ -1022,11 +1266,13 @@ mod tests {
         server.queue_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
         // Syntactically successful but undecodable as `AgentTraceIngestionBatchResponse`.
         server.queue_response(CannedResponse::json(200, &json!({"unexpected": "shape"})));
-        // Reconciliation refetch: cursor unchanged, so the batch is resent.
+        // The four initial stream requests overlap. Messages receives the
+        // malformed response, while the other streams receive their normal
+        // responses. Reconciliation then refetches state and resends messages.
+        server.queue_response(CannedResponse::json(200, &batch_response(1)));
+        server.queue_response(CannedResponse::json(200, &batch_response(1)));
+        server.queue_response(CannedResponse::json(200, &batch_response(1)));
         server.queue_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
-        server.queue_response(CannedResponse::json(200, &batch_response(1)));
-        server.queue_response(CannedResponse::json(200, &batch_response(1)));
-        server.queue_response(CannedResponse::json(200, &batch_response(1)));
         server.queue_response(CannedResponse::json(200, &batch_response(1)));
         let client = test_client(&server);
 

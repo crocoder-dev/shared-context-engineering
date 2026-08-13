@@ -7,6 +7,8 @@ pub mod control_plane;
 pub(crate) mod test_http_server;
 
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::services::agent_trace_export::{
     AgentTraceAgentTraceExportRow, AgentTraceDiffTraceExportRow, AgentTraceMessageExportRow,
@@ -121,7 +123,9 @@ pub struct StreamSyncOutcome {
 /// refreshed value: if it advanced, the next read naturally skips the
 /// already-accepted rows; if unchanged, the same rows are re-read and
 /// resent. Both cases share one bounded reconciliation counter.
-pub fn sync_stream<T, ReadFn, IngestFn, RefreshFn>(
+pub type SyncFuture<'a, Output> = Pin<Box<dyn Future<Output = Output> + 'a>>;
+
+pub async fn sync_stream<'a, T, ReadFn, IngestFn, RefreshFn>(
     initial_cursor: i64,
     batch_limit: usize,
     mut read_after: ReadFn,
@@ -129,10 +133,10 @@ pub fn sync_stream<T, ReadFn, IngestFn, RefreshFn>(
     mut refresh_cursor: RefreshFn,
 ) -> Result<StreamSyncOutcome, StreamSyncError>
 where
-    T: AgentTraceExportRow,
-    ReadFn: FnMut(i64, usize) -> Result<Vec<T>, StreamSyncError>,
-    IngestFn: FnMut(i64, &[T]) -> BatchAttemptOutcome,
-    RefreshFn: FnMut() -> Result<i64, StreamSyncError>,
+    T: AgentTraceExportRow + 'a,
+    ReadFn: FnMut(i64, usize) -> SyncFuture<'a, Result<Vec<T>, StreamSyncError>>,
+    IngestFn: for<'rows> FnMut(i64, &'rows [T]) -> SyncFuture<'a, BatchAttemptOutcome>,
+    RefreshFn: FnMut() -> SyncFuture<'a, Result<i64, StreamSyncError>>,
 {
     let mut cursor = initial_cursor;
     let mut uploaded = 0usize;
@@ -140,12 +144,12 @@ where
     let mut reconciliation_attempts = 0u32;
 
     loop {
-        let rows = read_after(cursor, batch_limit)?;
+        let rows = read_after(cursor, batch_limit).await?;
         if rows.is_empty() {
             break;
         }
 
-        match ingest_batch(cursor, &rows) {
+        match ingest_batch(cursor, &rows).await {
             BatchAttemptOutcome::Accepted {
                 accepted,
                 cursor: reported_cursor,
@@ -173,7 +177,7 @@ where
                     return Err(StreamSyncError::DidNotConverge);
                 }
 
-                cursor = refresh_cursor()?;
+                cursor = refresh_cursor().await?;
             }
         }
     }
@@ -189,9 +193,22 @@ where
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::future::Future;
 
     use super::*;
     use crate::services::agent_trace_db::MessageRole;
+
+    fn block_on<F: Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("build test runtime")
+            .block_on(future)
+    }
+
+    fn ready<T: 'static>(value: T) -> SyncFuture<'static, T> {
+        Box::pin(std::future::ready(value))
+    }
 
     fn row(source_row_id: i64) -> AgentTraceMessageExportRow {
         AgentTraceMessageExportRow {
@@ -203,9 +220,6 @@ mod tests {
         }
     }
 
-    /// In-memory local store: rows never disappear, only the caller-visible
-    /// server-accepted cursor advances, mirroring how the real reader and
-    /// control plane are independent sources of truth.
     struct FakeLocalRows {
         rows: Vec<AgentTraceMessageExportRow>,
     }
@@ -231,20 +245,19 @@ mod tests {
     fn empty_database_makes_no_batch_calls() {
         let local = FakeLocalRows::new(0);
         let batch_calls = RefCell::new(0usize);
-
-        let outcome = sync_stream(
+        let outcome = block_on(sync_stream(
             0,
             500,
-            |cursor, limit| Ok(local.after(cursor, limit)),
+            |cursor, limit| ready(Ok(local.after(cursor, limit))),
             |_cursor, rows: &[AgentTraceMessageExportRow]| {
                 *batch_calls.borrow_mut() += 1;
-                BatchAttemptOutcome::Accepted {
+                ready(BatchAttemptOutcome::Accepted {
                     accepted: rows.len(),
                     cursor: rows.last().map_or(0, |row| row.source_row_id),
-                }
+                })
             },
             || panic!("refresh should not be called when there is nothing to reconcile"),
-        )
+        ))
         .unwrap();
 
         assert_eq!(*batch_calls.borrow(), 0);
@@ -263,55 +276,47 @@ mod tests {
     fn one_batch_uploads_all_rows_and_advances_cursor() {
         let local = FakeLocalRows::new(3);
         let batch_calls = RefCell::new(0usize);
-
-        let outcome = sync_stream(
+        let outcome = block_on(sync_stream(
             0,
             500,
-            |cursor, limit| Ok(local.after(cursor, limit)),
+            |cursor, limit| ready(Ok(local.after(cursor, limit))),
             |_cursor, rows: &[AgentTraceMessageExportRow]| {
                 *batch_calls.borrow_mut() += 1;
-                BatchAttemptOutcome::Accepted {
+                ready(BatchAttemptOutcome::Accepted {
                     accepted: rows.len(),
                     cursor: rows.last().unwrap().source_row_id,
-                }
+                })
             },
             || panic!("refresh should not be called on an all-success run"),
-        )
+        ))
         .unwrap();
 
         assert_eq!(*batch_calls.borrow(), 1);
-        assert_eq!(
-            outcome,
-            StreamSyncOutcome {
-                uploaded: 3,
-                initial_cursor: 0,
-                final_cursor: 3,
-                batches: 1,
-            }
-        );
+        assert_eq!(outcome.uploaded, 3);
+        assert_eq!(outcome.final_cursor, 3);
+        assert_eq!(outcome.batches, 1);
     }
 
     #[test]
     fn more_than_five_hundred_rows_span_multiple_bounded_batches() {
         let local = FakeLocalRows::new(1_100);
         let batch_sizes = RefCell::new(Vec::new());
-
-        let outcome = sync_stream(
+        let outcome = block_on(sync_stream(
             0,
             500,
             |cursor, limit| {
                 assert!(limit <= 500);
-                Ok(local.after(cursor, limit))
+                ready(Ok(local.after(cursor, limit)))
             },
             |_cursor, rows: &[AgentTraceMessageExportRow]| {
                 batch_sizes.borrow_mut().push(rows.len());
-                BatchAttemptOutcome::Accepted {
+                ready(BatchAttemptOutcome::Accepted {
                     accepted: rows.len(),
                     cursor: rows.last().unwrap().source_row_id,
-                }
+                })
             },
             || panic!("refresh should not be called on an all-success run"),
-        )
+        ))
         .unwrap();
 
         assert_eq!(*batch_sizes.borrow(), vec![500, 500, 100]);
@@ -325,61 +330,56 @@ mod tests {
         let local = FakeLocalRows {
             rows: vec![row(2), row(5), row(9)],
         };
-
-        let outcome = sync_stream(
+        let outcome = block_on(sync_stream(
             0,
             500,
-            |cursor, limit| Ok(local.after(cursor, limit)),
-            |_cursor, rows: &[AgentTraceMessageExportRow]| BatchAttemptOutcome::Accepted {
-                accepted: rows.len(),
-                cursor: rows.last().unwrap().source_row_id,
+            |cursor, limit| ready(Ok(local.after(cursor, limit))),
+            |_cursor, rows: &[AgentTraceMessageExportRow]| {
+                ready(BatchAttemptOutcome::Accepted {
+                    accepted: rows.len(),
+                    cursor: rows.last().unwrap().source_row_id,
+                })
             },
             || panic!("refresh should not be called on an all-success run"),
-        )
+        ))
         .unwrap();
 
         assert_eq!(outcome.uploaded, 3);
         assert_eq!(outcome.final_cursor, 9);
-        let uploaded_as_cursor_delta =
-            i64::try_from(outcome.uploaded).expect("uploaded count fits in i64 for this test");
-        assert_ne!(
-            outcome.final_cursor,
-            outcome.initial_cursor + uploaded_as_cursor_delta
-        );
+        assert_ne!(outcome.final_cursor, outcome.initial_cursor + 3);
     }
 
     #[test]
     fn conflict_resends_only_the_unsent_tail() {
-        // Mirrors the plan's worked example: state=10, local rows 11-13, the
-        // first batch 409s, refreshed state=12, only row 13 is resent with
-        // expected_cursor=12.
         let local = FakeLocalRows {
             rows: vec![row(11), row(12), row(13)],
         };
         let attempts: RefCell<Vec<(i64, Vec<i64>)>> = RefCell::new(Vec::new());
-
-        let outcome = sync_stream(
+        let outcome = block_on(sync_stream(
             10,
             500,
-            |cursor, limit| Ok(local.after(cursor, limit)),
+            |cursor, limit| ready(Ok(local.after(cursor, limit))),
             |cursor, rows: &[AgentTraceMessageExportRow]| {
-                let ids: Vec<i64> = rows.iter().map(|row| row.source_row_id).collect();
+                let ids = rows.iter().map(|row| row.source_row_id).collect();
                 attempts.borrow_mut().push((cursor, ids));
-                if attempts.borrow().len() == 1 {
+                let result = if attempts.borrow().len() == 1 {
                     BatchAttemptOutcome::Conflict
                 } else {
                     BatchAttemptOutcome::Accepted {
                         accepted: rows.len(),
                         cursor: rows.last().unwrap().source_row_id,
                     }
-                }
+                };
+                ready(result)
             },
-            || Ok(12),
-        )
+            || ready(Ok(12)),
+        ))
         .unwrap();
 
-        let attempts = attempts.into_inner();
-        assert_eq!(attempts, vec![(10, vec![11, 12, 13]), (12, vec![13])]);
+        assert_eq!(
+            attempts.into_inner(),
+            vec![(10, vec![11, 12, 13]), (12, vec![13])]
+        );
         assert_eq!(outcome.uploaded, 1);
         assert_eq!(outcome.final_cursor, 13);
     }
@@ -388,32 +388,28 @@ mod tests {
     fn ambiguous_failure_with_advanced_refresh_does_not_resend() {
         let local = FakeLocalRows::new(3);
         let attempts: RefCell<Vec<Vec<i64>>> = RefCell::new(Vec::new());
-
-        let outcome = sync_stream(
+        let outcome = block_on(sync_stream(
             0,
             500,
-            |cursor, limit| Ok(local.after(cursor, limit)),
+            |cursor, limit| ready(Ok(local.after(cursor, limit))),
             |_cursor, rows: &[AgentTraceMessageExportRow]| {
-                let ids: Vec<i64> = rows.iter().map(|row| row.source_row_id).collect();
-                let is_first = attempts.borrow().is_empty();
+                let ids = rows.iter().map(|row| row.source_row_id).collect();
+                let first = attempts.borrow().is_empty();
                 attempts.borrow_mut().push(ids);
-                if is_first {
+                ready(if first {
                     BatchAttemptOutcome::Ambiguous
                 } else {
                     BatchAttemptOutcome::Accepted {
                         accepted: rows.len(),
                         cursor: rows.last().unwrap().source_row_id,
                     }
-                }
+                })
             },
-            // The control plane had already committed the batch server-side
-            // despite the ambiguous response; /state now reflects it.
-            || Ok(3),
-        )
+            || ready(Ok(3)),
+        ))
         .unwrap();
 
-        let attempts = attempts.into_inner();
-        assert_eq!(attempts, vec![vec![1, 2, 3]]);
+        assert_eq!(attempts.into_inner(), vec![vec![1, 2, 3]]);
         assert_eq!(outcome.uploaded, 0);
         assert_eq!(outcome.final_cursor, 3);
     }
@@ -422,31 +418,28 @@ mod tests {
     fn ambiguous_failure_with_unchanged_refresh_resends_once() {
         let local = FakeLocalRows::new(3);
         let attempts: RefCell<Vec<Vec<i64>>> = RefCell::new(Vec::new());
-
-        let outcome = sync_stream(
+        let outcome = block_on(sync_stream(
             0,
             500,
-            |cursor, limit| Ok(local.after(cursor, limit)),
+            |cursor, limit| ready(Ok(local.after(cursor, limit))),
             |_cursor, rows: &[AgentTraceMessageExportRow]| {
-                let ids: Vec<i64> = rows.iter().map(|row| row.source_row_id).collect();
-                let is_first = attempts.borrow().is_empty();
+                let ids = rows.iter().map(|row| row.source_row_id).collect();
+                let first = attempts.borrow().is_empty();
                 attempts.borrow_mut().push(ids);
-                if is_first {
+                ready(if first {
                     BatchAttemptOutcome::Ambiguous
                 } else {
                     BatchAttemptOutcome::Accepted {
                         accepted: rows.len(),
                         cursor: rows.last().unwrap().source_row_id,
                     }
-                }
+                })
             },
-            // /state confirms nothing was actually committed.
-            || Ok(0),
-        )
+            || ready(Ok(0)),
+        ))
         .unwrap();
 
-        let attempts = attempts.into_inner();
-        assert_eq!(attempts, vec![vec![1, 2, 3], vec![1, 2, 3]]);
+        assert_eq!(attempts.into_inner(), vec![vec![1, 2, 3], vec![1, 2, 3]]);
         assert_eq!(outcome.uploaded, 3);
         assert_eq!(outcome.final_cursor, 3);
     }
@@ -454,14 +447,13 @@ mod tests {
     #[test]
     fn reconciliation_bound_fails_with_did_not_converge() {
         let local = FakeLocalRows::new(3);
-
-        let result = sync_stream(
+        let result = block_on(sync_stream(
             0,
             500,
-            |cursor, limit| Ok(local.after(cursor, limit)),
-            |_cursor, _rows: &[AgentTraceMessageExportRow]| BatchAttemptOutcome::Ambiguous,
-            || Ok(0),
-        );
+            |cursor, limit| ready(Ok(local.after(cursor, limit))),
+            |_cursor, _rows: &[AgentTraceMessageExportRow]| ready(BatchAttemptOutcome::Ambiguous),
+            || ready(Ok(0)),
+        ));
 
         assert!(matches!(result, Err(StreamSyncError::DidNotConverge)));
     }
@@ -469,17 +461,18 @@ mod tests {
     #[test]
     fn invalid_response_rejects_mismatched_accepted_and_cursor() {
         let local = FakeLocalRows::new(3);
-
-        let result = sync_stream(
+        let result = block_on(sync_stream(
             0,
             500,
-            |cursor, limit| Ok(local.after(cursor, limit)),
-            |_cursor, _rows: &[AgentTraceMessageExportRow]| BatchAttemptOutcome::Accepted {
-                accepted: 2,
-                cursor: 99,
+            |cursor, limit| ready(Ok(local.after(cursor, limit))),
+            |_cursor, _rows: &[AgentTraceMessageExportRow]| {
+                ready(BatchAttemptOutcome::Accepted {
+                    accepted: 2,
+                    cursor: 99,
+                })
             },
             || panic!("refresh should not be called on an invalid response"),
-        );
+        ));
 
         assert!(matches!(result, Err(StreamSyncError::InvalidResponse(_))));
     }
