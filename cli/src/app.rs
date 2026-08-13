@@ -269,26 +269,28 @@ where
     StderrW: Write,
 {
     app_support::render_run_outcome(
-        try_run_with_dependency_check(args, dependency_check),
+        try_run_with_dependency_check(args, dependency_check, stderr),
         stdout,
         stderr,
     )
 }
 
-fn try_run_with_dependency_check<I, F>(
+fn try_run_with_dependency_check<I, F, StderrW>(
     args: I,
     dependency_check: F,
+    stderr: &mut StderrW,
 ) -> RunOutcome<services::observability::Logger>
 where
     I: IntoIterator<Item = String>,
     F: FnOnce() -> anyhow::Result<()>,
+    StderrW: Write,
 {
     let result = perform_dependency_check(dependency_check)
         .and_then(|()| build_startup_context())
         .and_then(initialize_runtime)
         .map(|runtime| {
             let startup_diagnostic = runtime.startup_diagnostic.clone();
-            let result = run_command_lifecycle(args, &runtime);
+            let result = run_command_lifecycle(args, &runtime, stderr);
             RunOutcome {
                 logger: Some(runtime.logger),
                 startup_diagnostic,
@@ -345,9 +347,14 @@ fn initialize_runtime(startup: StartupContext) -> Result<AppRuntime, ClassifiedE
     })
 }
 
-fn run_command_lifecycle<I>(args: I, runtime: &AppRuntime) -> Result<String, ClassifiedError>
+fn run_command_lifecycle<I, StderrW>(
+    args: I,
+    runtime: &AppRuntime,
+    stderr: &mut StderrW,
+) -> Result<String, ClassifiedError>
 where
     I: IntoIterator<Item = String>,
+    StderrW: Write,
 {
     let context = runtime.context();
     let mut args = Some(args.into_iter().collect::<Vec<_>>());
@@ -362,7 +369,7 @@ where
             return Err(ClassifiedError::runtime(REPEATED_COMMAND_DISPATCH_ERROR));
         };
         let command = parse_command_phase(command_args, &runtime.registry, &context)?;
-        app_support::execute_command_phase(&command, &context)
+        app_support::execute_command_phase(&command, &context, stderr)
     })
 }
 

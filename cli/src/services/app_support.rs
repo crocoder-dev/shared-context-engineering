@@ -101,12 +101,14 @@ pub(crate) fn log_startup_configuration(
     }
 }
 
-pub(crate) fn execute_command_phase<C>(
+pub(crate) fn execute_command_phase<C, W>(
     command: &RuntimeCommand,
     context: &C,
+    stderr: &mut W,
 ) -> Result<String, ClassifiedError>
 where
     C: HasLogger + ContextWithRepoRoot,
+    W: Write,
 {
     let command_name = command.name();
     let logger = context.logger();
@@ -116,7 +118,7 @@ where
         &[("command", command_name.as_ref())],
         None,
     );
-    let dispatch_result = command.execute(context);
+    let dispatch_result = command.execute_with_stderr(context, stderr);
     if dispatch_result.is_ok() {
         logger.debug(
             "sce.command.dispatch_end",

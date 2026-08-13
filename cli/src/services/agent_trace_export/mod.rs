@@ -10,7 +10,7 @@ use serde::Serialize;
 use crate::services::agent_trace_db::{repository::RepositoryAgentTraceDb, MessageRole};
 
 /// Maximum number of rows a single export reader call may return.
-pub const AGENT_TRACE_EXPORT_BATCH_SIZE: usize = 500;
+pub const AGENT_TRACE_EXPORT_BATCH_SIZE: usize = 100;
 
 /// Largest integer value that round-trips exactly through an IEEE-754 double
 /// (`Number.MAX_SAFE_INTEGER`).
@@ -667,7 +667,7 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         let rows = reader
-            .read_messages_after(1, 500)
+            .read_messages_after(1, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read after cursor should succeed");
 
         assert_eq!(
@@ -696,7 +696,7 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         let rows = reader
-            .read_messages_after(10, 500)
+            .read_messages_after(10, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read after cursor should succeed");
 
         assert_eq!(
@@ -759,11 +759,11 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         assert!(reader
-            .read_messages_after(1, 500)
+            .read_messages_after(1, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read at max id should succeed")
             .is_empty());
         assert!(reader
-            .read_messages_after(100, 500)
+            .read_messages_after(100, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read beyond max id should succeed")
             .is_empty());
 
@@ -777,7 +777,7 @@ mod tests {
         let reader = AgentTraceExportReader::new(&db);
 
         let cursor_error = reader
-            .read_messages_after(-1, 500)
+            .read_messages_after(-1, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect_err("negative cursor should error");
         assert!(cursor_error.to_string().contains("cursor"));
 
@@ -806,7 +806,7 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         let error = reader
-            .read_messages_after(0, 500)
+            .read_messages_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect_err("row above safe-integer bound should error");
         assert!(error.to_string().contains("JS-safe-integer"));
 
@@ -825,7 +825,7 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         reader
-            .read_messages_after(0, 500)
+            .read_messages_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read should succeed");
 
         assert_eq!(row_count(&db, "messages"), messages_before);
@@ -858,7 +858,7 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         let rows = reader
-            .read_parts_after(0, 500)
+            .read_parts_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read after cursor should succeed");
 
         assert_eq!(
@@ -888,7 +888,7 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         let rows = reader
-            .read_parts_after(10, 500)
+            .read_parts_after(10, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read after cursor should succeed");
 
         assert_eq!(
@@ -945,11 +945,11 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         assert!(reader
-            .read_parts_after(1, 500)
+            .read_parts_after(1, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read at max id should succeed")
             .is_empty());
         assert!(reader
-            .read_parts_after(100, 500)
+            .read_parts_after(100, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read beyond max id should succeed")
             .is_empty());
 
@@ -963,7 +963,7 @@ mod tests {
         let reader = AgentTraceExportReader::new(&db);
 
         let cursor_error = reader
-            .read_parts_after(-1, 500)
+            .read_parts_after(-1, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect_err("negative cursor should error");
         assert!(cursor_error.to_string().contains("cursor"));
 
@@ -992,7 +992,7 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         let error = reader
-            .read_parts_after(0, 500)
+            .read_parts_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect_err("row above safe-integer bound should error");
         assert!(error.to_string().contains("JS-safe-integer"));
 
@@ -1011,7 +1011,7 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         reader
-            .read_parts_after(0, 500)
+            .read_parts_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read should succeed");
 
         assert_eq!(row_count(&db, "parts"), parts_before);
@@ -1047,7 +1047,7 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         let rows = reader
-            .read_diff_traces_after(1, 500)
+            .read_diff_traces_after(1, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read after cursor should succeed");
 
         assert_eq!(
@@ -1081,7 +1081,7 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         let rows = reader
-            .read_diff_traces_after(0, 500)
+            .read_diff_traces_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read after cursor should succeed");
 
         assert_eq!(rows.len(), 1);
@@ -1111,7 +1111,7 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         let rows = reader
-            .read_diff_traces_after(10, 500)
+            .read_diff_traces_after(10, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read after cursor should succeed");
 
         assert_eq!(
@@ -1168,11 +1168,11 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         assert!(reader
-            .read_diff_traces_after(1, 500)
+            .read_diff_traces_after(1, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read at max id should succeed")
             .is_empty());
         assert!(reader
-            .read_diff_traces_after(100, 500)
+            .read_diff_traces_after(100, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read beyond max id should succeed")
             .is_empty());
 
@@ -1186,7 +1186,7 @@ mod tests {
         let reader = AgentTraceExportReader::new(&db);
 
         let cursor_error = reader
-            .read_diff_traces_after(-1, 500)
+            .read_diff_traces_after(-1, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect_err("negative cursor should error");
         assert!(cursor_error.to_string().contains("cursor"));
 
@@ -1224,7 +1224,7 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         let error = reader
-            .read_diff_traces_after(0, 500)
+            .read_diff_traces_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect_err("row above safe-integer bound should error");
         assert!(error.to_string().contains("JS-safe-integer"));
 
@@ -1243,7 +1243,7 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         reader
-            .read_diff_traces_after(0, 500)
+            .read_diff_traces_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read should succeed");
 
         assert_eq!(row_count(&db, "diff_traces"), diff_traces_before);
@@ -1277,7 +1277,7 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         let rows = reader
-            .read_agent_traces_after(1, 500)
+            .read_agent_traces_after(1, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read after cursor should succeed");
 
         assert_eq!(
@@ -1305,7 +1305,7 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         let rows = reader
-            .read_agent_traces_after(0, 500)
+            .read_agent_traces_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read after cursor should succeed");
 
         assert_eq!(rows.len(), 1);
@@ -1329,7 +1329,7 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         let rows = reader
-            .read_agent_traces_after(10, 500)
+            .read_agent_traces_after(10, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read after cursor should succeed");
 
         assert_eq!(
@@ -1386,11 +1386,11 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         assert!(reader
-            .read_agent_traces_after(1, 500)
+            .read_agent_traces_after(1, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read at max id should succeed")
             .is_empty());
         assert!(reader
-            .read_agent_traces_after(100, 500)
+            .read_agent_traces_after(100, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read beyond max id should succeed")
             .is_empty());
 
@@ -1404,7 +1404,7 @@ mod tests {
         let reader = AgentTraceExportReader::new(&db);
 
         let cursor_error = reader
-            .read_agent_traces_after(-1, 500)
+            .read_agent_traces_after(-1, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect_err("negative cursor should error");
         assert!(cursor_error.to_string().contains("cursor"));
 
@@ -1441,7 +1441,7 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         let error = reader
-            .read_agent_traces_after(0, 500)
+            .read_agent_traces_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect_err("row above safe-integer bound should error");
         assert!(error.to_string().contains("JS-safe-integer"));
 
@@ -1460,7 +1460,7 @@ mod tests {
 
         let reader = AgentTraceExportReader::new(&db);
         reader
-            .read_agent_traces_after(0, 500)
+            .read_agent_traces_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
             .expect("read should succeed");
 
         assert_eq!(row_count(&db, "agent_traces"), agent_traces_before);

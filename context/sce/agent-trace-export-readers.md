@@ -44,7 +44,7 @@ against `messages`, `parts`, `diff_traces`, and `agent_traces` respectively (`re
 Every call validates, before executing any query:
 
 - `cursor >= 0`
-- `1 <= limit <= AGENT_TRACE_EXPORT_BATCH_SIZE` (500)
+- `1 <= limit <= AGENT_TRACE_EXPORT_BATCH_SIZE` (100)
 
 and validates, per returned row before returning:
 
