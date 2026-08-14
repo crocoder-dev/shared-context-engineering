@@ -1,0 +1,11 @@
+import "../generation-contract-check.pkl" as contract
+
+local documents = new Mapping {
+  ["config/.opencode/skills/sce-next-task/references/task-execution.md"] =
+    "Write the task's Context synchronization handoff subsection, plus Implementation evidence and Verification evidence."
+}
+
+result = if (
+  contract.assertNextTaskCompactCompletionWriting.apply(documents)
+) "negative fixture unexpectedly accepted a task-execution reference building a separate handoff/evidence record"
+else throw("sce-next-task task-execution.md must record execution facts directly on the completed task and must not construct a separate Implementation evidence, Verification evidence, or Context synchronization handoff record")

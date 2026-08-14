@@ -96,6 +96,7 @@ Supporting repo docs:
 
 Recent decision records:
 
+- `context/decisions/2026-08-14-compact-task-record-supersedes-handoff.md` (the completed task record — `Completed`/`Files changed`/`Result`/`Verify`/`Context impact`/`Context synchronization`, identified only by plan path and task ID — is the sole durable input for immediate and cross-session task synchronization, with no separate persisted `Context synchronization handoff` structure; supersedes only the handoff-shape portion of `2026-08-12-persist-workflow-sync-lifecycle-in-plans.md`, whose `pending`/`synced`/`blocked` lifecycle-state invariant remains in force)
 - `context/decisions/2026-08-12-decision-gate-semantics.md` (nonqualifying/skipped decision gates are non-blocking; ADRs are immutable, active-only reuse is allowed, changed decisions create new dated records, and `Deprecated`/`Superseded` are creation-time-only statuses)
 - `context/decisions/2026-08-12-observational-final-validation.md`
 - `context/decisions/2026-08-12-persist-workflow-sync-lifecycle-in-plans.md`
