@@ -9,7 +9,7 @@ The Claude TypeScript agent-trace runtime was removed in T07 of the `claude-rust
 ## Event capture baseline
 
 - The plugin registers for `message`, `message.part`, `session.created`, and `session.updated` events.
-- Conversation-trace handoff uses the current mixed-batch STDIN shape expected by Rust: `{ "payloads": [{ "type": "message" | "message.part", ... }] }`. The producer does not emit top-level `type` envelopes.
+- Conversation-trace handoff uses the current mixed-batch STDIN shape expected by Rust: `{ "tool_name": "opencode", "payloads": [{ "type": "message" | "message.part", ... }] }`. The producer identity is hardcoded and the producer does not emit top-level `type` envelopes.
 - For every captured `message` event, the plugin checks for `summary.diffs` via `buildPatchConversationTracePayload`:
   - **When diffs exist**: builds one mixed `-patch` conversation-trace envelope containing the synthetic parent `message` item with `message_id = "${id}-patch"` plus all per-diff `message.part` patch items, then invokes `sce hooks conversation-trace` once. The original `message` event is replaced — no original `message` payload is sent.
   - **When no diffs exist**: builds one mixed envelope containing a single `message` item via `buildConversationTracePayload` and invokes `sce hooks conversation-trace` over STDIN JSON.
@@ -18,6 +18,7 @@ The Claude TypeScript agent-trace runtime was removed in T07 of the `claude-rust
 - Existing diff-trace capture remains filtered to user messages with usable diffs.
 - When diff extraction succeeds, the plugin invokes `sce hooks diff-trace` after conversation-trace handoff and sends `{ sessionID, diff, time, model_id, tool_name, tool_version }` over STDIN JSON (`tool_name` is always `"opencode"`; `tool_version` is captured from session lifecycle events when available). `runDiffTraceHook` fails open at the plugin level (ignored stderr, unconditional resolve), so callers do not need try/catch.
 - The plugin no longer writes diff-trace artifacts or database rows directly; the Rust `diff-trace` hook path owns DB-only AgentTraceDb insertion, including `oc_`-prefixed stored `diff_traces.session_id` values for OpenCode payloads.
+- Rust conversation-trace persistence likewise stores OpenCode message and part session IDs with an idempotent `oc_` prefix while keeping producer-facing skipped/error diagnostics on the original session ID.
 
 ## In-memory dedup cache
 

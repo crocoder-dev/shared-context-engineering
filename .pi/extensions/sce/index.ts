@@ -26,6 +26,7 @@ interface JsonPolicyResult {
 
 const SCE_INSTALL_URL =
 	"https://sce.crocoder.dev/docs/getting-started#install-cli";
+const TOOL_NAME = "pi" as const;
 
 type ConversationTraceMessageItem = {
 	type: "message";
@@ -49,6 +50,7 @@ type ConversationTraceItem =
 	| ConversationTraceMessagePartItem;
 
 type ConversationTracePayload = {
+	tool_name: typeof TOOL_NAME;
 	payloads: ConversationTraceItem[];
 };
 
@@ -57,7 +59,7 @@ type DiffTracePayload = {
 	diff: string;
 	time: number;
 	model_id: string | null;
-	tool_name: "pi";
+	tool_name: typeof TOOL_NAME;
 	tool_version: string | null;
 };
 
@@ -198,7 +200,7 @@ function buildMessageEndConversationTracePayload(
 		});
 	}
 
-	return { payloads };
+	return { tool_name: TOOL_NAME, payloads };
 }
 
 /**
@@ -409,6 +411,7 @@ export default function sceExtension(pi: ExtensionAPI): void {
 		const patchMessageId = `${event.toolCallId}-patch`;
 
 		void runConversationTraceHook(ctx.cwd, {
+			tool_name: TOOL_NAME,
 			payloads: [
 				{
 					type: "message",
@@ -433,7 +436,7 @@ export default function sceExtension(pi: ExtensionAPI): void {
 			diff,
 			time: generatedAtUnixMs,
 			model_id: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null,
-			tool_name: "pi",
+			tool_name: TOOL_NAME,
 			tool_version: await piToolVersionPromise,
 		});
 	});

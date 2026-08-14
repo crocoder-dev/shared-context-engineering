@@ -5,6 +5,7 @@ type OpenCodeEvent = Parameters<NonNullable<Hooks["event"]>>[0]["event"];
 
 const SCE_INSTALL_URL =
 	"https://sce.crocoder.dev/docs/getting-started#install-cli";
+const TOOL_NAME = "opencode" as const;
 
 const REQUIRED_EVENTS: Set<OpenCodeEvent["type"]> = new Set([
 	"message.updated",
@@ -48,6 +49,7 @@ type ConversationTraceItem =
 	| ConversationTraceMessagePartUpdatedItem;
 
 type ConversationTracePayload = {
+	tool_name: typeof TOOL_NAME;
 	payloads: ConversationTraceItem[];
 };
 
@@ -166,6 +168,7 @@ function buildConversationTracePayload(
 	const eventInfo = event.properties.info;
 
 	return {
+		tool_name: TOOL_NAME,
 		payloads: [
 			{
 				type: "message",
@@ -182,6 +185,7 @@ export function buildMessagePartConversationTracePayload(
 	eventPart: EventAllowedPart,
 ): ConversationTracePayload {
 	return {
+		tool_name: TOOL_NAME,
 		payloads: [
 			{
 				type: "message.part",
@@ -205,6 +209,7 @@ function buildQuestionToolConversationTracePayload(
 	}
 
 	return {
+		tool_name: TOOL_NAME,
 		payloads: [
 			{
 				type: "message.part",
@@ -314,7 +319,7 @@ async function buildTrace(
 
 	await runDiffTraceHook(repoRoot, {
 		...diffTracePayload,
-		tool_name: "opencode",
+		tool_name: TOOL_NAME,
 		tool_version: clientVersion,
 	});
 }
