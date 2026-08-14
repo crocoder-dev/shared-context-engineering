@@ -176,16 +176,12 @@ Never report a check as passed unless it ran successfully.
 Only after successful implementation and task-level verification:
 
 - Mark only the selected task complete.
-- Write the task's `Context synchronization handoff` subsection into the
-  completion record: the resolved plan path, the task ID and title, changed
-  files, implementation summary, verification, done checks, and context
-  impact, using the same field set task-context-sync consumes rather than
-  duplicating the entire execution result.
+- Record directly on the completed task: `Completed` (the date), the
+  baseline-relative `Files changed` list, a concise factual `Result`, the
+  actual outcome of every planned `Verify` check, and `Context impact`.
 - Set that task's `Context synchronization` field to `pending` in the plan file
-  before returning `complete`; this write must happen after the handoff
-  subsection above and before the synchronization phase is invoked.
-- Record concise implementation evidence.
-- Record verification commands and outcomes.
+  before returning `complete`; this write must happen after the execution
+  facts above and before the synchronization phase is invoked.
 - Record material deviations or approved assumptions.
 - Preserve the plan's existing structure and terminology.
 

@@ -28,16 +28,17 @@ any value other than `synced`, is unresolved synchronization debt. Never infer
 
 For the first task carrying debt:
 
-- When the task has no durable `Context synchronization handoff` subsection (a
-  legacy plan predating that structure), do not attempt a reconstructed retry.
+- When the task has no durable completed-task record (no `Files changed`,
+  `Result`, `Verify`, or `Context impact` recorded — a legacy plan predating
+  that structure, or an incomplete write), do not attempt a reconstructed retry.
   Set internal status `blocked` with a required action to migrate the plan
-  (add the handoff subsection, or resolve the debt manually) and a retry
+  (backfill the completion record, or resolve the debt manually) and a retry
   condition of the plan carrying that structure. Stop.
 - Otherwise, set internal status `sync_debt`, naming the debt task (its ID and
-  title), its persisted `Context synchronization handoff`, and — when its
-  field is `blocked` — its persisted `Context synchronization blocker`. Do not
-  run or cite the Task context synchronization phase. Stop. Do not select or
-  start a new task.
+  title) and its own completed record — read directly from the plan by plan
+  path and task ID — including, when its field is `blocked`, its persisted
+  `Context synchronization blocker`. Do not run or cite the Task context
+  synchronization phase. Stop. Do not select or start a new task.
 
 Only after every completed task is `synced` does task selection proceed.
 
@@ -129,7 +130,7 @@ A `ready` result must identify:
 A `sync_debt` result must identify:
 
 - The debt-carrying task's ID and title.
-- Its persisted `Context synchronization handoff`.
+- Its own completed record, read directly from the plan by plan path and task ID.
 - Its persisted `Context synchronization blocker`, when present.
 
 Step 2 consumes a `ready` result verbatim, so anything the execution phase

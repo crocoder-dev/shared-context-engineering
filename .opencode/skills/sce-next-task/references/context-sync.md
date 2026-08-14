@@ -6,15 +6,16 @@ session inherits what this task established. It never touches code, tests, or
 plan state.
 
 Input: either the complete `complete` result from the task execution phase
-(same-session), passed verbatim, or the persisted `Context synchronization
-handoff` — and, when retrying a `blocked` task, its `Context synchronization
-blocker` — subsection that a plan-review recovery step loaded from the plan
-(cross-session retry). Whichever was supplied is the authoritative handoff,
-and this phase owns reading the plan, task, changed files, verification
-evidence, and reported context impact out of it.
+(same-session), passed verbatim, or the plan path and task ID a plan-review
+recovery step resolved for a `blocked` task, together with that task's own
+completed record — read directly from the plan — and its persisted `Context
+synchronization blocker` when present (cross-session retry). Whichever was
+supplied is the authoritative source, and this phase owns reading the plan,
+task, changed files, verification evidence, and reported context impact out
+of it.
 
-Do not restate, summarize, or reconstruct any part of the handoff. Do not
-reconstruct a missing handoff — live or persisted — from conversation history.
+Do not restate, summarize, or reconstruct any part of it. Do not reconstruct a
+missing execution result or completed task record from conversation history.
 
 A live execution result must have:
 
@@ -22,23 +23,24 @@ A live execution result must have:
 status: complete
 ```
 
-A persisted retry handoff carries the same field set; its presence in the
-plan, loaded by plan review, is itself the authoritative signal, and it has no
-separate `status` field to check.
+A cross-session retry has no separate `status` field to check; the completed
+task record's presence in the plan, identified by plan path and task ID, is
+itself the authoritative signal.
 
 Use the report format in:
 
 `references/sync-report.md`
 
-Treat whichever handoff was supplied — live or persisted — as the
-authoritative source for:
+Treat whichever source was supplied — the live execution result, or the
+completed task record read directly from the plan — as the authoritative
+source for:
 
 - The resolved plan and completed task.
-- `changes.files_changed`, or the persisted handoff's `Changed files` field on
-  retry, already attributed relative to the pre-edit Git baseline.
+- `changes.files_changed`, or the completed task record's own `Files changed`
+  field on retry, already attributed relative to the pre-edit Git baseline.
 - Files changed by implementation.
-- Implementation summary.
-- Verification evidence.
+- The task's `Result` (or implementation summary, for a live result).
+- `Verify` outcomes (or verification evidence, for a live result).
 - Done-check evidence.
 - Reported context impact.
 
@@ -49,23 +51,24 @@ results.
 
 Confirm that:
 
-- A live execution result has `status` exactly `complete`; a persisted retry
-  handoff has no `status` field to check and is authoritative by its presence
-  in the plan.
-- A `plan` object with a `path` is present; a persisted retry handoff instead
-  carries its own `Plan path` field, so this requirement is met by the handoff
-  text itself, not by an out-of-band value supplied by the caller.
-- Exactly one completed task is identified; a persisted retry handoff instead
-  carries its own `Task ID` and `Task title` fields, so this requirement is
-  met by the handoff text itself, not by an out-of-band value supplied by the
-  caller.
-- Changed files and an implementation summary are present.
-- Verification evidence is present.
+- A live execution result has `status` exactly `complete`; a cross-session
+  retry has no `status` field to check and is authoritative by the completed
+  task record's presence in the plan.
+- A resolved plan path and task ID are present; a live execution result
+  carries them in its `plan` and `task` objects, and a cross-session retry
+  receives them directly from the caller that resolved the debt task.
+- Exactly one completed task is identified, and — on retry — its record is
+  read directly from the plan by that plan path and task ID rather than
+  reconstructed in-band.
+- Changed files and a `Result` (an implementation summary, for a live result)
+  are present.
+- `Verify` outcomes (verification evidence, for a live result) are present.
 - Done-check evidence is present.
 - A context-impact classification is present.
 
-If the handoff is missing required information or is internally contradictory, do
-not modify context. Return a `blocked` Markdown report.
+If the required information is missing, the completed task record cannot be
+read from the plan, or either is internally contradictory, do not modify
+context. Return a `blocked` Markdown report.
 
 ## 3.2 Confirm the context root
 
@@ -310,13 +313,12 @@ Set exactly one report status:
 existing context was checked and no edit was warranted. `blocked` means context
 could not be synchronized safely.
 
-A `blocked` report always writes a `Context synchronization handoff` section
-(plan path, task ID, task title, changed files, implementation summary,
-verification, done checks, context impact) and a `Context synchronization
-blocker` section (blocker, required action, retry condition), using the same
-field names the plan's completion record uses, so the plan-review recovery
-step can persist them verbatim and a future retry can validate the handoff
-without an out-of-band plan or task value.
+A `blocked` report always writes the plan path and task ID/title as identity,
+plus a `Context synchronization blocker` section (blocker, required action,
+retry condition), using the same field names the plan's completion record
+uses, so the plan-review recovery step can persist the blocker verbatim and a
+future retry can read the completed task record directly from the plan by
+plan path and task ID.
 
 Record only the Markdown report. Do not add explanatory prose before or after it.
 

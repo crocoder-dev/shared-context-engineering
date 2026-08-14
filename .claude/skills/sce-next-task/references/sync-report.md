@@ -96,18 +96,6 @@ non-obvious repository knowledge requiring an update.}
 **Plan:** `{plan path}`  
 **Task:** `{task id} — {task title}`
 
-## Context synchronization handoff
-
-- Plan path: {plan path}
-- Task ID: {task id}
-- Task title: {task title}
-- Changed files: {list each changed file from the handoff except paths
-  under `context/`; state `None.` when no files remain}
-- Implementation summary: {summary}
-- Verification: {commands and outcomes}
-- Done checks: {status of each done check}
-- Context impact: {durable context this change affects, or none}
-
 ## Context synchronization blocker
 
 - Blocker: {specific synchronization blocker}
@@ -131,16 +119,16 @@ non-obvious repository knowledge requiring an update.}
   the decision gate. In a successful report, state `None qualified.` when the
   gate skipped invocation. In a blocked report, state
   `None written or reused before the blocker.` when applicable.
-- Under **Updated files** (synced and no-context-change reports) or **Changed
-  files** (blocked reports), list every changed file from the execution
-  handoff except paths under `context/`.
+- Under **Updated files** (synced and no-context-change reports), list every
+  changed file from the execution handoff except paths under `context/`. A
+  blocked report does not repeat that list — it is already on the plan's
+  completed task record.
 - Report the missing context root as `blocked`, with `sce setup
   --bootstrap-context` as the required action and the existence of `context/` as
   the retry condition.
-- In a blocked report, write the `Context synchronization handoff` and
-  `Context synchronization blocker` subsections using the same field names
-  the plan's completion record uses, so plan review can persist them
-  verbatim.
+- In a blocked report, write the `Context synchronization blocker`
+  subsection using the same field names the plan's completion record
+  uses, so plan review can persist it verbatim.
 - Omit **Feature existence** only when the task implemented no feature.
 - Describe durable truth, not implementation-session chronology.
 - Keep evidence concise and factual.
