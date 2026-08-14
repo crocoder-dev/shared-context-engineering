@@ -45,9 +45,9 @@ or packaging fallbacks.
 - Part extraction: `TextContent.text` → `part_type: "text"`,
   `ThinkingContent.thinking` → `part_type: "reasoning"`; string user content
   becomes a single text part; empty text is skipped.
-- Batches are piped to `sce hooks conversation-trace` (same normalized mixed
-  `message` / `message.part` envelope as the OpenCode agent-trace plugin),
-  keyed by `ctx.sessionManager.getSessionId()` with `cwd` from `ctx.cwd`.
+- Batches are piped to `sce hooks conversation-trace` with the normalized mixed
+  `message` / `message.part` envelope and hardcoded `tool_name: "pi"`, keyed by
+  `ctx.sessionManager.getSessionId()` with `cwd` from `ctx.cwd`.
 - Fail-open fire-and-forget spawn: stdio `["pipe", "ignore", "ignore"]`,
   ENOENT logs install guidance, the promise resolves on every outcome and is
   not awaited by the handler.
@@ -69,7 +69,7 @@ or packaging fallbacks.
   are rewritten to the diff label only before the first `@@` marker so
   content lines are never touched; file creation rewrites to `--- /dev/null`.
 - Each diff is emitted twice, both fire-and-forget fail-open spawns:
-  - `sce hooks conversation-trace`: a mixed batch with a synthetic assistant
+  - `sce hooks conversation-trace`: a mixed batch with `tool_name: "pi"` and a synthetic assistant
     `message` (`message_id` = `${toolCallId}-patch`) plus one
     `part_type: "patch"` part, mirroring the OpenCode patch-batch shape.
   - `sce hooks diff-trace`: normalized `{ sessionID, diff, time, model_id,
@@ -92,6 +92,10 @@ Rust `diff-trace` intake prefixes stored `diff_traces.session_id` values for
 via the `"pi"` arm in `prefixed_diff_trace_session_id()`
 (`cli/src/services/hooks/mod.rs`). Unknown tool names still pass through
 unprefixed.
+
+Rust `conversation-trace` intake applies the same idempotent `pi_` prefix to
+both message and part session IDs, while skipped and batch-failure diagnostics
+retain the original producer-native session ID.
 
 ## Asset pipeline, install, and doctor coverage
 

@@ -47,6 +47,14 @@ const PI_TOOL_NAME: &str = "pi";
 type PayloadValidationError = fn(&str) -> String;
 
 pub(crate) fn prefixed_diff_trace_session_id(tool_name: &str, raw_session_id: &str) -> String {
+    prefixed_session_id(tool_name, raw_session_id)
+}
+
+fn prefixed_conversation_trace_session_id(tool_name: &str, raw_session_id: &str) -> String {
+    prefixed_session_id(tool_name, raw_session_id)
+}
+
+fn prefixed_session_id(tool_name: &str, raw_session_id: &str) -> String {
     let prefix = match tool_name {
         OPENCODE_TOOL_NAME => DIFF_TRACE_OPENCODE_SESSION_ID_PREFIX,
         CLAUDE_TOOL_NAME => DIFF_TRACE_CLAUDE_SESSION_ID_PREFIX,
@@ -129,12 +137,14 @@ pub struct ConversationTracePayload {
 pub struct ConversationTraceMessageBatch {
     pub inserts: Vec<InsertMessageInsert>,
     pub skipped: Vec<SkippedConversationTracePayload>,
+    diagnostic_session_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConversationTracePartBatch {
     pub inserts: Vec<InsertPartInsert>,
     pub skipped: Vec<SkippedConversationTracePayload>,
+    diagnostic_session_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -365,10 +375,7 @@ where
     log_skipped_conversation_trace_payloads(logger, EVENT_TYPE, &batch.skipped);
 
     let valid_count = batch.inserts.len();
-    let session_id = batch
-        .inserts
-        .first()
-        .map(|insert| insert.session_id.clone());
+    let session_id = batch.diagnostic_session_id;
     let persisted = if valid_count == 0 {
         0
     } else {
@@ -408,10 +415,7 @@ where
     log_skipped_conversation_trace_payloads(logger, EVENT_TYPE, &batch.skipped);
 
     let valid_count = batch.inserts.len();
-    let session_id = batch
-        .inserts
-        .first()
-        .map(|insert| insert.session_id.clone());
+    let session_id = batch.diagnostic_session_id;
     let persisted = if valid_count == 0 {
         0
     } else {
@@ -502,12 +506,14 @@ pub fn parse_conversation_trace_payload(stdin_payload: &str) -> Result<Conversat
                 "unsupported Claude hook event '{event_name}': supported events are 'UserPromptSubmit', 'Stop' and 'PostToolUse'"
             ))),
         };
-        return Ok(parse_conversation_trace_payloads(&items));
+        return Ok(parse_conversation_trace_payloads(&items, CLAUDE_TOOL_NAME));
     }
 
+    let tool_name =
+        required_non_empty_string_field(payload, "tool_name", conversation_trace_validation_error)?;
     let payloads = required_payloads_array(payload)?;
 
-    Ok(parse_conversation_trace_payloads(payloads))
+    Ok(parse_conversation_trace_payloads(payloads, &tool_name))
 }
 
 fn required_payloads_array(payload: &serde_json::Map<String, Value>) -> Result<&Vec<Value>> {
@@ -520,12 +526,17 @@ fn required_payloads_array(payload: &serde_json::Map<String, Value>) -> Result<&
         })
 }
 
-fn parse_conversation_trace_payloads(payloads: &[Value]) -> ConversationTracePayload {
+fn parse_conversation_trace_payloads(
+    payloads: &[Value],
+    tool_name: &str,
+) -> ConversationTracePayload {
     let mut message_inserts = Vec::new();
     let mut message_skipped = Vec::new();
     let mut part_inserts = Vec::new();
     let mut part_skipped = Vec::new();
     let mut skipped = Vec::new();
+    let mut message_diagnostic_session_id = None;
+    let mut part_diagnostic_session_id = None;
 
     for (index, item) in payloads.iter().enumerate() {
         let session_id = non_empty_string(item.get("session_id")).map(str::to_owned);
@@ -548,7 +559,14 @@ fn parse_conversation_trace_payloads(payloads: &[Value]) -> ConversationTracePay
 
         match event_type.as_str() {
             CONVERSATION_TRACE_MESSAGE_UPDATED => match parse_message_updated_item(item) {
-                Ok(input) => message_inserts.push(input),
+                Ok(mut input) => {
+                    if message_diagnostic_session_id.is_none() {
+                        message_diagnostic_session_id.clone_from(&session_id);
+                    }
+                    input.session_id =
+                        prefixed_conversation_trace_session_id(tool_name, &input.session_id);
+                    message_inserts.push(input);
+                }
                 Err(error) => message_skipped.push(SkippedConversationTracePayload {
                     index,
                     reason: error.to_string(),
@@ -557,7 +575,14 @@ fn parse_conversation_trace_payloads(payloads: &[Value]) -> ConversationTracePay
             },
             CONVERSATION_TRACE_MESSAGE_PART_UPDATED => {
                 match parse_message_part_updated_item(item) {
-                    Ok(input) => part_inserts.push(input),
+                    Ok(mut input) => {
+                        if part_diagnostic_session_id.is_none() {
+                            part_diagnostic_session_id.clone_from(&session_id);
+                        }
+                        input.session_id =
+                            prefixed_conversation_trace_session_id(tool_name, &input.session_id);
+                        part_inserts.push(input);
+                    }
                     Err(error) => part_skipped.push(SkippedConversationTracePayload {
                         index,
                         reason: error.to_string(),
@@ -580,10 +605,12 @@ fn parse_conversation_trace_payloads(payloads: &[Value]) -> ConversationTracePay
         message_updated: ConversationTraceMessageBatch {
             inserts: message_inserts,
             skipped: message_skipped,
+            diagnostic_session_id: message_diagnostic_session_id,
         },
         message_part_updated: ConversationTracePartBatch {
             inserts: part_inserts,
             skipped: part_skipped,
+            diagnostic_session_id: part_diagnostic_session_id,
         },
         skipped,
     }
@@ -2206,6 +2233,7 @@ mod tests {
         ])
         .to_string();
         let payload = serde_json::json!({
+            "tool_name": "opencode",
             "payloads": [
                 {
                     "type": "message",
@@ -2251,21 +2279,21 @@ mod tests {
 
         assert_eq!(parsed.message_updated.inserts.len(), 1);
         let message = &parsed.message_updated.inserts[0];
-        assert_eq!(message.session_id, "session-1");
+        assert_eq!(message.session_id, "oc_session-1");
         assert_eq!(message.message_id, "message-1");
         assert_eq!(message.role, MessageRole::Assistant);
         assert_eq!(message.generated_at_unix_ms, 1_800_000_000_000_i64);
 
         assert_eq!(parsed.message_part_updated.inserts.len(), 3);
         let reasoning_part = &parsed.message_part_updated.inserts[0];
-        assert_eq!(reasoning_part.session_id, "session-1");
+        assert_eq!(reasoning_part.session_id, "oc_session-1");
         assert_eq!(reasoning_part.message_id, "message-1");
         assert_eq!(reasoning_part.part_type, PartType::Reasoning);
         assert_eq!(reasoning_part.text, "thinking through validation");
         assert_eq!(reasoning_part.generated_at_unix_ms, 1_800_000_000_001_i64);
 
         let patch_part = &parsed.message_part_updated.inserts[1];
-        assert_eq!(patch_part.session_id, "session-1");
+        assert_eq!(patch_part.session_id, "oc_session-1");
         assert_eq!(patch_part.message_id, "message-1");
         assert_eq!(patch_part.part_type, PartType::Patch);
         assert_eq!(
@@ -2276,7 +2304,7 @@ mod tests {
         assert_eq!(patch_part.generated_at_unix_ms, 1_800_000_000_002_i64);
 
         let question_part = &parsed.message_part_updated.inserts[2];
-        assert_eq!(question_part.session_id, "session-1");
+        assert_eq!(question_part.session_id, "oc_session-1");
         assert_eq!(question_part.message_id, "message-1");
         assert_eq!(question_part.part_type, PartType::Question);
         assert_eq!(question_part.text, question_text);
@@ -2291,6 +2319,7 @@ mod tests {
         })
         .to_string();
         let payload = serde_json::json!({
+            "tool_name": "opencode",
             "payloads": [
                 {
                     "type": "message",
