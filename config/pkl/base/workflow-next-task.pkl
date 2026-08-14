@@ -411,16 +411,16 @@ local renderReviewSkillBody = (mode: model.WorkflowRenderMode) -> """
 
     For the first task carrying debt:
 
-    - When the task has no durable `Context synchronization handoff` subsection (a
-      legacy plan predating that structure), do not attempt a reconstructed retry.
-      \(returnUpper.render.apply(mode)) `blocked` with a required action to
-      migrate the plan (add the handoff subsection, or resolve the debt
+    - When the task has no durable completed-task record (no `Files changed`,
+      `Result`, `Verify`, or `Context impact` recorded — a legacy plan
+      predating that structure, or an incomplete write), do not attempt a
+      reconstructed retry. \(returnUpper.render.apply(mode)) `blocked` with a required action to
+      migrate the plan (backfill the completion record, or resolve the debt
       manually) and a retry condition of the plan carrying that structure. Stop.
-    - Otherwise, load its persisted `Context synchronization handoff` (and, when
-      its field is `blocked`, its persisted `Context synchronization blocker`)
-      from the plan. \(invoke.render.apply(mode)) \(taskContextSync.render.apply(mode))
-      using that persisted handoff as authoritative input — never reconstruct a
-      missing one from conversation history.
+    - Otherwise, read that task's own completed record directly from the plan
+      — identified by plan path and task ID — and \(invoke.render.apply(mode)) \(taskContextSync.render.apply(mode))
+      using that record as authoritative input — never reconstruct a missing
+      one from conversation history.
       - When it returns `synced` or `no_context_change`, set that task's `Context
         synchronization` field to `synced` in the plan and clear its blocker,
         required action, and retry condition. Continue checking the next earlier
@@ -1002,16 +1002,12 @@ local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
     Only after successful implementation and task-level verification:
 
     - Mark only the selected task complete.
-    - Write the task's `Context synchronization handoff` subsection into the
-      completion record: the resolved plan path, the task ID and title, changed
-      files, implementation summary, verification, done checks, and context
-      impact, using the same field set task-context-sync consumes rather than
-      duplicating the entire execution result.
+    - Record directly on the completed task: `Completed` (the date), the
+      baseline-relative `Files changed` list, a concise factual `Result`, the
+      actual outcome of every planned `Verify` check, and `Context impact`.
     - Set that task's `Context synchronization` field to `pending` in the plan file
-      before returning `complete`; this write must happen after the handoff
-      subsection above and before the synchronization phase is invoked.
-    - Record concise implementation evidence.
-    - Record verification commands and outcomes.
+      before returning `complete`; this write must happen after the execution
+      facts above and before the synchronization phase is invoked.
     - Record material deviations or approved assumptions.
     - Preserve the plan's existing structure and terminology.
     
@@ -1524,16 +1520,17 @@ any value other than `synced`, is unresolved synchronization debt. Never infer
 
 For the first task carrying debt:
 
-- When the task has no durable `Context synchronization handoff` subsection (a
-  legacy plan predating that structure), do not attempt a reconstructed retry.
+- When the task has no durable completed-task record (no `Files changed`,
+  `Result`, `Verify`, or `Context impact` recorded — a legacy plan predating
+  that structure, or an incomplete write), do not attempt a reconstructed retry.
   Set internal status `blocked` with a required action to migrate the plan
-  (add the handoff subsection, or resolve the debt manually) and a retry
+  (backfill the completion record, or resolve the debt manually) and a retry
   condition of the plan carrying that structure. Stop.
 - Otherwise, set internal status `sync_debt`, naming the debt task (its ID and
-  title), its persisted `Context synchronization handoff`, and — when its
-  field is `blocked` — its persisted `Context synchronization blocker`. Do not
-  run or cite the Task context synchronization phase. Stop. Do not select or
-  start a new task.
+  title) and its own completed record — read directly from the plan by plan
+  path and task ID — including, when its field is `blocked`, its persisted
+  `Context synchronization blocker`. Do not run or cite the Task context
+  synchronization phase. Stop. Do not select or start a new task.
 
 Only after every completed task is `synced` does task selection proceed.
 
@@ -1625,7 +1622,7 @@ A `ready` result must identify:
 A `sync_debt` result must identify:
 
 - The debt-carrying task's ID and title.
-- Its persisted `Context synchronization handoff`.
+- Its own completed record, read directly from the plan by plan path and task ID.
 - Its persisted `Context synchronization blocker`, when present.
 
 Step 2 consumes a `ready` result verbatim, so anything the execution phase
@@ -1825,16 +1822,12 @@ Never report a check as passed unless it ran successfully.
 Only after successful implementation and task-level verification:
 
 - Mark only the selected task complete.
-- Write the task's `Context synchronization handoff` subsection into the
-  completion record: the resolved plan path, the task ID and title, changed
-  files, implementation summary, verification, done checks, and context
-  impact, using the same field set task-context-sync consumes rather than
-  duplicating the entire execution result.
+- Record directly on the completed task: `Completed` (the date), the
+  baseline-relative `Files changed` list, a concise factual `Result`, the
+  actual outcome of every planned `Verify` check, and `Context impact`.
 - Set that task's `Context synchronization` field to `pending` in the plan file
-  before returning `complete`; this write must happen after the handoff
-  subsection above and before the synchronization phase is invoked.
-- Record concise implementation evidence.
-- Record verification commands and outcomes.
+  before returning `complete`; this write must happen after the execution
+  facts above and before the synchronization phase is invoked.
 - Record material deviations or approved assumptions.
 - Preserve the plan's existing structure and terminology.
 

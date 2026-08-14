@@ -607,29 +607,99 @@ hidden assertPlanReviewSyncDebtRecovery = (documents: Mapping) ->
   ) "sce-next-task plan-review reference: sync-debt recovery and legacy-migration wording present"
   else throw("plan-review reference must state sync-debt recovery and legacy-migration-failure behavior")
 
-local requiredHandoffIdentityPlanTemplateTokens = new Listing {
-  "Plan path: {path}; Task ID: {id}; Task title: {title}"
+local forbiddenLegacyTaskRecordTokens = new Listing {
+  "Goal:"
+  "Boundaries (in/out of scope)"
+  "Verification notes"
+  "Implementation evidence"
+  "Verification evidence"
+  "Context synchronization handoff"
 }
 
-local requiredHandoffIdentityContextSyncTokens = new Listing {
-  "carries its own `Plan path` field"
-  "carries its own `Task ID` and `Task title` fields"
+local requiredCompactPlanTemplateTaskTokens = new Listing {
+  "Scope: In —"
+  "Done when:"
+  "Verify:"
+  "Context synchronization: pending"
 }
 
-hidden assertHandoffIdentityFields = (documents: Mapping) ->
+local requiredCompactPlanTemplateCompletionTokens = new Listing {
+  "Completed: {YYYY-MM-DD}"
+  "Files changed: {paths}"
+  "Result: {concise factual outcome, not a prose diff}"
+  "Context impact: {durable context this change affects, or none}"
+  "Context synchronization: pending | synced | blocked"
+}
+
+hidden assertCompactPlanTemplateSchema = (documents: Mapping) ->
   if (
     documents.every((path, text) ->
-      (
-        !path.endsWith("/skills/sce-change-to-plan/references/plan-template.md")
-        || requiredHandoffIdentityPlanTemplateTokens.every((token) -> text.contains(token))
-      )
-      && (
-        !path.endsWith("/skills/sce-next-task/references/context-sync.md")
-        || requiredHandoffIdentityContextSyncTokens.every((token) -> text.contains(token))
+      !path.endsWith("/skills/sce-change-to-plan/references/plan-template.md")
+      || (
+        requiredCompactPlanTemplateTaskTokens.every((token) -> text.contains(token))
+        && requiredCompactPlanTemplateCompletionTokens.every((token) -> text.contains(token))
+        && forbiddenLegacyTaskRecordTokens.every((token) -> !text.contains(token))
       )
     )
-  ) "generated handoff identity: plan path and task identity present in the template and required at context-sync validation"
-  else throw("persisted handoff must carry Plan path, Task ID, and Task title, and context-sync validation must require them from the handoff itself")
+  ) "generated plan template: compact task/completion schema present, legacy fields absent"
+  else throw("generated plan-template.md must use the compact task and completion schema and must not reference the removed Goal, Boundaries (in/out of scope), Verification notes, Implementation evidence, Verification evidence, or Context synchronization handoff fields")
+
+local requiredNextTaskCompletionWritingTokens = new Listing {
+  "Record directly on the completed task:"
+  "`Files changed`"
+  "concise factual `Result`"
+  "`Context impact`"
+  "Set that task's `Context synchronization` field to `pending`"
+}
+
+hidden assertNextTaskCompactCompletionWriting = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      !path.endsWith("/skills/sce-next-task/references/task-execution.md")
+      || (
+        requiredNextTaskCompletionWritingTokens.every((token) -> text.contains(token))
+        && forbiddenLegacyTaskRecordTokens.every((token) -> !text.contains(token))
+      )
+    )
+  ) "sce-next-task task-execution reference: execution facts recorded directly on the completed task"
+  else throw("sce-next-task task-execution.md must record execution facts directly on the completed task and must not construct a separate Implementation evidence, Verification evidence, or Context synchronization handoff record")
+
+local requiredPlanReviewCompletedRecordTokens = new Listing {
+  "no durable completed-task record (no `Files changed`,"
+  "read directly from the plan by plan path and task ID"
+}
+
+hidden assertPlanReviewReadsCompletedRecord = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      !path.endsWith("/skills/sce-next-task/references/plan-review.md")
+      || (
+        requiredPlanReviewCompletedRecordTokens.every((token) -> text.contains(token))
+        && !text.contains("Context synchronization handoff")
+      )
+    )
+  ) "sce-next-task plan-review reference: sync-debt recovery reads the completed task record directly"
+  else throw("sce-next-task plan-review.md must recover synchronization debt by reading the completed task record directly from the plan by plan path and task ID, not a persisted Context synchronization handoff")
+
+local requiredContextSyncTaskRecordTokens = new Listing {
+  "completed task record"
+  "`Files changed`"
+  "`Result`"
+  "reported context impact"
+  "`Context synchronization blocker`"
+}
+
+hidden assertContextSyncValidatesTaskRecord = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      !path.endsWith("/skills/sce-next-task/references/context-sync.md")
+      || (
+        requiredContextSyncTaskRecordTokens.every((token) -> text.contains(token))
+        && !text.contains("Context synchronization handoff")
+      )
+    )
+  ) "sce-next-task context-sync reference: validates the completed task record, not a persisted handoff"
+  else throw("sce-next-task context-sync.md must validate the completed task record directly from the plan and must not reference a persisted Context synchronization handoff")
 
 hidden assertSyncDebtRecoveryBranch = (documents: Mapping) ->
   if (
@@ -741,7 +811,10 @@ contractChecks {
   ["target-neutral-references"] = assertTargetNeutralReferences.apply(workflowDocuments)
   ["no-stale-sync-debt-text"] = assertNoStaleSyncDebtText.apply(generatedArtifacts)
   ["plan-review-sync-debt-recovery"] = assertPlanReviewSyncDebtRecovery.apply(workflowDocuments)
-  ["handoff-identity-fields"] = assertHandoffIdentityFields.apply(workflowDocuments)
+  ["compact-plan-template-schema"] = assertCompactPlanTemplateSchema.apply(workflowDocuments)
+  ["next-task-compact-completion-writing"] = assertNextTaskCompactCompletionWriting.apply(workflowDocuments)
+  ["plan-review-reads-completed-record"] = assertPlanReviewReadsCompletedRecord.apply(workflowDocuments)
+  ["context-sync-validates-task-record"] = assertContextSyncValidatesTaskRecord.apply(workflowDocuments)
   ["sync-debt-recovery-branch"] = assertSyncDebtRecoveryBranch.apply(workflowDocuments)
   ["plan-review-all-tasks-scope"] = assertPlanReviewAllTasksScope.apply(workflowDocuments)
   ["sync-debt-blocked-routing"] = assertSyncDebtBlockedRouting.apply(workflowDocuments)

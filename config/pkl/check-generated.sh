@@ -143,8 +143,17 @@ expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/next-task-sync-debt-recovery-check.pkl" \
   "plan-review reference must state sync-debt recovery and legacy-migration-failure behavior"
 expect_pkl_fixture_failure \
-  "config/pkl/renderers/fixtures/handoff-identity-fields-check.pkl" \
-  "persisted handoff must carry Plan path, Task ID, and Task title, and context-sync validation must require them from the handoff itself"
+  "config/pkl/renderers/fixtures/compact-plan-template-schema-check.pkl" \
+  "generated plan-template.md must use the compact task and completion schema and must not reference the removed Goal, Boundaries (in/out of scope), Verification notes, Implementation evidence, Verification evidence, or Context synchronization handoff fields"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/next-task-compact-completion-writing-check.pkl" \
+  "sce-next-task task-execution.md must record execution facts directly on the completed task and must not construct a separate Implementation evidence, Verification evidence, or Context synchronization handoff record"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/plan-review-reads-completed-record-check.pkl" \
+  "sce-next-task plan-review.md must recover synchronization debt by reading the completed task record directly from the plan by plan path and task ID, not a persisted Context synchronization handoff"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/context-sync-validates-task-record-check.pkl" \
+  "sce-next-task context-sync.md must validate the completed task record directly from the plan and must not reference a persisted Context synchronization handoff"
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/sync-debt-recovery-branch-check.pkl" \
   "sce-next-task SKILL.md sync-debt recovery branch must cite references/context-sync.md before invoking the Task context synchronization phase"

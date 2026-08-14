@@ -1,0 +1,11 @@
+import "../generation-contract-check.pkl" as contract
+
+local documents = new Mapping {
+  ["config/.opencode/skills/sce-next-task/references/context-sync.md"] =
+    "Validate the persisted Context synchronization handoff."
+}
+
+result = if (
+  contract.assertContextSyncValidatesTaskRecord.apply(documents)
+) "negative fixture unexpectedly accepted a context-sync reference validating a persisted handoff instead of the completed task record"
+else throw("sce-next-task context-sync.md must validate the completed task record directly from the plan and must not reference a persisted Context synchronization handoff")

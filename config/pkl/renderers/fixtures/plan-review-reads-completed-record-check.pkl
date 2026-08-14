@@ -1,0 +1,11 @@
+import "../generation-contract-check.pkl" as contract
+
+local documents = new Mapping {
+  ["config/.opencode/skills/sce-next-task/references/plan-review.md"] =
+    "For sync debt, load the persisted Context synchronization handoff."
+}
+
+result = if (
+  contract.assertPlanReviewReadsCompletedRecord.apply(documents)
+) "negative fixture unexpectedly accepted a plan-review reference recovering sync debt from a persisted handoff"
+else throw("sce-next-task plan-review.md must recover synchronization debt by reading the completed task record directly from the plan by plan path and task ID, not a persisted Context synchronization handoff")

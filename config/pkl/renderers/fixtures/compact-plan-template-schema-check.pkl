@@ -1,0 +1,11 @@
+import "../generation-contract-check.pkl" as contract
+
+local documents = new Mapping {
+  ["config/.opencode/skills/sce-change-to-plan/references/plan-template.md"] =
+    "Goal: {task.goal}\nBoundaries (in/out of scope): {task.boundaries}"
+}
+
+result = if (
+  contract.assertCompactPlanTemplateSchema.apply(documents)
+) "negative fixture unexpectedly accepted a plan template referencing the removed verbose fields"
+else throw("generated plan-template.md must use the compact task and completion schema and must not reference the removed Goal, Boundaries (in/out of scope), Verification notes, Implementation evidence, Verification evidence, or Context synchronization handoff fields")
