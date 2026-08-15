@@ -44,6 +44,7 @@ pub(crate) const DIFF_TRACE_PI_SESSION_ID_PREFIX: &str = "pi_";
 const OPENCODE_TOOL_NAME: &str = "opencode";
 const CLAUDE_TOOL_NAME: &str = "claude";
 const PI_TOOL_NAME: &str = "pi";
+const NORMALIZED_CONVERSATION_TRACE_TOOL_NAMES: &[&str] = &[OPENCODE_TOOL_NAME, PI_TOOL_NAME];
 type PayloadValidationError = fn(&str) -> String;
 
 pub(crate) fn prefixed_diff_trace_session_id(tool_name: &str, raw_session_id: &str) -> String {
@@ -511,6 +512,11 @@ pub fn parse_conversation_trace_payload(stdin_payload: &str) -> Result<Conversat
 
     let tool_name =
         required_non_empty_string_field(payload, "tool_name", conversation_trace_validation_error)?;
+    if !NORMALIZED_CONVERSATION_TRACE_TOOL_NAMES.contains(&tool_name.as_str()) {
+        bail!(conversation_trace_validation_error(&format!(
+            "unsupported tool_name '{tool_name}': supported producers are 'opencode' and 'pi'"
+        )));
+    }
     let payloads = required_payloads_array(payload)?;
 
     Ok(parse_conversation_trace_payloads(payloads, &tool_name))
@@ -2405,6 +2411,107 @@ mod tests {
         assert!(parsed.skipped[2]
             .reason
             .contains("field 'type' must be a string"));
+    }
+
+    fn normalized_conversation_trace_message_payload(tool_name: &str, session_id: &str) -> String {
+        serde_json::json!({
+            "tool_name": tool_name,
+            "payloads": [
+                {
+                    "type": "message",
+                    "session_id": session_id,
+                    "message_id": "message-1",
+                    "role": "assistant",
+                    "generated_at_unix_ms": 1_800_000_000_000_i64
+                }
+            ]
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn conversation_trace_normalized_payload_accepts_pi_tool_name_with_prefixed_session_id() {
+        let stdin_payload = normalized_conversation_trace_message_payload("pi", "session-1");
+
+        let parsed = parse_conversation_trace_payload(&stdin_payload)
+            .expect("Pi normalized conversation-trace payload should parse");
+
+        assert_eq!(parsed.message_updated.inserts.len(), 1);
+        assert_eq!(parsed.message_updated.inserts[0].session_id, "pi_session-1");
+    }
+
+    #[test]
+    fn conversation_trace_normalized_payload_rejects_unsupported_tool_name() {
+        let stdin_payload = normalized_conversation_trace_message_payload("cursor", "session-1");
+
+        let error = parse_conversation_trace_payload(&stdin_payload)
+            .expect_err("unsupported tool_name should be rejected");
+
+        assert!(error.to_string().contains("unsupported tool_name 'cursor'"));
+        assert!(error.to_string().contains("'opencode'"));
+        assert!(error.to_string().contains("'pi'"));
+    }
+
+    #[test]
+    fn conversation_trace_normalized_payload_rejects_empty_tool_name() {
+        let stdin_payload = normalized_conversation_trace_message_payload("", "session-1");
+
+        let error = parse_conversation_trace_payload(&stdin_payload)
+            .expect_err("empty tool_name should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("field 'tool_name' must be a non-empty string"));
+    }
+
+    #[test]
+    fn conversation_trace_normalized_payload_rejects_missing_tool_name() {
+        let stdin_payload = serde_json::json!({
+            "payloads": [
+                {
+                    "type": "message",
+                    "session_id": "session-1",
+                    "message_id": "message-1",
+                    "role": "assistant",
+                    "generated_at_unix_ms": 1_800_000_000_000_i64
+                }
+            ]
+        })
+        .to_string();
+
+        let error = parse_conversation_trace_payload(&stdin_payload)
+            .expect_err("missing tool_name should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("missing required field 'tool_name'"));
+    }
+
+    #[test]
+    fn conversation_trace_normalized_payload_keeps_already_prefixed_session_id() {
+        let stdin_payload =
+            normalized_conversation_trace_message_payload("opencode", "oc_session-1");
+
+        let parsed = parse_conversation_trace_payload(&stdin_payload)
+            .expect("already-prefixed OpenCode session ID should parse");
+
+        assert_eq!(parsed.message_updated.inserts[0].session_id, "oc_session-1");
+    }
+
+    #[test]
+    fn conversation_trace_raw_claude_event_uses_claude_identity_with_cc_prefixed_session_id() {
+        let stdin_payload = serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-1",
+            "prompt": "hello"
+        })
+        .to_string();
+
+        let parsed = parse_conversation_trace_payload(&stdin_payload)
+            .expect("raw Claude UserPromptSubmit event should parse");
+
+        assert_eq!(parsed.message_updated.inserts.len(), 1);
+        assert_eq!(parsed.message_updated.inserts[0].session_id, "cc_session-1");
     }
 
     fn diff_trace_payload(model_id: Option<&str>, tool_version: Option<&str>) -> DiffTracePayload {
