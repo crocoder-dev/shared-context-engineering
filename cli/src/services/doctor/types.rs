@@ -367,13 +367,6 @@ pub(crate) struct DoctorFixResultRecord {
     pub(crate) detail: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum HumanTextStatus {
-    Pass,
-    Fail,
-    Miss,
-}
-
 pub(super) fn problem_category(category: ProblemCategory) -> &'static str {
     match category {
         ProblemCategory::GlobalState => "global_state",

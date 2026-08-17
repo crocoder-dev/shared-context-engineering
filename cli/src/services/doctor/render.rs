@@ -4,12 +4,12 @@ use serde_json::json;
 use crate::services::style::{heading, label, supports_color, value, OwoColorize};
 
 use super::types::{
-    fix_result_outcome, problem_category, problem_fixability, problem_severity, FileLocationHealth,
-    HookContentState, HookDoctorReport, HookFileHealth, HookPathSource, HumanTextStatus,
-    IntegrationArea, IntegrationChildHealth, IntegrationContentState, IntegrationGroupHealth,
-    IntegrationGroupKey, IntegrationTarget, ProblemKind, ProblemSeverity, Readiness,
+    fix_result_outcome, problem_category, problem_fixability, problem_severity,
+    DoctorDisplayStatus, HookContentState, HookDoctorReport, HookFileHealth, HookPathSource,
+    IntegrationArea, IntegrationContentState, IntegrationGroupHealth, IntegrationTarget,
+    ProblemKind, ProblemSeverity, Readiness,
 };
-use super::{DoctorExecution, DoctorFormat, DoctorMode, DoctorRequest, NAME, REQUIRED_HOOKS};
+use super::{DoctorExecution, DoctorFormat, DoctorMode, DoctorRequest, NAME};
 
 /// Guidance message rendered in the Integrations section when no integration
 /// targets are configured, detected, or both.
@@ -64,73 +64,62 @@ fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: boo
         .filter(|problem| problem.severity == ProblemSeverity::Warning)
         .count();
     let mut lines = Vec::new();
-    lines.push(format!(
-        "{} {}",
-        label("SCE doctor"),
-        value(match report.mode {
-            DoctorMode::Diagnose => "diagnose",
-            DoctorMode::Fix => "fix",
-        })
-    ));
+    lines.push(match report.mode {
+        DoctorMode::Diagnose => heading("SCE doctor"),
+        DoctorMode::Fix => heading("SCE doctor fix"),
+    });
 
-    lines.push(format!("\n{}:", heading("Environment")));
+    lines.push(format!("\n{}", heading("Environment")));
     lines.push(format_human_text_row(
         color_enabled,
+        2,
         state_root_status(report),
-        "State root",
-        report.state_root.as_ref().map_or_else(
-            || String::from("not detected"),
-            |location| location.path.display().to_string(),
-        ),
+        "State",
     ));
-
-    lines.push(format!("\n{}:", heading("Configuration")));
-    push_configuration_section_rows(report, color_enabled, &mut lines);
-
-    lines.push(format!("\n{}:", heading("Repository")));
     lines.push(format_human_text_row(
         color_enabled,
+        2,
+        configuration_status(report),
+        "Configuration",
+    ));
+    lines.push(format_human_text_row(
+        color_enabled,
+        2,
+        repository_identity_status(report),
+        "Repository identity",
+    ));
+
+    lines.push(format!("\n{}", heading("Repository")));
+    lines.push(format_human_text_row(
+        color_enabled,
+        2,
         repository_root_status(report),
-        "Repository",
-        report.repository_root.as_ref().map_or_else(
-            || String::from("not detected"),
-            |path| path.display().to_string(),
-        ),
+        "Git repository",
     ));
     lines.push(format_human_text_row(
         color_enabled,
-        hooks_directory_status(report),
-        "Hooks",
-        report.hooks_directory.as_ref().map_or_else(
-            || String::from("not detected"),
-            |path| path.display().to_string(),
-        ),
+        2,
+        git_hooks_status(report),
+        "Git hooks",
     ));
 
-    push_git_hooks_section(report, color_enabled, &mut lines);
-
-    lines.push(format!("\n{}:", heading("Integrations")));
+    lines.push(format!("\n{}", heading("Integrations")));
     if report.integration_targets_absent {
         lines.push(format_human_text_row(
             color_enabled,
-            HumanTextStatus::Fail,
+            2,
+            DoctorDisplayStatus::Fail,
             NO_INTEGRATIONS_MESSAGE,
-            "",
         ));
     } else {
-        for group in integration_groups_for_text(report) {
-            lines.push(format_human_text_row(
-                color_enabled,
-                integration_group_status(&group, report.repository_root.is_some()),
-                group.display_label(),
-                "",
-            ));
-            for child in &group.children {
-                lines.push(format_human_text_child_row(
+        for target in integration_targets_for_text(report) {
+            lines.push(format!("  {}", integration_target_label(target)));
+            for group in groups_for_target(report, target) {
+                lines.push(format_human_text_row(
                     color_enabled,
-                    integration_child_status(child, report.repository_root.is_some()),
-                    &child.relative_path,
-                    integration_child_detail(child),
+                    4,
+                    integration_group_status(&group, report),
+                    integration_area_label(group.key.area),
                 ));
             }
         }
@@ -146,134 +135,30 @@ fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: boo
     lines.join("\n")
 }
 
-fn push_configuration_section_rows(
-    report: &HookDoctorReport,
-    color_enabled: bool,
-    lines: &mut Vec<String>,
-) {
-    for location in &report.config_locations {
-        lines.push(format_human_text_row(
-            color_enabled,
-            config_location_status(report, location),
-            location.label,
-            location.path.display().to_string(),
-        ));
-    }
-
-    if let Some(identity) = &report.checkout_identity {
-        lines.push(format_human_text_row(
-            color_enabled,
-            HumanTextStatus::Pass,
-            "Checkout identity",
-            identity.checkout_id.clone(),
-        ));
-    }
-
-    if let Some(agent_trace_db) = &report.agent_trace_db {
-        lines.push(format_human_text_row(
-            color_enabled,
-            agent_trace_db_status(report),
-            agent_trace_db.label,
-            agent_trace_db.path.display().to_string(),
-        ));
-        lines.push(format_human_text_row(
-            color_enabled,
-            HumanTextStatus::Pass,
-            "Agent Trace repository ID",
-            agent_trace_db.repository_id.clone(),
-        ));
-        lines.push(format_human_text_row(
-            color_enabled,
-            HumanTextStatus::Pass,
-            "Agent Trace identity source",
-            agent_trace_db.identity_source.clone(),
-        ));
-        lines.push(format_human_text_row(
-            color_enabled,
-            HumanTextStatus::Pass,
-            "Agent Trace canonical identity",
-            agent_trace_db.canonical_identity.clone(),
-        ));
-        if let Some(remote) = &agent_trace_db.configured_remote {
-            lines.push(format_human_text_row(
-                color_enabled,
-                HumanTextStatus::Pass,
-                "Agent Trace configured remote",
-                remote.clone(),
-            ));
-        }
-    }
-}
-
-fn push_git_hooks_section(report: &HookDoctorReport, color_enabled: bool, lines: &mut Vec<String>) {
-    lines.push(format!("\n{}:", heading("Git Hooks")));
-    if report.hooks.is_empty() {
-        for hook_name in REQUIRED_HOOKS {
-            lines.push(format_human_text_row(
-                color_enabled,
-                HumanTextStatus::Fail,
-                hook_name,
-                "not inspected",
-            ));
-        }
-    }
-    for hook in &report.hooks {
-        lines.push(format_human_text_row(
-            color_enabled,
-            hook_human_text_status(hook),
-            hook.name,
-            hook.path.display().to_string(),
-        ));
-    }
-}
-
 fn format_human_text_row(
     color_enabled: bool,
-    status: HumanTextStatus,
+    indent: usize,
+    status: DoctorDisplayStatus,
     name: &str,
-    detail: impl AsRef<str>,
-) -> String {
-    let detail = detail.as_ref();
-
-    if detail.is_empty() {
-        format!(
-            "  {} {}",
-            value(&human_text_status_token(status, color_enabled)),
-            value(name),
-        )
-    } else {
-        format!(
-            "  {} {} ({})",
-            value(&human_text_status_token(status, color_enabled)),
-            value(name),
-            value(detail)
-        )
-    }
-}
-
-fn format_human_text_child_row(
-    color_enabled: bool,
-    status: HumanTextStatus,
-    name: &str,
-    detail: impl AsRef<str>,
 ) -> String {
     format!(
-        "    {} {} ({})",
+        "{}{} {}",
+        " ".repeat(indent),
         value(&human_text_status_token(status, color_enabled)),
         value(name),
-        value(detail.as_ref())
     )
 }
 
-fn human_text_status_label(status: HumanTextStatus) -> &'static str {
+fn human_text_status_label(status: DoctorDisplayStatus) -> &'static str {
     match status {
-        HumanTextStatus::Pass => "PASS",
-        HumanTextStatus::Fail => "FAIL",
-        HumanTextStatus::Miss => "MISS",
+        DoctorDisplayStatus::Pass => "PASS",
+        DoctorDisplayStatus::Warn => "WARN",
+        DoctorDisplayStatus::Fail => "FAIL",
+        DoctorDisplayStatus::Miss => "MISS",
     }
 }
 
-fn human_text_status_token(status: HumanTextStatus, color_enabled: bool) -> String {
+fn human_text_status_token(status: DoctorDisplayStatus, color_enabled: bool) -> String {
     let token = format!("[{}]", human_text_status_label(status));
 
     if !color_enabled {
@@ -281,187 +166,219 @@ fn human_text_status_token(status: HumanTextStatus, color_enabled: bool) -> Stri
     }
 
     match status {
-        HumanTextStatus::Pass => token.green().bold().to_string(),
-        HumanTextStatus::Fail | HumanTextStatus::Miss => token.red().bold().to_string(),
+        DoctorDisplayStatus::Pass => token.green().bold().to_string(),
+        DoctorDisplayStatus::Warn => token.yellow().bold().to_string(),
+        DoctorDisplayStatus::Fail | DoctorDisplayStatus::Miss => token.red().bold().to_string(),
     }
 }
 
-fn state_root_status(report: &HookDoctorReport) -> HumanTextStatus {
-    if report
+fn status_for_problems<F>(report: &HookDoctorReport, matches: F) -> DoctorDisplayStatus
+where
+    F: Fn(ProblemKind) -> bool,
+{
+    report
         .problems
         .iter()
-        .any(|problem| problem.kind == ProblemKind::UnableToResolveStateRoot)
-    {
-        HumanTextStatus::Fail
-    } else {
-        HumanTextStatus::Pass
-    }
+        .filter(|problem| matches(problem.kind))
+        .fold(DoctorDisplayStatus::Pass, |status, problem| {
+            status.worst(match problem.severity {
+                ProblemSeverity::Error => DoctorDisplayStatus::Fail,
+                ProblemSeverity::Warning => DoctorDisplayStatus::Warn,
+            })
+        })
 }
 
-fn config_location_status(
-    report: &HookDoctorReport,
-    location: &FileLocationHealth,
-) -> HumanTextStatus {
-    if report.problems.iter().any(|problem| {
-        problem.summary.starts_with(location.label) && problem.summary.contains("failed validation")
-    }) {
-        HumanTextStatus::Fail
-    } else {
-        HumanTextStatus::Pass
-    }
+fn state_root_status(report: &HookDoctorReport) -> DoctorDisplayStatus {
+    status_for_problems(report, |kind| {
+        matches!(kind, ProblemKind::UnableToResolveStateRoot)
+    })
 }
 
-fn agent_trace_db_status(report: &HookDoctorReport) -> HumanTextStatus {
-    if let Some(agent_trace_db) = &report.agent_trace_db {
-        if !agent_trace_db.path.exists() {
-            return HumanTextStatus::Miss;
-        }
-        if report.problems.iter().any(|p| {
-            p.kind == ProblemKind::UnableToResolveStateRoot && p.summary.contains("agent trace")
-                || p.kind == ProblemKind::AgentTraceDbConnectionFailed
-                || p.kind == ProblemKind::AgentTraceDbSchemaNotReady
-        }) {
-            return HumanTextStatus::Fail;
-        }
-        HumanTextStatus::Pass
-    } else {
-        HumanTextStatus::Fail
-    }
-}
-
-fn repository_root_status(report: &HookDoctorReport) -> HumanTextStatus {
-    let has_blocking_problem = report.problems.iter().any(|p| {
+fn configuration_status(report: &HookDoctorReport) -> DoctorDisplayStatus {
+    status_for_problems(report, |kind| {
         matches!(
-            p.kind,
-            ProblemKind::BareRepository | ProblemKind::NotInsideGitRepository
+            kind,
+            ProblemKind::GlobalConfigValidationFailed
+                | ProblemKind::UnableToResolveGlobalConfigPath
+                | ProblemKind::LocalConfigValidationFailed
+                | ProblemKind::UnableToResolveStateRoot
+                | ProblemKind::AgentTraceDbConnectionFailed
+                | ProblemKind::AgentTraceDbSchemaNotReady
+        )
+    })
+}
+
+fn repository_identity_status(report: &HookDoctorReport) -> DoctorDisplayStatus {
+    let status = status_for_problems(report, |kind| {
+        matches!(
+            kind,
+            ProblemKind::UnableToResolveStateRoot
+                | ProblemKind::AgentTraceDbConnectionFailed
+                | ProblemKind::AgentTraceDbSchemaNotReady
         )
     });
-    if has_blocking_problem {
-        HumanTextStatus::Fail
-    } else if report.repository_root.is_some() {
-        HumanTextStatus::Pass
+    if report.repository_root.is_none() {
+        status.worst(DoctorDisplayStatus::Miss)
     } else {
-        HumanTextStatus::Miss
+        status
     }
 }
 
-fn hooks_directory_status(report: &HookDoctorReport) -> HumanTextStatus {
-    let has_blocking_problem = report.problems.iter().any(|p| {
+fn repository_root_status(report: &HookDoctorReport) -> DoctorDisplayStatus {
+    if report.problems.iter().any(|problem| {
         matches!(
-            p.kind,
+            problem.kind,
+            ProblemKind::BareRepository | ProblemKind::NotInsideGitRepository
+        )
+    }) {
+        DoctorDisplayStatus::Fail
+    } else if report.repository_root.is_some() {
+        DoctorDisplayStatus::Pass
+    } else {
+        DoctorDisplayStatus::Miss
+    }
+}
+
+fn git_hooks_status(report: &HookDoctorReport) -> DoctorDisplayStatus {
+    if report.problems.iter().any(|problem| {
+        matches!(
+            problem.kind,
             ProblemKind::HooksDirectoryMissing
                 | ProblemKind::HooksPathNotDirectory
                 | ProblemKind::UnableToResolveGitHooksDirectory
+                | ProblemKind::RequiredHookMissing
+                | ProblemKind::HookNotExecutable
+                | ProblemKind::HookContentStale
+                | ProblemKind::HookReadFailed
         )
-    });
-    if has_blocking_problem {
-        HumanTextStatus::Fail
+    }) {
+        return DoctorDisplayStatus::Fail;
+    }
+    if report
+        .hooks
+        .iter()
+        .any(|hook| !matches!(hook_human_text_status(hook), DoctorDisplayStatus::Pass))
+    {
+        DoctorDisplayStatus::Fail
     } else if report.hooks_directory.is_some() {
-        HumanTextStatus::Pass
+        DoctorDisplayStatus::Pass
     } else {
-        HumanTextStatus::Miss
+        DoctorDisplayStatus::Miss
     }
 }
 
-fn hook_human_text_status(hook: &HookFileHealth) -> HumanTextStatus {
+fn hook_human_text_status(hook: &HookFileHealth) -> DoctorDisplayStatus {
     if !hook.exists {
-        HumanTextStatus::Miss
+        DoctorDisplayStatus::Miss
     } else if matches!(
         hook.content_state,
         HookContentState::Stale | HookContentState::Unknown
     ) || !hook.executable
     {
-        HumanTextStatus::Fail
+        DoctorDisplayStatus::Fail
     } else {
-        HumanTextStatus::Pass
+        DoctorDisplayStatus::Pass
     }
-}
-
-fn integration_groups_for_text(report: &HookDoctorReport) -> Vec<IntegrationGroupHealth> {
-    if report.repository_root.is_none() {
-        return vec![
-            IntegrationGroupHealth::new(
-                IntegrationGroupKey::new(IntegrationTarget::OpenCode, IntegrationArea::Plugins),
-                Vec::new(),
-            ),
-            IntegrationGroupHealth::new(
-                IntegrationGroupKey::new(IntegrationTarget::OpenCode, IntegrationArea::Agents),
-                Vec::new(),
-            ),
-            IntegrationGroupHealth::new(
-                IntegrationGroupKey::new(IntegrationTarget::OpenCode, IntegrationArea::Commands),
-                Vec::new(),
-            ),
-            IntegrationGroupHealth::new(
-                IntegrationGroupKey::new(IntegrationTarget::OpenCode, IntegrationArea::Skills),
-                Vec::new(),
-            ),
-            IntegrationGroupHealth::new(
-                IntegrationGroupKey::new(IntegrationTarget::ClaudeCode, IntegrationArea::Plugins),
-                Vec::new(),
-            ),
-            IntegrationGroupHealth::new(
-                IntegrationGroupKey::new(IntegrationTarget::ClaudeCode, IntegrationArea::Agents),
-                Vec::new(),
-            ),
-            IntegrationGroupHealth::new(
-                IntegrationGroupKey::new(IntegrationTarget::ClaudeCode, IntegrationArea::Commands),
-                Vec::new(),
-            ),
-            IntegrationGroupHealth::new(
-                IntegrationGroupKey::new(IntegrationTarget::ClaudeCode, IntegrationArea::Skills),
-                Vec::new(),
-            ),
-        ];
-    }
-
-    report.integration_groups.clone()
 }
 
 fn integration_group_status(
     group: &IntegrationGroupHealth,
-    repository_available: bool,
-) -> HumanTextStatus {
-    if !repository_available
-        || group
-            .children
-            .iter()
-            .any(|child| !matches!(&child.content_state, IntegrationContentState::Match))
+    report: &HookDoctorReport,
+) -> DoctorDisplayStatus {
+    let child_status = group
+        .children
+        .iter()
+        .fold(DoctorDisplayStatus::Pass, |status, child| {
+            status.worst(match child.content_state {
+                IntegrationContentState::Match => DoctorDisplayStatus::Pass,
+                IntegrationContentState::Missing
+                | IntegrationContentState::Mismatch
+                | IntegrationContentState::ReadFailed(_) => DoctorDisplayStatus::Fail,
+            })
+        });
+    let problem_status = if group.key.target == IntegrationTarget::OpenCode
+        && group.key.area == IntegrationArea::Plugins
     {
-        HumanTextStatus::Fail
+        status_for_problems(report, |kind| {
+            matches!(
+                kind,
+                ProblemKind::OpenCodePluginRegistryInvalid
+                    | ProblemKind::OpenCodeAssetMissingOrInvalid
+            )
+        })
     } else {
-        HumanTextStatus::Pass
+        DoctorDisplayStatus::Pass
+    };
+    child_status.worst(problem_status)
+}
+
+fn integration_targets_for_text(report: &HookDoctorReport) -> Vec<IntegrationTarget> {
+    [
+        IntegrationTarget::ClaudeCode,
+        IntegrationTarget::OpenCode,
+        IntegrationTarget::Pi,
+    ]
+    .into_iter()
+    .filter(|target| {
+        report
+            .integration_groups
+            .iter()
+            .any(|group| group.key.target == *target)
+    })
+    .collect()
+}
+
+fn groups_for_target(
+    report: &HookDoctorReport,
+    target: IntegrationTarget,
+) -> Vec<IntegrationGroupHealth> {
+    let mut groups = report
+        .integration_groups
+        .iter()
+        .filter(|group| group.key.target == target)
+        .cloned()
+        .collect::<Vec<_>>();
+    groups.sort_by_key(|group| integration_area_order(target, group.key.area));
+    groups
+}
+
+fn integration_target_label(target: IntegrationTarget) -> &'static str {
+    match target {
+        IntegrationTarget::ClaudeCode => "Claude Code",
+        IntegrationTarget::OpenCode => "OpenCode",
+        IntegrationTarget::Pi => "Pi",
     }
 }
 
-fn integration_child_status(
-    child: &IntegrationChildHealth,
-    repository_available: bool,
-) -> HumanTextStatus {
-    if repository_available {
-        match &child.content_state {
-            IntegrationContentState::Match => HumanTextStatus::Pass,
-            IntegrationContentState::Missing => HumanTextStatus::Miss,
-            IntegrationContentState::Mismatch | IntegrationContentState::ReadFailed(_) => {
-                HumanTextStatus::Fail
-            }
-        }
-    } else {
-        HumanTextStatus::Fail
+fn integration_area_label(area: IntegrationArea) -> &'static str {
+    match area {
+        IntegrationArea::Plugins => "Plugins",
+        IntegrationArea::Agents => "Agents",
+        IntegrationArea::Commands => "Commands",
+        IntegrationArea::Skills => "Skills",
+        IntegrationArea::Prompts => "Prompts",
+        IntegrationArea::Extensions => "Extensions",
     }
 }
 
-fn integration_child_detail(child: &IntegrationChildHealth) -> String {
-    match &child.content_state {
-        IntegrationContentState::Mismatch => {
-            format!("{} - content mismatch", child.path.display())
-        }
-        IntegrationContentState::ReadFailed(_) => {
-            format!("{} - read failed", child.path.display())
-        }
-        IntegrationContentState::Match | IntegrationContentState::Missing => {
-            child.path.display().to_string()
-        }
+fn integration_area_order(target: IntegrationTarget, area: IntegrationArea) -> usize {
+    match target {
+        IntegrationTarget::ClaudeCode | IntegrationTarget::OpenCode => match area {
+            IntegrationArea::Plugins => 0,
+            IntegrationArea::Agents => 1,
+            IntegrationArea::Commands => 2,
+            IntegrationArea::Skills => 3,
+            IntegrationArea::Prompts => 4,
+            IntegrationArea::Extensions => 5,
+        },
+        IntegrationTarget::Pi => match area {
+            IntegrationArea::Extensions => 0,
+            IntegrationArea::Prompts => 1,
+            IntegrationArea::Skills => 2,
+            IntegrationArea::Plugins => 3,
+            IntegrationArea::Agents => 4,
+            IntegrationArea::Commands => 5,
+        },
     }
 }
 

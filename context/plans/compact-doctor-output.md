@@ -451,13 +451,19 @@ criterion they map to.
   - Context impact: local — doctor report/view-model and inspection seams changed; durable doctor text-contract context remains unchanged until the rendering tasks.
   - Context synchronization: synced
 
-- [ ] T02: `Render compact healthy doctor domains and integration groups` (status:todo)
+- [x] T02: `Render compact healthy doctor domains and integration groups` (status:done)
   - Task ID: T02
   - Scope: In — refactor text rendering in `cli/src/services/doctor/render.rs` to emit the new header, Environment/Repository/Integrations hierarchy, concise pass rows, target-scoped group rows, and deterministic status/color handling; add all-pass, target-selection, non-TTY, and no-integration fixtures. Out — failure-detail expansion, diagnostic check changes, JSON shape changes, and fix execution.
   - Dependencies: T01
   - Done when: a healthy report contains only the compact rows from the approved output model, selected targets remain the only rendered integration targets, and no successful path/ID/file inventory leaks into text mode.
   - Verify: exact plain-text renderer tests with color disabled and non-TTY/`NO_COLOR` policy assertions.
-  - Context synchronization: pending
+   - Completed: 2026-08-17
+   - Files changed: `cli/src/services/doctor/render.rs`, `cli/src/services/doctor/types.rs`
+   - Result: Refactored human-readable doctor rendering to the compact SCE doctor, Environment, Repository, and target-scoped Integrations hierarchy; healthy rows suppress paths and identity metadata, target ordering is deterministic, warnings have color-aware status tokens, JSON remains unchanged, and no-integration guidance is retained.
+   - Done checks: Healthy reports render only compact approved rows (done); selected targets are the only integration targets rendered (done); successful paths, IDs, and file inventory are hidden from text output (done).
+   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::doctor` passed (12 tests, including exact compact renderer, selected-target ordering, no-integration, non-ANSI, optional-workflow, and inspection coverage); `nix develop -c sh -c 'cd cli && cargo fmt'` passed.
+   - Context impact: local — doctor text presentation and its render status seam changed; durable doctor text-contract context remains pending until T04.
+   - Context synchronization: synced
 
 - [ ] T03: `Expand warnings and failures with nested diagnostic details` (status:todo)
   - Task ID: T03
