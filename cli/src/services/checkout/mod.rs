@@ -5,8 +5,7 @@
 //! string, consistent with the existing `agent_trace_id` convention in this
 //! codebase.
 //!
-//! Checkout databases are discovered via filesystem scan in `sce trace db list`
-//! (see `cli/src/services/trace/`). There is no central registry file.
+//! Checkout identity is repository metadata used by Agent Trace diagnostics.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

@@ -1,12 +1,12 @@
-//! Renderers for `sce trace sync` (text and JSON).
+//! Renderers for `sce sync` (text and JSON).
 
 use anyhow::{Context, Result};
 use serde_json::json;
 
 use crate::services::output_format::OutputFormat;
 use crate::services::style;
-use crate::services::trace::sync::{AgentTraceSyncReport, StreamSyncReport};
-use crate::services::trace::NAME;
+use crate::services::sync::sync::{AgentTraceSyncReport, StreamSyncReport};
+use crate::services::sync::NAME;
 
 const HEADING: &str = "Agent Trace sync complete.";
 
@@ -76,7 +76,6 @@ fn render_json(report: &AgentTraceSyncReport) -> Result<String> {
     let payload = json!({
         "status": "ok",
         "command": NAME,
-        "subcommand": "sync",
         "repositoryId": report.repository_id,
         "sourceInstanceId": report.source_instance_id,
         "streams": {
@@ -87,7 +86,7 @@ fn render_json(report: &AgentTraceSyncReport) -> Result<String> {
         },
     });
 
-    serde_json::to_string_pretty(&payload).context("failed to serialize trace sync report to JSON")
+    serde_json::to_string_pretty(&payload).context("failed to serialize sync report to JSON")
 }
 
 fn stream_json(stream: &StreamSyncReport) -> serde_json::Value {
@@ -107,7 +106,7 @@ mod tests {
         AgentTraceSyncReport {
             repository_id: "repo-123".to_string(),
             source_instance_id: "source-abc".to_string(),
-            streams: crate::services::trace::sync::StreamSyncReports {
+            streams: crate::services::sync::sync::StreamSyncReports {
                 messages: StreamSyncReport {
                     uploaded: 3,
                     initial_cursor: 10,
@@ -166,8 +165,8 @@ mod tests {
         let payload = render_json(&sample_report()).expect("json render");
         let value: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
         assert_eq!(value["status"], "ok");
-        assert_eq!(value["command"], "trace");
-        assert_eq!(value["subcommand"], "sync");
+        assert_eq!(value["command"], "sync");
+        assert!(value.get("subcommand").is_none());
         assert_eq!(value["repositoryId"], "repo-123");
         assert_eq!(value["sourceInstanceId"], "source-abc");
 

@@ -14,7 +14,7 @@ const DEFAULT_COMMAND_NAMES: &[&str] = &[
     services::hooks::NAME,
     services::bash_policy::NAME,
     services::setup::NAME,
-    services::trace::NAME,
+    services::sync::NAME,
     services::version::NAME,
 ];
 
@@ -34,7 +34,7 @@ pub enum RuntimeCommand {
     Policy(services::bash_policy::command::PolicyCommand),
     Version(services::version::command::VersionCommand),
     Completion(services::completion::command::CompletionCommand),
-    Trace(services::trace::command::TraceCommand),
+    Sync(services::sync::command::SyncCommand),
 }
 
 impl RuntimeCommand {
@@ -50,7 +50,7 @@ impl RuntimeCommand {
             Self::Policy(_) => Cow::Borrowed(services::bash_policy::NAME),
             Self::Version(_) => Cow::Borrowed(services::version::NAME),
             Self::Completion(_) => Cow::Borrowed(services::completion::NAME),
-            Self::Trace(_) => Cow::Borrowed(services::trace::NAME),
+            Self::Sync(_) => Cow::Borrowed(services::sync::NAME),
         }
     }
 
@@ -83,7 +83,7 @@ impl RuntimeCommand {
             Self::Policy(command) => command.execute(),
             Self::Version(command) => command.execute(context),
             Self::Completion(command) => Ok(command.execute(context)),
-            Self::Trace(command) => command.execute_with_stderr(context, stderr),
+            Self::Sync(command) => command.execute_with_stderr(context, stderr),
         }
     }
 }
@@ -192,15 +192,11 @@ pub fn default_runtime_command(name: &str) -> Option<RuntimeCommand> {
                 },
             },
         )),
-        services::trace::NAME => Some(RuntimeCommand::Trace(
-            services::trace::command::TraceCommand {
-                request: services::trace::TraceRequest {
-                    subcommand: services::trace::TraceSubcommandRequest::DbList {
-                        format: services::output_format::OutputFormat::Text,
-                    },
-                },
+        services::sync::NAME => Some(RuntimeCommand::Sync(services::sync::command::SyncCommand {
+            request: services::sync::SyncRequest {
+                format: services::output_format::OutputFormat::Text,
             },
-        )),
+        })),
         _ => None,
     }
 }
@@ -224,7 +220,7 @@ mod tests {
                 "hooks",
                 "policy",
                 "setup",
-                "trace",
+                "sync",
                 "version"
             ]
         );
@@ -237,7 +233,7 @@ mod tests {
         for name in DEFAULT_COMMAND_NAMES {
             assert!(registry.contains(name));
         }
-        assert!(!registry.contains("sync"));
+        assert!(registry.contains("sync"));
     }
 
     #[test]
@@ -246,6 +242,6 @@ mod tests {
             let command = default_runtime_command(name).expect("command should exist");
             assert_eq!(command.name(), *name);
         }
-        assert!(default_runtime_command("sync").is_none());
+        assert!(default_runtime_command("sync").is_some());
     }
 }

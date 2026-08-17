@@ -250,30 +250,12 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
                 },
             },
         )),
-        cli_schema::Commands::Trace { subcommand } => Ok(convert_trace_subcommand(subcommand)),
+        cli_schema::Commands::Sync { format } => {
+            Ok(RuntimeCommand::Sync(services::sync::command::SyncCommand {
+                request: services::sync::SyncRequest { format },
+            }))
+        }
     }
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn convert_trace_subcommand(subcommand: cli_schema::TraceSubcommand) -> RuntimeCommand {
-    let request = match subcommand {
-        cli_schema::TraceSubcommand::Db { subcommand } => match subcommand {
-            cli_schema::TraceDbSubcommand::List { format } => services::trace::TraceRequest {
-                subcommand: services::trace::TraceSubcommandRequest::DbList { format },
-            },
-            cli_schema::TraceDbSubcommand::Shell { identifier } => services::trace::TraceRequest {
-                subcommand: services::trace::TraceSubcommandRequest::DbShell { identifier },
-            },
-        },
-        cli_schema::TraceSubcommand::Status { all, format } => services::trace::TraceRequest {
-            subcommand: services::trace::TraceSubcommandRequest::Status { all, format },
-        },
-        cli_schema::TraceSubcommand::Sync { format } => services::trace::TraceRequest {
-            subcommand: services::trace::TraceSubcommandRequest::Sync { format },
-        },
-    };
-
-    RuntimeCommand::Trace(services::trace::command::TraceCommand { request })
 }
 
 fn convert_doctor_command(
@@ -499,64 +481,44 @@ mod tests {
     }
 
     #[test]
-    fn trace_db_shell_parses_to_trace_shell_request() {
-        let command = parse(&["sce", "trace", "db", "shell", "agent_trace_0"]);
+    fn sync_parses_to_sync_request_with_default_text_format() {
+        let command = parse(&["sce", "sync"]);
 
-        let RuntimeCommand::Trace(command) = command else {
-            panic!("expected trace command");
+        let RuntimeCommand::Sync(command) = command else {
+            panic!("expected sync command");
         };
 
         assert_eq!(
-            command.request.subcommand,
-            services::trace::TraceSubcommandRequest::DbShell {
-                identifier: Some(String::from("agent_trace_0")),
-            }
+            command.request.format,
+            services::output_format::OutputFormat::Text
         );
     }
 
     #[test]
-    fn trace_sync_parses_to_trace_sync_request_with_default_text_format() {
-        let command = parse(&["sce", "trace", "sync"]);
+    fn sync_json_format_parses_to_sync_request() {
+        let command = parse(&["sce", "sync", "--format", "json"]);
 
-        let RuntimeCommand::Trace(command) = command else {
-            panic!("expected trace command");
+        let RuntimeCommand::Sync(command) = command else {
+            panic!("expected sync command");
         };
 
         assert_eq!(
-            command.request.subcommand,
-            services::trace::TraceSubcommandRequest::Sync {
-                format: services::output_format::OutputFormat::Text,
-            }
+            command.request.format,
+            services::output_format::OutputFormat::Json
         );
     }
 
     #[test]
-    fn trace_sync_json_format_parses_to_trace_sync_request() {
-        let command = parse(&["sce", "trace", "sync", "--format", "json"]);
-
-        let RuntimeCommand::Trace(command) = command else {
-            panic!("expected trace command");
-        };
-
-        assert_eq!(
-            command.request.subcommand,
-            services::trace::TraceSubcommandRequest::Sync {
-                format: services::output_format::OutputFormat::Json,
-            }
+    fn removed_trace_command_is_rejected() {
+        let result = parse_runtime_command(
+            ["sce", "trace", "sync"].into_iter().map(String::from),
+            &CommandRegistry::default(),
+            None,
         );
-    }
 
-    #[test]
-    fn trace_db_help_lists_shell_subcommand() {
-        let command = parse(&["sce", "trace", "db", "--help"]);
-
-        let RuntimeCommand::HelpText(command) = command else {
-            panic!("expected help text command");
-        };
-
-        assert!(command.text.contains("shell"));
-        assert!(command
-            .text
-            .contains("Open an embedded SQL shell for an Agent Trace database"));
+        match result {
+            Ok(_) => panic!("trace should be unavailable"),
+            Err(error) => assert!(error.to_string().contains("Unknown command 'trace'")),
+        }
     }
 }

@@ -7,12 +7,12 @@
 ```mermaid
 flowchart LR
     A["SCE local source DB\n(RepositoryAgentTraceDb)"] --> B["Incremental export reader\n(AgentTraceExportReader)"]
-    B --> C["Control-plane client\n(sce trace sync)"]
+    B --> C["Control-plane client\n(sce sync)"]
 ```
 
 - **SCE local source DB** — the existing repository-scoped `RepositoryAgentTraceDb` (see [agent-trace-db.md](agent-trace-db.md)), written by the hook/lifecycle paths already documented there. This reader does not change its writer, schema, or migrations.
 - **Incremental export reader** — `AgentTraceExportReader<'a>`, described below. Read-only, stateless across calls, no network.
-- **Control-plane client** — `sce trace sync` (see [agent-trace-sync-command.md](../cli/agent-trace-sync-command.md)) composes this reader with the authenticated control-plane HTTP client; the reader itself remains unaware of that caller.
+- **Control-plane client** — `sce sync` (see [agent-trace-sync-command.md](../cli/agent-trace-sync-command.md)) composes this reader with the authenticated control-plane HTTP client; the reader itself remains unaware of that caller.
 
 ## Composition point
 
@@ -56,7 +56,7 @@ Each stream has an owned `serde::Serialize` export-row DTO (`AgentTraceMessageEx
 
 This reader introduces no local sync state and no outbound transport:
 
-- No local sync cursor is stored anywhere; the caller (`sce trace sync`) derives cursors from the control plane's `/state` response on every invocation, entirely outside this module.
+- No local sync cursor is stored anywhere; the caller (`sce sync`) derives cursors from the control plane's `/state` response on every invocation, entirely outside this module.
 - No `agent-trace-sync.db` or any other new database or table exists.
 - No Turso Sync, no ETL pipeline, and no data-warehouse (DWH) integration exists.
 - No network call, no HTTP client, and no auth/WorkOS code exists in this module.

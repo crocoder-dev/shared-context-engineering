@@ -142,7 +142,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - Auth failure guidance for migrated auth keys no longer assumes env-only configuration.
 - Missing-client-id guidance for `workos_client_id` describes the full allowed chain for this key: `WORKOS_CLIENT_ID`, config-file key `workos_client_id`, or fallback to the baked default when no higher-precedence invalid override blocks it.
 - Auth login runtime guidance refers to the resolved source chain generically (`WORKOS_CLIENT_ID`, config file, or baked default for `workos_client_id`) instead of env-only wording.
-- `control_plane_base_url` resolves through the same shared auth-adjacent key path but has no dedicated auth failure guidance of its own; it is consumed by the Agent Trace control-plane client (`sce trace sync`).
+- `control_plane_base_url` resolves through the same shared auth-adjacent key path but has no dedicated auth failure guidance of its own; it is consumed by the Agent Trace control-plane client (`sce sync`).
 
 ## Related files
 

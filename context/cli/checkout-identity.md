@@ -22,7 +22,7 @@ During setup and hook runtime:
 - The active DB path is `<state_root>/sce/repos/<repository-id>/agent-trace.db`.
 - `RepositoryAgentTraceDb` opens through the repository fast-path-then-migrate flow and validates `repository_metadata.repository_id`.
 
-`sce doctor` still displays checkout identity where available. `sce trace` list/status/status-all/shell UX operates only on repository-scoped DBs. Any pre-migration `<state_root>/sce/agent-trace-*.db` checkout-scoped files left on disk are never touched by SCE and are no longer inspectable through the CLI.
+`sce doctor` still displays checkout identity where available. The former Agent Trace list/status/status-all/shell UX is no longer available; `sce sync` operates on the current repository-scoped DB. Any pre-migration `<state_root>/sce/agent-trace-*.db` checkout-scoped files left on disk are never touched by SCE and are no longer inspectable through the CLI.
 
 ## Testing boundary
 
