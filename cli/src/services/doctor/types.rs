@@ -1,17 +1,5 @@
 use std::path::PathBuf;
 
-pub(super) const OPENCODE_PLUGINS_LABEL: &str = "OpenCode plugins";
-pub(super) const OPENCODE_AGENTS_LABEL: &str = "OpenCode agents";
-pub(super) const OPENCODE_COMMANDS_LABEL: &str = "OpenCode commands";
-pub(super) const OPENCODE_SKILLS_LABEL: &str = "OpenCode skills";
-pub(super) const CLAUDE_PLUGINS_LABEL: &str = "ClaudeCode plugins";
-pub(super) const CLAUDE_AGENTS_LABEL: &str = "ClaudeCode agents";
-pub(super) const CLAUDE_COMMANDS_LABEL: &str = "ClaudeCode commands";
-pub(super) const CLAUDE_SKILLS_LABEL: &str = "ClaudeCode skills";
-pub(super) const PI_PROMPTS_LABEL: &str = "Pi prompts";
-pub(super) const PI_SKILLS_LABEL: &str = "Pi skills";
-pub(super) const PI_EXTENSIONS_LABEL: &str = "Pi extensions";
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Readiness {
     Ready,
@@ -88,10 +76,84 @@ pub(super) struct AgentTraceDbHealth {
     pub(super) configured_remote: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) enum IntegrationTarget {
+    OpenCode,
+    ClaudeCode,
+    Pi,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) enum IntegrationArea {
+    Plugins,
+    Agents,
+    Commands,
+    Skills,
+    Prompts,
+    Extensions,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) struct IntegrationGroupKey {
+    pub(super) target: IntegrationTarget,
+    pub(super) area: IntegrationArea,
+}
+
+impl IntegrationGroupKey {
+    pub(super) const fn new(target: IntegrationTarget, area: IntegrationArea) -> Self {
+        Self { target, area }
+    }
+
+    pub(super) const fn display_label(self) -> &'static str {
+        match (self.target, self.area) {
+            (IntegrationTarget::OpenCode, IntegrationArea::Plugins) => "OpenCode plugins",
+            (IntegrationTarget::OpenCode, IntegrationArea::Agents) => "OpenCode agents",
+            (IntegrationTarget::OpenCode, IntegrationArea::Commands) => "OpenCode commands",
+            (IntegrationTarget::OpenCode, IntegrationArea::Skills) => "OpenCode skills",
+            (IntegrationTarget::ClaudeCode, IntegrationArea::Plugins) => "ClaudeCode plugins",
+            (IntegrationTarget::ClaudeCode, IntegrationArea::Agents) => "ClaudeCode agents",
+            (IntegrationTarget::ClaudeCode, IntegrationArea::Commands) => "ClaudeCode commands",
+            (IntegrationTarget::ClaudeCode, IntegrationArea::Skills) => "ClaudeCode skills",
+            (IntegrationTarget::Pi, IntegrationArea::Prompts) => "Pi prompts",
+            (IntegrationTarget::Pi, IntegrationArea::Skills) => "Pi skills",
+            (IntegrationTarget::Pi, IntegrationArea::Extensions) => "Pi extensions",
+            // These combinations are not produced by inspection, but retaining
+            // deterministic labels keeps the key total for future targets/areas.
+            (IntegrationTarget::Pi, IntegrationArea::Plugins) => "Pi plugins",
+            (IntegrationTarget::Pi, IntegrationArea::Agents) => "Pi agents",
+            (IntegrationTarget::Pi, IntegrationArea::Commands) => "Pi commands",
+            (IntegrationTarget::ClaudeCode, IntegrationArea::Prompts) => "ClaudeCode prompts",
+            (IntegrationTarget::ClaudeCode, IntegrationArea::Extensions) => "ClaudeCode extensions",
+            (IntegrationTarget::OpenCode, IntegrationArea::Prompts) => "OpenCode prompts",
+            (IntegrationTarget::OpenCode, IntegrationArea::Extensions) => "OpenCode extensions",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct IntegrationGroupHealth {
-    pub(super) label: &'static str,
+    pub(super) key: IntegrationGroupKey,
     pub(super) children: Vec<IntegrationChildHealth>,
+}
+
+impl IntegrationGroupHealth {
+    pub(super) fn new(key: IntegrationGroupKey, children: Vec<IntegrationChildHealth>) -> Self {
+        Self { key, children }
+    }
+
+    pub(super) const fn display_label(&self) -> &'static str {
+        self.key.display_label()
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn display_node(&self) -> DoctorDisplayNode {
+        let children = self
+            .children
+            .iter()
+            .map(IntegrationChildHealth::display_node)
+            .collect::<Vec<_>>();
+        DoctorDisplayNode::group(self.display_label(), children)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -107,6 +169,123 @@ pub(super) enum IntegrationContentState {
     Missing,
     Mismatch,
     ReadFailed(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[allow(dead_code)]
+pub(super) enum DoctorDisplayStatus {
+    Pass,
+    Warn,
+    Miss,
+    Fail,
+}
+
+impl DoctorDisplayStatus {
+    #[allow(dead_code)]
+    pub(super) const fn worst(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Fail, _) | (_, Self::Fail) => Self::Fail,
+            (Self::Miss, _) | (_, Self::Miss) => Self::Miss,
+            (Self::Warn, _) | (_, Self::Warn) => Self::Warn,
+            (Self::Pass, Self::Pass) => Self::Pass,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub(super) enum DoctorDisplayDetail {
+    MissingPath(PathBuf),
+    ContentMismatch { path: PathBuf },
+    ReadFailed { path: PathBuf, error: String },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub(super) enum DoctorDisplayNodeKind {
+    Domain,
+    Group,
+    Asset,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub(super) struct DoctorDisplayNode {
+    pub(super) kind: DoctorDisplayNodeKind,
+    pub(super) label: String,
+    pub(super) status: DoctorDisplayStatus,
+    pub(super) detail: Option<DoctorDisplayDetail>,
+    pub(super) children: Vec<DoctorDisplayNode>,
+}
+
+impl DoctorDisplayNode {
+    #[allow(dead_code)]
+    pub(super) fn domain(label: impl Into<String>, children: Vec<Self>) -> Self {
+        Self::branch(DoctorDisplayNodeKind::Domain, label, children)
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn group(label: impl Into<String>, children: Vec<Self>) -> Self {
+        Self::branch(DoctorDisplayNodeKind::Group, label, children)
+    }
+
+    #[allow(dead_code)]
+    fn asset(
+        label: impl Into<String>,
+        status: DoctorDisplayStatus,
+        detail: Option<DoctorDisplayDetail>,
+    ) -> Self {
+        Self {
+            kind: DoctorDisplayNodeKind::Asset,
+            label: label.into(),
+            status,
+            detail,
+            children: Vec::new(),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn branch(kind: DoctorDisplayNodeKind, label: impl Into<String>, children: Vec<Self>) -> Self {
+        let status = children
+            .iter()
+            .fold(DoctorDisplayStatus::Pass, |status, child| {
+                status.worst(child.status)
+            });
+        Self {
+            kind,
+            label: label.into(),
+            status,
+            detail: None,
+            children,
+        }
+    }
+}
+
+impl IntegrationChildHealth {
+    #[allow(dead_code)]
+    pub(super) fn display_node(&self) -> DoctorDisplayNode {
+        let (status, detail) = match &self.content_state {
+            IntegrationContentState::Match => (DoctorDisplayStatus::Pass, None),
+            IntegrationContentState::Missing => (
+                DoctorDisplayStatus::Miss,
+                Some(DoctorDisplayDetail::MissingPath(self.path.clone())),
+            ),
+            IntegrationContentState::Mismatch => (
+                DoctorDisplayStatus::Fail,
+                Some(DoctorDisplayDetail::ContentMismatch {
+                    path: self.path.clone(),
+                }),
+            ),
+            IntegrationContentState::ReadFailed(error) => (
+                DoctorDisplayStatus::Fail,
+                Some(DoctorDisplayDetail::ReadFailed {
+                    path: self.path.clone(),
+                    error: error.clone(),
+                }),
+            ),
+        };
+        DoctorDisplayNode::asset(self.relative_path.clone(), status, detail)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
