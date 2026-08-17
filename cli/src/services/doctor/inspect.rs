@@ -23,11 +23,9 @@ use crate::services::setup::{
 use super::types::{
     AgentTraceDbHealth, CheckoutIdentityHealth, DoctorFixResultRecord, DoctorProblem,
     FileLocationHealth, FixResult, GlobalStateHealth, HookContentState, HookDoctorReport,
-    HookFileHealth, HookPathSource, IntegrationChildHealth, IntegrationContentState,
-    IntegrationGroupHealth, ProblemCategory, ProblemFixability, ProblemKind, ProblemSeverity,
-    Readiness, CLAUDE_AGENTS_LABEL, CLAUDE_COMMANDS_LABEL, CLAUDE_PLUGINS_LABEL,
-    CLAUDE_SKILLS_LABEL, OPENCODE_AGENTS_LABEL, OPENCODE_COMMANDS_LABEL, OPENCODE_PLUGINS_LABEL,
-    OPENCODE_SKILLS_LABEL, PI_EXTENSIONS_LABEL, PI_PROMPTS_LABEL, PI_SKILLS_LABEL,
+    HookFileHealth, HookPathSource, IntegrationArea, IntegrationChildHealth,
+    IntegrationContentState, IntegrationGroupHealth, IntegrationGroupKey, IntegrationTarget,
+    ProblemCategory, ProblemFixability, ProblemKind, ProblemSeverity, Readiness,
 };
 use super::{is_executable, DoctorDependencies, DoctorMode, REQUIRED_HOOKS};
 
@@ -676,7 +674,7 @@ fn collect_global_state_health(
                 category: ProblemCategory::GlobalState,
                 severity: ProblemSeverity::Error,
                 fixability: ProblemFixability::ManualOnly,
-                summary: format!(
+            summary: format!(
                     "Local config file '{}' failed validation: {error}",
                     local_path.display()
                 ),
@@ -863,11 +861,11 @@ fn push_opencode_integration_missing_problems(
             fixability: ProblemFixability::ManualOnly,
             summary: format!(
                 "{} required file(s) are missing: {}.",
-                group.label, missing_paths
+                group.display_label(), missing_paths
             ),
             remediation: format!(
                 "Reinstall repo-root OpenCode assets to restore the missing {} file(s), then rerun 'sce doctor'.",
-                group.label.to_ascii_lowercase()
+                group.display_label().to_ascii_lowercase()
             ),
             next_action: "manual_steps",
         });
@@ -900,11 +898,11 @@ fn push_opencode_integration_mismatch_problems(
             fixability: ProblemFixability::ManualOnly,
             summary: format!(
                 "{} file(s) differ from the canonical embedded content: {}.",
-                group.label, mismatched_paths
+                group.display_label(), mismatched_paths
             ),
             remediation: format!(
                 "Reinstall repo-root OpenCode assets to restore the canonical {} content, then rerun 'sce doctor'.",
-                group.label.to_ascii_lowercase()
+                group.display_label().to_ascii_lowercase()
             ),
             next_action: "manual_steps",
         });
@@ -966,11 +964,11 @@ fn push_claude_integration_missing_problems(
             fixability: ProblemFixability::ManualOnly,
             summary: format!(
                 "{} required file(s) are missing: {}.",
-                group.label, missing_paths
+                group.display_label(), missing_paths
             ),
             remediation: format!(
                 "Reinstall repo-root Claude assets to restore the missing {} file(s), then rerun 'sce doctor'.",
-                group.label.to_ascii_lowercase()
+                group.display_label().to_ascii_lowercase()
             ),
             next_action: "manual_steps",
         });
@@ -1003,11 +1001,11 @@ fn push_claude_integration_mismatch_problems(
             fixability: ProblemFixability::ManualOnly,
             summary: format!(
                 "{} file(s) differ from the canonical embedded content: {}.",
-                group.label, mismatched_paths
+                group.display_label(), mismatched_paths
             ),
             remediation: format!(
                 "Reinstall repo-root Claude assets to restore the canonical {} content, then rerun 'sce doctor'.",
-                group.label.to_ascii_lowercase()
+                group.display_label().to_ascii_lowercase()
             ),
             next_action: "manual_steps",
         });
@@ -1069,11 +1067,11 @@ fn push_pi_integration_missing_problems(
             fixability: ProblemFixability::ManualOnly,
             summary: format!(
                 "{} required file(s) are missing: {}.",
-                group.label, missing_paths
+                group.display_label(), missing_paths
             ),
             remediation: format!(
                 "Reinstall repo-root Pi assets to restore the missing {} file(s), then rerun 'sce doctor'.",
-                group.label.to_ascii_lowercase()
+                group.display_label().to_ascii_lowercase()
             ),
             next_action: "manual_steps",
         });
@@ -1106,11 +1104,11 @@ fn push_pi_integration_mismatch_problems(
             fixability: ProblemFixability::ManualOnly,
             summary: format!(
                 "{} file(s) differ from the canonical embedded content: {}.",
-                group.label, mismatched_paths
+                group.display_label(), mismatched_paths
             ),
             remediation: format!(
                 "Reinstall repo-root Pi assets to restore the canonical {} content, then rerun 'sce doctor'.",
-                group.label.to_ascii_lowercase()
+                group.display_label().to_ascii_lowercase()
             ),
             next_action: "manual_steps",
         });
@@ -1305,22 +1303,22 @@ fn collect_opencode_integration_groups(
     sort_integration_children(&mut skill_children);
 
     vec![
-        IntegrationGroupHealth {
-            label: OPENCODE_PLUGINS_LABEL,
-            children: plugin_children,
-        },
-        IntegrationGroupHealth {
-            label: OPENCODE_AGENTS_LABEL,
-            children: agent_children,
-        },
-        IntegrationGroupHealth {
-            label: OPENCODE_COMMANDS_LABEL,
-            children: command_children,
-        },
-        IntegrationGroupHealth {
-            label: OPENCODE_SKILLS_LABEL,
-            children: skill_children,
-        },
+        IntegrationGroupHealth::new(
+            IntegrationGroupKey::new(IntegrationTarget::OpenCode, IntegrationArea::Plugins),
+            plugin_children,
+        ),
+        IntegrationGroupHealth::new(
+            IntegrationGroupKey::new(IntegrationTarget::OpenCode, IntegrationArea::Agents),
+            agent_children,
+        ),
+        IntegrationGroupHealth::new(
+            IntegrationGroupKey::new(IntegrationTarget::OpenCode, IntegrationArea::Commands),
+            command_children,
+        ),
+        IntegrationGroupHealth::new(
+            IntegrationGroupKey::new(IntegrationTarget::OpenCode, IntegrationArea::Skills),
+            skill_children,
+        ),
     ]
 }
 
@@ -1378,22 +1376,22 @@ fn collect_claude_integration_groups(
     sort_integration_children(&mut skill_children);
 
     vec![
-        IntegrationGroupHealth {
-            label: CLAUDE_PLUGINS_LABEL,
-            children: plugin_children,
-        },
-        IntegrationGroupHealth {
-            label: CLAUDE_AGENTS_LABEL,
-            children: agent_children,
-        },
-        IntegrationGroupHealth {
-            label: CLAUDE_COMMANDS_LABEL,
-            children: command_children,
-        },
-        IntegrationGroupHealth {
-            label: CLAUDE_SKILLS_LABEL,
-            children: skill_children,
-        },
+        IntegrationGroupHealth::new(
+            IntegrationGroupKey::new(IntegrationTarget::ClaudeCode, IntegrationArea::Plugins),
+            plugin_children,
+        ),
+        IntegrationGroupHealth::new(
+            IntegrationGroupKey::new(IntegrationTarget::ClaudeCode, IntegrationArea::Agents),
+            agent_children,
+        ),
+        IntegrationGroupHealth::new(
+            IntegrationGroupKey::new(IntegrationTarget::ClaudeCode, IntegrationArea::Commands),
+            command_children,
+        ),
+        IntegrationGroupHealth::new(
+            IntegrationGroupKey::new(IntegrationTarget::ClaudeCode, IntegrationArea::Skills),
+            skill_children,
+        ),
     ]
 }
 
@@ -1438,18 +1436,18 @@ fn collect_pi_integration_groups(
     sort_integration_children(&mut extension_children);
 
     vec![
-        IntegrationGroupHealth {
-            label: PI_PROMPTS_LABEL,
-            children: prompt_children,
-        },
-        IntegrationGroupHealth {
-            label: PI_SKILLS_LABEL,
-            children: skill_children,
-        },
-        IntegrationGroupHealth {
-            label: PI_EXTENSIONS_LABEL,
-            children: extension_children,
-        },
+        IntegrationGroupHealth::new(
+            IntegrationGroupKey::new(IntegrationTarget::Pi, IntegrationArea::Prompts),
+            prompt_children,
+        ),
+        IntegrationGroupHealth::new(
+            IntegrationGroupKey::new(IntegrationTarget::Pi, IntegrationArea::Skills),
+            skill_children,
+        ),
+        IntegrationGroupHealth::new(
+            IntegrationGroupKey::new(IntegrationTarget::Pi, IntegrationArea::Extensions),
+            extension_children,
+        ),
     ]
 }
 

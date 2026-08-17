@@ -6,10 +6,8 @@ use crate::services::style::{heading, label, supports_color, value, OwoColorize}
 use super::types::{
     fix_result_outcome, problem_category, problem_fixability, problem_severity, FileLocationHealth,
     HookContentState, HookDoctorReport, HookFileHealth, HookPathSource, HumanTextStatus,
-    IntegrationChildHealth, IntegrationContentState, IntegrationGroupHealth, ProblemKind,
-    ProblemSeverity, Readiness, CLAUDE_AGENTS_LABEL, CLAUDE_COMMANDS_LABEL, CLAUDE_PLUGINS_LABEL,
-    CLAUDE_SKILLS_LABEL, OPENCODE_AGENTS_LABEL, OPENCODE_COMMANDS_LABEL, OPENCODE_PLUGINS_LABEL,
-    OPENCODE_SKILLS_LABEL,
+    IntegrationArea, IntegrationChildHealth, IntegrationContentState, IntegrationGroupHealth,
+    IntegrationGroupKey, IntegrationTarget, ProblemKind, ProblemSeverity, Readiness,
 };
 use super::{DoctorExecution, DoctorFormat, DoctorMode, DoctorRequest, NAME, REQUIRED_HOOKS};
 
@@ -124,7 +122,7 @@ fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: boo
             lines.push(format_human_text_row(
                 color_enabled,
                 integration_group_status(&group, report.repository_root.is_some()),
-                group.label,
+                group.display_label(),
                 "",
             ));
             for child in &group.children {
@@ -382,38 +380,38 @@ fn hook_human_text_status(hook: &HookFileHealth) -> HumanTextStatus {
 fn integration_groups_for_text(report: &HookDoctorReport) -> Vec<IntegrationGroupHealth> {
     if report.repository_root.is_none() {
         return vec![
-            IntegrationGroupHealth {
-                label: OPENCODE_PLUGINS_LABEL,
-                children: Vec::new(),
-            },
-            IntegrationGroupHealth {
-                label: OPENCODE_AGENTS_LABEL,
-                children: Vec::new(),
-            },
-            IntegrationGroupHealth {
-                label: OPENCODE_COMMANDS_LABEL,
-                children: Vec::new(),
-            },
-            IntegrationGroupHealth {
-                label: OPENCODE_SKILLS_LABEL,
-                children: Vec::new(),
-            },
-            IntegrationGroupHealth {
-                label: CLAUDE_PLUGINS_LABEL,
-                children: Vec::new(),
-            },
-            IntegrationGroupHealth {
-                label: CLAUDE_AGENTS_LABEL,
-                children: Vec::new(),
-            },
-            IntegrationGroupHealth {
-                label: CLAUDE_COMMANDS_LABEL,
-                children: Vec::new(),
-            },
-            IntegrationGroupHealth {
-                label: CLAUDE_SKILLS_LABEL,
-                children: Vec::new(),
-            },
+            IntegrationGroupHealth::new(
+                IntegrationGroupKey::new(IntegrationTarget::OpenCode, IntegrationArea::Plugins),
+                Vec::new(),
+            ),
+            IntegrationGroupHealth::new(
+                IntegrationGroupKey::new(IntegrationTarget::OpenCode, IntegrationArea::Agents),
+                Vec::new(),
+            ),
+            IntegrationGroupHealth::new(
+                IntegrationGroupKey::new(IntegrationTarget::OpenCode, IntegrationArea::Commands),
+                Vec::new(),
+            ),
+            IntegrationGroupHealth::new(
+                IntegrationGroupKey::new(IntegrationTarget::OpenCode, IntegrationArea::Skills),
+                Vec::new(),
+            ),
+            IntegrationGroupHealth::new(
+                IntegrationGroupKey::new(IntegrationTarget::ClaudeCode, IntegrationArea::Plugins),
+                Vec::new(),
+            ),
+            IntegrationGroupHealth::new(
+                IntegrationGroupKey::new(IntegrationTarget::ClaudeCode, IntegrationArea::Agents),
+                Vec::new(),
+            ),
+            IntegrationGroupHealth::new(
+                IntegrationGroupKey::new(IntegrationTarget::ClaudeCode, IntegrationArea::Commands),
+                Vec::new(),
+            ),
+            IntegrationGroupHealth::new(
+                IntegrationGroupKey::new(IntegrationTarget::ClaudeCode, IntegrationArea::Skills),
+                Vec::new(),
+            ),
         ];
     }
 
