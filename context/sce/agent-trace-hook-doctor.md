@@ -24,13 +24,13 @@ The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor comm
 
 - explicit mode selection through `sce doctor` (`diagnose`) and `sce doctor --fix` (`fix`)
 - command/help wiring for `--fix` plus stable text/JSON mode reporting
-- human text rendering with `SCE doctor diagnose` / `SCE doctor fix` header + ordered `Environment`, `Configuration`, `Repository`, `Git Hooks`, and `Integrations` sections
-- exact human text status vocabulary `[PASS]`, `[FAIL]`, and `[MISS]`
+- compact human text rendering with `SCE doctor` / `SCE doctor fix` header + ordered `Environment`, `Repository`, and `Integrations` domains; Environment contains State, Configuration, and Repository identity, while Repository contains Git repository and Git hooks
+- human text status vocabulary `[PASS]`, `[WARN]`, `[FAIL]`, and `[MISS]`, with healthy rows collapsed to status plus display label
 - text summary footer with blocking-problem and warning counts
 - local DB reporting in default doctor output
 - stable problem records with category, severity, fixability, and remediation metadata
 - deterministic fix-result records in fix mode with `fixed`, `skipped`, `manual`, and `failed` outcomes
-- simplified `label (path)` human rows for healthy path-backed state/config/repository/hook entries, without redundant `present` / `expected` prose
+- healthy human rows suppress path, identity, and implementation metadata; JSON retains the complete path/identity detail
 - default global/local config-file location reporting, plus validation of existing global and repo-local `sce/config.json` readability and schema compliance (delegated to `ConfigLifecycle::diagnose`)
 - startup config resolution no longer blocks doctor on invalid default-discovered config files; doctor reaches its own config-validation path, reports those files as problems, and keeps invalid-config remediation manual-only
 - local DB location reporting, DB parent-directory readiness checks, and existing-DB health validation (delegated to `LocalDbLifecycle::diagnose`)
@@ -38,12 +38,12 @@ The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor comm
 - explicit git-unavailable, outside-repo, and bare-repo repository-targeting failures
 - effective hook-path source (`default`, local `core.hooksPath`, global `core.hooksPath`)
 - repository root and hooks directory resolution when a repository target is detected
-- top-level-only human text hook rows for `pre-commit`, `commit-msg`, and `post-commit`, with nested `content` / `executable` detail removed from text mode
+- Git hook health is summarized beneath the Repository domain; individual healthy hook paths are not rendered in compact text
 - required hook presence and executable permissions for `pre-commit`, `commit-msg`, and `post-commit` when repo-scoped checks apply (delegated to `HooksLifecycle::diagnose`)
 - byte-for-byte stale-content detection for required hook payloads against canonical embedded SCE-managed hook assets (delegated to `HooksLifecycle::diagnose`)
 - integration target resolution that reads `integrations.target` from repo-local `.sce/config.json` when present, or falls back to detecting repo-root `.opencode/`, `.claude/`, and `.pi/` directories when config has no `integrations` or `integrations.target`; only the resolved targets are inspected
-- repo-root installed OpenCode integration inventory for `OpenCode plugins`, `OpenCode agents`, `OpenCode commands`, and `OpenCode skills`, Claude integration inventory for `ClaudeCode plugins`, `ClaudeCode agents`, `ClaudeCode commands`, and `ClaudeCode skills`, plus Pi integration inventory for `Pi prompts` and `Pi skills`, scoped to the resolved targets
-- integration child-row reporting validates installed files against embedded SHA-256 content; missing files render as `[MISS]`, content mismatches render as `[FAIL]`, and any affected parent group renders as `[FAIL]`
+- repo-root installed OpenCode integration inventory for typed `Plugins`, `Agents`, `Commands`, and `Skills` areas, Claude inventory for the same four areas, plus Pi inventory for `Extensions`, `Prompts`, and `Skills`, all scoped to the resolved targets
+- integration groups are rendered beneath typed, target-scoped `Claude Code`, `OpenCode`, and `Pi` nodes in deterministic area order; healthy groups render one concise status row without listing installed files
 - OpenCode plugin inventory includes the installed manifest file plus plugin/preset artifacts as required presence-only files; Claude groups are derived from embedded `.claude` assets (`settings.json` and `hooks/**` under `ClaudeCode plugins`, including `.claude/hooks/run-sce-or-show-install-guidance.sh`, then `agents/**`, `commands/**`, and `skills/**`); Pi groups are derived from embedded `.pi` assets (`prompts/**` under `Pi prompts`, `skills/**` under `Pi skills`); generated `config/.opencode/**`, `config/.claude/**`, and `config/.pi/**` trees are not inspected by doctor
 - repair-mode delegation to `ServiceLifecycle::fix` implementations: `HooksLifecycle::fix` reuses `install_required_git_hooks` for missing hooks directories plus missing, stale, or non-executable required hooks, so repair restores the canonical all-hook non-blocking missing-`sce` guidance, available-CLI argument/failure propagation, and post-commit-only remote forwarding contract; `LocalDbLifecycle::fix`, `AuthDbLifecycle::fix`, and `AgentTraceDbLifecycle::fix` handle bootstrap of missing canonical SCE-owned DB parent directories
 
