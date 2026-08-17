@@ -1,4 +1,4 @@
-//! `sce trace sync` orchestration: resolves the current repository's Agent
+//! `sce sync` orchestration: resolves the current repository's Agent
 //! Trace storage, fetches authoritative control-plane cursors, then
 //! synchronizes each of the four independent capture streams in the fixed
 //! `messages -> parts -> diff_traces -> agent_traces` order.
@@ -126,7 +126,7 @@ impl SyncProgressSink for NoopSyncProgressSink {
     fn report(&mut self, _event: SyncProgressEvent) {}
 }
 
-/// Terminal failure of `sce trace sync`.
+/// Terminal failure of `sce sync`.
 #[derive(Debug)]
 pub enum TraceSyncError {
     /// Local repository/storage/config resolution failed.
@@ -154,7 +154,7 @@ impl std::error::Error for TraceSyncError {}
 
 /// Resolves the current repository's Agent Trace storage (the same
 /// `ContextWithRepoRoot`/`AgentTraceStorageContext`/`resolve_agent_trace_storage`
-/// path `sce trace status` uses) and control-plane configuration, then
+/// path used by the sync command) and control-plane configuration, then
 /// synchronizes all four capture streams.
 #[allow(dead_code)]
 pub fn run_current_sync(repo_root: &Path) -> Result<AgentTraceSyncReport, TraceSyncError> {
@@ -622,7 +622,7 @@ fn shared_runtime() -> Result<&'static Runtime, TraceSyncError> {
         .enable_io()
         .enable_time()
         .build()
-        .context("failed to create trace sync command runtime")
+        .context("failed to create sync command runtime")
         .map_err(|error| TraceSyncError::Runtime(format!("{error:#}")))?;
 
     Ok(SYNC_RUNTIME.get_or_init(|| runtime))

@@ -47,9 +47,11 @@ pub const COMPLETION_CLAP_ABOUT: &str = "Generate deterministic shell completion
 pub const COMPLETION_TOP_LEVEL_PURPOSE: &str = "Generate deterministic shell completion scripts";
 pub const COMPLETION_SHOW_IN_TOP_LEVEL_HELP: bool = true;
 
-pub const TRACE_CLAP_ABOUT: &str = "Inspect Agent Trace databases and recorded activity";
-pub const TRACE_TOP_LEVEL_PURPOSE: &str = "Inspect Agent Trace databases and recorded activity";
-pub const TRACE_SHOW_IN_TOP_LEVEL_HELP: bool = true;
+pub const SYNC_CLAP_ABOUT: &str =
+    "Synchronize the current repository's Agent Trace database with the control plane";
+pub const SYNC_TOP_LEVEL_PURPOSE: &str =
+    "Synchronize the current repository's Agent Trace database";
+pub const SYNC_SHOW_IN_TOP_LEVEL_HELP: bool = true;
 
 pub const TOP_LEVEL_COMMANDS: &[TopLevelCommandMetadata] = &[
     TopLevelCommandMetadata {
@@ -93,9 +95,9 @@ pub const TOP_LEVEL_COMMANDS: &[TopLevelCommandMetadata] = &[
         show_in_top_level_help: COMPLETION_SHOW_IN_TOP_LEVEL_HELP,
     },
     TopLevelCommandMetadata {
-        name: crate::services::trace::NAME,
-        purpose: TRACE_TOP_LEVEL_PURPOSE,
-        show_in_top_level_help: TRACE_SHOW_IN_TOP_LEVEL_HELP,
+        name: crate::services::sync::NAME,
+        purpose: SYNC_TOP_LEVEL_PURPOSE,
+        show_in_top_level_help: SYNC_SHOW_IN_TOP_LEVEL_HELP,
     },
 ];
 
@@ -230,51 +232,10 @@ pub enum Commands {
         shell: CompletionShell,
     },
 
-    #[command(about = TRACE_CLAP_ABOUT, hide = !TRACE_SHOW_IN_TOP_LEVEL_HELP)]
-    Trace {
-        #[command(subcommand)]
-        subcommand: TraceSubcommand,
-    },
-}
-
-#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
-pub enum TraceSubcommand {
-    #[command(about = "Inspect discovered Agent Trace databases")]
-    Db {
-        #[command(subcommand)]
-        subcommand: TraceDbSubcommand,
-    },
-
-    #[command(about = "Show Agent Trace activity for the current repository (or all with --all)")]
-    Status {
-        #[arg(long)]
-        all: bool,
-
-        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
-        format: OutputFormat,
-    },
-
-    #[command(
-        about = "Synchronize the current repository's Agent Trace database with the control plane"
-    )]
+    #[command(about = SYNC_CLAP_ABOUT, hide = !SYNC_SHOW_IN_TOP_LEVEL_HELP)]
     Sync {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
-    },
-}
-
-#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
-pub enum TraceDbSubcommand {
-    #[command(about = "List discovered Agent Trace databases with readiness")]
-    List {
-        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
-        format: OutputFormat,
-    },
-
-    #[command(about = "Open an embedded SQL shell for an Agent Trace database")]
-    Shell {
-        #[arg(value_name = "repository-id-or-alias")]
-        identifier: Option<String>,
     },
 }
 

@@ -139,7 +139,7 @@ impl fmt::Display for ControlPlaneError {
         match self {
             Self::MissingCredentials => write!(
                 f,
-                "No stored WorkOS credentials were found. Try: run 'sce auth login' before running 'sce trace sync'."
+                "No stored WorkOS credentials were found. Try: run 'sce auth login' before running 'sce sync'."
             ),
             Self::AuthenticationFailed(reason) => write!(
                 f,
@@ -285,7 +285,7 @@ impl AuthenticatedControlPlaneClient {
         let outcome = run_with_retry(
             policy,
             "agent_trace_sync.ingestion_state",
-            "check network connectivity and control-plane availability, then rerun 'sce trace sync'",
+            "check network connectivity and control-plane availability, then rerun 'sce sync'",
             |_attempt| {
                 let url = url.clone();
                 async move {

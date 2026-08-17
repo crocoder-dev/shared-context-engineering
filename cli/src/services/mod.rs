@@ -36,6 +36,6 @@ pub mod security;
 pub mod setup;
 pub mod structured_patch;
 pub mod style;
+pub mod sync;
 pub mod token_storage;
-pub mod trace;
 pub mod version;

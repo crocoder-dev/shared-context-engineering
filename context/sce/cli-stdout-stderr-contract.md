@@ -26,6 +26,6 @@ See also: `context/sce/cli-error-code-taxonomy.md` for the canonical error-code 
 - Stream routing is centralized in one app-level path to avoid per-command stream drift.
 - Exit code class mapping remains unchanged (`parse`, `validation`, `runtime`, `dependency`).
 - Observability lifecycle logs remain on `stderr` by contract and are independent from command payload output.
-- Text-mode `sce trace sync` emits deterministic live start, cumulative accepted-batch, and stream-completion progress lines on `stderr`; the start line carries a UTC RFC3339 timestamp before the first sync request, and a terminal end timestamp follows success or failure. Empty streams report no new rows. JSON-mode sync emits no progress or lifecycle timestamp text and keeps its existing JSON-only payload on `stdout`.
+- Text-mode `sce sync` emits deterministic live start, cumulative accepted-batch, and stream-completion progress lines on `stderr`; the start line carries a UTC RFC3339 timestamp before the first sync request, and a terminal end timestamp follows success or failure. Empty streams report no new rows. JSON-mode sync emits no progress or lifecycle timestamp text and keeps its JSON-only payload on `stdout`.
 
 The durable trace-sync stream choice is recorded in [Trace-sync progress stream contract](../decisions/2026-08-13-trace-sync-progress-stream-contract.md).
