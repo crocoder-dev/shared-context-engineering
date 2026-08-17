@@ -196,6 +196,7 @@ fn doctor_problem_from_health(problem: HealthProblem) -> DoctorProblem {
         summary: problem.summary,
         remediation: problem.remediation,
         next_action: problem.next_action,
+        scope: None,
     }
 }
 

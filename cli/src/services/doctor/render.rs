@@ -5,9 +5,10 @@ use crate::services::style::{heading, label, supports_color, value, OwoColorize}
 
 use super::types::{
     fix_result_outcome, problem_category, problem_fixability, problem_severity,
-    DoctorDisplayStatus, HookContentState, HookDoctorReport, HookFileHealth, HookPathSource,
-    IntegrationArea, IntegrationContentState, IntegrationGroupHealth, IntegrationTarget,
-    ProblemKind, ProblemSeverity, Readiness,
+    DoctorDisplayDetail, DoctorDisplayNode, DoctorDisplayNodeKind, DoctorDisplayStatus,
+    HookContentState, HookDoctorReport, HookFileHealth, HookPathSource, IntegrationArea,
+    IntegrationChildHealth, IntegrationContentState, IntegrationGroupHealth, IntegrationGroupKey,
+    IntegrationTarget, ProblemKind, ProblemSeverity, Readiness,
 };
 use super::{DoctorExecution, DoctorFormat, DoctorMode, DoctorRequest, NAME};
 
@@ -70,57 +71,62 @@ fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: boo
     });
 
     lines.push(format!("\n{}", heading("Environment")));
-    lines.push(format_human_text_row(
-        color_enabled,
-        2,
-        state_root_status(report),
-        "State",
-    ));
-    lines.push(format_human_text_row(
-        color_enabled,
-        2,
-        configuration_status(report),
-        "Configuration",
-    ));
-    lines.push(format_human_text_row(
-        color_enabled,
-        2,
-        repository_identity_status(report),
-        "Repository identity",
-    ));
+    for node in environment_nodes(report) {
+        render_display_node(&mut lines, &node, color_enabled, 2, true);
+    }
 
     lines.push(format!("\n{}", heading("Repository")));
-    lines.push(format_human_text_row(
+    render_display_node(
+        &mut lines,
+        &top_level_node(
+            "Git repository",
+            repository_root_status(report),
+            problem_details(report, |kind| {
+                matches!(
+                    kind,
+                    ProblemKind::GitUnavailable
+                        | ProblemKind::BareRepository
+                        | ProblemKind::NotInsideGitRepository
+                )
+            }),
+        ),
         color_enabled,
         2,
-        repository_root_status(report),
-        "Git repository",
-    ));
-    lines.push(format_human_text_row(
+        true,
+    );
+    render_display_node(
+        &mut lines,
+        &top_level_node(
+            "Git hooks",
+            git_hooks_status(report),
+            problem_details(report, is_git_hooks_problem),
+        ),
         color_enabled,
         2,
-        git_hooks_status(report),
-        "Git hooks",
-    ));
+        true,
+    );
 
     lines.push(format!("\n{}", heading("Integrations")));
     if report.integration_targets_absent {
-        lines.push(format_human_text_row(
+        render_display_node(
+            &mut lines,
+            &top_level_node(
+                NO_INTEGRATIONS_MESSAGE,
+                DoctorDisplayStatus::Fail,
+                problem_details(report, |kind| {
+                    matches!(kind, ProblemKind::NoIntegrationsInstalled)
+                }),
+            ),
             color_enabled,
             2,
-            DoctorDisplayStatus::Fail,
-            NO_INTEGRATIONS_MESSAGE,
-        ));
+            true,
+        );
     } else {
         for target in integration_targets_for_text(report) {
             lines.push(format!("  {}", integration_target_label(target)));
             for group in groups_for_target(report, target) {
-                lines.push(format_human_text_row(
-                    color_enabled,
-                    4,
-                    integration_group_status(&group, report),
-                    integration_area_label(group.key.area),
-                ));
+                let node = integration_group_node(&group, report);
+                render_display_node(&mut lines, &node, color_enabled, 4, true);
             }
         }
     }
@@ -146,6 +152,101 @@ fn format_human_text_row(
         " ".repeat(indent),
         value(&human_text_status_token(status, color_enabled)),
         value(name),
+    )
+}
+
+fn environment_nodes(report: &HookDoctorReport) -> Vec<DoctorDisplayNode> {
+    vec![
+        top_level_node(
+            "State",
+            state_root_status(report),
+            problem_details(report, |kind| {
+                matches!(kind, ProblemKind::UnableToResolveStateRoot)
+            }),
+        ),
+        top_level_node(
+            "Configuration",
+            configuration_status(report),
+            problem_details(report, |kind| {
+                matches!(
+                    kind,
+                    ProblemKind::GlobalConfigValidationFailed
+                        | ProblemKind::UnableToResolveGlobalConfigPath
+                        | ProblemKind::LocalConfigValidationFailed
+                        | ProblemKind::AgentTraceDbConnectionFailed
+                        | ProblemKind::AgentTraceDbSchemaNotReady
+                )
+            }),
+        ),
+        top_level_node(
+            "Repository identity",
+            repository_identity_status(report),
+            problem_details(report, |kind| {
+                matches!(
+                    kind,
+                    ProblemKind::UnableToResolveStateRoot
+                        | ProblemKind::AgentTraceDbConnectionFailed
+                        | ProblemKind::AgentTraceDbSchemaNotReady
+                )
+            }),
+        ),
+    ]
+}
+
+fn top_level_node(
+    label: &str,
+    status: DoctorDisplayStatus,
+    details: Vec<DoctorDisplayDetail>,
+) -> DoctorDisplayNode {
+    DoctorDisplayNode::branch_with_status(
+        DoctorDisplayNodeKind::Domain,
+        label,
+        status,
+        details,
+        Vec::new(),
+    )
+}
+
+fn problem_details<F>(report: &HookDoctorReport, matches: F) -> Vec<DoctorDisplayDetail>
+where
+    F: Fn(ProblemKind) -> bool,
+{
+    report
+        .problems
+        .iter()
+        .filter(|problem| problem.scope.is_none() && matches(problem.kind))
+        .map(|problem| DoctorDisplayDetail::Problem {
+            summary: problem.summary.clone(),
+            remediation: problem.remediation.clone(),
+        })
+        .collect()
+}
+
+fn scoped_problem_details(
+    report: &HookDoctorReport,
+    scope: IntegrationGroupKey,
+) -> Vec<DoctorDisplayDetail> {
+    report
+        .problems
+        .iter()
+        .filter(|problem| problem.scope == Some(scope))
+        .map(|problem| DoctorDisplayDetail::Problem {
+            summary: problem.summary.clone(),
+            remediation: problem.remediation.clone(),
+        })
+        .collect()
+}
+
+fn is_git_hooks_problem(kind: ProblemKind) -> bool {
+    matches!(
+        kind,
+        ProblemKind::HooksDirectoryMissing
+            | ProblemKind::HooksPathNotDirectory
+            | ProblemKind::UnableToResolveGitHooksDirectory
+            | ProblemKind::RequiredHookMissing
+            | ProblemKind::HookNotExecutable
+            | ProblemKind::HookContentStale
+            | ProblemKind::HookReadFailed
     )
 }
 
@@ -189,9 +290,14 @@ where
 }
 
 fn state_root_status(report: &HookDoctorReport) -> DoctorDisplayStatus {
-    status_for_problems(report, |kind| {
+    let status = status_for_problems(report, |kind| {
         matches!(kind, ProblemKind::UnableToResolveStateRoot)
-    })
+    });
+    if report.state_root.is_none() {
+        status.worst(DoctorDisplayStatus::Miss)
+    } else {
+        status
+    }
 }
 
 fn configuration_status(report: &HookDoctorReport) -> DoctorDisplayStatus {
@@ -296,20 +402,155 @@ fn integration_group_status(
                 | IntegrationContentState::ReadFailed(_) => DoctorDisplayStatus::Fail,
             })
         });
-    let problem_status = if group.key.target == IntegrationTarget::OpenCode
-        && group.key.area == IntegrationArea::Plugins
-    {
-        status_for_problems(report, |kind| {
-            matches!(
-                kind,
-                ProblemKind::OpenCodePluginRegistryInvalid
-                    | ProblemKind::OpenCodeAssetMissingOrInvalid
-            )
-        })
-    } else {
-        DoctorDisplayStatus::Pass
-    };
+    let problem_status = report
+        .problems
+        .iter()
+        .filter(|problem| problem.scope == Some(group.key))
+        .fold(DoctorDisplayStatus::Pass, |status, problem| {
+            status.worst(match problem.severity {
+                ProblemSeverity::Error => DoctorDisplayStatus::Fail,
+                ProblemSeverity::Warning => DoctorDisplayStatus::Warn,
+            })
+        });
     child_status.worst(problem_status)
+}
+
+fn integration_group_node(
+    group: &IntegrationGroupHealth,
+    report: &HookDoctorReport,
+) -> DoctorDisplayNode {
+    let children = integration_asset_nodes(group);
+    let status = integration_group_status(group, report);
+    DoctorDisplayNode::branch_with_status(
+        DoctorDisplayNodeKind::Group,
+        integration_area_label(group.key.area),
+        status,
+        scoped_problem_details(report, group.key),
+        children,
+    )
+}
+
+fn integration_asset_nodes(group: &IntegrationGroupHealth) -> Vec<DoctorDisplayNode> {
+    let mut nodes = Vec::new();
+    for child in &group.children {
+        let components = asset_path_components(group.key.area, &child.relative_path);
+        let components = if components.is_empty() {
+            vec![child.relative_path.clone()]
+        } else {
+            components
+        };
+        insert_asset_node(&mut nodes, &components, child);
+    }
+    nodes
+}
+
+fn asset_path_components(area: IntegrationArea, relative_path: &str) -> Vec<String> {
+    let mut components = std::path::Path::new(relative_path)
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let expected_prefix = match area {
+        IntegrationArea::Plugins => Some("plugins"),
+        IntegrationArea::Agents => Some("agents"),
+        IntegrationArea::Commands => Some("commands"),
+        IntegrationArea::Skills => Some("skills"),
+        IntegrationArea::Prompts => Some("prompts"),
+        IntegrationArea::Extensions => Some("extensions"),
+    };
+    if expected_prefix.is_some_and(|prefix| components.first().is_some_and(|first| first == prefix))
+    {
+        components.remove(0);
+    }
+    components
+}
+
+fn insert_asset_node(
+    nodes: &mut Vec<DoctorDisplayNode>,
+    components: &[String],
+    child: &IntegrationChildHealth,
+) {
+    let label = components[0].clone();
+    if components.len() == 1 {
+        let mut node = child.display_node();
+        node.label = label;
+        nodes.push(node);
+        return;
+    }
+
+    let index = nodes
+        .iter()
+        .position(|node| node.label == label)
+        .unwrap_or_else(|| {
+            nodes.push(DoctorDisplayNode::branch_with_status(
+                DoctorDisplayNodeKind::Asset,
+                label,
+                DoctorDisplayStatus::Pass,
+                Vec::new(),
+                Vec::new(),
+            ));
+            nodes.len() - 1
+        });
+    insert_asset_node(&mut nodes[index].children, &components[1..], child);
+    nodes[index].status = nodes[index]
+        .children
+        .iter()
+        .fold(DoctorDisplayStatus::Pass, |status, child| {
+            status.worst(child.status)
+        });
+}
+
+fn render_display_node(
+    lines: &mut Vec<String>,
+    node: &DoctorDisplayNode,
+    color_enabled: bool,
+    indent: usize,
+    expand_unhealthy: bool,
+) {
+    lines.push(format_human_text_row(
+        color_enabled,
+        indent,
+        node.status,
+        &node.label,
+    ));
+    if !expand_unhealthy || node.status == DoctorDisplayStatus::Pass {
+        return;
+    }
+
+    for detail in &node.details {
+        render_display_detail(lines, detail, indent + 2);
+    }
+    for child in &node.children {
+        render_display_node(lines, child, color_enabled, indent + 2, true);
+    }
+}
+
+fn render_display_detail(lines: &mut Vec<String>, detail: &DoctorDisplayDetail, indent: usize) {
+    let prefix = " ".repeat(indent);
+    match detail {
+        DoctorDisplayDetail::MissingPath(path) => {
+            lines.push(format!("{prefix}Missing: {}", path.display()));
+        }
+        DoctorDisplayDetail::ContentMismatch { path } => {
+            lines.push(format!("{prefix}Path: {}", path.display()));
+            lines.push(format!(
+                "{prefix}Content mismatch: canonical content differs."
+            ));
+        }
+        DoctorDisplayDetail::ReadFailed { path, error } => {
+            lines.push(format!("{prefix}Path: {}", path.display()));
+            lines.push(format!("{prefix}Read error: {error}"));
+        }
+        DoctorDisplayDetail::Problem {
+            summary,
+            remediation,
+        } => {
+            lines.push(format!("{prefix}Problem: {summary}"));
+            lines.push(format!("{prefix}Remediation: {remediation}"));
+        }
+    }
 }
 
 fn integration_targets_for_text(report: &HookDoctorReport) -> Vec<IntegrationTarget> {

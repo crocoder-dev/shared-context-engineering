@@ -230,6 +230,7 @@ fn collect_agent_trace_db_health(
                 summary: problem.summary.clone(),
                 remediation: problem.remediation.clone(),
                 next_action: problem.next_action,
+                scope: None,
             });
             continue;
         }
@@ -357,6 +358,7 @@ fn inspect_repository_hooks(
             summary: String::from("Git is not available on this machine."),
             remediation: String::from("Install an accessible 'git' binary and ensure it is on PATH before rerunning 'sce doctor'."),
             next_action: "manual_steps",
+            scope: None,
         });
         return Vec::new();
     }
@@ -372,6 +374,7 @@ fn inspect_repository_hooks(
             ),
             remediation: String::from("Run 'sce doctor' from a non-bare working tree clone to inspect repo-scoped SCE hook health."),
             next_action: "manual_steps",
+            scope: None,
         });
         return Vec::new();
     }
@@ -385,6 +388,7 @@ fn inspect_repository_hooks(
             summary: String::from("The current directory is not inside a git repository."),
             remediation: String::from("Run 'sce doctor' from inside the target repository working tree to inspect repo-scoped SCE hook health."),
             next_action: "manual_steps",
+            scope: None,
         });
         return Vec::new();
     }
@@ -402,6 +406,7 @@ fn inspect_repository_hooks(
         summary: String::from("Unable to resolve git hooks directory."),
         remediation: String::from("Verify that git repository inspection succeeds and rerun 'sce doctor' inside a non-bare git repository."),
         next_action: "manual_steps",
+        scope: None,
     });
     Vec::new()
 }
@@ -488,6 +493,7 @@ fn inspect_repository_integrations(
                 "Run 'sce setup --opencode', 'sce setup --claude', 'sce setup --pi', or 'sce setup --all' to install integration assets.",
             ),
             next_action: "manual_steps",
+            scope: None,
         });
         return Vec::new();
     }
@@ -625,6 +631,7 @@ fn collect_global_state_health(
             summary: format!("Unable to resolve expected state root: {error}"),
             remediation: String::from("Verify that the current platform exposes a writable SCE state directory before rerunning 'sce doctor'."),
             next_action: "manual_steps",
+            scope: None,
         }),
     }
 
@@ -646,6 +653,7 @@ fn collect_global_state_health(
                             global_path.display()
                         ),
                         next_action: "manual_steps",
+                        scope: None,
                     });
                 }
             }
@@ -663,6 +671,7 @@ fn collect_global_state_health(
             summary: format!("Unable to resolve expected global config path: {error}"),
             remediation: String::from("Verify that the current platform exposes a writable SCE config directory before rerunning 'sce doctor'."),
             next_action: "manual_steps",
+            scope: None,
         }),
     }
 
@@ -683,6 +692,7 @@ fn collect_global_state_health(
                     local_path.display()
                 ),
                 next_action: "manual_steps",
+                scope: None,
             });
         }
     }
@@ -716,6 +726,7 @@ fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> V
                 directory.display()
             ),
             next_action: "doctor_fix",
+            scope: None,
         });
     } else if !directory.is_dir() {
         problems.push(DoctorProblem {
@@ -729,6 +740,7 @@ fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> V
                 directory.display()
             ),
             next_action: "manual_steps",
+            scope: None,
         });
     }
 
@@ -758,6 +770,7 @@ fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> V
                         "Run 'sce doctor --fix' to install the canonical '{hook_name}' hook, or run 'sce setup --hooks' directly."
                     ),
                     next_action: "doctor_fix",
+                    scope: None,
                 });
             } else if !executable {
                 problems.push(DoctorProblem {
@@ -771,6 +784,7 @@ fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> V
                         hook_path.display()
                     ),
                     next_action: "doctor_fix",
+                    scope: None,
                 });
             }
 
@@ -789,6 +803,7 @@ fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> V
                         "Run 'sce doctor --fix' to reinstall the canonical '{hook_name}' hook content, or run 'sce setup --hooks' directly."
                     ),
                     next_action: "doctor_fix",
+                    scope: None,
                 });
             }
 
@@ -868,6 +883,7 @@ fn push_opencode_integration_missing_problems(
                 group.display_label().to_ascii_lowercase()
             ),
             next_action: "manual_steps",
+            scope: Some(group.key),
         });
     }
 }
@@ -905,6 +921,7 @@ fn push_opencode_integration_mismatch_problems(
                 group.display_label().to_ascii_lowercase()
             ),
             next_action: "manual_steps",
+            scope: Some(group.key),
         });
     }
 }
@@ -933,6 +950,7 @@ fn push_opencode_integration_read_fail_problems(
                     child.path.display()
                 ),
                 next_action: "manual_steps",
+                scope: Some(group.key),
             });
         }
     }
@@ -971,6 +989,7 @@ fn push_claude_integration_missing_problems(
                 group.display_label().to_ascii_lowercase()
             ),
             next_action: "manual_steps",
+            scope: Some(group.key),
         });
     }
 }
@@ -1008,6 +1027,7 @@ fn push_claude_integration_mismatch_problems(
                 group.display_label().to_ascii_lowercase()
             ),
             next_action: "manual_steps",
+            scope: Some(group.key),
         });
     }
 }
@@ -1036,6 +1056,7 @@ fn push_claude_integration_read_fail_problems(
                     child.path.display()
                 ),
                 next_action: "manual_steps",
+                scope: Some(group.key),
             });
         }
     }
@@ -1074,6 +1095,7 @@ fn push_pi_integration_missing_problems(
                 group.display_label().to_ascii_lowercase()
             ),
             next_action: "manual_steps",
+            scope: Some(group.key),
         });
     }
 }
@@ -1111,6 +1133,7 @@ fn push_pi_integration_mismatch_problems(
                 group.display_label().to_ascii_lowercase()
             ),
             next_action: "manual_steps",
+            scope: Some(group.key),
         });
     }
 }
@@ -1139,6 +1162,7 @@ fn push_pi_integration_read_fail_problems(
                     child.path.display()
                 ),
                 next_action: "manual_steps",
+                scope: Some(group.key),
             });
         }
     }
@@ -1180,6 +1204,10 @@ fn inspect_opencode_plugin_registry_health(
             manifest_path.display()
         ),
         next_action: "manual_steps",
+        scope: Some(IntegrationGroupKey::new(
+            IntegrationTarget::OpenCode,
+            IntegrationArea::Plugins,
+        )),
     });
 }
 
@@ -1230,6 +1258,10 @@ fn inspect_opencode_asset_presence(
             asset_path.display()
         ),
         next_action: "manual_steps",
+        scope: Some(IntegrationGroupKey::new(
+            IntegrationTarget::OpenCode,
+            IntegrationArea::Plugins,
+        )),
     });
 }
 
@@ -1595,6 +1627,7 @@ fn inspect_hook_content_state(
                     hook_path.display()
                 ),
                 next_action: "manual_steps",
+                scope: None,
             });
             HookContentState::Unknown
         }
