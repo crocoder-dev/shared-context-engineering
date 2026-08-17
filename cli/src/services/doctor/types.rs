@@ -152,7 +152,22 @@ impl IntegrationGroupHealth {
             .iter()
             .map(IntegrationChildHealth::display_node)
             .collect::<Vec<_>>();
-        DoctorDisplayNode::group(self.display_label(), children)
+        let status = children
+            .iter()
+            .fold(DoctorDisplayStatus::Pass, |status, child| {
+                status.worst(if child.status == DoctorDisplayStatus::Miss {
+                    DoctorDisplayStatus::Fail
+                } else {
+                    child.status
+                })
+            });
+        DoctorDisplayNode::branch_with_status(
+            DoctorDisplayNodeKind::Group,
+            self.display_label(),
+            status,
+            Vec::new(),
+            children,
+        )
     }
 }
 
@@ -196,8 +211,17 @@ impl DoctorDisplayStatus {
 #[allow(dead_code)]
 pub(super) enum DoctorDisplayDetail {
     MissingPath(PathBuf),
-    ContentMismatch { path: PathBuf },
-    ReadFailed { path: PathBuf, error: String },
+    ContentMismatch {
+        path: PathBuf,
+    },
+    ReadFailed {
+        path: PathBuf,
+        error: String,
+    },
+    Problem {
+        summary: String,
+        remediation: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -214,7 +238,7 @@ pub(super) struct DoctorDisplayNode {
     pub(super) kind: DoctorDisplayNodeKind,
     pub(super) label: String,
     pub(super) status: DoctorDisplayStatus,
-    pub(super) detail: Option<DoctorDisplayDetail>,
+    pub(super) details: Vec<DoctorDisplayDetail>,
     pub(super) children: Vec<DoctorDisplayNode>,
 }
 
@@ -239,23 +263,41 @@ impl DoctorDisplayNode {
             kind: DoctorDisplayNodeKind::Asset,
             label: label.into(),
             status,
-            detail,
+            details: detail.into_iter().collect(),
             children: Vec::new(),
         }
     }
 
     #[allow(dead_code)]
     fn branch(kind: DoctorDisplayNodeKind, label: impl Into<String>, children: Vec<Self>) -> Self {
-        let status = children
-            .iter()
-            .fold(DoctorDisplayStatus::Pass, |status, child| {
-                status.worst(child.status)
-            });
+        Self::branch_with_status(kind, label, DoctorDisplayStatus::Pass, Vec::new(), children)
+    }
+
+    pub(super) fn branch_with_status(
+        kind: DoctorDisplayNodeKind,
+        label: impl Into<String>,
+        status: DoctorDisplayStatus,
+        details: Vec<DoctorDisplayDetail>,
+        children: Vec<Self>,
+    ) -> Self {
+        let status = children.iter().fold(status, |status, child| {
+            status.worst(
+                if matches!(
+                    kind,
+                    DoctorDisplayNodeKind::Domain | DoctorDisplayNodeKind::Group
+                ) && child.status == DoctorDisplayStatus::Miss
+                {
+                    DoctorDisplayStatus::Fail
+                } else {
+                    child.status
+                },
+            )
+        });
         Self {
             kind,
             label: label.into(),
             status,
-            detail: None,
+            details,
             children,
         }
     }
@@ -358,6 +400,7 @@ pub(crate) struct DoctorProblem {
     pub(crate) summary: String,
     pub(crate) remediation: String,
     pub(crate) next_action: &'static str,
+    pub(super) scope: Option<IntegrationGroupKey>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

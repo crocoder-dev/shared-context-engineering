@@ -34,7 +34,7 @@ The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor comm
 - default global/local config-file location reporting, plus validation of existing global and repo-local `sce/config.json` readability and schema compliance (delegated to `ConfigLifecycle::diagnose`)
 - startup config resolution no longer blocks doctor on invalid default-discovered config files; doctor reaches its own config-validation path, reports those files as problems, and keeps invalid-config remediation manual-only
 - local DB location reporting, DB parent-directory readiness checks, and existing-DB health validation (delegated to `LocalDbLifecycle::diagnose`)
-- local DB reporting plus checkout-aware Agent Trace DB reporting in default doctor output
+- local DB reporting plus checkout-aware Agent Trace DB diagnostics; healthy identity and path metadata stay in JSON while human text summarizes them under `Environment` → `Repository identity`
 - explicit git-unavailable, outside-repo, and bare-repo repository-targeting failures
 - effective hook-path source (`default`, local `core.hooksPath`, global `core.hooksPath`)
 - repository root and hooks directory resolution when a repository target is detected
@@ -49,7 +49,7 @@ The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor comm
 
 ## Approved human text-mode contract
 
-The implemented human-facing `sce doctor` text contract is split into `context/sce/doctor-human-text-contract.md`.
+The implemented human-facing `sce doctor` text contract is split into `context/sce/doctor-human-text-contract.md`, which is the single source of truth for section order, healthy-row suppression, status aggregation, and unhealthy-branch expansion.
 
 ## Command surface contract
 
@@ -128,7 +128,7 @@ The broadened contract for `sce doctor` must cover the following problem invento
 - local DB and repository-scoped Agent Trace DB parent directories are missing or not writable
 - local DB and repository-scoped Agent Trace DB bootstrap or health is broken
 - Agent Trace DB file exists but cannot be opened (connection failure) or has incomplete schema (missing/unapplied migrations) — reported as `AgentTraceDbConnectionFailed` / `AgentTraceDbSchemaNotReady` with manual-only remediation directing to `sce setup`
-- Agent Trace checkout ID plus repository-scoped DB path/health are reported in `Configuration` section output when available; repository DB rows include repository ID, identity source, safe canonical identity, configured remote name, and never raw remote URLs
+- Agent Trace checkout ID plus repository-scoped DB path/health remain in the complete report and JSON; human text summarizes them under `Environment` → `Repository identity` without exposing healthy identity metadata. Repository DB records include repository ID, identity source, safe canonical identity, configured remote name, and never raw remote URLs
 
 ### Repository targeting and git readiness
 

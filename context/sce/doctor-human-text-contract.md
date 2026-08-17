@@ -34,6 +34,10 @@ Healthy rows contain only their status and display label. They do not expose
 absolute paths, UUIDs, repository IDs, hashes, canonical identities, configured
 remote names, or individual integration asset paths.
 
+This redaction is presentation-only: diagnosis still performs the complete
+read-only inspection, and `--format json` remains the full-detail route for
+paths, identities, problem records, and fix results.
+
 ## Integration hierarchy
 
 Integration checks remain target-scoped. The doctor resolves targets using this
