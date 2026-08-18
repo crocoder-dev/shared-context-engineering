@@ -55,8 +55,10 @@ impl AgentTraceExportRow for AgentTraceAgentTraceExportRow {
 /// Result of one batch-ingest attempt, as classified by the caller-supplied
 /// ingest closure. `Conflict` and `Ambiguous` carry no data: reconciliation
 /// always re-derives truth from a fresh `/state` call rather than trusting
-/// anything about the failed attempt itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// anything about the failed attempt itself. `Terminal` is different: the
+/// attempt is known to have failed in a way that cannot be resolved by
+/// `/state`, so the stream stops without invoking its refresh closure.
+#[derive(Debug, PartialEq, Eq)]
 pub enum BatchAttemptOutcome {
     /// The batch was accepted. `accepted` and `cursor` are the server
     /// response's own fields, validated by the engine before the stream
@@ -67,6 +69,9 @@ pub enum BatchAttemptOutcome {
     /// The batch outcome could not be determined (`5xx`, a transport
     /// failure, or an invalid response).
     Ambiguous,
+    /// The batch failed with a terminal control-plane error. The string is
+    /// already safe to surface as a stream error and is never reconciled.
+    Terminal(String),
 }
 
 /// Terminal failure of [`sync_stream`].
@@ -80,6 +85,9 @@ pub enum StreamSyncError {
     /// that were sent (`accepted != rows.len()` or
     /// `cursor != rows.last().source_row_id()`).
     InvalidResponse(String),
+    /// The batch failed with a terminal control-plane error. Unlike
+    /// [`Self::Refresh`], this does not represent a failed `/state` call.
+    Terminal(String),
     /// The reconciliation loop exceeded [`RECONCILIATION_MAX_ATTEMPTS`]
     /// without converging.
     DidNotConverge,
@@ -93,6 +101,7 @@ impl fmt::Display for StreamSyncError {
             Self::InvalidResponse(reason) => {
                 write!(f, "control-plane batch response did not match the sent rows: {reason}")
             }
+            Self::Terminal(reason) => write!(f, "terminal control-plane failure: {reason}"),
             Self::DidNotConverge => write!(
                 f,
                 "stream did not converge after {RECONCILIATION_MAX_ATTEMPTS} reconciliation attempts"
@@ -122,7 +131,8 @@ pub struct StreamSyncOutcome {
 /// On `Conflict` or `Ambiguous`, calls `refresh_cursor` and resumes from the
 /// refreshed value: if it advanced, the next read naturally skips the
 /// already-accepted rows; if unchanged, the same rows are re-read and
-/// resent. Both cases share one bounded reconciliation counter.
+/// resent. Both cases share one bounded reconciliation counter. A `Terminal`
+/// outcome stops immediately without calling `refresh_cursor`.
 pub type SyncFuture<'a, Output> = Pin<Box<dyn Future<Output = Output> + 'a>>;
 
 pub async fn sync_stream<'a, T, ReadFn, IngestFn, RefreshFn>(
@@ -170,6 +180,9 @@ where
                 uploaded += rows.len();
                 batches += 1;
                 reconciliation_attempts = 0;
+            }
+            BatchAttemptOutcome::Terminal(reason) => {
+                return Err(StreamSyncError::Terminal(reason));
             }
             BatchAttemptOutcome::Conflict | BatchAttemptOutcome::Ambiguous => {
                 reconciliation_attempts += 1;
@@ -412,6 +425,32 @@ mod tests {
         assert_eq!(attempts.into_inner(), vec![vec![1, 2, 3]]);
         assert_eq!(outcome.uploaded, 0);
         assert_eq!(outcome.final_cursor, 3);
+    }
+
+    #[test]
+    fn terminal_failure_does_not_call_refresh() {
+        let local = FakeLocalRows::new(3);
+        let refresh_calls = RefCell::new(0usize);
+        let result = block_on(sync_stream(
+            0,
+            500,
+            |cursor, limit| ready(Ok(local.after(cursor, limit))),
+            |_cursor, _rows: &[AgentTraceMessageExportRow]| {
+                ready(BatchAttemptOutcome::Terminal(
+                    "batch route is not supported".to_string(),
+                ))
+            },
+            || {
+                *refresh_calls.borrow_mut() += 1;
+                ready(Ok(0))
+            },
+        ));
+
+        assert!(matches!(
+            result,
+            Err(StreamSyncError::Terminal(reason)) if reason == "batch route is not supported"
+        ));
+        assert_eq!(*refresh_calls.borrow(), 0);
     }
 
     #[test]

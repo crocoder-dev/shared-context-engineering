@@ -434,10 +434,10 @@ where
 }
 
 /// Synchronizes one stream via the T04 engine. Genuine `409`/`5xx`/transport
-/// ambiguity reconciles through a real `/state` refetch; a terminal
-/// control-plane failure (missing/invalid auth, `400`, `403`) short-circuits
-/// the reconciliation closure with that failure instead of issuing another
-/// network call, so a `403` never mutates local state or retries.
+/// ambiguity, including an undecodable successful batch body, reconciles
+/// through a real `/state` refetch. A terminal control-plane failure
+/// (missing/invalid auth, `400`, `403`, or a protocol mismatch such as `404`)
+/// stops the stream immediately without issuing another `/state` request.
 #[allow(clippy::too_many_arguments)]
 async fn sync_one_stream<'a, T, ReadFn, IngestFn, S>(
     client: &'a AuthenticatedControlPlaneClient,
@@ -460,7 +460,6 @@ where
             -> SyncFuture<'a, Result<AgentTraceIngestionBatchResponse, ControlPlaneError>>
         + 'a,
 {
-    let terminal: Rc<RefCell<Option<ControlPlaneError>>> = Rc::new(RefCell::new(None));
     let uploaded = Rc::new(RefCell::new(0usize));
 
     let outcome = sync_stream(
@@ -472,7 +471,6 @@ where
             Box::pin(std::future::ready(result))
         },
         |cursor, rows: &[T]| {
-            let terminal = Rc::clone(&terminal);
             let uploaded = Rc::clone(&uploaded);
             let row_count = rows.len();
             let last_row_id = rows
@@ -509,20 +507,13 @@ where
                     }
                     Err(ControlPlaneError::Conflict(_)) => BatchAttemptOutcome::Conflict,
                     Err(error) if is_stream_terminal(&error) => {
-                        *terminal.borrow_mut() = Some(error);
-                        BatchAttemptOutcome::Ambiguous
+                        BatchAttemptOutcome::Terminal(error.to_string())
                     }
                     Err(_) => BatchAttemptOutcome::Ambiguous,
                 }
             })
         },
         || {
-            if let Some(error) = terminal.borrow_mut().take() {
-                return Box::pin(std::future::ready(Err(StreamSyncError::Refresh(
-                    error.to_string(),
-                ))));
-            }
-
             let state_request = AgentTraceIngestionStateRequest {
                 repository_id: repository_id.to_string(),
                 source_instance_id: source_instance_id.to_string(),
