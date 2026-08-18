@@ -8,11 +8,8 @@ use crate::services::style;
 use crate::services::sync::sync::{AgentTraceSyncReport, StreamSyncReport};
 use crate::services::sync::NAME;
 
-const HEADING: &str = "Agent Trace sync complete.";
-
-const COL_STREAM: &str = "Stream";
-const COL_UPLOADED: &str = "Uploaded";
-const COL_FINAL_CURSOR: &str = "Final cursor";
+const COMPLETE_HEADING: &str = "Agent Trace sync complete.";
+const ALREADY_SYNCED_HEADING: &str = "Agent Trace already synced.";
 
 pub fn render(report: &AgentTraceSyncReport, format: OutputFormat) -> Result<String> {
     match format {
@@ -22,62 +19,25 @@ pub fn render(report: &AgentTraceSyncReport, format: OutputFormat) -> Result<Str
 }
 
 fn render_text(report: &AgentTraceSyncReport) -> String {
-    let mut lines = vec![style::heading(HEADING)];
-    lines.push(format!("Repository ID: {}", report.repository_id));
-    lines.push(format!("Source instance ID: {}", report.source_instance_id));
-    lines.push(String::new());
-
-    let headers = [COL_STREAM, COL_UPLOADED, COL_FINAL_CURSOR];
-    let rows: [[String; 3]; 4] = [
-        format_row("messages", &report.streams.messages),
-        format_row("parts", &report.streams.parts),
-        format_row("diff_traces", &report.streams.diff_traces),
-        format_row("agent_traces", &report.streams.agent_traces),
+    let uploaded = [
+        report.streams.messages.uploaded,
+        report.streams.parts.uploaded,
+        report.streams.diff_traces.uploaded,
+        report.streams.agent_traces.uploaded,
     ];
+    let heading = if uploaded.iter().all(|count| *count == 0) {
+        ALREADY_SYNCED_HEADING
+    } else {
+        COMPLETE_HEADING
+    };
 
-    let widths: Vec<usize> = (0..headers.len())
-        .map(|col| {
-            rows.iter()
-                .map(|row| row[col].len())
-                .max()
-                .unwrap_or(0)
-                .max(headers[col].len())
-        })
-        .collect();
-
-    lines.push(join_row(&headers.map(str::to_string), &widths));
-    for row in &rows {
-        lines.push(join_row(row, &widths));
-    }
-
-    lines.join("\n")
-}
-
-fn join_row<const N: usize>(cells: &[String; N], widths: &[usize]) -> String {
-    cells
-        .iter()
-        .enumerate()
-        .map(|(i, cell)| format!("{cell:<width$}", width = widths[i]))
-        .collect::<Vec<_>>()
-        .join("  ")
-        .trim_end()
-        .to_string()
-}
-
-fn format_row(name: &str, stream: &StreamSyncReport) -> [String; 3] {
-    [
-        name.to_string(),
-        stream.uploaded.to_string(),
-        stream.final_cursor.to_string(),
-    ]
+    style::heading(heading)
 }
 
 fn render_json(report: &AgentTraceSyncReport) -> Result<String> {
     let payload = json!({
         "status": "ok",
         "command": NAME,
-        "repositoryId": report.repository_id,
-        "sourceInstanceId": report.source_instance_id,
         "streams": {
             "messages": stream_json(&report.streams.messages),
             "parts": stream_json(&report.streams.parts),
@@ -136,39 +96,14 @@ mod tests {
     }
 
     #[test]
-    fn text_renders_concise_per_stream_layout_without_batches() {
-        let rendered = render_text(&sample_report());
-        assert!(rendered.contains("Agent Trace sync complete."));
-        assert!(rendered.contains("Repository ID: repo-123"));
-        assert!(rendered.contains("Source instance ID: source-abc"));
-        assert!(rendered.contains("messages"));
-        assert!(rendered.contains("parts"));
-        assert!(rendered.contains("diff_traces"));
-        assert!(rendered.contains("agent_traces"));
-        // Concise: no per-batch or per-row detail is printed.
-        assert!(!rendered.contains("batch"));
-    }
-
-    #[test]
-    fn text_row_values_match_uploaded_and_final_cursor() {
-        let rendered = render_text(&sample_report());
-        let messages_line = rendered
-            .lines()
-            .find(|line| line.trim_start().starts_with("messages"))
-            .expect("messages row present");
-        assert!(messages_line.contains('3'));
-        assert!(messages_line.contains("13"));
-    }
-
-    #[test]
     fn json_shape_matches_contract() {
         let payload = render_json(&sample_report()).expect("json render");
         let value: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
         assert_eq!(value["status"], "ok");
         assert_eq!(value["command"], "sync");
         assert!(value.get("subcommand").is_none());
-        assert_eq!(value["repositoryId"], "repo-123");
-        assert_eq!(value["sourceInstanceId"], "source-abc");
+        assert!(value.get("repositoryId").is_none());
+        assert!(value.get("sourceInstanceId").is_none());
 
         let messages = &value["streams"]["messages"];
         assert_eq!(messages["uploaded"], 3);

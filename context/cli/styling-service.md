@@ -5,7 +5,6 @@ The CLI styling service in `cli/src/services/style.rs` provides deterministic te
 ## Dependencies
 
 - `owo-colors` - Color styling with automatic TTY detection
-- `comfy-table` - Table rendering for tabular output
 
 ## API
 
@@ -14,15 +13,11 @@ The CLI styling service in `cli/src/services/style.rs` provides deterministic te
 - `supports_color() -> bool` - Returns `true` if stdout is a TTY and `NO_COLOR` is not set
 - `supports_color_stderr() -> bool` - Returns `true` if stderr is a TTY and `NO_COLOR` is not set
 
-### Table Rendering
-
-- `table() -> Table` - Creates a new `comfy_table::Table` instance for tabular output
-- `create_table(headers: &[&str]) -> Table` - Creates a styled table with compact preset (no borders), applies cyan/bold header styling when color is enabled, and returns a table ready for row additions
-
 ### Conditional Styling
 
 - `style_if_enabled<F>(text: &str, f: F) -> String` - Applies styling function only when colors are enabled
 - `style_if_enabled_stderr<F>(text: &str, f: F) -> String` - Applies styling function only when stderr colors are enabled
+- `success_with_stderr_color_policy(text: &str, color_enabled: bool) -> String` - Internal helper for applying the shared green/bold stderr success policy when a caller already resolved the color decision
 
 ### Help Output Styling
 
@@ -61,15 +56,27 @@ The CLI styling service in `cli/src/services/style.rs` provides deterministic te
 - Error diagnostics use `supports_color_stderr()` for stderr TTY detection
 - Top-level app diagnostics and observability log-file write failures both render through the shared stderr styling helpers when stderr color is enabled.
 
+## Sync progress styling
+
+The sync-owned `cli/src/services/sync/progress.rs` presentation consumer keeps human progress on
+`stderr` and uses `supports_color_stderr()` plus `NO_COLOR` for its completion
+marker. The presentation adapter owns the `indicatif` multi-progress rows;
+this service owns the shared green/bold completion-marker policy through
+`success_with_stderr_color_policy(...)`. Spinner rows use plain text when
+stderr is redirected or color is disabled; non-TTY snapshots never emit ANSI
+or terminal-control sequences. JSON output remains silent on the
+human-progress channel.
+The generic reporter contract and its no-op implementation remain owned by the
+sync progress module; this styling service owns only the shared color policy.
+
 ## Re-exports
 
 - `pub use owo_colors::OwoColorize` - Trait for color styling methods on strings
-- `pub use comfy_table::Table` - Table type for tabular output
 
 ## Usage
 
 ```rust
-use crate::services::style::{heading, command_name, error_code, error_text, success, label, value, prompt_label, prompt_value, create_table, supports_color};
+use crate::services::style::{heading, command_name, error_code, error_text, success, label, value, prompt_label, prompt_value, supports_color};
 
 // Help output styling
 println!("{}", heading("Usage:"));
@@ -85,12 +92,6 @@ println!("{} {}", label("Repository root:"), value("'/path/to/repo'"));
 // Interactive prompt styling
 println!("{} {}", prompt_label("Open in browser:"), prompt_value("https://example.com"));
 println!("{} {}", prompt_label("Code:"), prompt_value("ABCD-EFGH"));
-
-// Table output styling
-let mut table = create_table(&["Command", "Status", "Purpose"]);
-table.add_row(vec!["setup", "implemented", "Prepare local repository prerequisites"]);
-table.add_row(vec!["sync", "placeholder", "Coordinate future cloud sync workflows"]);
-println!("{}", table);
 
 // Conditional styling
 if supports_color() {

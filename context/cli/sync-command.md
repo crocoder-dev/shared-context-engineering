@@ -10,6 +10,17 @@ The Clap surface is defined in `cli/src/cli_schema.rs` and dispatched through
 the static `RuntimeCommand::Sync` variant. The sync-owned command boundary lives
 under `cli/src/services/sync/`; shared storage, export, authentication, and
 control-plane protocol infrastructure remains in their existing services.
+Sync orchestration owns its `SyncProgressEvent` lifecycle, batch, and
+stream-completion payloads and publishes them through the consumer-typed,
+library-independent `services::sync::progress::ProgressReporter<E>` contract.
+Reporters may collect events or discard them with the no-op implementation;
+the same sync-owned module supplies terminal presentation through that contract
+rather than the synchronization algorithm importing terminal-library details.
+There is no top-level `services::progress` module or cross-command progress
+framework.
+Text execution explicitly finalizes the reporter only after a successful sync;
+failure paths retain their existing termination behavior, and the final sync
+report remains owned by `render_sync` rather than the progress adapter.
 
 ## User flow
 
@@ -20,8 +31,9 @@ sce sync                # synchronize this repository's Agent Trace DB
 ```
 
 `sce sync --format json` produces the same synchronization with a machine-
-readable stdout payload. Text mode emits progress and lifecycle timestamps on
-stderr; JSON mode emits no progress or lifecycle text.
+readable stdout payload. Text mode creates the aligned multi-progress display
+on stderr before stream batches begin; JSON mode emits no human progress or
+lifecycle text.
 
 ## Composed data flow
 
@@ -48,18 +60,24 @@ authoritative control-plane cursors.
 
 ## Output contract
 
-The text report contains the completion heading, repository and source-instance
-identifiers, and one row per stream with uploaded rows and final cursor. During
-text mode, deterministic flushed stderr lines report start, accepted batches,
-stream completion, and terminal completion; empty streams explicitly report no
-new rows. JSON mode emits no human text and returns:
+The final text report contains only a completion heading after the progress
+display. It says `Agent Trace already synced.` when all four streams uploaded
+zero rows; otherwise it says `Agent Trace sync complete.`. During text mode,
+four progress rows are created immediately
+in the fixed order
+`messages`, `parts`, `diff_traces`, `agent_traces`. Each row uses a 15-column
+stream-label field, starts at `0 rows uploaded`, and has its own steady spinner.
+Accepted batches update only their stream's cumulative count. A stream replaces
+its spinner with a styled `✓` and its final count as soon as that stream's
+sync future completes. Redirected/non-TTY stderr uses stable aligned plain
+snapshots without ANSI or terminal-control sequences, while `NO_COLOR` also
+disables the completion styling. JSON mode uses the no-op human-progress
+sink, emits no progress on stderr, and emits this JSON-only stdout shape:
 
 ```json
 {
   "status": "ok",
   "command": "sync",
-  "repositoryId": "<repository-id>",
-  "sourceInstanceId": "<source-instance-id>",
   "streams": {
     "messages": {"uploaded": 0, "initialCursor": 0, "finalCursor": 0, "batches": 0},
     "parts": {"uploaded": 0, "initialCursor": 0, "finalCursor": 0, "batches": 0},

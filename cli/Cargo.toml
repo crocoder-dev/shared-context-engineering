@@ -34,6 +34,7 @@ clap_complete = "4"
 dirs = "6"
 hmac = "0.13"
 inquire = "0.9"
+indicatif = "0.18"
 jsonschema = "0.46"
 keyring-core = "1"
 owo-colors = { version = "4", features = ["supports-colors"] }
