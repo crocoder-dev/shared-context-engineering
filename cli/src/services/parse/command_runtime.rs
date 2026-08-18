@@ -319,9 +319,6 @@ fn convert_auth_subcommand(
         cli_schema::AuthSubcommand::Login { format } => {
             services::auth_command::AuthSubcommand::Login { format }
         }
-        cli_schema::AuthSubcommand::Renew { format, force } => {
-            services::auth_command::AuthSubcommand::Renew { format, force }
-        }
         cli_schema::AuthSubcommand::Logout { format } => {
             services::auth_command::AuthSubcommand::Logout { format }
         }
@@ -520,5 +517,33 @@ mod tests {
             Ok(_) => panic!("trace should be unavailable"),
             Err(error) => assert!(error.to_string().contains("Unknown command 'trace'")),
         }
+    }
+
+    #[test]
+    fn auth_help_lists_only_supported_subcommands() {
+        let command = parse(&["sce", "auth", "--help"]);
+
+        let RuntimeCommand::HelpText(command) = command else {
+            panic!("expected help text command");
+        };
+
+        assert!(command.text.contains("login"));
+        assert!(command.text.contains("status"));
+        assert!(command.text.contains("logout"));
+        assert!(!command.text.contains("renew"));
+    }
+
+    #[test]
+    fn auth_renew_is_rejected_as_parse_error() {
+        let Err(error) = parse_runtime_command(
+            ["sce", "auth", "renew"].into_iter().map(String::from),
+            &CommandRegistry::default(),
+            None,
+        ) else {
+            panic!("removed auth renew command should not parse")
+        };
+
+        assert_eq!(error.class(), FailureClass::Parse);
+        assert!(error.message().contains("Unknown command 'renew'"));
     }
 }
