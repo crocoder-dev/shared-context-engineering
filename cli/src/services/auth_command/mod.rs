@@ -2,11 +2,13 @@ pub mod command;
 
 use std::io::Write;
 use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::json;
 
+use crate::services::agent_trace_sync::control_plane::{
+    AuthenticatedControlPlaneClient, ControlPlaneError, MeResponse,
+};
 use crate::services::auth::{self, AuthError, DeviceAuthFlowResult};
 use crate::services::config;
 use crate::services::output_format::OutputFormat;
@@ -23,7 +25,7 @@ static AUTH_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 pub enum AuthSubcommand {
     Login { format: AuthFormat },
     Logout { format: AuthFormat },
-    Status { format: AuthFormat },
+    Whoami { format: AuthFormat },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,28 +33,15 @@ pub struct AuthRequest {
     pub subcommand: AuthSubcommand,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct AuthStatusReport {
-    authentication_state: &'static str,
-    stored_credentials_path: String,
-    has_stored_credentials: bool,
-    token_expired: Option<bool>,
-    token_type: Option<String>,
-    scope: Option<String>,
-    stored_at_unix_seconds: Option<u64>,
-    expires_at_unix_seconds: Option<u64>,
-    seconds_until_expiry: Option<i64>,
-}
-
 pub fn run_auth_subcommand(request: AuthRequest) -> Result<String> {
-    run_auth_subcommand_with(request, run_login, run_logout, run_status)
+    run_auth_subcommand_with(request, run_login, run_logout, run_whoami)
 }
 
 fn run_auth_subcommand_with<L, O, S>(
     request: AuthRequest,
     login: L,
     logout: O,
-    status: S,
+    whoami: S,
 ) -> Result<String>
 where
     L: FnOnce(AuthFormat) -> Result<String>,
@@ -62,7 +51,7 @@ where
     match request.subcommand {
         AuthSubcommand::Login { format } => login(format),
         AuthSubcommand::Logout { format } => logout(format),
-        AuthSubcommand::Status { format } => status(format),
+        AuthSubcommand::Whoami { format } => whoami(format),
     }
 }
 
@@ -93,27 +82,25 @@ pub fn run_logout(format: AuthFormat) -> Result<String> {
     render_logout_result(deleted, format)
 }
 
-pub fn run_status(format: AuthFormat) -> Result<String> {
-    let stored_credentials_path = token_storage::token_file_path()?.display().to_string();
-    let report = match token_storage::load_tokens()? {
-        Some(tokens) => {
-            let tokens = maybe_refresh_tokens_for_status(&tokens)?.unwrap_or(tokens);
-            build_authenticated_status_report(&tokens, stored_credentials_path)?
-        }
-        None => AuthStatusReport {
-            authentication_state: "unauthenticated",
-            stored_credentials_path,
-            has_stored_credentials: false,
-            token_expired: None,
-            token_type: None,
-            scope: None,
-            stored_at_unix_seconds: None,
-            expires_at_unix_seconds: None,
-            seconds_until_expiry: None,
-        },
-    };
+pub fn run_whoami(format: AuthFormat) -> Result<String> {
+    if token_storage::load_tokens()?.is_none() {
+        return render_unauthenticated_whoami(format);
+    }
 
-    render_status_result(&report, format)
+    let cwd = std::env::current_dir()
+        .context("failed to determine current directory for auth config resolution")?;
+    let auth_config = config::resolve_auth_runtime_config(&cwd)?;
+    let client = AuthenticatedControlPlaneClient::new(
+        reqwest::Client::new(),
+        auth_config.control_plane_base_url.value.unwrap_or_default(),
+        auth::WORKOS_DEFAULT_BASE_URL,
+        auth_config.workos_client_id.value.unwrap_or_default(),
+    );
+    let profile = shared_runtime()?
+        .block_on(client.me())
+        .map_err(|error| map_whoami_control_plane_error(&error))?;
+
+    render_whoami_result(&profile, format)
 }
 
 fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
@@ -164,26 +151,6 @@ where
     }
 
     device_login(format)
-}
-
-fn maybe_refresh_tokens_for_status(stored_tokens: &StoredTokens) -> Result<Option<StoredTokens>> {
-    if !auth::is_stored_token_expired(stored_tokens)? {
-        return Ok(None);
-    }
-
-    let client_id = resolve_login_client_id()?;
-    let runtime = shared_runtime()?;
-    let client = reqwest::Client::new();
-
-    match runtime.block_on(auth::ensure_valid_token_returning_token(
-        &client,
-        auth::WORKOS_DEFAULT_BASE_URL,
-        &client_id,
-        stored_tokens,
-    )) {
-        Ok(token) => Ok(Some(token_storage::save_tokens(&token)?)),
-        Err(_) => Ok(None),
-    }
 }
 
 fn run_text_login_with_runtime(
@@ -300,30 +267,6 @@ fn map_login_error(error: &AuthError) -> anyhow::Error {
     ))
 }
 
-fn build_authenticated_status_report(
-    tokens: &StoredTokens,
-    stored_credentials_path: String,
-) -> Result<AuthStatusReport> {
-    let now_unix_seconds = current_unix_timestamp_seconds()?;
-    let expires_at_unix_seconds = tokens
-        .stored_at_unix_seconds
-        .saturating_add(tokens.expires_in);
-    let seconds_until_expiry = i64::try_from(expires_at_unix_seconds).unwrap_or(i64::MAX)
-        - i64::try_from(now_unix_seconds).unwrap_or(0);
-
-    Ok(AuthStatusReport {
-        authentication_state: "authenticated",
-        stored_credentials_path,
-        has_stored_credentials: true,
-        token_expired: Some(seconds_until_expiry <= 0),
-        token_type: Some(tokens.token_type.clone()),
-        scope: tokens.scope.clone(),
-        stored_at_unix_seconds: Some(tokens.stored_at_unix_seconds),
-        expires_at_unix_seconds: Some(expires_at_unix_seconds),
-        seconds_until_expiry: Some(seconds_until_expiry),
-    })
-}
-
 fn render_login_result(result: &DeviceAuthFlowResult, format: AuthFormat) -> Result<String> {
     let expires_at_unix_seconds = result
         .stored_tokens
@@ -391,66 +334,76 @@ fn render_logout_result(deleted: bool, format: AuthFormat) -> Result<String> {
     }
 }
 
-fn render_status_result(report: &AuthStatusReport, format: AuthFormat) -> Result<String> {
+fn render_unauthenticated_whoami(format: AuthFormat) -> Result<String> {
+    match format {
+        AuthFormat::Text => Ok(format!(
+            "You are not logged in. Please log in using the {} command.",
+            success("sce auth login")
+        )),
+        AuthFormat::Json => serde_json::to_string_pretty(&json!({
+            "status": "ok",
+            "command": NAME,
+            "subcommand": "whoami",
+            "authentication_state": "unauthenticated",
+            "has_stored_credentials": false,
+        }))
+        .context("failed to serialize auth whoami report to JSON. Try: rerun 'sce auth whoami --format json'."),
+    }
+}
+
+fn render_whoami_result(profile: &MeResponse, format: AuthFormat) -> Result<String> {
     match format {
         AuthFormat::Text => {
-            if !report.has_stored_credentials {
-                return Ok(format!(
-                    "{} {}",
-                    label("Authentication status:"),
-                    value("unauthenticated")
-                ) + &format!(
-                    "\n{} {}\n{} {}",
-                    label("Stored credentials:"),
-                    value("none"),
-                    label("Credentials file:"),
-                    value(&report.stored_credentials_path),
-                ));
-            }
+            let permissions = if profile.authorization.permissions.is_empty() {
+                String::from("none")
+            } else {
+                profile.authorization.permissions.join(", ")
+            };
 
             Ok(format!(
-                "{} {}\n{} {}\n{} {}\n{} {}\n{} {}\n{} {}\n{} {}\n{} {}",
-                label("Authentication status:"),
-                value(report.authentication_state),
-                label("Stored credentials:"),
-                value("present"),
-                label("Credentials file:"),
-                value(&report.stored_credentials_path),
-                label("Token expired:"),
-                value(&report.token_expired.unwrap_or(false).to_string()),
-                label("Seconds until expiry:"),
-                value(&report.seconds_until_expiry.unwrap_or_default().to_string()),
-                label("Expires at (unix):"),
-                value(&report.expires_at_unix_seconds.unwrap_or_default().to_string()),
-                label("Token type:"),
-                value(report.token_type.as_deref().unwrap_or("(unknown)")),
-                label("Scope:"),
-                value(report.scope.as_deref().unwrap_or("(none)")),
+            "{} {}\n{} {}\n{} {}\n{} {}\n{} {}\n{} {}",
+            label("Email:"),
+            value(&profile.user.email),
+            label("First Name:"),
+            value(profile.user.first_name.as_deref().unwrap_or("")),
+            label("Last Name:"),
+            value(profile.user.last_name.as_deref().unwrap_or("")),
+            label("Role:"),
+            value(profile.authorization.role.as_deref().unwrap_or("none")),
+            label("Permissions:"),
+            value(&permissions),
+            label("Organization Name:"),
+            value(
+                profile
+                    .workspace
+                    .as_ref()
+                    .map_or("none", |workspace| workspace.name.as_str()),
+            ),
             ))
         }
         AuthFormat::Json => serde_json::to_string_pretty(&json!({
             "status": "ok",
             "command": NAME,
-            "subcommand": "status",
-            "authentication_state": report.authentication_state,
-            "stored_credentials_path": report.stored_credentials_path,
-            "has_stored_credentials": report.has_stored_credentials,
-            "token_expired": report.token_expired,
-            "token_type": report.token_type,
-            "scope": report.scope,
-            "stored_at_unix_seconds": report.stored_at_unix_seconds,
-            "expires_at_unix_seconds": report.expires_at_unix_seconds,
-            "seconds_until_expiry": report.seconds_until_expiry,
+            "subcommand": "whoami",
+            "user": {
+                "email": profile.user.email,
+                "first_name": profile.user.first_name,
+                "last_name": profile.user.last_name,
+            },
+            "authorization": {
+                "role": profile.authorization.role,
+                "permissions": profile.authorization.permissions,
+            },
+            "workspace": profile.workspace.as_ref().map(|workspace| json!({
+                "name": workspace.name,
+            })),
         }))
-        .context("failed to serialize auth status report to JSON. Try: rerun 'sce auth status --format json'."),
+        .context("failed to serialize auth whoami report to JSON. Try: rerun 'sce auth whoami --format json'."),
     }
 }
 
-fn current_unix_timestamp_seconds() -> Result<u64> {
-    Ok(SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| anyhow!("system clock is invalid for auth status checks: {error}. Try: verify local system time and rerun 'sce auth status'."))?
-        .as_secs())
+fn map_whoami_control_plane_error(error: &ControlPlaneError) -> anyhow::Error {
+    anyhow!("failed to fetch authenticated user information from the Control Plane: {error}")
 }
 
 fn with_try_guidance(message: String, guidance: &str) -> String {

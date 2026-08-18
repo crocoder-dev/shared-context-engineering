@@ -1,7 +1,8 @@
 //! Wire-contract DTOs for the control-plane Agent Trace ingestion API.
 //!
 //! These types define the request/response shapes for
-//! `POST /agent-trace/ingestion/state` and `POST /agent-trace/ingestion/batch`.
+//! `GET /me`, `POST /agent-trace/ingestion/state`, and
+//! `POST /agent-trace/ingestion/batch`.
 //! They perform no HTTP I/O and hold no cursor state themselves.
 
 use std::fmt;
@@ -105,6 +106,7 @@ pub struct AgentTraceIngestionBatchResponse {
 
 const STATE_PATH: &str = "agent-trace/ingestion/state";
 const BATCH_PATH: &str = "agent-trace/ingestion/batch";
+const ME_PATH: &str = "me";
 
 const STATE_RETRY_MAX_ATTEMPTS: u32 = 1;
 const STATE_RETRY_TIMEOUT_MS: u64 = 60_000;
@@ -234,6 +236,39 @@ pub struct AuthenticatedControlPlaneClient {
     refresh_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
+/// Response body for `GET /me`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeResponse {
+    pub user: MeUser,
+    pub authorization: MeAuthorization,
+    pub workspace: Option<MeWorkspace>,
+}
+
+/// User profile returned by the Control Plane's `/me` endpoint.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeUser {
+    pub email: String,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+}
+
+/// Authorization information returned by the Control Plane's `/me` endpoint.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeAuthorization {
+    pub permissions: Vec<String>,
+    pub role: Option<String>,
+}
+
+/// Current workspace returned by the Control Plane's `/me` endpoint.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeWorkspace {
+    pub name: String,
+}
+
 impl AuthenticatedControlPlaneClient {
     pub fn new(
         http: reqwest::Client,
@@ -304,6 +339,16 @@ impl AuthenticatedControlPlaneClient {
             StateAttempt::Done(response) => Ok(response),
             StateAttempt::Terminal(error) => Err(error),
         }
+    }
+
+    /// Calls `GET /me` to retrieve the current authenticated user's profile,
+    /// authorization, and optional workspace from the Control Plane.
+    pub async fn me(&self) -> Result<MeResponse, ControlPlaneError> {
+        let url = self.endpoint(ME_PATH);
+        let response = self
+            .execute_authenticated(|token| self.http.get(&url).bearer_auth(token))
+            .await?;
+        classify_response(response).await
     }
 
     pub async fn ingest_messages(
