@@ -22,7 +22,6 @@ static AUTH_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthSubcommand {
     Login { format: AuthFormat },
-    Renew { format: AuthFormat, force: bool },
     Logout { format: AuthFormat },
     Status { format: AuthFormat },
 }
@@ -46,25 +45,22 @@ struct AuthStatusReport {
 }
 
 pub fn run_auth_subcommand(request: AuthRequest) -> Result<String> {
-    run_auth_subcommand_with(request, run_login, run_renew, run_logout, run_status)
+    run_auth_subcommand_with(request, run_login, run_logout, run_status)
 }
 
-fn run_auth_subcommand_with<L, R, O, S>(
+fn run_auth_subcommand_with<L, O, S>(
     request: AuthRequest,
     login: L,
-    renew: R,
     logout: O,
     status: S,
 ) -> Result<String>
 where
     L: FnOnce(AuthFormat) -> Result<String>,
-    R: FnOnce(AuthFormat, bool) -> Result<String>,
     O: FnOnce(AuthFormat) -> Result<String>,
     S: FnOnce(AuthFormat) -> Result<String>,
 {
     match request.subcommand {
         AuthSubcommand::Login { format } => login(format),
-        AuthSubcommand::Renew { format, force } => renew(format, force),
         AuthSubcommand::Logout { format } => logout(format),
         AuthSubcommand::Status { format } => status(format),
     }
@@ -76,14 +72,15 @@ pub fn run_login(format: AuthFormat) -> Result<String> {
 
     let client_id = resolve_login_client_id()?;
 
-    if let Some(stored_tokens) = maybe_renew_expired_credentials(runtime, &client, &client_id)? {
-        return render_login_refresh_result(&stored_tokens, format);
-    }
-
-    match format {
-        AuthFormat::Text => run_text_login_with_runtime(runtime, &client, &client_id),
-        AuthFormat::Json => run_login_json(runtime, &client, &client_id, format),
-    }
+    run_login_with_stored_credentials(
+        format,
+        token_storage::load_tokens()?,
+        |stored_tokens| maybe_renew_stored_credentials(runtime, &client, &client_id, stored_tokens),
+        |format| match format {
+            AuthFormat::Text => run_text_login_with_runtime(runtime, &client, &client_id),
+            AuthFormat::Json => run_login_json(runtime, &client, &client_id, format),
+        },
+    )
 }
 
 pub fn run_logout(format: AuthFormat) -> Result<String> {
@@ -94,43 +91,6 @@ pub fn run_logout(format: AuthFormat) -> Result<String> {
         anyhow!(format!("{error} Try: {guidance}"))
     })?;
     render_logout_result(deleted, format)
-}
-
-pub fn run_renew(format: AuthFormat, force: bool) -> Result<String> {
-    let client = reqwest::Client::new();
-    let runtime = shared_runtime()?;
-    let client_id = resolve_login_client_id()?;
-
-    let Some(stored_tokens) = token_storage::load_tokens()? else {
-        return Err(anyhow!(AuthError::Unauthorized(
-            "No stored WorkOS credentials were found. Try: run 'sce auth login' before running 'sce auth renew'.".to_string(),
-        )));
-    };
-
-    let was_expired = auth::is_stored_token_expired(&stored_tokens)?;
-    let updated: StoredTokens = if force {
-        let token = runtime
-            .block_on(auth::renew_stored_token_from_refresh_token(
-                &client,
-                auth::WORKOS_DEFAULT_BASE_URL,
-                &client_id,
-                &stored_tokens.refresh_token,
-            ))
-            .map_err(|e| map_login_error(&e))?;
-        token_storage::save_tokens(&token)?
-    } else {
-        let token = runtime
-            .block_on(auth::ensure_valid_token_returning_token(
-                &client,
-                auth::WORKOS_DEFAULT_BASE_URL,
-                &client_id,
-                &stored_tokens,
-            ))
-            .map_err(|e| map_login_error(&e))?;
-        token_storage::save_tokens(&token)?
-    };
-
-    render_renew_result(&updated, force || was_expired, format)
 }
 
 pub fn run_status(format: AuthFormat) -> Result<String> {
@@ -170,28 +130,40 @@ fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
     Ok(AUTH_RUNTIME.get_or_init(|| runtime))
 }
 
-fn maybe_renew_expired_credentials(
+fn maybe_renew_stored_credentials(
     runtime: &tokio::runtime::Runtime,
     client: &reqwest::Client,
     client_id: &str,
+    stored_tokens: &StoredTokens,
 ) -> Result<Option<StoredTokens>> {
-    let Some(stored_tokens) = token_storage::load_tokens()? else {
-        return Ok(None);
-    };
-
-    if !auth::is_stored_token_expired(&stored_tokens)? {
-        return Ok(None);
-    }
-
     match runtime.block_on(auth::ensure_valid_token_returning_token(
         client,
         auth::WORKOS_DEFAULT_BASE_URL,
         client_id,
-        &stored_tokens,
+        stored_tokens,
     )) {
         Ok(token) => Ok(Some(token_storage::save_tokens(&token)?)),
         Err(_) => Ok(None),
     }
+}
+
+fn run_login_with_stored_credentials<R, D>(
+    format: AuthFormat,
+    stored_tokens: Option<StoredTokens>,
+    renew: R,
+    device_login: D,
+) -> Result<String>
+where
+    R: FnOnce(&StoredTokens) -> Result<Option<StoredTokens>>,
+    D: FnOnce(AuthFormat) -> Result<String>,
+{
+    if let Some(stored_tokens) = stored_tokens {
+        if let Some(renewed_tokens) = renew(&stored_tokens)? {
+            return render_login_refresh_result(&renewed_tokens, format);
+        }
+    }
+
+    device_login(format)
 }
 
 fn maybe_refresh_tokens_for_status(stored_tokens: &StoredTokens) -> Result<Option<StoredTokens>> {
@@ -357,25 +329,9 @@ fn render_login_result(result: &DeviceAuthFlowResult, format: AuthFormat) -> Res
         .stored_tokens
         .stored_at_unix_seconds
         .saturating_add(result.stored_tokens.expires_in);
-    let browser_url = result
-        .authorization
-        .verification_uri_complete
-        .as_deref()
-        .unwrap_or(&result.authorization.verification_uri);
 
     match format {
-        AuthFormat::Text => Ok(format!(
-            "{}\n{} {}\n{} {}\n{} {}\n{} {}",
-            success("Authentication succeeded."),
-            prompt_label("Open in browser:"),
-            prompt_value(browser_url),
-            prompt_label("Code:"),
-            prompt_value(&result.authorization.user_code),
-            label("Token type:"),
-            value(&result.stored_tokens.token_type),
-            label("Expires at (unix):"),
-            value(&expires_at_unix_seconds.to_string()),
-        )),
+        AuthFormat::Text => Ok(success("✓ Authentication succeeded.")),
         AuthFormat::Json => serde_json::to_string_pretty(&json!({
             "status": "ok",
             "command": NAME,
@@ -400,14 +356,7 @@ fn render_login_refresh_result(tokens: &StoredTokens, format: AuthFormat) -> Res
         .saturating_add(tokens.expires_in);
 
     match format {
-        AuthFormat::Text => Ok(format!(
-            "{}\n{} {}\n{} {}",
-            success("Authentication renewed."),
-            label("Token type:"),
-            value(&tokens.token_type),
-            label("Expires at (unix):"),
-            value(&expires_at_unix_seconds.to_string()),
-        )),
+        AuthFormat::Text => Ok(success("✓ Authentication succeeded.")),
         AuthFormat::Json => serde_json::to_string_pretty(&json!({
             "status": "ok",
             "command": NAME,
@@ -424,48 +373,12 @@ fn render_login_refresh_result(tokens: &StoredTokens, format: AuthFormat) -> Res
     }
 }
 
-fn render_renew_result(tokens: &StoredTokens, renewed: bool, format: AuthFormat) -> Result<String> {
-    let expires_at_unix_seconds = tokens
-        .stored_at_unix_seconds
-        .saturating_add(tokens.expires_in);
-
-    let status_text = if renewed {
-        "renewed"
-    } else {
-        "is already valid"
-    };
-
-    match format {
-        AuthFormat::Text => Ok(format!(
-            "{}\n{} {}\n{} {}",
-            success(&format!("Authentication {status_text}.")),
-            label("Token type:"),
-            value(&tokens.token_type),
-            label("Expires at (unix):"),
-            value(&expires_at_unix_seconds.to_string()),
-        )),
-        AuthFormat::Json => serde_json::to_string_pretty(&json!({
-            "status": "ok",
-            "command": NAME,
-            "subcommand": "renew",
-            "authenticated": true,
-            "renewed": renewed,
-            "token_type": tokens.token_type,
-            "scope": tokens.scope,
-            "stored_at_unix_seconds": tokens.stored_at_unix_seconds,
-            "expires_in_seconds": tokens.expires_in,
-            "expires_at_unix_seconds": expires_at_unix_seconds,
-        }))
-        .context("failed to serialize auth renew report to JSON. Try: rerun 'sce auth renew --format json'."),
-    }
-}
-
 fn render_logout_result(deleted: bool, format: AuthFormat) -> Result<String> {
     match format {
         AuthFormat::Text => Ok(if deleted {
-            success("Removed stored WorkOS credentials.")
+            success("Logged out")
         } else {
-            value("No stored WorkOS credentials were found.")
+            value("No user logged in")
         }),
         AuthFormat::Json => serde_json::to_string_pretty(&json!({
             "status": "ok",

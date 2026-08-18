@@ -12,8 +12,8 @@ pub struct TopLevelCommandMetadata {
 }
 
 pub const AUTH_CLAP_ABOUT: &str = "Authenticate with `WorkOS` device authorization flow";
-pub const AUTH_TOP_LEVEL_PURPOSE: &str = "Authenticate with WorkOS and inspect local auth state";
-pub const AUTH_SHOW_IN_TOP_LEVEL_HELP: bool = false;
+pub const AUTH_TOP_LEVEL_PURPOSE: &str = "Authenticate with WorkOS";
+pub const AUTH_SHOW_IN_TOP_LEVEL_HELP: bool = true;
 
 pub const CONFIG_CLAP_ABOUT: &str =
     "Inspect or validate runtime config and observability resolution";
@@ -143,11 +143,10 @@ pub fn auth_help_text() -> String {
     let base = render_help_for_path(&["auth"]).expect("auth help should be renderable");
 
     format!(
-        "{}\n{}:\n  {}\n  {}\n  {}\n  {}\n",
+        "{}\n{}:\n  {}\n  {}\n  {}\n",
         base,
         heading("Examples"),
         command_name("sce auth login"),
-        command_name("sce auth renew"),
         command_name("sce auth status"),
         command_name("sce auth logout")
     )
@@ -241,28 +240,19 @@ pub enum Commands {
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum AuthSubcommand {
-    #[command(about = "Start login flow and store credentials")]
+    #[command(about = "Start the login flow")]
     Login {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
 
-    #[command(about = "Renew stored credentials when they are expired or near expiry")]
-    Renew {
-        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
-        format: OutputFormat,
-
-        #[arg(long)]
-        force: bool,
-    },
-
-    #[command(about = "Remove stored credentials from the local machine")]
+    #[command(about = "Log out the currently authenticated user")]
     Logout {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
 
-    #[command(about = "Show current authentication status from stored credentials")]
+    #[command(about = "Show information about the currently authenticated user")]
     Status {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
