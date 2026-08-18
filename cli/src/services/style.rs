@@ -46,6 +46,10 @@ where
     style_if(text, supports_color_stderr(), f)
 }
 
+pub(crate) fn success_with_stderr_color_policy(text: &str, color_enabled: bool) -> String {
+    style_if(text, color_enabled, |s| s.green().bold().to_string())
+}
+
 #[must_use]
 pub fn heading(text: &str) -> String {
     heading_with_color_policy(text, supports_color())

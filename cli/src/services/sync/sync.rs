@@ -32,6 +32,7 @@ use crate::services::agent_trace_sync::{
 };
 use crate::services::auth;
 use crate::services::config;
+use crate::services::sync::progress::{NoopProgressReporter, ProgressReporter};
 
 static SYNC_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
@@ -60,28 +61,6 @@ pub struct StreamSyncReport {
     pub batches: usize,
 }
 
-/// Supplies timestamps for one trace-sync invocation.
-pub trait SyncProgressClock {
-    fn now(&self) -> DateTime<Utc>;
-}
-
-/// Uses the system UTC clock for production sync invocations.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SystemSyncProgressClock;
-
-impl SyncProgressClock for SystemSyncProgressClock {
-    fn now(&self) -> DateTime<Utc> {
-        Utc::now()
-    }
-}
-
-fn timestamp<C>(clock: &C) -> String
-where
-    C: SyncProgressClock,
-{
-    clock.now().to_rfc3339_opts(SecondsFormat::AutoSi, true)
-}
-
 /// Progress emitted while the four trace streams are synchronized.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SyncProgressEvent {
@@ -105,25 +84,26 @@ pub enum SyncProgressEvent {
     },
 }
 
-/// Receives deterministic sync progress events.
-pub trait SyncProgressSink {
-    fn report(&mut self, event: SyncProgressEvent);
+/// Supplies timestamps for one trace-sync invocation.
+pub trait SyncProgressClock {
+    fn now(&self) -> DateTime<Utc>;
 }
 
-impl<F> SyncProgressSink for F
-where
-    F: FnMut(SyncProgressEvent),
-{
-    fn report(&mut self, event: SyncProgressEvent) {
-        self(event);
+/// Uses the system UTC clock for production sync invocations.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemSyncProgressClock;
+
+impl SyncProgressClock for SystemSyncProgressClock {
+    fn now(&self) -> DateTime<Utc> {
+        Utc::now()
     }
 }
 
-/// Discards sync progress for callers that only need the final report.
-pub struct NoopSyncProgressSink;
-
-impl SyncProgressSink for NoopSyncProgressSink {
-    fn report(&mut self, _event: SyncProgressEvent) {}
+fn timestamp<C>(clock: &C) -> String
+where
+    C: SyncProgressClock,
+{
+    clock.now().to_rfc3339_opts(SecondsFormat::AutoSi, true)
 }
 
 /// Terminal failure of `sce sync`.
@@ -158,7 +138,7 @@ impl std::error::Error for TraceSyncError {}
 /// synchronizes all four capture streams.
 #[allow(dead_code)]
 pub fn run_current_sync(repo_root: &Path) -> Result<AgentTraceSyncReport, TraceSyncError> {
-    let mut progress = NoopSyncProgressSink;
+    let mut progress = NoopProgressReporter;
     run_current_sync_with_progress(repo_root, &mut progress)
 }
 
@@ -168,7 +148,7 @@ pub fn run_current_sync_with_progress<S>(
     progress: &mut S,
 ) -> Result<AgentTraceSyncReport, TraceSyncError>
 where
-    S: SyncProgressSink,
+    S: ProgressReporter<SyncProgressEvent>,
 {
     let clock = SystemSyncProgressClock;
     run_current_sync_with_progress_and_clock(repo_root, progress, &clock)
@@ -181,7 +161,7 @@ pub fn run_current_sync_with_progress_and_clock<S, C>(
     clock: &C,
 ) -> Result<AgentTraceSyncReport, TraceSyncError>
 where
-    S: SyncProgressSink,
+    S: ProgressReporter<SyncProgressEvent>,
     C: SyncProgressClock,
 {
     progress.report(SyncProgressEvent::Started {
@@ -199,7 +179,7 @@ fn run_current_sync_without_progress<S>(
     progress: &mut S,
 ) -> Result<AgentTraceSyncReport, TraceSyncError>
 where
-    S: SyncProgressSink,
+    S: ProgressReporter<SyncProgressEvent>,
 {
     let storage_config = config::resolve_agent_trace_storage_runtime_config(repo_root)
         .map_err(|error| TraceSyncError::Runtime(format!("{error:#}")))?;
@@ -239,7 +219,7 @@ pub(crate) fn run_sync_against(
     db: &RepositoryAgentTraceDb,
     client: &AuthenticatedControlPlaneClient,
 ) -> Result<AgentTraceSyncReport, TraceSyncError> {
-    let mut progress = NoopSyncProgressSink;
+    let mut progress = NoopProgressReporter;
     run_sync_against_with_progress(repository_id, source_instance_id, db, client, &mut progress)
 }
 
@@ -252,7 +232,7 @@ pub(crate) fn run_sync_against_with_progress<S>(
     progress: &mut S,
 ) -> Result<AgentTraceSyncReport, TraceSyncError>
 where
-    S: SyncProgressSink,
+    S: ProgressReporter<SyncProgressEvent>,
 {
     let clock = SystemSyncProgressClock;
     run_sync_against_with_progress_and_clock(
@@ -275,7 +255,7 @@ pub(crate) fn run_sync_against_with_progress_and_clock<S, C>(
     clock: &C,
 ) -> Result<AgentTraceSyncReport, TraceSyncError>
 where
-    S: SyncProgressSink,
+    S: ProgressReporter<SyncProgressEvent>,
     C: SyncProgressClock,
 {
     progress.report(SyncProgressEvent::Started {
@@ -297,7 +277,7 @@ fn run_sync_against_without_progress<S>(
     progress: &mut S,
 ) -> Result<AgentTraceSyncReport, TraceSyncError>
 where
-    S: SyncProgressSink,
+    S: ProgressReporter<SyncProgressEvent>,
 {
     let runtime = shared_runtime()?;
     let reader = AgentTraceExportReader::new(db);
@@ -319,7 +299,7 @@ async fn run_sync_async<'a, S>(
     progress: &'a mut S,
 ) -> Result<AgentTraceSyncReport, TraceSyncError>
 where
-    S: SyncProgressSink + 'a,
+    S: ProgressReporter<SyncProgressEvent> + 'a,
 {
     let state_request = AgentTraceIngestionStateRequest {
         repository_id: repository_id.to_string(),
@@ -378,22 +358,6 @@ where
         ),
     )
     .await?;
-
-    for (stream, report) in [
-        ("messages", messages),
-        ("parts", parts),
-        ("diff_traces", diff_traces),
-        ("agent_traces", agent_traces),
-    ] {
-        progress
-            .borrow_mut()
-            .report(SyncProgressEvent::StreamCompleted {
-                stream,
-                uploaded: report.uploaded,
-                cursor: report.final_cursor,
-                batches: report.batches,
-            });
-    }
 
     Ok(AgentTraceSyncReport {
         repository_id: repository_id.to_string(),
@@ -488,7 +452,7 @@ async fn sync_one_stream<'a, T, ReadFn, IngestFn, S>(
 ) -> Result<StreamSyncReport, TraceSyncError>
 where
     T: AgentTraceExportRow + Clone + 'a,
-    S: SyncProgressSink + 'a,
+    S: ProgressReporter<SyncProgressEvent> + 'a,
     ReadFn: FnMut(i64, usize) -> anyhow::Result<Vec<T>> + 'a,
     IngestFn: FnMut(
             AgentTraceIngestionBatchRequest<T>,
@@ -577,6 +541,15 @@ where
         stream: stream_label,
         source,
     })?;
+
+    progress
+        .borrow_mut()
+        .report(SyncProgressEvent::StreamCompleted {
+            stream: stream_label,
+            uploaded: outcome.uploaded,
+            cursor: outcome.final_cursor,
+            batches: outcome.batches,
+        });
 
     Ok(StreamSyncReport {
         uploaded: outcome.uploaded,
@@ -859,6 +832,24 @@ mod tests {
                 SyncProgressEvent::Started {
                     timestamp: "2026-01-02T03:04:05Z".to_string(),
                 },
+                SyncProgressEvent::StreamCompleted {
+                    stream: "parts",
+                    uploaded: 0,
+                    cursor: 0,
+                    batches: 0,
+                },
+                SyncProgressEvent::StreamCompleted {
+                    stream: "diff_traces",
+                    uploaded: 0,
+                    cursor: 0,
+                    batches: 0,
+                },
+                SyncProgressEvent::StreamCompleted {
+                    stream: "agent_traces",
+                    uploaded: 0,
+                    cursor: 0,
+                    batches: 0,
+                },
                 SyncProgressEvent::BatchAccepted {
                     stream: "messages",
                     batch_rows: 100,
@@ -882,24 +873,6 @@ mod tests {
                     uploaded: 201,
                     cursor: 201,
                     batches: 3,
-                },
-                SyncProgressEvent::StreamCompleted {
-                    stream: "parts",
-                    uploaded: 0,
-                    cursor: 0,
-                    batches: 0,
-                },
-                SyncProgressEvent::StreamCompleted {
-                    stream: "diff_traces",
-                    uploaded: 0,
-                    cursor: 0,
-                    batches: 0,
-                },
-                SyncProgressEvent::StreamCompleted {
-                    stream: "agent_traces",
-                    uploaded: 0,
-                    cursor: 0,
-                    batches: 0,
                 },
                 SyncProgressEvent::Finished {
                     timestamp: "2026-01-02T03:04:06Z".to_string(),
