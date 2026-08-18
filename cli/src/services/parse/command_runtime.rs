@@ -322,8 +322,8 @@ fn convert_auth_subcommand(
         cli_schema::AuthSubcommand::Logout { format } => {
             services::auth_command::AuthSubcommand::Logout { format }
         }
-        cli_schema::AuthSubcommand::Status { format } => {
-            services::auth_command::AuthSubcommand::Status { format }
+        cli_schema::AuthSubcommand::Whoami { format } => {
+            services::auth_command::AuthSubcommand::Whoami { format }
         }
     };
 
@@ -528,7 +528,7 @@ mod tests {
         };
 
         assert!(command.text.contains("login"));
-        assert!(command.text.contains("status"));
+        assert!(command.text.contains("whoami"));
         assert!(command.text.contains("logout"));
         assert!(!command.text.contains("renew"));
     }

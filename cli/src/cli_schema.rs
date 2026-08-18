@@ -147,7 +147,7 @@ pub fn auth_help_text() -> String {
         base,
         heading("Examples"),
         command_name("sce auth login"),
-        command_name("sce auth status"),
+        command_name("sce auth whoami"),
         command_name("sce auth logout")
     )
 }
@@ -253,7 +253,7 @@ pub enum AuthSubcommand {
     },
 
     #[command(about = "Show information about the currently authenticated user")]
-    Status {
+    Whoami {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },

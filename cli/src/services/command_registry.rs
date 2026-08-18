@@ -128,7 +128,7 @@ pub fn default_runtime_command(name: &str) -> Option<RuntimeCommand> {
         services::auth_command::NAME => Some(RuntimeCommand::Auth(
             services::auth_command::command::AuthCommand {
                 request: services::auth_command::AuthRequest {
-                    subcommand: services::auth_command::AuthSubcommand::Status {
+                    subcommand: services::auth_command::AuthSubcommand::Whoami {
                         format: services::auth_command::AuthFormat::Text,
                     },
                 },
