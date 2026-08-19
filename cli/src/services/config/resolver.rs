@@ -834,10 +834,8 @@ mod tests {
 
     #[test]
     fn agent_trace_auto_sync_resolves_from_config_file() {
-        let runtime = resolve_runtime_with_config(Some(
-            r#"{"agent_trace":{"auto_sync":true}}"#,
-        ))
-        .unwrap();
+        let runtime =
+            resolve_runtime_with_config(Some(r#"{"agent_trace":{"auto_sync":true}}"#)).unwrap();
 
         assert!(runtime.agent_trace_auto_sync.value);
         assert_eq!(

@@ -9,7 +9,11 @@ longer available; no compatibility alias is retained.
 The Clap surface is defined in `cli/src/cli_schema.rs` and dispatched through
 the static `RuntimeCommand::Sync` variant. The sync-owned command boundary lives
 under `cli/src/services/sync/`; shared storage, export, authentication, and
-control-plane protocol infrastructure remains in their existing services.
+control-plane protocol infrastructure remains in their existing services. The
+same boundary owns a best-effort one-shot launcher for callers that need
+asynchronous synchronization: it resolves the current `sce` executable, starts
+`sync --format json` in the repository root with null standard streams, and does
+not wait for the child; executable and spawn failures are ignored.
 Sync orchestration owns its `SyncProgressEvent` lifecycle, batch, and
 stream-completion payloads and publishes them through the consumer-typed,
 library-independent `services::sync::progress::ProgressReporter<E>` contract.
