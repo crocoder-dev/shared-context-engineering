@@ -17,7 +17,7 @@ use tracing::Level;
 use crate::services::config::{
     self, LogFormat, LogLevel, ENV_LOG_DIR, ENV_LOG_FORMAT, ENV_LOG_LEVEL,
 };
-use crate::services::error::ClassifiedError;
+use crate::services::error::CliError;
 use crate::services::security::redact_sensitive_text;
 
 pub mod traits;
@@ -136,12 +136,13 @@ impl Logger {
         self.log(LogLevel::Error, event_id, message, fields, session_id);
     }
 
-    pub fn log_classified_error(&self, error: &ClassifiedError, session_id: Option<&str>) {
+    pub fn log_classified_error(&self, error: &CliError, session_id: Option<&str>) {
         let event_id = format!("sce.error.{}", error.code());
+        let message = error.to_string();
         self.log(
             LogLevel::Error,
             &event_id,
-            error.message(),
+            &message,
             &[
                 ("error_code", error.code()),
                 ("error_class", error.class().as_str()),

@@ -1,13 +1,13 @@
 use crate::{cli_schema, command_surface, services};
 use services::command_registry::{CommandRegistry, RuntimeCommand};
-use services::error::{ClassifiedError, FailureClass};
+use services::error::{CliError, FailureClass};
 use services::observability::traits::Logger as LoggerTrait;
 
 pub fn parse_runtime_command<I>(
     args: I,
     registry: &CommandRegistry,
     logger: Option<&dyn LoggerTrait>,
-) -> Result<RuntimeCommand, ClassifiedError>
+) -> Result<RuntimeCommand, CliError>
 where
     I: IntoIterator<Item = String>,
 {
@@ -47,7 +47,7 @@ fn handle_clap_error(
     args: &[String],
     registry: &CommandRegistry,
     error: &clap::Error,
-) -> Result<RuntimeCommand, ClassifiedError> {
+) -> Result<RuntimeCommand, CliError> {
     if error.kind() == clap::error::ErrorKind::DisplayHelp {
         if let Some((name, text)) = render_subcommand_help_from_args(args) {
             return Ok(RuntimeCommand::HelpText(
@@ -63,7 +63,7 @@ fn handle_clap_error(
             return Ok(help_text);
         }
 
-        return Err(ClassifiedError::parse(
+        return Err(CliError::parse(
             "Missing required subcommand. Try: run 'sce --help' to see valid commands.",
         ));
     }
@@ -78,21 +78,21 @@ fn handle_clap_error(
 fn registry_command(
     registry: &CommandRegistry,
     name: &str,
-) -> Result<RuntimeCommand, ClassifiedError> {
+) -> Result<RuntimeCommand, CliError> {
     if !registry.contains(name) {
-        return Err(ClassifiedError::runtime(format!(
+        return Err(CliError::runtime(anyhow::Error::msg(format!(
             "Command '{name}' is not registered. Try: run 'sce --help' to see available commands."
-        )));
+        ))));
     }
 
     services::command_registry::default_runtime_command(name).ok_or_else(|| {
-        ClassifiedError::runtime(format!(
+        CliError::runtime(anyhow::Error::msg(format!(
             "Command '{name}' is not registered. Try: run 'sce --help' to see available commands."
-        ))
+        )))
     })
 }
 
-fn classify_clap_error(error: &clap::Error) -> ClassifiedError {
+fn classify_clap_error(error: &clap::Error) -> CliError {
     use clap::error::ErrorKind;
 
     let message = error.to_string();
@@ -105,8 +105,8 @@ fn classify_clap_error(error: &clap::Error) -> ClassifiedError {
     let cleaned_message = clean_clap_error_message(&message, error.kind());
 
     match class {
-        FailureClass::Validation => ClassifiedError::validation(cleaned_message),
-        _ => ClassifiedError::parse(cleaned_message),
+        FailureClass::Validation => CliError::validation(cleaned_message),
+        _ => CliError::parse(cleaned_message),
     }
 }
 
@@ -209,7 +209,7 @@ fn extract_quoted_value(message: &str) -> Option<String> {
     Some(message[start + 1..start + 1 + end].to_string())
 }
 
-fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand, ClassifiedError> {
+fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand, CliError> {
     match command {
         cli_schema::Commands::Config { subcommand } => convert_config_subcommand(subcommand),
         cli_schema::Commands::Auth { subcommand } => convert_auth_subcommand(subcommand),
@@ -314,7 +314,7 @@ fn convert_policy_output_mode(
 #[allow(clippy::unnecessary_wraps, clippy::needless_pass_by_value)]
 fn convert_auth_subcommand(
     subcommand: cli_schema::AuthSubcommand,
-) -> Result<RuntimeCommand, ClassifiedError> {
+) -> Result<RuntimeCommand, CliError> {
     let subcommand = match subcommand {
         cli_schema::AuthSubcommand::Login { format } => {
             services::auth_command::AuthSubcommand::Login { format }
@@ -347,7 +347,7 @@ fn convert_completion_shell(
 #[allow(clippy::unnecessary_wraps)]
 fn convert_config_subcommand(
     subcommand: cli_schema::ConfigSubcommand,
-) -> Result<RuntimeCommand, ClassifiedError> {
+) -> Result<RuntimeCommand, CliError> {
     match subcommand {
         cli_schema::ConfigSubcommand::Show {
             format,
@@ -388,9 +388,9 @@ fn convert_config_subcommand(
 
 fn convert_setup_command(
     options: services::setup::SetupCliOptions,
-) -> Result<RuntimeCommand, ClassifiedError> {
+) -> Result<RuntimeCommand, CliError> {
     let request = services::setup::resolve_setup_request(options)
-        .map_err(|error| ClassifiedError::validation(error.to_string()))?;
+        .map_err(|error| CliError::validation(error.to_string()))?;
 
     Ok(RuntimeCommand::Setup(
         services::setup::command::SetupCommand { request },
@@ -400,7 +400,7 @@ fn convert_setup_command(
 #[allow(clippy::unnecessary_wraps)]
 fn convert_hooks_subcommand(
     subcommand: cli_schema::HooksSubcommand,
-) -> Result<RuntimeCommand, ClassifiedError> {
+) -> Result<RuntimeCommand, CliError> {
     let subcommand = convert_hooks_subcommand_request(subcommand)?;
 
     Ok(RuntimeCommand::Hooks(
@@ -410,7 +410,7 @@ fn convert_hooks_subcommand(
 
 fn convert_hooks_subcommand_request(
     subcommand: cli_schema::HooksSubcommand,
-) -> Result<services::hooks::HookSubcommand, ClassifiedError> {
+) -> Result<services::hooks::HookSubcommand, CliError> {
     match subcommand {
         cli_schema::HooksSubcommand::PreCommit => Ok(services::hooks::HookSubcommand::PreCommit),
         cli_schema::HooksSubcommand::CommitMsg { message_file } => {
@@ -418,9 +418,9 @@ fn convert_hooks_subcommand_request(
         }
         cli_schema::HooksSubcommand::PostCommit { vcs, remote_url } => {
             let vcs_type = parse_optional_hook_vcs_type(vcs.as_deref())
-                .map_err(ClassifiedError::validation)?;
+                .map_err(CliError::validation)?;
             let remote_url =
-                parse_optional_hook_remote_url(remote_url).map_err(ClassifiedError::validation)?;
+                parse_optional_hook_remote_url(remote_url).map_err(CliError::validation)?;
 
             Ok(services::hooks::HookSubcommand::PostCommit {
                 vcs_type,
@@ -544,6 +544,6 @@ mod tests {
         };
 
         assert_eq!(error.class(), FailureClass::Parse);
-        assert!(error.message().contains("Unknown command 'renew'"));
+        assert!(error.to_string().contains("Unknown command 'renew'"));
     }
 }

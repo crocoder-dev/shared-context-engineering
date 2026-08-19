@@ -114,7 +114,7 @@ const STATE_RETRY_INITIAL_BACKOFF_MS: u64 = 250;
 const STATE_RETRY_MAX_BACKOFF_MS: u64 = 2_000;
 
 /// Typed failure classification for control-plane HTTP interactions, kept
-/// separate from `ClassifiedError` so the sync engine and CLI wiring can
+/// separate from `CliError` so the sync engine and CLI wiring can
 /// react to each case before deciding how to surface it.
 #[derive(Debug)]
 pub enum ControlPlaneError {

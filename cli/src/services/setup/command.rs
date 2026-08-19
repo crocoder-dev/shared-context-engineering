@@ -1,7 +1,7 @@
 use anyhow::Context;
 
 use crate::app::ContextWithRepoRoot;
-use crate::services::error::ClassifiedError;
+use crate::services::error::CliError;
 use crate::services::lifecycle::{
     lifecycle_providers, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
 };
@@ -12,18 +12,18 @@ pub struct SetupCommand {
 }
 
 impl SetupCommand {
-    pub fn execute<C: ContextWithRepoRoot>(&self, context: &C) -> Result<String, ClassifiedError> {
+    pub fn execute<C: ContextWithRepoRoot>(&self, context: &C) -> Result<String, CliError> {
         let setup_start_path = match &self.request.hooks_repo_path {
             Some(path) => path.clone(),
             None => std::env::current_dir()
                 .context("Failed to determine current directory")
-                .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?,
+                .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))?,
         };
 
         // The repository root is resolved before any prompt so the interactive
         // optional-workflow prompt can pre-check the persisted selection.
         let repository_root = setup::ensure_git_repository(&setup_start_path)
-            .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
+            .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))?;
 
         let setup_dispatch = if self.request.context_only {
             None
@@ -40,7 +40,7 @@ impl SetupCommand {
                 &setup::InquireSetupTargetPrompter,
                 &optional_workflow_defaults,
             )
-            .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?
+            .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))?
             {
                 setup::SetupDispatch::Proceed {
                     mode: resolved_mode,
@@ -58,7 +58,7 @@ impl SetupCommand {
 
         // Every successful setup path ensures the durable-context baseline exists.
         let context_message = setup::bootstrap_context_baseline(&repository_root)
-            .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
+            .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))?;
         sections.push(context_message);
 
         if self.request.context_only {
@@ -75,7 +75,7 @@ impl SetupCommand {
         for provider in &providers {
             let outcome = provider
                 .setup(&ctx)
-                .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
+                .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))?;
 
             sections.extend(outcome.messages);
 
@@ -96,7 +96,7 @@ impl SetupCommand {
 
             let setup_message =
                 setup::run_setup_for_mode(&repository_root, resolved_mode, optional_workflows)
-                    .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
+                    .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))?;
             sections.push(setup_message);
         }
 

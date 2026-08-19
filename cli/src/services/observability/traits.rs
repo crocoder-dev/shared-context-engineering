@@ -1,4 +1,4 @@
-use crate::services::error::ClassifiedError;
+use crate::services::error::CliError;
 
 pub trait Logger: Send + Sync {
     fn info(
@@ -33,14 +33,14 @@ pub trait Logger: Send + Sync {
         session_id: Option<&str>,
     );
 
-    fn log_classified_error(&self, error: &ClassifiedError, session_id: Option<&str>);
+    fn log_classified_error(&self, error: &CliError, session_id: Option<&str>);
 }
 
 pub trait Telemetry: Send + Sync {
     fn with_default_subscriber(
         &self,
-        action: &mut dyn FnMut() -> Result<String, ClassifiedError>,
-    ) -> Result<String, ClassifiedError>;
+        action: &mut dyn FnMut() -> Result<String, CliError>,
+    ) -> Result<String, CliError>;
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -84,7 +84,7 @@ impl Logger for NoopLogger {
     ) {
     }
 
-    fn log_classified_error(&self, _error: &ClassifiedError, _session_id: Option<&str>) {}
+    fn log_classified_error(&self, _error: &CliError, _session_id: Option<&str>) {}
 }
 
 impl Logger for super::Logger {
@@ -128,7 +128,7 @@ impl Logger for super::Logger {
         super::Logger::error(self, event_id, message, fields, session_id);
     }
 
-    fn log_classified_error(&self, error: &ClassifiedError, session_id: Option<&str>) {
+    fn log_classified_error(&self, error: &CliError, session_id: Option<&str>) {
         super::Logger::log_classified_error(self, error, session_id);
     }
 }
@@ -139,8 +139,8 @@ pub struct NoopTelemetry;
 impl Telemetry for NoopTelemetry {
     fn with_default_subscriber(
         &self,
-        action: &mut dyn FnMut() -> Result<String, ClassifiedError>,
-    ) -> Result<String, ClassifiedError> {
+        action: &mut dyn FnMut() -> Result<String, CliError>,
+    ) -> Result<String, CliError> {
         action()
     }
 }
