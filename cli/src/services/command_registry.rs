@@ -3,7 +3,7 @@ use std::io::Write;
 
 use crate::app::{ContextWithRepoRoot, HasLogger};
 use crate::services;
-use crate::services::error::ClassifiedError;
+use crate::services::error::CliError;
 
 const DEFAULT_COMMAND_NAMES: &[&str] = &[
     services::auth_command::NAME,
@@ -55,7 +55,7 @@ impl RuntimeCommand {
     }
 
     #[allow(dead_code)]
-    pub fn execute<C>(&self, context: &C) -> Result<String, ClassifiedError>
+    pub fn execute<C>(&self, context: &C) -> Result<String, CliError>
     where
         C: HasLogger + ContextWithRepoRoot,
     {
@@ -67,7 +67,7 @@ impl RuntimeCommand {
         &self,
         context: &C,
         stderr: &mut W,
-    ) -> Result<String, ClassifiedError>
+    ) -> Result<String, CliError>
     where
         C: HasLogger + ContextWithRepoRoot,
         W: Write,

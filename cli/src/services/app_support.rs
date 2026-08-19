@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use crate::app::{ContextWithRepoRoot, HasLogger};
 use crate::services;
 use services::command_registry::RuntimeCommand;
-use services::error::ClassifiedError;
+use services::error::CliError;
 use services::observability::traits::Logger as LoggerTrait;
 
 const INVALID_CONFIG_WARNING_EVENT_ID: &str = "sce.config.invalid_config";
@@ -13,7 +13,7 @@ pub(crate) struct RunOutcome<L>
 where
     L: LoggerTrait,
 {
-    pub(crate) result: Result<String, ClassifiedError>,
+    pub(crate) result: Result<String, CliError>,
     pub(crate) logger: Option<L>,
     pub(crate) startup_diagnostic: Option<String>,
 }
@@ -46,8 +46,8 @@ where
     }
 }
 
-pub(crate) fn classify_observability_configuration_error(error: &anyhow::Error) -> ClassifiedError {
-    ClassifiedError::validation(format!("Invalid observability configuration: {error}"))
+pub(crate) fn classify_observability_configuration_error(error: &anyhow::Error) -> CliError {
+    CliError::validation(format!("Invalid observability configuration: {error}"))
 }
 
 pub(crate) fn invalid_discovered_config_guidance(
@@ -105,7 +105,7 @@ pub(crate) fn execute_command_phase<C, W>(
     command: &RuntimeCommand,
     context: &C,
     stderr: &mut W,
-) -> Result<String, ClassifiedError>
+) -> Result<String, CliError>
 where
     C: HasLogger + ContextWithRepoRoot,
     W: Write,
@@ -137,7 +137,7 @@ where
     })
 }
 
-fn exit_with_error<L, W>(stderr: &mut W, logger: Option<&L>, error: &ClassifiedError) -> ExitCode
+fn exit_with_error<L, W>(stderr: &mut W, logger: Option<&L>, error: &CliError) -> ExitCode
 where
     L: LoggerTrait,
     W: Write,
@@ -149,24 +149,30 @@ where
     ExitCode::from(error.class().exit_code())
 }
 
-fn write_stdout_payload<W: Write>(writer: &mut W, payload: &str) -> Result<(), ClassifiedError> {
+fn write_stdout_payload<W: Write>(writer: &mut W, payload: &str) -> Result<(), CliError> {
     if payload.is_empty() {
         return Ok(());
     }
     writeln!(writer, "{payload}").map_err(|error| {
-        ClassifiedError::runtime(format!("Failed to write command output to stdout: {error}"))
+        CliError::runtime(anyhow::Error::msg(format!(
+            "Failed to write command output to stdout: {error}"
+        )))
     })
 }
 
-fn write_error_diagnostic<W: Write>(writer: &mut W, error: &ClassifiedError) {
-    let rendered = if error.message().contains("Try:") {
-        error.message().to_string()
-    } else {
-        format!(
-            "{} Try: {}",
-            error.message(),
-            error.class().default_try_guidance()
-        )
+fn write_error_diagnostic<W: Write>(writer: &mut W, error: &CliError) {
+    let rendered = match error {
+        CliError::Internal { source, .. } => {
+            let message = format!("{source:#}");
+            if message.contains("Try:") {
+                message
+            } else {
+                format!("{message} Try: {}", error.class().default_try_guidance())
+            }
+        }
+        CliError::User {
+            error: user_error, ..
+        } => user_error.message().to_string(),
     };
     let styled_message =
         services::style::error_text(&services::security::redact_sensitive_text(&rendered));

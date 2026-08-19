@@ -1,5 +1,5 @@
 use crate::app::HasLogger;
-use crate::services::error::ClassifiedError;
+use crate::services::error::CliError;
 use crate::services::hooks;
 
 pub struct HooksCommand {
@@ -7,8 +7,8 @@ pub struct HooksCommand {
 }
 
 impl HooksCommand {
-    pub fn execute<C: HasLogger>(&self, context: &C) -> Result<String, ClassifiedError> {
+    pub fn execute<C: HasLogger>(&self, context: &C) -> Result<String, CliError> {
         hooks::run_hooks_subcommand(&self.subcommand, Some(context.logger()))
-            .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))
+            .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))
     }
 }

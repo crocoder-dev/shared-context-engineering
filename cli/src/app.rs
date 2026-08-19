@@ -4,7 +4,7 @@ use std::process::ExitCode;
 
 use crate::services;
 use services::app_support::{self, RunOutcome};
-use services::error::ClassifiedError;
+use services::error::CliError;
 use services::observability::traits::{
     Logger as LoggerTrait, NoopTelemetry, Telemetry as TelemetryTrait,
 };
@@ -310,17 +310,19 @@ where
 
 fn perform_dependency_check<F: FnOnce() -> anyhow::Result<()>>(
     dependency_check: F,
-) -> Result<(), ClassifiedError> {
+) -> Result<(), CliError> {
     dependency_check().map_err(|error| {
-        ClassifiedError::dependency(format!("Failed to initialize dependency checks: {error}"))
+        CliError::dependency(anyhow::Error::msg(format!(
+            "Failed to initialize dependency checks: {error}"
+        )))
     })
 }
 
-fn build_startup_context() -> Result<StartupContext, ClassifiedError> {
+fn build_startup_context() -> Result<StartupContext, CliError> {
     let cwd = std::env::current_dir().map_err(|error| {
-        ClassifiedError::runtime(format!(
+        CliError::runtime(anyhow::Error::msg(format!(
             "Failed to determine current directory for observability config resolution: {error}"
-        ))
+        )))
     })?;
     let observability_config = services::config::resolve_observability_runtime_config(&cwd)
         .map_err(|error| app_support::classify_observability_configuration_error(&error))?;
@@ -332,7 +334,7 @@ fn build_startup_context() -> Result<StartupContext, ClassifiedError> {
     })
 }
 
-fn initialize_runtime(startup: StartupContext) -> Result<AppRuntime, ClassifiedError> {
+fn initialize_runtime(startup: StartupContext) -> Result<AppRuntime, CliError> {
     let logger =
         services::observability::Logger::from_resolved_config(&startup.observability_config)
             .map_err(|error| app_support::classify_observability_configuration_error(&error))?;
@@ -351,7 +353,7 @@ fn run_command_lifecycle<I, StderrW>(
     args: I,
     runtime: &AppRuntime,
     stderr: &mut StderrW,
-) -> Result<String, ClassifiedError>
+) -> Result<String, CliError>
 where
     I: IntoIterator<Item = String>,
     StderrW: Write,
@@ -366,7 +368,9 @@ where
             None,
         );
         let Some(command_args) = args.take() else {
-            return Err(ClassifiedError::runtime(REPEATED_COMMAND_DISPATCH_ERROR));
+            return Err(CliError::runtime(anyhow::Error::msg(
+                REPEATED_COMMAND_DISPATCH_ERROR,
+            )));
         };
         let command = parse_command_phase(command_args, &runtime.registry, &context)?;
         app_support::execute_command_phase(&command, &context, stderr)
@@ -377,7 +381,7 @@ fn parse_command_phase<I>(
     args: I,
     registry: &services::command_registry::CommandRegistry,
     context: &impl HasLogger,
-) -> Result<services::command_registry::RuntimeCommand, ClassifiedError>
+) -> Result<services::command_registry::RuntimeCommand, CliError>
 where
     I: IntoIterator<Item = String>,
 {

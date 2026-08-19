@@ -1,13 +1,13 @@
 use crate::services::config;
-use crate::services::error::ClassifiedError;
+use crate::services::error::CliError;
 
 pub struct ConfigCommand {
     pub subcommand: config::ConfigSubcommand,
 }
 
 impl ConfigCommand {
-    pub fn execute<C>(&self, _context: &C) -> Result<String, ClassifiedError> {
+    pub fn execute<C>(&self, _context: &C) -> Result<String, CliError> {
         config::run_config_subcommand(self.subcommand.clone())
-            .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))
+            .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))
     }
 }

@@ -1,7 +1,7 @@
 use std::io::Write;
 
 use crate::app::ContextWithRepoRoot;
-use crate::services::error::ClassifiedError;
+use crate::services::error::CliError;
 use crate::services::sync::progress::{
     IndicatifProgressReporter, NoopProgressReporter, ProgressReporter,
 };
@@ -16,7 +16,7 @@ pub struct SyncCommand {
     pub request: SyncRequest,
 }
 
-fn current_repo_root<C>(context: &C) -> Result<std::path::PathBuf, ClassifiedError>
+fn current_repo_root<C>(context: &C) -> Result<std::path::PathBuf, CliError>
 where
     C: ContextWithRepoRoot,
 {
@@ -24,19 +24,21 @@ where
         Ok(path.to_path_buf())
     } else {
         std::env::current_dir().map_err(|err| {
-            ClassifiedError::runtime(format!("failed to determine current directory: {err}"))
+            CliError::runtime(anyhow::Error::msg(format!(
+                "failed to determine current directory: {err}"
+            )))
         })
     }
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn classify_sync_error(err: TraceSyncError) -> ClassifiedError {
-    ClassifiedError::runtime(format!("{err}"))
+fn classify_sync_error(err: TraceSyncError) -> CliError {
+    CliError::runtime(anyhow::Error::msg(format!("{err}")))
 }
 
 impl SyncCommand {
     #[allow(dead_code)]
-    pub fn execute<C>(&self, context: &C) -> Result<String, ClassifiedError>
+    pub fn execute<C>(&self, context: &C) -> Result<String, CliError>
     where
         C: ContextWithRepoRoot,
     {
@@ -48,7 +50,7 @@ impl SyncCommand {
         &self,
         context: &C,
         stderr: &mut W,
-    ) -> Result<String, ClassifiedError>
+    ) -> Result<String, CliError>
     where
         C: ContextWithRepoRoot,
         W: Write,
@@ -62,7 +64,7 @@ impl SyncCommand {
         context: &C,
         stderr: &mut W,
         clock: &Clock,
-    ) -> Result<String, ClassifiedError>
+    ) -> Result<String, CliError>
     where
         C: ContextWithRepoRoot,
         W: Write,
@@ -88,6 +90,6 @@ impl SyncCommand {
         .map_err(classify_sync_error)?;
 
         render_sync::render(&report, self.request.format)
-            .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))
+            .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))
     }
 }

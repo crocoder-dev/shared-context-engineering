@@ -9,18 +9,18 @@ use crate::services::config;
 use crate::services::config::policy::{
     runtime_bash_policy_presets, BashPolicyConfig, CustomBashPolicyEntry, RuntimeBashPolicyPreset,
 };
-use crate::services::error::ClassifiedError;
+use crate::services::error::CliError;
 
 pub mod command {
     use crate::services::bash_policy;
-    use crate::services::error::ClassifiedError;
+    use crate::services::error::CliError;
 
     pub struct PolicyCommand {
         pub request: bash_policy::BashPolicyRequest,
     }
 
     impl PolicyCommand {
-        pub fn execute(&self) -> Result<String, ClassifiedError> {
+        pub fn execute(&self) -> Result<String, CliError> {
             bash_policy::run_bash_policy_request(&self.request)
         }
     }
@@ -455,7 +455,7 @@ struct JsonPolicyResult<'a> {
     policy_id: Option<&'a str>,
 }
 
-pub fn run_bash_policy_request(request: &BashPolicyRequest) -> Result<String, ClassifiedError> {
+pub fn run_bash_policy_request(request: &BashPolicyRequest) -> Result<String, CliError> {
     let stdin_payload = read_stdin_payload()?;
     run_bash_policy_request_from_payload(request, &stdin_payload)
 }
@@ -463,29 +463,29 @@ pub fn run_bash_policy_request(request: &BashPolicyRequest) -> Result<String, Cl
 fn run_bash_policy_request_from_payload(
     request: &BashPolicyRequest,
     stdin_payload: &str,
-) -> Result<String, ClassifiedError> {
+) -> Result<String, CliError> {
     let command = parse_command_from_stdin(request.input, stdin_payload)?;
     let cwd = resolved_policy_project_root()?;
     let policy_config = config::resolve_bash_policy_runtime_config(&cwd).map_err(|error| {
-        ClassifiedError::runtime(format!(
+        CliError::runtime(anyhow::Error::msg(format!(
             "Failed to resolve bash policy configuration for '{}': {error}",
             cwd.display()
-        ))
+        )))
     })?;
     let evaluation = evaluate_bash_command_policy(&command, policy_config.as_ref());
 
     render_policy_result(request.output, &command, &evaluation)
 }
 
-fn read_stdin_payload() -> Result<String, ClassifiedError> {
+fn read_stdin_payload() -> Result<String, CliError> {
     let mut payload = String::new();
     io::stdin().read_to_string(&mut payload).map_err(|error| {
-        ClassifiedError::validation(format!(
+        CliError::validation(format!(
             "Failed to read bash policy request from STDIN: {error}. Try: pipe a JSON payload to 'sce policy bash'."
         ))
     })?;
     if payload.trim().is_empty() {
-        return Err(ClassifiedError::validation(
+        return Err(CliError::validation(
             "Missing bash policy request on STDIN. Try: pipe Claude PreToolUse JSON or normalized {\"command\":...} JSON to 'sce policy bash'.",
         ));
     }
@@ -495,18 +495,18 @@ fn read_stdin_payload() -> Result<String, ClassifiedError> {
 fn parse_command_from_stdin(
     input: PolicyInputMode,
     stdin_payload: &str,
-) -> Result<String, ClassifiedError> {
+) -> Result<String, CliError> {
     match input {
         PolicyInputMode::ClaudePreToolUse => parse_claude_pre_tool_use_command(stdin_payload),
         PolicyInputMode::Normalized => parse_normalized_command(stdin_payload),
     }
 }
 
-fn parse_claude_pre_tool_use_command(stdin_payload: &str) -> Result<String, ClassifiedError> {
+fn parse_claude_pre_tool_use_command(stdin_payload: &str) -> Result<String, CliError> {
     let event: ClaudePreToolUseEvent = parse_json_payload(stdin_payload, "Claude PreToolUse")?;
     if let Some(tool_name) = event.tool_name.as_deref() {
         if tool_name != "Bash" {
-            return Err(ClassifiedError::validation(format!(
+            return Err(CliError::validation(format!(
                 "Invalid Claude PreToolUse payload: expected tool_name 'Bash' but received '{tool_name}'."
             )));
         }
@@ -514,37 +514,37 @@ fn parse_claude_pre_tool_use_command(stdin_payload: &str) -> Result<String, Clas
     validate_non_empty_command(event.tool_input.command, "Claude PreToolUse")
 }
 
-fn parse_normalized_command(stdin_payload: &str) -> Result<String, ClassifiedError> {
+fn parse_normalized_command(stdin_payload: &str) -> Result<String, CliError> {
     let request: NormalizedBashPolicyRequest =
         parse_json_payload(stdin_payload, "normalized bash policy")?;
     validate_non_empty_command(request.command, "normalized bash policy")
 }
 
-fn parse_json_payload<T>(stdin_payload: &str, label: &str) -> Result<T, ClassifiedError>
+fn parse_json_payload<T>(stdin_payload: &str, label: &str) -> Result<T, CliError>
 where
     T: for<'de> Deserialize<'de>,
 {
     serde_json::from_str(stdin_payload).map_err(|error| {
-        ClassifiedError::validation(format!(
+        CliError::validation(format!(
             "Invalid {label} JSON from STDIN: {error}. Try: pipe a valid JSON object to 'sce policy bash'."
         ))
     })
 }
 
-fn validate_non_empty_command(command: String, label: &str) -> Result<String, ClassifiedError> {
+fn validate_non_empty_command(command: String, label: &str) -> Result<String, CliError> {
     if command.trim().is_empty() {
-        return Err(ClassifiedError::validation(format!(
+        return Err(CliError::validation(format!(
             "Invalid {label} payload: command must be a non-empty string."
         )));
     }
     Ok(command)
 }
 
-fn resolved_policy_project_root() -> Result<PathBuf, ClassifiedError> {
+fn resolved_policy_project_root() -> Result<PathBuf, CliError> {
     let cwd = std::env::current_dir().map_err(|error| {
-        ClassifiedError::runtime(format!(
+        CliError::runtime(anyhow::Error::msg(format!(
             "Failed to determine current directory for bash policy configuration: {error}"
-        ))
+        )))
     })?;
     Ok(resolve_git_root(&cwd).unwrap_or(cwd))
 }
@@ -567,14 +567,14 @@ fn render_policy_result(
     output: PolicyOutputMode,
     command: &str,
     evaluation: &PolicyEvaluation,
-) -> Result<String, ClassifiedError> {
+) -> Result<String, CliError> {
     match output {
         PolicyOutputMode::ClaudeHook => render_claude_hook_result(evaluation),
         PolicyOutputMode::Json => render_json_result(command, evaluation),
     }
 }
 
-fn render_claude_hook_result(evaluation: &PolicyEvaluation) -> Result<String, ClassifiedError> {
+fn render_claude_hook_result(evaluation: &PolicyEvaluation) -> Result<String, CliError> {
     match evaluation {
         PolicyEvaluation::Allowed { .. } => Ok(String::new()),
         PolicyEvaluation::Blocked { policy, .. } => serialize_json(&json!({
@@ -590,7 +590,7 @@ fn render_claude_hook_result(evaluation: &PolicyEvaluation) -> Result<String, Cl
 fn render_json_result(
     command: &str,
     evaluation: &PolicyEvaluation,
-) -> Result<String, ClassifiedError> {
+) -> Result<String, CliError> {
     match evaluation {
         PolicyEvaluation::Allowed { normalized_argv } => serialize_json(&JsonPolicyResult {
             status: "ok",
@@ -617,11 +617,11 @@ fn render_json_result(
     }
 }
 
-fn serialize_json<T: ?Sized + Serialize>(value: &T) -> Result<String, ClassifiedError> {
+fn serialize_json<T: ?Sized + Serialize>(value: &T) -> Result<String, CliError> {
     serde_json::to_string(value).map_err(|error| {
-        ClassifiedError::runtime(format!(
+        CliError::runtime(anyhow::Error::msg(format!(
             "Failed to serialize bash policy result JSON: {error}"
-        ))
+        )))
     })
 }
 
@@ -869,7 +869,7 @@ mod tests {
         )
         .expect_err("payload should fail");
 
-        assert!(error.message().contains("expected tool_name 'Bash'"));
+        assert!(error.to_string().contains("expected tool_name 'Bash'"));
     }
 
     #[test]
