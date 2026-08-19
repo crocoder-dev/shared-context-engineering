@@ -7,7 +7,6 @@ pub struct ConfigCommand {
 
 impl ConfigCommand {
     pub fn execute<C>(&self, _context: &C) -> Result<String, CliError> {
-        config::run_config_subcommand(self.subcommand.clone())
-            .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))
+        config::run_config_subcommand(self.subcommand.clone()).map_err(CliError::runtime)
     }
 }

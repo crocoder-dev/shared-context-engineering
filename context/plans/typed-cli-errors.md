@@ -81,13 +81,22 @@ Persist this field in every plan; this is durable plan state, not chat state:
     - Additionally ran `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml` (clean) and manually exercised `sce bogus-command` (unchanged `Error [SCE-ERR-PARSE]: ... Try: ...` rendering, exit code 2) and `sce version` (unchanged success output) through the built binary.
   - Context impact: Internal-only. `CliError`/`UserError` are new public types within `cli/src/services/error.rs`, but no external-facing behavior, CLI contract, or SCE-ERR-* code changed — the rename and wrapping are transparent to callers. No `context/sce`/`context/cli` doc requires updating yet; T07 documents the full architecture once T02–T06 finish shaping it.
 
-- [ ] T02: `Preserve anyhow error sources at remaining command-adapter boundaries` (status:todo)
+- [x] T02: `Preserve anyhow error sources at remaining command-adapter boundaries` (status:done)
   - Task ID: T02
   - Scope: In — command adapters (auth/config/doctor/hooks/setup/version and other obvious `anyhow::Error`-returning call sites) currently doing `.map_err(|error| CliError::runtime(format!("{error:#}")))`, changed to `.map_err(CliError::runtime)` with `anyhow::Context` attached beforehand where it adds useful context. Out — redesigning domain error types, sync's own error path (T03/T04), setup `bail!` validation, clap/parser errors, bash policy errors.
   - Dependencies: T01
   - Done when: identified adapters construct `CliError::Internal` from the live `anyhow::Error` object instead of a pre-formatted string; rendered diagnostic text for existing failure cases is unchanged, since `write_error_diagnostic` already renders `format!("{source:#}")`.
   - Verify: `grep -rn 'CliError::runtime(format!("{error:#}"))' cli/src/services` (expect no results in migrated adapters); `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml`.
-  - Context synchronization: pending
+  - Completed: 2026-08-19
+  - Files changed: `cli/src/services/auth_command/command.rs`; `cli/src/services/config/command.rs`; `cli/src/services/doctor/command.rs`; `cli/src/services/hooks/command.rs`; `cli/src/services/setup/command.rs`; `cli/src/services/version/command.rs`
+  - Result: All six command-adapter `.map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))` call sites (one each in `auth_command`, `config`, `doctor`, `hooks`, `version`, and seven in `setup/command.rs`) now pass the live `anyhow::Error` directly via `.map_err(CliError::runtime)`, since every wrapped domain function already returns `anyhow::Result<...>` and `CliError::runtime` takes `impl Into<anyhow::Error>`. No `anyhow::Context` needed attaching beforehand — none of the six sites were missing useful context. `cli/src/services/app_support.rs:157` (`write_stdout_payload`, wrapping an `io::Error`, not one of the six named adapters) and `cli/src/services/sync/command.rs:93` (explicitly T04's territory) were left untouched, matching the task's out-of-scope boundaries. `write_error_diagnostic` already renders `format!("{source:#}")`, so rendered diagnostic text for these call sites is unchanged; only the preserved source chain differs (previously erased into a message-only `anyhow::Error`, now the original error with its full chain intact for observability).
+  - Verify:
+    - `./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml` — passed.
+    - `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` — passed, 345/345.
+    - `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml` — clean.
+    - `grep -rn 'CliError::runtime(anyhow::Error::msg(format!("{error:#}")))' cli/src/services/{auth_command,config,doctor,hooks,version,setup}` — no results.
+  - Context impact: Internal-only. No public interface, CLI contract, exit code, `SCE-ERR-*` code, or rendered diagnostic text changed — only the internal fidelity of the preserved `anyhow` source chain. No `context/sce`/`context/cli` doc requires updating for this task; T07 documents the full architecture once T02–T06 finish shaping it.
+  - Context synchronization: synced
 
 - [ ] T03: `Preserve typed control-plane errors through the sync stream stack` (status:todo)
   - Task ID: T03

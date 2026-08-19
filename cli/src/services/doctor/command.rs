@@ -8,7 +8,6 @@ pub struct DoctorCommand {
 
 impl DoctorCommand {
     pub fn execute<C: ContextWithRepoRoot>(&self, context: &C) -> Result<String, CliError> {
-        doctor::run_doctor_with_context(self.request, context)
-            .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))
+        doctor::run_doctor_with_context(self.request, context).map_err(CliError::runtime)
     }
 }
