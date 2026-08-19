@@ -73,13 +73,18 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml config::` — pass (25 tests); `nix run .#pkl-check-generated` — pass (107 generated files, inventory sha256 `5ebbf7a119a7f79e19f65a7c30ee032681ae749279270735b5fbb87b0e1b2658`).
   - Context impact: interface — document the new `agent_trace.auto_sync` config contract, default/provenance behavior, and its future post-commit hook boundary in current-state config and Agent Trace context; review all five root context files for stale configuration summaries.
 
-- [ ] T02: `Implement fail-open one-shot sync launcher` (status:todo)
+- [x] T02: `Implement fail-open one-shot sync launcher` (status:done)
   - Task ID: T02
   - Scope: In — `cli/src/services/sync/auto_sync.rs` or equivalent, sync module registration, production `current_exe`/`Command::spawn` construction, null stdio/current-directory configuration, and deterministic launcher tests. Out — invoking the launcher from high-frequency hooks or changing sync internals.
   - Dependencies: T01
   - Done when: the production trigger constructs the current-executable `sync --format json` child in the supplied repository root, detaches without waiting, suppresses all child streams, and ignores current-executable/spawn failures; tests prove exact command construction and fail-open behavior.
   - Verify: targeted Rust tests for `services::sync::auto_sync` through `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auto_sync`.
-  - Context synchronization: pending
+  - Completed: 2026-08-19
+  - Files changed: `cli/src/services/sync/auto_sync.rs`, `cli/src/services/sync/mod.rs`, `context/cli/sync-command.md`, `context/plans/automatic-agent-trace-sync.md`
+  - Result: Added a sync-owned best-effort launcher that resolves `current_exe`, starts `sync --format json` in the supplied repository root with null stdin/stdout/stderr, drops the child without waiting, and ignores executable/spawn failures; added exact command-spec and fail-open tests without changing sync internals or hook call sites.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auto_sync` — pass (8 tests, including existing auto-sync config tests).
+  - Context impact: domain — documented the sync-owned asynchronous launcher boundary and its fail-open/no-wait behavior in `context/cli/sync-command.md`; root context pass verified with no edits.
+  - Context synchronization: synced
 
 - [ ] T03: `Trigger auto-sync after successful post-commit persistence` (status:todo)
   - Task ID: T03

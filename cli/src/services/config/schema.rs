@@ -753,7 +753,10 @@ mod agent_trace_config_tests {
             Some("upstream")
         );
         assert_eq!(
-            config.agent_trace_auto_sync.as_ref().map(|value| value.value),
+            config
+                .agent_trace_auto_sync
+                .as_ref()
+                .map(|value| value.value),
             None
         );
     }
@@ -807,7 +810,10 @@ mod agent_trace_config_tests {
         let config = parse(r#"{"agent_trace":{"auto_sync":true}}"#).unwrap();
 
         assert_eq!(
-            config.agent_trace_auto_sync.as_ref().map(|value| value.value),
+            config
+                .agent_trace_auto_sync
+                .as_ref()
+                .map(|value| value.value),
             Some(true)
         );
     }
