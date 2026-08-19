@@ -116,8 +116,8 @@ local sceConfigSchema = new JsonSchema {
         }
         ["auto_sync"] = new JsonSchema {
           type = "boolean"
-          description = "Launch a detached, best-effort `sce sync` after successful post-commit Agent Trace persistence. Defaults to false."
-          default = false
+          description = "Launch a detached, best-effort `sce sync` after successful post-commit Agent Trace persistence. Defaults to true."
+          default = true
         }
       }
     }

@@ -8,6 +8,9 @@
       "pi"
     ]
   },
+  "agent_trace": {
+    "auto_sync": true
+  },
   "log_dir": "context/tmp",
   "log_level": "error",
   "policies": {

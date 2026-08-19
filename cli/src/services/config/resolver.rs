@@ -534,7 +534,7 @@ where
             source: ValueSource::ConfigFile(value.source),
         },
         None => ResolvedValue {
-            value: false,
+            value: true,
             source: ValueSource::Default,
         },
     };
@@ -825,10 +825,10 @@ mod tests {
     }
 
     #[test]
-    fn agent_trace_auto_sync_defaults_to_false() {
+    fn agent_trace_auto_sync_defaults_to_true() {
         let runtime = resolve_runtime_with_config(None).unwrap();
 
-        assert!(!runtime.agent_trace_auto_sync.value);
+        assert!(runtime.agent_trace_auto_sync.value);
         assert_eq!(runtime.agent_trace_auto_sync.source, ValueSource::Default);
     }
 
