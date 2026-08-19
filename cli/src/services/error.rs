@@ -39,11 +39,40 @@ impl FailureClass {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UserFacingPresentation {
+    message: String,
+    reason: Option<String>,
+}
+
+impl UserFacingPresentation {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            reason: None,
+        }
+    }
+
+    pub fn with_reason(mut self, reason: impl Into<String>) -> Self {
+        self.reason = Some(reason.into());
+        self
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
+    }
+}
+
 #[derive(Debug)]
 pub struct ClassifiedError {
     class: FailureClass,
     code: &'static str,
     message: String,
+    user_facing_presentation: Option<UserFacingPresentation>,
 }
 
 impl ClassifiedError {
@@ -52,6 +81,7 @@ impl ClassifiedError {
             class: FailureClass::Parse,
             code: "SCE-ERR-PARSE",
             message: message.into(),
+            user_facing_presentation: None,
         }
     }
 
@@ -60,6 +90,7 @@ impl ClassifiedError {
             class: FailureClass::Validation,
             code: "SCE-ERR-VALIDATION",
             message: message.into(),
+            user_facing_presentation: None,
         }
     }
 
@@ -68,6 +99,7 @@ impl ClassifiedError {
             class: FailureClass::Runtime,
             code: "SCE-ERR-RUNTIME",
             message: message.into(),
+            user_facing_presentation: None,
         }
     }
 
@@ -76,7 +108,18 @@ impl ClassifiedError {
             class: FailureClass::Dependency,
             code: "SCE-ERR-DEPENDENCY",
             message: message.into(),
+            user_facing_presentation: None,
         }
+    }
+
+    pub fn with_user_facing_message(mut self, message: impl Into<String>) -> Self {
+        self.user_facing_presentation = Some(UserFacingPresentation::new(message));
+        self
+    }
+
+    pub fn with_user_facing_presentation(mut self, presentation: UserFacingPresentation) -> Self {
+        self.user_facing_presentation = Some(presentation);
+        self
     }
 
     pub fn class(&self) -> FailureClass {
@@ -89,6 +132,10 @@ impl ClassifiedError {
 
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    pub fn user_facing_presentation(&self) -> Option<&UserFacingPresentation> {
+        self.user_facing_presentation.as_ref()
     }
 }
 

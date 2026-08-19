@@ -122,7 +122,7 @@ impl Logger {
         fields: &[(&str, &str)],
         session_id: Option<&str>,
     ) {
-        self.log_forced(LogLevel::Warn, event_id, message, fields, session_id);
+        self.log_forced(LogLevel::Warn, event_id, message, fields, session_id, true);
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -136,9 +136,14 @@ impl Logger {
         self.log(LogLevel::Error, event_id, message, fields, session_id);
     }
 
-    pub fn log_classified_error(&self, error: &ClassifiedError, session_id: Option<&str>) {
+    pub(crate) fn log_classified_error(
+        &self,
+        error: &ClassifiedError,
+        session_id: Option<&str>,
+        emit_stderr: bool,
+    ) {
         let event_id = format!("sce.error.{}", error.code());
-        self.log(
+        self.log_forced(
             LogLevel::Error,
             &event_id,
             error.message(),
@@ -147,6 +152,7 @@ impl Logger {
                 ("error_class", error.class().as_str()),
             ],
             session_id,
+            emit_stderr,
         );
     }
 
@@ -162,7 +168,7 @@ impl Logger {
             return;
         }
 
-        self.log_forced(level, event_id, message, fields, session_id);
+        self.log_forced(level, event_id, message, fields, session_id, true);
     }
 
     fn log_forced(
@@ -172,19 +178,18 @@ impl Logger {
         message: &str,
         fields: &[(&str, &str)],
         session_id: Option<&str>,
+        emit_stderr: bool,
     ) {
         emit_tracing_event(level, event_id, message, fields);
 
         let line = self.render_line(level, event_id, message, fields);
         let redacted_line = redact_sensitive_text(&line);
-        emit_stderr_line(&redacted_line);
 
-        if let Err(error) = self.write_log_line(&redacted_line, session_id) {
-            let diagnostic = redact_sensitive_text(&format!(
-                "Failed to write SCE log file: {error}. Logging continues on stderr."
-            ));
-            emit_stderr_line(&diagnostic);
+        if emit_stderr {
+            emit_stderr_line(&redacted_line);
         }
+
+        let _ = self.write_log_line(&redacted_line, session_id);
     }
 
     fn write_log_line(&self, redacted_line: &str, session_id: Option<&str>) -> Result<()> {
@@ -388,12 +393,7 @@ where
 {
     if write_target == LogWriteTarget::Created {
         if let Some(parent) = path.parent() {
-            if let Err(error) = cleanup(parent) {
-                let diagnostic = redact_sensitive_text(&format!(
-                    "Failed to clean up SCE log files: {error}. Logging continues on stderr."
-                ));
-                emit_stderr_line(&diagnostic);
-            }
+            let _ = cleanup(parent);
         }
     }
 }

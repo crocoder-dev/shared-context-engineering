@@ -143,7 +143,7 @@ where
     W: Write,
 {
     if let Some(log) = logger {
-        log.log_classified_error(error, None);
+        log.log_classified_error(error, None, error.user_facing_presentation().is_none());
     }
     write_error_diagnostic(stderr, error);
     ExitCode::from(error.class().exit_code())
@@ -159,6 +159,12 @@ fn write_stdout_payload<W: Write>(writer: &mut W, payload: &str) -> Result<(), C
 }
 
 fn write_error_diagnostic<W: Write>(writer: &mut W, error: &ClassifiedError) {
+    if let Some(presentation) = error.user_facing_presentation() {
+        let message = services::security::redact_sensitive_text(presentation.message());
+        writeln!(writer, "{message}").expect("writing error diagnostic to writer should not fail");
+        return;
+    }
+
     let rendered = if error.message().contains("Try:") {
         error.message().to_string()
     } else {

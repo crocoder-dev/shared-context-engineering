@@ -54,7 +54,7 @@ The CLI styling service in `cli/src/services/style.rs` provides deterministic te
 - Help output uses `supports_color()` for stdout TTY detection
 - Command-local help styling is applied after clap renders plain help text, covering `Usage:`, section headings, command rows, and placeholder tokens on stdout surfaces
 - Error diagnostics use `supports_color_stderr()` for stderr TTY detection
-- Top-level app diagnostics and observability log-file write failures both render through the shared stderr styling helpers when stderr color is enabled.
+- Classified fallback diagnostics render through the shared stderr styling helpers when stderr color is enabled; explicit user-facing presentations are redacted without a second renderer styling layer so caller-owned styling and structure survive. Observability log-file write failures remain fail-open without terminal styling or output.
 
 ## Sync progress styling
 
