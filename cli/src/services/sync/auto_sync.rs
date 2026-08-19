@@ -49,9 +49,8 @@ where
     FCurrentExe: FnOnce() -> io::Result<PathBuf>,
     FSpawn: FnOnce(AutoSyncCommand) -> io::Result<()>,
 {
-    let executable = match current_exe() {
-        Ok(executable) => executable,
-        Err(_) => return false,
+    let Ok(executable) = current_exe() else {
+        return false;
     };
 
     spawn(AutoSyncCommand::new(executable, repository_root)).is_ok()

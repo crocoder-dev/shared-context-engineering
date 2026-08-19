@@ -157,3 +157,4 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `cli/src/services/config/render.rs`
 - `cli/src/services/config/schema.rs`
 - `cli/src/services/config/policy.rs`
+- `context/cli/agent-trace-auto-sync.md`

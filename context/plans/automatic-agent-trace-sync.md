@@ -97,7 +97,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Result: Integrated the resolved `agent_trace.auto_sync` gate after successful post-commit Agent Trace persistence, invoking the existing sync-owned launcher through an injected fail-open seam; added tests for enabled ordering, disabled behavior, persistence failure, and launcher failure without changing high-frequency hook paths.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::` — pass (24 tests); post-commit boundary inspection confirmed launch occurs only after persistence and diff/conversation trace call sites were unchanged.
   - Context impact: interface — document the automatic post-commit trigger boundary, resolved config gate, and fail-open launcher behavior in durable SCE context; review all five root context files for stale hook/config descriptions.
-  - Context synchronization: pending
+  - Context synchronization: synced
 
 - [ ] T04: `Document asynchronous post-commit Agent Trace synchronization` (status:todo)
   - Task ID: T04

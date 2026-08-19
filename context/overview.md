@@ -12,7 +12,7 @@ The generated `/next-task` workflow persists task-level context-synchronization 
 - **Stderr diagnostics:** stable `SCE-ERR-{PARSE,VALIDATION,RUNTIME,DEPENDENCY}` codes with class-default `Try:` remediation (see `context/sce/cli-error-code-taxonomy.md`).
 - **Stdout/stderr:** command payloads on stdout only; redacted diagnostics and text-mode `sce sync` progress on stderr, while JSON sync remains silent (see `context/sce/cli-stdout-stderr-contract.md`).
 - **Observability:** config-resolved logging to stderr, optional dated/session-partitioned `log_dir` / `SCE_LOG_DIR` files with retention (see `context/sce/cli-observability-contract.md`).
-- **Config precedence:** `flags > env > config file > defaults` (see `context/cli/config-precedence-contract.md`); the config-file-only `agent_trace.auto_sync` opt-in defaults to `false` and is resolved with source metadata for the post-commit trigger boundary.
+- **Config precedence:** `flags > env > config file > defaults` (see `context/cli/config-precedence-contract.md`); the config-file-only `agent_trace.auto_sync` opt-in defaults to `false` and is resolved with source metadata for the post-commit trigger boundary. Its asynchronous post-commit behavior is documented in `context/cli/agent-trace-auto-sync.md`.
 - **Attribution hooks:** enabled by default, gated by staged-diff AI-overlap preflight; `SCE_ATTRIBUTION_HOOKS_DISABLED` opt-out (see `context/sce/agent-trace-commit-msg-coauthor-policy.md`).
 - **Install channels:** repo-flake Nix, Cargo, npm, and source-built Flatpak (`dev.crocoder.sce`); Homebrew deferred (see `context/sce/cli-first-install-channels-contract.md`).
 

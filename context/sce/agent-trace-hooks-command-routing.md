@@ -124,3 +124,9 @@
 - No `conversation-trace` retry/backfill path or `context/tmp` artifact persistence
 - No runtime Claude diff-trace persistence or AgentTraceDb writes from the removed capture route itself, and no direct artifact/DB writes from the Claude or OpenCode TypeScript runtimes
 - No checkout-scoped active DB writes, legacy checkout DB migration/import/backfill, or daemon/background Agent Trace service
+
+## Related context
+
+- [Automatic Agent Trace synchronization](../cli/agent-trace-auto-sync.md)
+- [CLI config precedence contract](../cli/config-precedence-contract.md)
+- [SCE sync command](../cli/sync-command.md)
