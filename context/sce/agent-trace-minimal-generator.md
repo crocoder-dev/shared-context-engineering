@@ -13,7 +13,7 @@ Given a `constructed_patch` (AI candidate) and a `post_commit_patch` (canonical 
    - **`mixed`** — `intersection_patch` hunk exists at the same slot but content differs.
    - **`unknown`** — no `intersection_patch` hunk at the same `old_start` slot.
 4. Map `Conversation.contributor.model_id` from the matched `intersection_patch` hunk when contributor type is `ai` or `mixed`; omit `model_id` when provenance is missing (`None`).
-5. For each emitted conversation, derive optional `conversation.related` entries from non-empty `session_id` values on touched lines in the matched `intersection_patch` hunk; emit related entries as `{ "type": "session", "url": "https://sce.crocoder.dev/sessions/<session_id>" }`, deduplicated by session ID with deterministic ordering, and omit `related` when no included lines provide `session_id`.
+5. For each emitted conversation, derive optional `conversation.related` entries from non-empty `session_id` values on touched lines in the matched `intersection_patch` hunk; emit related entries as `{ "type": "session", "url": "https://sce.crocoder.dev/sessions/<session_id>" }`, deduplicated by session ID with deterministic ordering, and omit `related` when no included lines provide `session_id`. Structured diff-trace reconstruction supplies the persisted canonical `cc_...` row session on every touched line, so Claude related-session URLs use canonical persisted provenance rather than the raw payload session.
 6. Emit one `Conversation` per `post_commit_patch` hunk, each carrying the trace lookup `url`, one `TraceFile` per `post_commit_patch` file, and one range per hunk with a deterministic `content_hash` computed from that hunk's touched-line kind/content.
 
 ## Domain types

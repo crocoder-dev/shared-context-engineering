@@ -377,6 +377,7 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
     let mut skipped = Vec::new();
 
     for row in rows {
+        let is_structured = row.payload_type == PAYLOAD_TYPE_STRUCTURED;
         let parse_result = match row.payload_type.as_str() {
             PAYLOAD_TYPE_PATCH => parse_patch(&row.patch, Some(row.session_id.as_str()))
                 .map_err(|error| skipped_diff_trace_patch_reason(&error)),
@@ -402,6 +403,11 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
                 for file in &mut patch.files {
                     for hunk in &mut file.hunks {
                         hunk.model_id.clone_from(&row.model_id);
+                        if is_structured {
+                            for line in &mut hunk.lines {
+                                line.session_id = Some(row.session_id.clone());
+                            }
+                        }
                     }
                 }
 
@@ -441,6 +447,7 @@ mod tests {
 
     use super::repository::RepositoryAgentTraceDb;
     use super::*;
+    use crate::services::agent_trace::{build_agent_trace, AgentTraceMetadataInput};
 
     fn unique_test_db_path() -> PathBuf {
         let nonce = SystemTime::now()
@@ -477,6 +484,119 @@ mod tests {
             payload_type: PAYLOAD_TYPE_PATCH,
         })
         .expect("diff trace insert should succeed");
+    }
+
+    #[test]
+    fn structured_diff_trace_reconstruction_uses_persisted_model_and_session_provenance() {
+        let db_path = unique_test_db_path();
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let payload =
+            include_str!("../structured_patch/fixtures/edit_multi_hunk/claude-post-tool-use.json");
+
+        db.insert_diff_trace(DiffTraceInsert {
+            time_ms: 1_000,
+            session_id: "cc_session-123",
+            patch: payload,
+            model_id: Some("claude/claude-sonnet-4-5"),
+            tool_name: "claude",
+            tool_version: Some("1.0.0"),
+            payload_type: PAYLOAD_TYPE_STRUCTURED,
+        })
+        .expect("structured diff trace insert should succeed");
+
+        let result = db
+            .recent_diff_trace_patches(0, 2_000)
+            .expect("structured diff trace should load");
+        assert_eq!(result.loaded_count(), 1);
+        assert_eq!(result.skipped_count(), 0);
+
+        let patch = &result.patches[0].patch;
+        assert!(
+            patch
+                .files
+                .iter()
+                .flat_map(|file| &file.hunks)
+                .all(|hunk| hunk.model_id.as_deref() == Some("claude/claude-sonnet-4-5")),
+            "every reconstructed hunk should use the persisted row model"
+        );
+        assert!(
+            patch
+                .files
+                .iter()
+                .flat_map(|file| &file.hunks)
+                .flat_map(|hunk| &hunk.lines)
+                .all(|line| line.session_id.as_deref() == Some("cc_session-123")),
+            "every reconstructed touched line should use the persisted canonical row session"
+        );
+
+        drop(db);
+        if let Some(parent) = db_path.parent() {
+            fs::remove_dir_all(parent).expect("test DB directory should be removed");
+        }
+    }
+
+    #[test]
+    fn claude_model_attribution_flows_from_persisted_structured_row_to_agent_trace() {
+        let db_path = unique_test_db_path();
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let payload =
+            include_str!("../structured_patch/fixtures/edit_single_hunk/claude-post-tool-use.json");
+        let post_commit_patch = parse_patch(
+            include_str!("../structured_patch/fixtures/edit_single_hunk/expected.patch"),
+            None,
+        )
+        .expect("post-commit fixture should parse");
+
+        db.insert_diff_trace(DiffTraceInsert {
+            time_ms: 1_000,
+            session_id: "cc_session-123",
+            patch: payload,
+            model_id: Some("claude/claude-sonnet-4-5"),
+            tool_name: "claude",
+            tool_version: Some("1.0.0"),
+            payload_type: PAYLOAD_TYPE_STRUCTURED,
+        })
+        .expect("structured diff trace insert should succeed");
+
+        let mut result = db
+            .recent_diff_trace_patches(0, 2_000)
+            .expect("structured diff trace should load");
+        let constructed_patch = result
+            .patches
+            .pop()
+            .expect("one structured diff trace should load")
+            .patch;
+        let agent_trace = build_agent_trace(
+            &constructed_patch,
+            &post_commit_patch,
+            AgentTraceMetadataInput {
+                commit_timestamp: "2026-04-23T10:20:30Z",
+                commit_revision: "a0b1c2d3e4f5a6b7c8d9e0f11223344556677889",
+                vcs_type: None,
+                tool_name: Some("claude"),
+                tool_version: Some("1.0.0"),
+            },
+        )
+        .expect("Agent Trace should build");
+        let agent_trace_json =
+            serde_json::to_value(agent_trace).expect("Agent Trace should serialize");
+
+        assert_eq!(
+            agent_trace_json["files"][0]["conversations"][0]["contributor"]["model_id"],
+            "claude/claude-sonnet-4-5"
+        );
+        assert_eq!(
+            agent_trace_json["files"][0]["conversations"][0]["related"],
+            serde_json::json!([{
+                "type": "session",
+                "url": "https://sce.crocoder.dev/sessions/cc_session-123"
+            }])
+        );
+
+        drop(db);
+        if let Some(parent) = db_path.parent() {
+            fs::remove_dir_all(parent).expect("test DB directory should be removed");
+        }
     }
 
     #[test]
