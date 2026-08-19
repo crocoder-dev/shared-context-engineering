@@ -9,6 +9,6 @@ pub struct HooksCommand {
 impl HooksCommand {
     pub fn execute<C: HasLogger>(&self, context: &C) -> Result<String, CliError> {
         hooks::run_hooks_subcommand(&self.subcommand, Some(context.logger()))
-            .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))
+            .map_err(CliError::runtime)
     }
 }

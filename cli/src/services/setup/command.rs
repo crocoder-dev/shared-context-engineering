@@ -17,13 +17,13 @@ impl SetupCommand {
             Some(path) => path.clone(),
             None => std::env::current_dir()
                 .context("Failed to determine current directory")
-                .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))?,
+                .map_err(CliError::runtime)?,
         };
 
         // The repository root is resolved before any prompt so the interactive
         // optional-workflow prompt can pre-check the persisted selection.
-        let repository_root = setup::ensure_git_repository(&setup_start_path)
-            .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))?;
+        let repository_root =
+            setup::ensure_git_repository(&setup_start_path).map_err(CliError::runtime)?;
 
         let setup_dispatch = if self.request.context_only {
             None
@@ -40,7 +40,7 @@ impl SetupCommand {
                 &setup::InquireSetupTargetPrompter,
                 &optional_workflow_defaults,
             )
-            .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))?
+            .map_err(CliError::runtime)?
             {
                 setup::SetupDispatch::Proceed {
                     mode: resolved_mode,
@@ -57,8 +57,8 @@ impl SetupCommand {
         let mut sections = Vec::new();
 
         // Every successful setup path ensures the durable-context baseline exists.
-        let context_message = setup::bootstrap_context_baseline(&repository_root)
-            .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))?;
+        let context_message =
+            setup::bootstrap_context_baseline(&repository_root).map_err(CliError::runtime)?;
         sections.push(context_message);
 
         if self.request.context_only {
@@ -73,9 +73,7 @@ impl SetupCommand {
         let providers = lifecycle_providers(self.request.install_hooks);
 
         for provider in &providers {
-            let outcome = provider
-                .setup(&ctx)
-                .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))?;
+            let outcome = provider.setup(&ctx).map_err(CliError::runtime)?;
 
             sections.extend(outcome.messages);
 
@@ -96,7 +94,7 @@ impl SetupCommand {
 
             let setup_message =
                 setup::run_setup_for_mode(&repository_root, resolved_mode, optional_workflows)
-                    .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))?;
+                    .map_err(CliError::runtime)?;
             sections.push(setup_message);
         }
 
