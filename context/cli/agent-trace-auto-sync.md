@@ -2,16 +2,16 @@
 
 ## Purpose
 
-Automatic synchronization is an opt-in convenience layered on the existing
+Automatic synchronization is a default-enabled convenience layered on the existing
 `sce sync` command. It does not replace explicit synchronization or introduce a
 second synchronization engine.
 
 ## Configuration
 
 `agent_trace.auto_sync` is a config-file-only boolean resolved through the normal
-global-then-local config merge. It defaults to `false`, and `sce config show`
-reports the resolved value and its source. There is no environment variable or
-CLI flag for this opt-in.
+global-then-local config merge. It defaults to `true`, and `sce config show`
+reports the resolved value and its source. Set it explicitly to `false` to opt
+out. There is no environment variable or CLI flag for this setting.
 
 ## Trigger boundary
 
