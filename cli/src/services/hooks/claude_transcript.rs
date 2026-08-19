@@ -55,11 +55,7 @@ fn extract_claude_transcript_model_from_reader<R: BufRead>(
             }
             message
         } else {
-            if !record
-                .get("role")
-                .and_then(Value::as_str)
-                .is_some_and(|value| value == "assistant")
-            {
+            if record.get("role").and_then(Value::as_str) != Some("assistant") {
                 continue;
             }
             record
@@ -100,8 +96,8 @@ mod tests {
 
     use super::*;
 
-    fn transcript_reader(content: &str) -> io::Result<Cursor<&[u8]>> {
-        Ok(Cursor::new(content.as_bytes()))
+    fn transcript_reader(content: &str) -> Cursor<&[u8]> {
+        Cursor::new(content.as_bytes())
     }
 
     #[test]
@@ -114,8 +110,10 @@ mod tests {
             "\n"
         );
 
-        let model =
-            extract_claude_transcript_model_from_reader(transcript_reader(transcript), "tool-123");
+        let model = extract_claude_transcript_model_from_reader(
+            Ok(transcript_reader(transcript)),
+            "tool-123",
+        );
 
         assert_eq!(model.as_deref(), Some("claude-opus-4-1"));
     }
@@ -142,12 +140,15 @@ mod tests {
         );
 
         assert_eq!(
-            extract_claude_transcript_model_from_reader(transcript_reader(unmatched), "tool-123"),
+            extract_claude_transcript_model_from_reader(
+                Ok(transcript_reader(unmatched)),
+                "tool-123"
+            ),
             None
         );
         assert_eq!(
             extract_claude_transcript_model_from_reader(
-                transcript_reader(missing_model),
+                Ok(transcript_reader(missing_model)),
                 "tool-123"
             ),
             None

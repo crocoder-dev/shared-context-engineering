@@ -75,6 +75,8 @@ Both functions wrap `serde_json::from_str`/`serde_json::from_slice` and map serd
 | `intersect_patches` | Post-commit hook runtime | Combines recent patches then intersects with current commit patch |
 | `combine_patches` | Post-commit hook runtime | Combines chronological recent patches before intersection |
 
+For `payload_type="structured"` database rows, the repository adapter enriches the derived `ParsedPatch` before these set operations: every hunk receives the persisted row `model_id`, and every touched line receives the persisted tool-prefixed canonical row `session_id`. The raw unprefixed session carried inside the stored Claude payload is not reconstructed as touched-line provenance.
+
 Public types consumed by the parser or load helpers have `#[allow(dead_code)]` removed; other module internals that are not yet consumed outside the crate retain `#[allow(dead_code)]`.
 
 ## Reconstruction fixture suites

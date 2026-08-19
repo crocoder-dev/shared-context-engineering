@@ -10,15 +10,15 @@ Also repair structured diff-trace reconstruction so every touched line receives 
 
 How this plan is proven complete. Each criterion is observable and names the check that proves it. `/validate` runs these checks; no task in the stack performs final validation.
 
-- [ ] AC1: A supported Claude `PostToolUse` event uses direct model metadata when present; otherwise it resolves the model from the real Claude assistant-message JSONL envelope by matching `tool_use.id` to `tool_use_id`, normalizes the result without double-prefixing, and leaves `model_id` null when lookup cannot succeed.
+- [x] AC1: A supported Claude `PostToolUse` event uses direct model metadata when present; otherwise it resolves the model from the real Claude assistant-message JSONL envelope by matching `tool_use.id` to `tool_use_id`, normalizes the result without double-prefixing, and leaves `model_id` null when lookup cannot succeed.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_transcript`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model`.
-- [ ] AC2: Transcript lookup is fail-open for missing or unreadable files, unmatched tool calls, missing models, and malformed unrelated JSONL lines, and direct metadata always wins over transcript-derived metadata.
+- [x] AC2: Transcript lookup is fail-open for missing or unreadable files, unmatched tool calls, missing models, and malformed unrelated JSONL lines, and direct metadata always wins over transcript-derived metadata.
   - Validate: focused transcript and resolver unit tests cover all named branches and pass under the commands in AC1.
-- [ ] AC3: Reconstructing a `payload_type="structured"` diff-trace row assigns the persisted `row.model_id` to every relevant hunk and the persisted canonical `row.session_id` to every touched line, without reusing the raw unprefixed session from the stored Claude payload.
+- [x] AC3: Reconstructing a `payload_type="structured"` diff-trace row assigns the persisted `row.model_id` to every relevant hunk and the persisted canonical `row.session_id` to every touched line, without reusing the raw unprefixed session from the stored Claude payload.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml structured_diff_trace`.
-- [ ] AC4: A Claude event with no direct model, a transcript match, and persisted `cc_...` session provenance produces Agent Trace output containing both `contributor.model_id` and a related resource with `type="session"` and the canonical `https://sce.crocoder.dev/sessions/cc_...` URL; existing OpenCode and Pi attribution behavior remains unchanged.
+- [x] AC4: A Claude event with no direct model, a transcript match, and persisted `cc_...` session provenance produces Agent Trace output containing both `contributor.model_id` and a related resource with `type="session"` and the canonical `https://sce.crocoder.dev/sessions/cc_...` URL; existing OpenCode and Pi attribution behavior remains unchanged.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_attribution`; existing OpenCode/Pi hook and Agent Trace regression tests pass in `nix flake check`.
-- [ ] AC5: Current-state Agent Trace documentation describes direct-first/transcript-second/NULL Claude attribution as event-local enrichment, explicitly excludes `session_models` from runtime design, and records canonical persisted-session propagation during structured reconstruction.
+- [x] AC5: Current-state Agent Trace documentation describes direct-first/transcript-second/NULL Claude attribution as event-local enrichment, explicitly excludes `session_models` from runtime design, and records canonical persisted-session propagation during structured reconstruction.
   - Validate: inspect the focused Agent Trace hook, DB, patch, and generator context documents for those statements and confirm no current-state document describes an active `session_models` runtime.
 
 ### Full validation
@@ -63,14 +63,50 @@ Repository-wide checks `/validate` runs after the last task, regardless of which
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_transcript` — pass (3 tests); `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model` — pass (3 tests).
   - Context impact: domain — synchronized current-state Agent Trace hook and DB documentation plus root summaries/patterns/glossary entries that previously described direct-only Claude model attribution.
 
-- [ ] T02: `Preserve structured diff-trace model and session provenance` (status:todo)
+- [x] T02: `Preserve structured diff-trace model and session provenance` (status:done)
   - Task ID: T02
   - Scope: In — update `parse_recent_diff_trace_patch_rows` so structured-row hunks retain persisted `model_id` and every touched line receives persisted canonical `session_id`; add focused reconstruction coverage and a practical persisted-row-to-Agent-Trace regression proving model plus canonical related session; preserve patch-row behavior. Out — schema/migration changes, backfill, Agent Trace schema changes, OpenCode/Pi attribution changes, and unrelated post-commit refactors.
   - Dependencies: T01
   - Done when: a persisted Claude structured row with `cc_session-123` and a Claude model reconstructs with that model on every relevant hunk and that canonical session on every touched line, and downstream Agent Trace output emits both model attribution and the canonical related-session URL; focused and existing regressions pass.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml structured_diff_trace`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_attribution`.
-  - Context synchronization: pending
+  - Context synchronization: synced
+  - Completed: 2026-08-19
+  - Files changed: `cli/src/services/agent_trace_db/mod.rs`
+  - Result: Structured diff-trace reconstruction now assigns the persisted row model to every hunk and the persisted canonical row session to every touched line, with persisted-row regressions proving downstream Agent Trace model and related-session output while preserving patch-row behavior.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml structured_diff_trace` — pass (1 test); `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_attribution` — pass (1 test); `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db::tests` — pass (3 tests).
+  - Context impact: domain — update current-state patch reconstruction and Agent Trace generator documentation for persisted structured-row model and canonical session propagation; review all five root context files for stale provenance summaries or contracts.
 
 ## Open questions
 
 None. The request fixes a production attribution loss with explicit precedence, failure, persistence, provenance, compatibility, documentation, and validation contracts; the existing code and historical helper provide sufficient implementation seams without an architecture decision.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-08-19
+
+### Commands run
+
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral generation passed for 107 files)
+- `nix flake check` -> exit 0 (all x86_64-linux flake checks passed, including CLI tests, Clippy, and formatting)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_transcript` -> exit 0 (3 focused transcript tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model` -> exit 0 (4 matching model-attribution tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml structured_diff_trace` -> exit 0 (1 structured reconstruction test passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_attribution` -> exit 0 (1 persisted-row Agent Trace attribution test passed)
+- `grep -R -n --include='*.md' 'session_models' context | head -200; git status --short` -> exit 0 (current-state references describe the runtime as removed or absent, and no untracked validation artifacts were present)
+
+### Success-criteria verification
+
+- [x] AC1: A supported Claude event uses direct-first/transcript-second normalized nullable model attribution -> both focused test commands passed, including real assistant-envelope lookup, direct precedence, normalization, and unresolved `None` behavior.
+- [x] AC2: Transcript lookup is fail-open across the named failure branches -> focused tests passed for unreadable, unmatched, missing-model, malformed-record, and direct-precedence cases.
+- [x] AC3: Structured reconstruction propagates persisted model and canonical session provenance -> the focused reconstruction test passed.
+- [x] AC4: Agent Trace emits Claude model and canonical related-session attribution while OpenCode/Pi regressions remain unchanged -> the focused persisted-row test and repository-wide flake checks passed.
+- [x] AC5: Current-state documentation records event-local Claude enrichment, excludes active `session_models`, and documents canonical persisted-session reconstruction -> inspected the focused hook, DB, patch, structured-patch, and generator documents; the context search found no current-state claim of an active `session_models` runtime.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- Default `nix flake check` validated x86_64-linux; Nix reported that aarch64-darwin, aarch64-linux, and x86_64-darwin checks were omitted as incompatible with the current host.
