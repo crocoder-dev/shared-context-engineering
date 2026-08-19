@@ -8,15 +8,15 @@ Extend the canonical Pkl schema and Rust config layers with `agent_trace.auto_sy
 
 ## Acceptance criteria
 
-- [ ] AC1: A config file containing `{ "agent_trace": { "auto_sync": true } }` validates and resolves as enabled, an invalid `auto_sync` type is rejected, and an omitted value resolves to `false`.
+- [x] AC1: A config file containing `{ "agent_trace": { "auto_sync": true } }` validates and resolves as enabled, an invalid `auto_sync` type is rejected, and an omitted value resolves to `false`.
   - Validate: targeted config schema/resolver tests for valid, invalid-type, and omitted-value cases; `nix run .#pkl-check-generated`.
-- [ ] AC2: When `agent_trace.auto_sync` is enabled and post-commit Agent Trace persistence succeeds, the hook launches the current executable with exactly `sync --format json`, uses the repository root as child working directory, discards stdin/stdout/stderr, and returns without waiting for the child.
+- [x] AC2: When `agent_trace.auto_sync` is enabled and post-commit Agent Trace persistence succeeds, the hook launches the current executable with exactly `sync --format json`, uses the repository root as child working directory, discards stdin/stdout/stderr, and returns without waiting for the child.
   - Validate: focused launcher and post-commit boundary tests asserting executable/arguments/current directory/stdio configuration and injected launcher invocation ordering.
-- [ ] AC3: Disabled auto-sync causes no launch; failed Agent Trace validation or persistence causes no launch; and a launcher/current-executable/spawn failure leaves the otherwise successful post-commit result successful.
+- [x] AC3: Disabled auto-sync causes no launch; failed Agent Trace validation or persistence causes no launch; and a launcher/current-executable/spawn failure leaves the otherwise successful post-commit result successful.
   - Validate: focused post-commit and launcher failure tests covering each fail-open branch.
-- [ ] AC4: Automatic synchronization invokes only the existing `sce sync` command and introduces no daemon, watcher, polling loop, local cursor, synchronization database, persistent service, or high-frequency `conversation-trace`/`diff-trace` trigger.
+- [x] AC4: Automatic synchronization invokes only the existing `sce sync` command and introduces no daemon, watcher, polling loop, local cursor, synchronization database, persistent service, or high-frequency `conversation-trace`/`diff-trace` trigger.
   - Validate: code inspection plus targeted module tests and the existing sync test suite; verify no changes to the existing sync protocol/cursor implementation.
-- [ ] AC5: Durable SCE context explains manual `sce sync`, opt-in `agent_trace.auto_sync`, one-shot asynchronous execution, no daemon, fail-open behavior, and local retryability through the control-plane cursor authority.
+- [x] AC5: Durable SCE context explains manual `sce sync`, opt-in `agent_trace.auto_sync`, one-shot asynchronous execution, no daemon, fail-open behavior, and local retryability through the control-plane cursor authority.
   - Validate: manual review of the updated/new context files against the implemented code.
 
 ### Full validation
@@ -99,14 +99,48 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: interface — document the automatic post-commit trigger boundary, resolved config gate, and fail-open launcher behavior in durable SCE context; review all five root context files for stale hook/config descriptions.
   - Context synchronization: synced
 
-- [ ] T04: `Document asynchronous post-commit Agent Trace synchronization` (status:todo)
+- [x] T04: `Document asynchronous post-commit Agent Trace synchronization` (status:done)
   - Task ID: T04
   - Scope: In — the new auto-sync context document and the listed overview, architecture, glossary, patterns, context-map, sync-command, config-precedence, and hook-routing updates, reflecting the final implemented names and behavior. Out — code changes, generated target trees, generated schema artifacts, and historical decision records.
   - Dependencies: T03
   - Done when: durable context distinguishes explicit/manual `sce sync` from opt-in asynchronous post-commit triggering, states that there is no daemon and failures are fail-open, explains that pending rows remain local for later retry, and accurately names the config and hook boundaries.
   - Verify: manual code/context review; `nix run .#pkl-check-generated`; `nix flake check`.
-  - Context synchronization: pending
+  - Completed: 2026-08-19
+  - Files changed: `context/plans/automatic-agent-trace-sync.md` (lifecycle/evidence record; scoped durable context was already current at the Git baseline)
+  - Result: Verified the scoped durable context against the implemented config resolver, sync-owned launcher, and post-commit hook boundary; all required auto-sync behavior, fail-open semantics, retryability, and non-goals are accurately documented, so no additional context text changes were necessary.
+  - Verify: manual code/context review — pass; `nix run .#pkl-check-generated` — pass (107 generated files, inventory sha256 `5ebbf7a119a7f79e19f65a7c30ee032681ae749279270735b5fbb87b0e1b2658`); `nix flake check` — pass (all checks passed; incompatible systems omitted).
+  - Context impact: interface — verified the new `agent_trace.auto_sync` config contract, asynchronous post-commit trigger boundary, fail-open launcher semantics, manual/cursor-authoritative retry path, and no-daemon/high-frequency-trigger non-goals across the listed durable context files.
+  - Context synchronization: synced
 
 ## Open questions
 
 None. The request fixes the trigger boundary, command shape, opt-in default, fail-open semantics, prohibited architectures, test expectations, and documentation requirements; the plan records only local implementation choices that follow existing repository patterns.
+
+## Validation Report
+
+**Status:** validated
+**Plan:** `context/plans/automatic-agent-trace-sync.md`
+**Name:** `automatic-agent-trace-sync`
+**Tasks:** `4/4 complete`
+**Date:** `2026-08-19`
+
+## Commands run
+
+- `nix flake check` -> passed — all flake checks passed; incompatible systems omitted.
+- `nix run .#pkl-check-generated` -> passed — ephemeral Pkl generation passed for 107 files.
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml config::` -> passed — 25 targeted config tests passed.
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auto_sync` -> passed — 13 launcher/config/post-commit auto-sync tests passed.
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::` -> passed — 25 focused hook tests passed.
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml sync::` -> passed — 57 existing sync tests passed.
+
+## Acceptance criteria
+
+- [x] AC1: A config file containing `{ "agent_trace": { "auto_sync": true } }` validates and resolves as enabled, an invalid `auto_sync` type is rejected, and an omitted value resolves to `false` — targeted config tests and generated Pkl validation passed.
+- [x] AC2: When enabled, post-commit launches the exact detached command in the repository root with null stdio — launcher and post-commit ordering tests passed.
+- [x] AC3: Disabled, validation-failure, persistence-failure, launcher/current-executable/spawn-failure paths are fail-open — focused tests passed, including `post_commit_validation_failure_does_not_resolve_or_launch_auto_sync`.
+- [x] AC4: Automatic synchronization reuses only `sce sync` without prohibited daemon, cursor, persistence, or high-frequency trigger behavior — targeted sync tests and code inspection passed.
+- [x] AC5: Durable context accurately documents opt-in asynchronous sync, manual retryability, cursor authority, fail-open behavior, and no daemon — manual review passed.
+
+## Residual risks
+
+- None identified.
