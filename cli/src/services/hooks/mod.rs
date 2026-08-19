@@ -2941,6 +2941,46 @@ mod tests {
     }
 
     #[test]
+    fn post_commit_validation_failure_does_not_resolve_or_launch_auto_sync() {
+        let validation_called = RefCell::new(false);
+        let config_called = RefCell::new(false);
+        let launch_called = RefCell::new(false);
+
+        let error = run_post_commit_subcommand_with(
+            Path::new("/repo"),
+            None,
+            "",
+            |_| Ok(post_commit_flow_result()),
+            |_, flow_result, vcs_type, remote_url| {
+                run_post_commit_agent_trace_flow_with(
+                    flow_result,
+                    vcs_type,
+                    remote_url,
+                    |_| {
+                        *validation_called.borrow_mut() = true;
+                        Err(anyhow!("Agent Trace validation failed"))
+                    },
+                    |_| panic!("Agent Trace persistence must not run after validation failure"),
+                )
+            },
+            |_| {
+                *config_called.borrow_mut() = true;
+                Ok(true)
+            },
+            |_| {
+                *launch_called.borrow_mut() = true;
+                Ok(())
+            },
+        )
+        .expect_err("validation failure should be returned");
+
+        assert!(*validation_called.borrow());
+        assert!(!error.to_string().is_empty());
+        assert!(!*config_called.borrow());
+        assert!(!*launch_called.borrow());
+    }
+
+    #[test]
     fn post_commit_auto_sync_does_not_launch_when_disabled() {
         let launch_called = RefCell::new(false);
 
