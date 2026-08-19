@@ -33,7 +33,7 @@ pub trait Logger: Send + Sync {
         session_id: Option<&str>,
     );
 
-    fn log_classified_error(&self, error: &CliError, session_id: Option<&str>);
+    fn log_cli_error(&self, error: &CliError, session_id: Option<&str>);
 }
 
 pub trait Telemetry: Send + Sync {
@@ -84,7 +84,7 @@ impl Logger for NoopLogger {
     ) {
     }
 
-    fn log_classified_error(&self, _error: &CliError, _session_id: Option<&str>) {}
+    fn log_cli_error(&self, _error: &CliError, _session_id: Option<&str>) {}
 }
 
 impl Logger for super::Logger {
@@ -128,8 +128,8 @@ impl Logger for super::Logger {
         super::Logger::error(self, event_id, message, fields, session_id);
     }
 
-    fn log_classified_error(&self, error: &CliError, session_id: Option<&str>) {
-        super::Logger::log_classified_error(self, error, session_id);
+    fn log_cli_error(&self, error: &CliError, session_id: Option<&str>) {
+        super::Logger::log_cli_error(self, error, session_id);
     }
 }
 

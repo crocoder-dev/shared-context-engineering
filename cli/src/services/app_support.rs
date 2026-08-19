@@ -143,7 +143,7 @@ where
     W: Write,
 {
     if let Some(log) = logger {
-        log.log_classified_error(error, None);
+        log.log_cli_error(error, None);
     }
     write_error_diagnostic(stderr, error);
     ExitCode::from(error.class().exit_code())

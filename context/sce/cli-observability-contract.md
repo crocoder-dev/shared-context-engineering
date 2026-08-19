@@ -48,7 +48,7 @@ Runtime observability consumes the shared resolved observability config from `cl
   - `sce.command.dispatch_end` (debug level - logged after successful dispatch)
   - `sce.command.completed`
 - Error logging uses the pattern `sce.error.{code}` where `{code}` is the classified error code (e.g., `sce.error.SCE-ERR-RUNTIME`).
-- All `CliError` instances are logged via `Logger::log_classified_error()` before user-facing stderr diagnostics are written.
+- All `CliError` instances are logged via `Logger::log_cli_error()` before user-facing stderr diagnostics are written.
 - Event records include deterministic metadata keys used by automation (`command`, `failure_class`, `component` when applicable).
 - Error log records include `error_code` and `error_class` fields for structured observability.
 - App runtime initializes tracing subscriber context before parse/dispatch and shuts down tracer provider on process exit.
@@ -65,7 +65,7 @@ Runtime observability consumes the shared resolved observability config from `cl
 
 ## Observability trait boundaries
 
-- `cli/src/services/observability/traits.rs` exposes the `services::observability::traits::Logger` trait with the current logging API: `info`, `debug`, `warn`, `error`, and `log_classified_error`, each accepting `Option<&str>` session context used only for file routing.
+- `cli/src/services/observability/traits.rs` exposes the `services::observability::traits::Logger` trait with the current logging API: `info`, `debug`, `warn`, `error`, and `log_cli_error`, each accepting `Option<&str>` session context used only for file routing.
 - The concrete `services::observability::Logger` implements the trait while retaining the existing inherent methods and behavior.
 - `NoopLogger` is available from the same traits module for tests and future dependency-injected services that need a logger without side effects.
 - The same traits module exposes object-safe `services::observability::traits::Telemetry` with the current app subscriber boundary: `with_default_subscriber` for command-lifecycle execution.
