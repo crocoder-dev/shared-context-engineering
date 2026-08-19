@@ -106,3 +106,4 @@ client. The command change does not alter those semantics.
 - [Agent Trace export readers](../sce/agent-trace-export-readers.md)
 - [CLI stdout/stderr contract](../sce/cli-stdout-stderr-contract.md)
 - [Trace-sync progress stream contract](../decisions/2026-08-13-trace-sync-progress-stream-contract.md)
+- [Automatic Agent Trace synchronization](agent-trace-auto-sync.md)
