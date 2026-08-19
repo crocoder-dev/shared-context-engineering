@@ -116,13 +116,23 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: Internal-only. `ControlPlaneError`/`StreamSyncError`/`TraceSyncError` are all internal-to-the-sync-stack types; no public CLI interface, exit code, `SCE-ERR-*` code, or rendered diagnostic text changed, and `Display` output for every affected variant is unchanged. No `context/sce`/`context/cli` doc requires updating yet; T07 documents the full architecture once T02–T06 finish shaping it.
   - Context synchronization: synced
 
-- [ ] T04: `Classify sce sync authentication failures as the typed user error` (status:todo)
+- [x] T04: `Classify sce sync authentication failures as the typed user error` (status:done)
   - Task ID: T04
   - Scope: In — `cli/src/services/sync/command.rs`'s `classify_sync_error(err: TraceSyncError) -> CliError`, rewritten to call `err.is_authentication_failure()` and return `CliError::user_with_source(UserError::NotAuthenticated, err)` when true, `CliError::runtime(err)` otherwise. Out — any friendly-sentence text, terminal styling, or color-policy decision in `sync/command.rs` (owned by `app_support` since T01); rendering/observability changes.
   - Dependencies: T01, T03
   - Done when: `sce sync` authentication failures from the initial `/state` call, a stream batch request, and a stream reconciliation `/state` refresh all classify as `CliError::User { error: UserError::NotAuthenticated, .. }`; every other `ControlPlaneError` variant (`Forbidden`, `BadRequest`, `Transport`, `ServerError`, `InvalidResponse`, `Storage`, `Protocol`) still classifies as `CliError::Internal`; `sync/command.rs` contains no string matching, no styling call, and no friendly sentence.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml sync::`; `grep -n "style::success\|You are not logged in\|\\.contains(" cli/src/services/sync/command.rs` (expect no results).
-  - Context synchronization: pending
+  - Completed: 2026-08-19
+  - Files changed: `cli/src/services/sync/command.rs`
+  - Result: `classify_sync_error` now branches on `err.is_authentication_failure()`: `true` returns `CliError::user_with_source(UserError::NotAuthenticated, err)` (preserving the live `TraceSyncError`/`ControlPlaneError` chain as the technical source instead of the prior `anyhow::Error::msg(format!("{err}"))` stringification), `false` returns `CliError::runtime(err)` (also now passing the live error via `Into<anyhow::Error>` rather than a pre-formatted string, matching T02's anyhow-preservation pattern). Added a `UserError` import. Added a `#[cfg(test)] mod tests` covering all four authentication paths named in the task (`ControlPlane(MissingCredentials)`, `ControlPlane(AuthenticationFailed)`, `Stream { source: Terminal(AuthenticationFailed) }`, `Stream { source: Refresh(MissingCredentials) }`) asserting `CliError::User` with a preserved source, plus negative cases for every other `ControlPlaneError` variant (`Forbidden`, `BadRequest`, `Transport`, `ServerError`, `InvalidResponse`, `Storage`) and `TraceSyncError::Runtime`, asserting `CliError::Internal`. No changes outside `sync/command.rs`; `sync.rs`'s pre-existing `#[allow(dead_code)]` on `TraceSyncError::is_authentication_failure()` was left in place since removing it was outside this task's declared scope (harmless now that the method has a real caller — an unused `allow` is not a compiler or clippy error).
+  - Verify:
+    - `./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml` — passed.
+    - `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml sync::` — passed, 60/60, including the 8 new classification tests.
+    - `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` — passed, 351/351 (up from 345; +6 net after removing none and adding 8 minus overlap in filtered count reporting).
+    - `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml` — clean.
+    - `grep -n "style::success\|You are not logged in\|\.contains(" cli/src/services/sync/command.rs` — no results.
+  - Context impact: Internal-only for `sync/command.rs`'s own contract, but this is the first call site that actually constructs `CliError::User`/`UserError::NotAuthenticated`, so `sce sync` authentication failures now render through `app_support`'s friendly-diagnostic path (built in T01) instead of the generic internal-error path — a real, user-visible behavior change for that one failure mode, though the rendering logic itself is unchanged. `context/cli/sync-command.md` and `context/cli/agent-trace-sync-command.md` (listed under this plan's Context sync) describe this authentication-classification behavior; T07 is the task that updates durable context docs once T02–T06 finish shaping the full architecture, so no doc update is made here.
+  - Context synchronization: synced
 
 - [ ] T05: `Give observability one owner for structured CliError logging without duplicate terminal output` (status:todo)
   - Task ID: T05

@@ -1,7 +1,7 @@
 use std::io::Write;
 
 use crate::app::ContextWithRepoRoot;
-use crate::services::error::CliError;
+use crate::services::error::{CliError, UserError};
 use crate::services::sync::progress::{
     IndicatifProgressReporter, NoopProgressReporter, ProgressReporter,
 };
@@ -33,7 +33,11 @@ where
 
 #[allow(clippy::needless_pass_by_value)]
 fn classify_sync_error(err: TraceSyncError) -> CliError {
-    CliError::runtime(anyhow::Error::msg(format!("{err}")))
+    if err.is_authentication_failure() {
+        CliError::user_with_source(UserError::NotAuthenticated, err)
+    } else {
+        CliError::runtime(err)
+    }
 }
 
 impl SyncCommand {
@@ -91,5 +95,82 @@ impl SyncCommand {
 
         render_sync::render(&report, self.request.format)
             .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify_sync_error;
+    use crate::services::agent_trace_sync::control_plane::ControlPlaneError;
+    use crate::services::agent_trace_sync::StreamSyncError;
+    use crate::services::error::CliError;
+    use crate::services::sync::sync::TraceSyncError;
+
+    fn assert_user_not_authenticated(err: TraceSyncError) {
+        match classify_sync_error(err) {
+            CliError::User { error, source } => {
+                assert_eq!(error.key(), "auth.not_authenticated");
+                assert!(source.is_some());
+            }
+            other => panic!("expected CliError::User, got {other:?}"),
+        }
+    }
+
+    fn assert_internal(err: TraceSyncError) {
+        match classify_sync_error(err) {
+            CliError::Internal { .. } => {}
+            other => panic!("expected CliError::Internal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn initial_state_missing_credentials_classifies_as_not_authenticated() {
+        assert_user_not_authenticated(TraceSyncError::ControlPlane(
+            ControlPlaneError::MissingCredentials,
+        ));
+    }
+
+    #[test]
+    fn initial_state_authentication_failed_classifies_as_not_authenticated() {
+        assert_user_not_authenticated(TraceSyncError::ControlPlane(
+            ControlPlaneError::AuthenticationFailed("token expired".to_string()),
+        ));
+    }
+
+    #[test]
+    fn stream_batch_authentication_failed_classifies_as_not_authenticated() {
+        assert_user_not_authenticated(TraceSyncError::Stream {
+            stream: "prompts",
+            source: StreamSyncError::Terminal(ControlPlaneError::AuthenticationFailed(
+                "token expired".to_string(),
+            )),
+        });
+    }
+
+    #[test]
+    fn stream_refresh_authentication_failed_classifies_as_not_authenticated() {
+        assert_user_not_authenticated(TraceSyncError::Stream {
+            stream: "prompts",
+            source: StreamSyncError::Refresh(ControlPlaneError::MissingCredentials),
+        });
+    }
+
+    #[test]
+    fn other_control_plane_errors_classify_as_internal() {
+        for error in [
+            ControlPlaneError::Forbidden("nope".to_string()),
+            ControlPlaneError::BadRequest("bad".to_string()),
+            ControlPlaneError::Transport("down".to_string()),
+            ControlPlaneError::ServerError("500".to_string()),
+            ControlPlaneError::InvalidResponse("garbage".to_string()),
+            ControlPlaneError::Storage("disk".to_string()),
+        ] {
+            assert_internal(TraceSyncError::ControlPlane(error));
+        }
+    }
+
+    #[test]
+    fn runtime_failure_classifies_as_internal() {
+        assert_internal(TraceSyncError::Runtime("local failure".to_string()));
     }
 }
