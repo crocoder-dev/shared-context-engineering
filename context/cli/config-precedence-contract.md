@@ -4,7 +4,7 @@
 
 This contract documents the implemented `sce config` command behavior, runtime resolver, renderer, and canonical Pkl-authored `sce/config.json` schema. The schema is emitted to payload-relative `config/schema/sce-config.schema.json` under Cargo `OUT_DIR` or packaging fallbacks and embedded by `cli/src/services/config/schema.rs` as `SCE_CONFIG_SCHEMA_JSON`; no generated schema is committed.
 
-The current implementation resolves flat logging keys with deterministic precedence and source metadata, exposes resolved-value inspection through `sce config show`, and keeps `sce config validate` focused on validation status plus errors/warnings. Threshold, format, directory, and `log_file_retention_limit` values are consumed by runtime logging; the concrete logger uses the retention value for primary and v2 creation-triggered cleanup.
+The current implementation resolves flat logging keys and Agent Trace runtime keys with deterministic precedence and source metadata, exposes resolved-value inspection through `sce config show`, and keeps `sce config validate` focused on validation status plus errors/warnings. Threshold, format, directory, and `log_file_retention_limit` values are consumed by runtime logging; the concrete logger uses the retention value for primary and v2 creation-triggered cleanup. The opt-in `agent_trace.auto_sync` value is currently config plumbing for the post-commit trigger boundary and defaults to disabled until enabled by the later hook integration task.
 
 ## Command surface
 
@@ -29,6 +29,7 @@ Agent Trace repository identity keys are also config-file only with per-key `glo
 
 - `agent_trace.repository_id` — optional explicit repository identity; resolves as an optional value with no default.
 - `agent_trace.repository_remote` — Git remote name used to derive repository identity; defaults to `origin` (`DEFAULT_AGENT_TRACE_REPOSITORY_REMOTE` in `cli/src/services/config/resolver.rs`) when no config file sets it.
+- `agent_trace.auto_sync` — opt-in boolean for the future post-commit Agent Trace synchronization trigger; config-file only, with no flag or environment layer, and defaults to `false`.
 
 Resolved observability values that currently have no CLI flag layer follow the same lower-precedence chain without a flag step:
 
@@ -89,9 +90,10 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `workos_client_id` must be a string when present.
 - `control_plane_base_url` must be a non-empty string when present.
 
-- `agent_trace` must be an object when present and currently allows only `repository_id` and `repository_remote`.
+- `agent_trace` must be an object when present and currently allows `repository_id`, `repository_remote`, and `auto_sync`.
 - `agent_trace.repository_id` must be a non-empty string when present.
 - `agent_trace.repository_remote` must be a non-empty string when present; the generated schema documents default `origin`.
+- `agent_trace.auto_sync` must be a boolean when present; omitted values resolve to `false`.
 
 - `integrations` must be an object when present and currently allows `target` and `optional_workflows`; either key alone yields a parsed `IntegrationsConfig` with the other defaulting to empty.
 - `integrations.target` must be an array of unique canonical target IDs when present.
@@ -122,7 +124,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `show` includes resolved observability values directly in `result.resolved`, preserving flat logging keys (`log_level`, `log_format`, `log_dir`, `log_file_retention_limit`).
 - `validate` text output is limited to `SCE config validation`, `Validation issues`, and `Validation warnings` lines.
 - `validate` JSON output is limited to `result.command`, `result.valid`, `result.issues`, and `result.warnings`.
-- `show` includes resolved Agent Trace repository identity under `result.resolved.agent_trace` (JSON: `repository_id` optional-value shape, `repository_remote` resolved-value shape) and as `agent_trace.repository_id` / `agent_trace.repository_remote` per-key text lines, reporting `(unset)` for a missing `repository_id` and `source: default` for the `origin` remote fallback.
+- `show` includes resolved Agent Trace configuration under `result.resolved.agent_trace` (JSON: `repository_id` optional-value shape, `repository_remote` and `auto_sync` resolved-value shapes) and as per-key text lines, reporting `(unset)` for a missing `repository_id`, `source: default` for the `origin` remote fallback, and `source: default` for omitted `auto_sync`.
 - `show` includes resolved bash-tool policies under `result.resolved.policies.bash`.
 - Bash-policy output includes resolved preset IDs, expanded custom entries (`id`, `match.argv_prefix`, `message`), and config-file source metadata when present.
 - `show` text output renders `policies.bash` as a single deterministic line and reports `(unset)` when no policy config resolves.

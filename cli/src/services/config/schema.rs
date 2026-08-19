@@ -85,6 +85,7 @@ pub(crate) struct ParsedFileConfigDocument {
 pub(crate) struct ParsedAgentTraceConfigDocument {
     pub(crate) repository_id: Option<String>,
     pub(crate) repository_remote: Option<String>,
+    pub(crate) auto_sync: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -165,6 +166,7 @@ pub(crate) struct FileConfig {
     pub(crate) control_plane_base_url: Option<FileConfigValue<String>>,
     pub(crate) agent_trace_repository_id: Option<FileConfigValue<String>>,
     pub(crate) agent_trace_repository_remote: Option<FileConfigValue<String>>,
+    pub(crate) agent_trace_auto_sync: Option<FileConfigValue<bool>>,
     pub(crate) bash_policy_presets: Option<FileConfigValue<Vec<String>>>,
     pub(crate) bash_policy_custom: Option<FileConfigValue<Vec<CustomBashPolicyEntry>>>,
     pub(crate) database_retry: Option<FileConfigValue<DatabaseRetryConfig>>,
@@ -313,7 +315,7 @@ pub(crate) fn parse_file_config(
     let control_plane_base_url = typed
         .control_plane_base_url
         .map(|value| FileConfigValue { value, source });
-    let (agent_trace_repository_id, agent_trace_repository_remote) =
+    let (agent_trace_repository_id, agent_trace_repository_remote, agent_trace_auto_sync) =
         map_agent_trace_config(typed.agent_trace.as_ref(), object, path, source)?;
     let (attribution_hooks_enabled, bash_policy_presets, bash_policy_custom, database_retry) =
         map_policies_config(typed.policies.as_ref(), object, path, source)?;
@@ -330,6 +332,7 @@ pub(crate) fn parse_file_config(
         control_plane_base_url,
         agent_trace_repository_id,
         agent_trace_repository_remote,
+        agent_trace_auto_sync,
         bash_policy_presets,
         bash_policy_custom,
         database_retry,
@@ -610,6 +613,7 @@ pub(crate) fn map_database_retry_config(
 pub(crate) type ParsedAgentTraceConfig = (
     Option<FileConfigValue<String>>,
     Option<FileConfigValue<String>>,
+    Option<FileConfigValue<bool>>,
 );
 
 fn map_agent_trace_config(
@@ -619,7 +623,7 @@ fn map_agent_trace_config(
     source: ConfigPathSource,
 ) -> Result<ParsedAgentTraceConfig> {
     let Some(agent_trace_value) = object.get("agent_trace") else {
-        return Ok((None, None));
+        return Ok((None, None, None));
     };
 
     let agent_trace_object = agent_trace_value.as_object().with_context(|| {
@@ -633,8 +637,8 @@ fn map_agent_trace_config(
         agent_trace_object,
         path,
         Some("agent_trace"),
-        &["repository_id", "repository_remote"],
-        "repository_id, repository_remote",
+        &["repository_id", "repository_remote", "auto_sync"],
+        "repository_id, repository_remote, auto_sync",
     )?;
 
     let repository_id = typed
@@ -643,8 +647,11 @@ fn map_agent_trace_config(
     let repository_remote = typed
         .and_then(|config| config.repository_remote.clone())
         .map(|value| FileConfigValue { value, source });
+    let auto_sync = typed
+        .and_then(|config| config.auto_sync)
+        .map(|value| FileConfigValue { value, source });
 
-    Ok((repository_id, repository_remote))
+    Ok((repository_id, repository_remote, auto_sync))
 }
 
 fn map_integrations_config(
@@ -745,6 +752,10 @@ mod agent_trace_config_tests {
                 .map(|value| value.value.as_str()),
             Some("upstream")
         );
+        assert_eq!(
+            config.agent_trace_auto_sync.as_ref().map(|value| value.value),
+            None
+        );
     }
 
     #[test]
@@ -785,6 +796,25 @@ mod agent_trace_config_tests {
     #[test]
     fn rejects_non_string_repository_remote() {
         let error = parse(r#"{"agent_trace":{"repository_remote":7}}"#)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("failed schema validation"), "{error}");
+    }
+
+    #[test]
+    fn parses_agent_trace_auto_sync() {
+        let config = parse(r#"{"agent_trace":{"auto_sync":true}}"#).unwrap();
+
+        assert_eq!(
+            config.agent_trace_auto_sync.as_ref().map(|value| value.value),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn rejects_non_boolean_agent_trace_auto_sync() {
+        let error = parse(r#"{"agent_trace":{"auto_sync":"true"}}"#)
             .unwrap_err()
             .to_string();
 

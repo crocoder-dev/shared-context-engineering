@@ -78,6 +78,7 @@ pub(super) struct RuntimeConfig {
     pub(super) control_plane_base_url: ResolvedOptionalValue<String>,
     pub(super) agent_trace_repository_id: ResolvedOptionalValue<String>,
     pub(super) agent_trace_repository_remote: ResolvedValue<String>,
+    pub(super) agent_trace_auto_sync: ResolvedValue<bool>,
     pub(super) bash_policies: ResolvedOptionalValue<BashPolicyConfig>,
     pub(super) database_retry: ResolvedOptionalValue<DatabaseRetryConfig>,
     pub(super) validation_errors: Vec<String>,
@@ -268,6 +269,7 @@ where
 
     Ok(ResolvedHookRuntimeConfig {
         attribution_hooks_enabled: runtime.attribution_hooks_enabled.value,
+        agent_trace_auto_sync: runtime.agent_trace_auto_sync.value,
     })
 }
 
@@ -318,6 +320,7 @@ where
         control_plane_base_url: None,
         agent_trace_repository_id: None,
         agent_trace_repository_remote: None,
+        agent_trace_auto_sync: None,
         bash_policy_presets: None,
         bash_policy_custom: None,
         database_retry: None,
@@ -363,6 +366,9 @@ where
         }
         if let Some(agent_trace_repository_remote) = layer.agent_trace_repository_remote {
             file_config.agent_trace_repository_remote = Some(agent_trace_repository_remote);
+        }
+        if let Some(agent_trace_auto_sync) = layer.agent_trace_auto_sync {
+            file_config.agent_trace_auto_sync = Some(agent_trace_auto_sync);
         }
         if let Some(bash_policy_presets) = layer.bash_policy_presets {
             file_config.bash_policy_presets = Some(bash_policy_presets);
@@ -522,6 +528,17 @@ where
         };
     }
 
+    let resolved_agent_trace_auto_sync = match file_config.agent_trace_auto_sync {
+        Some(value) => ResolvedValue {
+            value: value.value,
+            source: ValueSource::ConfigFile(value.source),
+        },
+        None => ResolvedValue {
+            value: false,
+            source: ValueSource::Default,
+        },
+    };
+
     let resolved_bash_policies = resolve_bash_policy_config(
         file_config.bash_policy_presets.as_ref(),
         file_config.bash_policy_custom.as_ref(),
@@ -543,6 +560,7 @@ where
         control_plane_base_url: resolved_control_plane_base_url,
         agent_trace_repository_id: resolved_agent_trace_repository_id,
         agent_trace_repository_remote: resolved_agent_trace_repository_remote,
+        agent_trace_auto_sync: resolved_agent_trace_auto_sync,
         bash_policies: resolved_bash_policies,
         database_retry: resolved_database_retry,
         validation_errors,
@@ -765,6 +783,7 @@ mod tests {
 
         Ok(ResolvedHookRuntimeConfig {
             attribution_hooks_enabled: runtime.attribution_hooks_enabled.value,
+            agent_trace_auto_sync: runtime.agent_trace_auto_sync.value,
         })
     }
 
@@ -803,6 +822,56 @@ mod tests {
 
         assert_eq!(runtime.agent_trace_repository_id.value, None);
         assert_eq!(runtime.agent_trace_repository_id.source, None);
+    }
+
+    #[test]
+    fn agent_trace_auto_sync_defaults_to_false() {
+        let runtime = resolve_runtime_with_config(None).unwrap();
+
+        assert!(!runtime.agent_trace_auto_sync.value);
+        assert_eq!(runtime.agent_trace_auto_sync.source, ValueSource::Default);
+    }
+
+    #[test]
+    fn agent_trace_auto_sync_resolves_from_config_file() {
+        let runtime = resolve_runtime_with_config(Some(
+            r#"{"agent_trace":{"auto_sync":true}}"#,
+        ))
+        .unwrap();
+
+        assert!(runtime.agent_trace_auto_sync.value);
+        assert_eq!(
+            runtime.agent_trace_auto_sync.source,
+            ValueSource::ConfigFile(ConfigPathSource::Flag)
+        );
+    }
+
+    #[test]
+    fn agent_trace_auto_sync_uses_local_config_over_global_config() {
+        let runtime = resolve_runtime_config_with(
+            &empty_request(),
+            Path::new("/tmp/repo"),
+            |_| None,
+            |path| {
+                if path == Path::new("/tmp/global-sce-config.json") {
+                    Ok(r#"{"agent_trace":{"auto_sync":false}}"#.to_string())
+                } else {
+                    Ok(r#"{"agent_trace":{"auto_sync":true}}"#.to_string())
+                }
+            },
+            |path| {
+                path == Path::new("/tmp/global-sce-config.json")
+                    || path == Path::new("/tmp/repo/.sce/config.json")
+            },
+            || Ok(PathBuf::from("/tmp/global-sce-config.json")),
+        )
+        .unwrap();
+
+        assert!(runtime.agent_trace_auto_sync.value);
+        assert_eq!(
+            runtime.agent_trace_auto_sync.source,
+            ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredLocal)
+        );
     }
 
     #[test]

@@ -48,6 +48,11 @@ pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportF
                     &runtime.agent_trace_repository_remote.value,
                     runtime.agent_trace_repository_remote.source,
                 ),
+                format_resolved_value_text(
+                    "agent_trace.auto_sync",
+                    &runtime.agent_trace_auto_sync.value.to_string(),
+                    runtime.agent_trace_auto_sync.source,
+                ),
                 format_bash_policies_text(&runtime.bash_policies),
                 format_database_retry_text(&runtime.database_retry),
                 format_validation_warnings_text(&warnings),
@@ -88,6 +93,10 @@ pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportF
                             "repository_remote": format_resolved_value_json(
                                 runtime.agent_trace_repository_remote.value.as_str(),
                                 runtime.agent_trace_repository_remote.source,
+                            ),
+                            "auto_sync": format_resolved_value_json(
+                                runtime.agent_trace_auto_sync.value,
+                                runtime.agent_trace_auto_sync.source,
                             ),
                         },
                         "policies": {
