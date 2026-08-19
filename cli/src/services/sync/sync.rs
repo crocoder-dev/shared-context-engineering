@@ -132,6 +132,22 @@ impl fmt::Display for TraceSyncError {
 
 impl std::error::Error for TraceSyncError {}
 
+impl TraceSyncError {
+    /// True when this failure means the caller has no usable `WorkOS`
+    /// credentials, whether that surfaced from the initial `/state` call
+    /// (`ControlPlane`) or from a stream's batch/refresh path (`Stream`).
+    /// `Runtime` never carries a `ControlPlaneError` and is never an
+    /// authentication failure.
+    #[allow(dead_code)]
+    pub fn is_authentication_failure(&self) -> bool {
+        match self {
+            Self::Runtime(_) => false,
+            Self::ControlPlane(error) => error.is_authentication_failure(),
+            Self::Stream { source, .. } => source.is_authentication_failure(),
+        }
+    }
+}
+
 /// Resolves the current repository's Agent Trace storage (the same
 /// `ContextWithRepoRoot`/`AgentTraceStorageContext`/`resolve_agent_trace_storage`
 /// path used by the sync command) and control-plane configuration, then
@@ -507,7 +523,7 @@ where
                     }
                     Err(ControlPlaneError::Conflict(_)) => BatchAttemptOutcome::Conflict,
                     Err(error) if is_stream_terminal(&error) => {
-                        BatchAttemptOutcome::Terminal(error.to_string())
+                        BatchAttemptOutcome::Terminal(error)
                     }
                     Err(_) => BatchAttemptOutcome::Ambiguous,
                 }
@@ -522,7 +538,7 @@ where
                 let response = client
                     .ingestion_state(&state_request)
                     .await
-                    .map_err(|error| StreamSyncError::Refresh(error.to_string()))?;
+                    .map_err(StreamSyncError::Refresh)?;
                 Ok(cursor_for_stream(&response.cursors, stream))
             })
         },

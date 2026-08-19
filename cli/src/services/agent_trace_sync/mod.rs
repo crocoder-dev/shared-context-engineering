@@ -14,6 +14,7 @@ use crate::services::agent_trace_export::{
     AgentTraceAgentTraceExportRow, AgentTraceDiffTraceExportRow, AgentTraceMessageExportRow,
     AgentTracePartExportRow,
 };
+use control_plane::ControlPlaneError;
 
 /// Bound on consecutive `409`/ambiguous-batch-failure reconciliation attempts
 /// for one stream, matching the order of magnitude of existing retry
@@ -58,7 +59,7 @@ impl AgentTraceExportRow for AgentTraceAgentTraceExportRow {
 /// anything about the failed attempt itself. `Terminal` is different: the
 /// attempt is known to have failed in a way that cannot be resolved by
 /// `/state`, so the stream stops without invoking its refresh closure.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum BatchAttemptOutcome {
     /// The batch was accepted. `accepted` and `cursor` are the server
     /// response's own fields, validated by the engine before the stream
@@ -69,9 +70,10 @@ pub enum BatchAttemptOutcome {
     /// The batch outcome could not be determined (`5xx`, a transport
     /// failure, or an invalid response).
     Ambiguous,
-    /// The batch failed with a terminal control-plane error. The string is
-    /// already safe to surface as a stream error and is never reconciled.
-    Terminal(String),
+    /// The batch failed with a terminal control-plane error. The typed
+    /// error is already safe to surface as a stream error and is never
+    /// reconciled.
+    Terminal(ControlPlaneError),
 }
 
 /// Terminal failure of [`sync_stream`].
@@ -80,14 +82,14 @@ pub enum StreamSyncError {
     /// The local-row reader closure failed.
     Read(String),
     /// The `/state`-refresh closure failed.
-    Refresh(String),
+    Refresh(ControlPlaneError),
     /// A syntactically successful batch response did not match the rows
     /// that were sent (`accepted != rows.len()` or
     /// `cursor != rows.last().source_row_id()`).
     InvalidResponse(String),
     /// The batch failed with a terminal control-plane error. Unlike
     /// [`Self::Refresh`], this does not represent a failed `/state` call.
-    Terminal(String),
+    Terminal(ControlPlaneError),
     /// The reconciliation loop exceeded [`RECONCILIATION_MAX_ATTEMPTS`]
     /// without converging.
     DidNotConverge,
@@ -111,6 +113,19 @@ impl fmt::Display for StreamSyncError {
 }
 
 impl std::error::Error for StreamSyncError {}
+
+impl StreamSyncError {
+    /// True only when the underlying `ControlPlaneError` (from a `Refresh`
+    /// or `Terminal` failure) means the caller has no usable credentials.
+    /// `Read`, `InvalidResponse`, and `DidNotConverge` never carry a
+    /// `ControlPlaneError` and are never authentication failures.
+    pub fn is_authentication_failure(&self) -> bool {
+        match self {
+            Self::Refresh(error) | Self::Terminal(error) => error.is_authentication_failure(),
+            Self::Read(_) | Self::InvalidResponse(_) | Self::DidNotConverge => false,
+        }
+    }
+}
 
 /// Outcome of a fully converged [`sync_stream`] run for one stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -436,9 +451,9 @@ mod tests {
             500,
             |cursor, limit| ready(Ok(local.after(cursor, limit))),
             |_cursor, _rows: &[AgentTraceMessageExportRow]| {
-                ready(BatchAttemptOutcome::Terminal(
+                ready(BatchAttemptOutcome::Terminal(ControlPlaneError::BadRequest(
                     "batch route is not supported".to_string(),
-                ))
+                )))
             },
             || {
                 *refresh_calls.borrow_mut() += 1;
@@ -448,7 +463,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(StreamSyncError::Terminal(reason)) if reason == "batch route is not supported"
+            Err(StreamSyncError::Terminal(ControlPlaneError::BadRequest(reason))) if reason == "batch route is not supported"
         ));
         assert_eq!(*refresh_calls.borrow(), 0);
     }

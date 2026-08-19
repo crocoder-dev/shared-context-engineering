@@ -172,6 +172,20 @@ impl fmt::Display for ControlPlaneError {
 
 impl std::error::Error for ControlPlaneError {}
 
+impl ControlPlaneError {
+    /// True only for the two variants that mean the caller has no usable
+    /// `WorkOS` credentials: no stored token, or a token the control plane
+    /// rejected as invalid/expired. Every other variant is a different kind
+    /// of failure (request shape, ownership, transport, server-side) and
+    /// must not be classified as an authentication failure.
+    pub fn is_authentication_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::MissingCredentials | Self::AuthenticationFailed(_)
+        )
+    }
+}
+
 impl From<TokenStorageError> for ControlPlaneError {
     fn from(value: TokenStorageError) -> Self {
         Self::Storage(value.to_string())
