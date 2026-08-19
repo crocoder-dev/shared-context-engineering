@@ -53,6 +53,7 @@ impl UserFacingPresentation {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_reason(mut self, reason: impl Into<String>) -> Self {
         self.reason = Some(reason.into());
         self
@@ -62,6 +63,7 @@ impl UserFacingPresentation {
         &self.message
     }
 
+    #[allow(dead_code)]
     pub fn reason(&self) -> Option<&str> {
         self.reason.as_deref()
     }
@@ -112,6 +114,7 @@ impl ClassifiedError {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_user_facing_message(mut self, message: impl Into<String>) -> Self {
         self.user_facing_presentation = Some(UserFacingPresentation::new(message));
         self

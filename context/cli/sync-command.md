@@ -87,6 +87,21 @@ sink, emits no progress on stderr, and emits this JSON-only stdout shape:
 }
 ```
 
+## Authentication failure presentation
+
+When sync classification receives the typed `ControlPlaneError::MissingCredentials`
+or `ControlPlaneError::AuthenticationFailed` failure, it keeps the classified
+runtime error and attaches the shared `UserFacingPresentation` seam. Text-mode
+stderr then renders the concise message:
+
+`You are not logged in. Please log in using the sce auth login command.`
+
+The `sce auth login` segment is caller-styled through the shared `success`
+helper when styling is enabled. The app boundary does not add the classified
+error header, technical diagnostic, or automatic `Try:` guidance for this
+presentation; exit code `4`, technical logging, and empty stdout remain
+unchanged. Other sync failures retain the classified fallback diagnostic.
+
 Authentication refresh, conflict reconciliation, ambiguous batch recovery,
 terminal protocol failures, ownership rejection, and sanitized control-plane
 errors remain owned by `services::agent_trace_sync` and its control-plane

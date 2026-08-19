@@ -16,13 +16,13 @@ It complements the numeric process exit-code classes documented in `context/sce/
 
 - `ClassifiedError` may carry a `UserFacingPresentation` containing a caller-provided message, including any presentation styling, and an optional separate semantic reason key.
 - The presentation is distinct from the technical diagnostic message, `FailureClass`, stable `SCE-ERR-*` code, and numeric exit code.
-- Existing constructors leave the presentation absent, and current command mappings do not attach one; the app renderer therefore retains the classified fallback until a later command-specific adoption change.
+- Existing constructors leave the presentation absent. The top-level `sync` command is the current command-specific adoption: typed `MissingCredentials` and `AuthenticationFailed` control-plane failures attach a concise login presentation, while other command mappings retain the classified fallback.
 
 ## Rendering contract
 
 - Errors with no `UserFacingPresentation` are emitted on `stderr` as: `Error [<code>]: <message>`.
 - When a `UserFacingPresentation` is present, the app emits its redacted message on `stderr` without applying renderer-owned styling, and without the `Error [<code>]` header, technical diagnostic, or automatic class-default `Try:` guidance; any caller-provided styling and message structure are preserved.
-- The presentation does not change the classified exit code or structured error logging; current command mappings do not attach one, so they retain the classified fallback.
+- The presentation does not change the classified exit code or structured error logging. For `sce sync` authentication failures, it renders `You are not logged in. Please log in using the sce auth login command.` in color-disabled output, with only the `sce auth login` segment caller-styled when styling is enabled; other command mappings retain the classified fallback.
 - Before stderr emission, all `ClassifiedError` instances are logged via `Logger::log_classified_error()` with event ID `sce.error.{code}` and fields `error_code`, `error_class`. The app passes `true` for fallback errors so the configured logger stderr record remains visible, and `false` for an explicit presentation so only that logger stderr record is suppressed; tracing/file observability remains active.
 - If a fallback diagnostic message does not already include `Try:`, runtime appends class-default remediation guidance.
 - If the message already contains `Try:`, runtime preserves the original remediation text and does not append a second one.

@@ -1,7 +1,8 @@
 use std::io::Write;
 
 use crate::app::ContextWithRepoRoot;
-use crate::services::error::ClassifiedError;
+use crate::services::agent_trace_sync::control_plane::ControlPlaneError;
+use crate::services::error::{ClassifiedError, UserFacingPresentation};
 use crate::services::sync::progress::{
     IndicatifProgressReporter, NoopProgressReporter, ProgressReporter,
 };
@@ -31,7 +32,22 @@ where
 
 #[allow(clippy::needless_pass_by_value)]
 fn classify_sync_error(err: TraceSyncError) -> ClassifiedError {
-    ClassifiedError::runtime(format!("{err}"))
+    let is_unauthenticated = matches!(
+        &err,
+        TraceSyncError::ControlPlane(
+            ControlPlaneError::MissingCredentials | ControlPlaneError::AuthenticationFailed(_)
+        )
+    );
+    let classified = ClassifiedError::runtime(format!("{err}"));
+
+    if is_unauthenticated {
+        classified.with_user_facing_presentation(UserFacingPresentation::new(format!(
+            "You are not logged in. Please log in using the {} command.",
+            crate::services::style::success("sce auth login")
+        )))
+    } else {
+        classified
+    }
 }
 
 impl SyncCommand {
