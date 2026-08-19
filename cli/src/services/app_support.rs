@@ -161,6 +161,18 @@ fn write_stdout_payload<W: Write>(writer: &mut W, payload: &str) -> Result<(), C
 }
 
 fn write_error_diagnostic<W: Write>(writer: &mut W, error: &CliError) {
+    write_error_diagnostic_with_color_policy(
+        writer,
+        error,
+        services::style::supports_color_stderr(),
+    );
+}
+
+fn write_error_diagnostic_with_color_policy<W: Write>(
+    writer: &mut W,
+    error: &CliError,
+    color_enabled: bool,
+) {
     let rendered = match error {
         CliError::Internal { source, .. } => {
             let message = format!("{source:#}");
@@ -174,13 +186,15 @@ fn write_error_diagnostic<W: Write>(writer: &mut W, error: &CliError) {
             error: user_error, ..
         } => user_error.message().to_string(),
     };
-    let styled_message =
-        services::style::error_text(&services::security::redact_sensitive_text(&rendered));
+    let styled_message = services::style::error_text_with_color_policy(
+        &services::security::redact_sensitive_text(&rendered),
+        color_enabled,
+    );
     writeln!(
         writer,
         "{} [{}]: {}",
         services::style::heading("Error"),
-        services::style::error_code(error.code()),
+        services::style::error_code_with_color_policy(error.code(), color_enabled),
         styled_message
     )
     .expect("writing error diagnostic to writer should not fail");
@@ -189,4 +203,150 @@ fn write_error_diagnostic<W: Write>(writer: &mut W, error: &CliError) {
 fn write_startup_diagnostic<W: Write>(writer: &mut W, diagnostic: &str) {
     writeln!(writer, "{}", services::style::error_code(diagnostic))
         .expect("writing startup diagnostic to writer should not fail");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use services::error::UserError;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct RecordingLogger {
+        log_cli_error_calls: Arc<Mutex<Vec<(&'static str, bool)>>>,
+    }
+
+    impl LoggerTrait for RecordingLogger {
+        fn info(&self, _: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {}
+        fn debug(&self, _: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {}
+        fn warn(&self, _: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {}
+        fn error(&self, _: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {}
+
+        fn log_cli_error(&self, error: &CliError, _session_id: Option<&str>) {
+            let has_source = match error {
+                CliError::User { source, .. } => source.is_some(),
+                CliError::Internal { .. } => true,
+            };
+            self.log_cli_error_calls
+                .lock()
+                .expect("recording logger mutex must not be poisoned")
+                .push((error.code(), has_source));
+        }
+    }
+
+    fn diagnostic_lines(stderr: &str) -> Vec<&str> {
+        stderr.lines().filter(|line| line.contains("Error [")).collect()
+    }
+
+    #[test]
+    fn user_error_routes_to_friendly_diagnostic_with_empty_stdout_and_exit_four() {
+        let error = CliError::user_with_source(
+            UserError::NotAuthenticated,
+            anyhow::anyhow!("missing credentials"),
+        );
+        let logger = RecordingLogger::default();
+        let outcome = RunOutcome {
+            result: Err(error),
+            logger: Some(logger),
+            startup_diagnostic: None,
+        };
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let exit_code = render_run_outcome(outcome, &mut stdout, &mut stderr);
+
+        assert!(stdout.is_empty(), "stdout must stay empty on failure");
+        assert_eq!(exit_code, ExitCode::from(4));
+
+        let stderr_text = String::from_utf8(stderr).expect("stderr is valid utf8");
+        assert_eq!(
+            diagnostic_lines(&stderr_text).len(),
+            1,
+            "exactly one terminal diagnostic must be written"
+        );
+        assert!(stderr_text.contains("You are not logged in"));
+        assert!(!stderr_text.contains("missing credentials"));
+        assert!(!stderr_text.to_lowercase().contains("control-plane"));
+    }
+
+    #[test]
+    fn user_error_preserves_technical_source_for_observability() {
+        let error = CliError::user_with_source(
+            UserError::NotAuthenticated,
+            anyhow::anyhow!("missing credentials"),
+        );
+        let logger = RecordingLogger::default();
+        let calls = logger.log_cli_error_calls.clone();
+        let outcome = RunOutcome {
+            result: Err(error),
+            logger: Some(logger),
+            startup_diagnostic: None,
+        };
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        render_run_outcome(outcome, &mut stdout, &mut stderr);
+
+        let recorded = calls.lock().expect("mutex must not be poisoned");
+        assert_eq!(
+            recorded.as_slice(),
+            [("SCE-ERR-RUNTIME", true)],
+            "observability must log the CliError with its technical source preserved"
+        );
+    }
+
+    #[test]
+    fn internal_error_still_renders_full_chain_and_exit_four() {
+        let source = anyhow::anyhow!("root cause").context("failed to sync");
+        let error = CliError::runtime(source);
+        let outcome: RunOutcome<RecordingLogger> = RunOutcome {
+            result: Err(error),
+            logger: None,
+            startup_diagnostic: None,
+        };
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let exit_code = render_run_outcome(outcome, &mut stdout, &mut stderr);
+
+        assert!(stdout.is_empty());
+        assert_eq!(exit_code, ExitCode::from(4));
+        let stderr_text = String::from_utf8(stderr).expect("stderr is valid utf8");
+        assert_eq!(diagnostic_lines(&stderr_text).len(), 1);
+        assert!(stderr_text.contains("failed to sync"));
+        assert!(stderr_text.contains("root cause"));
+    }
+
+    #[test]
+    fn redaction_still_applies_to_the_rendered_message() {
+        let mut stderr = Vec::new();
+        let error = CliError::user(UserError::NotAuthenticated);
+        write_error_diagnostic_with_color_policy(&mut stderr, &error, false);
+
+        let rendered = String::from_utf8(stderr).expect("stderr is valid utf8");
+        let redacted_message =
+            services::security::redact_sensitive_text(UserError::NotAuthenticated.message());
+        assert!(rendered.contains(&redacted_message));
+    }
+
+    #[test]
+    fn user_error_diagnostic_is_styled_only_when_color_is_enabled() {
+        let error = CliError::user(UserError::NotAuthenticated);
+
+        let mut colored = Vec::new();
+        write_error_diagnostic_with_color_policy(&mut colored, &error, true);
+        let colored_text = String::from_utf8(colored).expect("stderr is valid utf8");
+
+        let mut plain = Vec::new();
+        write_error_diagnostic_with_color_policy(&mut plain, &error, false);
+        let plain_text = String::from_utf8(plain).expect("stderr is valid utf8");
+
+        // TTY-following (color_enabled: true) and redirected/NO_COLOR
+        // (color_enabled: false) diverge: only the enabled case carries ANSI.
+        assert_ne!(colored_text, plain_text);
+        assert!(!plain_text.contains('\u{1b}'));
+        assert!(colored_text.contains('\u{1b}'));
+        assert!(plain_text.contains("You are not logged in"));
+        assert!(colored_text.contains("You are not logged in"));
+    }
 }
