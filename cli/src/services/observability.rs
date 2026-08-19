@@ -136,19 +136,14 @@ impl Logger {
         self.log(LogLevel::Error, event_id, message, fields, session_id);
     }
 
-    pub fn log_classified_error(&self, error: &CliError, session_id: Option<&str>) {
+    pub fn log_cli_error(&self, error: &CliError, session_id: Option<&str>) {
         let event_id = format!("sce.error.{}", error.code());
         let message = error.to_string();
-        self.log(
-            LogLevel::Error,
-            &event_id,
-            &message,
-            &[
-                ("error_code", error.code()),
-                ("error_class", error.class().as_str()),
-            ],
-            session_id,
-        );
+        let fields = cli_error_fields(error);
+        let field_refs: Vec<(&str, &str)> =
+            fields.iter().map(|(key, value)| (*key, value.as_str())).collect();
+
+        self.log(LogLevel::Error, &event_id, &message, &field_refs, session_id);
     }
 
     fn log(
@@ -252,6 +247,41 @@ impl Logger {
             }
         }
     }
+}
+
+fn cli_error_surface(error: &CliError) -> &'static str {
+    match error {
+        CliError::User { .. } => "user",
+        CliError::Internal { .. } => "internal",
+    }
+}
+
+fn cli_error_technical_source(error: &CliError) -> Option<&anyhow::Error> {
+    match error {
+        CliError::User { source, .. } => source.as_ref(),
+        CliError::Internal { source, .. } => Some(source),
+    }
+}
+
+fn cli_error_fields(error: &CliError) -> Vec<(&'static str, String)> {
+    let mut fields: Vec<(&str, String)> = vec![
+        ("error_code", error.code().to_string()),
+        ("error_class", error.class().as_str().to_string()),
+        ("error_surface", cli_error_surface(error).to_string()),
+    ];
+
+    if let CliError::User {
+        error: user_error, ..
+    } = error
+    {
+        fields.push(("user_error", user_error.key().to_string()));
+    }
+
+    if let Some(source) = cli_error_technical_source(error) {
+        fields.push(("error_source", format!("{source:#}")));
+    }
+
+    fields
 }
 
 fn validate_log_dir(value: &str) -> Result<()> {
@@ -643,5 +673,70 @@ fn emit_tracing_event_with_fields_json<F>(
             event_message = message,
             fields = %fields_json
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::error::{FailureClass, UserError};
+
+    fn field_value<'a>(fields: &'a [(&'static str, String)], key: &str) -> Option<&'a str> {
+        fields
+            .iter()
+            .find(|(field_key, _)| *field_key == key)
+            .map(|(_, value)| value.as_str())
+    }
+
+    #[test]
+    fn observability_fields_for_user_error_carry_surface_and_key_plus_source() {
+        let error = CliError::user_with_source(
+            UserError::NotAuthenticated,
+            anyhow::anyhow!("missing credentials"),
+        );
+
+        let fields = cli_error_fields(&error);
+
+        assert_eq!(field_value(&fields, "error_code"), Some("SCE-ERR-RUNTIME"));
+        assert_eq!(field_value(&fields, "error_class"), Some("runtime"));
+        assert_eq!(field_value(&fields, "error_surface"), Some("user"));
+        assert_eq!(
+            field_value(&fields, "user_error"),
+            Some("auth.not_authenticated")
+        );
+        assert_eq!(
+            field_value(&fields, "error_source"),
+            Some("missing credentials")
+        );
+    }
+
+    #[test]
+    fn observability_fields_for_user_error_without_source_omit_error_source() {
+        let error = CliError::user(UserError::NotAuthenticated);
+
+        let fields = cli_error_fields(&error);
+
+        assert_eq!(field_value(&fields, "error_surface"), Some("user"));
+        assert_eq!(field_value(&fields, "error_source"), None);
+    }
+
+    #[test]
+    fn observability_fields_for_internal_error_carry_surface_and_full_source_chain() {
+        let source = anyhow::anyhow!("root cause").context("failed to do the thing");
+        let error = CliError::internal(FailureClass::Dependency, source);
+
+        let fields = cli_error_fields(&error);
+
+        assert_eq!(
+            field_value(&fields, "error_code"),
+            Some("SCE-ERR-DEPENDENCY")
+        );
+        assert_eq!(field_value(&fields, "error_class"), Some("dependency"));
+        assert_eq!(field_value(&fields, "error_surface"), Some("internal"));
+        assert_eq!(field_value(&fields, "user_error"), None);
+        assert_eq!(
+            field_value(&fields, "error_source"),
+            Some("failed to do the thing: root cause")
+        );
     }
 }
