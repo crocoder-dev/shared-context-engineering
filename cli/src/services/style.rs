@@ -39,13 +39,6 @@ where
     style_if(text, supports_color(), f)
 }
 
-pub(crate) fn style_if_enabled_stderr<F>(text: &str, f: F) -> String
-where
-    F: FnOnce(&str) -> String,
-{
-    style_if(text, supports_color_stderr(), f)
-}
-
 pub(crate) fn success_with_stderr_color_policy(text: &str, color_enabled: bool) -> String {
     style_if(text, color_enabled, |s| s.green().bold().to_string())
 }
@@ -72,12 +65,22 @@ fn command_name_with_color_policy(text: &str, color_enabled: bool) -> String {
 
 #[must_use]
 pub fn error_code(text: &str) -> String {
-    style_if_enabled_stderr(text, |s| s.red().bold().to_string())
+    error_code_with_color_policy(text, supports_color_stderr())
 }
 
 #[must_use]
-pub fn error_text(text: &str) -> String {
-    style_if_enabled_stderr(text, |s| s.yellow().to_string())
+pub(crate) fn error_code_with_color_policy(text: &str, color_enabled: bool) -> String {
+    style_if(text, color_enabled, |s| s.red().bold().to_string())
+}
+
+/// Styles human-readable stderr diagnostic bodies (yellow), following the
+/// stderr TTY/`NO_COLOR` policy passed in by the caller. `app_support`'s
+/// error-diagnostic renderer is the sole caller in production, threading
+/// `supports_color_stderr()` through explicitly so the same code path is
+/// exercisable with an injected policy in tests.
+#[must_use]
+pub(crate) fn error_text_with_color_policy(text: &str, color_enabled: bool) -> String {
+    style_if(text, color_enabled, |s| s.yellow().to_string())
 }
 
 #[must_use]
@@ -321,4 +324,45 @@ pub(crate) fn banner_with_gradient_with_color_policy(
 #[allow(dead_code, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn lerp_u8(a: u8, b: u8, t: f64) -> u8 {
     (f64::from(a) + (f64::from(b) - f64::from(a)) * t).round() as u8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `supports_color_stderr()` combines the real stderr TTY check with the
+    // `NO_COLOR` check into one `color_enabled` boolean; a real TTY can't be
+    // simulated in `cargo test`, so these `_with_color_policy` seams (the same
+    // pattern used elsewhere in this module and in `doctor/render.rs`) are
+    // exercised directly against that boolean instead of mutating process
+    // environment state.
+
+    #[test]
+    fn error_text_styles_when_color_enabled() {
+        let styled = error_text_with_color_policy("boom", true);
+        assert_ne!(styled, "boom");
+        assert!(styled.contains("boom"));
+    }
+
+    #[test]
+    fn error_text_is_plain_when_color_disabled() {
+        // Covers both a non-TTY stderr (redirected) and `NO_COLOR` being set,
+        // since both collapse to `color_enabled: false`.
+        assert_eq!(error_text_with_color_policy("boom", false), "boom");
+    }
+
+    #[test]
+    fn error_code_styles_when_color_enabled() {
+        let styled = error_code_with_color_policy("SCE-ERR-RUNTIME", true);
+        assert_ne!(styled, "SCE-ERR-RUNTIME");
+        assert!(styled.contains("SCE-ERR-RUNTIME"));
+    }
+
+    #[test]
+    fn error_code_is_plain_when_color_disabled() {
+        assert_eq!(
+            error_code_with_color_policy("SCE-ERR-RUNTIME", false),
+            "SCE-ERR-RUNTIME"
+        );
+    }
 }

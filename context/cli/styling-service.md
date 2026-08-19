@@ -16,7 +16,6 @@ The CLI styling service in `cli/src/services/style.rs` provides deterministic te
 ### Conditional Styling
 
 - `style_if_enabled<F>(text: &str, f: F) -> String` - Applies styling function only when colors are enabled
-- `style_if_enabled_stderr<F>(text: &str, f: F) -> String` - Applies styling function only when stderr colors are enabled
 - `success_with_stderr_color_policy(text: &str, color_enabled: bool) -> String` - Internal helper for applying the shared green/bold stderr success policy when a caller already resolved the color decision
 
 ### Help Output Styling
@@ -28,8 +27,9 @@ The CLI styling service in `cli/src/services/style.rs` provides deterministic te
 ### Error Diagnostics Styling
 
 - `error_code(text: &str) -> String` - Styles error codes (red/bold) for stderr diagnostics
+- `error_code_with_color_policy(text: &str, color_enabled: bool) -> String` - Internal variant accepting an explicit color policy flag for testability
 - `heading(text: &str) -> String` - Styles headings for both stdout and stderr output (cyan/bold)
-- `error_text(text: &str) -> String` - Styles human-readable stderr diagnostic bodies (yellow)
+- `error_text_with_color_policy(text: &str, color_enabled: bool) -> String` - Internal helper styling human-readable stderr diagnostic bodies (yellow) given an explicit color policy flag; `app_support::write_error_diagnostic` is the sole production caller, passing `supports_color_stderr()`
 
 ### Command Output Styling
 
@@ -76,14 +76,19 @@ sync progress module; this styling service owns only the shared color policy.
 ## Usage
 
 ```rust
-use crate::services::style::{heading, command_name, error_code, error_text, success, label, value, prompt_label, prompt_value, supports_color};
+use crate::services::style::{heading, command_name, error_code, error_text_with_color_policy, success, label, value, prompt_label, prompt_value, supports_color, supports_color_stderr};
 
 // Help output styling
 println!("{}", heading("Usage:"));
 println!("  {}", command_name("sce setup"));
 
 // Error diagnostics styling (stderr)
-eprintln!("{} [{}]: {}", heading("Error"), error_code("SCE-ERR-PARSE"), error_text(message));
+eprintln!(
+    "{} [{}]: {}",
+    heading("Error"),
+    error_code("SCE-ERR-PARSE"),
+    error_text_with_color_policy(message, supports_color_stderr())
+);
 
 // Command output styling
 println!("{}", success("Setup completed successfully."));

@@ -112,14 +112,14 @@ mod tests {
                 assert_eq!(error.key(), "auth.not_authenticated");
                 assert!(source.is_some());
             }
-            other => panic!("expected CliError::User, got {other:?}"),
+            other @ CliError::Internal { .. } => panic!("expected CliError::User, got {other:?}"),
         }
     }
 
     fn assert_internal(err: TraceSyncError) {
         match classify_sync_error(err) {
             CliError::Internal { .. } => {}
-            other => panic!("expected CliError::Internal, got {other:?}"),
+            other @ CliError::User { .. } => panic!("expected CliError::Internal, got {other:?}"),
         }
     }
 
@@ -164,6 +164,10 @@ mod tests {
             ControlPlaneError::ServerError("500".to_string()),
             ControlPlaneError::InvalidResponse("garbage".to_string()),
             ControlPlaneError::Storage("disk".to_string()),
+            ControlPlaneError::Protocol {
+                status: reqwest::StatusCode::NOT_FOUND,
+                message: "route removed".to_string(),
+            },
         ] {
             assert_internal(TraceSyncError::ControlPlane(error));
         }
