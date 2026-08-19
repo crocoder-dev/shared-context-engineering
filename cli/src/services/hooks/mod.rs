@@ -32,6 +32,7 @@ use crate::services::structured_patch::{
     build_claude_post_tool_use_patch, derive_claude_structured_patch,
     ClaudeStructuredPatchDerivationResult, PatchBuildResult,
 };
+pub mod claude_transcript;
 pub mod command;
 pub mod lifecycle;
 
@@ -952,7 +953,7 @@ fn parse_claude_diff_trace_payload(
                 session_id: patch.session_id,
                 diff: stdin_payload.to_string(),
                 time: patch.time,
-                model_id: extract_direct_claude_model_id(payload),
+                model_id: resolve_claude_model_id(payload),
                 tool_name: patch.tool_name,
                 tool_version: patch.tool_version,
                 payload_type: PAYLOAD_TYPE_STRUCTURED.to_string(),
@@ -964,6 +965,26 @@ fn parse_claude_diff_trace_payload(
             )))
         }
     }
+}
+
+fn resolve_claude_model_id(payload: &serde_json::Map<String, Value>) -> Option<String> {
+    resolve_claude_model_id_with(payload, claude_transcript::extract_claude_transcript_model)
+}
+
+fn resolve_claude_model_id_with<F>(
+    payload: &serde_json::Map<String, Value>,
+    transcript_lookup: F,
+) -> Option<String>
+where
+    F: FnOnce(&Path, &str) -> Option<String>,
+{
+    extract_direct_claude_model_id(payload).or_else(|| {
+        let transcript_path = non_empty_string(payload.get("transcript_path"))?;
+        let tool_use_id = non_empty_string(payload.get("tool_use_id"))?;
+
+        transcript_lookup(Path::new(transcript_path), tool_use_id)
+            .and_then(|model| normalize_claude_model_id(&model))
+    })
 }
 
 fn extract_direct_claude_model_id(payload: &serde_json::Map<String, Value>) -> Option<String> {
@@ -2540,6 +2561,108 @@ mod tests {
             tool_version: tool_version.map(String::from),
             payload_type: String::from(payload_type),
         }
+    }
+
+    fn claude_model_test_event(transcript_path: &Path, tool_use_id: &str) -> Value {
+        json!({
+            "hook_event_name": "PostToolUse",
+            "session_id": "session-123",
+            "tool_name": "Write",
+            "tool_use_id": tool_use_id,
+            "transcript_path": transcript_path,
+            "tool_input": {
+                "file_path": "docs/status.md",
+                "content": "# Status\n\nThe new state is complete.\n"
+            },
+            "tool_response": {
+                "originalFile": "# Status\n\nThe old state is pending.\n",
+                "structuredPatch": {
+                    "hunks": [{
+                        "oldStart": 1,
+                        "oldCount": 3,
+                        "newStart": 1,
+                        "newCount": 3,
+                        "lines": [
+                            " # Status",
+                            " ",
+                            "-The old state is pending.",
+                            "+The new state is complete."
+                        ]
+                    }]
+                }
+            }
+        })
+    }
+
+    fn parsed_claude_model_id(event: &Value) -> Option<String> {
+        match parse_diff_trace_payload(&event.to_string())
+            .expect("Claude PostToolUse diff-trace payload should parse")
+        {
+            DiffTraceParseResult::Persist(payload) => payload.model_id,
+            DiffTraceParseResult::NoOp(message) => {
+                panic!("Claude Write payload should persist, got no-op: {message}")
+            }
+        }
+    }
+
+    fn resolved_claude_model_id_with<F>(event: &Value, transcript_lookup: F) -> Option<String>
+    where
+        F: FnOnce(&Path, &str) -> Option<String>,
+    {
+        resolve_claude_model_id_with(
+            event.as_object().expect("test event should be an object"),
+            transcript_lookup,
+        )
+    }
+
+    #[test]
+    fn claude_model_direct_nested_metadata_wins_over_transcript_without_double_prefixing() {
+        let transcript_path = Path::new("/unused/direct-precedence.jsonl");
+        let mut event = claude_model_test_event(transcript_path, "tool-123");
+        event
+            .as_object_mut()
+            .expect("test event should be an object")
+            .insert("model".to_string(), json!({ "id": "claude/direct-model" }));
+
+        let model_id = resolved_claude_model_id_with(&event, |_, _| {
+            panic!("transcript lookup must not run when direct metadata is present")
+        });
+
+        assert_eq!(model_id.as_deref(), Some("claude/direct-model"));
+        assert_eq!(parsed_claude_model_id(&event), model_id);
+    }
+
+    #[test]
+    fn claude_model_falls_back_to_matching_transcript_and_normalizes_model() {
+        let transcript_path = Path::new("/virtual/transcript-fallback.jsonl");
+        let event = claude_model_test_event(transcript_path, "tool-123");
+
+        let model_id = resolved_claude_model_id_with(&event, |path, tool_use_id| {
+            assert_eq!(path, transcript_path);
+            assert_eq!(tool_use_id, "tool-123");
+            Some(String::from("claude/claude-opus-4-1"))
+        });
+
+        assert_eq!(model_id.as_deref(), Some("claude/claude-opus-4-1"));
+    }
+
+    #[test]
+    fn claude_model_remains_none_when_transcript_lookup_cannot_succeed() {
+        let event = claude_model_test_event(Path::new("/virtual/missing.jsonl"), "tool-123");
+        assert_eq!(resolved_claude_model_id_with(&event, |_, _| None), None);
+
+        let mut event_without_lookup_fields = event;
+        let payload = event_without_lookup_fields
+            .as_object_mut()
+            .expect("test event should be an object");
+        payload.remove("transcript_path");
+        payload.remove("tool_use_id");
+        assert_eq!(
+            resolved_claude_model_id_with(&event_without_lookup_fields, |_, _| {
+                panic!("lookup must not run without transcript event metadata")
+            }),
+            None
+        );
     }
 
     #[test]
