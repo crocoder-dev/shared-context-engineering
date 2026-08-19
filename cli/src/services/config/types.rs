@@ -207,6 +207,7 @@ pub(crate) struct ResolvedObservabilityRuntimeConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResolvedHookRuntimeConfig {
     pub(crate) attribution_hooks_enabled: bool,
+    pub(crate) agent_trace_auto_sync: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
