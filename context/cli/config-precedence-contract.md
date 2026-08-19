@@ -4,7 +4,7 @@
 
 This contract documents the implemented `sce config` command behavior, runtime resolver, renderer, and canonical Pkl-authored `sce/config.json` schema. The schema is emitted to payload-relative `config/schema/sce-config.schema.json` under Cargo `OUT_DIR` or packaging fallbacks and embedded by `cli/src/services/config/schema.rs` as `SCE_CONFIG_SCHEMA_JSON`; no generated schema is committed.
 
-The current implementation resolves flat logging keys and Agent Trace runtime keys with deterministic precedence and source metadata, exposes resolved-value inspection through `sce config show`, and keeps `sce config validate` focused on validation status plus errors/warnings. Threshold, format, directory, and `log_file_retention_limit` values are consumed by runtime logging; the concrete logger uses the retention value for primary and v2 creation-triggered cleanup. The opt-in `agent_trace.auto_sync` value is currently config plumbing for the post-commit trigger boundary and defaults to disabled until enabled by the later hook integration task.
+The current implementation resolves flat logging keys and Agent Trace runtime keys with deterministic precedence and source metadata, exposes resolved-value inspection through `sce config show`, and keeps `sce config validate` focused on validation status plus errors/warnings. Threshold, format, directory, and `log_file_retention_limit` values are consumed by runtime logging; the concrete logger uses the retention value for primary and v2 creation-triggered cleanup. The opt-in `agent_trace.auto_sync` value is consumed by the post-commit trigger boundary and defaults to disabled.
 
 ## Command surface
 
@@ -29,7 +29,7 @@ Agent Trace repository identity keys are also config-file only with per-key `glo
 
 - `agent_trace.repository_id` — optional explicit repository identity; resolves as an optional value with no default.
 - `agent_trace.repository_remote` — Git remote name used to derive repository identity; defaults to `origin` (`DEFAULT_AGENT_TRACE_REPOSITORY_REMOTE` in `cli/src/services/config/resolver.rs`) when no config file sets it.
-- `agent_trace.auto_sync` — opt-in boolean for the future post-commit Agent Trace synchronization trigger; config-file only, with no flag or environment layer, and defaults to `false`.
+- `agent_trace.auto_sync` — opt-in boolean for the post-commit Agent Trace synchronization trigger; config-file only, with no flag or environment layer, and defaults to `false`.
 
 Resolved observability values that currently have no CLI flag layer follow the same lower-precedence chain without a flag step:
 

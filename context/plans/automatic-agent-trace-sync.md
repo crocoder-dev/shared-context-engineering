@@ -86,12 +86,17 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: domain — documented the sync-owned asynchronous launcher boundary and its fail-open/no-wait behavior in `context/cli/sync-command.md`; root context pass verified with no edits.
   - Context synchronization: synced
 
-- [ ] T03: `Trigger auto-sync after successful post-commit persistence` (status:todo)
+- [x] T03: `Trigger auto-sync after successful post-commit persistence` (status:done)
   - Task ID: T03
   - Scope: In — `cli/src/services/hooks/mod.rs` production post-commit boundary, config-gate lookup, launcher injection seam for post-commit tests, and focused tests for disabled/enabled/order/persistence-failure/spawn-failure cases. Out — `pre-commit`, `diff-trace`, `conversation-trace`, plugin event changes, and synchronization algorithm changes.
   - Dependencies: T01, T02
   - Done when: a successful post-commit persistence result triggers exactly one best-effort launcher only when resolved auto-sync is enabled; persistence failures do not trigger it; disabled config does not trigger it; launcher failures do not change the successful hook result; the hook path never waits on the child.
   - Verify: targeted Rust hook tests through `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::`; inspect the post-commit boundary and confirm no high-frequency hook call sites changed.
+  - Completed: 2026-08-19
+  - Files changed: `cli/src/services/hooks/mod.rs`
+  - Result: Integrated the resolved `agent_trace.auto_sync` gate after successful post-commit Agent Trace persistence, invoking the existing sync-owned launcher through an injected fail-open seam; added tests for enabled ordering, disabled behavior, persistence failure, and launcher failure without changing high-frequency hook paths.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::` — pass (24 tests); post-commit boundary inspection confirmed launch occurs only after persistence and diff/conversation trace call sites were unchanged.
+  - Context impact: interface — document the automatic post-commit trigger boundary, resolved config gate, and fail-open launcher behavior in durable SCE context; review all five root context files for stale hook/config descriptions.
   - Context synchronization: pending
 
 - [ ] T04: `Document asynchronous post-commit Agent Trace synchronization` (status:todo)

@@ -32,6 +32,7 @@ use crate::services::structured_patch::{
     build_claude_post_tool_use_patch, derive_claude_structured_patch,
     ClaudeStructuredPatchDerivationResult, PatchBuildResult,
 };
+use crate::services::sync::auto_sync;
 pub mod claude_transcript;
 pub mod command;
 pub mod lifecycle;
@@ -1397,15 +1398,24 @@ fn run_post_commit_subcommand(
         remote_url,
         run_post_commit_intersection_flow,
         run_post_commit_agent_trace_flow,
+        |root| {
+            config::resolve_hook_runtime_config(root).map(|runtime| runtime.agent_trace_auto_sync)
+        },
+        |root| {
+            auto_sync::launch(root);
+            Ok(())
+        },
     )
 }
 
-fn run_post_commit_subcommand_with<F, B>(
+fn run_post_commit_subcommand_with<F, B, C, L>(
     repository_root: &Path,
     vcs_type: Option<AgentTraceVcsType>,
     remote_url: &str,
     run_intersection_flow: F,
     run_agent_trace_flow: B,
+    resolve_auto_sync: C,
+    launch_auto_sync: L,
 ) -> Result<String>
 where
     F: FnOnce(&Path) -> Result<PostCommitIntersectionFlowResult>,
@@ -1415,9 +1425,15 @@ where
         Option<AgentTraceVcsType>,
         &str,
     ) -> Result<AgentTrace>,
+    C: FnOnce(&Path) -> Result<bool>,
+    L: FnOnce(&Path) -> Result<()>,
 {
     let result = run_intersection_flow(repository_root)?;
     let _agent_trace = run_agent_trace_flow(repository_root, &result, vcs_type, remote_url)?;
+
+    if resolve_auto_sync(repository_root)? {
+        let _ = launch_auto_sync(repository_root);
+    }
 
     Ok(format!(
         "post-commit hook processed intersection: commit={}, intersection_files={}",
@@ -2870,5 +2886,116 @@ mod tests {
         assert_eq!(output.combined_recent_patch.files[0].new_path, "src/lib.rs");
         assert_eq!(output.tool_name, Some(String::from("opencode")));
         assert_eq!(output.tool_version, Some(String::from("1.2.3")));
+    }
+
+    fn post_commit_flow_result() -> PostCommitIntersectionFlowResult {
+        PostCommitIntersectionFlowResult {
+            combined_recent_patch: valid_patch("src/lib.rs", "shared line"),
+            post_commit_data: PostCommitPatchData {
+                commit_oid: String::from("abc123"),
+                commit_time_ms: 1_800_000_000_000,
+                parsed_patch: valid_patch("src/lib.rs", "shared line"),
+            },
+            tool_name: None,
+            tool_version: None,
+        }
+    }
+
+    fn minimal_agent_trace() -> AgentTrace {
+        serde_json::from_value(json!({ "files": [] }))
+            .expect("minimal Agent Trace should deserialize")
+    }
+
+    #[test]
+    fn post_commit_auto_sync_launches_after_successful_persistence_when_enabled() {
+        let events = RefCell::new(Vec::new());
+
+        let output = run_post_commit_subcommand_with(
+            Path::new("/repo"),
+            None,
+            "",
+            |_| {
+                events.borrow_mut().push("intersection");
+                Ok(post_commit_flow_result())
+            },
+            |_, _, _, _| {
+                events.borrow_mut().push("persistence");
+                Ok(minimal_agent_trace())
+            },
+            |_| {
+                events.borrow_mut().push("config");
+                Ok(true)
+            },
+            |_| {
+                events.borrow_mut().push("launch");
+                Ok(())
+            },
+        )
+        .expect("successful post-commit should remain successful");
+
+        assert!(output.contains("post-commit hook processed intersection"));
+        assert_eq!(
+            events.into_inner(),
+            vec!["intersection", "persistence", "config", "launch"]
+        );
+    }
+
+    #[test]
+    fn post_commit_auto_sync_does_not_launch_when_disabled() {
+        let launch_called = RefCell::new(false);
+
+        run_post_commit_subcommand_with(
+            Path::new("/repo"),
+            None,
+            "",
+            |_| Ok(post_commit_flow_result()),
+            |_, _, _, _| Ok(minimal_agent_trace()),
+            |_| Ok(false),
+            |_| {
+                *launch_called.borrow_mut() = true;
+                Ok(())
+            },
+        )
+        .expect("disabled auto-sync should not affect post-commit success");
+
+        assert!(!*launch_called.borrow());
+    }
+
+    #[test]
+    fn post_commit_persistence_failure_does_not_launch_auto_sync() {
+        let launch_called = RefCell::new(false);
+
+        let error = run_post_commit_subcommand_with(
+            Path::new("/repo"),
+            None,
+            "",
+            |_| Ok(post_commit_flow_result()),
+            |_, _, _, _| Err(anyhow!("Agent Trace persistence failed")),
+            |_| panic!("auto-sync config must not be resolved after persistence failure"),
+            |_| {
+                *launch_called.borrow_mut() = true;
+                Ok(())
+            },
+        )
+        .expect_err("persistence failure should be returned");
+
+        assert!(error.to_string().contains("persistence failed"));
+        assert!(!*launch_called.borrow());
+    }
+
+    #[test]
+    fn post_commit_auto_sync_launcher_failure_is_fail_open() {
+        let output = run_post_commit_subcommand_with(
+            Path::new("/repo"),
+            None,
+            "",
+            |_| Ok(post_commit_flow_result()),
+            |_, _, _, _| Ok(minimal_agent_trace()),
+            |_| Ok(true),
+            |_| Err(anyhow!("spawn unavailable")),
+        )
+        .expect("launcher failure must not affect post-commit success");
+
+        assert!(output.contains("post-commit hook processed intersection"));
     }
 }
