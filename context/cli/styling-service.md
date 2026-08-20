@@ -24,12 +24,13 @@ The CLI styling service in `cli/src/services/style.rs` provides deterministic te
 - `command_name(text: &str) -> String` - Styles command names (green) for help output
 - `clap_help(text: &str) -> String` - Post-processes command-local clap help text so stdout help surfaces reuse shared heading, command, and placeholder styling without changing plain-text output when color is disabled
 
-### Error Diagnostics Styling
+### Internal Error Diagnostics Styling
 
-- `error_code(text: &str) -> String` - Styles error codes (red/bold) for stderr diagnostics
+- `error_code(text: &str) -> String` - Styles error codes (red/bold) for internal stderr diagnostics
 - `error_code_with_color_policy(text: &str, color_enabled: bool) -> String` - Internal variant accepting an explicit color policy flag for testability
-- `heading(text: &str) -> String` - Styles headings for both stdout and stderr output (cyan/bold)
-- `error_text_with_color_policy(text: &str, color_enabled: bool) -> String` - Internal helper styling human-readable stderr diagnostic bodies (yellow) given an explicit color policy flag; `app_support::write_error_diagnostic` is the sole production caller, passing `supports_color_stderr()`
+- `heading(text: &str) -> String` - Styles headings for both stdout and internal stderr output (cyan/bold)
+- `error_text_with_color_policy(text: &str, color_enabled: bool) -> String` - Internal helper styling human-readable internal stderr diagnostic bodies (yellow) given an explicit color policy flag; `app_support::write_error_diagnostic` is the sole production caller, passing `supports_color_stderr()`
+- Catalog messages for expected failures are intentionally emitted redacted but unstyled and without the internal diagnostic wrapper.
 
 ### Command Output Styling
 
@@ -54,7 +55,7 @@ The CLI styling service in `cli/src/services/style.rs` provides deterministic te
 - Help output uses `supports_color()` for stdout TTY detection
 - Command-local help styling is applied after clap renders plain help text, covering `Usage:`, section headings, command rows, and placeholder tokens on stdout surfaces
 - Error diagnostics use `supports_color_stderr()` for stderr TTY detection
-- Top-level app diagnostics and observability log-file write failures both render through the shared stderr styling helpers when stderr color is enabled.
+- Top-level internal app diagnostics and observability log-file write failures render through the shared stderr styling helpers when stderr color is enabled; user catalog diagnostics intentionally bypass those helpers.
 
 ## Sync progress styling
 
@@ -82,13 +83,15 @@ use crate::services::style::{heading, command_name, error_code, error_text_with_
 println!("{}", heading("Usage:"));
 println!("  {}", command_name("sce setup"));
 
-// Error diagnostics styling (stderr)
+// Internal error diagnostics styling (stderr)
 eprintln!(
     "{} [{}]: {}",
     heading("Error"),
     error_code("SCE-ERR-PARSE"),
     error_text_with_color_policy(message, supports_color_stderr())
 );
+
+// Catalog messages are redacted and written without styling or wrapper.
 
 // Command output styling
 println!("{}", success("Setup completed successfully."));
