@@ -9,7 +9,12 @@
   },
   "metadata": {
     "sce": {
-      "version": "0.2.0"
+      "version": "0.2.0",
+      "line_changes": {
+        "ai": { "added": 0, "removed": 0 },
+        "mixed": { "added": 24, "removed": 0 },
+        "unknown": { "added": 0, "removed": 0 }
+      }
     }
   },
   "files": [

@@ -29,7 +29,9 @@ Given a `constructed_patch` (AI candidate) and a `post_commit_patch` (canonical 
 | `AgentTraceVcs`         | Optional top-level VCS metadata object carrying `type` + `revision` when present                             |
 | `AgentTraceTool`        | Optional top-level tool metadata object carrying optional `name` + optional `version`                        |
 | `AgentTraceMetadata`    | Top-level implementation metadata object carrying SCE-owned metadata                                         |
-| `AgentTraceSceMetadata` | Nested `metadata.sce` object carrying the compiled SCE CLI package `version`                                 |
+| `AgentTraceSceMetadata` | Nested `metadata.sce` object carrying the compiled SCE CLI package `version` plus `line_changes`             |
+| `LineChangeCounts`      | `{ added, removed }` `u64` touched-line counters for one hunk-classification bucket                          |
+| `LineChangeAttribution` | `metadata.sce.line_changes` shape: `{ ai, mixed, unknown }`, each a `LineChangeCounts`, `#[serde(default)]`  |
 | `AgentTrace`            | Top-level payload: `version`, `id`, `timestamp`, optional `vcs`, optional `tool`, `metadata`, `files`        |
 
 All types are `serde`-serializable with `snake_case` field naming. `Conversation.url` is always serialized as `https://sce.crocoder.dev/conversations/{agent_trace.id}` for the generated top-level trace ID. `Conversation.contributor` serializes as a nested object with a JSON field named `type`; `model_id` is present only when a concrete value exists. `Conversation.related` is optional and omitted when `None` (`skip_serializing_if = "Option::is_none"`) and populated from matched intersection-line `session_id` provenance as session links.
@@ -45,6 +47,7 @@ Current output includes top-level metadata fields with this contract:
 - when `vcs` is emitted, `vcs.type` is sourced from the schema-aligned enum (`git | jj | hg | svn`) and `vcs.revision` is sourced from `AgentTraceMetadataInput.commit_revision`
 - `tool` is omitted when `intersection_patch.files` is empty (no AI content overlapped with the post-commit patch) or when both `AgentTraceMetadataInput.tool_name` and `AgentTraceMetadataInput.tool_version` are `None`; when `intersection_patch.files` is non-empty and either metadata value is present, builder construction sets `AgentTrace.tool` and it serializes as `{ "name"?: string, "version"?: string }` with each nested field omitted when absent
 - `metadata.sce.version` is always emitted and is sourced from `env!("CARGO_PKG_VERSION")`, the compiled `sce` CLI package version; it is implementation metadata and does not change top-level Agent Trace `version` semantics
+- `metadata.sce.line_changes` is always emitted (`{ ai, mixed, unknown }`, each `{ added, removed }`) and carries exact touched-line attribution counts derived from `PatchHunk.lines` on the canonical `post_commit_patch` — the same hunk-level classification already used for `Conversation.contributor.type` (no independent second classification pass for the common per-file/per-hunk path); a `mixed` hunk's *entire* touched-line count is recorded, not just the subset also present in `intersection_patch`; the deleted-`.patch` embedded-expansion branch counts only the deleted file's own literal `post_commit_patch` hunks (classified by `old_path` against the top-level `intersection_patch`, since a deleted file's `new_path` is always empty and would otherwise collide with other deleted files in the same patch), never the embedded reconstructed hunks used to synthesize that branch's `Conversation` entries; `#[serde(default)]` on `line_changes` and its parent keeps pre-existing `metadata.sce.version`-only payloads deserializing with all-zero counts
 - every `Conversation.url` is the absolute URI `https://sce.crocoder.dev/conversations/{agent_trace.id}` derived from the generated top-level `AgentTrace.id`; all conversations in one payload therefore share the same URL
 
 ```json
@@ -58,7 +61,12 @@ Current output includes top-level metadata fields with this contract:
   },
   "metadata": {
     "sce": {
-      "version": "0.2.0"
+      "version": "0.2.0",
+      "line_changes": {
+        "ai": { "added": 5, "removed": 0 },
+        "mixed": { "added": 0, "removed": 0 },
+        "unknown": { "added": 0, "removed": 0 }
+      }
     }
   },
   "files": [
@@ -90,8 +98,8 @@ Current output includes top-level metadata fields with this contract:
 
 ## Test fixture contract
 
-- Golden fixtures under `cli/src/services/agent_trace/fixtures/**/golden.json` pin deterministic literal values for top-level `id`, `timestamp`, optional `vcs`, `metadata.sce.version`, per-conversation `url`, range-level `content_hash`, and expected file/conversation shapes.
-- Tests validate golden fixtures and built payloads against the embedded schema, assert core runtime metadata directly (`version`, `timestamp`, optional `vcs`, and `metadata.sce.version`), and compare `vcs`, `metadata`, and normalized `files` against fixture truth. Expected fixture URLs are normalized to the runtime `AgentTrace.id` before the existing file-shape comparison because UUIDv7 generation includes non-deterministic bits.
+- Golden fixtures under `cli/src/services/agent_trace/fixtures/**/golden.json` pin deterministic literal values for top-level `id`, `timestamp`, optional `vcs`, `metadata.sce.version`, `metadata.sce.line_changes`, per-conversation `url`, range-level `content_hash`, and expected file/conversation shapes.
+- Tests validate golden fixtures and built payloads against the embedded schema, assert core runtime metadata directly (`version`, `timestamp`, optional `vcs`, and `metadata.sce.version`), and compare `vcs`, `metadata.sce.line_changes`, and normalized `files` against fixture truth. Expected fixture URLs are normalized to the runtime `AgentTrace.id` before the existing file-shape comparison because UUIDv7 generation includes non-deterministic bits.
 
 ## Relationship to existing patch service
 
