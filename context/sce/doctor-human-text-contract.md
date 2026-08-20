@@ -54,7 +54,7 @@ Only resolved targets render. Display labels are normalized as `Claude Code`,
 `OpenCode`, and `Pi`; typed target/area keys, not display-label parsing, own the
 hierarchy. Areas render in deterministic order:
 
-- Claude Code: `Plugins`, `Agents`, `Commands`, `Skills`
+- Claude Code: `Plugins`, `Commands`, `Skills`
 - OpenCode: `Plugins`, `Agents`, `Commands`, `Skills`
 - Pi: `Extensions`, `Prompts`, `Skills`
 

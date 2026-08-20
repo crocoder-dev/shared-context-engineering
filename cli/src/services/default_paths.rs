@@ -383,7 +383,6 @@ pub(crate) mod claude_asset {
     pub const SETTINGS_FILE: &str = "settings.json";
     pub const HOOKS_DIR: &str = "hooks";
     pub const SKILLS_DIR: &str = "skills";
-    pub const AGENTS_DIR: &str = "agents";
     pub const COMMANDS_DIR: &str = "commands";
 }
 

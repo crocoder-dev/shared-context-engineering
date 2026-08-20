@@ -1366,7 +1366,6 @@ fn collect_claude_integration_groups(
     )
     .collect::<Vec<_>>();
     let mut plugin_children = Vec::new();
-    let mut agent_children = Vec::new();
     let mut command_children = Vec::new();
     let mut skill_children = Vec::new();
 
@@ -1386,11 +1385,6 @@ fn collect_claude_integration_groups(
             plugin_children.push(child);
         } else if child
             .relative_path
-            .starts_with(&format!("{}/", claude_asset::AGENTS_DIR))
-        {
-            agent_children.push(child);
-        } else if child
-            .relative_path
             .starts_with(&format!("{}/", claude_asset::COMMANDS_DIR))
         {
             command_children.push(child);
@@ -1403,7 +1397,6 @@ fn collect_claude_integration_groups(
     }
 
     sort_integration_children(&mut plugin_children);
-    sort_integration_children(&mut agent_children);
     sort_integration_children(&mut command_children);
     sort_integration_children(&mut skill_children);
 
@@ -1411,10 +1404,6 @@ fn collect_claude_integration_groups(
         IntegrationGroupHealth::new(
             IntegrationGroupKey::new(IntegrationTarget::ClaudeCode, IntegrationArea::Plugins),
             plugin_children,
-        ),
-        IntegrationGroupHealth::new(
-            IntegrationGroupKey::new(IntegrationTarget::ClaudeCode, IntegrationArea::Agents),
-            agent_children,
         ),
         IntegrationGroupHealth::new(
             IntegrationGroupKey::new(IntegrationTarget::ClaudeCode, IntegrationArea::Commands),
