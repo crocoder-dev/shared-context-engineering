@@ -11,6 +11,7 @@ use crate::services::agent_trace_sync::control_plane::{
 };
 use crate::services::auth::{self, AuthError, DeviceAuthFlowResult};
 use crate::services::config;
+use crate::services::error::{CliError, UserError};
 use crate::services::output_format::OutputFormat;
 use crate::services::style::{label, prompt_label, prompt_value, success, value};
 use crate::services::token_storage::{self, StoredTokens};
@@ -33,7 +34,7 @@ pub struct AuthRequest {
     pub subcommand: AuthSubcommand,
 }
 
-pub fn run_auth_subcommand(request: AuthRequest) -> Result<String> {
+pub fn run_auth_subcommand(request: AuthRequest) -> Result<String, CliError> {
     run_auth_subcommand_with(request, run_login, run_logout, run_whoami)
 }
 
@@ -42,11 +43,11 @@ fn run_auth_subcommand_with<L, O, S>(
     login: L,
     logout: O,
     whoami: S,
-) -> Result<String>
+) -> Result<String, CliError>
 where
-    L: FnOnce(AuthFormat) -> Result<String>,
-    O: FnOnce(AuthFormat) -> Result<String>,
-    S: FnOnce(AuthFormat) -> Result<String>,
+    L: FnOnce(AuthFormat) -> Result<String, CliError>,
+    O: FnOnce(AuthFormat) -> Result<String, CliError>,
+    S: FnOnce(AuthFormat) -> Result<String, CliError>,
 {
     match request.subcommand {
         AuthSubcommand::Login { format } => login(format),
@@ -55,15 +56,16 @@ where
     }
 }
 
-pub fn run_login(format: AuthFormat) -> Result<String> {
+pub fn run_login(format: AuthFormat) -> Result<String, CliError> {
     let client = reqwest::Client::new();
-    let runtime = shared_runtime()?;
+    let runtime = shared_runtime().map_err(unexpected_auth_command_error)?;
 
-    let client_id = resolve_login_client_id()?;
+    let client_id = resolve_login_client_id().map_err(unexpected_auth_command_error)?;
+    let stored_tokens = token_storage::load_tokens().map_err(auth_storage_error)?;
 
     run_login_with_stored_credentials(
         format,
-        token_storage::load_tokens()?,
+        stored_tokens,
         |stored_tokens| maybe_renew_stored_credentials(runtime, &client, &client_id, stored_tokens),
         |format| match format {
             AuthFormat::Text => run_text_login_with_runtime(runtime, &client, &client_id),
@@ -72,35 +74,39 @@ pub fn run_login(format: AuthFormat) -> Result<String> {
     )
 }
 
-pub fn run_logout(format: AuthFormat) -> Result<String> {
-    let deleted = token_storage::delete_tokens().map_err(|error| {
-        let guidance = auth_state_path_guidance(
-            "verify file permissions for the auth state directory and rerun 'sce auth logout'",
-        );
-        anyhow!(format!("{error} Try: {guidance}"))
-    })?;
-    render_logout_result(deleted, format)
+pub fn run_logout(format: AuthFormat) -> Result<String, CliError> {
+    let deleted = token_storage::delete_tokens().map_err(auth_storage_error)?;
+    if !deleted {
+        return Err(CliError::user(UserError::NotAuthenticated));
+    }
+    render_logout_success(format).map_err(unexpected_auth_command_error)
 }
 
-pub fn run_whoami(format: AuthFormat) -> Result<String> {
-    if token_storage::load_tokens()?.is_none() {
-        return render_unauthenticated_whoami(format);
+pub fn run_whoami(format: AuthFormat) -> Result<String, CliError> {
+    if token_storage::load_tokens()
+        .map_err(auth_storage_error)?
+        .is_none()
+    {
+        return Err(CliError::user(UserError::NotAuthenticated));
     }
 
     let cwd = std::env::current_dir()
-        .context("failed to determine current directory for auth config resolution")?;
-    let auth_config = config::resolve_auth_runtime_config(&cwd)?;
+        .context("failed to determine current directory for auth config resolution")
+        .map_err(unexpected_auth_command_error)?;
+    let auth_config =
+        config::resolve_auth_runtime_config(&cwd).map_err(unexpected_auth_command_error)?;
     let client = AuthenticatedControlPlaneClient::new(
         reqwest::Client::new(),
         auth_config.control_plane_base_url.value.unwrap_or_default(),
         auth::WORKOS_DEFAULT_BASE_URL,
         auth_config.workos_client_id.value.unwrap_or_default(),
     );
-    let profile = shared_runtime()?
+    let profile = shared_runtime()
+        .map_err(unexpected_auth_command_error)?
         .block_on(client.me())
-        .map_err(|error| map_whoami_control_plane_error(&error))?;
+        .map_err(map_whoami_control_plane_error)?;
 
-    render_whoami_result(&profile, format)
+    render_whoami_result(&profile, format).map_err(unexpected_auth_command_error)
 }
 
 fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
@@ -122,14 +128,16 @@ fn maybe_renew_stored_credentials(
     client: &reqwest::Client,
     client_id: &str,
     stored_tokens: &StoredTokens,
-) -> Result<Option<StoredTokens>> {
+) -> Result<Option<StoredTokens>, CliError> {
     match runtime.block_on(auth::ensure_valid_token_returning_token(
         client,
         auth::WORKOS_DEFAULT_BASE_URL,
         client_id,
         stored_tokens,
     )) {
-        Ok(token) => Ok(Some(token_storage::save_tokens(&token)?)),
+        Ok(token) => token_storage::save_tokens(&token)
+            .map(Some)
+            .map_err(auth_storage_error),
         Err(_) => Ok(None),
     }
 }
@@ -139,14 +147,15 @@ fn run_login_with_stored_credentials<R, D>(
     stored_tokens: Option<StoredTokens>,
     renew: R,
     device_login: D,
-) -> Result<String>
+) -> Result<String, CliError>
 where
-    R: FnOnce(&StoredTokens) -> Result<Option<StoredTokens>>,
-    D: FnOnce(AuthFormat) -> Result<String>,
+    R: FnOnce(&StoredTokens) -> Result<Option<StoredTokens>, CliError>,
+    D: FnOnce(AuthFormat) -> Result<String, CliError>,
 {
     if let Some(stored_tokens) = stored_tokens {
         if let Some(renewed_tokens) = renew(&stored_tokens)? {
-            return render_login_refresh_result(&renewed_tokens, format);
+            return render_login_refresh_result(&renewed_tokens, format)
+                .map_err(unexpected_auth_command_error);
         }
     }
 
@@ -157,16 +166,16 @@ fn run_text_login_with_runtime(
     runtime: &tokio::runtime::Runtime,
     client: &reqwest::Client,
     client_id: &str,
-) -> Result<String> {
+) -> Result<String, CliError> {
     let authorization = runtime
         .block_on(auth::request_device_authorization(
             client,
             auth::WORKOS_DEFAULT_BASE_URL,
             client_id,
         ))
-        .map_err(|e| map_login_error(&e))?;
+        .map_err(map_login_error)?;
 
-    write_login_prompt(&authorization)?;
+    write_login_prompt(&authorization).map_err(unexpected_auth_command_error)?;
 
     let token = runtime
         .block_on(auth::complete_device_auth_flow_returning_token(
@@ -175,9 +184,9 @@ fn run_text_login_with_runtime(
             client_id,
             &authorization,
         ))
-        .map_err(|e| map_login_error(&e))?;
+        .map_err(map_login_error)?;
 
-    let stored_tokens = token_storage::save_tokens(&token)?;
+    let stored_tokens = token_storage::save_tokens(&token).map_err(auth_storage_error)?;
 
     render_login_result(
         &DeviceAuthFlowResult {
@@ -186,6 +195,7 @@ fn run_text_login_with_runtime(
         },
         AuthFormat::Text,
     )
+    .map_err(unexpected_auth_command_error)
 }
 
 fn run_login_json(
@@ -193,14 +203,14 @@ fn run_login_json(
     client: &reqwest::Client,
     client_id: &str,
     format: AuthFormat,
-) -> Result<String> {
+) -> Result<String, CliError> {
     let authorization = runtime
         .block_on(auth::request_device_authorization(
             client,
             auth::WORKOS_DEFAULT_BASE_URL,
             client_id,
         ))
-        .map_err(|e| map_login_error(&e))?;
+        .map_err(map_login_error)?;
 
     let token = runtime
         .block_on(auth::complete_device_auth_flow_returning_token(
@@ -209,9 +219,9 @@ fn run_login_json(
             client_id,
             &authorization,
         ))
-        .map_err(|e| map_login_error(&e))?;
+        .map_err(map_login_error)?;
 
-    let stored_tokens = token_storage::save_tokens(&token)?;
+    let stored_tokens = token_storage::save_tokens(&token).map_err(auth_storage_error)?;
 
     render_login_result(
         &DeviceAuthFlowResult {
@@ -220,6 +230,7 @@ fn run_login_json(
         },
         format,
     )
+    .map_err(unexpected_auth_command_error)
 }
 
 fn resolve_login_client_id() -> Result<String> {
@@ -260,11 +271,12 @@ fn write_login_prompt(authorization: &auth::DeviceAuthorizationResponse) -> Resu
     Ok(())
 }
 
-fn map_login_error(error: &AuthError) -> anyhow::Error {
-    anyhow!(with_try_guidance(
-        error.to_string(),
-        "verify the resolved WorkOS client ID source (WORKOS_CLIENT_ID, config file, or baked default), confirm network access, and rerun 'sce auth login'."
-    ))
+fn map_login_error(error: AuthError) -> CliError {
+    let user_error = match &error {
+        AuthError::Io(_) | AuthError::Storage(_) => UserError::AuthStorageUnavailable,
+        _ => UserError::UnexpectedFailure,
+    };
+    CliError::user_with_source(user_error, error)
 }
 
 fn render_login_result(result: &DeviceAuthFlowResult, format: AuthFormat) -> Result<String> {
@@ -316,38 +328,17 @@ fn render_login_refresh_result(tokens: &StoredTokens, format: AuthFormat) -> Res
     }
 }
 
-fn render_logout_result(deleted: bool, format: AuthFormat) -> Result<String> {
+fn render_logout_success(format: AuthFormat) -> Result<String> {
     match format {
-        AuthFormat::Text => Ok(if deleted {
-            success("Logged out")
-        } else {
-            value("No user logged in")
-        }),
+        AuthFormat::Text => Ok(success("Logged out")),
         AuthFormat::Json => serde_json::to_string_pretty(&json!({
             "status": "ok",
             "command": NAME,
             "subcommand": "logout",
             "authenticated": false,
-            "credentials_removed": deleted,
+            "credentials_removed": true,
         }))
         .context("failed to serialize auth logout report to JSON. Try: rerun 'sce auth logout --format json'."),
-    }
-}
-
-fn render_unauthenticated_whoami(format: AuthFormat) -> Result<String> {
-    match format {
-        AuthFormat::Text => Ok(format!(
-            "You are not logged in. Please log in using the {} command.",
-            success("sce auth login")
-        )),
-        AuthFormat::Json => serde_json::to_string_pretty(&json!({
-            "status": "ok",
-            "command": NAME,
-            "subcommand": "whoami",
-            "authentication_state": "unauthenticated",
-            "has_stored_credentials": false,
-        }))
-        .context("failed to serialize auth whoami report to JSON. Try: rerun 'sce auth whoami --format json'."),
     }
 }
 
@@ -402,21 +393,25 @@ fn render_whoami_result(profile: &MeResponse, format: AuthFormat) -> Result<Stri
     }
 }
 
-fn map_whoami_control_plane_error(error: &ControlPlaneError) -> anyhow::Error {
-    anyhow!("failed to fetch authenticated user information from the Control Plane: {error}")
-}
-
-fn with_try_guidance(message: String, guidance: &str) -> String {
-    if message.contains("Try:") {
-        message
+fn map_whoami_control_plane_error(error: ControlPlaneError) -> CliError {
+    let user_error = if error.is_authentication_failure() {
+        UserError::NotAuthenticated
+    } else if error.is_storage_failure() {
+        UserError::AuthStorageUnavailable
     } else {
-        format!("{message} Try: {guidance}")
-    }
+        UserError::UnexpectedFailure
+    };
+
+    CliError::user_with_source(
+        user_error,
+        anyhow!("failed to fetch authenticated user information from the Control Plane: {error}"),
+    )
 }
 
-fn auth_state_path_guidance(action: &str) -> String {
-    match token_storage::token_file_path() {
-        Ok(path) => format!("{action}; expected path: '{}'", path.display()),
-        Err(_) => action.to_string(),
-    }
+fn auth_storage_error(error: crate::services::token_storage::TokenStorageError) -> CliError {
+    CliError::user_with_source(UserError::AuthStorageUnavailable, error)
+}
+
+fn unexpected_auth_command_error(error: anyhow::Error) -> CliError {
+    CliError::user_with_source(UserError::UnexpectedFailure, error)
 }
