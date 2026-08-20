@@ -33,10 +33,12 @@ where
 
 #[allow(clippy::needless_pass_by_value)]
 fn classify_sync_error(err: TraceSyncError) -> CliError {
-    if err.is_authentication_failure() {
+    if err.is_storage_failure() {
+        CliError::user_with_source(UserError::AuthStorageUnavailable, err)
+    } else if err.is_authentication_failure() {
         CliError::user_with_source(UserError::NotAuthenticated, err)
     } else {
-        CliError::runtime(err)
+        CliError::user_with_source(UserError::UnexpectedFailure, err)
     }
 }
 
@@ -112,10 +114,13 @@ mod tests {
         }
     }
 
-    fn assert_internal(err: TraceSyncError) {
+    fn assert_user_error(err: TraceSyncError, expected_key: &str) {
         match classify_sync_error(err) {
-            CliError::Internal { .. } => {}
-            other @ CliError::User { .. } => panic!("expected CliError::Internal, got {other:?}"),
+            CliError::User { error, source } => {
+                assert_eq!(error.key(), expected_key);
+                assert!(source.is_some());
+            }
+            other @ CliError::Internal { .. } => panic!("expected CliError::User, got {other:?}"),
         }
     }
 
@@ -152,25 +157,49 @@ mod tests {
     }
 
     #[test]
-    fn other_control_plane_errors_classify_as_internal() {
+    fn other_control_plane_errors_classify_as_unexpected_failure() {
         for error in [
             ControlPlaneError::Forbidden("nope".to_string()),
             ControlPlaneError::BadRequest("bad".to_string()),
             ControlPlaneError::Transport("down".to_string()),
             ControlPlaneError::ServerError("500".to_string()),
             ControlPlaneError::InvalidResponse("garbage".to_string()),
-            ControlPlaneError::Storage("disk".to_string()),
             ControlPlaneError::Protocol {
                 status: reqwest::StatusCode::NOT_FOUND,
                 message: "route removed".to_string(),
             },
         ] {
-            assert_internal(TraceSyncError::ControlPlane(error));
+            assert_user_error(
+                TraceSyncError::ControlPlane(error),
+                "general.unexpected_failure",
+            );
         }
     }
 
     #[test]
-    fn runtime_failure_classifies_as_internal() {
-        assert_internal(TraceSyncError::Runtime("local failure".to_string()));
+    fn credential_storage_failure_classifies_as_storage_unavailable() {
+        assert_user_error(
+            TraceSyncError::ControlPlane(ControlPlaneError::Storage("disk".to_string())),
+            "auth.storage_unavailable",
+        );
+    }
+
+    #[test]
+    fn runtime_failure_classifies_as_unexpected_failure() {
+        assert_user_error(
+            TraceSyncError::Runtime("local failure".to_string()),
+            "general.unexpected_failure",
+        );
+    }
+
+    #[test]
+    fn stream_storage_failure_does_not_classify_as_storage_unavailable() {
+        assert_user_error(
+            TraceSyncError::Stream {
+                stream: "prompts",
+                source: StreamSyncError::Terminal(ControlPlaneError::Storage("disk".to_string())),
+            },
+            "general.unexpected_failure",
+        );
     }
 }
