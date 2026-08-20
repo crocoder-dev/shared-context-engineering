@@ -31,9 +31,11 @@ It complements the numeric process exit-code classes documented in `context/sce/
 ## Ownership
 
 - `FailureClass` in `cli/src/services/error.rs` owns class selection and stable code assignment (`FailureClass::code()`).
-- `CliError::{User,Internal}` in `cli/src/services/error.rs` is the typed CLI-boundary error type; `CliError::code()`/`CliError::class()` delegate to the failure class. `CliError::User` carries a catalog `UserError` (currently only `NotAuthenticated`) for expected, deliberately-explained failures; `CliError::Internal` carries a live `anyhow::Error` source for every other failure.
+- `CliError::{User,Internal}` in `cli/src/services/error.rs` is the typed CLI-boundary error type; `CliError::code()`/`CliError::class()` delegate to the failure class. `CliError::User` carries a catalog `UserError` (currently only `NotAuthenticated`) for expected, deliberately-explained failures; `CliError::Internal` carries a live `anyhow::Error` source for every other failure. `CliError::User` may also carry an optional preserved technical `source`, kept for observability only and never rendered to the terminal.
+- `UserError` in `cli/src/services/error.rs` is the closed catalog of deliberately presented terminal failures. It has no arbitrary-message variant (no `Message(String)`/`Custom(...)` escape hatch): every entry is a fixed, reviewed sentence returned by `UserError::message()`, keyed for structured logging by `UserError::key()`.
+- Command and domain layers construct and return a `CliError`; they do not format terminal text, apply styling, or decide authentication/user-error semantics from string matching. `app_support` is the sole owner of turning a `CliError` into the final stderr sentence.
 - `Logger::log_cli_error` in `cli/src/services/observability.rs` owns structured error logging with `sce.error.{code}` event IDs.
-- `write_error_diagnostic` in `cli/src/services/app_support.rs` owns final code-bearing stderr rendering.
+- `write_error_diagnostic` in `cli/src/services/app_support.rs` owns final code-bearing stderr rendering, including styling `CliError::User`'s catalog message and `CliError::Internal`'s rendered chain through `services::style::error_text_with_color_policy` under the stderr TTY/`NO_COLOR` policy (`services::style::supports_color_stderr()`), independent of stdout's TTY state.
 - `run_with_dependency_check_and_streams` in `cli/src/app.rs` owns error logging before stderr emission.
 
 ## Determinism and testing

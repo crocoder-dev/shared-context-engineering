@@ -193,7 +193,7 @@ fn write_error_diagnostic_with_color_policy<W: Write>(
     writeln!(
         writer,
         "{} [{}]: {}",
-        services::style::heading("Error"),
+        services::style::heading_with_color_policy("Error", color_enabled),
         services::style::error_code_with_color_policy(error.code(), color_enabled),
         styled_message
     )
@@ -235,7 +235,10 @@ mod tests {
     }
 
     fn diagnostic_lines(stderr: &str) -> Vec<&str> {
-        stderr.lines().filter(|line| line.contains("Error [")).collect()
+        stderr
+            .lines()
+            .filter(|line| line.contains("Error") && line.contains("SCE-ERR-"))
+            .collect()
     }
 
     #[test]

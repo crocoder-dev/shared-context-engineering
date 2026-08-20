@@ -49,7 +49,7 @@ pub fn heading(text: &str) -> String {
 }
 
 #[must_use]
-fn heading_with_color_policy(text: &str, color_enabled: bool) -> String {
+pub(crate) fn heading_with_color_policy(text: &str, color_enabled: bool) -> String {
     style_if(text, color_enabled, |s| s.cyan().bold().to_string())
 }
 

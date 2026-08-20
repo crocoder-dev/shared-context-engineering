@@ -92,10 +92,30 @@ terminal protocol failures, ownership rejection, and sanitized control-plane
 errors remain owned by `services::agent_trace_sync` and its control-plane
 client. The command change does not alter those semantics.
 
+## Error classification
+
+`cli/src/services/sync/command.rs`'s `classify_sync_error` maps the command's
+terminal `TraceSyncError` into the typed `CliError` boundary by calling
+`TraceSyncError::is_authentication_failure()` — a typed traversal down to
+`ControlPlaneError`, never string/substring matching. An authentication
+failure from the initial `/state` call, a stream batch request, or a stream
+reconciliation `/state` refresh (`ControlPlaneError::MissingCredentials` or
+`AuthenticationFailed`) classifies as `CliError::User { error:
+UserError::NotAuthenticated, .. }`, preserving the technical error as its
+source; every other `ControlPlaneError` (`Forbidden`, `BadRequest`,
+`Transport`, `ServerError`, `InvalidResponse`, `Storage`, `Protocol`)
+classifies as `CliError::Internal`. `sync/command.rs` builds no friendly
+sentence and applies no terminal styling itself — `app_support` renders the
+single `You are not logged in...` diagnostic for the user case, and the full
+`anyhow`/control-plane chain for the internal case. See [CLI error-code
+taxonomy](../sce/cli-error-code-taxonomy.md) for the full `CliError`/`UserError`
+architecture.
+
 ## Related context
 
 - [Agent Trace sync architecture](agent-trace-sync-command.md)
 - [Agent Trace storage](agent-trace-storage.md)
 - [Agent Trace export readers](../sce/agent-trace-export-readers.md)
 - [CLI stdout/stderr contract](../sce/cli-stdout-stderr-contract.md)
+- [CLI error-code taxonomy](../sce/cli-error-code-taxonomy.md)
 - [Trace-sync progress stream contract](../decisions/2026-08-13-trace-sync-progress-stream-contract.md)

@@ -75,10 +75,7 @@ fn handle_clap_error(
     Err(classify_clap_error(error))
 }
 
-fn registry_command(
-    registry: &CommandRegistry,
-    name: &str,
-) -> Result<RuntimeCommand, CliError> {
+fn registry_command(registry: &CommandRegistry, name: &str) -> Result<RuntimeCommand, CliError> {
     if !registry.contains(name) {
         return Err(CliError::runtime(anyhow::Error::msg(format!(
             "Command '{name}' is not registered. Try: run 'sce --help' to see available commands."
@@ -417,8 +414,8 @@ fn convert_hooks_subcommand_request(
             Ok(services::hooks::HookSubcommand::CommitMsg { message_file })
         }
         cli_schema::HooksSubcommand::PostCommit { vcs, remote_url } => {
-            let vcs_type = parse_optional_hook_vcs_type(vcs.as_deref())
-                .map_err(CliError::validation)?;
+            let vcs_type =
+                parse_optional_hook_vcs_type(vcs.as_deref()).map_err(CliError::validation)?;
             let remote_url =
                 parse_optional_hook_remote_url(remote_url).map_err(CliError::validation)?;
 

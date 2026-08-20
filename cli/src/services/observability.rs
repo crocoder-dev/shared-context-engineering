@@ -140,10 +140,18 @@ impl Logger {
         let event_id = format!("sce.error.{}", error.code());
         let message = error.to_string();
         let fields = cli_error_fields(error);
-        let field_refs: Vec<(&str, &str)> =
-            fields.iter().map(|(key, value)| (*key, value.as_str())).collect();
+        let field_refs: Vec<(&str, &str)> = fields
+            .iter()
+            .map(|(key, value)| (*key, value.as_str()))
+            .collect();
 
-        self.log(LogLevel::Error, &event_id, &message, &field_refs, session_id);
+        self.log(
+            LogLevel::Error,
+            &event_id,
+            &message,
+            &field_refs,
+            session_id,
+        );
     }
 
     fn log(

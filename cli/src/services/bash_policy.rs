@@ -587,10 +587,7 @@ fn render_claude_hook_result(evaluation: &PolicyEvaluation) -> Result<String, Cl
     }
 }
 
-fn render_json_result(
-    command: &str,
-    evaluation: &PolicyEvaluation,
-) -> Result<String, CliError> {
+fn render_json_result(command: &str, evaluation: &PolicyEvaluation) -> Result<String, CliError> {
     match evaluation {
         PolicyEvaluation::Allowed { normalized_argv } => serialize_json(&JsonPolicyResult {
             status: "ok",
