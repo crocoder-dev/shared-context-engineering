@@ -50,11 +50,7 @@ impl SyncCommand {
         self.execute_with_stderr(context, &mut stderr)
     }
 
-    pub fn execute_with_stderr<C, W>(
-        &self,
-        context: &C,
-        stderr: &mut W,
-    ) -> Result<String, CliError>
+    pub fn execute_with_stderr<C, W>(&self, context: &C, stderr: &mut W) -> Result<String, CliError>
     where
         C: ContextWithRepoRoot,
         W: Write,

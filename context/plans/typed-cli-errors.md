@@ -8,21 +8,21 @@ This replaces `ClassifiedError` rather than extending it, and is scoped to one a
 
 ## Acceptance criteria
 
-- [ ] AC1: No arbitrary user-message escape hatch exists — `UserError` has no `Message(String)`/`Custom(...)` variant, and `UserFacingPresentation` does not exist anywhere in the codebase.
+- [x] AC1: No arbitrary user-message escape hatch exists — `UserError` has no `Message(String)`/`Custom(...)` variant, and `UserFacingPresentation` does not exist anywhere in the codebase.
   - Validate: `grep -rn "UserFacingPresentation" cli/src` and `grep -rn "UserError::Message\|UserError::Custom" cli/src` both return no results; `cli/src/services/error.rs` shows `UserError` with only `NotAuthenticated`.
-- [ ] AC2: `CliError` distinguishes typed user errors (`CliError::User`) from internal failures (`CliError::Internal`), and `FailureClass::code()` still maps to the four stable `SCE-ERR-*` strings.
+- [x] AC2: `CliError` distinguishes typed user errors (`CliError::User`) from internal failures (`CliError::Internal`), and `FailureClass::code()` still maps to the four stable `SCE-ERR-*` strings.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml error::`
-- [ ] AC3: `sce sync` classifies an authentication failure from the initial `/state` call (`MissingCredentials` or `AuthenticationFailed`), a stream batch request, or a stream reconciliation `/state` refresh as `UserError::NotAuthenticated`, while `Forbidden`, `BadRequest`, `Transport`, `ServerError`, `InvalidResponse`, `Storage`, and `Protocol` remain internal failures.
+- [x] AC3: `sce sync` classifies an authentication failure from the initial `/state` call (`MissingCredentials` or `AuthenticationFailed`), a stream batch request, or a stream reconciliation `/state` refresh as `UserError::NotAuthenticated`, while `Forbidden`, `BadRequest`, `Transport`, `ServerError`, `InvalidResponse`, `Storage`, and `Protocol` remain internal failures.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml sync::` (positive and negative classification cases from Phase 10).
-- [ ] AC4: A `sce sync` authentication failure renders exactly one friendly login diagnostic on stderr (no low-level control-plane text), leaves stdout empty, exits with the runtime class (`4`), and still preserves the technical `ControlPlaneError`/`anyhow` source for observability.
+- [x] AC4: A `sce sync` authentication failure renders exactly one friendly login diagnostic on stderr (no low-level control-plane text), leaves stdout empty, exits with the runtime class (`4`), and still preserves the technical `ControlPlaneError`/`anyhow` source for observability.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml app_support::` end-to-end routing test asserting stdout/stderr/exit-code/single-diagnostic behavior.
 - [ ] AC5: `CliError::Internal` diagnostics still render the real `anyhow` error chain (`format!("{source:#}")`) rather than a pre-stringified message, and existing exit-code classes plus `SCE-ERR-*` codes and `Try:` remediation are unchanged.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml app::`
-- [ ] AC6: Friendly login-guidance styling follows stderr TTY/`NO_COLOR` policy (`supports_color_stderr()`), independent of stdout's TTY state.
+- [x] AC6: Friendly login-guidance styling follows stderr TTY/`NO_COLOR` policy (`supports_color_stderr()`), independent of stdout's TTY state.
   - Validate: targeted styling test covering TTY, redirected-stderr, and `NO_COLOR` cases for the user-error renderer.
-- [ ] AC7: `cli/src/services/sync/command.rs` contains no friendly-sentence construction, no terminal styling call, and no string/substring matching used to decide authentication semantics.
+- [x] AC7: `cli/src/services/sync/command.rs` contains no friendly-sentence construction, no terminal styling call, and no string/substring matching used to decide authentication semantics.
   - Validate: `grep -n "style::success\|You are not logged in" cli/src/services/sync/command.rs` returns no results; manual review of `classify_sync_error` shows it dispatches only on `is_authentication_failure()`.
-- [ ] AC8: Observability logs one structured record per `CliError` (class, code, surface, `user_error` key when present, technical source) without emitting a second competing terminal stderr diagnostic for the same error.
+- [x] AC8: Observability logs one structured record per `CliError` (class, code, surface, `user_error` key when present, technical source) without emitting a second competing terminal stderr diagnostic for the same error.
   - Validate: targeted observability test asserting a single stderr diagnostic write plus the structured log fields for both a `CliError::User` and a `CliError::Internal` case.
 
 ### Full validation
@@ -169,14 +169,67 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: `local`. No production rendered diagnostic text, exit code, or `SCE-ERR-*` code changed for any real invocation — `write_error_diagnostic` still resolves styling via `supports_color_stderr()` exactly as before; only the computation was threaded through an explicit-bool seam for testability. However, `context/cli/styling-service.md` (not one of this plan's listed Context sync docs, but a real cross-reference) documented a standalone public `error_text(text: &str) -> String` primitive and `style_if_enabled_stderr` helper, and imported `error_text` directly in its usage example; both no longer exist as public/crate items (replaced by the crate-internal `error_text_with_color_policy`), which was a factual contradiction in that doc, not narrative — corrected during context synchronization below, following the same immediate-correction precedent T05 used for the `log_classified_error` → `log_cli_error` rename. None of this plan's own listed Context sync docs (`cli-error-code-taxonomy.md`, `cli-stdout-stderr-contract.md`, `cli-observability-contract.md`, `context/cli/sync-command.md`, `context/cli/agent-trace-sync-command.md`, `context/overview.md`) reference anything changed by this task; the full architecture narrative for those remains deferred to T07 per the T01–T05 precedent.
   - Context synchronization: synced
 
-- [ ] T07: `Document the typed CliError/UserError architecture in durable context` (status:todo)
+- [x] T07: `Document the typed CliError/UserError architecture in durable context` (status:done)
   - Task ID: T07
   - Scope: In — update `context/sce/cli-error-code-taxonomy.md`, `context/sce/cli-stdout-stderr-contract.md`, `context/sce/cli-observability-contract.md`, `context/cli/sync-command.md`, `context/cli/agent-trace-sync-command.md`, and `context/overview.md` to describe `CliError::{User,Internal}`, `UserError` as the catalog of deliberately presented terminal failures, the separation from technical source errors, that commands/domain layers do not own terminal rendering, that `app_support` owns final stderr presentation with styling applied at the renderer using stderr policy, that observability retains technical detail independently, and that stable `SCE-ERR-*`/exit classes are unchanged. Out — introducing or documenting `UserFacingPresentation` (must not appear); restating unrelated legacy content.
   - Dependencies: T06
   - Done when: the listed context docs describe the shipped `CliError`/`UserError` architecture with no reference to `ClassifiedError` or `UserFacingPresentation`.
   - Verify: `nix run .#pkl-check-generated`; `grep -rn "UserFacingPresentation" context/` (expect no results); `grep -rln "ClassifiedError" context/cli context/sce` (expect no results among the updated files).
-  - Context synchronization: pending
+  - Completed: 2026-08-19
+  - Files changed: `context/sce/cli-error-code-taxonomy.md`; `context/sce/cli-stdout-stderr-contract.md`; `context/sce/cli-observability-contract.md`; `context/cli/sync-command.md`; `context/cli/agent-trace-sync-command.md`; `context/overview.md`
+  - Result: All six listed docs now describe the shipped architecture. `cli-error-code-taxonomy.md`'s Ownership section gained explicit statements that `UserError` is the closed catalog of deliberately presented terminal failures (no `Message`/`Custom` escape hatch), that command/domain layers construct and return a `CliError` without formatting terminal text or deciding user-error semantics by string matching, and that `app_support` styles both variants through `services::style::error_text_with_color_policy` under the stderr TTY/`NO_COLOR` policy independent of stdout's TTY state. `cli-stdout-stderr-contract.md` gained a bullet distinguishing the `CliError::Internal` (full `anyhow` chain plus class-default `Try:`) vs `CliError::User` (catalog message verbatim, no `Try:`) diagnostic bodies. `cli-observability-contract.md`'s error-log-record bullet now lists `error_surface`, `user_error`, and `error_source` alongside the existing `error_code`/`error_class`, matching `cli_error_fields()` in `observability.rs`. `sync-command.md` gained an "Error classification" section describing `classify_sync_error`'s typed `is_authentication_failure()` dispatch (never string matching) to `CliError::User { error: UserError::NotAuthenticated, .. }` vs `CliError::Internal`, plus a taxonomy cross-link. `agent-trace-sync-command.md`'s `401` recovery bullet gained a companion bullet on the typed `is_authentication_failure()` traversal through `ControlPlaneError`/`StreamSyncError`/`TraceSyncError` and the command-level classification outcome, plus a taxonomy cross-link in Related context. `overview.md`'s stderr-error-classes sentence (line 22) gained the cross-cutting `ClassifiedError` → `CliError` rename summary: the `User`/`Internal` split, `app_support` as sole renderer, and `sce sync` as the first `CliError::User` adopter. No production code was touched; `context/plans/typed-cli-errors.md`'s own pre-existing mentions of `UserFacingPresentation` (describing the constraint that it must not exist, and that this plan is not built on PR #221) are unchanged and out of this task's scope — they were present before T07 and are not among the six target docs.
+  - Verify:
+    - `nix run .#pkl-check-generated` — passed: "Ephemeral Pkl generation passed: 107 files".
+    - `grep -rn "UserFacingPresentation" context/` — four results, all pre-existing in `context/plans/typed-cli-errors.md` itself (AC1, Scope, Done-when, Verify prose describing the non-existence constraint and the PR #221 non-reuse note); none of the six updated docs reference it.
+    - `grep -rln "ClassifiedError" context/cli context/sce` — no results.
+  - Context impact: `local`. All six changes are documentation-only, describing already-shipped T01–T06 behavior with no change to public interface, exit codes, `SCE-ERR-*` codes, or rendered diagnostic text. `pkl-check-generated` confirms the generated Pkl payload set is unaffected.
+  - Context synchronization: synced
 
 ## Open questions
 
 None. The change request fully specifies scope, architecture, phase-by-phase behavior, and acceptance criteria; the only latitude left (exact wording, illustrative type-shape naming) is recorded under Assumptions rather than blocking authoring.
+
+## Validation Report
+
+**Status:** failed  
+**Date:** 2026-08-19
+
+### Commands run
+
+- `nix run .#pkl-check-generated` -> exit 0 (Ephemeral Pkl generation passed: 107 files)
+- `nix flake check` -> exit 0 (all checks passed, including `cli-fmt`/`cli-clippy`/`cli-tests`, after the rustfmt drift found in the prior validation run was fixed)
+- `grep -rn "UserFacingPresentation" cli/src` -> exit 1, no results (pass)
+- `grep -rn "UserError::Message\|UserError::Custom" cli/src` -> exit 1, no results (pass)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml error::` -> exit 0 (6 passed; 0 failed)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml sync::` -> exit 0 (60 passed; 0 failed)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml app_support::` -> exit 0 (5 passed; 0 failed)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml app::` -> exit 0 (0 passed; 0 failed — no test path matches the `app::` prefix, confirmed again with `-- --list`)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml observability` -> exit 0 (4 passed; 0 failed)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml style::` -> exit 0 (4 passed; 0 failed)
+- `grep -n "style::success\|You are not logged in" cli/src/services/sync/command.rs` -> exit 1, no results (pass)
+- Manual review of `classify_sync_error` in `cli/src/services/sync/command.rs:35` -> dispatches only on `err.is_authentication_failure()` (pass)
+
+### Success-criteria verification
+
+- [x] AC1: No `Message`/`Custom` escape hatch; `UserFacingPresentation` absent from `cli/src` -> both greps returned no results; `UserError` in `error.rs` has only `NotAuthenticated`.
+- [x] AC2: `CliError` distinguishes `User`/`Internal`; `FailureClass::code()` maps to the four `SCE-ERR-*` strings -> `error::` suite, 6/6 passed including `failure_class_code_maps_to_stable_sce_err_strings`.
+- [x] AC3: `sce sync` classifies auth failures across all four paths as `NotAuthenticated`, other `ControlPlaneError` variants stay internal -> `sync::` suite, 60/60 passed, including the 4 positive and 7 negative classification tests in `sync/command.rs`.
+- [x] AC4: Auth failure renders one friendly stderr diagnostic, empty stdout, exit 4, source preserved -> `app_support::` suite, 5/5 passed, including `user_error_routes_to_friendly_diagnostic_with_empty_stdout_and_exit_four`.
+- [ ] AC5: `CliError::Internal` renders the real `anyhow` chain; exit-code classes, `SCE-ERR-*` codes, and `Try:` remediation unchanged -> the criterion's own `Validate:` command (`test ... app::`) still matches zero tests (re-confirmed with `-- --list`), so it ran successfully but confirmed nothing; the criterion remains unverified.
+- [x] AC6: Friendly styling follows stderr TTY/`NO_COLOR` policy independent of stdout -> `style::` suite, 4/4 passed, covering styled/plain output under the injected color-policy boolean.
+- [x] AC7: `sync/command.rs` has no friendly-sentence text, no styling call, no string matching for auth semantics -> grep returned no results; `classify_sync_error` dispatches only on `is_authentication_failure()`.
+- [x] AC8: One structured log record per `CliError` with `error_surface`/`user_error`/source, no duplicate terminal diagnostic -> `observability` suite, 4/4 passed, including `user_error_preserves_technical_source_for_observability`, which asserts exactly one `log_cli_error` call.
+
+### Failed checks and follow-ups
+
+- AC5: the plan's own `Validate:` command (`./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml app::`) matches zero tests — `cli/src/app.rs` has no `#[cfg(test)] mod tests` and no submodules; evidence: `-- --list` filtered by `app::` returns nothing (re-confirmed after the `cli-fmt` fixes landed); required: either add a targeted `app::`-path test, or correct the `Validate:` command to point at whichever suite actually exercises unchanged `CliError::Internal` rendering, exit-code classes, `SCE-ERR-*` codes, and `Try:` remediation — e.g. `app_support::internal_error_still_renders_full_chain_and_exit_four` already covers part of this — before rerunning validation.
+
+### Residual risks
+
+- The previously reported `nix flake check` / `cli-fmt` failure was resolved between validation runs (rustfmt drift in `command_runtime.rs` and `sync/command.rs` was cleaned up, and `app_support.rs`'s error-heading now correctly routes through `heading_with_color_policy` instead of the unconditionally-styled `heading`). No other residual risk identified beyond the open AC5 check above.
+
+### Retry
+
+After repairs, rerun:
+
+`/validate context/plans/typed-cli-errors.md`

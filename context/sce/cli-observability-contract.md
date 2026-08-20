@@ -48,9 +48,9 @@ Runtime observability consumes the shared resolved observability config from `cl
   - `sce.command.dispatch_end` (debug level - logged after successful dispatch)
   - `sce.command.completed`
 - Error logging uses the pattern `sce.error.{code}` where `{code}` is the classified error code (e.g., `sce.error.SCE-ERR-RUNTIME`).
-- All `CliError` instances are logged via `Logger::log_cli_error()` before user-facing stderr diagnostics are written.
+- All `CliError` instances are logged via `Logger::log_cli_error()` before user-facing stderr diagnostics are written; observability retains full technical detail independently of what is rendered to the terminal, and never writes a second competing stderr diagnostic for the same error.
 - Event records include deterministic metadata keys used by automation (`command`, `failure_class`, `component` when applicable).
-- Error log records include `error_code` and `error_class` fields for structured observability.
+- Error log records include `error_code` and `error_class` fields for structured observability, plus `error_surface` (`user` for `CliError::User`, `internal` for `CliError::Internal`), `user_error` (the catalog `UserError::key()`, present only for `CliError::User`), and `error_source` (the full technical source chain, present whenever one was preserved — always for `CliError::Internal`, and for `CliError::User` only when constructed with `CliError::user_with_source`).
 - App runtime initializes tracing subscriber context before parse/dispatch and shuts down tracer provider on process exit.
 - Tracing event emission checks the `sce` target and requested tracing level before constructing serialized `fields` payloads; disabled or filtered tracing events return without building field JSON while enabled events preserve the same `event_id`, `event_message`, and `fields` payload shape.
 

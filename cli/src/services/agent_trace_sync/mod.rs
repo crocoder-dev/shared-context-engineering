@@ -451,9 +451,9 @@ mod tests {
             500,
             |cursor, limit| ready(Ok(local.after(cursor, limit))),
             |_cursor, _rows: &[AgentTraceMessageExportRow]| {
-                ready(BatchAttemptOutcome::Terminal(ControlPlaneError::BadRequest(
-                    "batch route is not supported".to_string(),
-                )))
+                ready(BatchAttemptOutcome::Terminal(
+                    ControlPlaneError::BadRequest("batch route is not supported".to_string()),
+                ))
             },
             || {
                 *refresh_calls.borrow_mut() += 1;
