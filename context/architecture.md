@@ -151,6 +151,8 @@ The repository includes a new placeholder Rust binary crate at `cli/`.
 - `cli/Cargo.toml` keeps crates.io publication-ready package metadata for the `shared-context-engineering` crate, and `cli/README.md` is the Cargo install surface for crates.io (`cargo install shared-context-engineering --locked`) and local checkout (`./scripts/run-cli-cargo.sh install --path cli --locked`) guidance. Direct `cargo install --git` is unsupported because it cannot invoke the repository's pre-Cargo producer. The published crate installs the `sce` binary. Tokio remains intentionally constrained (`default-features = false`) with current-thread runtime usage plus timer-backed bounded resilience wrappers for retry/timeout behavior.
 - `cli/Cargo.toml` now declares Tokio's `time` feature directly alongside the existing constrained current-thread runtime setup (`rt`, `io-util`, `time`) instead of relying on transitive enablement.
 
+The `UserError::UnexpectedFailure` catalog entry (`general.unexpected_failure`) is owned by `cli/src/services/error.rs`; `sce sync` uses it for non-authentication and non-credential-storage failures, rendering one fixed log-files guidance sentence through `services::app_support` without exposing a technical error source, interpolating a path, or changing the closed catalog into an arbitrary-message surface.
+
 ## Build / devShell / CI performance (flake-speedup)
 
 The current structure and durable before/after results for the native/release

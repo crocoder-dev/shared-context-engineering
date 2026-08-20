@@ -102,19 +102,25 @@ client. The command change does not alter those semantics.
 ## Error classification
 
 `cli/src/services/sync/command.rs`'s `classify_sync_error` maps the command's
-terminal `TraceSyncError` into the typed `CliError` boundary by calling
-`TraceSyncError::is_authentication_failure()` — a typed traversal down to
-`ControlPlaneError`, never string/substring matching. An authentication
-failure from the initial `/state` call, a stream batch request, or a stream
-reconciliation `/state` refresh (`ControlPlaneError::MissingCredentials` or
-`AuthenticationFailed`) classifies as `CliError::User { error:
-UserError::NotAuthenticated, .. }`, preserving the technical error as its
-source; every other `ControlPlaneError` (`Forbidden`, `BadRequest`,
-`Transport`, `ServerError`, `InvalidResponse`, `Storage`, `Protocol`)
-classifies as `CliError::Internal`. `sync/command.rs` builds no friendly
-sentence and applies no terminal styling itself — `app_support` renders the
-single `You are not logged in...` diagnostic for the user case, and the full
-`anyhow`/control-plane chain for the internal case. See [CLI error-code
+terminal `TraceSyncError` into the typed `CliError` boundary through typed
+predicates that traverse to `ControlPlaneError`, never string/substring
+matching. An authentication failure from the initial `/state` call, a stream
+batch request, or a stream reconciliation `/state` refresh
+(`ControlPlaneError::MissingCredentials` or `AuthenticationFailed`) classifies
+as `CliError::User { error: UserError::NotAuthenticated, .. }`. A credential
+storage failure (`ControlPlaneError::Storage`) from the initial `/state` call
+classifies as `CliError::User { error: UserError::AuthStorageUnavailable, .. }`.
+Stream failures never classify as credential-storage user errors; their
+authentication failures still use `NotAuthenticated`. Both user cases preserve
+the technical error as their optional source. Every other `ControlPlaneError`
+(`Forbidden`, `BadRequest`, `Transport`, `ServerError`, `InvalidResponse`,
+`Protocol`) and runtime failures classify as
+`CliError::User { error: UserError::UnexpectedFailure, .. }`; the technical
+source remains available for observability. Stream credential-storage failures
+also use `UnexpectedFailure`, because storage classification applies only to
+the initial control-plane failure.
+`sync/command.rs` builds no friendly sentence and applies no terminal styling
+itself — `app_support` renders the catalog message for user cases. See [CLI error-code
 taxonomy](../sce/cli-error-code-taxonomy.md) for the full `CliError`/`UserError`
 architecture.
 

@@ -184,7 +184,12 @@ fn write_error_diagnostic_with_color_policy<W: Write>(
         }
         CliError::User {
             error: user_error, ..
-        } => user_error.message().to_string(),
+        } => {
+            let message = services::security::redact_sensitive_text(user_error.message());
+            writeln!(writer, "{message}")
+                .expect("writing user error diagnostic to writer should not fail");
+            return;
+        }
     };
     let styled_message = services::style::error_text_with_color_policy(
         &services::security::redact_sensitive_text(&rendered),
@@ -263,11 +268,12 @@ mod tests {
 
         let stderr_text = String::from_utf8(stderr).expect("stderr is valid utf8");
         assert_eq!(
-            diagnostic_lines(&stderr_text).len(),
-            1,
-            "exactly one terminal diagnostic must be written"
+            stderr_text,
+            "You are not logged in. Please log in using the `sce auth login` command.\n"
         );
-        assert!(stderr_text.contains("You are not logged in"));
+        assert!(!stderr_text.contains("Error"));
+        assert!(!stderr_text.contains("SCE-ERR-"));
+        assert!(!stderr_text.contains("Try:"));
         assert!(!stderr_text.contains("missing credentials"));
         assert!(!stderr_text.to_lowercase().contains("control-plane"));
     }
@@ -333,23 +339,16 @@ mod tests {
     }
 
     #[test]
-    fn user_error_diagnostic_is_styled_only_when_color_is_enabled() {
+    fn user_error_diagnostic_is_plain_in_every_color_policy_mode() {
         let error = CliError::user(UserError::NotAuthenticated);
+        let expected = "You are not logged in. Please log in using the `sce auth login` command.\n";
 
-        let mut colored = Vec::new();
-        write_error_diagnostic_with_color_policy(&mut colored, &error, true);
-        let colored_text = String::from_utf8(colored).expect("stderr is valid utf8");
+        for color_enabled in [true, false] {
+            let mut stderr = Vec::new();
+            write_error_diagnostic_with_color_policy(&mut stderr, &error, color_enabled);
+            let rendered = String::from_utf8(stderr).expect("stderr is valid utf8");
 
-        let mut plain = Vec::new();
-        write_error_diagnostic_with_color_policy(&mut plain, &error, false);
-        let plain_text = String::from_utf8(plain).expect("stderr is valid utf8");
-
-        // TTY-following (color_enabled: true) and redirected/NO_COLOR
-        // (color_enabled: false) diverge: only the enabled case carries ANSI.
-        assert_ne!(colored_text, plain_text);
-        assert!(!plain_text.contains('\u{1b}'));
-        assert!(colored_text.contains('\u{1b}'));
-        assert!(plain_text.contains("You are not logged in"));
-        assert!(colored_text.contains("You are not logged in"));
+            assert_eq!(rendered, expected);
+        }
     }
 }
