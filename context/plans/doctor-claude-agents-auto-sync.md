@@ -12,15 +12,15 @@ How this plan is proven complete. Each criterion is observable and names the
 check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation.
 
-- [ ] AC1: Claude doctor inspection and both doctor renderers expose only the generated Claude areas (`Plugins`, `Commands`, and `Skills`), while OpenCode continues to expose its `Agents` area and existing target-scoped ordering remains deterministic.
+- [x] AC1: Claude doctor inspection and both doctor renderers expose only the generated Claude areas (`Plugins`, `Commands`, and `Skills`), while OpenCode continues to expose its `Agents` area and existing target-scoped ordering remains deterministic.
   - Validate: focused doctor tests assert no Claude `Agents` group/children or rendered `Claude Code` agent label and assert the OpenCode `Agents` group remains present; inspect text and JSON fixtures for the same target inventory.
-- [ ] AC2: In a repository with a current installed canonical `post-commit` managed block and resolved `agent_trace.auto_sync: true` (including the omitted default), doctor reports automatic sync as enabled and ready in text and `--format json`; with explicit `false`, it reports a healthy intentional disabled opt-out without marking overall readiness not ready.
+- [x] AC2: In a repository with a current installed canonical `post-commit` managed block and resolved `agent_trace.auto_sync: true` (including the omitted default), doctor reports automatic sync as enabled and ready in text and `--format json`; with explicit `false`, it reports a healthy intentional disabled opt-out without marking overall readiness not ready.
   - Validate: focused doctor/config tests assert the text status/label and stable JSON auto-sync state, enabled value, and resolved source for default, configured true, and configured false cases.
-- [ ] AC3: Doctor reports automatic sync as not ready when the effective `post-commit` managed block is missing, stale, unreadable, or otherwise not current, while preserving the existing hook problem/remediation and readiness behavior; doctor never launches `sce sync` or any background process.
+- [x] AC3: Doctor reports automatic sync as not ready when the effective `post-commit` managed block is missing, stale, unreadable, or otherwise not current, while preserving the existing hook problem/remediation and readiness behavior; doctor never launches `sce sync` or any background process.
   - Validate: filesystem-backed hook/doctor tests cover current, drifted, missing, and unreadable post-commit states and assert no launcher invocation; existing hook lifecycle tests continue to pass.
-- [ ] AC4: The post-commit runtime still forwards `origin` metadata, launches the existing detached `sync --format json` only after successful Agent Trace persistence when enabled, and remains fail-open for launcher failures; no canonical hook asset, launcher semantics, setup flow, or high-frequency trigger changes.
+- [x] AC4: The post-commit runtime still forwards `origin` metadata, launches the existing detached `sync --format json` only after successful Agent Trace persistence when enabled, and remains fail-open for launcher failures; no canonical hook asset, launcher semantics, setup flow, or high-frequency trigger changes.
   - Validate: focused hook tests and inspection of `cli/assets/hooks/post-commit`, `hooks/mod.rs`, and `sync/auto_sync.rs` confirm the existing ordering, argument forwarding, and fail-open behavior are unchanged.
-- [ ] AC5: Durable context accurately describes the Claude target inventory and the doctor automatic-sync readiness, text, JSON, default, and opt-out contracts without claiming that Claude generates agents.
+- [x] AC5: Durable context accurately describes the Claude target inventory and the doctor automatic-sync readiness, text, JSON, default, and opt-out contracts without claiming that Claude generates agents.
   - Validate: manual review of the context files listed under `Context sync` against the implemented report fields and focused tests.
 
 ### Full validation
@@ -88,14 +88,48 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor::` — pass (15 tests); `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::` — pass (25 tests); inspected `cli/src/services/config/resolver.rs`, `cli/src/services/hooks/lifecycle.rs`, `cli/src/services/hooks/mod.rs`, and `cli/src/services/sync/auto_sync.rs` — existing default/opt-out, managed-block, forwarding, ordering, detached-launch, and fail-open contracts remain unchanged.
   - Context impact: interface — doctor report types, human text, JSON fields, and configuration-resolution consumption changed; `context/sce/agent-trace-hook-doctor.md`, `context/cli/cli-command-surface.md`, `context/architecture.md`, `context/overview.md`, and `context/sce/doctor-human-text-contract.md` require synchronization before the next task.
 
-- [ ] T03: `Synchronize doctor and automatic-sync context contracts` (status:todo)
+- [x] T03: `Synchronize doctor and automatic-sync context contracts` (status:done)
   - Task ID: T03
   - Scope: In — update the durable doctor operator contract, CLI command surface, architecture/overview summaries, and human text contract as required by the implemented state/field names and Claude inventory. Out — application code, tests, generated outputs, historical plan files, and any change to the runtime behavior.
   - Dependencies: T02
   - Done when: the named context files no longer claim Claude has generated agents and document the doctor auto-sync readiness proof, default-enabled setting, explicit opt-out, text/JSON observables, preserved existing hook remediation, and no-launch/fail-open boundaries.
   - Verify: manual code-to-context review against T01/T02 output and the focused doctor/hook test results; confirm no context file outside the listed sync set was changed.
-  - Context synchronization: pending
+  - Context synchronization: synced
+  - Completed: 2026-08-20
+  - Files changed: `context/sce/agent-trace-hook-doctor.md`, `context/cli/cli-command-surface.md`, `context/architecture.md`, `context/overview.md`, `context/sce/doctor-human-text-contract.md`
+  - Result: Synchronized the five durable doctor context contracts with the implemented Claude inventory and post-commit auto-sync readiness states, fields, configuration sources, remediation boundaries, and fail-open/no-launch behavior.
+  - Verify: manual code-to-context review against T01/T02 implementation and recorded focused doctor/hook results — pass; `git diff --check` — pass; changed paths are limited to the five listed sync files before the required plan-state write.
+  - Context impact: documentation — current doctor inventory, text/JSON output, configuration-resolution, and hook-runtime boundaries are now synchronized; no application behavior changed.
 
 ## Open questions
 
 None. The supplied brief and repository conventions determine the readiness proof, opt-out semantics, output shape, ownership boundary, and non-goals; the remaining choices are recorded assumptions.
+
+## Validation Report
+
+**Status:** validated
+**Date:** 2026-08-20
+
+### Commands run
+
+- `nix flake check` -> exit 0 (flake evaluation passed; the command reported no checks executed for the current system)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor::` -> exit 0 (15 focused doctor tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::` -> exit 0 (25 focused hook tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml config::` -> exit 0 (26 focused config tests passed)
+- `git status --short && git diff --check` -> exit 0 (only intended plan/application/context paths are modified; no whitespace errors)
+
+### Success-criteria verification
+
+- [x] AC1: Claude doctor inspection and both doctor renderers expose only the generated Claude areas (`Plugins`, `Commands`, and `Skills`), while OpenCode continues to expose its `Agents` area and existing target-scoped ordering remains deterministic. -> 15 focused doctor tests passed, including exact Claude/OpenCode inventory, Claude agent exclusion, OpenCode agent preservation, and deterministic text ordering; source and renderer tests confirm the text/JSON inventory contract.
+- [x] AC2: In a repository with a current installed canonical `post-commit` managed block and resolved `agent_trace.auto_sync: true` (including the omitted default), doctor reports automatic sync as enabled and ready in text and `--format json`; with explicit `false`, it reports a healthy intentional disabled opt-out without marking overall readiness not ready. -> Doctor tests passed for default-enabled, configured true, and explicit disabled text/JSON states; 26 config tests passed for default, configured true, local precedence, and explicit false resolution.
+- [x] AC3: Doctor reports automatic sync as not ready when the effective `post-commit` managed block is missing, stale, unreadable, or otherwise not current, while preserving the existing hook problem/remediation and readiness behavior; doctor never launches `sce sync` or any background process. -> Doctor tests passed for current, missing, stale, and unreadable states plus hook diagnostics; focused hook tests passed and source inspection confirmed doctor has no sync-launch path.
+- [x] AC4: The post-commit runtime still forwards `origin` metadata, launches the existing detached `sync --format json` only after successful Agent Trace persistence when enabled, and remains fail-open for launcher failures; no canonical hook asset, launcher semantics, setup flow, or high-frequency trigger changes. -> 25 focused hook tests passed; inspection of `cli/assets/hooks/post-commit`, `cli/src/services/hooks/mod.rs`, and `cli/src/services/sync/auto_sync.rs` confirmed origin forwarding, persistence-before-launch ordering, detached JSON sync, and fail-open behavior.
+- [x] AC5: Durable context accurately describes the Claude target inventory and the doctor automatic-sync readiness, text, JSON, default, and opt-out contracts without claiming that Claude generates agents. -> Manual review of the five listed context files against the implemented report fields and focused tests confirmed the Claude inventory, readiness states, source fields, opt-out, no-launch, and fail-open contracts; the worktree contains no untracked artifacts and `git diff --check` passed.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- None identified.
