@@ -53,20 +53,21 @@ impl FailureClass {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(clippy::enum_variant_names)]
 pub enum UserError {
-    #[allow(dead_code)]
     NotAuthenticated,
     NotGitRepository,
-    NotGitRemote {
-        remote_name: String,
-    },
+    NotGitRemote,
+    AuthStorageUnavailable,
+    UnexpectedFailure,
 }
 
 impl UserError {
     pub fn class(&self) -> FailureClass {
         match self {
-            Self::NotAuthenticated | Self::NotGitRepository | Self::NotGitRemote { .. } => {
-                FailureClass::Runtime
-            }
+            Self::NotAuthenticated
+            | Self::NotGitRepository
+            | Self::NotGitRemote
+            | Self::AuthStorageUnavailable
+            | Self::UnexpectedFailure => FailureClass::Runtime,
         }
     }
 
@@ -76,22 +77,28 @@ impl UserError {
             Self::NotAuthenticated => "auth.not_authenticated",
             Self::NotGitRepository => "setup.not_git_repository",
             Self::NotGitRemote { .. } => "setup.not_git_remote",
+            Self::AuthStorageUnavailable => "auth.storage_unavailable",
+            Self::UnexpectedFailure => "general.unexpected_failure",
         }
     }
 
-    pub fn message(&self) -> String {
+    pub fn message(&self) -> &'static str {
         match self {
             Self::NotAuthenticated => {
                 "You are not logged in. Please log in using the `sce auth login` command."
-                    .to_string()
             }
             Self::NotGitRepository => {
                 "The target directory is not a Git repository. Please run `git init`, then retry."
-                    .to_string()
             }
-            Self::NotGitRemote { remote_name } => format!(
-                "The Git repository has no configured URL for remote '{remote_name}'. Please run `git remote add <remote> <url>`, then retry."
-            ),
+            Self::NotGitRemote => {
+                "The Git repository has no configured remote URL. Please run `git remote add <name> <url>`, then retry."
+            }
+            Self::AuthStorageUnavailable => {
+                "Authentication storage is unavailable. Verify local credential storage is available, then retry the command."
+            }
+            Self::UnexpectedFailure => {
+                "An unexpected error occurred. Check the log files for more details."
+            }
         }
     }
 }
@@ -205,6 +212,34 @@ mod tests {
         assert_eq!(error.code(), "SCE-ERR-RUNTIME");
         assert_eq!(UserError::NotAuthenticated.key(), "auth.not_authenticated");
         assert!(error.to_string().contains("You are not logged in"));
+    }
+
+    #[test]
+    fn unexpected_failure_has_stable_runtime_catalog_mapping() {
+        let error = CliError::user(UserError::UnexpectedFailure);
+
+        assert_eq!(error.class(), FailureClass::Runtime);
+        assert_eq!(error.code(), "SCE-ERR-RUNTIME");
+        assert_eq!(
+            UserError::UnexpectedFailure.key(),
+            "general.unexpected_failure"
+        );
+        assert_eq!(
+            UserError::UnexpectedFailure.message(),
+            "An unexpected error occurred. Check the log files for more details."
+        );
+        assert_eq!(
+            error.to_string(),
+            "An unexpected error occurred. Check the log files for more details."
+        );
+    }
+
+    #[test]
+    fn unexpected_failure_has_one_static_safe_message() {
+        assert_eq!(
+            UserError::UnexpectedFailure.message(),
+            "An unexpected error occurred. Check the log files for more details."
+        );
     }
 
     #[test]

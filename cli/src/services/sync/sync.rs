@@ -146,6 +146,15 @@ impl TraceSyncError {
             Self::Stream { source, .. } => source.is_authentication_failure(),
         }
     }
+
+    /// True when the initial control-plane failure came from local credential
+    /// storage. Stream failures never carry storage errors.
+    pub fn is_storage_failure(&self) -> bool {
+        match self {
+            Self::ControlPlane(error) => error.is_storage_failure(),
+            Self::Runtime(_) | Self::Stream { .. } => false,
+        }
+    }
 }
 
 /// Resolves the current repository's Agent Trace storage (the same

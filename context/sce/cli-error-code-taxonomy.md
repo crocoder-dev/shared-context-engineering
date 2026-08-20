@@ -14,10 +14,11 @@ It complements the numeric process exit-code classes documented in `context/sce/
 
 ## Rendering contract
 
-- User-facing diagnostics are emitted on `stderr` as: `Error [<code>]: <message>`.
+- Catalog diagnostics are emitted on `stderr` as the redacted catalog message followed by a newline, without an `Error` label, `SCE-ERR-*` code, separator, `Try:` guidance, or ANSI styling. This is the terminal path for `CliError::User`.
+- `CliError::Internal` diagnostics are emitted on `stderr` as the styled `Error [<code>]: <message>` wrapper.
 - Before stderr emission, all `CliError` instances are logged via `Logger::log_cli_error()` with event ID `sce.error.{code}` and fields `error_code`, `error_class`.
 - For `CliError::Internal`, if the rendered message does not already include `Try:`, runtime appends class-default remediation guidance; if it already contains `Try:`, runtime preserves the original remediation text and does not append a second one.
-- For `CliError::User`, runtime renders the catalog message from `UserError` verbatim, with no class-default `Try:` appended.
+- For `CliError::User`, runtime renders the catalog message from `UserError` without technical source text or class-default `Try:` remediation. The `UserError::UnexpectedFailure` entry renders the fixed message `An unexpected error occurred. Check the log files for more details.` without dynamic path interpolation.
 - Diagnostic text is still redaction-filtered through `services::security::redact_sensitive_text` before emission.
 
 ## Actionable parser/invocation guidance contract
@@ -32,11 +33,11 @@ It complements the numeric process exit-code classes documented in `context/sce/
 ## Ownership
 
 - `FailureClass` in `cli/src/services/error.rs` owns class selection and stable code assignment (`FailureClass::code()`).
-- `CliError::{User,Internal}` in `cli/src/services/error.rs` is the typed CLI-boundary error type; `CliError::code()`/`CliError::class()` delegate to the failure class. `CliError::User` carries a catalog `UserError` (`NotAuthenticated`, `NotGitRepository`, or `NotGitRemote { remote_name }`) for expected, deliberately-explained failures; `CliError::Internal` carries a live `anyhow::Error` source for every other failure, including non-classifiable setup preflight failures. `CliError::User` may also carry an optional preserved technical `source`, kept for observability only and never rendered to the terminal; the named remote payload contains no URL.
-- `UserError` in `cli/src/services/error.rs` is the closed catalog of deliberately presented terminal failures. It has no arbitrary-message variant (no `Message(String)`/`Custom(...)` escape hatch): every entry returns a fixed reviewed sentence or reviewed payload-derived message from `UserError::message()`, keyed for structured logging by `UserError::key()`.
+- `CliError::{User,Internal}` in `cli/src/services/error.rs` is the typed CLI-boundary error type; `CliError::code()`/`CliError::class()` delegate to the failure class. `CliError::User` carries a catalog `UserError` (`NotAuthenticated`, `NotGitRepository`, `NotGitRemote { remote_name }`, `AuthStorageUnavailable`, or `UnexpectedFailure`) for expected, deliberately-explained failures; `CliError::Internal` carries a live `anyhow::Error` source for every other failure, including non-classifiable setup preflight failures. `CliError::User` may also carry an optional preserved technical `source`, kept for observability only and never rendered to the terminal; the named remote payload contains no URL.
+- `UserError` in `cli/src/services/error.rs` is the closed catalog of deliberately presented terminal failures. It has no arbitrary-message variant (no `Message(String)`/`Custom(...)` escape hatch): every entry returns a fixed reviewed sentence or reviewed payload-derived message from `UserError::message()`, keyed for structured logging by `UserError::key()`. `AuthStorageUnavailable` (`auth.storage_unavailable`) is currently used by `sce sync` for typed authentication credential-storage failures. `UnexpectedFailure` (`general.unexpected_failure`) is used by `sce sync` for its default failure classification; it renders one fixed, user-safe log-files guidance sentence and has no automatic `Try:` suffix or dynamic path input.
 - Command and domain layers construct and return a `CliError`; they do not format terminal text, apply styling, or decide authentication/user-error semantics from string matching. `app_support` is the sole owner of turning a `CliError` into the final stderr sentence.
 - `Logger::log_cli_error` in `cli/src/services/observability.rs` owns structured error logging with `sce.error.{code}` event IDs.
-- `write_error_diagnostic` in `cli/src/services/app_support.rs` owns final code-bearing stderr rendering, including styling `CliError::User`'s catalog message and `CliError::Internal`'s rendered chain through `services::style::error_text_with_color_policy` under the stderr TTY/`NO_COLOR` policy (`services::style::supports_color_stderr()`), independent of stdout's TTY state.
+- `write_error_diagnostic` in `cli/src/services/app_support.rs` owns final stderr rendering: it redacts and writes the catalog variant's message without a wrapper or styling, while `CliError::Internal` retains code-bearing rendering and styles its rendered chain through `services::style::error_text_with_color_policy` under the stderr TTY/`NO_COLOR` policy (`services::style::supports_color_stderr()`), independent of stdout's TTY state.
 - `run_with_dependency_check_and_streams` in `cli/src/app.rs` owns error logging before stderr emission.
 
 ## Determinism and testing
