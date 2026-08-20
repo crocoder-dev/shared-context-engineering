@@ -53,11 +53,28 @@ pub(super) struct HookDoctorReport {
     pub(super) repository_root: Option<PathBuf>,
     pub(super) hook_path_source: HookPathSource,
     pub(super) hooks_directory: Option<PathBuf>,
+    pub(super) post_commit_auto_sync: PostCommitAutoSyncHealth,
     pub(super) config_locations: Vec<FileLocationHealth>,
     pub(super) hooks: Vec<HookFileHealth>,
     pub(super) integration_groups: Vec<IntegrationGroupHealth>,
     pub(super) integration_targets_absent: bool,
     pub(super) problems: Vec<DoctorProblem>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PostCommitAutoSyncHealth {
+    pub(super) state: PostCommitAutoSyncState,
+    pub(super) enabled: bool,
+    pub(super) source: &'static str,
+    pub(super) config_source: Option<&'static str>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PostCommitAutoSyncState {
+    Ready,
+    Disabled,
+    NotReady,
+    NotApplicable,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

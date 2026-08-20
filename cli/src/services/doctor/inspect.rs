@@ -25,7 +25,8 @@ use super::types::{
     FileLocationHealth, FixResult, GlobalStateHealth, HookContentState, HookDoctorReport,
     HookFileHealth, HookPathSource, IntegrationArea, IntegrationChildHealth,
     IntegrationContentState, IntegrationGroupHealth, IntegrationGroupKey, IntegrationTarget,
-    ProblemCategory, ProblemFixability, ProblemKind, ProblemSeverity, Readiness,
+    PostCommitAutoSyncHealth, PostCommitAutoSyncState, ProblemCategory, ProblemFixability,
+    ProblemKind, ProblemSeverity, Readiness,
 };
 use super::{is_executable, DoctorDependencies, DoctorMode, REQUIRED_HOOKS};
 
@@ -127,6 +128,12 @@ fn build_report_without_service_owned_problem_checks(
         Vec::new()
     };
 
+    let post_commit_auto_sync = collect_post_commit_auto_sync_health(
+        repository_root,
+        detected_repository_root.is_some(),
+        &hooks,
+    );
+
     let integration_targets_absent = should_show_no_integrations_message(
         git_available,
         bare_repository,
@@ -148,11 +155,61 @@ fn build_report_without_service_owned_problem_checks(
         repository_root: detected_repository_root,
         hook_path_source,
         hooks_directory,
+        post_commit_auto_sync,
         config_locations: global_state.config_locations,
         hooks,
         integration_groups,
         integration_targets_absent,
         problems,
+    }
+}
+
+fn collect_post_commit_auto_sync_health(
+    repository_root: &Path,
+    repository_is_available: bool,
+    hooks: &[HookFileHealth],
+) -> PostCommitAutoSyncHealth {
+    let resolved = config::resolve_agent_trace_auto_sync_runtime_config(repository_root).ok();
+    let (enabled, source, config_source) =
+        resolved.map_or((true, "unresolved", None), |resolved| {
+            (
+                resolved.value,
+                resolved.source.as_str(),
+                resolved
+                    .source
+                    .config_source()
+                    .map(|source| source.as_str()),
+            )
+        });
+
+    let state = post_commit_auto_sync_state(enabled, repository_is_available, hooks);
+
+    PostCommitAutoSyncHealth {
+        state,
+        enabled,
+        source,
+        config_source,
+    }
+}
+
+fn post_commit_auto_sync_state(
+    enabled: bool,
+    repository_is_available: bool,
+    hooks: &[HookFileHealth],
+) -> PostCommitAutoSyncState {
+    if !repository_is_available {
+        PostCommitAutoSyncState::NotApplicable
+    } else if !enabled {
+        PostCommitAutoSyncState::Disabled
+    } else if hooks.iter().any(|hook| {
+        hook.name == "post-commit"
+            && hook.exists
+            && hook.executable
+            && hook.content_state == HookContentState::Current
+    }) {
+        PostCommitAutoSyncState::Ready
+    } else {
+        PostCommitAutoSyncState::NotReady
     }
 }
 
@@ -1630,8 +1687,8 @@ mod tests {
     use super::{
         collect_claude_integration_groups, collect_hook_file_health,
         collect_opencode_integration_groups, collect_pi_integration_groups,
-        inspect_claude_integration_health, HookContentState, IntegrationContentState,
-        IntegrationGroupHealth,
+        inspect_claude_integration_health, post_commit_auto_sync_state, HookContentState,
+        IntegrationContentState, IntegrationGroupHealth,
     };
     use crate::services::setup::OPTIONAL_WORKFLOWS;
 
@@ -1974,6 +2031,13 @@ mod tests {
         crate::services::setup::iter_required_hook_assets()
             .find(|asset| asset.relative_path == "pre-commit")
             .expect("embedded catalog carries pre-commit")
+            .bytes
+    }
+
+    fn canonical_post_commit_bytes() -> &'static [u8] {
+        crate::services::setup::iter_required_hook_assets()
+            .find(|asset| asset.relative_path == "post-commit")
+            .expect("embedded catalog carries post-commit")
             .bytes
     }
 

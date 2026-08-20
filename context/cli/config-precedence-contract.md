@@ -4,7 +4,7 @@
 
 This contract documents the implemented `sce config` command behavior, runtime resolver, renderer, and canonical Pkl-authored `sce/config.json` schema. The schema is emitted to payload-relative `config/schema/sce-config.schema.json` under Cargo `OUT_DIR` or packaging fallbacks and embedded by `cli/src/services/config/schema.rs` as `SCE_CONFIG_SCHEMA_JSON`; no generated schema is committed.
 
-The current implementation resolves flat logging keys and Agent Trace runtime keys with deterministic precedence and source metadata, exposes resolved-value inspection through `sce config show`, and keeps `sce config validate` focused on validation status plus errors/warnings. Threshold, format, directory, and `log_file_retention_limit` values are consumed by runtime logging; the concrete logger uses the retention value for primary and v2 creation-triggered cleanup. The default-enabled `agent_trace.auto_sync` value is consumed by the post-commit trigger boundary and can be disabled explicitly.
+The current implementation resolves flat logging keys and Agent Trace runtime keys with deterministic precedence and source metadata, exposes resolved-value inspection through `sce config show`, and keeps `sce config validate` focused on validation status plus errors/warnings. Threshold, format, directory, and `log_file_retention_limit` values are consumed by runtime logging; the concrete logger uses the retention value for primary and v2 creation-triggered cleanup. The default-enabled `agent_trace.auto_sync` value is consumed by the post-commit trigger boundary and by doctor readiness reporting, and can be disabled explicitly.
 
 ## Command surface
 
@@ -125,6 +125,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `validate` text output is limited to `SCE config validation`, `Validation issues`, and `Validation warnings` lines.
 - `validate` JSON output is limited to `result.command`, `result.valid`, `result.issues`, and `result.warnings`.
 - `show` includes resolved Agent Trace configuration under `result.resolved.agent_trace` (JSON: `repository_id` optional-value shape, `repository_remote` and `auto_sync` resolved-value shapes) and as per-key text lines, reporting `(unset)` for a missing `repository_id`, `source: default` for the `origin` remote fallback, and `source: default` for omitted `auto_sync`.
+- Doctor consumes the same resolved `agent_trace.auto_sync` value and source metadata; its separate `post_commit_auto_sync` report fact documents hook readiness without launching synchronization.
 - `show` includes resolved bash-tool policies under `result.resolved.policies.bash`.
 - Bash-policy output includes resolved preset IDs, expanded custom entries (`id`, `match.argv_prefix`, `message`), and config-file source metadata when present.
 - `show` text output renders `policies.bash` as a single deterministic line and reports `(unset)` when no policy config resolves.

@@ -13,7 +13,8 @@ Human text output renders these sections in this exact order:
 3. `Integrations`
 
 The `Environment` domain contains `State`, `Configuration`, and `Repository
-identity`. The `Repository` domain contains `Git repository` and `Git hooks`.
+identity`. The `Repository` domain contains `Git repository`, `Post-commit Agent
+Trace auto-sync`, and `Git hooks`.
 
 ## Header and status vocabulary
 
@@ -37,6 +38,24 @@ remote names, or individual integration asset paths.
 This redaction is presentation-only: diagnosis still performs the complete
 read-only inspection, and `--format json` remains the full-detail route for
 paths, identities, problem records, and fix results.
+
+The post-commit Agent Trace auto-sync row uses these stable labels and states:
+
+- `[PASS] Post-commit Agent Trace auto-sync` means the canonical post-commit
+  managed block is current and the resolved setting is enabled.
+- `[PASS] Post-commit Agent Trace auto-sync (disabled by config)` means the
+  explicit `agent_trace.auto_sync: false` opt-out is active; it does not make
+  overall doctor readiness fail.
+- `[FAIL] Post-commit Agent Trace auto-sync` means the enabled capability is not
+  ready because the post-commit managed block is missing, stale, unreadable, or
+  otherwise not current.
+- Outside an applicable repository scope, the row is `[MISS] ... (not
+  applicable)` and does not launch or inspect a synchronization process.
+
+JSON exposes the same fact as `post_commit_auto_sync` with stable `state`,
+`enabled`, `source`, and `config_source` fields. Existing hook problem records,
+remediation, and overall readiness semantics remain the source of blocking
+diagnostics.
 
 ## Integration hierarchy
 

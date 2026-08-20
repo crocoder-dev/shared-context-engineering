@@ -24,7 +24,7 @@ The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor comm
 
 - explicit mode selection through `sce doctor` (`diagnose`) and `sce doctor --fix` (`fix`)
 - command/help wiring for `--fix` plus stable text/JSON mode reporting
-- compact human text rendering with `SCE doctor` / `SCE doctor fix` header + ordered `Environment`, `Repository`, and `Integrations` domains; Environment contains State, Configuration, and Repository identity, while Repository contains Git repository and Git hooks
+- compact human text rendering with `SCE doctor` / `SCE doctor fix` header + ordered `Environment`, `Repository`, and `Integrations` domains; Environment contains State, Configuration, and Repository identity, while Repository contains Git repository, post-commit Agent Trace auto-sync readiness, and Git hooks
 - human text status vocabulary `[PASS]`, `[WARN]`, `[FAIL]`, and `[MISS]`, with healthy rows collapsed to status plus display label
 - text summary footer with blocking-problem and warning counts
 - local DB reporting in default doctor output
@@ -40,7 +40,8 @@ The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor comm
 - repository root and hooks directory resolution when a repository target is detected
 - Git hook health is summarized beneath the Repository domain; individual healthy hook paths are not rendered in compact text
 - required hook presence and executable permissions for `pre-commit`, `commit-msg`, and `post-commit` when repo-scoped checks apply (delegated to `HooksLifecycle::diagnose`)
-- byte-for-byte stale-content detection for required hook payloads against canonical embedded SCE-managed hook assets (delegated to `HooksLifecycle::diagnose`)
+- post-commit automatic-sync readiness from the installed canonical managed block and resolved `agent_trace.auto_sync` setting; enabled/current reports ready, explicit `false` reports a healthy disabled opt-out, and enabled-but-missing, stale, unreadable, or non-executable post-commit state reports not ready without launching sync
+- managed-block currency checks for required hook payloads against canonical embedded SCE hook assets (delegated to `HooksLifecycle::diagnose` and reused by doctor inspection)
 - integration target resolution that reads `integrations.target` from repo-local `.sce/config.json` when present, or falls back to detecting repo-root `.opencode/`, `.claude/`, and `.pi/` directories when config has no `integrations` or `integrations.target`; only the resolved targets are inspected
 - repo-root installed OpenCode integration inventory for typed `Plugins`, `Agents`, `Commands`, and `Skills` areas, Claude inventory for generated `Plugins`, `Commands`, and `Skills` areas, plus Pi inventory for `Extensions`, `Prompts`, and `Skills`, all scoped to the resolved targets
 - integration groups are rendered beneath typed, target-scoped `Claude Code`, `OpenCode`, and `Pi` nodes in deterministic target-specific area order; healthy groups render one concise status row without listing installed files

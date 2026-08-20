@@ -126,6 +126,29 @@ pub(crate) fn resolve_hook_runtime_config(cwd: &Path) -> Result<ResolvedHookRunt
     )
 }
 
+pub(crate) fn resolve_agent_trace_auto_sync_runtime_config(
+    cwd: &Path,
+) -> Result<ResolvedValue<bool>> {
+    let runtime = resolve_runtime_config_with(
+        &ConfigRequest {
+            report_format: ReportFormat::Text,
+            config_path: None,
+            log_level: None,
+            timeout_ms: None,
+        },
+        cwd,
+        |key| std::env::var(key).ok(),
+        |path| {
+            std::fs::read_to_string(path)
+                .with_context(|| format!("Failed to read config file '{}'.", path.display()))
+        },
+        Path::exists,
+        resolve_default_global_config_path,
+    )?;
+
+    Ok(runtime.agent_trace_auto_sync)
+}
+
 pub(crate) fn resolve_agent_trace_storage_runtime_config(
     cwd: &Path,
 ) -> Result<ResolvedAgentTraceStorageRuntimeConfig> {

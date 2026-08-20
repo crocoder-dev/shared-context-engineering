@@ -75,13 +75,18 @@ Persist this field in every plan; this is durable plan state, not chat state:
    - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor::` — pass (10 tests); inspection confirmed the Claude collector has no agent production path and OpenCode retains its Agents group.
    - Context impact: interface — Claude doctor inventory and rendered target-area ordering changed; the listed doctor, CLI surface, architecture, overview, and human-text contract context files require synchronization before the next task.
 
-- [ ] T02: `Report post-commit automatic-sync readiness in doctor` (status:todo)
+- [x] T02: `Report post-commit automatic-sync readiness in doctor` (status:done)
   - Task ID: T02
   - Scope: In — `HooksLifecycle`/doctor inspection seam using canonical embedded `post-commit` managed-block currency, resolved `agent_trace.auto_sync` state, doctor report types, human text row, JSON object, and filesystem/config/format regression tests. Out — canonical hook files, setup installation, the post-commit runtime trigger, sync launcher implementation, new daemon/retry behavior, and unrelated hook problem taxonomy changes.
   - Dependencies: T01
   - Done when: doctor deterministically reports enabled/default, explicit disabled, not-ready, and not-applicable states; current hook plus resolved configuration produces ready output; hook drift/missing/read failures preserve existing problem/remediation and readiness behavior; doctor performs no sync launch; text and JSON output are stable and tested.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor::`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::`; inspect `cli/src/services/config/resolver.rs`, `cli/src/services/hooks/lifecycle.rs`, `cli/src/services/hooks/mod.rs`, and `cli/src/services/sync/auto_sync.rs` to confirm the existing default/opt-out and fail-open runtime contracts remain unchanged.
-  - Context synchronization: pending
+  - Context synchronization: synced
+  - Completed: 2026-08-20
+  - Files changed: `cli/src/services/config/mod.rs`, `cli/src/services/config/resolver.rs`, `cli/src/services/doctor/inspect.rs`, `cli/src/services/doctor/render.rs`, `cli/src/services/doctor/types.rs`
+  - Result: Added deterministic post-commit Agent Trace auto-sync readiness facts using canonical managed-block currency and resolved configuration, with enabled/disabled/not-ready/not-applicable text and JSON reporting while preserving existing hook problems, readiness, and runtime launcher behavior.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor::` — pass (15 tests); `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::` — pass (25 tests); inspected `cli/src/services/config/resolver.rs`, `cli/src/services/hooks/lifecycle.rs`, `cli/src/services/hooks/mod.rs`, and `cli/src/services/sync/auto_sync.rs` — existing default/opt-out, managed-block, forwarding, ordering, detached-launch, and fail-open contracts remain unchanged.
+  - Context impact: interface — doctor report types, human text, JSON fields, and configuration-resolution consumption changed; `context/sce/agent-trace-hook-doctor.md`, `context/cli/cli-command-surface.md`, `context/architecture.md`, `context/overview.md`, and `context/sce/doctor-human-text-contract.md` require synchronization before the next task.
 
 - [ ] T03: `Synchronize doctor and automatic-sync context contracts` (status:todo)
   - Task ID: T03
