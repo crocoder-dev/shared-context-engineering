@@ -110,6 +110,10 @@ fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
         !metadata_version.is_empty(),
         "metadata.sce.version should not be empty"
     );
+    assert_eq!(
+        actual_json["metadata"]["sce"]["line_changes"], golden["metadata"]["sce"]["line_changes"],
+        "line_changes should match golden fixture exactly"
+    );
     assert_eq!(actual_json["vcs"], golden["vcs"]);
     assert_eq!(actual_json["files"], expected_files);
 }

@@ -62,6 +62,7 @@ fn default_agent_trace_metadata() -> AgentTraceMetadata {
     AgentTraceMetadata {
         sce: AgentTraceSceMetadata {
             version: PACKAGE_VERSION.to_owned(),
+            line_changes: LineChangeAttribution::default(),
         },
     }
 }
@@ -122,6 +123,53 @@ pub struct AgentTraceMetadata {
 #[serde(rename_all = "snake_case")]
 pub struct AgentTraceSceMetadata {
     pub version: String,
+    /// Exact touched-line attribution counts derived from canonical
+    /// `post_commit_patch` hunks, bucketed by hunk classification.
+    #[serde(default)]
+    pub line_changes: LineChangeAttribution,
+}
+
+/// Exact added/removed touched-line counts for one hunk-classification bucket.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct LineChangeCounts {
+    pub added: u64,
+    pub removed: u64,
+}
+
+/// Exact touched-line attribution counts, bucketed by hunk classification.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct LineChangeAttribution {
+    #[serde(default)]
+    pub ai: LineChangeCounts,
+    #[serde(default)]
+    pub mixed: LineChangeCounts,
+    #[serde(default)]
+    pub unknown: LineChangeCounts,
+}
+
+/// Tally one `post_commit_patch` hunk's touched lines into the bucket matching
+/// `kind`. A hunk's entire touched-line count is recorded in a single bucket:
+/// a `mixed` hunk contributes all of its touched lines, not just the subset
+/// that also appears in the AI intersection.
+fn record_hunk_line_changes(
+    counts: &mut LineChangeAttribution,
+    kind: HunkContributor,
+    hunk: &PatchHunk,
+) {
+    let bucket = match kind {
+        HunkContributor::Ai => &mut counts.ai,
+        HunkContributor::Mixed => &mut counts.mixed,
+        HunkContributor::Unknown => &mut counts.unknown,
+    };
+
+    for line in &hunk.lines {
+        match line.kind {
+            TouchedLineKind::Added => bucket.added += 1,
+            TouchedLineKind::Removed => bucket.removed += 1,
+        }
+    }
 }
 
 fn parse_commit_timestamp(commit_timestamp: &str) -> Result<DateTime<FixedOffset>> {
@@ -444,6 +492,7 @@ fn build_trace_file(
     post_commit_file: &PatchFileChange,
     intersection_patch: &ParsedPatch,
     conversation_url: &str,
+    line_changes: &mut LineChangeAttribution,
 ) -> Option<TraceFile> {
     if post_commit_file.hunks.is_empty() {
         return None;
@@ -480,6 +529,7 @@ fn build_trace_file(
                     }
                     None => (HunkContributor::Unknown, None, None),
                 };
+            record_hunk_line_changes(line_changes, contributor_kind, post_commit_hunk);
             let related_session_ids = matched_intersection_hunk
                 .into_iter()
                 .flat_map(|hunk| hunk.lines.iter())
@@ -540,19 +590,49 @@ pub fn build_agent_trace(
     let intersection_patch = intersect_patches(constructed_patch, post_commit_patch);
 
     let mut files = Vec::new();
+    let mut line_changes = LineChangeAttribution::default();
 
     for post_commit_file in &post_commit_patch.files {
         if let Some(embedded_patch) = parse_embedded_deleted_patch(post_commit_file) {
+            // The literal deleted-`.patch` file's own hunks describe the actual
+            // canonical commit content, so they are classified and counted here
+            // against the top-level `intersection_patch` even though they never
+            // produce a `Conversation` in this branch. The embedded reconstructed
+            // hunks below describe the deleted patch's logical content, not the
+            // canonical commit, and must never be counted toward `line_changes`.
+            // Matched by `old_path` (always non-empty for a deleted file), not
+            // `new_path` (always empty for every deleted file, which would
+            // otherwise collide across multiple deleted files in the same patch).
+            for hunk in &post_commit_file.hunks {
+                let kind = intersection_patch
+                    .files
+                    .iter()
+                    .find(|ifile| ifile.old_path == post_commit_file.old_path)
+                    .map_or(HunkContributor::Unknown, |ifile| {
+                        classify_hunk(hunk, &ifile.hunks)
+                    });
+                record_hunk_line_changes(&mut line_changes, kind, hunk);
+            }
+
             let embedded_intersection = intersect_patches(constructed_patch, &embedded_patch);
+            let mut discarded_line_changes = LineChangeAttribution::default();
             files.extend(embedded_patch.files.iter().filter_map(|embedded_file| {
-                build_trace_file(embedded_file, &embedded_intersection, &conversation_url)
+                build_trace_file(
+                    embedded_file,
+                    &embedded_intersection,
+                    &conversation_url,
+                    &mut discarded_line_changes,
+                )
             }));
             continue;
         }
 
-        if let Some(trace_file) =
-            build_trace_file(post_commit_file, &intersection_patch, &conversation_url)
-        {
+        if let Some(trace_file) = build_trace_file(
+            post_commit_file,
+            &intersection_patch,
+            &conversation_url,
+            &mut line_changes,
+        ) {
             files.push(trace_file);
         }
     }
@@ -577,7 +657,12 @@ pub fn build_agent_trace(
             revision: metadata.commit_revision.to_owned(),
         }),
         tool,
-        metadata: default_agent_trace_metadata(),
+        metadata: AgentTraceMetadata {
+            sce: AgentTraceSceMetadata {
+                version: PACKAGE_VERSION.to_owned(),
+                line_changes,
+            },
+        },
         files,
     })
 }
