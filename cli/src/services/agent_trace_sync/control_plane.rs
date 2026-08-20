@@ -184,6 +184,12 @@ impl ControlPlaneError {
             Self::MissingCredentials | Self::AuthenticationFailed(_)
         )
     }
+
+    /// True when the failure came from loading or saving local authentication
+    /// credentials, rather than from the control-plane request itself.
+    pub fn is_storage_failure(&self) -> bool {
+        matches!(self, Self::Storage(_))
+    }
 }
 
 impl From<TokenStorageError> for ControlPlaneError {

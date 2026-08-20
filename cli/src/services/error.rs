@@ -54,12 +54,17 @@ impl FailureClass {
 pub enum UserError {
     #[allow(dead_code)]
     NotAuthenticated,
+    AuthStorageUnavailable,
+    #[allow(dead_code)]
+    UnexpectedFailure,
 }
 
 impl UserError {
     pub fn class(self) -> FailureClass {
         match self {
-            Self::NotAuthenticated => FailureClass::Runtime,
+            Self::NotAuthenticated | Self::AuthStorageUnavailable | Self::UnexpectedFailure => {
+                FailureClass::Runtime
+            }
         }
     }
 
@@ -67,6 +72,8 @@ impl UserError {
     pub fn key(self) -> &'static str {
         match self {
             Self::NotAuthenticated => "auth.not_authenticated",
+            Self::AuthStorageUnavailable => "auth.storage_unavailable",
+            Self::UnexpectedFailure => "general.unexpected_failure",
         }
     }
 
@@ -74,6 +81,12 @@ impl UserError {
         match self {
             Self::NotAuthenticated => {
                 "You are not logged in. Please log in using the `sce auth login` command."
+            }
+            Self::AuthStorageUnavailable => {
+                "Authentication storage is unavailable. Verify local credential storage is available, then retry the command."
+            }
+            Self::UnexpectedFailure => {
+                "An unexpected error occurred. Check the log files for more details."
             }
         }
     }
@@ -188,6 +201,34 @@ mod tests {
         assert_eq!(error.code(), "SCE-ERR-RUNTIME");
         assert_eq!(UserError::NotAuthenticated.key(), "auth.not_authenticated");
         assert!(error.to_string().contains("You are not logged in"));
+    }
+
+    #[test]
+    fn unexpected_failure_has_stable_runtime_catalog_mapping() {
+        let error = CliError::user(UserError::UnexpectedFailure);
+
+        assert_eq!(error.class(), FailureClass::Runtime);
+        assert_eq!(error.code(), "SCE-ERR-RUNTIME");
+        assert_eq!(
+            UserError::UnexpectedFailure.key(),
+            "general.unexpected_failure"
+        );
+        assert_eq!(
+            UserError::UnexpectedFailure.message(),
+            "An unexpected error occurred. Check the log files for more details."
+        );
+        assert_eq!(
+            error.to_string(),
+            "An unexpected error occurred. Check the log files for more details."
+        );
+    }
+
+    #[test]
+    fn unexpected_failure_has_one_static_safe_message() {
+        assert_eq!(
+            UserError::UnexpectedFailure.message(),
+            "An unexpected error occurred. Check the log files for more details."
+        );
     }
 
     #[test]
