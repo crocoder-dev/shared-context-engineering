@@ -111,7 +111,6 @@ impl IntegrationGroupKey {
             (IntegrationTarget::OpenCode, IntegrationArea::Commands) => "OpenCode commands",
             (IntegrationTarget::OpenCode, IntegrationArea::Skills) => "OpenCode skills",
             (IntegrationTarget::ClaudeCode, IntegrationArea::Plugins) => "ClaudeCode plugins",
-            (IntegrationTarget::ClaudeCode, IntegrationArea::Agents) => "ClaudeCode agents",
             (IntegrationTarget::ClaudeCode, IntegrationArea::Commands) => "ClaudeCode commands",
             (IntegrationTarget::ClaudeCode, IntegrationArea::Skills) => "ClaudeCode skills",
             (IntegrationTarget::Pi, IntegrationArea::Prompts) => "Pi prompts",
@@ -124,6 +123,7 @@ impl IntegrationGroupKey {
             (IntegrationTarget::Pi, IntegrationArea::Commands) => "Pi commands",
             (IntegrationTarget::ClaudeCode, IntegrationArea::Prompts) => "ClaudeCode prompts",
             (IntegrationTarget::ClaudeCode, IntegrationArea::Extensions) => "ClaudeCode extensions",
+            (IntegrationTarget::ClaudeCode, IntegrationArea::Agents) => "Unsupported Claude area",
             (IntegrationTarget::OpenCode, IntegrationArea::Prompts) => "OpenCode prompts",
             (IntegrationTarget::OpenCode, IntegrationArea::Extensions) => "OpenCode extensions",
         }

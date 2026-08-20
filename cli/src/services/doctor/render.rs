@@ -604,11 +604,19 @@ fn integration_area_label(area: IntegrationArea) -> &'static str {
 
 fn integration_area_order(target: IntegrationTarget, area: IntegrationArea) -> usize {
     match target {
-        IntegrationTarget::ClaudeCode | IntegrationTarget::OpenCode => match area {
+        IntegrationTarget::OpenCode => match area {
             IntegrationArea::Plugins => 0,
             IntegrationArea::Agents => 1,
             IntegrationArea::Commands => 2,
             IntegrationArea::Skills => 3,
+            IntegrationArea::Prompts => 4,
+            IntegrationArea::Extensions => 5,
+        },
+        IntegrationTarget::ClaudeCode => match area {
+            IntegrationArea::Plugins => 0,
+            IntegrationArea::Commands => 1,
+            IntegrationArea::Skills => 2,
+            IntegrationArea::Agents => 3,
             IntegrationArea::Prompts => 4,
             IntegrationArea::Extensions => 5,
         },
