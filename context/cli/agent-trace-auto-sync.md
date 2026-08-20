@@ -35,6 +35,21 @@ Automatic synchronization is not invoked by `pre-commit`, `diff-trace`, or
 watcher, polling loop, scheduler, daemon, retry queue, persistent service, or
 second synchronization database.
 
+## Doctor readiness
+
+`sce doctor` reports the capability without invoking it. The post-commit hook's
+canonical managed block is the hook-side readiness proof, using the same
+managed-block currency semantics as setup. The report exposes
+`post_commit_auto_sync` in JSON with `state`, `enabled`, `source`, and
+`config_source` fields. Its states are `ready` for enabled/current,
+`disabled` for an explicit false opt-out, `not_ready` for enabled but missing,
+stale, unreadable, or otherwise non-current hook content, and `not_applicable`
+outside repository scope. The disabled state is healthy and does not alter the
+existing problem/remediation or overall readiness rules for unrelated hook
+issues. Text uses `[PASS] Post-commit Agent Trace auto-sync`, the explicit
+disabled label, or `[FAIL] Post-commit Agent Trace auto-sync` accordingly.
+Doctor never launches `sce sync` or a background process.
+
 ## Manual synchronization and retryability
 
 The explicit operator flow remains:

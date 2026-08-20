@@ -8,7 +8,7 @@ use super::types::{
     DoctorDisplayDetail, DoctorDisplayNode, DoctorDisplayNodeKind, DoctorDisplayStatus,
     HookContentState, HookDoctorReport, HookFileHealth, HookPathSource, IntegrationArea,
     IntegrationChildHealth, IntegrationContentState, IntegrationGroupHealth, IntegrationGroupKey,
-    IntegrationTarget, ProblemKind, ProblemSeverity, Readiness,
+    IntegrationTarget, PostCommitAutoSyncState, ProblemKind, ProblemSeverity, Readiness,
 };
 use super::{DoctorExecution, DoctorFormat, DoctorMode, DoctorRequest, NAME};
 
@@ -97,6 +97,17 @@ fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: boo
     render_display_node(
         &mut lines,
         &top_level_node(
+            post_commit_auto_sync_label(report.post_commit_auto_sync.state),
+            post_commit_auto_sync_status(report.post_commit_auto_sync.state),
+            Vec::new(),
+        ),
+        color_enabled,
+        2,
+        true,
+    );
+    render_display_node(
+        &mut lines,
+        &top_level_node(
             "Git hooks",
             git_hooks_status(report),
             problem_details(report, is_git_hooks_problem),
@@ -139,6 +150,30 @@ fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: boo
     ));
 
     lines.join("\n")
+}
+
+fn post_commit_auto_sync_label(state: PostCommitAutoSyncState) -> &'static str {
+    match state {
+        PostCommitAutoSyncState::Disabled => {
+            "Post-commit Agent Trace auto-sync (disabled by config)"
+        }
+        PostCommitAutoSyncState::NotApplicable => {
+            "Post-commit Agent Trace auto-sync (not applicable)"
+        }
+        PostCommitAutoSyncState::Ready | PostCommitAutoSyncState::NotReady => {
+            "Post-commit Agent Trace auto-sync"
+        }
+    }
+}
+
+fn post_commit_auto_sync_status(state: PostCommitAutoSyncState) -> DoctorDisplayStatus {
+    match state {
+        PostCommitAutoSyncState::Ready | PostCommitAutoSyncState::Disabled => {
+            DoctorDisplayStatus::Pass
+        }
+        PostCommitAutoSyncState::NotReady => DoctorDisplayStatus::Fail,
+        PostCommitAutoSyncState::NotApplicable => DoctorDisplayStatus::Miss,
+    }
 }
 
 fn format_human_text_row(
@@ -702,6 +737,12 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
             .hooks_directory
             .as_ref()
             .map(|path| path.display().to_string()),
+        "post_commit_auto_sync": {
+            "state": post_commit_auto_sync_state(report.post_commit_auto_sync.state),
+            "enabled": report.post_commit_auto_sync.enabled,
+            "source": report.post_commit_auto_sync.source,
+            "config_source": report.post_commit_auto_sync.config_source,
+        },
         "config_paths": config_paths,
         "hooks": hooks,
         "problems": report.problems.iter().map(|problem| json!({
@@ -728,6 +769,15 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
     });
 
     serde_json::to_string_pretty(&payload).context("failed to serialize doctor report to JSON")
+}
+
+fn post_commit_auto_sync_state(state: PostCommitAutoSyncState) -> &'static str {
+    match state {
+        PostCommitAutoSyncState::Ready => "ready",
+        PostCommitAutoSyncState::Disabled => "disabled",
+        PostCommitAutoSyncState::NotReady => "not_ready",
+        PostCommitAutoSyncState::NotApplicable => "not_applicable",
+    }
 }
 
 fn hook_state(hook: &HookFileHealth) -> &'static str {
