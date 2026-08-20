@@ -178,7 +178,7 @@ fn collect_post_commit_auto_sync_health(
                 resolved
                     .source
                     .config_source()
-                    .map(|source| source.as_str()),
+                    .map(ConfigPathSource::as_str),
             )
         });
 
@@ -1687,8 +1687,8 @@ mod tests {
     use super::{
         collect_claude_integration_groups, collect_hook_file_health,
         collect_opencode_integration_groups, collect_pi_integration_groups,
-        inspect_claude_integration_health, post_commit_auto_sync_state, HookContentState,
-        IntegrationContentState, IntegrationGroupHealth,
+        inspect_claude_integration_health, HookContentState, IntegrationContentState,
+        IntegrationGroupHealth,
     };
     use crate::services::setup::OPTIONAL_WORKFLOWS;
 
@@ -2031,13 +2031,6 @@ mod tests {
         crate::services::setup::iter_required_hook_assets()
             .find(|asset| asset.relative_path == "pre-commit")
             .expect("embedded catalog carries pre-commit")
-            .bytes
-    }
-
-    fn canonical_post_commit_bytes() -> &'static [u8] {
-        crate::services::setup::iter_required_hook_assets()
-            .find(|asset| asset.relative_path == "post-commit")
-            .expect("embedded catalog carries post-commit")
             .bytes
     }
 

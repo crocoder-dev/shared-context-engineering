@@ -57,6 +57,16 @@ JSON exposes the same fact as `post_commit_auto_sync` with stable `state`,
 remediation, and overall readiness semantics remain the source of blocking
 diagnostics.
 
+The resolved `enabled` value defaults to `true` when `agent_trace.auto_sync` is
+omitted and is `false` only for the explicit config opt-out. `source` reports
+`default` or `config_file` for resolved values, or `unresolved` when config
+resolution fails; `config_source` identifies the discovered global or local
+config layer when applicable and is otherwise `null`. Doctor only reports
+this fact: it never launches `sce sync` or a background process. The post-commit
+runtime still launches one detached `sync --format json` child only after
+successful Agent Trace persistence when enabled, and launcher failures remain
+fail-open.
+
 ## Integration hierarchy
 
 Integration checks remain target-scoped. The doctor resolves targets using this
