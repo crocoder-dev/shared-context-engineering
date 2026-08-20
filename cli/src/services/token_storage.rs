@@ -1,5 +1,4 @@
 use std::fmt;
-use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -7,7 +6,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::services::auth::TokenResponse;
 use crate::services::auth_db::AuthDb;
-use crate::services::default_paths::auth_db_path;
 
 /// Constant row ID for the single token row in `auth_credentials`.
 const DEFAULT_TOKEN_ROW_ID: i64 = 1;
@@ -158,10 +156,6 @@ pub fn delete_tokens() -> Result<bool, TokenStorageError> {
         .map_err(|e| TokenStorageError::Database(e.to_string()))?;
 
     Ok(affected > 0)
-}
-
-pub fn token_file_path() -> Result<PathBuf, TokenStorageError> {
-    auth_db_path().map_err(|error| TokenStorageError::PathResolution(error.to_string()))
 }
 
 fn current_unix_timestamp_seconds() -> Result<u64, TokenStorageError> {
