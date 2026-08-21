@@ -215,6 +215,23 @@ mod tests {
     }
 
     #[test]
+    fn not_git_repository_has_stable_runtime_catalog_mapping() {
+        let error = CliError::user(UserError::NotGitRepository);
+
+        assert_eq!(error.class(), FailureClass::Runtime);
+        assert_eq!(error.code(), "SCE-ERR-RUNTIME");
+        assert_eq!(
+            UserError::NotGitRepository.key(),
+            "setup.not_git_repository"
+        );
+        assert_eq!(
+            UserError::NotGitRepository.message(),
+            "This directory is not a Git repository. Run `git init`, then rerun `sce setup`."
+        );
+        assert_eq!(error.to_string(), UserError::NotGitRepository.message());
+    }
+
+    #[test]
     fn unexpected_failure_has_stable_runtime_catalog_mapping() {
         let error = CliError::user(UserError::UnexpectedFailure);
 

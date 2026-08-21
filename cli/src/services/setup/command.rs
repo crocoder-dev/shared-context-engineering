@@ -17,7 +17,7 @@ impl SetupCommand {
             Some(path) => path.clone(),
             None => std::env::current_dir()
                 .context("Failed to determine current directory")
-                .map_err(CliError::runtime)?,
+                .map_err(unexpected_failure)?,
         };
 
         // The repository root is resolved before any prompt so the interactive
@@ -40,7 +40,7 @@ impl SetupCommand {
                 &setup::InquireSetupTargetPrompter,
                 &optional_workflow_defaults,
             )
-            .map_err(CliError::runtime)?
+            .map_err(unexpected_failure)?
             {
                 setup::SetupDispatch::Proceed {
                     mode: resolved_mode,
@@ -58,7 +58,7 @@ impl SetupCommand {
 
         // Every successful setup path ensures the durable-context baseline exists.
         let context_message =
-            setup::bootstrap_context_baseline(&repository_root).map_err(CliError::runtime)?;
+            setup::bootstrap_context_baseline(&repository_root).map_err(unexpected_failure)?;
         sections.push(context_message);
 
         if self.request.context_only {
@@ -73,7 +73,7 @@ impl SetupCommand {
         let providers = lifecycle_providers(self.request.install_hooks);
 
         for provider in &providers {
-            let outcome = provider.setup(&ctx).map_err(CliError::runtime)?;
+            let outcome = provider.setup(&ctx).map_err(unexpected_failure)?;
 
             sections.extend(outcome.messages);
 
@@ -94,7 +94,7 @@ impl SetupCommand {
 
             let setup_message =
                 setup::run_setup_for_mode(&repository_root, resolved_mode, optional_workflows)
-                    .map_err(CliError::runtime)?;
+                    .map_err(unexpected_failure)?;
             sections.push(setup_message);
         }
 
@@ -107,7 +107,7 @@ fn resolve_setup_repository(start_path: &std::path::Path) -> Result<std::path::P
         if setup::is_not_git_repository_error(&source) {
             CliError::user_with_source(UserError::NotGitRepository, source)
         } else {
-            CliError::runtime(source)
+            unexpected_failure(source)
         }
     })?;
     let storage_config = config::resolve_agent_trace_storage_runtime_config(&repository_root)
@@ -116,19 +116,18 @@ fn resolve_setup_repository(start_path: &std::path::Path) -> Result<std::path::P
     setup::ensure_git_remote(&repository_root, &storage_config.repository_remote).map_err(
         |source| {
             if setup::is_missing_git_remote_error(&source) {
-                CliError::user_with_source(
-                    UserError::NotGitRemote {
-                        remote_name: storage_config.repository_remote.clone(),
-                    },
-                    source,
-                )
+                CliError::user_with_source(UserError::NotGitRemote, source)
             } else {
-                CliError::runtime(source)
+                unexpected_failure(source)
             }
         },
     )?;
 
     Ok(repository_root)
+}
+
+fn unexpected_failure(source: impl Into<anyhow::Error>) -> CliError {
+    CliError::user_with_source(UserError::UnexpectedFailure, source)
 }
 
 fn setup_required_hooks_outcome_from_lifecycle(
