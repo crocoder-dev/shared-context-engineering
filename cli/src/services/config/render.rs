@@ -10,6 +10,7 @@ use super::resolver::{
 use super::types::DatabaseRetryConfig;
 use super::{ConfigPathSource, ReportFormat, ResolvedOptionalValue, ValueSource};
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> String {
     let warnings = build_show_warnings(runtime);
     match report_format {
@@ -75,6 +76,10 @@ pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportF
                         "log_format": format_resolved_value_json(
                             runtime.log_format.value.as_str(),
                             runtime.log_format.source,
+                        ),
+                        "log_to_file": format_resolved_value_json(
+                            runtime.log_to_file.value,
+                            runtime.log_to_file.source,
                         ),
                         "log_dir": format_optional_resolved_value_json(&runtime.log_dir),
                         "log_file_retention_limit": format_resolved_value_json(
@@ -234,6 +239,11 @@ fn format_observability_text_lines(runtime: &RuntimeConfig) -> Vec<String> {
             "log_format",
             runtime.log_format.value.as_str(),
             runtime.log_format.source,
+        ),
+        format_resolved_value_text(
+            "log_to_file",
+            &runtime.log_to_file.value.to_string(),
+            runtime.log_to_file.source,
         ),
         format_optional_resolved_value_text("log_dir", &runtime.log_dir),
         format_resolved_value_text(

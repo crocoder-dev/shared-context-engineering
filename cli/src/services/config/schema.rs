@@ -34,6 +34,7 @@ pub(crate) const TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     CONFIG_SCHEMA_DECLARATION_KEY,
     "log_level",
     "log_format",
+    "log_to_file",
     "log_dir",
     "log_file_retention_limit",
     "timeout_ms",
@@ -45,7 +46,7 @@ pub(crate) const TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
 ];
 
 pub(crate) const TOP_LEVEL_CONFIG_KEYS_DESCRIPTION: &str =
-    "$schema, log_level, log_format, timeout_ms, workos_client_id, control_plane_base_url, agent_trace, policies, integrations, log_dir, log_file_retention_limit";
+    "$schema, log_level, log_format, log_to_file, timeout_ms, workos_client_id, control_plane_base_url, agent_trace, policies, integrations, log_dir, log_file_retention_limit";
 
 static CONFIG_SCHEMA_VALIDATOR: OnceLock<Validator> = OnceLock::new();
 
@@ -71,6 +72,7 @@ pub(crate) struct ParsedFileConfigDocument {
     pub(crate) _schema: Option<String>,
     pub(crate) log_level: Option<String>,
     pub(crate) log_format: Option<String>,
+    pub(crate) log_to_file: Option<bool>,
     pub(crate) log_dir: Option<String>,
     pub(crate) log_file_retention_limit: Option<usize>,
     pub(crate) timeout_ms: Option<u64>,
@@ -158,6 +160,7 @@ pub(crate) struct FileConfigValue<T> {
 pub(crate) struct FileConfig {
     pub(crate) log_level: Option<FileConfigValue<LogLevel>>,
     pub(crate) log_format: Option<FileConfigValue<LogFormat>>,
+    pub(crate) log_to_file: Option<FileConfigValue<bool>>,
     pub(crate) log_dir: Option<FileConfigValue<String>>,
     pub(crate) log_file_retention_limit: Option<FileConfigValue<usize>>,
     pub(crate) timeout_ms: Option<FileConfigValue<u64>>,
@@ -302,6 +305,9 @@ pub(crate) fn parse_file_config(
             })
         })
         .transpose()?;
+    let log_to_file = typed
+        .log_to_file
+        .map(|value| FileConfigValue { value, source });
     let log_dir = typed.log_dir.map(|value| FileConfigValue { value, source });
     let log_file_retention_limit = typed
         .log_file_retention_limit
@@ -324,6 +330,7 @@ pub(crate) fn parse_file_config(
     Ok(FileConfig {
         log_level,
         log_format,
+        log_to_file,
         log_dir,
         log_file_retention_limit,
         timeout_ms,
@@ -759,6 +766,25 @@ mod agent_trace_config_tests {
                 .map(|value| value.value),
             None
         );
+    }
+
+    #[test]
+    fn parses_log_to_file_boolean() {
+        let config = parse(r#"{"log_to_file":false}"#).unwrap();
+
+        assert_eq!(
+            config.log_to_file.as_ref().map(|value| value.value),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn rejects_empty_log_dir_when_file_logging_is_enabled() {
+        let error = parse(r#"{"log_to_file":true,"log_dir":""}"#)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("failed schema validation"), "{error}");
     }
 
     #[test]

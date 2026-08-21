@@ -12,7 +12,8 @@ Runtime observability consumes the shared resolved observability config from `cl
 - `SCE_LOG_LEVEL` selects log threshold with allowed values `error`, `warn`, `info`, `debug`.
 - `SCE_LOG_FORMAT` selects log format with allowed values `text`, `json`.
 - `SCE_LOG_DIR` configures the log-directory value used by the logger configuration surface and overrides config/default values.
-- Defaults are deterministic: `log_level=error`, `log_format=text`, and `log_dir=<state_root>/sce/logs` when higher-precedence env/config inputs are unset.
+- `log_to_file` is a flat config-file boolean that defaults to `true`; it explicitly controls whether records are written to the configured log directory while tracing and stderr routing remain separate concerns for the current logger. It resolves independently from `log_dir`.
+- Defaults are deterministic: `log_level=error`, `log_format=text`, `log_to_file=true`, and `log_dir=<state_root>/sce/logs` when higher-precedence env/config inputs are unset. Omitting either file-logging property is valid.
 - `log_file_retention_limit` is a flat config-file/default-only value with minimum `1` and default `10`; it has no environment variable or CLI flag, merges local over global, and appears in `sce config show` with provenance.
 - The default `log_dir` is resolved by `cli/src/services/default_paths.rs` through `observability_log_dir()`; on Linux this is `$XDG_STATE_HOME/sce/logs`, or `~/.local/state/sce/logs` when `XDG_STATE_HOME` is unset.
 - Invalid observability env values still fail invocation validation with actionable error text.
@@ -26,13 +27,14 @@ Runtime observability consumes the shared resolved observability config from `cl
 
 ## Emission contract
 
-- Log output is always emitted to `stderr`; command result payloads remain on `stdout`.
-- Each enabled or forced log operation appends the redacted rendered record to a file selected at emit time from the resolved `log_dir`, machine-local date, and optional caller-provided session ID.
+- Command result payloads remain on `stdout`; non-error log records and file-write diagnostics are emitted to `stderr`.
+- Error records are emitted to tracing in all cases. When `log_to_file=true`, they are written to the configured log file and their logger emission is suppressed on `stderr` to avoid duplicate output; when `log_to_file=false`, error records remain on `stderr` and are not written to a file.
+- Each enabled or forced log operation appends the redacted rendered record to a file selected at emit time from the resolved `log_dir`, machine-local date, and optional caller-provided session ID, except when file logging is disabled.
 - Sessionless file logs route to `<log_dir>/sce-<dd_mm_yyyy>.log`; session-aware file logs route to `<log_dir>/sce-<dd_mm_yyyy>-<sanitized_session_id>.log`.
 - Session filename sanitization preserves ASCII letters, digits, `-`, and `_`; percent-encodes every other UTF-8 byte as uppercase `%HH`; and represents an explicitly empty `Some("")` session ID with the reserved `%EMPTY` token.
 - `sce hooks diff-trace` and `conversation-trace` pass producer-native session context into this existing routing argument when available. Diff-trace logging never uses the AgentTraceDb-only `oc_`/`cc_`/`pi_` prefix; skipped conversation items use their own session; batch-wide conversation insert failures use the first valid insert's session. Agent Trace DB open failures use hook-specific error events (`sce.hooks.diff_trace.agent_trace_db_open_failed` and `sce.hooks.conversation_trace.agent_trace_db_open_failed`) and do not also emit their broader write/intake events for the same failure. Session IDs remain absent from rendered record fields unless separately supplied as fields.
 - File routing creates the configured directory when needed, uses owner-only create permissions on Unix, and serializes writes independently per path.
-- If the selected primary file cannot be opened, appended to, or flushed, the logger retries the complete rendered record exactly once at a sibling path with `-v2` inserted before `.log`: `sce-<dd_mm_yyyy>-v2.log` or `sce-<dd_mm_yyyy>-<sanitized_session_id>-v2.log`. Existing v2 files use the same create-or-append and per-path serialization behavior.
+- If file logging is enabled and the selected primary file cannot be opened, appended to, or flushed, the logger retries the complete rendered record exactly once at a sibling path with `-v2` inserted before `.log`: `sce-<dd_mm_yyyy>-v2.log` or `sce-<dd_mm_yyyy>-<sanitized_session_id>-v2.log`. Existing v2 files use the same create-or-append and per-path serialization behavior.
 - Successful v2 persistence suppresses the terminal `Failed to write SCE log file` diagnostic and leaves the CLI command result unchanged. If both persistence attempts fail, the logger emits one redacted terminal file-write diagnostic to stderr and continues fail-open; a partial primary append may therefore coexist with the complete fallback record.
 - Directory creation, primary lock acquisition, and retention cleanup failures do not trigger alternate-name generation. The fallback attempt is non-recursive: no v3, timestamped, random, or unbounded variants are tried.
 - After a successful write to a newly created primary or v2 SCE log file, the logger runs one best-effort retention pass over direct regular `*.log` children of `log_dir`. Existing-file appends do not scan or delete files. Cleanup keeps the resolved `log_file_retention_limit` newest files (default `10`). Files are ordered newest-first by filesystem modification time with path/name ordering as the deterministic tie-break, and older `.log` files are removed regardless of whether their names are SCE-owned.
@@ -76,13 +78,15 @@ Runtime observability consumes the shared resolved observability config from `cl
 
 ## Log directory config safety contract
 
-- `log_dir` config-file values are schema-validated as non-empty strings.
+- `log_to_file` is resolved from the config file or its backward-compatible `true` default and is surfaced with provenance by `sce config show`.
+- `log_to_file` and `log_dir` are independent configuration properties. Omitting `log_dir` uses the default location, and omitting `log_to_file` defaults to enabled file logging; neither omission creates a cross-property validation error.
+- `log_dir` config-file values are schema-validated as non-empty strings; an explicitly empty config value fails schema validation before runtime startup. Setting `log_to_file` to `false` disables file logging without changing `log_dir` resolution.
 - `SCE_LOG_DIR` env values are resolved with env-over-config-over-default precedence and rejected when explicitly empty.
 - Logger construction validates resolved `log_dir` as non-empty without opening files; directory creation, per-operation local-date file selection, append writes, Unix owner-only create permissions, and creation-triggered retention happen at log emission time.
 
 ## Ownership and verification
 
-- `cli/src/services/config/resolver.rs` owns shared observability value resolution, config-file discovery/merge, env-over-config/default precedence for supported runtime inputs, default `log_dir` resolution through `default_paths::observability_log_dir()`, and config-file/default-only `log_file_retention_limit` resolution.
+- `cli/src/services/config/resolver.rs` owns shared observability value resolution, including independent config-file/default `log_to_file` and `log_dir` resolution, config-file discovery/merge, env-over-config/default precedence for supported runtime inputs, default `log_dir` resolution through `default_paths::observability_log_dir()`, and config-file/default-only `log_file_retention_limit` resolution.
 - `cli/src/services/observability.rs` owns runtime logger construction from resolved values, storage and application of `log_file_retention_limit`, `log_dir` non-empty validation, level filtering, tracing-event enablement checks, record rendering, local-date/session file-name selection, session filename sanitization, primary append plus one-time v2 fallback persistence, and best-effort `.log` retention; `cli/src/services/observability/traits.rs` owns the logger and telemetry trait boundaries plus the no-op logger implementation.
 - `cli/src/app.rs` owns lifecycle event emission around parse/dispatch success and failure paths, resolves observability config before command dispatch, emits startup invalid-config warning events for skipped discovered config files, wraps dispatch inside the observability subscriber context, and guards the single-use command-dispatch action against repeated telemetry invocation with a runtime-classified error. `cli/src/services/app_support.rs` owns final stdout/stderr rendering and generic logger-backed classified-error logging.
 - Retention-specific validation uses packaged CLI smoke checks for config/schema behavior and direct review of the primary/v2 logger cleanup plumbing. The root flake check suite validates the build, lint, formatting, generated parity, and remaining repository tests; no retention-specific Rust test module is currently kept in `observability.rs`, `config/resolver.rs`, or `config/schema.rs`.

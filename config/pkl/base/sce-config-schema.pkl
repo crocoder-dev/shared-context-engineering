@@ -77,6 +77,11 @@ local sceConfigSchema = new JsonSchema {
       type = "string"
       enum = new { "text"; "json" }
     }
+    ["log_to_file"] = new JsonSchema {
+      type = "boolean"
+      description = "Write log records to the configured log directory. Defaults to true."
+      default = true
+    }
     ["log_dir"] = new JsonSchema {
       type = "string"
       minLength = 1
