@@ -70,6 +70,7 @@ pub(super) struct RuntimeConfig {
     pub(super) loaded_config_paths: Vec<LoadedConfigPath>,
     pub(super) log_level: ResolvedValue<LogLevel>,
     pub(super) log_format: ResolvedValue<LogFormat>,
+    pub(super) log_to_file: ResolvedValue<bool>,
     pub(super) log_dir: ResolvedOptionalValue<String>,
     pub(super) log_file_retention_limit: ResolvedValue<usize>,
     pub(super) timeout_ms: ResolvedValue<u64>,
@@ -257,6 +258,7 @@ where
     Ok(ResolvedObservabilityRuntimeConfig {
         log_level: runtime.log_level.value,
         log_format: runtime.log_format.value,
+        log_to_file: runtime.log_to_file.value,
         log_dir: runtime.log_dir.value,
         log_file_retention_limit: runtime.log_file_retention_limit.value,
         loaded_config_paths: runtime.loaded_config_paths,
@@ -335,6 +337,7 @@ where
     let mut file_config = schema::FileConfig {
         log_level: None,
         log_format: None,
+        log_to_file: None,
         log_dir: None,
         log_file_retention_limit: None,
         timeout_ms: None,
@@ -365,6 +368,9 @@ where
         }
         if let Some(log_format) = layer.log_format {
             file_config.log_format = Some(log_format);
+        }
+        if let Some(log_to_file) = layer.log_to_file {
+            file_config.log_to_file = Some(log_to_file);
         }
         if let Some(log_dir) = layer.log_dir {
             file_config.log_dir = Some(log_dir);
@@ -446,6 +452,17 @@ where
             source: ValueSource::Env,
         };
     }
+
+    let resolved_log_to_file = match file_config.log_to_file {
+        Some(value) => ResolvedValue {
+            value: value.value,
+            source: ValueSource::ConfigFile(value.source),
+        },
+        None => ResolvedValue {
+            value: true,
+            source: ValueSource::Default,
+        },
+    };
 
     let resolved_log_dir = if let Some(raw) = env_lookup(ENV_LOG_DIR) {
         ResolvedOptionalValue {
@@ -575,6 +592,7 @@ where
         loaded_config_paths,
         log_level: resolved_log_level,
         log_format: resolved_log_format,
+        log_to_file: resolved_log_to_file,
         log_dir: resolved_log_dir,
         log_file_retention_limit: resolved_log_file_retention_limit,
         timeout_ms: resolved_timeout_ms,
@@ -845,6 +863,60 @@ mod tests {
 
         assert_eq!(runtime.agent_trace_repository_id.value, None);
         assert_eq!(runtime.agent_trace_repository_id.source, None);
+    }
+
+    #[test]
+    fn log_to_file_defaults_to_true() {
+        let runtime = resolve_runtime_with_config(None).unwrap();
+
+        assert!(runtime.log_to_file.value);
+        assert_eq!(runtime.log_to_file.source, ValueSource::Default);
+    }
+
+    #[test]
+    fn log_to_file_and_log_dir_resolve_independently() {
+        let enabled_without_log_dir =
+            resolve_runtime_with_config(Some(r#"{"log_to_file":true}"#)).unwrap();
+        let log_dir_without_log_to_file =
+            resolve_runtime_with_config(Some(r#"{"log_dir":"/tmp/sce-logs"}"#)).unwrap();
+        let disabled_without_log_dir =
+            resolve_runtime_with_config(Some(r#"{"log_to_file":false}"#)).unwrap();
+
+        assert!(enabled_without_log_dir.log_to_file.value);
+        assert!(enabled_without_log_dir.log_dir.value.is_some());
+        assert!(enabled_without_log_dir.validation_errors.is_empty());
+        assert_eq!(
+            log_dir_without_log_to_file.log_dir.value.as_deref(),
+            Some("/tmp/sce-logs")
+        );
+        assert!(log_dir_without_log_to_file.log_to_file.value);
+        assert!(disabled_without_log_dir.log_dir.value.is_some());
+        assert!(disabled_without_log_dir.validation_errors.is_empty());
+        assert_eq!(
+            enabled_without_log_dir.log_to_file.source,
+            ValueSource::ConfigFile(ConfigPathSource::Flag)
+        );
+        assert_eq!(
+            disabled_without_log_dir.log_to_file.source,
+            ValueSource::ConfigFile(ConfigPathSource::Flag)
+        );
+    }
+
+    #[test]
+    fn log_to_file_resolves_both_explicit_boolean_values() {
+        let enabled = resolve_runtime_with_config(Some(r#"{"log_to_file":true}"#)).unwrap();
+        let disabled = resolve_runtime_with_config(Some(r#"{"log_to_file":false}"#)).unwrap();
+
+        assert!(enabled.log_to_file.value);
+        assert!(!disabled.log_to_file.value);
+        assert_eq!(
+            enabled.log_to_file.source,
+            ValueSource::ConfigFile(ConfigPathSource::Flag)
+        );
+        assert_eq!(
+            disabled.log_to_file.source,
+            ValueSource::ConfigFile(ConfigPathSource::Flag)
+        );
     }
 
     #[test]

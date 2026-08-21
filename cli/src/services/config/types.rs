@@ -198,6 +198,7 @@ pub(crate) struct ResolvedAuthRuntimeConfig {
 pub(crate) struct ResolvedObservabilityRuntimeConfig {
     pub(crate) log_level: LogLevel,
     pub(crate) log_format: LogFormat,
+    pub(crate) log_to_file: bool,
     pub(crate) log_dir: Option<String>,
     pub(crate) log_file_retention_limit: usize,
     pub(crate) loaded_config_paths: Vec<LoadedConfigPath>,

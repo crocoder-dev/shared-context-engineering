@@ -4,7 +4,7 @@
 
 This contract documents the implemented `sce config` command behavior, runtime resolver, renderer, and canonical Pkl-authored `sce/config.json` schema. The schema is emitted to payload-relative `config/schema/sce-config.schema.json` under Cargo `OUT_DIR` or packaging fallbacks and embedded by `cli/src/services/config/schema.rs` as `SCE_CONFIG_SCHEMA_JSON`; no generated schema is committed.
 
-The current implementation resolves flat logging keys and Agent Trace runtime keys with deterministic precedence and source metadata, exposes resolved-value inspection through `sce config show`, and keeps `sce config validate` focused on validation status plus errors/warnings. Threshold, format, directory, and `log_file_retention_limit` values are consumed by runtime logging; the concrete logger uses the retention value for primary and v2 creation-triggered cleanup. The default-enabled `agent_trace.auto_sync` value is consumed by the post-commit trigger boundary and by doctor readiness reporting, and can be disabled explicitly.
+The current implementation resolves flat logging keys and Agent Trace runtime keys with deterministic precedence and source metadata, exposes resolved-value inspection through `sce config show`, and keeps `sce config validate` focused on validation status plus errors/warnings. File logging is explicitly controlled by the config-file/default `log_to_file` boolean, which defaults to `true`; `log_to_file` and `log_dir` resolve independently, with omitted `log_dir` falling back to the default location. Threshold, format, directory, and `log_file_retention_limit` values are consumed by runtime logging; the concrete logger uses the retention value for primary and v2 creation-triggered cleanup. The default-enabled `agent_trace.auto_sync` value is consumed by the post-commit trigger boundary and by doctor readiness reporting, and can be disabled explicitly.
 
 ## Command surface
 
@@ -34,8 +34,10 @@ Agent Trace repository identity keys are also config-file only with per-key `glo
 Resolved observability values that currently have no CLI flag layer follow the same lower-precedence chain without a flag step:
 
 1. environment values (`SCE_LOG_FORMAT`, `SCE_LOG_DIR`)
-2. config file values (`log_format`, `log_dir`)
-3. defaults (`log_format=text`; `log_dir=<state_root>/sce/logs` through `default_paths::observability_log_dir()`, resolving on Linux to `$XDG_STATE_HOME/sce/logs` or `~/.local/state/sce/logs` when `XDG_STATE_HOME` is unset)
+2. config file values (`log_format`, `log_to_file`, `log_dir`)
+3. defaults (`log_format=text`, `log_to_file=true`; `log_dir=<state_root>/sce/logs` through `default_paths::observability_log_dir()`, resolving on Linux to `$XDG_STATE_HOME/sce/logs` or `~/.local/state/sce/logs` when `XDG_STATE_HOME` is unset)
+
+`log_to_file` is config-file/default only; unlike `log_dir`, it has no environment variable or CLI flag. Omitting either property does not produce a cross-property validation error: `log_to_file` defaults to `true`, and omitted `log_dir` resolves to the default location. An explicit empty config value for `log_dir` is rejected by the generated schema.
 
 `log_file_retention_limit` intentionally has no environment or CLI-flag layer:
 
@@ -80,8 +82,9 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - Startup/runtime config resolution now degrades gracefully only for default-discovered files: invalid discovered files are skipped and reported via collected `validation_errors`, while explicit `--config` / `SCE_CONFIG_FILE` targets still fail immediately on the same parse or validation errors.
 
 - Config file content must be valid JSON with a top-level object.
-- Allowed keys: `$schema`, `log_level`, `log_format`, `log_dir`, `log_file_retention_limit`, `timeout_ms`, `workos_client_id`, `control_plane_base_url`, `agent_trace`, `policies`, `integrations`.
+- Allowed keys: `$schema`, `log_level`, `log_format`, `log_to_file`, `log_dir`, `log_file_retention_limit`, `timeout_ms`, `workos_client_id`, `control_plane_base_url`, `agent_trace`, `policies`, `integrations`.
 - Unknown keys fail validation.
+- `log_to_file` must be a boolean when present and defaults to `true`; it is independent of `log_dir`.
 - `log_level` must be one of `error|warn|info|debug`.
 - `log_format` must be `text` or `json` when present.
 - `log_dir` must be a non-empty string when present.
@@ -121,7 +124,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `show` reports discovered config files as `config_paths` (JSON) / `Config files:` (text).
 - Resolved values in `show` continue to report `source`; when source is `config_file`, output also reports a deterministic `config_source` value (`flag`, `env`, `default_discovered_global`, `default_discovered_local`).
 - `show` includes migrated supported auth keys in `result.resolved`.
-- `show` includes resolved observability values directly in `result.resolved`, preserving flat logging keys (`log_level`, `log_format`, `log_dir`, `log_file_retention_limit`).
+- `show` includes resolved observability values directly in `result.resolved`, preserving flat logging keys (`log_level`, `log_format`, `log_to_file`, `log_dir`, `log_file_retention_limit`) and their source metadata.
 - `validate` text output is limited to `SCE config validation`, `Validation issues`, and `Validation warnings` lines.
 - `validate` JSON output is limited to `result.command`, `result.valid`, `result.issues`, and `result.warnings`.
 - `show` includes resolved Agent Trace configuration under `result.resolved.agent_trace` (JSON: `repository_id` optional-value shape, `repository_remote` and `auto_sync` resolved-value shapes) and as per-key text lines, reporting `(unset)` for a missing `repository_id`, `source: default` for the `origin` remote fallback, and `source: default` for omitted `auto_sync`.
