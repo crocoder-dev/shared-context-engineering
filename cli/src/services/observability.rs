@@ -31,6 +31,7 @@ const EMPTY_SESSION_ID_TOKEN: &str = "%EMPTY";
 pub struct ObservabilityConfig {
     pub level: LogLevel,
     pub format: LogFormat,
+    pub log_to_file: bool,
 }
 
 impl Default for ObservabilityConfig {
@@ -38,6 +39,7 @@ impl Default for ObservabilityConfig {
         Self {
             level: LogLevel::Error,
             format: LogFormat::Text,
+            log_to_file: true,
         }
     }
 }
@@ -61,8 +63,13 @@ impl Logger {
             config: ObservabilityConfig {
                 level: config.log_level,
                 format: config.log_format,
+                log_to_file: config.log_to_file,
             },
-            log_dir: config.log_dir.as_deref().map(PathBuf::from),
+            log_dir: config
+                .log_to_file
+                .then_some(config.log_dir.as_deref())
+                .flatten()
+                .map(PathBuf::from),
             log_file_retention_limit: config.log_file_retention_limit,
         })
     }
@@ -181,7 +188,9 @@ impl Logger {
 
         let line = self.render_line(level, event_id, message, fields);
         let redacted_line = redact_sensitive_text(&line);
-        emit_stderr_line(&redacted_line);
+        if should_emit_to_stderr(level, self.config.log_to_file) {
+            emit_stderr_line(&redacted_line);
+        }
 
         if let Err(error) = self.write_log_line(&redacted_line, session_id) {
             let diagnostic = redact_sensitive_text(&format!(
@@ -192,6 +201,10 @@ impl Logger {
     }
 
     fn write_log_line(&self, redacted_line: &str, session_id: Option<&str>) -> Result<()> {
+        if !self.config.log_to_file {
+            return Ok(());
+        }
+
         let Some(log_dir) = self.log_dir.as_deref() else {
             return Ok(());
         };
@@ -290,6 +303,10 @@ fn cli_error_fields(error: &CliError) -> Vec<(&'static str, String)> {
     }
 
     fields
+}
+
+fn should_emit_to_stderr(level: LogLevel, log_to_file: bool) -> bool {
+    level != LogLevel::Error || !log_to_file
 }
 
 fn validate_log_dir(value: &str) -> Result<()> {
@@ -726,6 +743,68 @@ mod tests {
 
         assert_eq!(field_value(&fields, "error_surface"), Some("user"));
         assert_eq!(field_value(&fields, "error_source"), None);
+    }
+
+    #[test]
+    fn error_records_route_to_stderr_only_when_file_logging_is_disabled() {
+        assert!(!should_emit_to_stderr(LogLevel::Error, true));
+        assert!(should_emit_to_stderr(LogLevel::Error, false));
+    }
+
+    #[test]
+    fn non_error_records_remain_on_stderr_when_file_logging_is_enabled() {
+        assert!(should_emit_to_stderr(LogLevel::Warn, true));
+        assert!(should_emit_to_stderr(LogLevel::Info, true));
+        assert!(should_emit_to_stderr(LogLevel::Debug, true));
+    }
+
+    #[test]
+    fn enabled_file_logging_writes_error_records_without_stderr_routing() {
+        let log_dir =
+            std::env::temp_dir().join(format!("sce-observability-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&log_dir);
+        let logger = Logger {
+            config: ObservabilityConfig {
+                level: LogLevel::Error,
+                format: LogFormat::Text,
+                log_to_file: true,
+            },
+            log_dir: Some(log_dir.clone()),
+            log_file_retention_limit: 10,
+        };
+
+        logger.error("sce.test.error", "test error", &[], None);
+
+        let entries = fs::read_dir(&log_dir)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        let contents = fs::read_to_string(entries[0].path()).unwrap();
+        assert!(contents.contains("event_id=sce.test.error"));
+        let _ = fs::remove_dir_all(log_dir);
+    }
+
+    #[test]
+    fn disabled_file_logging_keeps_error_records_off_disk() {
+        let log_dir = std::env::temp_dir().join(format!(
+            "sce-observability-disabled-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&log_dir);
+        let logger = Logger {
+            config: ObservabilityConfig {
+                level: LogLevel::Error,
+                format: LogFormat::Text,
+                log_to_file: false,
+            },
+            log_dir: Some(log_dir.clone()),
+            log_file_retention_limit: 10,
+        };
+
+        logger.error("sce.test.error", "test error", &[], None);
+
+        assert!(!log_dir.exists());
     }
 
     #[test]
