@@ -104,7 +104,7 @@ pub fn run_whoami(format: AuthFormat) -> Result<String, CliError> {
     let profile = shared_runtime()
         .map_err(unexpected_auth_command_error)?
         .block_on(client.me())
-        .map_err(map_whoami_control_plane_error)?;
+        .map_err(|error| map_whoami_control_plane_error(&error))?;
 
     render_whoami_result(&profile, format).map_err(unexpected_auth_command_error)
 }
@@ -393,7 +393,7 @@ fn render_whoami_result(profile: &MeResponse, format: AuthFormat) -> Result<Stri
     }
 }
 
-fn map_whoami_control_plane_error(error: ControlPlaneError) -> CliError {
+fn map_whoami_control_plane_error(error: &ControlPlaneError) -> CliError {
     let user_error = if error.is_authentication_failure() {
         UserError::NotAuthenticated
     } else if error.is_storage_failure() {
