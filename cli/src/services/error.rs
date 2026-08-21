@@ -55,6 +55,7 @@ pub enum UserError {
     #[allow(dead_code)]
     NotAuthenticated,
     AuthStorageUnavailable,
+    NotGitRepository,
     #[allow(dead_code)]
     UnexpectedFailure,
 }
@@ -62,9 +63,10 @@ pub enum UserError {
 impl UserError {
     pub fn class(self) -> FailureClass {
         match self {
-            Self::NotAuthenticated | Self::AuthStorageUnavailable | Self::UnexpectedFailure => {
-                FailureClass::Runtime
-            }
+            Self::NotAuthenticated
+            | Self::AuthStorageUnavailable
+            | Self::NotGitRepository
+            | Self::UnexpectedFailure => FailureClass::Runtime,
         }
     }
 
@@ -73,6 +75,7 @@ impl UserError {
         match self {
             Self::NotAuthenticated => "auth.not_authenticated",
             Self::AuthStorageUnavailable => "auth.storage_unavailable",
+            Self::NotGitRepository => "setup.not_git_repository",
             Self::UnexpectedFailure => "general.unexpected_failure",
         }
     }
@@ -84,6 +87,9 @@ impl UserError {
             }
             Self::AuthStorageUnavailable => {
                 "Authentication storage is unavailable. Verify local credential storage is available, then retry the command."
+            }
+            Self::NotGitRepository => {
+                "This directory is not a Git repository. Run `git init`, then rerun `sce setup`."
             }
             Self::UnexpectedFailure => {
                 "An unexpected error occurred. Check the log files for more details."
@@ -201,6 +207,23 @@ mod tests {
         assert_eq!(error.code(), "SCE-ERR-RUNTIME");
         assert_eq!(UserError::NotAuthenticated.key(), "auth.not_authenticated");
         assert!(error.to_string().contains("You are not logged in"));
+    }
+
+    #[test]
+    fn not_git_repository_has_stable_runtime_catalog_mapping() {
+        let error = CliError::user(UserError::NotGitRepository);
+
+        assert_eq!(error.class(), FailureClass::Runtime);
+        assert_eq!(error.code(), "SCE-ERR-RUNTIME");
+        assert_eq!(
+            UserError::NotGitRepository.key(),
+            "setup.not_git_repository"
+        );
+        assert_eq!(
+            UserError::NotGitRepository.message(),
+            "This directory is not a Git repository. Run `git init`, then rerun `sce setup`."
+        );
+        assert_eq!(error.to_string(), UserError::NotGitRepository.message());
     }
 
     #[test]

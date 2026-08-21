@@ -1,7 +1,7 @@
 use anyhow::Context;
 
 use crate::app::ContextWithRepoRoot;
-use crate::services::error::CliError;
+use crate::services::error::{CliError, UserError};
 use crate::services::lifecycle::{
     lifecycle_providers, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
 };
@@ -17,13 +17,13 @@ impl SetupCommand {
             Some(path) => path.clone(),
             None => std::env::current_dir()
                 .context("Failed to determine current directory")
-                .map_err(CliError::runtime)?,
+                .map_err(unexpected_failure)?,
         };
 
         // The repository root is resolved before any prompt so the interactive
         // optional-workflow prompt can pre-check the persisted selection.
-        let repository_root =
-            setup::ensure_git_repository(&setup_start_path).map_err(CliError::runtime)?;
+        let repository_root = setup::ensure_git_repository(&setup_start_path)
+            .map_err(|source| CliError::user_with_source(UserError::NotGitRepository, source))?;
 
         let setup_dispatch = if self.request.context_only {
             None
@@ -40,7 +40,7 @@ impl SetupCommand {
                 &setup::InquireSetupTargetPrompter,
                 &optional_workflow_defaults,
             )
-            .map_err(CliError::runtime)?
+            .map_err(unexpected_failure)?
             {
                 setup::SetupDispatch::Proceed {
                     mode: resolved_mode,
@@ -58,7 +58,7 @@ impl SetupCommand {
 
         // Every successful setup path ensures the durable-context baseline exists.
         let context_message =
-            setup::bootstrap_context_baseline(&repository_root).map_err(CliError::runtime)?;
+            setup::bootstrap_context_baseline(&repository_root).map_err(unexpected_failure)?;
         sections.push(context_message);
 
         if self.request.context_only {
@@ -73,7 +73,7 @@ impl SetupCommand {
         let providers = lifecycle_providers(self.request.install_hooks);
 
         for provider in &providers {
-            let outcome = provider.setup(&ctx).map_err(CliError::runtime)?;
+            let outcome = provider.setup(&ctx).map_err(unexpected_failure)?;
 
             sections.extend(outcome.messages);
 
@@ -94,12 +94,16 @@ impl SetupCommand {
 
             let setup_message =
                 setup::run_setup_for_mode(&repository_root, resolved_mode, optional_workflows)
-                    .map_err(CliError::runtime)?;
+                    .map_err(unexpected_failure)?;
             sections.push(setup_message);
         }
 
         Ok(sections.join("\n\n"))
     }
+}
+
+fn unexpected_failure(source: impl Into<anyhow::Error>) -> CliError {
+    CliError::user_with_source(UserError::UnexpectedFailure, source)
 }
 
 fn setup_required_hooks_outcome_from_lifecycle(
