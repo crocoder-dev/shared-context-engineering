@@ -13,13 +13,13 @@ use super::super::{
 };
 use super::CodexHookEvent;
 
-/// Captures a Codex `UserPromptSubmit` event as one `messages` row
-/// (`role = "user"`) and one `parts` row (`part_type = "text"`, `text = prompt`)
-/// under session `cx_<session_id>`, message `cx:<turn_id>:user`.
+/// Captures a Codex `Stop` event as one `messages` row (`role = "assistant"`)
+/// and one `parts` row (`part_type = "text"`, `text = last_assistant_message`)
+/// under session `cx_<session_id>`, message `cx:<turn_id>:assistant`.
 pub(super) fn handle(repository_root: &Path, event: &CodexHookEvent) -> Result<String> {
     let db = open_agent_trace_db_for_hook_runtime(
         repository_root,
-        "Failed to open Agent Trace DB for Codex UserPromptSubmit persistence.",
+        "Failed to open Agent Trace DB for Codex Stop persistence.",
     )?;
 
     capture_with(&db, event, || current_unix_time_ms().unwrap_or(0))
@@ -37,37 +37,40 @@ where
 {
     let session_id = required_field(event.session_id.as_deref(), "session_id")?;
     let turn_id = required_field(event.turn_id.as_deref(), "turn_id")?;
-    let prompt = required_field(event.prompt.as_deref(), "prompt")?;
+    let last_assistant_message = required_field(
+        event.last_assistant_message.as_deref(),
+        "last_assistant_message",
+    )?;
 
     let prefixed_session_id = prefixed_conversation_trace_session_id(CODEX_TOOL_NAME, session_id);
-    let message_id = format!("cx:{turn_id}:user");
+    let message_id = format!("cx:{turn_id}:assistant");
     let generated_at_unix_ms = generate_timestamp_ms();
 
     db.insert_messages(vec![InsertMessageInsert {
         session_id: prefixed_session_id.clone(),
         message_id: message_id.clone(),
-        role: MessageRole::User,
+        role: MessageRole::Assistant,
         generated_at_unix_ms,
     }])
-    .context("Failed to insert Codex UserPromptSubmit message row.")?;
+    .context("Failed to insert Codex Stop message row.")?;
 
     db.insert_parts(vec![InsertPartInsert {
         part_type: PartType::Text,
-        text: prompt.to_string(),
+        text: last_assistant_message.to_string(),
         session_id: prefixed_session_id,
         message_id,
         generated_at_unix_ms,
     }])
-    .context("Failed to insert Codex UserPromptSubmit text part row.")?;
+    .context("Failed to insert Codex Stop text part row.")?;
 
-    Ok("codex hooks: UserPromptSubmit captured into messages/parts.".to_string())
+    Ok("codex hooks: Stop captured into messages/parts.".to_string())
 }
 
 fn required_field<'a>(value: Option<&'a str>, field_name: &str) -> Result<&'a str> {
     match value {
         Some(value) if !value.trim().is_empty() => Ok(value),
         _ => Err(anyhow::anyhow!(
-            "Invalid Codex UserPromptSubmit payload: field '{field_name}' must be a non-empty string."
+            "Invalid Codex Stop payload: field '{field_name}' must be a non-empty string."
         )),
     }
 }
@@ -89,7 +92,7 @@ mod tests {
             .as_nanos();
         std::env::temp_dir()
             .join(format!(
-                "sce-codex-user-prompt-submit-{label}-{}-{nonce}",
+                "sce-codex-stop-{label}-{}-{nonce}",
                 std::process::id()
             ))
             .join("agent-trace.db")
@@ -101,9 +104,9 @@ mod tests {
         }
     }
 
-    fn event(session_id: &str, turn_id: &str, prompt: &str) -> CodexHookEvent {
+    fn event(session_id: &str, turn_id: &str, last_assistant_message: &str) -> CodexHookEvent {
         CodexHookEvent {
-            hook_event_name: "UserPromptSubmit".to_string(),
+            hook_event_name: "Stop".to_string(),
             session_id: Some(session_id.to_string()),
             turn_id: Some(turn_id.to_string()),
             cwd: None,
@@ -112,8 +115,8 @@ mod tests {
             tool_use_id: None,
             tool_input: None,
             tool_response: None,
-            prompt: Some(prompt.to_string()),
-            last_assistant_message: None,
+            prompt: None,
+            last_assistant_message: Some(last_assistant_message.to_string()),
         }
     }
 
@@ -153,25 +156,25 @@ mod tests {
         let db_path = unique_test_db_path("basic");
         let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
 
-        let output = capture_with(&db, &event("session-1", "turn-1", "hello world"), || 1_000)
+        let output = capture_with(&db, &event("session-1", "turn-1", "hello back"), || 1_000)
             .expect("capture should succeed");
-        assert!(output.contains("UserPromptSubmit"));
+        assert!(output.contains("Stop"));
 
         assert_eq!(
             message_rows(&db),
             vec![(
                 "cx_session-1".to_string(),
-                "cx:turn-1:user".to_string(),
-                "user".to_string()
+                "cx:turn-1:assistant".to_string(),
+                "assistant".to_string()
             )]
         );
         assert_eq!(
             part_rows(&db),
             vec![(
                 "cx_session-1".to_string(),
-                "cx:turn-1:user".to_string(),
+                "cx:turn-1:assistant".to_string(),
                 "text".to_string(),
-                "hello world".to_string()
+                "hello back".to_string()
             )]
         );
 
@@ -195,7 +198,7 @@ mod tests {
     fn capture_with_does_not_duplicate_the_parent_message_on_reprocess() {
         let db_path = unique_test_db_path("dedupe");
         let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
-        let payload = event("session-1", "turn-1", "hello world");
+        let payload = event("session-1", "turn-1", "hello back");
 
         capture_with(&db, &payload, || 1_000).expect("first capture should succeed");
         capture_with(&db, &payload, || 2_000).expect("reprocessed capture should succeed");
@@ -203,21 +206,22 @@ mod tests {
         assert_eq!(
             message_rows(&db).len(),
             1,
-            "reprocessing the same turn's UserPromptSubmit must not duplicate the parent message row"
+            "reprocessing the same turn's Stop must not duplicate the parent message row"
         );
 
         remove_test_db(&db_path);
     }
 
     #[test]
-    fn capture_with_rejects_a_missing_prompt() {
-        let db_path = unique_test_db_path("missing-prompt");
+    fn capture_with_rejects_a_missing_last_assistant_message() {
+        let db_path = unique_test_db_path("missing-last-assistant-message");
         let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
-        let mut payload = event("session-1", "turn-1", "hello world");
-        payload.prompt = None;
+        let mut payload = event("session-1", "turn-1", "hello back");
+        payload.last_assistant_message = None;
 
-        let error = capture_with(&db, &payload, || 1_000).expect_err("missing prompt should error");
-        assert!(error.to_string().contains("'prompt'"));
+        let error = capture_with(&db, &payload, || 1_000)
+            .expect_err("missing last_assistant_message should error");
+        assert!(error.to_string().contains("'last_assistant_message'"));
 
         remove_test_db(&db_path);
     }
@@ -226,7 +230,7 @@ mod tests {
     fn capture_with_rejects_a_missing_turn_id() {
         let db_path = unique_test_db_path("missing-turn-id");
         let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
-        let mut payload = event("session-1", "turn-1", "hello world");
+        let mut payload = event("session-1", "turn-1", "hello back");
         payload.turn_id = None;
 
         let error =
