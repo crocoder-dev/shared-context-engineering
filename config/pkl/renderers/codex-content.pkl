@@ -1,0 +1,13 @@
+import "../base/decision-skill.pkl" as decision
+import "workflow-composite.pkl" as workflowResults
+
+/// Codex has no command-routed entrypoints — it discovers skills directly, with
+/// no per-target frontmatter beyond the shared description, matching Pi.
+skillDocuments {
+  for (path, document in workflowResults.skillDocuments.apply("")) {
+    [path] = document
+  }
+  for (path, document in decision.skillDocuments.apply("")) {
+    [path] = document
+  }
+}
