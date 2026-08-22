@@ -16,8 +16,7 @@ use super::super::CodexHookEvent;
 /// The transient before-state snapshot recorded for one pending
 /// `apply_patch` tool call, keyed by [`event_key`] on disk.
 ///
-/// Finalization (a later task) reads this back to compute the observed
-/// after-state diff.
+/// `super::post` reads this back to compute the observed after-state diff.
 #[derive(Debug, Deserialize, Serialize)]
 pub(super) struct PendingApplyPatchState {
     pub(super) before_tree_oid: String,
@@ -70,7 +69,8 @@ where
     let tool_use_id = required_field(event.tool_use_id.as_deref(), "tool_use_id")?;
 
     let key = event_key(session_id, turn_id, tool_use_id);
-    let before_tree_oid = snapshot_before_tree_oid(repository_root, pending_dir, &key)?;
+    let before_tree_oid =
+        snapshot_worktree_tree_oid(repository_root, pending_dir, &format!("{key}.index.tmp"))?;
 
     let pending_state = PendingApplyPatchState {
         before_tree_oid,
@@ -83,7 +83,7 @@ where
     ))
 }
 
-fn required_field<'a>(value: Option<&'a str>, field_name: &str) -> Result<&'a str> {
+pub(super) fn required_field<'a>(value: Option<&'a str>, field_name: &str) -> Result<&'a str> {
     match value {
         Some(value) if !value.trim().is_empty() => Ok(value),
         _ => Err(anyhow::anyhow!(
@@ -114,12 +114,15 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 /// Snapshots the current worktree state (tracked changes plus non-ignored
-/// untracked files) into a `before_tree_oid`, using a scratch `GIT_INDEX_FILE`
-/// so the repository's real index is never read or written.
-fn snapshot_before_tree_oid(
+/// untracked files) into a tree object, using a scratch `GIT_INDEX_FILE` so
+/// the repository's real index is never read or written. Shared by both the
+/// `PreToolUse` before-state snapshot and the `PostToolUse` after-state
+/// snapshot; `temp_index_file_name` must be unique per call site to avoid the
+/// two snapshots colliding on the same scratch index file.
+pub(super) fn snapshot_worktree_tree_oid(
     repository_root: &Path,
     pending_dir: &Path,
-    key: &str,
+    temp_index_file_name: &str,
 ) -> Result<String> {
     std::fs::create_dir_all(pending_dir).with_context(|| {
         format!(
@@ -128,7 +131,7 @@ fn snapshot_before_tree_oid(
         )
     })?;
 
-    let temp_index_file = pending_dir.join(format!("{key}.index.tmp"));
+    let temp_index_file = pending_dir.join(temp_index_file_name);
     let outcome = (|| -> Result<String> {
         run_git_with_index(
             repository_root,

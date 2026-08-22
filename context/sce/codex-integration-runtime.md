@@ -94,8 +94,8 @@ Codex (see "Explicit non-goals" in
 
 `cli/src/services/hooks/codex/apply_patch/pre.rs` implements the
 `PreToolUse(apply_patch)` arm: it captures the worktree state just before a
-Codex `apply_patch` tool call runs, so a later `PostToolUse(apply_patch)`
-finalize step (a later Codex-integration task) can diff against it.
+Codex `apply_patch` tool call runs, so the `PostToolUse(apply_patch)` finalize
+step below can diff against it.
 
 - Requires non-empty `session_id`, `turn_id`, and `tool_use_id`; a missing or
   blank field is a validation error (logged and failed open by the outer
@@ -123,13 +123,38 @@ finalize step (a later Codex-integration task) can diff against it.
   is produced only once `PostToolUse(apply_patch)` finalizes a non-empty
   diff (a later task).
 
-## Still-stub arms
+## `PostToolUse(apply_patch)` finalize: after-state, observed diff, cleanup
 
-`PostToolUse(apply_patch)` currently returns a deterministic stub success
-string naming the future task that implements it — reading back the
-`PreToolUse(apply_patch)` pending-state file, computing the observed diff
-against a second temporary-index snapshot, and persisting it. This document
-will grow a slice for it once it lands.
+`cli/src/services/hooks/codex/apply_patch/post.rs` implements the
+`PostToolUse(apply_patch)` arm: it finalizes the before/after attribution
+`PreToolUse(apply_patch)` set up, by reading back that pending-state file and
+computing the observed diff.
+
+- Re-derives the same event key from `session_id`, `turn_id`, `tool_use_id`
+  and looks up `<event_key>.json` in the pending-state directory.
+- No pending file, or a pending file whose contents fail to parse: fails open
+  through the outer dispatcher's fail-open path (same posture as every other
+  arm's field-validation errors) and persists no diff evidence. A malformed
+  pending file is also removed so a corrupt file does not linger; a missing
+  file has nothing to remove.
+- A found, valid pending file: takes a second worktree snapshot the same way
+  `PreToolUse` did (`read-tree HEAD` + `add -A` + `write-tree` against a
+  distinct scratch `GIT_INDEX_FILE`) for `after_tree_oid`, then runs a plain
+  (index-less) `git diff --binary --find-renames <before_tree_oid>
+  <after_tree_oid>` — a tree-to-tree diff needs no index at all.
+- An empty diff is a successful no-op. A non-empty diff is the observed
+  patch. Either way, the pending-state file is removed once the diff has been
+  computed, so a duplicate `PostToolUse` call for the same event key
+  thereafter hits the "no pending file" fail-open branch rather than
+  recomputing or erroring differently.
+- Because the before-state snapshot already captured any pre-existing dirty
+  worktree change, the observed diff naturally excludes it: only the
+  incremental delta between the two snapshots appears, regardless of what was
+  already dirty when `PreToolUse` fired.
+- Persisting a non-empty diff as `diff_traces`/conversation evidence (the
+  `openai/`-normalized model ID, the `cx_` session, the patch conversation
+  row) is a later Codex-integration task; this arm only computes the diff and
+  reports success or no-op, with no `agent-trace.db` write in either case.
 
 ## Verification
 

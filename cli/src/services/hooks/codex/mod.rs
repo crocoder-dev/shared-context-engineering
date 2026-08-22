@@ -114,7 +114,7 @@ fn run_codex_subcommand_from_payload(
         CodexDispatchArm::PreToolUseBash => bash_policy::handle(repository_root, &event)?,
         CodexDispatchArm::PreToolUseApplyPatch => apply_patch::handle(repository_root, &event)?,
         CodexDispatchArm::PostToolUseApplyPatch => {
-            "codex hooks: PostToolUse apply_patch dispatch (stub; finalize lands in T11).".to_string()
+            apply_patch::handle_post(repository_root, &event)?
         }
         CodexDispatchArm::NoOp => format!(
             "codex hooks: no-op for unsupported event/tool combination (hook_event_name='{}', tool_name={:?}).",
@@ -222,19 +222,6 @@ mod tests {
         assert_eq!(
             classify_codex_event(&event("SessionStart", None)),
             CodexDispatchArm::NoOp
-        );
-    }
-
-    #[test]
-    fn run_codex_subcommand_from_payload_dispatches_each_still_stubbed_combination() {
-        let payload =
-            r#"{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"apply_patch"}"#;
-
-        let output = run_codex_subcommand_from_payload(Path::new("/tmp"), payload)
-            .expect("stub dispatch should succeed");
-        assert!(
-            output.contains("PostToolUse apply_patch"),
-            "expected output '{output}' to mention 'PostToolUse apply_patch'"
         );
     }
 
