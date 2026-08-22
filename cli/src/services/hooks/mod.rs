@@ -214,9 +214,12 @@ fn run_hooks_subcommand_in_repo(
         HookSubcommand::PostCommit {
             vcs_type,
             remote_url,
-        } => {
-            run_post_commit_subcommand_with_trace(repository_root, *vcs_type, remote_url.as_deref())
-        }
+        } => run_post_commit_subcommand_with_trace(
+            repository_root,
+            *vcs_type,
+            remote_url.as_deref(),
+            logger,
+        ),
         HookSubcommand::PostRewrite { rewrite_method } => {
             run_post_rewrite_subcommand_with_trace(repository_root, subcommand, rewrite_method)
         }
@@ -1406,6 +1409,7 @@ fn run_post_commit_subcommand(
     repository_root: &Path,
     vcs_type: Option<AgentTraceVcsType>,
     remote_url: &str,
+    logger: Option<&dyn Logger>,
 ) -> Result<String> {
     run_post_commit_subcommand_with(
         repository_root,
@@ -1420,10 +1424,13 @@ fn run_post_commit_subcommand(
             auto_sync::launch(root);
             Ok(())
         },
+        run_post_commit_passive_checkpoint,
+        logger,
     )
 }
 
-fn run_post_commit_subcommand_with<F, B, C, L>(
+#[allow(clippy::too_many_arguments)]
+fn run_post_commit_subcommand_with<F, B, C, L, K>(
     repository_root: &Path,
     vcs_type: Option<AgentTraceVcsType>,
     remote_url: &str,
@@ -1431,6 +1438,8 @@ fn run_post_commit_subcommand_with<F, B, C, L>(
     run_agent_trace_flow: B,
     resolve_auto_sync: C,
     launch_auto_sync: L,
+    run_passive_checkpoint: K,
+    logger: Option<&dyn Logger>,
 ) -> Result<String>
 where
     F: FnOnce(&Path) -> Result<PostCommitIntersectionFlowResult>,
@@ -1442,9 +1451,21 @@ where
     ) -> Result<AgentTrace>,
     C: FnOnce(&Path) -> Result<bool>,
     L: FnOnce(&Path) -> Result<()>,
+    K: FnOnce(&Path) -> Result<()>,
 {
     let result = run_intersection_flow(repository_root)?;
     let _agent_trace = run_agent_trace_flow(repository_root, &result, vcs_type, remote_url)?;
+
+    if let Err(error) = run_passive_checkpoint(repository_root) {
+        if let Some(log) = logger {
+            log.warn(
+                "sce.agent_trace_db.passive_checkpoint_failed",
+                &error.to_string(),
+                &[],
+                None,
+            );
+        }
+    }
 
     if resolve_auto_sync(repository_root)? {
         let _ = launch_auto_sync(repository_root);
@@ -1455,6 +1476,15 @@ where
         result.post_commit_data.commit_oid,
         result.combined_recent_patch.files.len()
     ))
+}
+
+fn run_post_commit_passive_checkpoint(repository_root: &Path) -> Result<()> {
+    let db = open_agent_trace_db_for_hook_runtime(
+        repository_root,
+        "Failed to open Agent Trace DB for post-commit checkpoint.",
+    )?;
+
+    db.passive_checkpoint()
 }
 
 fn run_post_commit_agent_trace_flow(
@@ -1779,8 +1809,14 @@ fn run_post_commit_subcommand_with_trace(
     repository_root: &Path,
     vcs_type: Option<AgentTraceVcsType>,
     remote_url: Option<&str>,
+    logger: Option<&dyn Logger>,
 ) -> Result<String> {
-    run_post_commit_subcommand(repository_root, vcs_type, remote_url.unwrap_or_default())
+    run_post_commit_subcommand(
+        repository_root,
+        vcs_type,
+        remote_url.unwrap_or_default(),
+        logger,
+    )
 }
 
 fn run_post_rewrite_subcommand(repository_root: &Path, rewrite_method: &str) -> Result<String> {
@@ -3006,13 +3042,24 @@ mod tests {
                 events.borrow_mut().push("launch");
                 Ok(())
             },
+            |_| {
+                events.borrow_mut().push("checkpoint");
+                Ok(())
+            },
+            None,
         )
         .expect("successful post-commit should remain successful");
 
         assert!(output.contains("post-commit hook processed intersection"));
         assert_eq!(
             events.into_inner(),
-            vec!["intersection", "persistence", "config", "launch"]
+            vec![
+                "intersection",
+                "persistence",
+                "checkpoint",
+                "config",
+                "launch"
+            ]
         );
     }
 
@@ -3047,6 +3094,8 @@ mod tests {
                 *launch_called.borrow_mut() = true;
                 Ok(())
             },
+            |_| panic!("checkpoint must not run after persistence failure"),
+            None,
         )
         .expect_err("validation failure should be returned");
 
@@ -3071,6 +3120,8 @@ mod tests {
                 *launch_called.borrow_mut() = true;
                 Ok(())
             },
+            |_| Ok(()),
+            None,
         )
         .expect("disabled auto-sync should not affect post-commit success");
 
@@ -3092,6 +3143,8 @@ mod tests {
                 *launch_called.borrow_mut() = true;
                 Ok(())
             },
+            |_| panic!("checkpoint must not run after persistence failure"),
+            None,
         )
         .expect_err("persistence failure should be returned");
 
@@ -3109,9 +3162,127 @@ mod tests {
             |_, _, _, _| Ok(minimal_agent_trace()),
             |_| Ok(true),
             |_| Err(anyhow!("spawn unavailable")),
+            |_| Ok(()),
+            None,
         )
         .expect("launcher failure must not affect post-commit success");
 
         assert!(output.contains("post-commit hook processed intersection"));
+    }
+
+    #[derive(Default)]
+    struct RecordingLogger {
+        warnings: std::sync::Mutex<Vec<(String, String)>>,
+    }
+
+    impl Logger for RecordingLogger {
+        fn info(
+            &self,
+            _event_id: &str,
+            _message: &str,
+            _fields: &[(&str, &str)],
+            _session_id: Option<&str>,
+        ) {
+        }
+
+        fn debug(
+            &self,
+            _event_id: &str,
+            _message: &str,
+            _fields: &[(&str, &str)],
+            _session_id: Option<&str>,
+        ) {
+        }
+
+        fn warn(
+            &self,
+            event_id: &str,
+            message: &str,
+            _fields: &[(&str, &str)],
+            _session_id: Option<&str>,
+        ) {
+            self.warnings
+                .lock()
+                .expect("warnings mutex should not be poisoned")
+                .push((event_id.to_string(), message.to_string()));
+        }
+
+        fn error(
+            &self,
+            _event_id: &str,
+            _message: &str,
+            _fields: &[(&str, &str)],
+            _session_id: Option<&str>,
+        ) {
+        }
+
+        fn log_cli_error(
+            &self,
+            _error: &crate::services::error::CliError,
+            _session_id: Option<&str>,
+        ) {
+        }
+    }
+
+    #[test]
+    fn post_commit_checkpoint_runs_once_after_successful_persistence() {
+        let events = RefCell::new(Vec::new());
+
+        let output = run_post_commit_subcommand_with(
+            Path::new("/repo"),
+            None,
+            "",
+            |_| Ok(post_commit_flow_result()),
+            |_, _, _, _| {
+                events.borrow_mut().push("persistence");
+                Ok(minimal_agent_trace())
+            },
+            |_| Ok(false),
+            |_| Ok(()),
+            |_| {
+                events.borrow_mut().push("checkpoint");
+                Ok(())
+            },
+            None,
+        )
+        .expect("successful checkpoint should not affect post-commit success");
+
+        assert!(output.contains("post-commit hook processed intersection"));
+        assert_eq!(events.into_inner(), vec!["persistence", "checkpoint"]);
+    }
+
+    #[test]
+    fn post_commit_checkpoint_failure_is_fail_open_and_logs_warning() {
+        let logger = RecordingLogger::default();
+        let persisted = RefCell::new(false);
+
+        let output = run_post_commit_subcommand_with(
+            Path::new("/repo"),
+            None,
+            "",
+            |_| Ok(post_commit_flow_result()),
+            |_, _, _, _| {
+                *persisted.borrow_mut() = true;
+                Ok(minimal_agent_trace())
+            },
+            |_| Ok(false),
+            |_| Ok(()),
+            |_| Err(anyhow!("checkpoint failed")),
+            Some(&logger),
+        )
+        .expect("checkpoint failure must not affect post-commit success");
+
+        assert!(output.contains("post-commit hook processed intersection"));
+        assert!(*persisted.borrow());
+        assert_eq!(
+            logger
+                .warnings
+                .into_inner()
+                .expect("warnings mutex should not be poisoned"),
+            vec![(
+                String::from("sce.agent_trace_db.passive_checkpoint_failed"),
+                String::from("checkpoint failed")
+            )]
+        );
     }
 }

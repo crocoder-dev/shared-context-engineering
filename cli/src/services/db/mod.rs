@@ -748,6 +748,45 @@ impl<M: DbSpec> TursoDb<M> {
         self.core.run_migrations()
     }
 
+    /// Run a passive WAL checkpoint (`PRAGMA wal_checkpoint(PASSIVE)`).
+    ///
+    /// PASSIVE checkpoints only what is currently safe to move from the WAL
+    /// into the main database file and never blocks on active readers or
+    /// writers, so it does not guarantee WAL truncation. Safe to call
+    /// repeatedly. Routine maintenance only; not a durability boundary.
+    pub fn passive_checkpoint(&self) -> Result<()> {
+        let operation_name = format!("checkpoint {} database WAL", M::db_name());
+
+        run_with_retry_sync(
+            resolve_query_retry_policy::<M>(),
+            &operation_name,
+            QUERY_RETRY_HINT,
+            |_| {
+                block_on_isolated(&self.core.runtime, async {
+                    let mut rows = self
+                        .core
+                        .conn
+                        .query("PRAGMA wal_checkpoint(PASSIVE)", ())
+                        .await
+                        .map_err(|e| {
+                            anyhow::anyhow!("{} WAL checkpoint failed: {e}", M::db_name())
+                        })?;
+
+                    while rows
+                        .next()
+                        .await
+                        .map_err(|e| {
+                            anyhow::anyhow!("{} WAL checkpoint row fetch failed: {e}", M::db_name())
+                        })?
+                        .is_some()
+                    {}
+
+                    Ok(())
+                })
+            },
+        )
+    }
+
     /// Check migration metadata for problems that would prevent safe hook
     /// runtime access.
     ///
@@ -1018,9 +1057,96 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::*;
 
     const QUERY_RETRY_FAILURE_BUDGET_MS: u64 = 2_000;
+
+    struct TestDbSpec;
+
+    impl DbSpec for TestDbSpec {
+        fn db_name() -> &'static str {
+            "test"
+        }
+
+        fn db_path() -> Result<PathBuf> {
+            unreachable!("tests always open via TursoDb::new_at with an explicit path")
+        }
+
+        fn migrations() -> &'static [(&'static str, &'static str)] {
+            &[]
+        }
+
+        fn db_config_key() -> &'static str {
+            "test_db"
+        }
+    }
+
+    fn unique_test_db_path() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after Unix epoch")
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!("sce-db-mod-test-{}-{nonce}", std::process::id()))
+            .join("test.db")
+    }
+
+    fn open_test_db() -> (TursoDb<TestDbSpec>, PathBuf) {
+        let db_path = unique_test_db_path();
+        let db = TursoDb::<TestDbSpec>::new_at(&db_path).expect("test DB should open");
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS checkpoint_probe (value TEXT NOT NULL)",
+            (),
+        )
+        .expect("test table creation should succeed");
+
+        (db, db_path)
+    }
+
+    fn cleanup_test_db(db: TursoDb<TestDbSpec>, db_path: &Path) {
+        drop(db);
+        if let Some(parent) = db_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn passive_checkpoint_keeps_previously_written_data_readable() {
+        let (db, db_path) = open_test_db();
+
+        db.execute(
+            "INSERT INTO checkpoint_probe (value) VALUES (?1)",
+            ("hello",),
+        )
+        .expect("insert should succeed");
+
+        db.passive_checkpoint()
+            .expect("passive checkpoint should succeed");
+
+        let values = db
+            .query_map("SELECT value FROM checkpoint_probe", (), |row| {
+                row.get::<String>(0).map_err(Into::into)
+            })
+            .expect("post-checkpoint read should succeed");
+
+        assert_eq!(values, vec![String::from("hello")]);
+
+        cleanup_test_db(db, &db_path);
+    }
+
+    #[test]
+    fn passive_checkpoint_is_safe_to_call_repeatedly() {
+        let (db, db_path) = open_test_db();
+
+        db.passive_checkpoint()
+            .expect("first passive checkpoint should succeed");
+        db.passive_checkpoint()
+            .expect("second passive checkpoint should succeed");
+
+        cleanup_test_db(db, &db_path);
+    }
 
     fn worst_case_retry_failure_budget_ms(policy: RetryPolicy) -> u64 {
         let attempt_timeouts = policy
