@@ -8,6 +8,7 @@ use crate::services::observability::traits::Logger;
 
 use super::read_hook_stdin;
 
+mod stop;
 mod user_prompt_submit;
 
 const CODEX_HOOK_EVENT_USER_PROMPT_SUBMIT: &str = "UserPromptSubmit";
@@ -24,7 +25,9 @@ const CODEX_HOOK_TOOL_BASH: &str = "Bash";
 /// `turn_id`, `cwd`, and `model` vary by event; `tool_name`/`tool_use_id`/
 /// `tool_input`/`tool_response` are present only on `PreToolUse`/`PostToolUse`;
 /// `prompt` is present only on `UserPromptSubmit`, matching Claude's own
-/// `UserPromptSubmit` payload shape (see `transform_claude_user_prompt_submit_with`).
+/// `UserPromptSubmit` payload shape (see `transform_claude_user_prompt_submit_with`);
+/// `last_assistant_message` is present only on `Stop`, matching Claude's own
+/// `Stop` payload shape (see `transform_claude_stop_with`).
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub(crate) struct CodexHookEvent {
@@ -47,6 +50,8 @@ pub(crate) struct CodexHookEvent {
     pub(crate) tool_response: Option<Value>,
     #[serde(default)]
     pub(crate) prompt: Option<String>,
+    #[serde(default)]
+    pub(crate) last_assistant_message: Option<String>,
 }
 
 /// The set of Codex hook-event/tool combinations `sce hooks codex` gives
@@ -93,9 +98,7 @@ fn run_codex_subcommand_from_payload(
         CodexDispatchArm::UserPromptSubmit => {
             user_prompt_submit::handle(repository_root, &event)?
         }
-        CodexDispatchArm::Stop => {
-            "codex hooks: Stop dispatch (stub; capture lands in T08).".to_string()
-        }
+        CodexDispatchArm::Stop => stop::handle(repository_root, &event)?,
         CodexDispatchArm::PreToolUseBash => {
             "codex hooks: PreToolUse Bash dispatch (stub; policy routing lands in T09)."
                 .to_string()
@@ -133,6 +136,7 @@ mod tests {
             tool_input: None,
             tool_response: None,
             prompt: None,
+            last_assistant_message: None,
         }
     }
 
@@ -211,10 +215,6 @@ mod tests {
     #[test]
     fn run_codex_subcommand_from_payload_dispatches_each_still_stubbed_combination() {
         let cases = [
-            (
-                r#"{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1"}"#,
-                "Stop",
-            ),
             (
                 r#"{"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Bash"}"#,
                 "PreToolUse Bash",
