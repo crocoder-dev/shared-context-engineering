@@ -433,6 +433,7 @@ fn convert_hooks_subcommand_request(
         cli_schema::HooksSubcommand::ConversationTrace => {
             Ok(services::hooks::HookSubcommand::ConversationTrace)
         }
+        cli_schema::HooksSubcommand::Codex => Ok(services::hooks::HookSubcommand::Codex),
     }
 }
 
