@@ -25,12 +25,13 @@ Task `setup-repo-gate-and-local-config-bootstrap` T02, `turso-local-db-sync` T04
 
 ## Post-install integration target persistence
 
-After config asset installation succeeds for a non-interactive target (`--opencode`, `--claude`, `--pi`, or `--all`), setup persists the selected target(s) into `.sce/config.json` under `integrations.target`:
+After config asset installation succeeds for a non-interactive target (`--opencode`, `--claude`, `--pi`, `--codex`, or `--all`), setup persists the selected target(s) into `.sce/config.json` under `integrations.target`:
 
 - `--opencode` records `["opencode"]`.
 - `--claude` adds `"claude"` to an existing array (e.g. `["opencode"]` → `["opencode", "claude"]`).
 - `--pi` adds `"pi"` the same way.
-- `--all` records `["opencode", "claude", "pi"]` atomically. (`--both` was removed when `--all` was introduced.)
+- `--codex` adds `"codex"` the same way.
+- `--all` records `["opencode", "claude", "pi", "codex"]` atomically. (`--both` was removed when `--all` was introduced.)
 - Repeated runs are idempotent — existing targets are deduplicated; previously unrelated config keys (`$schema`, `log_level`, etc.) are preserved.
 - If the config file does not exist, it is bootstrapped first, then the targets are written.
 - `--hooks` only setup does not modify `integrations.target`.

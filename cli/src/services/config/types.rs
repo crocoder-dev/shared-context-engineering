@@ -245,6 +245,7 @@ pub(crate) enum IntegrationTargetId {
     Opencode,
     Claude,
     Pi,
+    Codex,
 }
 
 impl IntegrationTargetId {
@@ -253,8 +254,9 @@ impl IntegrationTargetId {
             "opencode" => Ok(Self::Opencode),
             "claude" => Ok(Self::Claude),
             "pi" => Ok(Self::Pi),
+            "codex" => Ok(Self::Codex),
             _ => anyhow::bail!(
-                "Invalid integration target '{raw}' from {source}. Valid values: opencode, claude, pi."
+                "Invalid integration target '{raw}' from {source}. Valid values: opencode, claude, pi, codex."
             ),
         }
     }
@@ -310,6 +312,10 @@ mod integration_target_id_tests {
             IntegrationTargetId::parse("pi", "test").unwrap(),
             IntegrationTargetId::Pi
         );
+        assert_eq!(
+            IntegrationTargetId::parse("codex", "test").unwrap(),
+            IntegrationTargetId::Codex
+        );
     }
 
     #[test]
@@ -319,7 +325,7 @@ mod integration_target_id_tests {
             .to_string();
         assert_eq!(
             error,
-            "Invalid integration target 'cursor' from test source. Valid values: opencode, claude, pi."
+            "Invalid integration target 'cursor' from test source. Valid values: opencode, claude, pi, codex."
         );
     }
 }

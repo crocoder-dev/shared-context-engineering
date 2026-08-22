@@ -28,6 +28,7 @@ pub enum SetupTarget {
     OpenCode,
     Claude,
     Pi,
+    Codex,
     All,
 }
 
@@ -83,6 +84,7 @@ fn embedded_assets_for_concrete_target(target: SetupTarget) -> &'static [Embedde
         SetupTarget::OpenCode => OPENCODE_EMBEDDED_ASSETS,
         SetupTarget::Claude => CLAUDE_EMBEDDED_ASSETS,
         SetupTarget::Pi => PI_EMBEDDED_ASSETS,
+        SetupTarget::Codex => CODEX_EMBEDDED_ASSETS,
         SetupTarget::All => {
             unreachable!("meta targets are expanded into concrete targets")
         }
@@ -95,23 +97,29 @@ fn embedded_assets_for_concrete_target(target: SetupTarget) -> &'static [Embedde
 /// needs no Rust change.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct WorkflowAssetLayout {
-    command_dir: &'static str,
+    /// `None` for a target with no command directory (skills only), such as
+    /// Codex.
+    command_dir: Option<&'static str>,
     skills_dir: &'static str,
 }
 
 fn workflow_asset_layout(target: SetupTarget) -> WorkflowAssetLayout {
     match target {
         SetupTarget::OpenCode => WorkflowAssetLayout {
-            command_dir: default_paths::opencode_asset::OPENCODE_COMMAND_DIR,
+            command_dir: Some(default_paths::opencode_asset::OPENCODE_COMMAND_DIR),
             skills_dir: default_paths::opencode_asset::SKILLS_DIR,
         },
         SetupTarget::Claude => WorkflowAssetLayout {
-            command_dir: default_paths::claude_asset::COMMANDS_DIR,
+            command_dir: Some(default_paths::claude_asset::COMMANDS_DIR),
             skills_dir: default_paths::claude_asset::SKILLS_DIR,
         },
         SetupTarget::Pi => WorkflowAssetLayout {
-            command_dir: default_paths::pi_asset::PROMPTS_DIR,
+            command_dir: Some(default_paths::pi_asset::PROMPTS_DIR),
             skills_dir: default_paths::pi_asset::SKILLS_DIR,
+        },
+        SetupTarget::Codex => WorkflowAssetLayout {
+            command_dir: None,
+            skills_dir: default_paths::codex_asset::SKILLS_DIR,
         },
         SetupTarget::All => {
             unreachable!("meta targets are expanded into concrete targets")
@@ -124,10 +132,12 @@ fn asset_belongs_to_optional_workflow(
     workflow: &OptionalWorkflow,
     layout: WorkflowAssetLayout,
 ) -> bool {
-    let command_path = format!("{}/{}.md", layout.command_dir, workflow.command_slug);
+    let is_command_asset = layout.command_dir.is_some_and(|command_dir| {
+        relative_path == format!("{command_dir}/{}.md", workflow.command_slug)
+    });
     let skill_prefix = format!("{}/{}/", layout.skills_dir, workflow.skill_slug);
 
-    relative_path == command_path || relative_path.starts_with(&skill_prefix)
+    is_command_asset || relative_path.starts_with(&skill_prefix)
 }
 
 /// Embedded assets for `target`, minus the command and skill assets of every
@@ -188,6 +198,7 @@ pub struct SetupCliOptions {
     pub opencode: bool,
     pub claude: bool,
     pub pi: bool,
+    pub codex: bool,
     pub all: bool,
     pub hooks: bool,
     pub repo_path: Option<PathBuf>,
@@ -231,6 +242,7 @@ pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
             || options.opencode
             || options.claude
             || options.pi
+            || options.codex
             || options.all
             || options.hooks
             || options.repo_path.is_some();
@@ -260,19 +272,22 @@ pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
     if options.pi {
         selected_targets.push(SetupTarget::Pi);
     }
+    if options.codex {
+        selected_targets.push(SetupTarget::Codex);
+    }
     if options.all {
         selected_targets.push(SetupTarget::All);
     }
 
     if selected_targets.len() > 1 {
         bail!(
-            "Options '--opencode', '--claude', '--pi', and '--all' are mutually exclusive. Try: choose exactly one target flag (for example 'sce setup --opencode --non-interactive') or omit all target flags for interactive mode."
+            "Options '--opencode', '--claude', '--pi', '--codex', and '--all' are mutually exclusive. Try: choose exactly one target flag (for example 'sce setup --opencode --non-interactive') or omit all target flags for interactive mode."
         );
     }
 
     if options.non_interactive && selected_targets.is_empty() && !options.hooks {
         bail!(
-            "Option '--non-interactive' requires a target flag. Try: 'sce setup --opencode --non-interactive', 'sce setup --claude --non-interactive', 'sce setup --pi --non-interactive', or 'sce setup --all --non-interactive'."
+            "Option '--non-interactive' requires a target flag. Try: 'sce setup --opencode --non-interactive', 'sce setup --claude --non-interactive', 'sce setup --pi --non-interactive', 'sce setup --codex --non-interactive', or 'sce setup --all --non-interactive'."
         );
     }
 
@@ -608,6 +623,7 @@ fn setup_target_label(target: SetupTarget) -> &'static str {
         SetupTarget::OpenCode => "OpenCode",
         SetupTarget::Claude => "Claude",
         SetupTarget::Pi => "Pi",
+        SetupTarget::Codex => "Codex",
         SetupTarget::All => "All",
     }
 }
@@ -712,7 +728,13 @@ pub(crate) fn concrete_targets_for(target: SetupTarget) -> &'static [SetupTarget
         SetupTarget::OpenCode => &[SetupTarget::OpenCode],
         SetupTarget::Claude => &[SetupTarget::Claude],
         SetupTarget::Pi => &[SetupTarget::Pi],
-        SetupTarget::All => &[SetupTarget::OpenCode, SetupTarget::Claude, SetupTarget::Pi],
+        SetupTarget::Codex => &[SetupTarget::Codex],
+        SetupTarget::All => &[
+            SetupTarget::OpenCode,
+            SetupTarget::Claude,
+            SetupTarget::Pi,
+            SetupTarget::Codex,
+        ],
     }
 }
 
@@ -723,6 +745,7 @@ fn integration_target_id_str(target: SetupTarget) -> &'static str {
         SetupTarget::OpenCode => "opencode",
         SetupTarget::Claude => "claude",
         SetupTarget::Pi => "pi",
+        SetupTarget::Codex => "codex",
         SetupTarget::All => {
             unreachable!("integration_target_id_str must not be called with meta targets")
         }
@@ -893,6 +916,7 @@ mod install {
             SetupTarget::OpenCode => install_targets.opencode_target_dir(),
             SetupTarget::Claude => install_targets.claude_target_dir(),
             SetupTarget::Pi => install_targets.pi_target_dir(),
+            SetupTarget::Codex => install_targets.codex_target_dir(),
             SetupTarget::All => unreachable!("meta targets are expanded into concrete targets"),
         };
 
@@ -1267,6 +1291,7 @@ mod install {
             SetupTarget::OpenCode => install_targets.opencode_target_dir(),
             SetupTarget::Claude => install_targets.claude_target_dir(),
             SetupTarget::Pi => install_targets.pi_target_dir(),
+            SetupTarget::Codex => install_targets.codex_target_dir(),
             SetupTarget::All => {
                 unreachable!("meta targets are expanded into concrete targets")
             }
@@ -1522,6 +1547,7 @@ enum SetupPromptTarget {
     OpenCode,
     Claude,
     Pi,
+    Codex,
     All,
 }
 
@@ -1570,6 +1596,7 @@ mod prompt {
             SetupPromptTarget::OpenCode,
             SetupPromptTarget::Claude,
             SetupPromptTarget::Pi,
+            SetupPromptTarget::Codex,
             SetupPromptTarget::All,
         ];
 
@@ -1579,12 +1606,13 @@ mod prompt {
             Ok(SetupPromptTarget::OpenCode) => Ok(proceed(SetupTarget::OpenCode)),
             Ok(SetupPromptTarget::Claude) => Ok(proceed(SetupTarget::Claude)),
             Ok(SetupPromptTarget::Pi) => Ok(proceed(SetupTarget::Pi)),
+            Ok(SetupPromptTarget::Codex) => Ok(proceed(SetupTarget::Codex)),
             Ok(SetupPromptTarget::All) => Ok(proceed(SetupTarget::All)),
             Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
                 Ok(SetupDispatch::Cancelled)
             }
             Err(InquireError::NotTTY) => bail!(
-                "Interactive setup requires a TTY. Re-run with '--non-interactive' and one of '--opencode', '--claude', '--pi', or '--all'."
+                "Interactive setup requires a TTY. Re-run with '--non-interactive' and one of '--opencode', '--claude', '--pi', '--codex', or '--all'."
             ),
             Err(error) => Err(error.into()),
         }
@@ -1613,7 +1641,7 @@ mod prompt {
             )),
             Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => Ok(None),
             Err(InquireError::NotTTY) => bail!(
-                "Interactive setup requires a TTY. Re-run with '--non-interactive' and one of '--opencode', '--claude', '--pi', or '--all', adding '--workflow <slug>' for each optional workflow to install."
+                "Interactive setup requires a TTY. Re-run with '--non-interactive' and one of '--opencode', '--claude', '--pi', '--codex', or '--all', adding '--workflow <slug>' for each optional workflow to install."
             ),
             Err(error) => Err(error.into()),
         }
@@ -1712,7 +1740,8 @@ mod prompt {
             SetupPromptTarget::OpenCode => "OpenCode",
             SetupPromptTarget::Claude => "Claude",
             SetupPromptTarget::Pi => "Pi",
-            SetupPromptTarget::All => "All (OpenCode + Claude + Pi)",
+            SetupPromptTarget::Codex => "Codex",
+            SetupPromptTarget::All => "All (OpenCode + Claude + Pi + Codex)",
         };
 
         prompt_value_with_color_policy(label, color_enabled)
@@ -1841,6 +1870,21 @@ mod tests {
         assert_eq!(
             request.config_mode,
             Some(SetupMode::NonInteractive(SetupTarget::Pi))
+        );
+        assert!(!request.context_only);
+    }
+
+    #[test]
+    fn resolve_setup_request_accepts_codex_target() {
+        let request = resolve_setup_request(options_with(|options| {
+            options.codex = true;
+            options.non_interactive = true;
+        }))
+        .expect("codex target should resolve");
+
+        assert_eq!(
+            request.config_mode,
+            Some(SetupMode::NonInteractive(SetupTarget::Codex))
         );
         assert!(!request.context_only);
     }
@@ -2016,16 +2060,26 @@ mod tests {
     }
 
     #[test]
-    fn concrete_targets_for_all_expands_to_three_targets() {
+    fn concrete_targets_for_all_expands_to_four_targets() {
         assert_eq!(
             concrete_targets_for(SetupTarget::All),
-            &[SetupTarget::OpenCode, SetupTarget::Claude, SetupTarget::Pi]
+            &[
+                SetupTarget::OpenCode,
+                SetupTarget::Claude,
+                SetupTarget::Pi,
+                SetupTarget::Codex
+            ]
         );
     }
 
     #[test]
     fn integration_target_id_str_maps_pi() {
         assert_eq!(integration_target_id_str(SetupTarget::Pi), "pi");
+    }
+
+    #[test]
+    fn integration_target_id_str_maps_codex() {
+        assert_eq!(integration_target_id_str(SetupTarget::Codex), "codex");
     }
 
     /// Every optional workflow selected, so filtering drops nothing.
@@ -2043,10 +2097,13 @@ mod tests {
             iter_embedded_assets_for_setup_target_with_selection(target, &selection).count()
         };
 
-        let concrete_sum =
-            count(SetupTarget::OpenCode) + count(SetupTarget::Claude) + count(SetupTarget::Pi);
+        let concrete_sum = count(SetupTarget::OpenCode)
+            + count(SetupTarget::Claude)
+            + count(SetupTarget::Pi)
+            + count(SetupTarget::Codex);
 
         assert!(count(SetupTarget::Pi) > 0);
+        assert!(count(SetupTarget::Codex) > 0);
         assert_eq!(count(SetupTarget::All), concrete_sum);
     }
 
@@ -2067,6 +2124,44 @@ mod tests {
         assert!(contains(SetupTarget::Pi, "prompts/next-task.md"));
         assert!(contains(SetupTarget::Pi, "extensions/sce/index.ts"));
         assert!(iter_required_hook_assets().all(|asset| !asset.bytes.is_empty()));
+    }
+
+    #[test]
+    fn codex_embedded_assets_cover_both_output_roots_with_no_command_dir() {
+        let has = |path: &str| {
+            CODEX_EMBEDDED_ASSETS
+                .iter()
+                .any(|asset| asset.relative_path == path && !asset.bytes.is_empty())
+        };
+
+        assert!(has(".agents/skills/sce-next-task/SKILL.md"));
+        assert!(has(".codex/hooks.json"));
+        assert!(has(".codex/hooks/run-sce-or-show-install-guidance.sh"));
+        assert!(!CODEX_EMBEDDED_ASSETS
+            .iter()
+            .any(|asset| asset.relative_path.starts_with(".agents/commands/")));
+    }
+
+    #[test]
+    fn install_writes_codex_assets_directly_under_repo_root() {
+        let repo = init_git_repo("install-codex-dual-roots");
+        let selection: Vec<String> = every_optional_workflow()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+
+        install_embedded_setup_assets(&repo, SetupTarget::Codex, &selection)
+            .expect("codex install should succeed");
+
+        assert!(repo.join(".agents/skills/sce-next-task/SKILL.md").is_file());
+        assert!(repo.join(".codex/hooks.json").is_file());
+        assert!(repo
+            .join(".codex/hooks/run-sce-or-show-install-guidance.sh")
+            .is_file());
+        assert!(!repo.join(".codex/.agents").exists());
+        assert!(!repo.join(".agents/.codex").exists());
+
+        let _ = fs::remove_dir_all(&repo);
     }
 
     #[test]
