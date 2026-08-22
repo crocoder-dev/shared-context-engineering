@@ -12,8 +12,8 @@ for how the other three tools intake conversation/diff evidence.
 - STDIN carries one raw Codex hook-event JSON payload, deserialized into a
   typed `CodexHookEvent` (`hook_event_name`, `session_id`, `turn_id`, `cwd`,
   `model`, `tool_name`, `tool_use_id`, `tool_input`, `tool_response`,
-  `prompt`; only `hook_event_name` is required, matching the working contract
-  in `context/plans/codex-cli-integration.md`).
+  `prompt`, `last_assistant_message`; only `hook_event_name` is required,
+  matching the working contract in `context/plans/codex-cli-integration.md`).
 - `classify_codex_event` matches `(hook_event_name, tool_name)` into one of
   three dispatch arms — `UserPromptSubmit`, `Stop`, `PreToolUse(Bash)` — with
   every other combination (`apply_patch` under `PreToolUse`/`PostToolUse`,
@@ -35,25 +35,29 @@ for how the other three tools intake conversation/diff evidence.
   any dispatch arm; its first consumer lands with a later Codex-integration
   task.
 
-## Implemented slice: `UserPromptSubmit` capture
+## Implemented slices: `UserPromptSubmit` and `Stop` capture
 
-`cli/src/services/hooks/codex/user_prompt_submit.rs` implements the
-`UserPromptSubmit` arm — the first dispatch arm with real behavior; every
-other arm below is still a stub.
+`cli/src/services/hooks/codex/user_prompt_submit.rs` and
+`cli/src/services/hooks/codex/stop.rs` implement the `UserPromptSubmit` and
+`Stop` arms — the first two dispatch arms with real behavior; every other arm
+below is still a stub. Both follow the same shape:
 
-- Requires non-empty `session_id`, `turn_id`, and `prompt`; a missing or
-  blank field is a validation error (logged and failed open by the outer
-  dispatcher).
-- `session_id` is stored as `cx_<session_id>` (idempotent). `message_id` is
-  deterministic — `cx:<turn_id>:user` — rather than a generated UUID, so that
+- `UserPromptSubmit` requires non-empty `session_id`, `turn_id`, and
+  `prompt`; `Stop` requires non-empty `session_id`, `turn_id`, and
+  `last_assistant_message`. A missing or blank required field is a
+  validation error (logged and failed open by the outer dispatcher).
+- `session_id` is stored as `cx_<session_id>` (idempotent) for both arms.
+  `message_id` is deterministic rather than a generated UUID — `cx:<turn_id>:user`
+  for `UserPromptSubmit`, `cx:<turn_id>:assistant` for `Stop` — so that
   reprocessing the same turn's event is a no-op for the parent message row
   via the existing `messages` table's `ON CONFLICT (session_id, message_id)
   DO NOTHING` semantics.
-- Persists exactly one `role = "user"` row via `RepositoryAgentTraceDb::insert_messages`
-  and one `part_type = "text"` row (`text = prompt`) via
-  `RepositoryAgentTraceDb::insert_parts` — the same insert helpers and
-  `messages`/`parts` tables `conversation-trace` already writes; there is no
-  Codex-specific DB adapter.
+- `UserPromptSubmit` persists one `role = "user"` row with a `part_type = "text"`
+  part (`text = prompt`); `Stop` persists one `role = "assistant"` row with a
+  `part_type = "text"` part (`text = last_assistant_message`). Both go through
+  `RepositoryAgentTraceDb::insert_messages`/`insert_parts` — the same insert
+  helpers and `messages`/`parts` tables `conversation-trace` already writes;
+  there is no Codex-specific DB adapter.
 - The `parts` table has no uniqueness constraint (append-only, like every
   other producer's part rows), so only the parent message row's
   non-duplication is guaranteed on reprocess, not the part row's.
@@ -63,12 +67,11 @@ other arm below is still a stub.
 
 ## Still-stub arms
 
-`Stop` and `PreToolUse(Bash)` currently return a deterministic stub success
-string naming the future task that implements them (`Stop` mirrors
-`UserPromptSubmit`'s capture shape with `role = "assistant"`; `PreToolUse(Bash)`
-delegates to the existing Bash policy engine). This document will grow a
-slice per arm as each lands. Codex `apply_patch` tracing has no dispatch arm
-yet and is not documented here in detail; it is deferred to a later task.
+`PreToolUse(Bash)` currently returns a deterministic stub success string
+naming the future task that implements it (it delegates to the existing Bash
+policy engine). This document will grow a slice per arm as each lands. Codex
+`apply_patch` tracing has no dispatch arm yet and is not documented here in
+detail; it is deferred to a later task.
 
 ## Verification
 
