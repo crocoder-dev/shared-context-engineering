@@ -215,7 +215,7 @@ mod tests {
         })
         .to_string();
 
-        let output = super::super::run_codex_subcommand_from_payload(&repo_root, &payload)
+        let output = super::super::run_codex_subcommand_from_payload(&repo_root, &payload, None)
             .expect("Codex Bash PreToolUse dispatch should succeed");
         assert_eq!(output, "", "an allowed command must be silent");
 

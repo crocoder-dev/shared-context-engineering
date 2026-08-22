@@ -49,7 +49,6 @@ const OPENCODE_TOOL_NAME: &str = "opencode";
 const CLAUDE_TOOL_NAME: &str = "claude";
 const PI_TOOL_NAME: &str = "pi";
 const CODEX_TOOL_NAME: &str = "codex";
-#[allow(dead_code)]
 const OPENAI_MODEL_ID_PREFIX: &str = "openai/";
 const NORMALIZED_CONVERSATION_TRACE_TOOL_NAMES: &[&str] = &[OPENCODE_TOOL_NAME, PI_TOOL_NAME];
 type PayloadValidationError = fn(&str) -> String;
@@ -1034,7 +1033,6 @@ fn normalize_claude_model_id(model: &str) -> Option<String> {
     }
 }
 
-#[allow(dead_code)]
 fn normalize_codex_model_id(model: &str) -> Option<String> {
     let normalized = model.trim();
     if normalized.is_empty() {

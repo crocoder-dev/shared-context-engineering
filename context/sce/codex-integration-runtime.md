@@ -15,12 +15,11 @@ for how the other three tools intake conversation/diff evidence.
   `prompt`, `last_assistant_message`; only `hook_event_name` is required,
   matching the working contract in `context/plans/codex-cli-integration.md`).
 - `classify_codex_event` matches `(hook_event_name, tool_name)` into one of
-  three dispatch arms — `UserPromptSubmit`, `Stop`, `PreToolUse(Bash)` — with
-  every other combination (`apply_patch` under `PreToolUse`/`PostToolUse`,
+  four dispatch arms — `UserPromptSubmit`, `Stop`, `PreToolUse(Bash)`,
+  `PostToolUse(apply_patch)` — with every other combination (`apply_patch`
+  under `PreToolUse` — no such registration exists in `.codex/hooks.json` —
   unknown tool, `Bash` under `PostToolUse`, unrecognized `hook_event_name`)
-  falling through to a deterministic `NoOp` success. Codex `apply_patch`
-  tracing is not yet implemented — there is no `PreToolUse`/`PostToolUse`
-  `apply_patch` registration or dispatch arm.
+  falling through to a deterministic `NoOp` success.
 - Malformed/non-JSON STDIN is logged through `sce.hooks.codex.error` and the
   command still returns hook success (fails open), matching the other hook
   intakes' producer-facing failure posture.
@@ -31,17 +30,17 @@ for how the other three tools intake conversation/diff evidence.
   (`cli/src/services/hooks/mod.rs`) carry a `"codex" -> cx_` arm alongside
   `oc_`/`cc_`/`pi_`, idempotent for an already-prefixed session ID.
 - `normalize_codex_model_id` idempotently prefixes a raw Codex model ID with
-  `openai/`, mirroring `normalize_claude_model_id`. It is not yet called from
-  any dispatch arm; its first consumer lands with a later Codex-integration
-  task.
+  `openai/`, mirroring `normalize_claude_model_id`. `PostToolUse(apply_patch)`
+  calls it to derive a `diff_traces.model_id` value when the event reports a
+  model.
 
 ## Implemented slices: `UserPromptSubmit` and `Stop` capture
 
 `cli/src/services/hooks/codex/user_prompt_submit.rs` and
 `cli/src/services/hooks/codex/stop.rs` implement the `UserPromptSubmit` and
 `Stop` arms — conversation-capture dispatch arms with real behavior (see
-"`PreToolUse(Bash)` policy delegation" below for the third). Both follow the
-same shape:
+"`PreToolUse(Bash)` policy delegation" and "`PostToolUse(apply_patch)` diff
+capture" below for the other two). Both follow the same shape:
 
 - `UserPromptSubmit` requires non-empty `session_id`, `turn_id`, and
   `prompt`; `Stop` requires non-empty `session_id`, `turn_id`, and
@@ -92,12 +91,55 @@ pending-state file; Bash-triggered filesystem mutations remain untracked for
 Codex (see "Explicit non-goals" in
 [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md)).
 
+## `PostToolUse(apply_patch)` diff capture
+
+`cli/src/services/hooks/codex/apply_patch/` implements the
+`PostToolUse(apply_patch)` arm: `parser.rs` parses Codex's own `apply_patch`
+text format (`*** Begin Patch` ... `*** End Patch`, with `Add File`/`Delete
+File`/`Update File` operations and an optional `Update File` + `Move to`)
+into a typed `CodexPatch`; `normalize.rs` normalizes it into SCE `Index:`-form
+unified-diff text `crate::services::patch::parse_patch` already accepts;
+`mod.rs`'s `handle` wires the two together and persists the result:
+
+- Reads the raw patch text from `tool_input.command` (a working assumption
+  mirroring `PreToolUse(Bash)`'s own `tool_input.command` shape); a missing or
+  non-string `command` fails open with no evidence.
+- A parse failure is logged (`sce.hooks.codex.apply_patch.parse_failed`) and
+  fails open with no evidence — never a deny response, since `apply_patch`
+  tracing is `PostToolUse`-only.
+- Normalization keeps only the touched (`+`/`-`) lines of each `Add`/`Update`
+  operation under deterministic, patch-local synthetic line numbers (starting
+  at 1 per file) — Codex's own unchanged context lines are dropped entirely,
+  never persisted or claimed as real filesystem positions. `Delete File`
+  operations, and an `Update File` + `Move to` with no changed lines, produce
+  no evidence; a wholly-empty normalized result (e.g. delete-only) is a
+  successful no-op with no `diff_traces` insert.
+- A non-empty result is persisted as exactly one `diff_traces` row via the
+  existing `insert_diff_trace` — `session_id = cx_<session_id>`, `model_id =
+  normalize_codex_model_id(event.model)` when a model is reported, `tool_name
+  = "codex"`, `tool_version = None`, `payload_type = "patch"` — no new
+  persistence adapter.
+- The timestamp comes from `current_unix_time_ms()`; unlike every other
+  Codex arm (which falls back to epoch zero via `.unwrap_or(0)`), a
+  timestamp-acquisition failure here skips the insert entirely (fails open)
+  rather than substituting a fabricated epoch-zero value.
+- Every path — success, empty-normalize no-op, and every fail-open branch —
+  returns empty stdout.
+
+Once committed, a Codex Update's synthetic patch-local line numbers still
+attribute correctly through the existing, unmodified `intersect_patches`
+historical `kind`+`content` fallback (`cli/src/services/patch.rs`) even when
+the real committed lines land at different real line numbers — this module
+does not touch that fallback, and no `diff_traces`/Agent Trace schema
+migration was added to support it.
+
 ## No remaining stub arms
 
-All three currently-registered dispatch arms (`UserPromptSubmit`, `Stop`,
-`PreToolUse(Bash)`) now have real behavior. Codex `apply_patch` tracing has
-no dispatch arm yet — it is not documented here in detail and is deferred to
-a later task.
+All four registered dispatch arms (`UserPromptSubmit`, `Stop`,
+`PreToolUse(Bash)`, `PostToolUse(apply_patch)`) now have real behavior.
+`PreToolUse(apply_patch)` is deliberately never registered (see plan
+`context/plans/codex-cli-integration.md`'s no-snapshot design) and falls
+open as a `NoOp` like any other unsupported combination.
 
 ## Verification
 
