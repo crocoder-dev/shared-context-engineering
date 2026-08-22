@@ -49,7 +49,6 @@ const OPENCODE_TOOL_NAME: &str = "opencode";
 const CLAUDE_TOOL_NAME: &str = "claude";
 const PI_TOOL_NAME: &str = "pi";
 const CODEX_TOOL_NAME: &str = "codex";
-const OPENAI_MODEL_ID_PREFIX: &str = "openai/";
 const NORMALIZED_CONVERSATION_TRACE_TOOL_NAMES: &[&str] = &[OPENCODE_TOOL_NAME, PI_TOOL_NAME];
 type PayloadValidationError = fn(&str) -> String;
 
@@ -1039,11 +1038,7 @@ fn normalize_codex_model_id(model: &str) -> Option<String> {
         return None;
     }
 
-    if normalized.starts_with(OPENAI_MODEL_ID_PREFIX) {
-        Some(normalized.to_string())
-    } else {
-        Some(format!("{OPENAI_MODEL_ID_PREFIX}{normalized}"))
-    }
+    Some(normalized.to_string())
 }
 
 /// Extract a u64 timestamp from a Claude hook event payload, falling back to the
@@ -2751,19 +2746,31 @@ mod tests {
     }
 
     #[test]
-    fn normalize_codex_model_id_prefixes_fresh_model_id() {
+    fn normalize_codex_model_id_preserves_fresh_model_id() {
         assert_eq!(
             normalize_codex_model_id("gpt-5.6-codex").as_deref(),
-            Some("openai/gpt-5.6-codex")
+            Some("gpt-5.6-codex")
         );
     }
 
     #[test]
-    fn normalize_codex_model_id_keeps_already_prefixed_model_id() {
+    fn normalize_codex_model_id_preserves_qualified_model_ids() {
+        for model in ["openai/gpt-x", "qualified/custom-provider/model"] {
+            assert_eq!(normalize_codex_model_id(model).as_deref(), Some(model));
+        }
+    }
+
+    #[test]
+    fn normalize_codex_model_id_preserves_unqualified_model_ids() {
         assert_eq!(
-            normalize_codex_model_id("openai/gpt-5.6-codex").as_deref(),
-            Some("openai/gpt-5.6-codex")
+            normalize_codex_model_id("custom-codex-model").as_deref(),
+            Some("custom-codex-model")
         );
+    }
+
+    #[test]
+    fn normalize_codex_model_id_returns_none_for_blank_model_ids() {
+        assert_eq!(normalize_codex_model_id("   "), None);
     }
 
     #[test]

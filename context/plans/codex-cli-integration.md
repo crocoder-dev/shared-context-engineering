@@ -4,7 +4,9 @@
 
 Adds Codex CLI as a fourth first-class SCE integration target alongside OpenCode, Claude Code, and Pi. This extends existing behavior rather than replacing it: Codex reuses the same canonical Pkl workflow catalog, the same Rust Bash policy engine, the same conversation (`messages`/`parts`) persistence, and the same `diff_traces` → post-commit intersection → `agent_traces` pipeline every other integration already goes through. The only new runtime surface is a Codex-specific hook adapter (`sce hooks codex`) that produces normalized evidence for Codex's two output roots (`.agents/` for skills, `.codex/` for hooks).
 
-`apply_patch` attribution was originally scoped around a transient before/after Git-index snapshot mechanism (T10–T12 below). That implementation was built, validated, and then removed from this branch before this revision; its task and acceptance-criteria text is replaced here with a no-snapshot design: `PostToolUse apply_patch` only (no `PreToolUse apply_patch` registration, no snapshots, no temporary Git indexes, no pending tool state) parses Codex's own `tool_input.command` apply_patch text, normalizes it into an SCE-supported unified diff with deterministic patch-local synthetic line numbers, and persists it as a `diff_traces` row. The existing, unmodified `intersect_patches` historical `kind`+`content` fallback is what lets that synthetic-line evidence still attribute correctly once the real commit lands at different line numbers — this plan does not touch that fallback. Bash-triggered filesystem mutations remain explicitly out of scope for attribution — Bash gets policy enforcement only, matching the current-state boundary already documented for Claude/Pi.
+`apply_patch` attribution was originally scoped around a transient before/after Git-index snapshot mechanism (T10–T12 below). That implementation was built, validated, and then removed from this branch before this revision; its task and acceptance-criteria text is replaced here with a no-snapshot design: `PostToolUse apply_patch` only (no `PreToolUse apply_patch` registration, no snapshots, no temporary Git indexes, no pending tool state) parses Codex's own `tool_input.command` apply_patch text, normalizes it into an SCE-supported unified diff with deterministic event-scoped synthetic line identities, and persists it as a `diff_traces` row.
+
+This revision hardens that implementation rather than redesigning Agent Trace. It adds upstream-aligned outer patch normalization, resolves parsed paths against the real Git repository and Codex event `cwd`, rejects missing/invalid provenance inputs, makes all non-policy Codex hook paths silent, fixes nested-cwd generated hook invocation, prevents avoidable `combine_patches` collisions, and removes fabricated OpenAI model provenance. The current upstream `openai/codex` source inspected for this revision is commit `343074d4207d572809bd8cea15f4be1d09d98e0b`; its hook payload has `cwd`, `model`, `tool_name`, `tool_use_id`, `tool_input`, and `tool_response`, but no separate provider field, and its command runner executes hooks with `.current_dir(cwd)`.  The existing, unmodified `intersect_patches` historical `kind`+`content` fallback is what lets that synthetic-line evidence still attribute correctly once the real commit lands at different line numbers — this plan does not touch that fallback. Bash-triggered filesystem mutations remain explicitly out of scope for attribution — Bash gets policy enforcement only, matching the current-state boundary already documented for Claude/Pi.
 
 ## Acceptance criteria
 
@@ -30,7 +32,7 @@ Adds Codex CLI as a fourth first-class SCE integration target alongside OpenCode
   - Validate: regression test running `echo generated > generated.txt` through the Codex Bash hook path and asserting zero new `diff_traces` rows.
 - [x] AC11: A successful Codex `apply_patch` containing an Add File and/or Update File operation produces exactly one `diff_traces` row whose patch text is a valid SCE unified diff carrying only that file's added/removed lines (not unrelated Codex context), under deterministic patch-local synthetic hunk positions.
   - Validate: integration test driving `PostToolUse apply_patch` with Add/Update operations against a scratch repo and asserting one inserted `diff_traces` row whose stored patch parses via `parse_patch`.
-- [x] AC12: The persisted `diff_traces` row for a successful `apply_patch` carries `session_id = cx_<session>`, `model_id = openai/<model>` when the event reports a model, `tool_name = codex`, `tool_version = NULL`, and `payload_type = patch`.
+- [x] AC12: The persisted `diff_traces` row for a successful `apply_patch` carries `session_id = cx_<session>`, preserves the reported Codex `model_id` according to AC22, `tool_name = codex`, `tool_version = NULL`, and `payload_type = patch`.
   - Validate: same integration test as AC11, asserting row field values.
 - [x] AC13: A Codex `apply_patch` `Update File` with a `Move to` destination normalizes with `old_path`/`new_path` matching the source/destination paths, and persists any changed lines as evidence; a move with no changed lines persists no `diff_traces` row.
   - Validate: integration tests covering a move-with-edits and a pure rename with no line changes.
@@ -43,6 +45,23 @@ Adds Codex CLI as a fourth first-class SCE integration target alongside OpenCode
 - [x] AC17: Existing OpenCode, Claude, and Pi setup, generated assets, conversation tracing, diff tracing, policy behavior, and Agent Trace tests continue to pass.
   - Validate: `nix flake check`.
 
+- [x] AC18: Codex apply_patch input accepted by the current upstream lenient parser is accepted by SCE's outer normalization and canonical parser, including raw text, `<<EOF`, `<<'EOF'`, and `<<"EOF"` wrappers, supported marker whitespace, environment IDs, empty/context-only forms, multiple operations/hunks, and end-of-file markers; arbitrary prefixes, mismatched heredoc quotes, missing delimiters, and trailing garbage fail open with no evidence.
+  - Validate: current-upstream parser fixtures in `hooks::codex::apply_patch::parser`/outer-normalization tests and malformed-input hook tests; compare the accepted wrapper set with `openai/codex` commit `343074d4207d572809bd8cea15f4be1d09d98e0b`.
+- [x] AC19: Successful Add/Update/Move apply_patch evidence stores repository-relative paths resolved from `event.cwd` inside the real Git root; paths from nested cwd, old and move-destination paths, spaces in repository paths, missing/malformed/outside-repository cwd, and traversal/unsafe paths are handled conservatively, with invalid resolution logged and producing no row.
+  - Validate: nested-cwd, move, repository-escape, outside-repository, missing-cwd, malformed-cwd, and spaces-in-path hook tests using temporary Git repositories.
+- [x] AC20: Codex apply_patch persistence requires a present, trimmed non-empty session ID and stores exactly `cx_<real session>`; missing, empty, and whitespace-only IDs create no `diff_traces` row. Every non-policy success, no-op, malformed-payload, malformed-apply_patch, and fail-open path returns exactly `""` on stdout, while Bash denial alone returns the exact existing Codex-native deny JSON.
+  - Validate: full Codex hook dispatch tests asserting exact strings and temporary Agent Trace DB row counts for all session variants and malformed paths.
+- [x] AC21: Separate apply_patch events use deterministic, event-scoped synthetic `u64` line identities derived from `tool_use_id` plus bounded local offsets; the same event and patch normalize identically, different event IDs do not begin at the same synthetic range except for the documented negligible hash-collision risk, Add File evidence is event-scoped, and checked arithmetic prevents overflow. Combining two same-content events preserves both pieces of evidence, and the existing intersection can consume two corresponding commit additions.
+  - Validate: normalization determinism/overflow tests, two-event `combine_patches` tests, and a post-commit intersection test with two identical matching additions.
+- [x] AC22: Codex model provenance is truthful: already-qualified IDs remain unchanged, unqualified custom-looking IDs are not prefixed with `openai/`, blank IDs become `None`, and no provider field is invented because current upstream Codex exposes no trustworthy provider identity separately from `model`.
+  - Validate: persistence and model-normalization tests for `openai/gpt-x`, `qualified/custom-provider/model`, an unqualified custom-looking ID, and blank/missing model values.
+- [x] AC23: Generated Codex hook commands locate and invoke the SCE-owned helper through the Git repository root from both repository root and arbitrary nested cwd, including repository paths containing spaces; the command uses safe quoting/no `eval`, preserves stdin, fails open when Git root resolution fails, and keeps the four registrations (`UserPromptSubmit`, `Stop`, `PreToolUse` Bash, `PostToolUse` apply_patch) without `PreToolUse` apply_patch or an invalid `$schema`. Doctor expectations remain structural and do not require root cwd.
+  - Validate: fresh generated asset inspection plus helper-command execution tests from root/nested cwd and a spaced-path temporary Git repository, with a stub `sce` proving the same helper receives unchanged JSON stdin; `nix run .#pkl-check-generated` and doctor tests.
+- [x] AC24: Codex integration documentation and tests explicitly state that Add/Update evidence is exact for supplied touched content but physical occurrence attribution can remain ambiguous for repeated identical lines because Codex supplies no true line ranges and SCE takes no filesystem snapshot; Delete File, pure rename, and Bash-created mutations remain without line-level evidence, and the existing post-commit intersection remains the final filter without generic semantic changes.
+  - Validate: focused repeated-identical-content intersection test and documentation inspection of `context/sce/codex-integration-runtime.md`, directly relevant architecture/context references, and the revised plan.
+- [x] AC25: The complete hardened pipeline remains `PostToolUse apply_patch` → `tool_input.command` parsing → cwd-aware path resolution → SCE `payload_type = "patch"` `diff_traces` → existing `recent_diff_trace_patches`/`combine_patches` → existing Git post-commit intersection → Agent Trace, with no new schema, snapshot, pending state, PreToolUse apply_patch registration, Bash mutation attribution, or Codex-specific Agent Trace builder.
+  - Validate: end-to-end temporary repository/Agent Trace DB test feeding realistic Codex PostToolUse JSON and a realistic post-commit patch, plus source/status inspection showing no migration or forbidden state artifacts.
+
 ### Full validation
 
 - `nix run .#pkl-check-generated`
@@ -54,9 +73,9 @@ Adds Codex CLI as a fourth first-class SCE integration target alongside OpenCode
 - `context/cli/cli-command-surface.md` — `sce setup --codex`, `sce hooks codex` command-surface additions.
 - `context/cli/config-precedence-contract.md` — `integrations.target` accepting `"codex"`.
 - `context/overview.md` — remove the "Codex `apply_patch` tracing is not yet implemented" sentence and describe the implemented `PostToolUse`-only pipeline instead.
-- `context/sce/codex-integration-runtime.md` (modeled on `context/sce/pi-extension-runtime.md`) — `cx_` session prefix, `openai/` model normalization, UserPromptSubmit/Stop mapping, Bash policy delegation, the `PostToolUse apply_patch` parse/normalize/persist pipeline and its boundary (Add/Update produce line-level evidence, Update+Move preserves the destination path, Delete produces none, Bash mutation attribution remains unsupported, final attribution is always the existing post-commit intersection), replacing the "not yet implemented" framing.
+- `context/sce/codex-integration-runtime.md` (modeled on `context/sce/pi-extension-runtime.md`) — `cx_` session prefix, truthful model provenance without fabricated `openai/` prefixes, UserPromptSubmit/Stop mapping, Bash policy delegation, the `PostToolUse apply_patch` outer-normalize/parse/resolve/normalize/persist pipeline and its boundary (Add/Update produce line-level evidence, paths resolve from Codex cwd, Update+Move preserves the destination path, Delete produces none, Bash mutation attribution remains unsupported, final attribution is always the existing post-commit intersection), silent fail-open behavior, event-scoped synthetic identities, and the repeated-content ambiguity limitation.
 - `context/sce/doctor-human-text-contract.md` — Codex integration group/area ordering.
-- `context/sce/agent-trace-hooks-command-routing.md` and `context/sce/agent-trace-db.md` — note that `sce hooks codex` is a second writer into the same `diff_traces`/`messages`/`parts` tables via the existing insert helpers, with no new adapter.
+- `context/sce/agent-trace-hooks-command-routing.md` and `context/sce/agent-trace-db.md` — retain the existing second-writer/no-new-adapter contract and clarify that Codex apply_patch remains on the existing `diff_traces`/post-commit intersection path with no snapshots or pending state.
 
 ## Task context synchronization lifecycle
 
@@ -71,14 +90,16 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Constraints and non-goals
 
-- **In scope:** `cli/src/services/setup/`, `cli/src/services/config/`, `cli/src/services/hooks/`, `cli/src/services/doctor/`, `cli/src/services/default_paths.rs`, `cli/build.rs`, `config/pkl/base/`, `config/pkl/renderers/`, a new `config/codex-target/` build-time asset source, a new Codex `apply_patch` parser/normalizer module under `cli/src/services/hooks/codex/`, and the durable context files listed under Context sync.
+- **In scope:** `cli/src/services/setup/`, `cli/src/services/config/`, `cli/src/services/hooks/`, `cli/src/services/doctor/`, `cli/src/services/default_paths.rs`, `cli/build.rs`, `config/pkl/base/`, `config/pkl/renderers/`, a new `config/codex-target/` build-time asset source, the Codex `apply_patch` parser/outer-normalization/path-resolution/normalizer modules under `cli/src/services/hooks/codex/`, generated-hook command tests, and the durable context files listed under Context sync.
 - **Out of scope:** any change to `cli/migrations/agent-trace-repository/`; any change to OpenCode/Claude/Pi's own generated behavior beyond what is mechanically required to add a fourth target to shared enums/renderers; Codex App Server or `codex exec --json` integration; MCP-tool or subagent attribution; `AGENTS.md` generation/management; a Codex slash-command compatibility layer; any change to `intersect_patches`/`combine_patches` in `cli/src/services/patch.rs` unless a test demonstrates the normalized Codex evidence cannot flow through the existing contract.
 - **Constraints:** reuse `cli/src/services/bash_policy.rs` for Bash policy evaluation without reimplementing matching; reuse `DiffTraceInsert`/`insert_diff_trace` for persistence without a Codex-specific DB adapter; reuse `cli/src/services/patch.rs`'s existing, unmodified `parse_patch`/`intersect_patches`/`combine_patches` — the Codex apply_patch normalizer must produce text `parse_patch` already accepts, and `intersect_patches`' existing historical `kind`+`content` fallback is the sole mechanism for reconciling Codex's synthetic line numbers against real post-commit line numbers; no second diff engine.
 - **Non-goal:** Bash-created filesystem change attribution for Codex, Claude, or Pi (deferred — tracked as a known gap, not solved here); a generic cross-producer mutation tracker; any `diff_traces`/Agent Trace DB schema column for snapshot/pending state; filesystem snapshots, temporary Git indexes, or pending tool state for Codex `apply_patch` (the removed design, deliberately not reintroduced); Delete-File line-level attribution for Codex `apply_patch` (no before-state snapshot exists to prove removed content, and this plan does not add one).
 
 ## Assumptions
 
-- The Codex hook lifecycle event names and field names given in the change request (`hook_event_name`, `session_id`, `turn_id`, `cwd`, `model`, `tool_name`, `tool_use_id`, `tool_input`, `tool_response`; events `UserPromptSubmit`, `Stop`, `PreToolUse`, `PostToolUse`; tool identifiers `Bash`, `apply_patch`) are taken as the working contract. T06/T09 already checked the `Bash`-related shape against Codex CLI reality; T10 opens by checking the `apply_patch` `tool_input.command` grammar the same way against current `openai/codex` source before finalizing the parser, adjusting field/marker details to match reality without changing the architecture, dispatcher shape, or any acceptance criterion above (all stated as SCE-side observable outcomes, not exact Codex wire-format assertions).
+- Before this revision, `git fetch origin codex` was run on local branch `codex`; `HEAD` and `origin/codex` both resolved to `3ada88f04f5c8441b8f537bfb48478f14d8f819e` (`codex: Implement PostToolUse apply_patch tracing`).
+- Current upstream `openai/codex` was inspected before planning against commit `343074d4207d572809bd8cea15f4be1d09d98e0b`: `codex-rs/apply-patch/src/parser.rs` accepts the exact lenient wrappers `<<EOF`, `<<'EOF'`, and `<<"EOF"` when the closing line ends with `EOF`, while strict inner parsing trims patch boundary markers; `codex-rs/core/src/tools/handlers/apply_patch.rs` emits the hook-facing tool name `apply_patch`, exposes the raw custom input under `tool_input.command`, and `codex-rs/core/src/hook_runtime.rs` calls PostToolUse only after a successful tool result; `codex-rs/hooks/src/engine/command_runner.rs` runs command hooks with `.current_dir(cwd)`; current hook input schemas expose `model` but no provider field. If upstream changes later, the parser compatibility tests and a fresh source inspection are the update boundary.
+- The Codex hook lifecycle event names and field names given in the change request (`hook_event_name`, `session_id`, `turn_id`, `cwd`, `model`, `tool_name`, `tool_use_id`, `tool_input`, `tool_response`; events `UserPromptSubmit`, `Stop`, `PreToolUse`, `PostToolUse`; tool identifiers `Bash`, `apply_patch`) remain the working contract. T06/T09 already checked the Bash-related shape against Codex CLI reality; this revision updates only the stale apply_patch and runtime assumptions against the current source above.
 - Codex's `PreToolUse` deny response shape (confirmed in T09) is unaffected by this revision; `apply_patch` tracing is `PostToolUse`-only and never returns a deny response, only empty stdout on success (including every fail-open branch).
 - `apply_patch` tracing departs from this codebase's existing `current_unix_time_ms().unwrap_or(0)` pattern (used elsewhere in `cli/src/services/hooks/mod.rs` and by the Codex `UserPromptSubmit`/`Stop` arms) by design: a time-acquisition failure skips the `diff_traces` insert entirely (fails open) rather than substituting a fabricated epoch-zero timestamp, per the change request's explicit instruction for this one code path.
 
@@ -253,45 +274,137 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: root — `context/sce/doctor-human-text-contract.md` is already named under this plan's "Context sync" list for exactly this update (target-resolution priority list, display-label list, area-ordering list, and the new `Hooks`-area/trust-guidance paragraph), and this task edited it directly as part of implementation rather than deferring it; no other root context file states doctor's per-target area list or target-resolution priority as fact, so no further root file requires a synchronization pass.
   - Context synchronization: synced
 
+- [x] T14: `Align Codex apply_patch outer parsing with current upstream leniency` (status:done)
+  - Task ID: T14
+  - Scope: In — keep `parse_codex_apply_patch` focused on canonical Codex patch grammar, add separate `normalize_outer_apply_patch_input`, and mirror the current upstream lenient boundary behavior for raw input plus exactly the verified `<<EOF`, `<<'EOF'`, and `<<\"EOF\"` wrappers; preserve supported marker whitespace, environment IDs, empty/context-only forms, multiple operations/hunks, and end-of-file markers while retaining conservative evidence parsing. Add fixtures for invalid heredoc quoting/delimiters, random prefixes, garbage after `*** End Patch`, and grammar edge cases. Out — filesystem/repository path resolution (T15), event-scoped synthetic numbering (T16), persistence/runtime behavior, generated assets, and generic patch intersection changes.
+  - Dependencies: T13
+  - Done when: every accepted outer form is canonicalized before the grammar parser, all successful forms from the inspected upstream parser are covered by exact tests, malformed wrappers and unsupported shell syntax fail parsing, and normal raw `*** Begin Patch` input remains unchanged.
+  - Completed: 2026-08-22
+  - Files changed: `cli/src/services/hooks/codex/apply_patch/parser.rs`, `cli/src/services/hooks/codex/apply_patch/mod.rs`
+  - Result: Added `normalize_outer_apply_patch_input` as a strict seam between Codex hook command intake and the canonical grammar parser. It preserves raw canonical patch text, unwraps exactly `<<EOF`, `<<'EOF'`, and `<<\"EOF\"` forms, retains upstream-supported boundary whitespace and grammar edge cases, and rejects prefixes, unsupported/mismatched quoting, missing or malformed delimiters, and trailing garbage. The PostToolUse handler now normalizes before parsing; all accepted evidence still flows through the existing conservative parser and downstream persistence path.
+  - Verify: `nix develop -c sh -c './scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::codex::apply_patch::parser'` — passed: 22 passed, 0 failed.
+  - Verify: compared the exact wrapper behavior and fixtures with `openai/codex` commit `343074d4207d572809bd8cea15f4be1d09d98e0b` — passed; the three accepted wrapper spellings and upstream grammar fixtures are covered, with explicit rejection tests for the malformed/trailing cases required by this task.
+  - Context impact: none — this is an internal parser boundary and handler-routing hardening change; repository-wide Codex runtime documentation and the remaining pipeline description are owned by later context synchronization work.
+  - Context synchronization: synced
+
+- [x] T15: `Resolve Codex patch paths from event cwd to repository-relative evidence` (status:done)
+  - Task ID: T15
+  - Scope: In — add a path-resolution seam equivalent to `resolve_codex_patch_path(repository_root, event_cwd, codex_path)`, discover/verify the real Git root rather than treating the hook process cwd as the root, resolve relative source and move-destination paths independently against `event.cwd`, normalize dot components, accept only safely representable repository-relative paths, and reject traversal/escape, malformed or missing cwd, cwd outside the repository, and ambiguous/lossy mappings. Wire resolution between parsing and normalization; invalid resolution logs a diagnostic and returns empty stdout without persistence. Out — filesystem snapshots, mutation observation, symlink-based redesign, and changes to generic Git post-commit matching.
+  - Dependencies: T14
+  - Done when: root cwd, nested cwd, nested `src/lib.rs`, move source/destination, repository escape, cwd outside the repository, missing/malformed cwd, and repository paths containing spaces have deterministic tests; successful stored patches contain only repository-relative paths and no invalid case opens/persists evidence.
+  - Completed: 2026-08-23
+  - Files changed: `cli/src/services/hooks/codex/apply_patch/mod.rs`, `cli/src/services/hooks/codex/apply_patch/parser.rs`, `cli/src/services/hooks/codex/apply_patch/path.rs` (new)
+  - Result: Added a focused path-resolution module that discovers the actual Git root with `git rev-parse --show-toplevel`, canonicalizes and verifies the event cwd is an absolute directory inside that root, resolves every Add/Update/Delete source and Update move destination independently from the event cwd, normalizes dot components into repository-relative slash-separated UTF-8 paths, and rejects traversal, absolute, malformed, outside-repository, lossy, or symlink-escaping mappings. The PostToolUse handler now resolves paths after outer normalization and canonical parsing but before SCE normalization and DB access; failures are logged and fail open with empty stdout. Added temporary-Git-repository tests for root/nested cwd and paths, moves, unsafe inputs, outside/malformed cwd, operation-wide rewriting, and repository paths containing spaces. Also replaced two pre-existing test-only `format!` calls with string conversions required by the repository's denied Clippy lint while touching the parser.
+  - Verify: `nix develop -c sh -c './scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::codex::apply_patch'` — passed: 46 passed, 0 failed.
+  - Verify: `nix develop -c sh -c './scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::codex'` — passed: 75 passed, 0 failed.
+  - Verify: `nix flake check` — passed: all checks passed (CLI tests, Clippy, formatting, generated-input, and Pkl checks).
+  - Context impact: root — Codex PostToolUse runtime behavior now depends on event-cwd/real-Git-root path resolution and conservative repository-relative evidence mapping; the durable Codex runtime and directly relevant architecture/hook-routing context must describe this new pipeline boundary during synchronization.
+  - Context synchronization: synced
+
+- [x] T16: `Make normalized apply_patch evidence event-scoped and collision-resistant` (status:done)
+  - Task ID: T16
+  - Scope: In — pass the stable `tool_use_id` into normalization, derive a bounded deterministic synthetic base using the smallest existing deterministic hash primitive (domain-separated SHA-256 if no suitable helper exists), allocate checked local offsets across all operations/hunks/files including Add File, reject overflow/faulted identity inputs fail-open, and document that positions are evidence identities rather than source line numbers. Add tests for deterministic repeat normalization, distinct event IDs, `u64` bounds, and two same-content events surviving existing `combine_patches` and matching two corresponding commit additions through the existing intersection. Out — DB schema changes, tool-use persistence columns, random/time-based identity, snapshots, and changes to generic `combine_patches`/`intersect_patches` semantics.
+  - Dependencies: T15
+  - Done when: same `tool_use_id` plus patch produces identical normalized line identities, separate event IDs use disjoint synthetic ranges with overwhelming-certain hash separation, no event starts at line 1 by default, all arithmetic is overflow-safe, and both pieces of same-content evidence survive combination and are consumable by the unchanged post-commit intersection.
+  - Completed: 2026-08-23
+  - Files changed: `cli/src/services/hooks/codex/apply_patch/mod.rs`, `cli/src/services/hooks/codex/apply_patch/normalize.rs`, `context/sce/codex-integration-runtime.md`
+  - Result: Passed the stable `tool_use_id` into Codex apply_patch normalization and used a domain-separated SHA-256-derived event bucket with a bounded synthetic range. Checked allocation now spans Add/Update operations and hunks across the full patch; invalid identities and range overflow fail open. Added deterministic, distinct-event, bounds, same-content combination, and existing-intersection coverage. Documented synthetic positions as event-scoped evidence identities rather than source line numbers; generic patch combination/intersection semantics remain unchanged.
+  - Verify: `nix develop -c sh -c './scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::codex::apply_patch::normalize'` — passed: 12 passed, 0 failed.
+  - Verify: `nix develop -c sh -c './scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::patch'` — passed: 8 passed, 0 failed.
+  - Verify: `nix develop -c sh -c './scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::codex'` — passed: 79 passed, 0 failed.
+  - Context impact: root — `context/sce/codex-integration-runtime.md` now documents event-scoped synthetic evidence identities, checked cross-file allocation, invalid-identity fail-open behavior, and preservation through existing combination/intersection.
+  - Context synchronization: synced
+
+- [x] T17: `Harden Codex session, model provenance, and silent hook contracts` (status:done)
+  - Task ID: T17
+  - Scope: In — require trimmed non-empty session IDs before any apply_patch persistence and normalize them through the existing idempotent `cx_` helper; change Codex NoOp and fail-open paths to log diagnostics and return `String::new()`; keep Bash denial as the only structured stdout response and assert exact stdout for unsupported, malformed, successful UserPromptSubmit/Stop, missing-command, malformed-apply_patch, apply_patch success, and Bash allow/deny paths. Replace unconditional `openai/` fabrication with preservation of qualified model IDs, truthful raw unqualified IDs (or `None` where existing SCE semantics require it), and `None` for blank models; do not add a provider field because current upstream exposes none. Out — provider inference, session caches, changes to other producers, and any new persistence schema.
+  - Dependencies: T16
+  - Done when: missing/empty/whitespace session variants produce zero rows, valid `abc`/`cx_abc` produce exactly `cx_abc`, qualified/custom/unqualified/blank model tests show no false OpenAI provenance, all non-policy output assertions are exact empty strings, and the existing exact Codex deny JSON remains unchanged.
+  - Completed: 2026-08-23
+  - Files changed: `cli/src/services/hooks/mod.rs`, `cli/src/services/hooks/codex/mod.rs`, `cli/src/services/hooks/codex/user_prompt_submit.rs`, `cli/src/services/hooks/codex/stop.rs`, `cli/src/services/hooks/codex/apply_patch/mod.rs`
+  - Result: Codex apply_patch now rejects missing, empty, and whitespace-only session input before parsing or persistence, trims valid IDs before idempotent `cx_` prefixing, and preserves the existing Bash deny response. Codex no-op, fail-open, UserPromptSubmit, Stop, and apply_patch success paths now return empty stdout while diagnostics remain logger-only. Model normalization now trims blank values to `None` and preserves qualified and unqualified raw IDs without fabricating an `openai/` provider prefix. Added exact-output, session, and model-provenance persistence coverage.
+  - Verify: `nix develop -c sh -c './scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::codex'` — passed: 82 passed, 0 failed, including targeted Agent Trace persistence and Bash policy tests.
+  - Context impact: root — Codex hook stdout is now a silent success contract for all non-policy paths, and model/session persistence semantics are cross-cutting runtime contracts; `context/sce/codex-integration-runtime.md`, `context/sce/agent-trace-hooks-command-routing.md`, and the root context contract files must remain aligned.
+  - Context synchronization: synced
+
+- [x] T18: `Make generated Codex hook invocation repository-root aware` (status:done)
+  - Task ID: T18
+  - Scope: In — update canonical `config/pkl/renderers/codex-content.pkl` hook command/helper contract so Codex resolves the Git root at invocation time and executes the SCE-owned helper safely from root or nested cwd, with quoted paths, no `eval`, unchanged stdin forwarding, and fail-open Git-root failure behavior; update generated-contract/doctor expectations and tests without adding `PreToolUse apply_patch` or `$schema`. Out — hardcoded install-time absolute paths, alternate hook registration systems, and root-cwd assumptions in doctor.
+  - Dependencies: T17
+  - Done when: fresh generated assets retain exactly the four registrations, the command reaches the same helper from repository root and `repo/a/b/c`, works with spaces in the repository path, preserves a sentinel JSON stdin byte-for-byte to a stub `sce`, and the helper remains silent on normal successful execution except the existing missing-CLI stderr guidance.
+  - Verify: `nix run .#pkl-check-generated`; targeted generated Codex command/helper execution and doctor tests; `nix flake check`.
+  - Completed: 2026-08-23
+  - Files changed: `config/pkl/renderers/codex-content.pkl`, `config/pkl/renderers/generation-contract-check.pkl`, `flake.nix`, `scripts/test-codex-hook-command.sh`, `cli/src/services/hooks/mod.rs`
+  - Result: Changed the generated Codex command to resolve `git rev-parse --show-toplevel` at invocation time, safely quote the root/helper path, and exit successfully when Git-root resolution fails. Added a generated contract assertion and a flake-integrated command test covering all four registrations, root/nested/spaced paths, byte-preserved stdin, silent fail-open behavior, and missing-CLI guidance. Aligned the pre-existing Codex model unit expectation with T17's truthful raw-ID behavior so the full flake check passes.
+  - Verify: `nix run .#pkl-check-generated` — passed: ephemeral generation produced 135 files and the new Codex hook invocation contract passed.
+  - Verify: targeted generated Codex command/helper execution — passed: `nix develop -c sh -c './scripts/test-codex-hook-command.sh'`, including root, nested, spaced-path, Git-failure, stdin, and missing-CLI cases; targeted doctor tests passed with 12 tests.
+  - Verify: `nix flake check` — passed: all checks passed after correcting the stale pre-existing T17 model expectation exposed by the full suite.
+  - Context impact: root — the canonical generated Codex hook invocation contract and its flake-integrated execution coverage changed; durable Codex runtime/generation context must describe invocation from nested cwd via runtime Git-root resolution.
+  - Context synchronization: synced
+
+- [x] T19: `Prove and document the hardened conservative Codex pipeline` (status:done)
+  - Task ID: T19
+  - Scope: In — add/update full-pipeline tests that feed realistic Codex PostToolUse JSON through `tool_input.command`, use a temporary repository and repository-scoped Agent Trace DB, verify path/session/model/payload persistence, feed a realistic post-commit patch, and assert existing attribution plus delete-only/pure-rename no-row behavior; add a focused repeated-identical-content ambiguity test; update `context/sce/codex-integration-runtime.md` and directly relevant overview/architecture/hook-routing/patch documentation to describe cwd-aware resolution, event-scoped synthetic identities, silent fail-open behavior, truthful model provenance, exact pipeline boundaries, and the unresolved physical-occurrence ambiguity. Out — filesystem snapshots, Codex-specific Agent Trace generation, generic intersection redesign, and a validation-only cleanup task.
+  - Dependencies: T18
+  - Done when: the end-to-end and regression suite covers routing, stdout, path resolution, current Codex input compatibility, session validation, synthetic identity, existing intersection, delete/rename boundaries, and generated assets; documentation explicitly does not claim issue 8 is solved; no forbidden snapshot/pending/migration/Bash-mutation artifacts are introduced.
+  - Completed: 2026-08-23
+  - Files changed: `cli/src/services/hooks/codex/apply_patch/mod.rs`, `cli/src/services/hooks/codex/apply_patch/normalize.rs`, `cli/src/services/hooks/codex/mod.rs`, `context/architecture.md`, `context/cli/patch-service.md`, `context/overview.md`, `context/sce/agent-trace-hooks-command-routing.md`, `context/sce/codex-integration-runtime.md`
+  - Result: Added a realistic Codex `PostToolUse(apply_patch)` test using a nested cwd, heredoc input, temporary Git repository, repository-scoped Agent Trace DB, real commit patch capture, existing post-commit intersection, and persisted Agent Trace assertions for repository-relative paths, `cx_` session identity, truthful model provenance, payload/tool metadata, and silent stdout. Added delete-only and pure-rename no-row coverage plus a focused repeated-identical-content test documenting the unresolved physical-occurrence ambiguity. Added a test-only state-root seam for exercising the real hook dispatcher against isolated repository storage without changing production storage behavior. Updated runtime, hook-routing, overview, architecture, and patch-service context to state the conservative pipeline and no-snapshot/no-pending/no-schema/generic-intersection boundaries.
+  - Verify: `nix develop -c sh -c './scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::codex'` — passed: 85 tests, 0 failed.
+  - Verify: applicable patch/intersection tests — passed: `services::patch` 8 tests; Codex normalization and intersection coverage included in the 85-test Codex run.
+  - Verify: Agent Trace storage/database tests — passed: `services::agent_trace_storage` 14 tests and `services::agent_trace_db` 16 tests.
+  - Verify: setup/doctor tests — passed: `services::setup` 59 tests and `services::doctor` 12 tests.
+  - Verify: `nix run .#pkl-check-generated` — passed: ephemeral Pkl generation, 135 files.
+  - Verify: `nix flake check` — passed: all checks, including CLI tests, Clippy, formatting, generated-input, Pkl, Codex hook-command, setup/doctor, and related repository checks.
+  - Context impact: root — the hardened Codex runtime and patch attribution boundaries are cross-cutting integration contracts; `context/overview.md`, `context/architecture.md`, `context/sce/agent-trace-hooks-command-routing.md`, `context/sce/codex-integration-runtime.md`, and `context/cli/patch-service.md` now document cwd-aware resolution, event-scoped identities, silent fail-open behavior, truthful model provenance, existing-intersection attribution, and repeated-content ambiguity.
+  - Context synchronization: synced
+
 ## Open questions
 
-- The exact current Codex CLI hook JSON schema (event names, field names, tool-call identifiers, the native `PreToolUse` deny response shape, and the `apply_patch` `tool_input.command` grammar) cannot be verified from this repository — Codex CLI is an external, evolving tool. T06/T09 already checked the `Bash`-related shape; T10 opens by checking the `apply_patch` grammar the same way before finalizing the parser. This is recorded as an assumption above rather than a blocking question because no acceptance criterion in this plan depends on the exact wire format — every AC is stated as an SCE-side observable outcome (DB rows, generated files, policy behavior) that holds regardless of the precise Codex JSON shape.
+- Current upstream behavior is verified at `openai/codex` commit `343074d4207d572809bd8cea15f4be1d09d98e0b`, but Codex is external and evolving; a future upstream hook-schema or parser change can require refreshing the compatibility fixtures. This is non-blocking because the plan records the source commit and makes the accepted forms/tests explicit. The current source exposes no provider identity separate from `model`, so this revision intentionally preserves incomplete model provenance rather than fabricating `openai/`.
 
 ## Validation Report
 
 **Status:** validated  
-**Date:** 2026-08-22
+**Date:** 2026-08-23
 
 ### Commands run
 
-- `nix run .#pkl-check-generated` -> exit 0 (Ephemeral Pkl generation passed: 135 files, inventory sha256 8be0ee0f495048f048317d2bd9d8e0ebc11120e12eba16e472dc7ed0b929a033)
-- `nix flake check` -> exit 0 (all checks passed!: cli-tests, cli-clippy, cli-fmt, cli-generated-input, pkl-generated, npm-bun-tests, npm-biome-check, npm-biome-format, config-lib-bun-tests, config-lib-biome-check, config-lib-biome-format, workflow-actionlint, native-portability-audit, flatpak-static-validation, cargo-sources-parity, flatpak-manifest-parity)
-- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::codex` -> exit 0 (63 passed, 0 failed, 0 ignored — covers all `hooks::codex::*` unit/integration tests including `apply_patch`, `bash_policy`, `stop`, `user_prompt_submit`)
-- `nix run .#pkl-generate -- <scratch dir>` + manual inspection of `.agents/skills/` and `.codex/hooks.json` -> exit 0; `.agents/skills/` contains the five core skills plus `sce-brownfield`/`sce-decision`; `.codex/hooks.json` registers exactly `UserPromptSubmit`, `Stop`, `PreToolUse` (`Bash`), `PostToolUse` (`apply_patch`), no `PreToolUse apply_patch`, no `PostToolUse Bash`, no `$schema`
-- `sce setup --codex --non-interactive` in a scratch git repo (fake `origin` remote) -> exit 0; installed `.agents/skills/**` (6 core skills, no `sce-brownfield`) and `.codex/hooks.json` + `.codex/hooks/run-sce-or-show-install-guidance.sh`; `.sce/config.json` recorded `{"integrations": {"optional_workflows": [], "target": ["codex"]}}`
-- `sce setup --all --non-interactive` in a scratch git repo -> exit 0; reported "Selected target(s): OpenCode, Claude, Pi, Codex" and installed all four target trees (`.opencode` 35, `.claude` 31, `.pi` 30, `.agents` 24 + `.codex` 2) with no regression to the other three; `.sce/config.json` recorded `"target": ["opencode", "claude", "pi", "codex"]`
-- `sce setup --codex --workflow brownfield --non-interactive` vs `sce setup --codex --non-interactive` in separate scratch repos -> exit 0 each; `sce-brownfield` present only in the `--workflow brownfield` run's `.agents/skills/`
-- `git diff --stat -- cli/migrations/agent-trace-repository/` -> empty (no changes); `git status --short -- cli/migrations/agent-trace-repository/` -> empty; directory contains only the two pre-existing baseline files
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral Pkl generation passed: 135 files)
+- `nix flake check` -> exit 0 (all checks passed)
+- `nix develop -c sh -c './scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml'` -> exit 0 (475 passed, 0 failed)
+- `nix develop -c sh -c './scripts/test-codex-hook-command.sh'` -> exit 0 (root, nested, spaced-path, stdin, and Git-failure cases passed)
+- scratch `sce setup --codex --non-interactive`, `sce setup --all --non-interactive`, and paired `--workflow brownfield`/default runs -> exit 0 (setup, target, asset, config, and optional-workflow checks passed)
+- `git diff -- cli/migrations/agent-trace-repository` and `git status --short -- cli/migrations/agent-trace-repository` -> exit 0 (no migration changes)
+- Codex hardened pipeline source/status inspection -> exit 0 (no forbidden snapshot/pending artifacts; existing persistence/intersection paths present)
 
 ### Success-criteria verification
 
-- [x] AC1: `sce setup --codex --non-interactive` installs both output roots and persists `integrations.target` -> verified directly in a scratch git repo (see Commands run)
-- [x] AC2: `sce setup --all --non-interactive` installs Codex alongside the other three targets with no regression -> verified directly in a scratch git repo
-- [x] AC3: core workflows under `.agents/skills/`, `brownfield` obeys `--workflow` selection -> verified via `pkl-generate` inspection and paired scratch-repo `setup` runs with/without `--workflow brownfield`
-- [x] AC4: `.codex/hooks.json` registers exactly the four documented lifecycle entries -> verified via direct `pkl-generate` output inspection
-- [x] AC5: `UserPromptSubmit` produces one message + one part under `cx_<session>` -> verified via `hooks::codex::user_prompt_submit::tests` (63-test run)
-- [x] AC6: `Stop` produces one message + one part -> verified via `hooks::codex::stop::tests`
-- [x] AC7: reprocessing does not duplicate the parent message -> verified via `capture_with_does_not_duplicate_the_parent_message_on_reprocess` (both arms)
-- [x] AC8: allowed Bash command is silent -> verified via `hooks::codex::bash_policy::tests`
-- [x] AC9: denied Bash command uses Codex-native deny shape with policy reason -> verified via `hooks::codex::bash_policy::tests`
-- [x] AC10: Bash mutations create no `diff_trace` -> verified via `codex_bash_pre_tool_use_path_creates_no_diff_trace_for_a_filesystem_mutation_command`
-- [x] AC11: successful `apply_patch` (Add/Update) produces one valid `diff_traces` row -> verified via `apply_patch_persists_one_row_with_expected_field_values_for_add_and_update`
-- [x] AC12: persisted row carries expected `session_id`/`model_id`/`tool_name`/`tool_version`/`payload_type` -> verified via the same test asserting field values
-- [x] AC13: `Update File` + `Move to` normalizes `old_path`/`new_path`, no row for a changeless move -> verified via `apply_patch_move_with_edits_persists_row_with_expected_paths` plus the paired no-changed-lines case
-- [x] AC14: Delete-only produces no row; mixed Update+Delete+Add persists only Update/Add evidence -> verified via `apply_patch_mixed_operations_persists_only_add_and_update_evidence` plus the delete-only case
-- [x] AC15: synthetic-line `diff_trace` still attributes through the unmodified post-commit intersection pipeline -> verified via `apply_patch_diff_trace_attributes_through_agent_trace_pipeline_at_different_real_lines`
-- [x] AC16: no Agent Trace schema migration added -> verified via empty `git diff`/`git status` on `cli/migrations/agent-trace-repository/`
-- [x] AC17: existing OpenCode/Claude/Pi behavior and tests continue to pass -> verified via `nix flake check` passing in full (no regressions)
+- [x] AC1: setup installs both Codex output roots and persists `integrations.target` -> scratch Git repository passed.
+- [x] AC2: `setup --all` installs Codex alongside OpenCode, Claude, and Pi -> scratch Git repository passed.
+- [x] AC3: core and optional workflow selection is correct -> generation inspection and paired scratch setup runs passed.
+- [x] AC4: generated Codex hook registrations are exactly the four required entries -> generated inspection and hook-command check passed.
+- [x] AC5: `UserPromptSubmit` produces one user message and text part -> full test suite passed the Codex persistence tests.
+- [x] AC6: `Stop` produces one assistant message and text part -> full test suite passed the Codex persistence tests.
+- [x] AC7: repeated conversation events do not duplicate parent messages -> full test suite passed both reprocessing tests.
+- [x] AC8: allowed Bash is silent -> Codex Bash policy tests passed.
+- [x] AC9: denied Bash uses the native deny response and policy reason -> Codex Bash policy tests passed.
+- [x] AC10: Bash mutations create no diff trace -> regression test passed.
+- [x] AC11: Add/Update apply_patch persists valid evidence -> full test suite passed the persistence and parser tests.
+- [x] AC12: persisted model ID follows the truthful AC22 provenance contract -> persistence test passed with raw and qualified IDs.
+- [x] AC13: move-with-edits preserves paths and pure rename creates no row -> full test suite passed.
+- [x] AC14: delete-only and mixed-operation evidence boundaries hold -> full test suite passed.
+- [x] AC15: synthetic evidence attributes through the existing intersection pipeline -> full test suite passed the Agent Trace attribution test.
+- [x] AC16: no Agent Trace schema migration was added -> migration diff/status inspection passed.
+- [x] AC17: existing integrations and repository checks continue to pass -> full test suite and `nix flake check` passed.
+- [x] AC18: upstream-compatible outer wrappers and malformed-input behavior -> parser tests passed.
+- [x] AC19: cwd-aware repository-relative path resolution -> path and realistic hook tests passed.
+- [x] AC20: session validation and exact silent/non-policy output contracts -> Codex dispatcher and persistence tests passed.
+- [x] AC21: deterministic event-scoped synthetic identities and collision handling -> normalization/combination/intersection tests passed.
+- [x] AC22: truthful model provenance and no invented provider -> model normalization and persistence tests passed.
+- [x] AC23: root-aware generated hook invocation and structural doctor expectations -> generated hook-command check, Pkl check, and doctor tests passed.
+- [x] AC24: conservative attribution boundary and repeated-content ambiguity are documented and tested -> documentation inspection and repeated-content test passed.
+- [x] AC25: complete hardened pipeline and forbidden-artifact boundaries -> realistic end-to-end test and source/status inspection passed.
 
 ### Failed checks and follow-ups
 
@@ -299,7 +412,5 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ### Residual risks
 
-- The Codex hook JSON schema (event/field names, `apply_patch` grammar, deny-response shape) is an external, evolving contract verified against `openai/codex` source at implementation time (T06/T09/T10); a future upstream change could silently desync the SCE-side parser from real Codex output. Already recorded as a plan assumption/open question, not a defect.
-- None else identified.
-
+- Codex's external hook schema and apply_patch grammar may evolve beyond the upstream commit used for these fixtures.
 

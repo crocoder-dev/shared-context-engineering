@@ -56,6 +56,27 @@ hidden generatedArtifacts = new Mapping {
   }
 }
 
+local assertCodexHookInvocationContract = (artifacts: Mapping) ->
+  let (text = artifacts["config/.codex/hooks.json"])
+    if (
+      text.split("\"UserPromptSubmit\"").length == 2
+      && text.split("\"Stop\"").length == 2
+      && text.split("\"PreToolUse\"").length == 2
+      && text.split("\"PostToolUse\"").length == 2
+      && text.split("\"type\": \"command\"").length == 5
+      && text.split("\"matcher\": \"Bash\"").length == 2
+      && text.split("\"matcher\": \"apply_patch\"").length == 2
+      && !text.contains("\"$schema\"")
+      && text.contains("git rev-parse --show-toplevel")
+      && text.contains("2>/dev/null")
+      && text.contains("|| exit 0")
+      && text.contains("exec bash")
+      && text.contains("$root/.codex/hooks/run-sce-or-show-install-guidance.sh")
+      && text.contains("sce hooks codex")
+      && !text.contains("eval")
+    ) "Codex hook invocation: four registrations use safe repository-root resolution"
+    else throw("Codex hook invocation must resolve the Git root safely and preserve the exact four registrations")
+
 hidden workflowDocuments = new Mapping {
   for (path, document in opencode.skillDocuments) {
     ["config/.opencode/skills/\(path)"] = document.text
@@ -790,6 +811,7 @@ hidden assertValidateExcludesDecisionAndPlanSync = (documents: Mapping) ->
 
 contractChecks {
   ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
+  ["codex-hook-invocation"] = assertCodexHookInvocationContract.apply(generatedArtifacts)
   ["optional-workflow-manifest"] = assertOptionalWorkflowManifest.apply(generatedArtifacts)
   ["workflow-references"] = assertWorkflowReferences.apply(workflowDocuments)
   ["workflow-helper-composition"] = assertWorkflowHelperComposition.apply(compositeWorkflowDocuments)

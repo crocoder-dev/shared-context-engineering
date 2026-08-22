@@ -115,9 +115,55 @@ fn error(message: impl Into<String>) -> CodexPatchParseError {
     }
 }
 
-/// Parses raw Codex `apply_patch` `tool_input.command` text into a
-/// [`CodexPatch`]. Performs no normalization to SCE unified-diff form and no
-/// filesystem access; see the `apply_patch` module's own scope boundary.
+/// Removes the optional shell-like heredoc boundary that current upstream
+/// Codex may include around an `apply_patch` command. The canonical grammar
+/// parser intentionally does not know about shell syntax; callers should pass
+/// this result to [`parse_codex_apply_patch`].
+#[allow(dead_code)]
+pub(crate) fn normalize_outer_apply_patch_input(raw: &str) -> Result<String, CodexPatchParseError> {
+    let trimmed = raw.trim();
+    let lines: Vec<&str> = trimmed.lines().collect();
+
+    if has_canonical_boundaries(&lines) {
+        // Preserve ordinary raw patch input byte-for-byte. The canonical
+        // parser performs the same boundary trimming it did before this
+        // outer-normalization seam was introduced.
+        return Ok(raw.to_string());
+    }
+
+    let Some(first_line) = lines.first().copied() else {
+        return Err(error("Codex apply_patch input cannot be empty."));
+    };
+    let Some(last_line) = lines.last().copied() else {
+        return Err(error("Codex apply_patch input cannot be empty."));
+    };
+
+    let is_supported_heredoc = matches!(first_line, "<<EOF" | "<<'EOF'" | "<<\"EOF\"");
+    if !is_supported_heredoc || last_line != "EOF" || lines.len() < 4 {
+        return Err(error(
+            "Codex apply_patch input must be a canonical patch or one of the supported EOF wrappers.",
+        ));
+    }
+
+    let inner_lines = &lines[1..lines.len() - 1];
+    if !has_canonical_boundaries(inner_lines) {
+        return Err(error(
+            "Codex apply_patch heredoc must contain exactly one canonical patch.",
+        ));
+    }
+
+    Ok(inner_lines.join("\n"))
+}
+
+fn has_canonical_boundaries(lines: &[&str]) -> bool {
+    lines.first().map(|line| line.trim()) == Some(BEGIN_PATCH_MARKER)
+        && lines.last().map(|line| line.trim()) == Some(END_PATCH_MARKER)
+}
+
+/// Parses canonical Codex `apply_patch` text into a [`CodexPatch`]. Performs
+/// no outer shell normalization, normalization to SCE unified-diff form, or
+/// filesystem access; callers handling hook `tool_input.command` should first
+/// use [`normalize_outer_apply_patch_input`].
 #[allow(dead_code)]
 pub(crate) fn parse_codex_apply_patch(raw: &str) -> Result<CodexPatch, CodexPatchParseError> {
     let trimmed = raw.trim();
@@ -335,6 +381,92 @@ fn validate_path(path: &str) -> Result<String, CodexPatchParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SIMPLE_CANONICAL_PATCH: &str =
+        "*** Begin Patch\n*** Add File: hello.txt\n+hello\n*** End Patch";
+
+    #[test]
+    fn normal_raw_patch_is_returned_unchanged() {
+        let raw = format!("\n{SIMPLE_CANONICAL_PATCH}\n");
+
+        assert_eq!(
+            normalize_outer_apply_patch_input(&raw).expect("raw patch should be accepted"),
+            raw
+        );
+    }
+
+    #[test]
+    fn normalizes_each_upstream_supported_heredoc_wrapper_exactly() {
+        for wrapper in ["<<EOF", "<<'EOF'", "<<\"EOF\""] {
+            let raw = format!("{wrapper}\n{SIMPLE_CANONICAL_PATCH}\nEOF\n");
+
+            assert_eq!(
+                normalize_outer_apply_patch_input(&raw)
+                    .expect("supported heredoc wrapper should be accepted"),
+                SIMPLE_CANONICAL_PATCH
+            );
+        }
+    }
+
+    #[test]
+    fn normalizes_wrapped_empty_context_only_and_complex_patches() {
+        let fixtures = [
+            "*** Begin Patch\n*** End Patch",
+            "*** Begin Patch\n*** Update File: file.txt\n@@ context\n context\n*** End Patch",
+            "*** Begin Patch\n*** Environment ID: remote\n*** Update File: file.txt\n@@\n-old\n+new\n*** End of File\n*** Add File: another.txt\n+added\n*** End Patch",
+        ];
+
+        for canonical in fixtures {
+            let raw = format!("<<'EOF'\n{canonical}\nEOF");
+            assert_eq!(
+                normalize_outer_apply_patch_input(&raw)
+                    .expect("upstream-supported wrapper should be accepted"),
+                canonical
+            );
+        }
+    }
+
+    #[test]
+    fn preserves_supported_boundary_marker_whitespace() {
+        let canonical = "  *** Begin Patch  \n*** Add File: hello.txt\n+hello\n*** End Patch  ";
+        let raw = format!("<<EOF\n{canonical}\nEOF");
+
+        assert_eq!(
+            normalize_outer_apply_patch_input(&raw)
+                .expect("boundary marker whitespace should be accepted"),
+            canonical
+        );
+        parse_codex_apply_patch(canonical).expect("canonical parser should preserve this support");
+    }
+
+    #[test]
+    fn canonical_parser_does_not_parse_heredoc_shell_syntax() {
+        let raw = format!("<<EOF\n{SIMPLE_CANONICAL_PATCH}\nEOF");
+
+        assert!(parse_codex_apply_patch(&raw).is_err());
+        assert!(normalize_outer_apply_patch_input(&raw).is_ok());
+    }
+
+    #[test]
+    fn rejects_invalid_heredoc_wrappers_and_outer_garbage() {
+        let cases = [
+            format!("apply_patch <<EOF\n{SIMPLE_CANONICAL_PATCH}\nEOF"),
+            format!("<<\"EOF'\n{SIMPLE_CANONICAL_PATCH}\nEOF"),
+            format!("<<EOF\n{SIMPLE_CANONICAL_PATCH}"),
+            format!("<<EOFx\n{SIMPLE_CANONICAL_PATCH}\nEOF"),
+            format!("<<EOF\n{SIMPLE_CANONICAL_PATCH}\nEOF garbage"),
+            "<<EOF\n*** Begin Patch\n*** End Patch\ngarbage\nEOF".to_string(),
+            "*** Begin Patch\n*** End Patch\ngarbage".to_string(),
+            format!("bash -lc 'apply_patch <<EOF'\n{SIMPLE_CANONICAL_PATCH}\nEOF"),
+        ];
+
+        for raw in cases {
+            assert!(
+                normalize_outer_apply_patch_input(&raw).is_err(),
+                "invalid outer form unexpectedly accepted: {raw:?}"
+            );
+        }
+    }
 
     #[test]
     fn parses_add_file_operation() {

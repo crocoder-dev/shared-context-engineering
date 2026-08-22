@@ -63,7 +63,7 @@ where
     }])
     .context("Failed to insert Codex Stop text part row.")?;
 
-    Ok("codex hooks: Stop captured into messages/parts.".to_string())
+    Ok(String::new())
 }
 
 fn required_field<'a>(value: Option<&'a str>, field_name: &str) -> Result<&'a str> {
@@ -158,7 +158,7 @@ mod tests {
 
         let output = capture_with(&db, &event("session-1", "turn-1", "hello back"), || 1_000)
             .expect("capture should succeed");
-        assert!(output.contains("Stop"));
+        assert_eq!(output, "");
 
         assert_eq!(
             message_rows(&db),
