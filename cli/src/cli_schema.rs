@@ -320,6 +320,9 @@ pub enum HooksSubcommand {
 
     #[command(about = "Run conversation-trace hook (reads JSON payload from STDIN)")]
     ConversationTrace,
+
+    #[command(about = "Run Codex hook (reads JSON payload from STDIN)")]
+    Codex,
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
