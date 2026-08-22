@@ -1,4 +1,5 @@
 import "../base/decision-skill.pkl" as decision
+import "common.pkl" as common
 import "workflow-composite.pkl" as workflowResults
 
 /// Codex has no command-routed entrypoints — it discovers skills directly, with
@@ -10,4 +11,91 @@ skillDocuments {
   for (path, document in decision.skillDocuments.apply("")) {
     [path] = document
   }
+}
+
+local missingSceInstallMessage = "sce CLI not found. Install it from https://sce.crocoder.dev/docs/getting-started#install-cli"
+
+local codexSceHookScriptPath = ".codex/hooks/run-sce-or-show-install-guidance.sh"
+
+local codexSceHookCommand = "bash \\\"\(codexSceHookScriptPath)\\\" sce hooks codex"
+
+/// Every Codex lifecycle event Codex routes to the SCE hook is dispatched
+/// through a single command (`sce hooks codex`); the typed dispatcher inside
+/// that command (T06) distinguishes event/tool combinations from the JSON
+/// payload it receives on stdin, so no per-event command varies here.
+hooksJson = new common.RenderedTextFile {
+  slug = "hooks"
+  rendered = """
+{
+  "$schema": "https://json.schemastore.org/codex-cli-hooks.json",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(codexSceHookCommand)"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(codexSceHookCommand)"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(codexSceHookCommand)"
+          }
+        ]
+      },
+      {
+        "matcher": "apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(codexSceHookCommand)"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(codexSceHookCommand)"
+          }
+        ]
+      }
+    ]
+  }
+}
+"""
+}
+
+sceHookScript = new common.RenderedTextFile {
+  slug = "sce-hook"
+  rendered = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v sce >/dev/null 2>&1; then
+  echo "\(missingSceInstallMessage)" >&2
+  exit 0
+fi
+
+exec "$@"
+"""
 }
