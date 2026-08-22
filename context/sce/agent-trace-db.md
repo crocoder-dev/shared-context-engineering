@@ -202,7 +202,7 @@ Post-commit intersection rows are written by the active `post-commit` hook flow 
 
 `sce hooks session-model` is no longer a supported command route, generated Claude settings no longer produce `SessionStart` model-attribution events, and the Agent Trace DB adapter no longer exposes a `session_models` API or fresh-schema table. See [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md).
 
-`sce hooks codex`'s `UserPromptSubmit` arm is a second, independent writer into `messages` and `parts`, reusing `insert_messages`/`insert_parts` and the same `ON CONFLICT (session_id, message_id) DO NOTHING` parent-message dedup — not a new adapter. It stores `cx_`-prefixed session IDs and a deterministic `cx:<turn_id>:user` message ID rather than a generated UUID. See [codex-integration-runtime.md](codex-integration-runtime.md).
+`sce hooks codex`'s `UserPromptSubmit` and `Stop` arms are each a second, independent writer into `messages` and `parts`, reusing `insert_messages`/`insert_parts` and the same `ON CONFLICT (session_id, message_id) DO NOTHING` parent-message dedup — not a new adapter. They store `cx_`-prefixed session IDs and a deterministic `cx:<turn_id>:user`/`cx:<turn_id>:assistant` message ID rather than a generated UUID. See [codex-integration-runtime.md](codex-integration-runtime.md).
 
 ## Recent patch reads
 

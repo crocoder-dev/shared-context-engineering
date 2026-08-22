@@ -8,6 +8,7 @@ use crate::services::observability::traits::Logger;
 
 use super::read_hook_stdin;
 
+mod bash_policy;
 mod stop;
 mod user_prompt_submit;
 
@@ -99,10 +100,7 @@ fn run_codex_subcommand_from_payload(
             user_prompt_submit::handle(repository_root, &event)?
         }
         CodexDispatchArm::Stop => stop::handle(repository_root, &event)?,
-        CodexDispatchArm::PreToolUseBash => {
-            "codex hooks: PreToolUse Bash dispatch (stub; policy routing lands in T09)."
-                .to_string()
-        }
+        CodexDispatchArm::PreToolUseBash => bash_policy::handle(repository_root, &event)?,
         CodexDispatchArm::NoOp => format!(
             "codex hooks: no-op for unsupported event/tool combination (hook_event_name='{}', tool_name={:?}).",
             event.hook_event_name, event.tool_name
@@ -210,25 +208,6 @@ mod tests {
             classify_codex_event(&event("SessionStart", None)),
             CodexDispatchArm::NoOp
         );
-    }
-
-    #[test]
-    fn run_codex_subcommand_from_payload_dispatches_each_still_stubbed_combination() {
-        let cases = [
-            (
-                r#"{"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Bash"}"#,
-                "PreToolUse Bash",
-            ),
-        ];
-
-        for (payload, expected_substring) in cases {
-            let output = run_codex_subcommand_from_payload(Path::new("/tmp"), payload)
-                .expect("stub dispatch should succeed");
-            assert!(
-                output.contains(expected_substring),
-                "expected output '{output}' to mention '{expected_substring}'"
-            );
-        }
     }
 
     #[test]
