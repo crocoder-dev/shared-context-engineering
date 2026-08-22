@@ -8,6 +8,7 @@ use crate::services::default_paths::codex_apply_patch_pending_dir_for_repository
 use crate::services::repository_identity::resolve::resolve_repository_identity;
 
 use super::super::CodexHookEvent;
+use super::persist;
 use super::pre::{
     event_key, pending_state_file_path, required_field, snapshot_worktree_tree_oid,
     PendingApplyPatchState,
@@ -48,10 +49,13 @@ pub(in crate::services::hooks::codex) fn handle(
             .context("Failed to resolve Codex apply_patch pending-state directory.")?;
 
     match finalize_with(repository_root, &pending_dir, event)? {
-        ApplyPatchFinalizeOutcome::Diff(patch) => Ok(format!(
-            "codex hooks: PostToolUse apply_patch finalized with an observed diff ({} bytes).",
-            patch.len()
-        )),
+        ApplyPatchFinalizeOutcome::Diff(patch) => {
+            let persist_output = persist::handle(repository_root, event, &patch)?;
+            Ok(format!(
+                "codex hooks: PostToolUse apply_patch finalized with an observed diff ({} bytes); {persist_output}",
+                patch.len()
+            ))
+        }
         ApplyPatchFinalizeOutcome::NoOp => Ok(String::from(
             "codex hooks: PostToolUse apply_patch finalized with no observed change (no-op).",
         )),

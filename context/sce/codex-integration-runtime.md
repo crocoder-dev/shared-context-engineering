@@ -29,9 +29,8 @@ for how the other three tools intake conversation/diff evidence.
   (`cli/src/services/hooks/mod.rs`) carry a `"codex" -> cx_` arm alongside
   `oc_`/`cc_`/`pi_`, idempotent for an already-prefixed session ID.
 - `normalize_codex_model_id` idempotently prefixes a raw Codex model ID with
-  `openai/`, mirroring `normalize_claude_model_id`. It is not yet called from
-  any dispatch arm — apply_patch diff-trace persistence (a later
-  Codex-integration task) is its first consumer.
+  `openai/`, mirroring `normalize_claude_model_id`. Its first and only caller
+  is `apply_patch/persist.rs`'s diff-trace persistence (see below).
 
 ## Implemented slices: `UserPromptSubmit` and `Stop` capture
 
@@ -151,15 +150,55 @@ computing the observed diff.
   worktree change, the observed diff naturally excludes it: only the
   incremental delta between the two snapshots appears, regardless of what was
   already dirty when `PreToolUse` fired.
-- Persisting a non-empty diff as `diff_traces`/conversation evidence (the
-  `openai/`-normalized model ID, the `cx_` session, the patch conversation
-  row) is a later Codex-integration task; this arm only computes the diff and
-  reports success or no-op, with no `agent-trace.db` write in either case.
+- A non-empty diff is handed to `apply_patch/persist.rs` (below) for
+  persistence; a `NoOp` outcome is never persisted.
+
+## Persisting a non-empty diff: `diff_traces` and patch conversation
+
+`cli/src/services/hooks/codex/apply_patch/persist.rs` implements the
+persistence step `PostToolUse(apply_patch)` calls for a non-empty observed
+diff — the last previously-stub Codex dispatch arm behavior; every Codex
+dispatch arm now has real behavior.
+
+- Requires the same non-empty `session_id`, `turn_id`, `tool_use_id` as
+  `pre`/`post` (reuses `pre::required_field`).
+- Persists one `DiffTraceInsert` row via the existing `insert_diff_trace()`:
+  `session_id = cx_<session_id>` (via `prefixed_diff_trace_session_id`),
+  `patch` = the observed unified diff, `model_id` = `event.model` passed
+  through T01's `normalize_codex_model_id` (`openai/`-prefixed, `None` when
+  `event.model` is absent), `tool_name = "codex"`, `tool_version = None`,
+  `payload_type = PAYLOAD_TYPE_PATCH`.
+- Persists one assistant patch conversation row via the existing
+  `insert_messages`/`insert_parts`: `session_id = cx_<session_id>` (via
+  `prefixed_conversation_trace_session_id`), `message_id =
+  cx:<turn_id>:<tool_use_id>:patch`, `role = Assistant`, one `part_type =
+  Patch` part whose `text` is the raw observed diff (stored as-is, not
+  JSON-serialized — the DB layer imposes no format constraint on
+  `parts.text`).
+- No Codex-specific DB adapter: both inserts reuse the exact helpers
+  `UserPromptSubmit`/`Stop` and the other three tools' diff-trace/
+  conversation-trace intakes already use.
+- A persistence failure propagates through `?` to the outer dispatcher's
+  existing fail-open path (`run_codex_subcommand` → `log_codex_fail_open`),
+  the same posture as every other Codex arm's validation/parse errors.
+- The persisted `diff_traces` row is read back and attributed by the
+  existing, unmodified post-commit intersection pipeline
+  (`recent_diff_trace_patches` → `combine_patches` → `intersect_patches` →
+  `build_agent_trace`) exactly like an OpenCode/Claude/Pi row — no
+  post-commit code required a change for Codex.
 
 ## Verification
 
 - `nix develop -c sh -c './scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::codex'`
-  (also runnable narrowed per-arm, e.g. `hooks::codex::user_prompt_submit`).
+  (also runnable narrowed per-arm, e.g. `hooks::codex::user_prompt_submit`,
+  `hooks::codex::apply_patch::persist`).
+- The post-commit-pipeline-reuse proof
+  (`codex_diff_trace_is_attributed_through_the_post_commit_pipeline`) lives in
+  `cli/src/services/hooks/mod.rs`'s own test module, not under `hooks::codex`,
+  since it exercises `run_post_commit_intersection_flow_with`/
+  `run_post_commit_agent_trace_flow_with`/`capture_post_commit_patch_from_git`
+  — private to that module and unreachable from a descendant `codex::` test
+  module.
 - `nix flake check` runs the same tests plus clippy/fmt/generated-asset checks.
 
 See also: [agent-trace-db.md](agent-trace-db.md),
