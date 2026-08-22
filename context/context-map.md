@@ -98,6 +98,7 @@ Supporting repo docs:
 
 Recent decision records:
 
+- `context/decisions/2026-08-23-codex-canonical-worktree-path-resolution.md` (accepts upstream-compatible Codex apply_patch parent/absolute paths only when canonical resolution remains inside the Git worktree, validates nearest existing prefixes for missing targets, and rejects symlink escapes)
 - `context/decisions/2026-08-23-codex-event-scoped-apply-patch-evidence-identities.md` (uses bounded, deterministic `tool_use_id`-derived synthetic line identities for Codex apply_patch evidence; positions are evidence identities rather than source line numbers, with existing patch combination/intersection semantics unchanged)
 - `context/decisions/2026-08-23-codex-truthful-model-provenance.md` (preserves non-empty Codex model IDs unchanged, leaves blank/missing values nullable, and forbids inferred provider prefixes or a fabricated provider field)
 - `context/decisions/2026-08-23-codex-root-aware-hook-invocation.md` (requires generated Codex hook commands to resolve the Git root at invocation time, quote the helper path, preserve STDIN, and fail open when root resolution fails)

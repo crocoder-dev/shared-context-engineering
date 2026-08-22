@@ -118,19 +118,20 @@ fn resolve_event_cwd(git_root: &Path, event_cwd: &str) -> Result<PathBuf> {
         bail!("Codex hook event cwd must be an absolute path.");
     }
 
-    let cwd = std::fs::canonicalize(cwd).with_context(|| {
+    let lexical_cwd = normalize_absolute_path(cwd)?;
+    let canonical_cwd = std::fs::canonicalize(&lexical_cwd).with_context(|| {
         format!(
             "failed to resolve Codex hook event cwd '{}'.",
             cwd.display()
         )
     })?;
-    if !cwd.is_dir() {
+    if !canonical_cwd.is_dir() {
         bail!(
             "Codex hook event cwd '{}' is not a directory.",
             cwd.display()
         );
     }
-    if !cwd.starts_with(git_root) {
+    if !canonical_cwd.starts_with(git_root) {
         bail!(
             "Codex hook event cwd '{}' is outside Git repository '{}'.",
             cwd.display(),
@@ -138,87 +139,86 @@ fn resolve_event_cwd(git_root: &Path, event_cwd: &str) -> Result<PathBuf> {
         );
     }
 
-    Ok(cwd)
+    Ok(lexical_cwd)
 }
 
 fn resolve_path_from_cwd(git_root: &Path, event_cwd: &Path, codex_path: &str) -> Result<String> {
-    let relative_path = normalize_codex_relative_path(codex_path)?;
-    let candidate = event_cwd.join(&relative_path);
-    ensure_existing_prefix_is_inside_repository(git_root, &candidate)?;
-
-    let cwd_relative = event_cwd
-        .strip_prefix(git_root)
-        .map_err(|_| anyhow!("Codex hook event cwd cannot be represented relative to Git root."))?;
-    let repository_relative = cwd_relative.join(relative_path);
-    path_to_utf8_slash_path(&repository_relative)
-}
-
-fn normalize_codex_relative_path(codex_path: &str) -> Result<PathBuf> {
     if codex_path.trim().is_empty() || codex_path.contains('\0') {
         bail!("Codex apply_patch path is empty or malformed.");
     }
 
-    let path = Path::new(codex_path);
-    if path.is_absolute() {
-        bail!("Codex apply_patch path '{codex_path}' must not be absolute.");
+    let codex_path = Path::new(codex_path);
+    let candidate = if codex_path.is_absolute() {
+        codex_path.to_path_buf()
+    } else {
+        event_cwd.join(codex_path)
+    };
+    let lexical_target = normalize_absolute_path(&candidate)?;
+    let resolved = resolve_candidate_inside_repository(git_root, &lexical_target)?;
+    path_to_utf8_slash_path(
+        resolved
+            .strip_prefix(git_root)
+            .map_err(|_| anyhow!("repository-relative path is outside the Git root."))?,
+    )
+}
+
+/// Resolve a lexically normalized absolute path while preserving filesystem
+/// semantics for existing components. Lexical normalization must happen before
+/// this function so a symlink component removed by `..` is never inspected.
+fn resolve_candidate_inside_repository(git_root: &Path, candidate: &Path) -> Result<PathBuf> {
+    let (existing, suffix) = nearest_existing_prefix(candidate)?;
+    let canonical_existing = canonicalize_inside_repository(git_root, &existing, candidate)?;
+    let resolved = append_path_lexically(&canonical_existing, &suffix)?;
+    if !resolved.starts_with(git_root) {
+        bail!(
+            "Codex apply_patch path '{}' resolves outside Git repository '{}'.",
+            candidate.display(),
+            git_root.display()
+        );
+    }
+    Ok(resolved)
+}
+
+/// Normalize an absolute path using Codex's lexical `PathUri::join` semantics:
+/// `.` is removed, `..` removes the preceding lexical component, and parent
+/// traversal at the filesystem root is clamped rather than treated as an error.
+fn normalize_absolute_path(path: &Path) -> Result<PathBuf> {
+    if !path.is_absolute() {
+        bail!("Codex path must be absolute after joining with the event cwd.");
     }
 
     let mut normalized = PathBuf::new();
-    let mut has_normal_component = false;
     for component in path.components() {
         match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(std::path::MAIN_SEPARATOR.to_string()),
             Component::CurDir => {}
-            Component::Normal(value) => {
-                if value.to_str().is_none() {
-                    bail!("Codex apply_patch path '{codex_path}' is not valid UTF-8.");
-                }
-                normalized.push(value);
-                has_normal_component = true;
-            }
+            Component::Normal(value) => normalized.push(value),
             Component::ParentDir => {
-                bail!("Codex apply_patch path '{codex_path}' must not escape the event cwd.");
-            }
-            Component::RootDir | Component::Prefix(_) => {
-                bail!("Codex apply_patch path '{codex_path}' is not relative.");
+                let _ = normalized.pop();
             }
         }
-    }
-
-    if !has_normal_component {
-        bail!("Codex apply_patch path '{codex_path}' has no file component.");
     }
 
     Ok(normalized)
 }
 
-/// Check the nearest existing path prefix so a lexical path through a
-/// symlink cannot silently map evidence outside the real repository. Missing
-/// Add File targets are allowed; their existing parent prefix is checked.
-fn ensure_existing_prefix_is_inside_repository(git_root: &Path, candidate: &Path) -> Result<()> {
-    let mut existing = candidate;
+fn nearest_existing_prefix(path: &Path) -> Result<(PathBuf, PathBuf)> {
+    let mut existing = path.to_path_buf();
     loop {
-        match std::fs::symlink_metadata(existing) {
+        match std::fs::symlink_metadata(&existing) {
             Ok(_) => {
-                let resolved = std::fs::canonicalize(existing).with_context(|| {
-                    format!(
-                        "failed to resolve existing Codex apply_patch path prefix '{}'.",
-                        existing.display()
-                    )
-                })?;
-                if !resolved.starts_with(git_root) {
-                    bail!(
-                        "Codex apply_patch path '{}' resolves outside Git repository '{}'.",
-                        candidate.display(),
-                        git_root.display()
-                    );
-                }
-                return Ok(());
+                let suffix = path
+                    .strip_prefix(&existing)
+                    .map_err(|_| anyhow!("Codex apply_patch path has an invalid prefix."))?
+                    .to_path_buf();
+                return Ok((existing, suffix));
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                existing = existing.parent().ok_or_else(|| {
+                existing = existing.parent().map(Path::to_path_buf).ok_or_else(|| {
                     anyhow!(
                         "Codex apply_patch path '{}' has no existing repository prefix.",
-                        candidate.display()
+                        path.display()
                     )
                 })?;
             }
@@ -234,6 +234,48 @@ fn ensure_existing_prefix_is_inside_repository(git_root: &Path, candidate: &Path
     }
 }
 
+fn canonicalize_inside_repository(
+    git_root: &Path,
+    existing: &Path,
+    candidate: &Path,
+) -> Result<PathBuf> {
+    let resolved = std::fs::canonicalize(existing).with_context(|| {
+        format!(
+            "failed to resolve existing Codex apply_patch path prefix '{}'.",
+            existing.display()
+        )
+    })?;
+    if !resolved.starts_with(git_root) {
+        bail!(
+            "Codex apply_patch path '{}' resolves outside Git repository '{}'.",
+            candidate.display(),
+            git_root.display()
+        );
+    }
+    Ok(resolved)
+}
+
+fn append_path_lexically(base: &Path, suffix: &Path) -> Result<PathBuf> {
+    let mut result = base.to_path_buf();
+    for component in suffix.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(value) => result.push(value),
+            Component::ParentDir => {
+                if !result.pop() {
+                    bail!("Codex apply_patch path traverses above the filesystem root.");
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                bail!("Codex apply_patch path has an invalid suffix.");
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// Convert a canonical or lexically resolved path into the slash-separated
+/// UTF-8 form used by SCE patch text.
 fn path_to_utf8_slash_path(path: &Path) -> Result<String> {
     let mut components = Vec::new();
     for component in path.components() {
@@ -302,18 +344,53 @@ mod tests {
     }
 
     #[test]
-    fn resolves_nested_cwd_and_dot_components() {
+    fn resolves_nested_cwd_parent_traversal_and_dot_components() {
         let root = temp_repo("nested");
         let cwd = root.join("src").join("lib");
         fs::create_dir_all(&cwd).expect("nested cwd should be created");
-        let result =
-            resolve_codex_patch_path(&root, &cwd.join(".").to_string_lossy(), "./../lib.rs")
-                .expect_err("traversal must be rejected even when dot components are present");
-        assert!(result.to_string().contains("must not escape"));
+
+        let result = resolve_codex_patch_path(&root, &cwd.to_string_lossy(), "./../lib.rs")
+            .expect("valid parent traversal should resolve");
+        assert_eq!(result, "src/lib.rs");
+
+        let result = resolve_codex_patch_path(&root, &cwd.to_string_lossy(), "../../root.rs")
+            .expect("multiple valid parent traversals should resolve");
+        assert_eq!(result, "root.rs");
 
         let result = resolve_codex_patch_path(&root, &cwd.to_string_lossy(), "./nested/file.rs")
             .expect("nested relative path should resolve");
         assert_eq!(result, "src/lib/nested/file.rs");
+        remove_repo(&root);
+    }
+
+    #[test]
+    fn accepts_absolute_inside_worktree_paths() {
+        let root = temp_repo("absolute-inside");
+        let cwd = root.join("src");
+        fs::create_dir(&cwd).expect("src directory should be created");
+        let target = cwd.join("../lib.rs");
+
+        let result =
+            resolve_codex_patch_path(&root, &cwd.to_string_lossy(), &target.to_string_lossy())
+                .expect("absolute path inside the worktree should resolve");
+        assert_eq!(result, "lib.rs");
+        remove_repo(&root);
+    }
+
+    #[test]
+    fn accepts_missing_add_targets_and_normalizes_their_parent_components() {
+        let root = temp_repo("missing-target");
+        let cwd = root.join("src").join("lib");
+        fs::create_dir_all(&cwd).expect("nested cwd should be created");
+
+        let result =
+            resolve_codex_patch_path(&root, &cwd.to_string_lossy(), "../generated/new file.rs")
+                .expect("missing add target should resolve");
+        assert_eq!(result, "src/generated/new file.rs");
+
+        let result = resolve_codex_patch_path(&root, &cwd.to_string_lossy(), "../../new.rs")
+            .expect("missing target after parent traversal should resolve");
+        assert_eq!(result, "new.rs");
         remove_repo(&root);
     }
 
@@ -339,7 +416,7 @@ mod tests {
             .expect("temporary root should have a parent")
             .to_path_buf();
 
-        for path in ["../outside.txt", "/etc/passwd", "./..", ""] {
+        for path in ["../outside.txt", "/etc/passwd", "./..", "", "bad\0path"] {
             let error = resolve_codex_patch_path(&root, &root.to_string_lossy(), path)
                 .expect_err("unsafe path should be rejected");
             assert!(!error.to_string().is_empty());
@@ -356,6 +433,73 @@ mod tests {
         let error = resolve_codex_patch_path(&root, "relative/cwd", "file.rs")
             .expect_err("relative cwd should be rejected");
         assert!(error.to_string().contains("absolute"));
+        remove_repo(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_existing_and_missing_paths_that_escape_through_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_repo("symlink-escape");
+        let outside = root
+            .parent()
+            .expect("temporary root should have a parent")
+            .join(format!("sce-codex-path-outside-{}", std::process::id()));
+        fs::create_dir_all(&outside).expect("outside directory should be created");
+        fs::write(outside.join("existing.rs"), "outside").expect("outside file should be created");
+
+        let alias = root.join("alias");
+        let existing_link = root.join("existing-link");
+        let missing_link = root.join("missing-link");
+        symlink(&outside, &alias).expect("alias escape symlink should be created");
+        symlink(&outside, &existing_link).expect("existing escape symlink should be created");
+        symlink(&outside, &missing_link).expect("missing escape symlink should be created");
+
+        let eliminated =
+            resolve_codex_patch_path(&root, &root.to_string_lossy(), "alias/../foo.rs")
+                .expect("a symlink removed by lexical parent traversal must not be inspected");
+        assert_eq!(eliminated, "foo.rs");
+        assert!(
+            resolve_codex_patch_path(&root, &root.to_string_lossy(), "alias/foo.rs").is_err(),
+            "an actually traversed escape symlink must be rejected"
+        );
+        assert!(resolve_codex_patch_path(
+            &root,
+            &root.to_string_lossy(),
+            "existing-link/existing.rs"
+        )
+        .is_err());
+        assert!(
+            resolve_codex_patch_path(&root, &root.to_string_lossy(), "missing-link/new.rs")
+                .is_err()
+        );
+
+        remove_repo(&root);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn clamps_excessive_parent_traversal_at_filesystem_root() {
+        let root = temp_repo("root-clamp");
+        let cwd = root.join("src");
+        fs::create_dir(&cwd).expect("src directory should be created");
+        let parent_path = root
+            .parent()
+            .expect("temporary repository should have a parent")
+            .strip_prefix(Path::new("/"))
+            .expect("temporary repository parent should be absolute")
+            .to_string_lossy();
+        let root_name = root
+            .file_name()
+            .expect("temporary repository should have a name")
+            .to_str()
+            .expect("temporary repository name should be UTF-8");
+        let path = format!("../../../../{parent_path}/{root_name}/clamped.rs");
+
+        let result = resolve_codex_patch_path(&root, &cwd.to_string_lossy(), &path)
+            .expect("excessive parent traversal should clamp at filesystem root");
+        assert_eq!(result, "clamped.rs");
         remove_repo(&root);
     }
 

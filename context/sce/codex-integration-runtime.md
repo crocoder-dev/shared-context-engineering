@@ -133,11 +133,16 @@ accepts; `mod.rs`'s `handle` wires the stages together and persists the result:
 - After parsing, the handler discovers the real Git root rather than assuming
   the process cwd is the repository root. It requires `cwd` to be a valid
   absolute directory inside that root, resolves every source and move
-  destination independently from that cwd, normalizes `.` components, and
-  emits only lossless repository-relative UTF-8 paths. Traversal, absolute or
-  malformed paths, outside-repository cwd, and symlink-escaping existing path
-  prefixes are logged as `sce.hooks.codex.apply_patch.path_resolution_failed`
-  and fail open before normalization or database access.
+  destination independently from that cwd, and emits only lossless
+  repository-relative UTF-8 paths. Valid `..` components and absolute paths
+  are accepted when canonical resolution remains inside the worktree. Missing
+  targets are checked through their nearest existing prefix, so Add File paths
+  can remain absent while existing and missing symlink escapes are rejected.
+  Outside-repository cwd, outside paths, malformed/NUL paths, and ambiguous
+  mappings are logged as
+  `sce.hooks.codex.apply_patch.path_resolution_failed` and fail open before
+  normalization or database access. This canonical worktree containment rule
+  is an accepted compatibility and security decision; see [the ADR](../decisions/2026-08-23-codex-canonical-worktree-path-resolution.md).
 - A parse failure is logged (`sce.hooks.codex.apply_patch.parse_failed`) and
   fails open with no evidence — never a deny response, since `apply_patch`
   tracing is `PostToolUse`-only.
