@@ -97,7 +97,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 
 - `integrations` must be an object when present and currently allows `target` and `optional_workflows`; either key alone yields a parsed `IntegrationsConfig` with the other defaulting to empty.
 - `integrations.target` must be an array of unique canonical target IDs when present.
-- Supported target ID values: `opencode`, `claude`, `pi`.
+- Supported target ID values: `opencode`, `claude`, `pi`, `codex`.
 - Unknown target IDs fail schema validation.
 - `integrations.optional_workflows` must be an array of unique optional-workflow IDs when present; it records which optional workflows a repository has opted into. Its enum is derived in `config/pkl/base/sce-config-schema.pkl` from the workflow catalog's `optional` records rather than hand-listed, so marking a workflow optional in Pkl extends the accepted values with no Rust or schema edit. Currently the only accepted value is `brownfield`.
 - Unknown optional-workflow IDs and duplicate entries fail schema validation. Rust-side mapping validates each ID a second time against the embedded optional-workflow catalog (`parse_optional_workflow_id` in `cli/src/services/config/types.rs`), reporting the catalog's available IDs.

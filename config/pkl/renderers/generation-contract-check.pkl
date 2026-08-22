@@ -3,6 +3,7 @@ import "../base/workflow-catalog.pkl" as catalog
 import "opencode-content.pkl" as opencode
 import "claude-content.pkl" as claude
 import "pi-content.pkl" as pi
+import "codex-content.pkl" as codex
 
 /// Build the expected inventory from each target's independently checked
 /// document inventory plus the retained non-workflow assets. This deliberately
@@ -39,6 +40,12 @@ hidden expectedArtifactPaths = new Mapping {
   }
   ["config/.pi/extensions/sce/index.ts"] = true
 
+  for (path, _ in codex.skillDocuments) {
+    ["config/.agents/skills/\(path)"] = true
+  }
+  ["config/.codex/hooks.json"] = true
+  ["config/.codex/hooks/run-sce-or-show-install-guidance.sh"] = true
+
   ["config/schema/sce-config.schema.json"] = true
   ["config/optional-workflows.json"] = true
 }
@@ -58,6 +65,9 @@ hidden workflowDocuments = new Mapping {
   }
   for (path, document in pi.skillDocuments) {
     ["config/.pi/skills/\(path)"] = document.text
+  }
+  for (path, document in codex.skillDocuments) {
+    ["config/.agents/skills/\(path)"] = document.text
   }
 }
 
@@ -106,7 +116,7 @@ local decisionWorkflowText = (documents: Mapping, workflowSlug: String) ->
   }.join("\n")
 
 local expectedDecisionDocumentPaths = new Mapping {
-  for (target in new Listing { ".opencode"; ".claude"; ".pi" }) {
+  for (target in new Listing { ".opencode"; ".claude"; ".pi"; ".agents" }) {
     ["config/\(target)/skills/sce-decision/SKILL.md"] = true
     ["config/\(target)/skills/sce-decision/references/adr-template.md"] = true
   }
@@ -261,10 +271,11 @@ local forbiddenWorkflowReferenceTokens = new Listing {
 
 /// Six cross-target workflow packages, with package-local phase references and
 /// supporting documents on the four phase-based workflows, plus the decision
-/// package and retained non-workflow assets. Stating the total as a literal makes
-/// an unintended inventory change fail here instead of silently becoming the new
-/// expectation.
-local expectedArtifactPathCount = 107
+/// package and retained non-workflow assets, across OpenCode, Claude, Pi, and
+/// Codex, plus Codex's `.codex/hooks.json` and its install-guidance hook
+/// script. Stating the total as a literal makes an unintended inventory
+/// change fail here instead of silently becoming the new expectation.
+local expectedArtifactPathCount = 135
 
 local assertExactArtifactPaths = (actual: Mapping) ->
   if (
@@ -376,7 +387,7 @@ local assertDecisionDocumentPaths = (documents: Mapping) ->
 
 hidden assertPhaseReferenceContract = (documents: Mapping) ->
   if (
-    new Listing { ".opencode"; ".claude"; ".pi" }.every((target) ->
+    new Listing { ".opencode"; ".claude"; ".pi"; ".agents" }.every((target) ->
       requiredPhaseReferencesBySkill.every((skillSlug, references) ->
         let (skillPath = "config/\(target)/skills/\(skillSlug)/SKILL.md")
           documents.containsKey(skillPath)
@@ -405,7 +416,7 @@ local assertDecisionContent = (documents: Mapping) ->
 
 local assertHandoverContent = (documents: Mapping) ->
   if (
-    documents.length == 3
+    documents.length == 4
     && documents.every((_, text) ->
       requiredHandoverSkillTokens.every((token) -> text.contains(token))
     )
@@ -414,7 +425,7 @@ local assertHandoverContent = (documents: Mapping) ->
 
 local assertBrownfieldContent = (documents: Mapping) ->
   if (
-    documents.length == 3
+    documents.length == 4
     && documents.every((_, text) ->
       requiredBrownfieldSkillTokens.every((token) -> text.contains(token))
     )
@@ -583,6 +594,7 @@ hidden assertTargetNeutralReferences = (documents: Mapping) ->
       opencodeReferences.every((relativePath, text) ->
         documents["config/.claude/skills/" + relativePath] == text
         && documents["config/.pi/skills/" + relativePath] == text
+        && (!documents.containsKey("config/.agents/skills/" + relativePath) || documents["config/.agents/skills/" + relativePath] == text)
       )
     ) "target-neutral references: Pi, Claude, and OpenCode bodies match"
     else throw("target-neutral package references differ between Pi, Claude, and OpenCode")

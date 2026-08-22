@@ -8,8 +8,8 @@ use crate::services::checkout;
 use crate::services::config::schema::parse_file_config;
 use crate::services::config::{self, ConfigPathSource, IntegrationTargetId};
 use crate::services::default_paths::{
-    agent_trace_db_path_for_repository, claude_asset, opencode_asset, pi_asset, InstallTargetPaths,
-    RepoPaths,
+    agent_trace_db_path_for_repository, claude_asset, codex_asset, opencode_asset, pi_asset,
+    repo_dir, InstallTargetPaths, RepoPaths,
 };
 use crate::services::repository_identity::resolve::{
     resolve_repository_identity, RepositoryIdentitySource,
@@ -519,6 +519,9 @@ fn resolve_doctor_integration_targets(repository_root: &Path) -> Vec<Integration
     if repo_paths.pi_dir().exists() {
         detected.push(IntegrationTargetId::Pi);
     }
+    if repo_paths.codex_dir().exists() {
+        detected.push(IntegrationTargetId::Codex);
+    }
     detected
 }
 
@@ -544,10 +547,10 @@ fn inspect_repository_integrations(
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
             summary: String::from(
-                "No integrations are installed. Run 'sce setup' to install OpenCode, Claude, and/or Pi integration assets.",
+                "No integrations are installed. Run 'sce setup' to install OpenCode, Claude, Pi, and/or Codex integration assets.",
             ),
             remediation: String::from(
-                "Run 'sce setup --opencode', 'sce setup --claude', 'sce setup --pi', or 'sce setup --all' to install integration assets.",
+                "Run 'sce setup --opencode', 'sce setup --claude', 'sce setup --pi', 'sce setup --codex', or 'sce setup --all' to install integration assets.",
             ),
             next_action: "manual_steps",
             scope: None,
@@ -581,6 +584,12 @@ fn inspect_repository_integrations(
                     collect_pi_integration_groups(resolved_root, &selected_optional_workflows);
                 inspect_pi_integration_health(&pi_groups, problems);
                 integration_groups.extend(pi_groups);
+            }
+            IntegrationTargetId::Codex => {
+                let codex_groups =
+                    collect_codex_integration_groups(resolved_root, &selected_optional_workflows);
+                inspect_codex_integration_health(&codex_groups, problems);
+                integration_groups.extend(codex_groups);
             }
         }
     }
@@ -907,6 +916,15 @@ fn inspect_pi_integration_health(
     push_pi_integration_read_fail_problems(integration_groups, problems);
 }
 
+fn inspect_codex_integration_health(
+    integration_groups: &[IntegrationGroupHealth],
+    problems: &mut Vec<DoctorProblem>,
+) {
+    push_codex_integration_missing_problems(integration_groups, problems);
+    push_codex_integration_mismatch_problems(integration_groups, problems);
+    push_codex_integration_read_fail_problems(integration_groups, problems);
+}
+
 fn push_opencode_integration_missing_problems(
     integration_groups: &[IntegrationGroupHealth],
     problems: &mut Vec<DoctorProblem>,
@@ -1225,6 +1243,129 @@ fn push_pi_integration_read_fail_problems(
     }
 }
 
+/// Codex requires the project's `.codex/hooks.json` to be reviewed and
+/// trusted inside the Codex CLI before it will execute; doctor can only
+/// diagnose the file on disk and reinstall it, never grant that trust.
+const CODEX_HOOK_TRUST_GUIDANCE: &str = "Codex also requires reviewing and trusting this project's hooks inside the Codex CLI before they take effect; 'sce doctor' cannot grant that trust on your behalf.";
+
+fn push_codex_integration_missing_problems(
+    integration_groups: &[IntegrationGroupHealth],
+    problems: &mut Vec<DoctorProblem>,
+) {
+    for group in integration_groups {
+        let missing_children = group
+            .children
+            .iter()
+            .filter(|child| matches!(&child.content_state, IntegrationContentState::Missing))
+            .collect::<Vec<_>>();
+        if missing_children.is_empty() {
+            continue;
+        }
+
+        let missing_paths = missing_children
+            .iter()
+            .map(|child| format!("'{}'", child.path.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut remediation = format!(
+            "Reinstall repo-root Codex assets to restore the missing {} file(s), then rerun 'sce doctor'.",
+            group.display_label().to_ascii_lowercase()
+        );
+        if group.key.area == IntegrationArea::Hooks {
+            remediation.push(' ');
+            remediation.push_str(CODEX_HOOK_TRUST_GUIDANCE);
+        }
+        problems.push(DoctorProblem {
+            kind: ProblemKind::CodexIntegrationFilesMissing,
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "{} required file(s) are missing: {}.",
+                group.display_label(),
+                missing_paths
+            ),
+            remediation,
+            next_action: "manual_steps",
+            scope: Some(group.key),
+        });
+    }
+}
+
+fn push_codex_integration_mismatch_problems(
+    integration_groups: &[IntegrationGroupHealth],
+    problems: &mut Vec<DoctorProblem>,
+) {
+    for group in integration_groups {
+        let mismatched_children = group
+            .children
+            .iter()
+            .filter(|child| matches!(&child.content_state, IntegrationContentState::Mismatch))
+            .collect::<Vec<_>>();
+        if mismatched_children.is_empty() {
+            continue;
+        }
+
+        let mismatched_paths = mismatched_children
+            .iter()
+            .map(|child| format!("'{}'", child.path.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut remediation = format!(
+            "Reinstall repo-root Codex assets to restore the canonical {} content, then rerun 'sce doctor'.",
+            group.display_label().to_ascii_lowercase()
+        );
+        if group.key.area == IntegrationArea::Hooks {
+            remediation.push(' ');
+            remediation.push_str(CODEX_HOOK_TRUST_GUIDANCE);
+        }
+        problems.push(DoctorProblem {
+            kind: ProblemKind::CodexIntegrationContentMismatch,
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "{} file(s) differ from the canonical embedded content: {}.",
+                group.display_label(),
+                mismatched_paths
+            ),
+            remediation,
+            next_action: "manual_steps",
+            scope: Some(group.key),
+        });
+    }
+}
+
+fn push_codex_integration_read_fail_problems(
+    integration_groups: &[IntegrationGroupHealth],
+    problems: &mut Vec<DoctorProblem>,
+) {
+    for group in integration_groups {
+        for child in &group.children {
+            let IntegrationContentState::ReadFailed(error) = &child.content_state else {
+                continue;
+            };
+            problems.push(DoctorProblem {
+                kind: ProblemKind::CodexAssetReadFailed,
+                category: ProblemCategory::FilesystemPermissions,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!(
+                    "Unable to read Codex asset '{}' at '{}': {error}",
+                    child.relative_path,
+                    child.path.display()
+                ),
+                remediation: format!(
+                    "Verify that '{}' is readable before rerunning 'sce doctor'.",
+                    child.path.display()
+                ),
+                next_action: "manual_steps",
+                scope: Some(group.key),
+            });
+        }
+    }
+}
+
 fn inspect_opencode_plugin_registry_health(
     repository_root: &Path,
     problems: &mut Vec<DoctorProblem>,
@@ -1529,6 +1670,53 @@ fn collect_pi_integration_groups(
     ]
 }
 
+/// Codex's embedded-asset relative paths keep their own `.agents/`/`.codex/`
+/// output-root prefix (see `codex_asset`), so the integration root is the
+/// repository root itself rather than a single per-target subdirectory.
+fn collect_codex_integration_groups(
+    repository_root: &Path,
+    selected_optional_workflows: &[String],
+) -> Vec<IntegrationGroupHealth> {
+    let codex_root = InstallTargetPaths::new(repository_root).codex_target_dir();
+    let embedded_assets = iter_embedded_assets_for_setup_target_with_selection(
+        SetupTarget::Codex,
+        selected_optional_workflows,
+    )
+    .collect::<Vec<_>>();
+    let mut skill_children = Vec::new();
+    let mut hook_children = Vec::new();
+
+    for asset in embedded_assets {
+        let child = build_integration_child_from_asset(&codex_root, asset, None);
+
+        if child
+            .relative_path
+            .starts_with(&format!("{}/", codex_asset::SKILLS_DIR))
+        {
+            skill_children.push(child);
+        } else if child
+            .relative_path
+            .starts_with(&format!("{}/", repo_dir::CODEX))
+        {
+            hook_children.push(child);
+        }
+    }
+
+    sort_integration_children(&mut skill_children);
+    sort_integration_children(&mut hook_children);
+
+    vec![
+        IntegrationGroupHealth::new(
+            IntegrationGroupKey::new(IntegrationTarget::Codex, IntegrationArea::Skills),
+            skill_children,
+        ),
+        IntegrationGroupHealth::new(
+            IntegrationGroupKey::new(IntegrationTarget::Codex, IntegrationArea::Hooks),
+            hook_children,
+        ),
+    ]
+}
+
 fn sort_integration_children(children: &mut [IntegrationChildHealth]) {
     children.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
 }
@@ -1685,11 +1873,13 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        collect_claude_integration_groups, collect_hook_file_health,
-        collect_opencode_integration_groups, collect_pi_integration_groups,
-        inspect_claude_integration_health, HookContentState, IntegrationContentState,
-        IntegrationGroupHealth,
+        collect_claude_integration_groups, collect_codex_integration_groups,
+        collect_hook_file_health, collect_opencode_integration_groups,
+        collect_pi_integration_groups, inspect_claude_integration_health,
+        inspect_codex_integration_health, resolve_doctor_integration_targets, HookContentState,
+        IntegrationArea, IntegrationContentState, IntegrationGroupHealth, IntegrationTarget,
     };
+    use crate::services::config::IntegrationTargetId;
     use crate::services::setup::OPTIONAL_WORKFLOWS;
 
     /// The collectors only read file state, so a non-existent root is enough to
@@ -1853,6 +2043,119 @@ mod tests {
         .find(|asset| asset.relative_path == "opencode.json")
         .expect("embedded OpenCode catalog carries opencode.json")
         .bytes
+    }
+
+    fn embedded_codex_asset_bytes(relative_path: &str) -> &'static [u8] {
+        crate::services::setup::iter_embedded_assets_for_setup_target_with_selection(
+            crate::services::setup::SetupTarget::Codex,
+            &[] as &[String],
+        )
+        .find(|asset| asset.relative_path == relative_path)
+        .unwrap_or_else(|| panic!("embedded Codex catalog carries {relative_path}"))
+        .bytes
+    }
+
+    #[test]
+    fn codex_integration_groups_split_into_skills_and_hooks_areas() {
+        let root = absent_repository_root();
+        let groups = collect_codex_integration_groups(&root, &[]);
+
+        let skills_group = groups
+            .iter()
+            .find(|group| group.key.area == IntegrationArea::Skills)
+            .expect("Codex skills group present");
+        assert_eq!(skills_group.key.target, IntegrationTarget::Codex);
+        assert!(
+            skills_group
+                .children
+                .iter()
+                .all(|child| child.relative_path.starts_with(".agents/skills/")),
+            "Codex skills group children should all live under .agents/skills/"
+        );
+        assert!(!skills_group.children.is_empty());
+
+        let hooks_group = groups
+            .iter()
+            .find(|group| group.key.area == IntegrationArea::Hooks)
+            .expect("Codex hooks group present");
+        assert!(
+            hooks_group
+                .children
+                .iter()
+                .any(|child| child.relative_path == ".codex/hooks.json"),
+            "Codex hooks group should include .codex/hooks.json"
+        );
+        assert!(
+            hooks_group
+                .children
+                .iter()
+                .any(|child| child.relative_path
+                    == ".codex/hooks/run-sce-or-show-install-guidance.sh"),
+            "Codex hooks group should include the hook helper script"
+        );
+
+        assert!(
+            groups
+                .iter()
+                .flat_map(|group| &group.children)
+                .all(|child| matches!(child.content_state, IntegrationContentState::Missing)),
+            "an absent repository root should report every Codex asset as missing"
+        );
+    }
+
+    #[test]
+    fn codex_hooks_json_reports_match_then_missing_problem_includes_trust_guidance() {
+        let root = unique_temp_repository_root("codex-hooks");
+        let codex_hooks_dir = root.join(".codex");
+        std::fs::create_dir_all(&codex_hooks_dir).unwrap();
+        std::fs::write(
+            codex_hooks_dir.join("hooks.json"),
+            embedded_codex_asset_bytes(".codex/hooks.json"),
+        )
+        .unwrap();
+
+        let groups = collect_codex_integration_groups(&root, &[]);
+        let hooks_child = groups
+            .iter()
+            .flat_map(|group| &group.children)
+            .find(|child| child.relative_path == ".codex/hooks.json")
+            .expect(".codex/hooks.json child present");
+        assert!(matches!(
+            hooks_child.content_state,
+            IntegrationContentState::Match
+        ));
+
+        std::fs::remove_file(codex_hooks_dir.join("hooks.json")).unwrap();
+
+        let groups_after_delete = collect_codex_integration_groups(&root, &[]);
+        let mut problems = Vec::new();
+        inspect_codex_integration_health(&groups_after_delete, &mut problems);
+
+        let hooks_problem = problems
+            .iter()
+            .find(|problem| problem.summary.contains(".codex/hooks.json"))
+            .expect("a missing .codex/hooks.json problem was reported");
+        assert!(
+            hooks_problem.remediation.contains("trust"),
+            "Codex hooks remediation should mention the project hook trust/review requirement: {}",
+            hooks_problem.remediation
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn resolve_doctor_integration_targets_detects_codex_directory() {
+        let root = unique_temp_repository_root("codex-detect");
+        std::fs::create_dir_all(root.join(".codex")).unwrap();
+
+        let targets = resolve_doctor_integration_targets(&root);
+        assert!(
+            targets.contains(&IntegrationTargetId::Codex),
+            "a repo-root .codex/ directory should be detected without a configured target"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

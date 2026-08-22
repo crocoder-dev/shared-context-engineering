@@ -2,6 +2,7 @@ import "../base/workflow-catalog.pkl" as catalog
 import "opencode-content.pkl" as opencode
 import "claude-content.pkl" as claude
 import "pi-content.pkl" as pi
+import "codex-content.pkl" as codex
 
 local expectedCommandSlugs = new Mapping {
   for (slug, _ in catalog.workflows) {
@@ -99,6 +100,11 @@ local piSkillDocuments = new Mapping {
     [path] = document
   }
 }
+local codexSkillDocuments = new Mapping {
+  for (path, document in codex.skillDocuments) {
+    [path] = document
+  }
+}
 
 local assertExactKeys = (actual: Mapping, expected: Mapping, label: String) ->
   if (
@@ -137,6 +143,7 @@ inventoryChecks {
   for (slug, document in piCommands) {
     ["pi-command-route-\(slug)"] = assertCommandRoute.apply("Pi", slug, document.text)
   }
+  ["codex-skill-documents"] = assertExactKeys.apply(codexSkillDocuments, expectedSkillDocumentPaths, "Codex skill document")
 }
 
 /// Force rendering after exact inventory checks so target-specific metadata
@@ -173,6 +180,11 @@ piCommandCoverage {
 }
 piSkillDocumentCoverage {
   for (path, document in piSkillDocuments) {
+    [path] = document.text
+  }
+}
+codexSkillDocumentCoverage {
+  for (path, document in codexSkillDocuments) {
     [path] = document.text
   }
 }

@@ -214,6 +214,7 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
             opencode,
             claude,
             pi,
+            codex,
             all,
             non_interactive,
             hooks,
@@ -226,6 +227,7 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
             opencode,
             claude,
             pi,
+            codex,
             all,
             hooks,
             repo_path: repo,
@@ -431,6 +433,7 @@ fn convert_hooks_subcommand_request(
         cli_schema::HooksSubcommand::ConversationTrace => {
             Ok(services::hooks::HookSubcommand::ConversationTrace)
         }
+        cli_schema::HooksSubcommand::Codex => Ok(services::hooks::HookSubcommand::Codex),
     }
 }
 

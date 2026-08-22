@@ -168,16 +168,19 @@ pub enum Commands {
 
     #[command(about = SETUP_CLAP_ABOUT, hide = !SETUP_SHOW_IN_TOP_LEVEL_HELP)]
     Setup {
-        #[arg(long, conflicts_with_all = ["claude", "pi", "all"])]
+        #[arg(long, conflicts_with_all = ["claude", "pi", "codex", "all"])]
         opencode: bool,
 
-        #[arg(long, conflicts_with_all = ["opencode", "pi", "all"])]
+        #[arg(long, conflicts_with_all = ["opencode", "pi", "codex", "all"])]
         claude: bool,
 
-        #[arg(long, conflicts_with_all = ["opencode", "claude", "all"])]
+        #[arg(long, conflicts_with_all = ["opencode", "claude", "codex", "all"])]
         pi: bool,
 
-        #[arg(long, conflicts_with_all = ["opencode", "claude", "pi"])]
+        #[arg(long, conflicts_with_all = ["opencode", "claude", "pi", "all"])]
+        codex: bool,
+
+        #[arg(long, conflicts_with_all = ["opencode", "claude", "pi", "codex"])]
         all: bool,
 
         #[arg(long)]
@@ -317,6 +320,9 @@ pub enum HooksSubcommand {
 
     #[command(about = "Run conversation-trace hook (reads JSON payload from STDIN)")]
     ConversationTrace,
+
+    #[command(about = "Run Codex hook (reads JSON payload from STDIN)")]
+    Codex,
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]

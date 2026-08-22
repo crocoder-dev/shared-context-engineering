@@ -34,6 +34,7 @@ use crate::services::structured_patch::{
 };
 use crate::services::sync::auto_sync;
 pub mod claude_transcript;
+pub mod codex;
 pub mod command;
 pub mod lifecycle;
 
@@ -43,9 +44,12 @@ const CLAUDE_MODEL_ID_PREFIX: &str = "claude/";
 pub(crate) const DIFF_TRACE_OPENCODE_SESSION_ID_PREFIX: &str = "oc_";
 pub(crate) const DIFF_TRACE_CLAUDE_SESSION_ID_PREFIX: &str = "cc_";
 pub(crate) const DIFF_TRACE_PI_SESSION_ID_PREFIX: &str = "pi_";
+pub(crate) const DIFF_TRACE_CODEX_SESSION_ID_PREFIX: &str = "cx_";
 const OPENCODE_TOOL_NAME: &str = "opencode";
 const CLAUDE_TOOL_NAME: &str = "claude";
 const PI_TOOL_NAME: &str = "pi";
+const CODEX_TOOL_NAME: &str = "codex";
+const OPENAI_MODEL_ID_PREFIX: &str = "openai/";
 const NORMALIZED_CONVERSATION_TRACE_TOOL_NAMES: &[&str] = &[OPENCODE_TOOL_NAME, PI_TOOL_NAME];
 type PayloadValidationError = fn(&str) -> String;
 
@@ -62,6 +66,7 @@ fn prefixed_session_id(tool_name: &str, raw_session_id: &str) -> String {
         OPENCODE_TOOL_NAME => DIFF_TRACE_OPENCODE_SESSION_ID_PREFIX,
         CLAUDE_TOOL_NAME => DIFF_TRACE_CLAUDE_SESSION_ID_PREFIX,
         PI_TOOL_NAME => DIFF_TRACE_PI_SESSION_ID_PREFIX,
+        CODEX_TOOL_NAME => DIFF_TRACE_CODEX_SESSION_ID_PREFIX,
         _ => return raw_session_id.to_string(),
     };
 
@@ -87,6 +92,7 @@ pub enum HookSubcommand {
     },
     DiffTrace,
     ConversationTrace,
+    Codex,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -219,6 +225,7 @@ fn run_hooks_subcommand_in_repo(
         HookSubcommand::ConversationTrace => {
             Ok(run_conversation_trace_subcommand(repository_root, logger))
         }
+        HookSubcommand::Codex => Ok(codex::run_codex_subcommand(repository_root, logger)),
     }
 }
 
@@ -1026,6 +1033,19 @@ fn normalize_claude_model_id(model: &str) -> Option<String> {
     }
 }
 
+fn normalize_codex_model_id(model: &str) -> Option<String> {
+    let normalized = model.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if normalized.starts_with(OPENAI_MODEL_ID_PREFIX) {
+        Some(normalized.to_string())
+    } else {
+        Some(format!("{OPENAI_MODEL_ID_PREFIX}{normalized}"))
+    }
+}
+
 /// Extract a u64 timestamp from a Claude hook event payload, falling back to the
 /// current system time when no timestamp field is present.
 fn extract_claude_event_time(payload: &serde_json::Map<String, Value>) -> u64 {
@@ -1795,6 +1815,7 @@ fn hook_runtime_invocation_name(subcommand: &HookSubcommand) -> &'static str {
         HookSubcommand::PostRewrite { .. } => "post-rewrite runtime invocation",
         HookSubcommand::DiffTrace => "diff-trace runtime invocation",
         HookSubcommand::ConversationTrace => "conversation-trace runtime invocation",
+        HookSubcommand::Codex => "codex runtime invocation",
     }
 }
 
@@ -2698,6 +2719,54 @@ mod tests {
     }
 
     #[test]
+    fn prefixed_diff_trace_session_id_prefixes_fresh_codex_session_id() {
+        assert_eq!(
+            prefixed_diff_trace_session_id("codex", "session-123"),
+            "cx_session-123"
+        );
+    }
+
+    #[test]
+    fn prefixed_diff_trace_session_id_keeps_already_prefixed_codex_session_id() {
+        assert_eq!(
+            prefixed_diff_trace_session_id("codex", "cx_session-123"),
+            "cx_session-123"
+        );
+    }
+
+    #[test]
+    fn prefixed_diff_trace_session_id_adding_codex_does_not_affect_other_tool_prefixes() {
+        assert_eq!(
+            prefixed_diff_trace_session_id("opencode", "session-123"),
+            "oc_session-123"
+        );
+        assert_eq!(
+            prefixed_diff_trace_session_id("claude", "session-123"),
+            "cc_session-123"
+        );
+        assert_eq!(
+            prefixed_diff_trace_session_id("pi", "session-123"),
+            "pi_session-123"
+        );
+    }
+
+    #[test]
+    fn normalize_codex_model_id_prefixes_fresh_model_id() {
+        assert_eq!(
+            normalize_codex_model_id("gpt-5.6-codex").as_deref(),
+            Some("openai/gpt-5.6-codex")
+        );
+    }
+
+    #[test]
+    fn normalize_codex_model_id_keeps_already_prefixed_model_id() {
+        assert_eq!(
+            normalize_codex_model_id("openai/gpt-5.6-codex").as_deref(),
+            Some("openai/gpt-5.6-codex")
+        );
+    }
+
+    #[test]
     fn pi_normalized_diff_trace_payload_persists_with_pi_prefixed_session_id() {
         let stdin_payload = serde_json::json!({
             "sessionID": "session-123",
@@ -2776,6 +2845,203 @@ mod tests {
         assert_eq!(output.combined_recent_patch.files.len(), 1);
         assert_eq!(output.tool_name, Some(String::from("pi")));
         assert_eq!(output.tool_version, None);
+    }
+
+    fn codex_post_commit_test_repo(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after Unix epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "sce-codex-post-commit-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create scratch repo dir");
+        dir
+    }
+
+    fn codex_post_commit_test_db_path(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after Unix epoch")
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!(
+                "sce-codex-post-commit-db-{label}-{}-{nonce}",
+                std::process::id()
+            ))
+            .join("agent-trace.db")
+    }
+
+    fn codex_post_commit_git(repo_root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo_root)
+            .output()
+            .unwrap_or_else(|error| panic!("git {args:?} failed to spawn: {error}"));
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn codex_post_commit_git_write_tree(repo_root: &Path) -> String {
+        let output = Command::new("git")
+            .args(["write-tree"])
+            .current_dir(repo_root)
+            .output()
+            .expect("git write-tree should run");
+        assert!(output.status.success(), "git write-tree failed");
+        String::from_utf8(output.stdout)
+            .expect("git write-tree output should be UTF-8")
+            .trim()
+            .to_string()
+    }
+
+    fn codex_post_commit_observed_diff(
+        repo_root: &Path,
+        before_tree_oid: &str,
+        after_tree_oid: &str,
+    ) -> String {
+        let output = Command::new("git")
+            .args([
+                "diff",
+                "--binary",
+                "--find-renames",
+                before_tree_oid,
+                after_tree_oid,
+            ])
+            .current_dir(repo_root)
+            .output()
+            .expect("git diff should run");
+        assert!(output.status.success(), "git diff failed");
+        String::from_utf8(output.stdout).expect("git diff output should be UTF-8")
+    }
+
+    /// End-to-end proof (AC17/AC18) that a Codex `apply_patch` `diff_trace` row
+    /// (as `persist::persist_with` would insert it) is attributed through the
+    /// existing, unmodified post-commit intersection pipeline
+    /// (`recent_diff_trace_patches` -> `combine_patches` -> `intersect_patches`
+    /// -> `build_agent_trace`), and that the resulting `agent_traces` row
+    /// preserves `tool_name = "codex"` and the Codex model ID.
+    #[test]
+    fn codex_diff_trace_is_attributed_through_the_post_commit_pipeline() {
+        let repo_root = codex_post_commit_test_repo("repo");
+        codex_post_commit_git(&repo_root, &["init", "-q"]);
+        codex_post_commit_git(
+            &repo_root,
+            &["config", "user.email", "codex-test@example.invalid"],
+        );
+        codex_post_commit_git(&repo_root, &["config", "user.name", "Codex Test"]);
+        std::fs::write(repo_root.join("tracked.txt"), "original\n").expect("write tracked file");
+        codex_post_commit_git(&repo_root, &["add", "tracked.txt"]);
+        codex_post_commit_git(&repo_root, &["commit", "-q", "-m", "initial commit"]);
+
+        // Mirrors T11's own before/after snapshot mechanism: the before-state
+        // tree is the clean HEAD tree captured prior to Codex's edit.
+        let before_tree_oid = codex_post_commit_git_write_tree(&repo_root);
+
+        std::fs::write(repo_root.join("tracked.txt"), "codex edit\n")
+            .expect("apply the Codex-authored edit");
+        codex_post_commit_git(&repo_root, &["add", "-A"]);
+        let after_tree_oid = codex_post_commit_git_write_tree(&repo_root);
+
+        let observed_diff =
+            codex_post_commit_observed_diff(&repo_root, &before_tree_oid, &after_tree_oid);
+        assert!(
+            observed_diff.contains("tracked.txt"),
+            "observed diff should reflect the Codex edit"
+        );
+
+        let db_path = codex_post_commit_test_db_path("db");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+
+        let recorded_time_ms = current_unix_time_ms().expect("current time should be available");
+        db.insert_diff_trace(DiffTraceInsert {
+            time_ms: recorded_time_ms,
+            session_id: "cx_session-42",
+            patch: &observed_diff,
+            model_id: Some("openai/gpt-5.6-codex"),
+            tool_name: CODEX_TOOL_NAME,
+            tool_version: None,
+            payload_type: PAYLOAD_TYPE_PATCH,
+        })
+        .expect("Codex diff-trace row should insert");
+
+        codex_post_commit_git(&repo_root, &["commit", "-q", "-m", "codex change"]);
+
+        let flow_result = run_post_commit_intersection_flow_with(
+            &repo_root,
+            capture_post_commit_patch_from_git,
+            current_unix_time_ms,
+            |cutoff_ms, end_ms| {
+                db.recent_diff_trace_patches(cutoff_ms, end_ms)
+                    .context("Failed to query recent diff trace patches.")
+            },
+            |insert_input| {
+                db.insert_post_commit_patch_intersection(insert_input)
+                    .context("Failed to persist post-commit patch intersection.")?;
+                Ok(())
+            },
+        )
+        .expect("post-commit intersection flow should succeed for the Codex change");
+
+        assert_eq!(flow_result.tool_name, Some(String::from("codex")));
+        assert_eq!(flow_result.tool_version, None);
+        assert_eq!(flow_result.combined_recent_patch.files.len(), 1);
+
+        let agent_trace = run_post_commit_agent_trace_flow_with(
+            &flow_result,
+            None,
+            "https://github.com/acme/widgets",
+            |trace_value| {
+                validate_agent_trace_value(trace_value)
+                    .map_err(|error| anyhow!(error.to_string()))
+                    .context("Failed to verify built post-commit Agent Trace payload.")
+            },
+            |insert_input| {
+                db.insert_agent_trace(insert_input)
+                    .context("Failed to persist built post-commit Agent Trace payload.")?;
+                Ok(())
+            },
+        )
+        .expect("post-commit agent-trace flow should succeed for the Codex change");
+
+        assert_eq!(
+            agent_trace
+                .tool
+                .as_ref()
+                .and_then(|tool| tool.name.as_deref()),
+            Some("codex")
+        );
+
+        let agent_trace_json =
+            serde_json::to_value(&agent_trace).expect("Agent Trace should serialize");
+        assert_eq!(
+            agent_trace_json["files"][0]["conversations"][0]["contributor"]["model_id"],
+            "openai/gpt-5.6-codex"
+        );
+
+        let persisted_trace_count: i64 = db
+            .query_map(
+                "SELECT COUNT(*) FROM agent_traces WHERE commit_id = ?1",
+                (flow_result.post_commit_data.commit_oid.as_str(),),
+                |row| row.get::<i64>(0).map_err(anyhow::Error::from),
+            )
+            .expect("agent_traces count query should succeed")
+            .into_iter()
+            .next()
+            .expect("agent_traces count query should return one row");
+        assert_eq!(
+            persisted_trace_count, 1,
+            "the built Agent Trace should be persisted under the Codex commit"
+        );
+
+        std::fs::remove_dir_all(&repo_root).ok();
+        if let Some(parent) = db_path.parent() {
+            std::fs::remove_dir_all(parent).ok();
+        }
     }
 
     #[test]

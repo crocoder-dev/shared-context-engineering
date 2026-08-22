@@ -1,6 +1,7 @@
 import "renderers/opencode-content.pkl" as opencode
 import "renderers/claude-content.pkl" as claude
 import "renderers/pi-content.pkl" as pi
+import "renderers/codex-content.pkl" as codex
 import "renderers/common.pkl" as common
 import "base/sce-config-schema.pkl" as sce_config_schema
 import "base/optional-workflow-manifest.pkl" as optional_workflow_manifest
@@ -56,6 +57,17 @@ output {
     }
     ["config/.pi/extensions/sce/index.ts"] {
       text = piExtensionSource
+    }
+    for (documentPath, document in codex.skillDocuments) {
+      ["config/.agents/skills/\(documentPath)"] {
+        text = "\(document.text)\n"
+      }
+    }
+    ["config/.codex/hooks.json"] {
+      text = codex.hooksJson.rendered
+    }
+    ["config/.codex/hooks/run-sce-or-show-install-guidance.sh"] {
+      text = codex.sceHookScript.rendered
     }
     ["config/.opencode/lib/bash-policy-presets.json"] {
       text = bashPolicyPresetCatalogSource
