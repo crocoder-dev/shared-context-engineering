@@ -58,6 +58,17 @@ hooksJson = new common.RenderedTextFile {
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(codexSceHookCommand)"
+          }
+        ]
+      }
     ]
   }
 }

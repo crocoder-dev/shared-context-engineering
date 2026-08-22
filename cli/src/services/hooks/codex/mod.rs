@@ -8,6 +8,7 @@ use crate::services::observability::traits::Logger;
 
 use super::read_hook_stdin;
 
+mod apply_patch;
 mod bash_policy;
 mod stop;
 mod user_prompt_submit;
@@ -15,7 +16,9 @@ mod user_prompt_submit;
 const CODEX_HOOK_EVENT_USER_PROMPT_SUBMIT: &str = "UserPromptSubmit";
 const CODEX_HOOK_EVENT_STOP: &str = "Stop";
 const CODEX_HOOK_EVENT_PRE_TOOL_USE: &str = "PreToolUse";
+const CODEX_HOOK_EVENT_POST_TOOL_USE: &str = "PostToolUse";
 const CODEX_HOOK_TOOL_BASH: &str = "Bash";
+const CODEX_HOOK_TOOL_APPLY_PATCH: &str = "apply_patch";
 
 /// A single Codex hook lifecycle event, deserialized from the raw STDIN JSON
 /// payload `sce hooks codex` receives via
@@ -62,6 +65,7 @@ pub(crate) enum CodexDispatchArm {
     UserPromptSubmit,
     Stop,
     PreToolUseBash,
+    PostToolUseApplyPatch,
     NoOp,
 }
 
@@ -71,6 +75,9 @@ pub(crate) fn classify_codex_event(event: &CodexHookEvent) -> CodexDispatchArm {
         (CODEX_HOOK_EVENT_STOP, _) => CodexDispatchArm::Stop,
         (CODEX_HOOK_EVENT_PRE_TOOL_USE, Some(CODEX_HOOK_TOOL_BASH)) => {
             CodexDispatchArm::PreToolUseBash
+        }
+        (CODEX_HOOK_EVENT_POST_TOOL_USE, Some(CODEX_HOOK_TOOL_APPLY_PATCH)) => {
+            CodexDispatchArm::PostToolUseApplyPatch
         }
         _ => CodexDispatchArm::NoOp,
     }
@@ -82,7 +89,7 @@ pub(super) fn run_codex_subcommand(repository_root: &Path, logger: Option<&dyn L
         Err(error) => return log_codex_fail_open(&error, logger),
     };
 
-    match run_codex_subcommand_from_payload(repository_root, &stdin_payload) {
+    match run_codex_subcommand_from_payload(repository_root, &stdin_payload, logger) {
         Ok(output) => output,
         Err(error) => log_codex_fail_open(&error, logger),
     }
@@ -91,6 +98,7 @@ pub(super) fn run_codex_subcommand(repository_root: &Path, logger: Option<&dyn L
 fn run_codex_subcommand_from_payload(
     repository_root: &Path,
     stdin_payload: &str,
+    logger: Option<&dyn Logger>,
 ) -> Result<String> {
     let event: CodexHookEvent = serde_json::from_str(stdin_payload)
         .context("Invalid Codex hook payload from STDIN: expected valid JSON.")?;
@@ -101,6 +109,9 @@ fn run_codex_subcommand_from_payload(
         }
         CodexDispatchArm::Stop => stop::handle(repository_root, &event)?,
         CodexDispatchArm::PreToolUseBash => bash_policy::handle(repository_root, &event)?,
+        CodexDispatchArm::PostToolUseApplyPatch => {
+            apply_patch::handle(repository_root, &event, logger)?
+        }
         CodexDispatchArm::NoOp => format!(
             "codex hooks: no-op for unsupported event/tool combination (hook_event_name='{}', tool_name={:?}).",
             event.hook_event_name, event.tool_name
@@ -171,10 +182,10 @@ mod tests {
     }
 
     #[test]
-    fn classify_codex_event_routes_post_tool_use_apply_patch_to_no_op() {
+    fn classify_codex_event_routes_post_tool_use_apply_patch() {
         assert_eq!(
             classify_codex_event(&event("PostToolUse", Some("apply_patch"))),
-            CodexDispatchArm::NoOp
+            CodexDispatchArm::PostToolUseApplyPatch
         );
     }
 
@@ -214,7 +225,7 @@ mod tests {
     fn run_codex_subcommand_from_payload_no_ops_unsupported_combination_without_error() {
         let payload = r#"{"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Read"}"#;
 
-        let output = run_codex_subcommand_from_payload(Path::new("/tmp"), payload)
+        let output = run_codex_subcommand_from_payload(Path::new("/tmp"), payload, None)
             .expect("no-op dispatch should succeed");
 
         assert!(output.contains("no-op"));
@@ -224,7 +235,7 @@ mod tests {
     fn run_codex_subcommand_from_payload_no_ops_unrecognized_hook_event_name_without_error() {
         let payload = r#"{"hook_event_name":"SessionStart","session_id":"s1"}"#;
 
-        let output = run_codex_subcommand_from_payload(Path::new("/tmp"), payload)
+        let output = run_codex_subcommand_from_payload(Path::new("/tmp"), payload, None)
             .expect("no-op dispatch should succeed");
 
         assert!(output.contains("no-op"));
@@ -232,7 +243,7 @@ mod tests {
 
     #[test]
     fn run_codex_subcommand_from_payload_rejects_non_json_stdin() {
-        let error = run_codex_subcommand_from_payload(Path::new("/tmp"), "not json")
+        let error = run_codex_subcommand_from_payload(Path::new("/tmp"), "not json", None)
             .expect_err("malformed payload should fail parsing");
 
         assert!(error.to_string().contains("Invalid Codex hook payload"));
