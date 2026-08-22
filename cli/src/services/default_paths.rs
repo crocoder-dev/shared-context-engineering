@@ -349,6 +349,7 @@ pub(crate) mod repo_dir {
     pub const OPENCODE: &str = ".opencode";
     pub const CLAUDE: &str = ".claude";
     pub const PI: &str = ".pi";
+    pub const CODEX: &str = ".codex";
     pub const GIT: &str = ".git";
 }
 
@@ -455,6 +456,10 @@ impl RepoPaths {
 
     pub(crate) fn pi_dir(&self) -> PathBuf {
         self.root.join(repo_dir::PI)
+    }
+
+    pub(crate) fn codex_dir(&self) -> PathBuf {
+        self.root.join(repo_dir::CODEX)
     }
 
     pub(crate) fn git_dir(&self) -> PathBuf {

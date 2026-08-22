@@ -98,6 +98,7 @@ pub(super) enum IntegrationTarget {
     OpenCode,
     ClaudeCode,
     Pi,
+    Codex,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -108,6 +109,7 @@ pub(super) enum IntegrationArea {
     Skills,
     Prompts,
     Extensions,
+    Hooks,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -133,16 +135,26 @@ impl IntegrationGroupKey {
             (IntegrationTarget::Pi, IntegrationArea::Prompts) => "Pi prompts",
             (IntegrationTarget::Pi, IntegrationArea::Skills) => "Pi skills",
             (IntegrationTarget::Pi, IntegrationArea::Extensions) => "Pi extensions",
+            (IntegrationTarget::Codex, IntegrationArea::Skills) => "Codex skills",
+            (IntegrationTarget::Codex, IntegrationArea::Hooks) => "Codex hooks",
             // These combinations are not produced by inspection, but retaining
             // deterministic labels keeps the key total for future targets/areas.
             (IntegrationTarget::Pi, IntegrationArea::Plugins) => "Pi plugins",
             (IntegrationTarget::Pi, IntegrationArea::Agents) => "Pi agents",
             (IntegrationTarget::Pi, IntegrationArea::Commands) => "Pi commands",
+            (IntegrationTarget::Pi, IntegrationArea::Hooks) => "Pi hooks",
             (IntegrationTarget::ClaudeCode, IntegrationArea::Prompts) => "ClaudeCode prompts",
             (IntegrationTarget::ClaudeCode, IntegrationArea::Extensions) => "ClaudeCode extensions",
             (IntegrationTarget::ClaudeCode, IntegrationArea::Agents) => "Unsupported Claude area",
+            (IntegrationTarget::ClaudeCode, IntegrationArea::Hooks) => "ClaudeCode hooks",
             (IntegrationTarget::OpenCode, IntegrationArea::Prompts) => "OpenCode prompts",
             (IntegrationTarget::OpenCode, IntegrationArea::Extensions) => "OpenCode extensions",
+            (IntegrationTarget::OpenCode, IntegrationArea::Hooks) => "OpenCode hooks",
+            (IntegrationTarget::Codex, IntegrationArea::Plugins) => "Codex plugins",
+            (IntegrationTarget::Codex, IntegrationArea::Agents) => "Codex agents",
+            (IntegrationTarget::Codex, IntegrationArea::Commands) => "Codex commands",
+            (IntegrationTarget::Codex, IntegrationArea::Prompts) => "Codex prompts",
+            (IntegrationTarget::Codex, IntegrationArea::Extensions) => "Codex extensions",
         }
     }
 }
@@ -390,12 +402,15 @@ pub(crate) enum ProblemKind {
     ClaudeIntegrationContentMismatch,
     PiIntegrationFilesMissing,
     PiIntegrationContentMismatch,
+    CodexIntegrationFilesMissing,
+    CodexIntegrationContentMismatch,
     OpenCodePluginRegistryInvalid,
     OpenCodeAssetMissingOrInvalid,
     HookReadFailed,
     OpenCodeAssetReadFailed,
     ClaudeAssetReadFailed,
     PiAssetReadFailed,
+    CodexAssetReadFailed,
     AgentTraceDbConnectionFailed,
     AgentTraceDbSchemaNotReady,
 }
