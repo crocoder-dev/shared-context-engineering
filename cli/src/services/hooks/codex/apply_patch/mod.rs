@@ -5,6 +5,7 @@
 
 mod normalize;
 mod parser;
+mod path;
 
 use std::path::Path;
 
@@ -12,14 +13,18 @@ use anyhow::{Context, Result};
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::agent_trace_db::{DiffTraceInsert, PAYLOAD_TYPE_PATCH};
+use crate::services::agent_trace_storage::{
+    resolve_agent_trace_storage_for_hook_runtime_at_state_root, AgentTraceStorageContext,
+};
 use crate::services::observability::traits::Logger;
 
 use normalize::normalize_codex_patch;
 #[allow(unused_imports)]
 use parser::{
-    parse_codex_apply_patch, CodexFileOperation, CodexHunk, CodexHunkLine, CodexPatch,
-    CodexPatchParseError,
+    normalize_outer_apply_patch_input, parse_codex_apply_patch, CodexFileOperation, CodexHunk,
+    CodexHunkLine, CodexPatch, CodexPatchParseError,
 };
+use path::resolve_codex_patch_paths;
 
 use super::super::{
     current_unix_time_ms, normalize_codex_model_id, open_agent_trace_db_for_hook_runtime,
@@ -40,11 +45,39 @@ pub(super) fn handle(
     event: &CodexHookEvent,
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
+    handle_with_state_root(repository_root, event, None, logger)
+}
+
+pub(super) fn handle_with_state_root(
+    repository_root: &Path,
+    event: &CodexHookEvent,
+    state_root: Option<&Path>,
+    logger: Option<&dyn Logger>,
+) -> Result<String> {
+    // Validate the session before parsing, path resolution, or DB access so
+    // invalid Codex events can never reach apply_patch persistence.
+    required_session_id(event.session_id.as_deref())?;
+
     let Some(command) = apply_patch_command_from_event(event) else {
         return Ok(String::new());
     };
 
-    let patch = match parse_codex_apply_patch(command) {
+    let canonical_command = match normalize_outer_apply_patch_input(command) {
+        Ok(command) => command,
+        Err(parse_error) => {
+            if let Some(log) = logger {
+                log.error(
+                    "sce.hooks.codex.apply_patch.parse_failed",
+                    &parse_error.to_string(),
+                    &[],
+                    event.session_id.as_deref(),
+                );
+            }
+            return Ok(String::new());
+        }
+    };
+
+    let patch = match parse_codex_apply_patch(&canonical_command) {
         Ok(patch) => patch,
         Err(parse_error) => {
             if let Some(log) = logger {
@@ -59,7 +92,46 @@ pub(super) fn handle(
         }
     };
 
-    let normalized_patch = normalize_codex_patch(&patch);
+    let mut patch = patch;
+    if let Some(event_cwd) = event.cwd.as_deref() {
+        if let Err(error) = resolve_codex_patch_paths(repository_root, event_cwd, &mut patch) {
+            if let Some(log) = logger {
+                log.error(
+                    "sce.hooks.codex.apply_patch.path_resolution_failed",
+                    &error.to_string(),
+                    &[],
+                    event.session_id.as_deref(),
+                );
+            }
+            return Ok(String::new());
+        }
+    } else {
+        if let Some(log) = logger {
+            log.error(
+                "sce.hooks.codex.apply_patch.path_resolution_failed",
+                "Codex hook event cwd is missing or malformed.",
+                &[],
+                event.session_id.as_deref(),
+            );
+        }
+        return Ok(String::new());
+    }
+
+    let normalized_patch =
+        match normalize_codex_patch(&patch, event.tool_use_id.as_deref().unwrap_or_default()) {
+            Ok(normalized_patch) => normalized_patch,
+            Err(error) => {
+                if let Some(log) = logger {
+                    log.error(
+                        "sce.hooks.codex.apply_patch.normalize_failed",
+                        &error.to_string(),
+                        &[],
+                        event.session_id.as_deref(),
+                    );
+                }
+                return Ok(String::new());
+            }
+        };
     if normalized_patch.is_empty() {
         return Ok(String::new());
     }
@@ -68,10 +140,22 @@ pub(super) fn handle(
         return Ok(String::new());
     };
 
-    let db = open_agent_trace_db_for_hook_runtime(
-        repository_root,
-        "Failed to open Agent Trace DB for Codex apply_patch persistence.",
-    )?;
+    let db = match state_root {
+        Some(state_root) => resolve_agent_trace_storage_for_hook_runtime_at_state_root(
+            &AgentTraceStorageContext {
+                repository_root,
+                explicit_repository_id: None,
+                repository_remote: "origin",
+            },
+            state_root,
+        )
+        .map(|storage| storage.db)
+        .context("Failed to open Agent Trace DB for Codex apply_patch persistence."),
+        None => open_agent_trace_db_for_hook_runtime(
+            repository_root,
+            "Failed to open Agent Trace DB for Codex apply_patch persistence.",
+        ),
+    }?;
 
     persist_with(&db, event, &normalized_patch, time_ms)
 }
@@ -87,6 +171,15 @@ fn apply_patch_command_from_event(event: &CodexHookEvent) -> Option<&str> {
         .and_then(|value| value.as_str())
 }
 
+fn required_session_id(value: Option<&str>) -> Result<&str> {
+    match value.map(str::trim) {
+        Some(value) if !value.is_empty() => Ok(value),
+        _ => anyhow::bail!(
+            "Invalid Codex apply_patch payload: field 'session_id' must be a trimmed, non-empty string."
+        ),
+    }
+}
+
 /// Injectable counterpart of `handle`'s persistence step, for deterministic
 /// testing against an already-open Agent Trace DB — mirrors the
 /// `user_prompt_submit`/`stop` sibling arms' `capture_with` pattern.
@@ -98,7 +191,7 @@ fn persist_with(
 ) -> Result<String> {
     let session_id = prefixed_diff_trace_session_id(
         CODEX_TOOL_NAME,
-        event.session_id.as_deref().unwrap_or_default(),
+        required_session_id(event.session_id.as_deref())?,
     );
     let model_id = event.model.as_deref().and_then(normalize_codex_model_id);
 
@@ -203,7 +296,11 @@ mod tests {
     }
 
     fn normalized(raw: &str) -> String {
-        normalize_codex_patch(&parse_codex_apply_patch(raw).expect("fixture patch should parse"))
+        normalize_codex_patch(
+            &parse_codex_apply_patch(raw).expect("fixture patch should parse"),
+            "tool-1",
+        )
+        .expect("fixture tool identity should normalize")
     }
 
     fn unique_test_db_path(label: &str) -> PathBuf {
@@ -285,6 +382,51 @@ mod tests {
     }
 
     #[test]
+    fn persist_with_rejects_missing_empty_and_whitespace_session_ids_without_rows() {
+        let db_path = unique_test_db_path("invalid-session");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let normalized_patch = normalized(UPDATE_ONLY_PATCH);
+
+        for session_id in [None, Some(""), Some("   ")] {
+            let mut invalid_event = event("session-1", None, UPDATE_ONLY_PATCH);
+            invalid_event.session_id = session_id.map(str::to_string);
+            assert!(persist_with(&db, &invalid_event, &normalized_patch, 1_000).is_err());
+        }
+
+        let recent = db
+            .recent_diff_trace_patches(0, i64::MAX)
+            .expect("diff trace query should succeed");
+        assert_eq!(recent.loaded_count(), 0);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn persist_with_trims_valid_session_ids_before_prefixing() {
+        let db_path = unique_test_db_path("trimmed-session");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let normalized_patch = normalized(UPDATE_ONLY_PATCH);
+        let mut trimmed_event = event(" session-1 ", None, UPDATE_ONLY_PATCH);
+
+        persist_with(&db, &trimmed_event, &normalized_patch, 1_000)
+            .expect("trimmed session should persist");
+        trimmed_event.session_id = Some("cx_session-2".to_string());
+        persist_with(&db, &trimmed_event, &normalized_patch, 2_000)
+            .expect("already prefixed session should persist");
+
+        let rows = db
+            .query_map(
+                "SELECT session_id FROM diff_traces ORDER BY id ASC",
+                (),
+                |row| row.get::<String>(0).map_err(anyhow::Error::from),
+            )
+            .expect("diff trace query should succeed");
+        assert_eq!(rows, vec!["cx_session-1", "cx_session-2"]);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
     fn handle_is_a_successful_no_op_for_a_pure_rename_with_no_changed_lines() {
         let output = handle(
             Path::new("/nonexistent"),
@@ -336,7 +478,50 @@ mod tests {
             .files
             .iter()
             .flat_map(|file| &file.hunks)
-            .all(|hunk| hunk.model_id.as_deref() == Some("openai/gpt-5-codex")));
+            .all(|hunk| hunk.model_id.as_deref() == Some("gpt-5-codex")));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn apply_patch_persists_truthful_model_ids_without_fabricating_openai() {
+        let db_path = unique_test_db_path("model-provenance");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let normalized_patch = normalized(UPDATE_ONLY_PATCH);
+        let cases = [
+            (Some("openai/gpt-x"), Some("openai/gpt-x")),
+            (
+                Some("qualified/custom-provider/model"),
+                Some("qualified/custom-provider/model"),
+            ),
+            (Some("custom-model"), Some("custom-model")),
+            (Some("   "), None),
+            (None, None),
+        ];
+
+        for (index, (model, _expected)) in cases.iter().enumerate() {
+            persist_with(
+                &db,
+                &event(&format!("session-{index}"), *model, UPDATE_ONLY_PATCH),
+                &normalized_patch,
+                i64::try_from(index).expect("test index should fit") + 1_000,
+            )
+            .expect("model provenance should persist");
+        }
+
+        let recent = db
+            .recent_diff_trace_patches(0, i64::MAX)
+            .expect("diff trace query should succeed");
+        let model_ids: Vec<Option<String>> = recent
+            .patches
+            .iter()
+            .map(|row| row.patch.files[0].hunks[0].model_id.clone())
+            .collect();
+        let expected: Vec<Option<String>> = cases
+            .iter()
+            .map(|(_, expected)| expected.map(str::to_string))
+            .collect();
+        assert_eq!(model_ids, expected);
 
         remove_test_db(&db_path);
     }
@@ -483,7 +668,7 @@ mod tests {
         assert_eq!(agent_trace_json["tool"]["name"], "codex");
         assert_eq!(
             agent_trace_json["files"][0]["conversations"][0]["contributor"]["model_id"],
-            "openai/gpt-5-codex"
+            "gpt-5-codex"
         );
 
         remove_test_db(&db_path);

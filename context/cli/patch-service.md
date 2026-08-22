@@ -66,6 +66,25 @@ Both functions wrap `serde_json::from_str`/`serde_json::from_slice` and map serd
 - **Determinism**: the same inputs in the same order always produce the same output
 - **Consumed by**: the post-commit hook runtime combines recent DB diff-trace patches before intersecting (see `agent-trace-hooks-command-routing.md`).
 
+### Codex apply_patch boundary
+
+Codex `PostToolUse(apply_patch)` evidence enters this service only after the
+Codex-specific outer wrapper normalization, canonical parsing, and event-cwd
+path resolution have produced safe repository-relative paths. Its normalizer
+emits only provable Add/Update touched lines as `Index:`-form text, assigning
+bounded deterministic synthetic line identities from `tool_use_id`; those
+identities are evidence keys, not physical source line numbers. Delete File,
+pure rename, and Bash filesystem mutations produce no line-level evidence.
+
+The existing `combine_patches` and `intersect_patches` operations remain
+unchanged. Their historical `kind` + `content` fallback reconciles synthetic
+Codex positions with real post-commit positions, while repeated identical
+content can remain physically ambiguous because Codex supplies no true line
+ranges and SCE takes no filesystem snapshot. The Codex handler persists through
+the existing `diff_traces` row shape and the post-commit runtime consumes it
+through the same combination/intersection path; no Codex-specific Agent Trace
+builder, pending state, or schema migration is introduced.
+
 ### Runtime wiring status
 
 | Operation | Wired into | Notes |

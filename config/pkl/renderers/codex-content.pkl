@@ -17,7 +17,10 @@ local missingSceInstallMessage = "sce CLI not found. Install it from https://sce
 
 local codexSceHookScriptPath = ".codex/hooks/run-sce-or-show-install-guidance.sh"
 
-local codexSceHookCommand = "bash \\\"\(codexSceHookScriptPath)\\\" sce hooks codex"
+/// Codex invokes hooks with the event cwd, which may be nested below the
+/// repository root. Resolve that root at invocation time and fail open when
+/// Git cannot resolve it; the quoted expansion keeps spaces in the root safe.
+local codexSceHookCommand = "root=\\\"$(git rev-parse --show-toplevel 2>/dev/null)\\\" || exit 0; exec bash \\\"$root/\(codexSceHookScriptPath)\\\" sce hooks codex"
 
 /// Every Codex lifecycle event Codex routes to the SCE hook is dispatched
 /// through a single command (`sce hooks codex`); the typed dispatcher inside

@@ -229,6 +229,7 @@
             (pkgs.lib.fileset.maybeMissing ./config/schema/sce-config.schema.json)
             (pkgs.lib.fileset.maybeMissing ./cli/assets/generated)
             ./scripts/produce-cli-generated-input.sh
+            ./scripts/test-codex-hook-command.sh
           ];
         };
 
@@ -1289,6 +1290,14 @@
             checkCommand = "biome check --${mode}-enabled=false .";
           };
 
+        codexHookCommandCheck = mkCopiedSourceCheck {
+          name = "codex-hook-command-check";
+          src = pklGeneratedCheckSrc;
+          workdir = ".";
+          nativeBuildInputs = [ pkgs.bash pkgs.coreutils pkgs.git pkgs.jq pkgs.pkl ];
+          checkCommand = "bash ./scripts/test-codex-hook-command.sh";
+        };
+
         configLibBunTests = mkBunCheck {
           name = "config-lib-bun-tests";
           src = configLibBashPolicySrc;
@@ -1527,6 +1536,7 @@
 
             cli-generated-input = cliGeneratedInputCheck;
             pkl-generated = pklGeneratedCheck;
+            codex-hook-command = codexHookCommandCheck;
 
             npm-bun-tests = npmTests;
             npm-biome-check = npmBiomeCheck;
