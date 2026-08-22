@@ -582,6 +582,10 @@ fn inspect_repository_integrations(
                 inspect_pi_integration_health(&pi_groups, problems);
                 integration_groups.extend(pi_groups);
             }
+            // Codex doctor coverage (integration group collection, health
+            // checks) is scoped to a later task; this arm only keeps the
+            // exhaustive match compiling now that the target ID exists.
+            IntegrationTargetId::Codex => {}
         }
     }
 

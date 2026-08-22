@@ -392,6 +392,13 @@ pub(crate) mod pi_asset {
     pub const EXTENSIONS_DIR: &str = "extensions";
 }
 
+/// Codex embedded-asset relative paths keep their own `.agents/`/`.codex/`
+/// output-root prefix (unlike OpenCode/Claude/Pi, whose relative paths are
+/// stripped of their single root), so `SKILLS_DIR` carries that prefix too.
+pub(crate) mod codex_asset {
+    pub const SKILLS_DIR: &str = ".agents/skills";
+}
+
 pub(crate) mod context_dir {
     pub const CONTEXT_ROOT: &str = "context";
     pub const PLANS: &str = "plans";
@@ -534,6 +541,13 @@ impl InstallTargetPaths {
 
     pub(crate) fn pi_target_dir(&self) -> PathBuf {
         self.repo_root.join(repo_dir::PI)
+    }
+
+    /// Codex has two output roots (`.agents/` for skills, `.codex/` for
+    /// hooks), both already embedded as prefixes on `CODEX_EMBEDDED_ASSETS`
+    /// relative paths, so the destination root is the repository root itself.
+    pub(crate) fn codex_target_dir(&self) -> PathBuf {
+        self.repo_root.clone()
     }
 
     pub(crate) fn opencode_plugin_target(&self) -> PathBuf {
