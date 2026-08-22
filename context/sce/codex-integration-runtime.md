@@ -37,8 +37,9 @@ for how the other three tools intake conversation/diff evidence.
 
 `cli/src/services/hooks/codex/user_prompt_submit.rs` and
 `cli/src/services/hooks/codex/stop.rs` implement the `UserPromptSubmit` and
-`Stop` arms — the first two dispatch arms with real behavior; every other arm
-below is still a stub. Both follow the same shape:
+`Stop` arms — conversation-capture dispatch arms with real behavior (see
+"`PreToolUse(Bash)` policy delegation" below for the third). Both follow the
+same shape:
 
 - `UserPromptSubmit` requires non-empty `session_id`, `turn_id`, and
   `prompt`; `Stop` requires non-empty `session_id`, `turn_id`, and
@@ -63,14 +64,38 @@ below is still a stub. Both follow the same shape:
   `open_agent_trace_db_for_hook_runtime` repository-storage resolution the
   other hook intakes use.
 
+## `PreToolUse(Bash)` policy delegation
+
+`cli/src/services/hooks/codex/bash_policy.rs` implements the
+`PreToolUse(Bash)` arm. It reads the shell command from
+`tool_input.command` (a working assumption mirroring Claude's own `Bash`
+`tool_input` shape, since no authoritative Codex-specific field-name source
+was found; adjustable later without an architecture change) and calls
+`evaluate_bash_command_policy` (`cli/src/services/bash_policy.rs`) directly
+— the same matching engine `sce policy bash` uses for OpenCode/Claude, with
+no reimplemented matching and no Codex-specific DB adapter:
+
+- Allowed: returns an empty string (silent hook success, no model-visible
+  output).
+- Blocked: returns Codex's own native `PreToolUse` deny response —
+  `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision":
+  "deny", "permissionDecisionReason": "<policy id + message>"}}` — confirmed
+  against Codex's real hook contract (`openai/codex` issue #28437) to be
+  identical in shape to Claude's own deny response
+  (`render_claude_hook_result` in `bash_policy.rs`), though built directly
+  rather than by calling that Claude-specific function.
+
+Neither branch reads or writes `diff_traces`, a snapshot, or any
+pending-state file; Bash-triggered filesystem mutations remain untracked for
+Codex (see "Explicit non-goals" in
+[agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md)).
+
 ## Still-stub arms
 
-`PreToolUse(Bash)`, `PreToolUse(apply_patch)`, and `PostToolUse(apply_patch)`
-currently return a deterministic stub success string naming the future task
-that implements them (`PreToolUse(Bash)` delegates to the existing Bash
-policy engine; the `apply_patch` pair captures a before/after repository
-snapshot and persists the observed diff). This document will grow a slice
-per arm as each lands.
+`PreToolUse(apply_patch)` and `PostToolUse(apply_patch)` currently return a
+deterministic stub success string naming the future task that implements
+them — a before/after repository snapshot and the persisted observed diff.
+This document will grow a slice per arm as each lands.
 
 ## Verification
 
