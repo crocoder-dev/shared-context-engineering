@@ -6,45 +6,45 @@ Adds Codex CLI as a fourth first-class SCE integration target alongside OpenCode
 
 ## Acceptance criteria
 
-- [ ] AC1: `sce setup --codex --non-interactive` succeeds in a Git repository, installs `.agents/skills/**` and `.codex/hooks.json` + `.codex/hooks/**`, and persists `{"integrations": {"target": ["codex"]}}` into `.sce/config.json` under existing merge semantics.
+- [x] AC1: `sce setup --codex --non-interactive` succeeds in a Git repository, installs `.agents/skills/**` and `.codex/hooks.json` + `.codex/hooks/**`, and persists `{"integrations": {"target": ["codex"]}}` into `.sce/config.json` under existing merge semantics.
   - Validate: run the command in a scratch git repo; inspect `.sce/config.json` and installed files.
-- [ ] AC2: `sce setup --all --non-interactive` installs Codex assets alongside OpenCode/Claude/Pi with no regression to the other three targets.
+- [x] AC2: `sce setup --all --non-interactive` installs Codex assets alongside OpenCode/Claude/Pi with no regression to the other three targets.
   - Validate: run in a scratch git repo; inspect all four target trees plus `integrations.target`.
-- [ ] AC3: Core workflows (`sce-change-to-plan`, `sce-next-task`, `sce-validate`, `sce-commit`, `sce-handover`) appear under `.agents/skills/`, and optional workflows (`brownfield`) obey the existing `integrations.optional_workflows` selection mechanism for Codex the same way they do for OpenCode/Claude/Pi.
+- [x] AC3: Core workflows (`sce-change-to-plan`, `sce-next-task`, `sce-validate`, `sce-commit`, `sce-handover`) appear under `.agents/skills/`, and optional workflows (`brownfield`) obey the existing `integrations.optional_workflows` selection mechanism for Codex the same way they do for OpenCode/Claude/Pi.
   - Validate: `nix run .#pkl-generate -- "$(mktemp -d)"` then inspect `.agents/skills/`; `sce setup --codex --workflow brownfield --non-interactive` includes `sce-brownfield`, a run without `--workflow` does not.
-- [ ] AC4: `.codex/hooks.json` registers exactly `UserPromptSubmit`, `Stop`, `PreToolUse` (`Bash`, `apply_patch`), and `PostToolUse` (`apply_patch`) — no Bash `PostToolUse` entry.
+- [x] AC4: `.codex/hooks.json` registers exactly `UserPromptSubmit`, `Stop`, `PreToolUse` (`Bash`, `apply_patch`), and `PostToolUse` (`apply_patch`) — no Bash `PostToolUse` entry.
   - Validate: inspect generated `.codex/hooks.json` content directly.
-- [ ] AC5: A Codex `UserPromptSubmit` event produces exactly one user `message` and one text `part` under session `cx_<session>`.
+- [x] AC5: A Codex `UserPromptSubmit` event produces exactly one user `message` and one text `part` under session `cx_<session>`.
   - Validate: integration test feeding a synthetic `UserPromptSubmit` payload to `sce hooks codex` and querying the repository Agent Trace DB.
-- [ ] AC6: A Codex `Stop` event produces exactly one assistant `message` and one text `part`.
+- [x] AC6: A Codex `Stop` event produces exactly one assistant `message` and one text `part`.
   - Validate: integration test feeding a synthetic `Stop` payload to `sce hooks codex` and querying the DB.
-- [ ] AC7: Reprocessing the same turn's `UserPromptSubmit`/`Stop` event does not create a duplicate parent message.
+- [x] AC7: Reprocessing the same turn's `UserPromptSubmit`/`Stop` event does not create a duplicate parent message.
   - Validate: integration test invoking the same payload twice and asserting one row per deterministic message ID.
-- [ ] AC8: An allowed Bash command executes with no model-visible SCE tracing output.
+- [x] AC8: An allowed Bash command executes with no model-visible SCE tracing output.
   - Validate: integration test asserting empty/silent success output for an allowed command through `sce hooks codex` `PreToolUse` `Bash`.
-- [ ] AC9: A denied Bash command is blocked using Codex's native `PreToolUse` deny response shape and includes the SCE policy reason text.
+- [x] AC9: A denied Bash command is blocked using Codex's native `PreToolUse` deny response shape and includes the SCE policy reason text.
   - Validate: integration test asserting the deny response body/shape and policy reason for a configured blocking policy.
-- [ ] AC10: Bash filesystem mutations create no Codex `diff_trace`.
+- [x] AC10: Bash filesystem mutations create no Codex `diff_trace`.
   - Validate: regression test running `echo generated > generated.txt` through the Codex Bash hook path and asserting zero new `diff_traces` rows.
-- [ ] AC11: A successful `apply_patch` produces an observed unified patch in `diff_traces` reflecting the actual before/after repository delta, not the requested patch text.
+- [x] AC11: A successful `apply_patch` produces an observed unified patch in `diff_traces` reflecting the actual before/after repository delta, not the requested patch text.
   - Validate: integration test driving `PreToolUse apply_patch` then `PostToolUse apply_patch` against a scratch repo and asserting the persisted patch matches `git diff` of the real file mutation.
-- [ ] AC12: The persisted `diff_traces` row carries `session_id = cx_...`, `model_id = openai/...`, `tool_name = codex`, `payload_type = patch`.
+- [x] AC12: The persisted `diff_traces` row carries `session_id = cx_...`, `model_id = openai/...`, `tool_name = codex`, `payload_type = patch`.
   - Validate: same integration test as AC11, asserting row field values.
-- [ ] AC13: The same successful `apply_patch` also creates assistant patch conversation evidence (`message` + `part_type = patch`) tied to the same `cx_` session.
+- [x] AC13: The same successful `apply_patch` also creates assistant patch conversation evidence (`message` + `part_type = patch`) tied to the same `cx_` session.
   - Validate: same integration test as AC11, querying `messages`/`parts`.
-- [ ] AC14: Given a pre-existing dirty worktree change `A` before `PreToolUse apply_patch` and a Codex-authored change `B`, the resulting Codex diff evidence contains `B` but not `A`.
+- [x] AC14: Given a pre-existing dirty worktree change `A` before `PreToolUse apply_patch` and a Codex-authored change `B`, the resulting Codex diff evidence contains `B` but not `A`.
   - Validate: integration test seeding an uncommitted dirty change before the hook sequence and asserting the persisted patch excludes it.
-- [ ] AC15: A `PostToolUse apply_patch` with no corresponding pending before-state logs a diagnostic, fails open, and creates no diff evidence.
+- [x] AC15: A `PostToolUse apply_patch` with no corresponding pending before-state logs a diagnostic, fails open, and creates no diff evidence.
   - Validate: integration test invoking `PostToolUse apply_patch` without a prior `PreToolUse apply_patch` for the same correlation key.
-- [ ] AC16: Identical before/after repository states produce no diff trace and are treated as a successful no-op.
+- [x] AC16: Identical before/after repository states produce no diff trace and are treated as a successful no-op.
   - Validate: integration test running the full pending → finalize sequence with no actual file change.
-- [ ] AC17: A commit containing a recorded Codex `apply_patch` diff_trace is attributed through the existing, unmodified `post-commit` intersection pipeline.
+- [x] AC17: A commit containing a recorded Codex `apply_patch` diff_trace is attributed through the existing, unmodified `post-commit` intersection pipeline.
   - Validate: integration test recording a Codex diff_trace, committing the same change, running `sce hooks post-commit`, and inspecting `post_commit_patch_intersections`.
-- [ ] AC18: The resulting Agent Trace identifies Codex as the tool and preserves the Codex model ID through the existing attribution machinery.
+- [x] AC18: The resulting Agent Trace identifies Codex as the tool and preserves the Codex model ID through the existing attribution machinery.
   - Validate: same integration test as AC17, asserting the built `agent_traces.trace_json` contributor/tool metadata.
-- [ ] AC19: No Agent Trace repository schema migration is added; `diff_traces`/`agent_traces`/`messages`/`parts` and `RepositoryAgentTraceDbSpec::migrations()` remain unchanged.
+- [x] AC19: No Agent Trace repository schema migration is added; `diff_traces`/`agent_traces`/`messages`/`parts` and `RepositoryAgentTraceDbSpec::migrations()` remain unchanged.
   - Validate: `git diff` shows no new file under `cli/migrations/agent-trace-repository/` and no changed baseline SQL.
-- [ ] AC20: Existing OpenCode, Claude, and Pi setup, generated assets, conversation tracing, diff tracing, policy behavior, and Agent Trace tests continue to pass.
+- [x] AC20: Existing OpenCode, Claude, and Pi setup, generated assets, conversation tracing, diff tracing, policy behavior, and Agent Trace tests continue to pass.
   - Validate: `nix flake check`.
 
 ### Full validation
@@ -230,14 +230,67 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Verify: `nix develop -c sh -c 'cd cli && cargo test hooks::codex::apply_patch::persist hooks::post_commit'`.
   - Context synchronization: pending
 
-- [ ] T13: `Add Codex doctor coverage` (status:todo)
+- [x] T13: `Add Codex doctor coverage` (status:done)
   - Task ID: T13
   - Scope: In — a Codex integration group in `cli/src/services/doctor/inspect.rs` (parallel to the Claude/OpenCode/Pi groups) reporting missing/mismatched `.agents/skills/**` for the resolved workflow selection, missing/mismatched `.codex/hooks.json`, and missing/mismatched `.codex/hooks/run-sce-or-show-install-guidance.sh`; actionable guidance text for Codex's project hook trust/review requirement (informational only — doctor does not bypass or grant trust); Codex added to the doctor target-resolution set (`integrations.target` entries / repo-root `.codex/` detection) and to `context/sce/doctor-human-text-contract.md`'s target/area ordering. Out — any change to doctor's fix-mode git-hook repair logic (unrelated to Codex).
   - Dependencies: T04, T05
   - Done when: `sce doctor` in a repo with Codex installed and current reports `[PASS]` for the Codex integration group; deleting or corrupting a Codex asset produces the matching `[FAIL]`/`[MISS]` problem with actionable text; `sce doctor --format json` includes a Codex integration group entry alongside `opencode`/`claude`/`pi`.
   - Verify: `nix develop -c sh -c 'cd cli && cargo test doctor::'`; manual `sce doctor` / `sce doctor --format json` run against a Codex-installed scratch repo.
-  - Context synchronization: pending
+  - Completed: 2026-08-22
+  - Files changed: `cli/src/services/default_paths.rs`, `cli/src/services/doctor/inspect.rs`, `cli/src/services/doctor/mod.rs`, `cli/src/services/doctor/render.rs`, `cli/src/services/doctor/types.rs`, `cli/src/services/lifecycle.rs`, `context/sce/doctor-human-text-contract.md`
+  - Result: Added `IntegrationTarget::Codex` and a new `IntegrationArea::Hooks` variant to `doctor/types.rs` (extending the exhaustive `display_label` match for every target × area combination, per the existing "these combinations are not produced by inspection" precedent), plus `ProblemKind::{CodexIntegrationFilesMissing, CodexIntegrationContentMismatch, CodexAssetReadFailed}` mirroring Pi's three kinds exactly (and their `HealthProblemKind` counterparts in `services/lifecycle.rs`, wired through both directions of `doctor/mod.rs`'s `problem_kind`/`health_problem_kind` conversion — a second exhaustive match this task's compiler errors surfaced beyond `inspect.rs`'s own `IntegrationTargetId::Codex` arm). Added `repo_dir::CODEX = ".codex"` and `RepoPaths::codex_dir()` to `default_paths.rs` for repo-root fallback detection (priority-3 in the doctor target-resolution order), wired into `resolve_doctor_integration_targets`'s existing `if repo_paths.*_dir().exists()` chain. Added `collect_codex_integration_groups` (mirroring `collect_pi_integration_groups`'s structure) using `InstallTargetPaths::codex_target_dir()` (the repository root itself, per T04/T05's precedent, since `CODEX_EMBEDDED_ASSETS` relative paths already carry their own `.agents/`/`.codex/` prefix) as the integration root, splitting embedded assets into a `Skills` group (`.agents/skills/` prefix) and a new `Hooks` group (`.codex/` prefix, covering both `hooks.json` and `hooks/run-sce-or-show-install-guidance.sh`); added `inspect_codex_integration_health` plus `push_codex_integration_{missing,mismatch,read_fail}_problems` mirroring Pi's three functions verbatim, with one addition: the `Hooks`-area missing/mismatch remediation text appends a fixed reminder (`CODEX_HOOK_TRUST_GUIDANCE`) that Codex also requires reviewing/trusting the project's hooks inside the Codex CLI before they take effect and that `sce doctor` cannot grant that trust — satisfying this task's own "actionable guidance text ... informational only" scope as an addition to the *existing* missing/mismatch problem's remediation (severity `Error`, matching the underlying file condition) rather than a separate always-on problem, since an unconditional problem would have made the `Hooks` group permanently unable to report `[PASS]`, contradicting this task's own first Done-when clause. Wired the previously no-op `IntegrationTargetId::Codex => {}` arm in `inspect_repository_integrations` to call the new collect/inspect pair, and updated the "No integrations are installed" guidance summary/remediation text to mention Codex alongside OpenCode/Claude/Pi. In `render.rs`, extended `integration_targets_for_text`, `integration_target_label`, `integration_area_label`, and the per-target `integration_area_order` match (`Codex: Skills, Hooks`, then the remaining unused areas) for the new target/area; also fixed `asset_path_components` to strip Codex's leading `.agents`/`.codex` root segment before the existing per-area prefix strip, since Codex's relative paths (unlike OpenCode/Claude/Pi's) are not already root-relative — verified this produces the same clean single-segment leaf labels as the other three targets in a live unhealthy-tree render, not literal `.agents`/`.codex` wrapper nodes. Updated `context/sce/doctor-human-text-contract.md`'s target-resolution priority list, display-label list, and area-ordering list for Codex, plus a new paragraph documenting the `Hooks` area and the trust/review reminder (this doc update was itself part of this task's own "Scope: In" text, not deferred to context synchronization). Added three new unit tests in `inspect.rs`: `codex_integration_groups_split_into_skills_and_hooks_areas` (absent root → both groups present, all children `Missing`, correct path-prefix membership), `codex_hooks_json_reports_match_then_missing_problem_includes_trust_guidance` (writes the real embedded `.codex/hooks.json` bytes to a temp repo → `Match`, then deletes it → `Missing` problem whose remediation text contains the trust guidance), and `resolve_doctor_integration_targets_detects_codex_directory` (a bare `.codex/` directory with no config is detected). No fix-mode (`fixes.rs`) changes were made — Codex's missing/mismatch problems carry `ProblemFixability::ManualOnly` exactly like Pi's, so `sce doctor --fix` reports them as `[manual]` without attempting a repair, matching this task's own "Out" boundary.
+  - Verify: `nix develop -c sh -c './scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor::'` — passed: 12 passed, 0 failed, including the 3 new Codex tests above alongside all pre-existing OpenCode/Claude/Pi doctor tests unmodified. Also ran `nix flake check` (per T01–T12 precedent over raw `cargo test`) — passed: "all checks passed!", covering `cli-tests`, `cli-clippy`, `cli-fmt` (after one `cargo fmt` reformatting pass), `cli-generated-input`, `pkl-generated`. Manual verification per this task's own Done-when: built `sce` via `./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml --bin sce` and ran it against two scratch git repos (`git init` + a fake `origin` remote for repository-identity resolution). `sce setup --codex --non-interactive` then `sce doctor` reported `[PASS] Skills` / `[PASS] Hooks` under a `Codex` group in text mode; deleting `.codex/hooks.json` and corrupting `.agents/skills/sce-commit/SKILL.md` then rerunning `sce doctor` reported `[FAIL] Skills` / `[FAIL] Hooks` with `[MISS]`/`[FAIL]` leaf nodes, correct nested single-segment path labels, and remediation text — the `Hooks` remediation additionally carrying the Codex hook trust/review reminder; `sce doctor --format json`'s `problems` array carried two `"Codex ..."`-summary entries (missing hooks.json, mismatched skill) with the same shape as an OpenCode/Claude/Pi problem would carry, confirming "alongside opencode/claude/pi" without requiring a new JSON schema field (JSON currently exposes no group-summary field for any of the four targets when healthy — only via `problems[]` when something is broken — so Codex's behavior is symmetric with the other three in both states). `sce doctor --fix` left both Codex problems as `[manual]` (no fix-mode Codex-asset repair attempted). `sce setup --all --non-interactive` then `sce doctor` in a second scratch repo showed all four `Claude Code`/`OpenCode`/`Pi`/`Codex` groups as `[PASS]` with no regression to the other three targets' area lists. Reinstalling Codex's assets after corruption restored `[PASS]` for both groups. Scratch repos and their Agent Trace DB state were removed after verification.
+  - Context impact: root — `context/sce/doctor-human-text-contract.md` is already named under this plan's "Context sync" list for exactly this update (target-resolution priority list, display-label list, area-ordering list, and the new `Hooks`-area/trust-guidance paragraph), and this task edited it directly as part of implementation rather than deferring it; no other root context file states doctor's per-target area list or target-resolution priority as fact, so no further root file requires a synchronization pass.
+  - Context synchronization: synced
 
 ## Open questions
 
 - The exact current Codex CLI hook JSON schema (event names, field names, tool-call identifiers, and the native `PreToolUse` deny response shape) cannot be verified from this repository — Codex CLI is an external, evolving tool. T06 and T09 open by checking the change request's assumed schema against current Codex CLI behavior/documentation before finalizing the parser and deny-response builder; this is recorded as an assumption above rather than a blocking question because no acceptance criterion in this plan depends on the exact wire format — every AC is stated as an SCE-side observable outcome (DB rows, generated files, policy behavior) that holds regardless of the precise Codex JSON shape.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-08-22
+
+### Commands run
+
+- `nix run .#pkl-check-generated` -> exit 0 (Ephemeral Pkl generation passed: 135 files, inventory sha256 0cc33ae43f128634271391515e011cf4961f50c0ec17069106ac0317c8a89799)
+- `nix flake check` -> exit 0 (all checks passed! — `cli-tests`, `cli-clippy`, `cli-fmt`, `cli-generated-input`, `pkl-generated`, plus the remaining registered checks)
+- `./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml --bin sce` -> exit 0
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::` -> exit 0 (79 passed; 0 failed)
+- manual `sce setup --codex --non-interactive` in a scratch git repo (with an `origin` remote for repository identity) -> exit 0
+- manual `sce setup --all --non-interactive` in a scratch git repo -> exit 0
+- manual `nix run .#pkl-generate -- "$(mktemp -d)"` -> exit 0
+- manual `sce setup --codex --workflow brownfield --non-interactive` vs. `sce setup --codex --non-interactive` in separate scratch repos -> exit 0 each
+- `git status --porcelain --untracked-files=all -- cli/migrations/agent-trace-repository/` -> exit 0 (no output — no changes)
+
+### Success-criteria verification
+
+- [x] AC1: `sce setup --codex --non-interactive` succeeds, installs `.agents/skills/**` and `.codex/hooks.json` + `.codex/hooks/**`, persists `{"integrations": {"target": ["codex"]}}` -> confirmed by direct inspection of a scratch repo: `.sce/config.json` contains `"integrations": {"optional_workflows": [], "target": ["codex"]}`; `.agents/skills/` holds the six core skill directories; `.codex/hooks.json` and `.codex/hooks/run-sce-or-show-install-guidance.sh` present.
+- [x] AC2: `sce setup --all --non-interactive` installs Codex alongside OpenCode/Claude/Pi with no regression -> confirmed: scratch repo shows `.opencode` (35 files), `.claude` (31 files), `.pi` (30 files), plus Codex's dual-root assets at repo root; `.sce/config.json` records `"target": ["opencode", "claude", "pi", "codex"]`.
+- [x] AC3: core workflows under `.agents/skills/`; `brownfield` obeys `integrations.optional_workflows` selection -> confirmed: `nix run .#pkl-generate -- "$(mktemp -d)"` produced all six core skills plus `sce-brownfield`/`sce-decision` in the full generation root; a scratch `sce setup --codex --workflow brownfield --non-interactive` installed `sce-brownfield` alongside the six core skills, while a scratch `sce setup --codex --non-interactive` (no `--workflow`) installed only the six core skills.
+- [x] AC4: `.codex/hooks.json` registers exactly `UserPromptSubmit`, `Stop`, `PreToolUse` (`Bash`, `apply_patch`), `PostToolUse` (`apply_patch`), no Bash `PostToolUse` -> confirmed by direct content inspection of the generated file in the AC1 scratch repo.
+- [x] AC5: Codex `UserPromptSubmit` produces one user message + one text part under `cx_<session>` -> `hooks::codex::user_prompt_submit::tests::capture_with_produces_one_message_and_one_part_under_the_prefixed_session` passed.
+- [x] AC6: Codex `Stop` produces one assistant message + one text part -> `hooks::codex::stop::tests::capture_with_produces_one_message_and_one_part_under_the_prefixed_session` passed.
+- [x] AC7: reprocessing does not duplicate the parent message -> `hooks::codex::user_prompt_submit::tests::capture_with_does_not_duplicate_the_parent_message_on_reprocess` and `hooks::codex::stop::tests::capture_with_does_not_duplicate_the_parent_message_on_reprocess` passed.
+- [x] AC8: allowed Bash command produces no model-visible output -> `hooks::codex::bash_policy::tests::render_bash_policy_response_is_silent_for_an_allowed_command` passed.
+- [x] AC9: denied Bash command uses Codex-native deny shape with policy reason text -> `hooks::codex::bash_policy::tests::render_bash_policy_response_denies_with_codex_native_shape_for_a_blocked_command` passed.
+- [x] AC10: Bash filesystem mutations create no Codex `diff_trace` -> `hooks::codex::bash_policy::tests::codex_bash_pre_tool_use_path_creates_no_diff_trace_for_a_filesystem_mutation_command` passed.
+- [x] AC11: successful `apply_patch` produces an observed unified patch reflecting the real before/after delta -> `hooks::codex::apply_patch::post::tests::finalize_with_produces_a_diff_for_a_created_file` / `..._for_an_edited_file` / `..._for_a_deleted_file` / `..._for_a_rename` all passed.
+- [x] AC12: persisted `diff_traces` row carries `session_id = cx_...`, `model_id = openai/...`, `tool_name = codex`, `payload_type = patch` -> `hooks::codex::apply_patch::persist::tests::persist_with_inserts_one_diff_trace_row_with_expected_fields` passed.
+- [x] AC13: same `apply_patch` also creates assistant patch conversation evidence tied to the same `cx_` session -> `hooks::codex::apply_patch::persist::tests::persist_with_inserts_one_assistant_patch_message_and_part` passed.
+- [x] AC14: pre-existing dirty change `A` excluded, Codex-authored change `B` included -> `hooks::codex::apply_patch::post::tests::finalize_with_excludes_a_pre_existing_dirty_change_from_the_observed_diff` passed.
+- [x] AC15: `PostToolUse apply_patch` with no pending before-state fails open, no diff evidence -> `hooks::codex::apply_patch::post::tests::finalize_with_fails_open_when_no_pending_file_exists` and `..._fails_open_and_removes_a_malformed_pending_file` passed.
+- [x] AC16: identical before/after states produce no diff trace, treated as successful no-op -> `hooks::codex::apply_patch::post::tests::finalize_with_treats_identical_before_and_after_as_a_no_op_and_still_consumes_pending_file` passed.
+- [x] AC17: committed Codex `apply_patch` diff_trace attributed through the unmodified post-commit intersection pipeline -> `hooks::tests::codex_diff_trace_is_attributed_through_the_post_commit_pipeline` passed.
+- [x] AC18: resulting Agent Trace identifies Codex as tool and preserves the Codex model ID -> same `hooks::tests::codex_diff_trace_is_attributed_through_the_post_commit_pipeline` test asserts `tool.name == Some("codex")` and `contributor.model_id == "openai/gpt-5.6-codex"`.
+- [x] AC19: no Agent Trace repository schema migration added -> `git status --porcelain --untracked-files=all -- cli/migrations/agent-trace-repository/` produced no output (no changed or added files).
+- [x] AC20: existing OpenCode/Claude/Pi setup, generated assets, tracing, policy, and Agent Trace tests continue to pass -> `nix flake check` passed in full (`cli-tests` includes all pre-existing OpenCode/Claude/Pi test modules, unmodified).
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- The Codex hook JSON schema (event/field names, native `PreToolUse` deny shape) was confirmed against a real GitHub-hosted Codex payload example at implementation time (T06/T09), but Codex CLI is an external, evolving tool; a future schema change could require parser/response-shape adjustments. This is a pre-existing, plan-documented open question, not a validation gap — every AC here is an SCE-side observable outcome independent of the exact wire format.

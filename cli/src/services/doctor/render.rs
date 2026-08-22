@@ -487,6 +487,16 @@ fn asset_path_components(area: IntegrationArea, relative_path: &str) -> Vec<Stri
             _ => None,
         })
         .collect::<Vec<_>>();
+    // Codex's relative paths keep their own `.agents/`/`.codex/` output-root
+    // prefix (unlike OpenCode/Claude/Pi, whose relative paths are already
+    // stripped of their single root), so drop that leading root segment
+    // before the shared per-area prefix stripping below.
+    if components
+        .first()
+        .is_some_and(|first| first == ".agents" || first == ".codex")
+    {
+        components.remove(0);
+    }
     let expected_prefix = match area {
         IntegrationArea::Plugins => Some("plugins"),
         IntegrationArea::Agents => Some("agents"),
@@ -494,6 +504,7 @@ fn asset_path_components(area: IntegrationArea, relative_path: &str) -> Vec<Stri
         IntegrationArea::Skills => Some("skills"),
         IntegrationArea::Prompts => Some("prompts"),
         IntegrationArea::Extensions => Some("extensions"),
+        IntegrationArea::Hooks => Some("hooks"),
     };
     if expected_prefix.is_some_and(|prefix| components.first().is_some_and(|first| first == prefix))
     {
@@ -593,6 +604,7 @@ fn integration_targets_for_text(report: &HookDoctorReport) -> Vec<IntegrationTar
         IntegrationTarget::ClaudeCode,
         IntegrationTarget::OpenCode,
         IntegrationTarget::Pi,
+        IntegrationTarget::Codex,
     ]
     .into_iter()
     .filter(|target| {
@@ -623,6 +635,7 @@ fn integration_target_label(target: IntegrationTarget) -> &'static str {
         IntegrationTarget::ClaudeCode => "Claude Code",
         IntegrationTarget::OpenCode => "OpenCode",
         IntegrationTarget::Pi => "Pi",
+        IntegrationTarget::Codex => "Codex",
     }
 }
 
@@ -634,6 +647,7 @@ fn integration_area_label(area: IntegrationArea) -> &'static str {
         IntegrationArea::Skills => "Skills",
         IntegrationArea::Prompts => "Prompts",
         IntegrationArea::Extensions => "Extensions",
+        IntegrationArea::Hooks => "Hooks",
     }
 }
 
@@ -646,6 +660,7 @@ fn integration_area_order(target: IntegrationTarget, area: IntegrationArea) -> u
             IntegrationArea::Skills => 3,
             IntegrationArea::Prompts => 4,
             IntegrationArea::Extensions => 5,
+            IntegrationArea::Hooks => 6,
         },
         IntegrationTarget::ClaudeCode => match area {
             IntegrationArea::Plugins => 0,
@@ -654,6 +669,7 @@ fn integration_area_order(target: IntegrationTarget, area: IntegrationArea) -> u
             IntegrationArea::Agents => 3,
             IntegrationArea::Prompts => 4,
             IntegrationArea::Extensions => 5,
+            IntegrationArea::Hooks => 6,
         },
         IntegrationTarget::Pi => match area {
             IntegrationArea::Extensions => 0,
@@ -662,6 +678,16 @@ fn integration_area_order(target: IntegrationTarget, area: IntegrationArea) -> u
             IntegrationArea::Plugins => 3,
             IntegrationArea::Agents => 4,
             IntegrationArea::Commands => 5,
+            IntegrationArea::Hooks => 6,
+        },
+        IntegrationTarget::Codex => match area {
+            IntegrationArea::Skills => 0,
+            IntegrationArea::Hooks => 1,
+            IntegrationArea::Plugins => 2,
+            IntegrationArea::Agents => 3,
+            IntegrationArea::Commands => 4,
+            IntegrationArea::Prompts => 5,
+            IntegrationArea::Extensions => 6,
         },
     }
 }

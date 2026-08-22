@@ -73,19 +73,27 @@ Integration checks remain target-scoped. The doctor resolves targets using this
 priority:
 
 1. A non-empty `.sce/config.json` `integrations.target` array selects only the
-   listed targets (`opencode`, `claude`, `pi`).
+   listed targets (`opencode`, `claude`, `pi`, `codex`).
 2. An explicitly empty target array selects no targets and renders the no-target
    guidance row.
 3. Without a configured target property, repo-root `.opencode/`, `.claude/`,
-   and `.pi/` directories are detected.
+   `.pi/`, and `.codex/` directories are detected.
 
 Only resolved targets render. Display labels are normalized as `Claude Code`,
-`OpenCode`, and `Pi`; typed target/area keys, not display-label parsing, own the
-hierarchy. Areas render in deterministic order:
+`OpenCode`, `Pi`, and `Codex`; typed target/area keys, not display-label parsing,
+own the hierarchy. Areas render in deterministic order:
 
 - Claude Code: `Plugins`, `Commands`, `Skills`
 - OpenCode: `Plugins`, `Agents`, `Commands`, `Skills`
 - Pi: `Extensions`, `Prompts`, `Skills`
+- Codex: `Skills`, `Hooks`
+
+Codex's `Hooks` area covers `.codex/hooks.json` and
+`.codex/hooks/run-sce-or-show-install-guidance.sh`. A missing or mismatched
+Codex `Hooks` asset also carries a reminder that Codex requires reviewing and
+trusting this project's hooks inside the Codex CLI before they take effect;
+doctor diagnoses and can reinstall the on-disk file but cannot grant that
+trust.
 
 Healthy areas render one concise `[PASS]` row and never list installed files.
 The report and JSON payload still retain the complete inspected asset facts for
