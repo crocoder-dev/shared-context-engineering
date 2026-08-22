@@ -34,6 +34,7 @@ use crate::services::structured_patch::{
 };
 use crate::services::sync::auto_sync;
 pub mod claude_transcript;
+pub mod codex;
 pub mod command;
 pub mod lifecycle;
 
@@ -92,6 +93,7 @@ pub enum HookSubcommand {
     },
     DiffTrace,
     ConversationTrace,
+    Codex,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -224,6 +226,7 @@ fn run_hooks_subcommand_in_repo(
         HookSubcommand::ConversationTrace => {
             Ok(run_conversation_trace_subcommand(repository_root, logger))
         }
+        HookSubcommand::Codex => Ok(codex::run_codex_subcommand(repository_root, logger)),
     }
 }
 
@@ -1814,6 +1817,7 @@ fn hook_runtime_invocation_name(subcommand: &HookSubcommand) -> &'static str {
         HookSubcommand::PostRewrite { .. } => "post-rewrite runtime invocation",
         HookSubcommand::DiffTrace => "diff-trace runtime invocation",
         HookSubcommand::ConversationTrace => "conversation-trace runtime invocation",
+        HookSubcommand::Codex => "codex runtime invocation",
     }
 }
 
