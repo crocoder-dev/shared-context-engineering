@@ -63,6 +63,12 @@ output {
         text = "\(document.text)\n"
       }
     }
+    ["config/.codex/hooks.json"] {
+      text = codex.hooksJson.rendered
+    }
+    ["config/.codex/hooks/run-sce-or-show-install-guidance.sh"] {
+      text = codex.sceHookScript.rendered
+    }
     ["config/.opencode/lib/bash-policy-presets.json"] {
       text = bashPolicyPresetCatalogSource
     }

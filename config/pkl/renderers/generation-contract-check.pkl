@@ -43,6 +43,8 @@ hidden expectedArtifactPaths = new Mapping {
   for (path, _ in codex.skillDocuments) {
     ["config/.agents/skills/\(path)"] = true
   }
+  ["config/.codex/hooks.json"] = true
+  ["config/.codex/hooks/run-sce-or-show-install-guidance.sh"] = true
 
   ["config/schema/sce-config.schema.json"] = true
   ["config/optional-workflows.json"] = true
@@ -270,9 +272,10 @@ local forbiddenWorkflowReferenceTokens = new Listing {
 /// Six cross-target workflow packages, with package-local phase references and
 /// supporting documents on the four phase-based workflows, plus the decision
 /// package and retained non-workflow assets, across OpenCode, Claude, Pi, and
-/// Codex. Stating the total as a literal makes an unintended inventory change
-/// fail here instead of silently becoming the new expectation.
-local expectedArtifactPathCount = 133
+/// Codex, plus Codex's `.codex/hooks.json` and its install-guidance hook
+/// script. Stating the total as a literal makes an unintended inventory
+/// change fail here instead of silently becoming the new expectation.
+local expectedArtifactPathCount = 135
 
 local assertExactArtifactPaths = (actual: Mapping) ->
   if (
