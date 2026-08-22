@@ -43,9 +43,13 @@ const CLAUDE_MODEL_ID_PREFIX: &str = "claude/";
 pub(crate) const DIFF_TRACE_OPENCODE_SESSION_ID_PREFIX: &str = "oc_";
 pub(crate) const DIFF_TRACE_CLAUDE_SESSION_ID_PREFIX: &str = "cc_";
 pub(crate) const DIFF_TRACE_PI_SESSION_ID_PREFIX: &str = "pi_";
+pub(crate) const DIFF_TRACE_CODEX_SESSION_ID_PREFIX: &str = "cx_";
 const OPENCODE_TOOL_NAME: &str = "opencode";
 const CLAUDE_TOOL_NAME: &str = "claude";
 const PI_TOOL_NAME: &str = "pi";
+const CODEX_TOOL_NAME: &str = "codex";
+#[allow(dead_code)]
+const OPENAI_MODEL_ID_PREFIX: &str = "openai/";
 const NORMALIZED_CONVERSATION_TRACE_TOOL_NAMES: &[&str] = &[OPENCODE_TOOL_NAME, PI_TOOL_NAME];
 type PayloadValidationError = fn(&str) -> String;
 
@@ -62,6 +66,7 @@ fn prefixed_session_id(tool_name: &str, raw_session_id: &str) -> String {
         OPENCODE_TOOL_NAME => DIFF_TRACE_OPENCODE_SESSION_ID_PREFIX,
         CLAUDE_TOOL_NAME => DIFF_TRACE_CLAUDE_SESSION_ID_PREFIX,
         PI_TOOL_NAME => DIFF_TRACE_PI_SESSION_ID_PREFIX,
+        CODEX_TOOL_NAME => DIFF_TRACE_CODEX_SESSION_ID_PREFIX,
         _ => return raw_session_id.to_string(),
     };
 
@@ -1023,6 +1028,20 @@ fn normalize_claude_model_id(model: &str) -> Option<String> {
         Some(normalized.to_string())
     } else {
         Some(format!("{CLAUDE_MODEL_ID_PREFIX}{normalized}"))
+    }
+}
+
+#[allow(dead_code)]
+fn normalize_codex_model_id(model: &str) -> Option<String> {
+    let normalized = model.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if normalized.starts_with(OPENAI_MODEL_ID_PREFIX) {
+        Some(normalized.to_string())
+    } else {
+        Some(format!("{OPENAI_MODEL_ID_PREFIX}{normalized}"))
     }
 }
 
@@ -2694,6 +2713,54 @@ mod tests {
         assert_eq!(
             prefixed_diff_trace_session_id("pi", "pi_session-123"),
             "pi_session-123"
+        );
+    }
+
+    #[test]
+    fn prefixed_diff_trace_session_id_prefixes_fresh_codex_session_id() {
+        assert_eq!(
+            prefixed_diff_trace_session_id("codex", "session-123"),
+            "cx_session-123"
+        );
+    }
+
+    #[test]
+    fn prefixed_diff_trace_session_id_keeps_already_prefixed_codex_session_id() {
+        assert_eq!(
+            prefixed_diff_trace_session_id("codex", "cx_session-123"),
+            "cx_session-123"
+        );
+    }
+
+    #[test]
+    fn prefixed_diff_trace_session_id_adding_codex_does_not_affect_other_tool_prefixes() {
+        assert_eq!(
+            prefixed_diff_trace_session_id("opencode", "session-123"),
+            "oc_session-123"
+        );
+        assert_eq!(
+            prefixed_diff_trace_session_id("claude", "session-123"),
+            "cc_session-123"
+        );
+        assert_eq!(
+            prefixed_diff_trace_session_id("pi", "session-123"),
+            "pi_session-123"
+        );
+    }
+
+    #[test]
+    fn normalize_codex_model_id_prefixes_fresh_model_id() {
+        assert_eq!(
+            normalize_codex_model_id("gpt-5.6-codex").as_deref(),
+            Some("openai/gpt-5.6-codex")
+        );
+    }
+
+    #[test]
+    fn normalize_codex_model_id_keeps_already_prefixed_model_id() {
+        assert_eq!(
+            normalize_codex_model_id("openai/gpt-5.6-codex").as_deref(),
+            Some("openai/gpt-5.6-codex")
         );
     }
 
