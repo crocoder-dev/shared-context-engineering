@@ -220,7 +220,7 @@ local sceConfigSchema = new JsonSchema {
           uniqueItems = true
           items = new JsonSchema {
             type = "string"
-            enum = new { "opencode"; "claude"; "pi" }
+            enum = new { "opencode"; "claude"; "pi"; "codex" }
           }
         }
         ["optional_workflows"] = new JsonSchema {

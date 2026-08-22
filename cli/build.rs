@@ -30,24 +30,43 @@ const TARGETS: &[TargetSpec] = &[
     TargetSpec {
         const_name: "OPENCODE_EMBEDDED_ASSETS",
         generated_root: "config/.opencode",
+        allow_dead_code: false,
     },
     TargetSpec {
         const_name: "CLAUDE_EMBEDDED_ASSETS",
         generated_root: "config/.claude",
+        allow_dead_code: false,
     },
     TargetSpec {
         const_name: "PI_EMBEDDED_ASSETS",
         generated_root: "config/.pi",
+        allow_dead_code: false,
+    },
+    TargetSpec {
+        const_name: "CODEX_EMBEDDED_ASSETS",
+        generated_root: CODEX_TARGET_DIR,
+        // Not wired into any SetupTarget/install path yet (T05); only read by
+        // this task's own test so far.
+        allow_dead_code: true,
     },
     TargetSpec {
         const_name: "HOOK_EMBEDDED_ASSETS",
         generated_root: "static/hooks",
+        allow_dead_code: false,
     },
 ];
+
+/// Build-time-only staging directory (inside `OUT_DIR`) that merges Codex's two
+/// Pkl-generated output roots, `config/.agents` and `config/.codex`, into one
+/// tree so it can be embedded like every other single-root target below.
+const CODEX_TARGET_DIR: &str = "config/codex-target";
+const CODEX_AGENTS_SOURCE_DIR: &str = "config/.agents";
+const CODEX_HOOKS_SOURCE_DIR: &str = "config/.codex";
 
 struct TargetSpec {
     const_name: &'static str,
     generated_root: &'static str,
+    allow_dead_code: bool,
 }
 
 fn main() {
@@ -84,6 +103,7 @@ fn prepare_build_artifacts() -> io::Result<()> {
     } else {
         stage_packaged_fallback(&manifest_dir, &out_dir)?;
     }
+    stage_codex_target(&out_dir)?;
     validate_staged_artifacts(&out_dir)?;
     generate_embedded_asset_manifest(&out_dir)?;
     generate_optional_workflow_catalog(&out_dir)?;
@@ -281,7 +301,7 @@ fn validate_fallback_inventory(fallback_root: &Path) -> io::Result<()> {
 }
 
 fn validate_staged_artifacts(out_dir: &Path) -> io::Result<()> {
-    for target in TARGETS.iter().take(3) {
+    for target in TARGETS.iter().take(4) {
         let expected_root = out_dir.join(PKL_OUTPUT_DIR).join(target.generated_root);
         if !expected_root.is_dir() {
             return Err(invalid_data(&format!(
@@ -328,6 +348,26 @@ fn stage_static_inputs(
     copy_file(
         &repository_root.join("config/schema/agent-trace.schema.json"),
         &static_root.join("schema/agent-trace.schema.json"),
+    )
+}
+
+/// Merges Codex's two Pkl-generated output roots into `CODEX_TARGET_DIR` so it
+/// can be embedded through the same single-root `TargetSpec` mechanism as every
+/// other target. Runs after both the repository-source and packaged-fallback
+/// staging branches, since either one populates the generated payload this
+/// reads from.
+fn stage_codex_target(out_dir: &Path) -> io::Result<()> {
+    let pkl_output_root = out_dir.join(PKL_OUTPUT_DIR);
+    let destination_root = pkl_output_root.join(CODEX_TARGET_DIR);
+    remove_path_if_exists(&destination_root)?;
+
+    copy_tree(
+        &pkl_output_root.join(CODEX_AGENTS_SOURCE_DIR),
+        &destination_root.join(".agents"),
+    )?;
+    copy_tree(
+        &pkl_output_root.join(CODEX_HOOKS_SOURCE_DIR),
+        &destination_root.join(".codex"),
     )
 }
 
@@ -389,6 +429,9 @@ fn generate_embedded_asset_manifest(out_dir: &Path) -> io::Result<()> {
         collect_files(&source_root, &source_root, &mut files)?;
         files.sort_unstable_by(|left, right| left.relative_path.cmp(&right.relative_path));
 
+        if target.allow_dead_code {
+            output.push_str("#[allow(dead_code)]\n");
+        }
         writeln!(
             output,
             "pub static {}: &[EmbeddedAsset] = &[",
