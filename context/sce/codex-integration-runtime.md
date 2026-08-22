@@ -90,12 +90,46 @@ pending-state file; Bash-triggered filesystem mutations remain untracked for
 Codex (see "Explicit non-goals" in
 [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md)).
 
+## `PreToolUse(apply_patch)` before-state snapshot
+
+`cli/src/services/hooks/codex/apply_patch/pre.rs` implements the
+`PreToolUse(apply_patch)` arm: it captures the worktree state just before a
+Codex `apply_patch` tool call runs, so a later `PostToolUse(apply_patch)`
+finalize step (a later Codex-integration task) can diff against it.
+
+- Requires non-empty `session_id`, `turn_id`, and `tool_use_id`; a missing or
+  blank field is a validation error (logged and failed open by the outer
+  dispatcher, matching every other arm's posture).
+- Derives a deterministic, filesystem-safe **event key** by SHA-256-hashing
+  `session_id`, `turn_id`, and `tool_use_id` as separately-delimited byte
+  segments (not string-concatenated, so field-boundary ambiguity cannot
+  collide two distinct triples) and hex-encoding the digest.
+- Snapshots the current worktree — tracked changes plus non-ignored untracked
+  files, not just `HEAD` — into a `before_tree_oid` via `git read-tree HEAD`
+  + `git add -A` + `git write-tree` run against a **temporary, scratch
+  `GIT_INDEX_FILE`**, so the repository's real Git index is never read or
+  written. The scratch index file is removed after the snapshot regardless
+  of outcome.
+- Writes `{before_tree_oid, created_at_unix_ms}` to a pending-state file
+  named `<event_key>.json`, atomically (temp file in the same directory,
+  then `fs::rename`), under a new per-repository pending-state directory:
+  `<state_root>/sce/repos/<repository_id>/hooks/codex/pending/`
+  (`codex_apply_patch_pending_dir_for_repository` in
+  `cli/src/services/default_paths.rs`, mirroring the repository-scoped
+  Agent Trace DB path). `repository_id` is resolved the same way
+  `open_agent_trace_db_for_hook_runtime` resolves it — this arm reads no
+  Agent Trace DB, and writes none.
+- Writes no `diff_traces`, `messages`, or `parts` row. Attribution evidence
+  is produced only once `PostToolUse(apply_patch)` finalizes a non-empty
+  diff (a later task).
+
 ## Still-stub arms
 
-`PreToolUse(apply_patch)` and `PostToolUse(apply_patch)` currently return a
-deterministic stub success string naming the future task that implements
-them — a before/after repository snapshot and the persisted observed diff.
-This document will grow a slice per arm as each lands.
+`PostToolUse(apply_patch)` currently returns a deterministic stub success
+string naming the future task that implements it — reading back the
+`PreToolUse(apply_patch)` pending-state file, computing the observed diff
+against a second temporary-index snapshot, and persisting it. This document
+will grow a slice for it once it lands.
 
 ## Verification
 

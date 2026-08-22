@@ -307,6 +307,50 @@ pub fn agent_trace_db_path_for_repository_at(
         .join("agent-trace.db"))
 }
 
+/// Returns the canonical Codex `apply_patch` pending before-state snapshot
+/// directory for a repository checkout.
+///
+/// The path is `<state_root>/sce/repos/<repository_id>/hooks/codex/pending/`,
+/// where `state_root` comes from the shared default-path catalog and
+/// `repository_id` is the stable repository identity hash from
+/// `services::repository_identity`. This is a transient, per-user-state
+/// directory (mirroring the repository-scoped Agent Trace DB path), never
+/// under the tracked repository working tree.
+pub fn codex_apply_patch_pending_dir_for_repository(
+    repository_id: &str,
+) -> anyhow::Result<PathBuf> {
+    let state_root = resolve_sce_default_locations()?
+        .roots()
+        .state_root()
+        .to_path_buf();
+    codex_apply_patch_pending_dir_for_repository_at(&state_root, repository_id)
+}
+
+/// Builds the Codex `apply_patch` pending-state directory path under an
+/// explicit state root: `<state_root>/sce/repos/<repository_id>/hooks/codex/pending/`.
+pub fn codex_apply_patch_pending_dir_for_repository_at(
+    state_root: &std::path::Path,
+    repository_id: &str,
+) -> anyhow::Result<PathBuf> {
+    let repository_id = repository_id.trim();
+    if repository_id.is_empty() {
+        anyhow::bail!(
+            "repository ID must not be empty when resolving Codex apply_patch pending-state directory"
+        );
+    }
+    if repository_id.contains(['/', '\\']) || repository_id == "." || repository_id == ".." {
+        anyhow::bail!("repository ID '{repository_id}' is not a valid path segment");
+    }
+
+    Ok(state_root
+        .join("sce")
+        .join("repos")
+        .join(repository_id)
+        .join("hooks")
+        .join("codex")
+        .join("pending"))
+}
+
 /// Returns the canonical default observability log directory.
 ///
 /// The path is `<state_root>/sce/logs`, where `state_root` comes from the

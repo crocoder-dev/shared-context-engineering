@@ -8,6 +8,7 @@ use crate::services::observability::traits::Logger;
 
 use super::read_hook_stdin;
 
+mod apply_patch;
 mod bash_policy;
 mod stop;
 mod user_prompt_submit;
@@ -111,10 +112,7 @@ fn run_codex_subcommand_from_payload(
         }
         CodexDispatchArm::Stop => stop::handle(repository_root, &event)?,
         CodexDispatchArm::PreToolUseBash => bash_policy::handle(repository_root, &event)?,
-        CodexDispatchArm::PreToolUseApplyPatch => {
-            "codex hooks: PreToolUse apply_patch dispatch (stub; before-state snapshot lands in T10)."
-                .to_string()
-        }
+        CodexDispatchArm::PreToolUseApplyPatch => apply_patch::handle(repository_root, &event)?,
         CodexDispatchArm::PostToolUseApplyPatch => {
             "codex hooks: PostToolUse apply_patch dispatch (stub; finalize lands in T11).".to_string()
         }
@@ -229,25 +227,15 @@ mod tests {
 
     #[test]
     fn run_codex_subcommand_from_payload_dispatches_each_still_stubbed_combination() {
-        let cases = [
-            (
-                r#"{"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"apply_patch"}"#,
-                "PreToolUse apply_patch",
-            ),
-            (
-                r#"{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"apply_patch"}"#,
-                "PostToolUse apply_patch",
-            ),
-        ];
+        let payload =
+            r#"{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"apply_patch"}"#;
 
-        for (payload, expected_substring) in cases {
-            let output = run_codex_subcommand_from_payload(Path::new("/tmp"), payload)
-                .expect("stub dispatch should succeed");
-            assert!(
-                output.contains(expected_substring),
-                "expected output '{output}' to mention '{expected_substring}'"
-            );
-        }
+        let output = run_codex_subcommand_from_payload(Path::new("/tmp"), payload)
+            .expect("stub dispatch should succeed");
+        assert!(
+            output.contains("PostToolUse apply_patch"),
+            "expected output '{output}' to mention 'PostToolUse apply_patch'"
+        );
     }
 
     #[test]
