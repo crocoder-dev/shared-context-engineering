@@ -8,6 +8,8 @@ use crate::services::observability::traits::Logger;
 
 use super::read_hook_stdin;
 
+mod user_prompt_submit;
+
 const CODEX_HOOK_EVENT_USER_PROMPT_SUBMIT: &str = "UserPromptSubmit";
 const CODEX_HOOK_EVENT_STOP: &str = "Stop";
 const CODEX_HOOK_EVENT_PRE_TOOL_USE: &str = "PreToolUse";
@@ -20,7 +22,9 @@ const CODEX_HOOK_TOOL_BASH: &str = "Bash";
 /// Working contract (see plan `context/plans/codex-cli-integration.md`
 /// Assumptions): `hook_event_name` is present on every event; `session_id`,
 /// `turn_id`, `cwd`, and `model` vary by event; `tool_name`/`tool_use_id`/
-/// `tool_input`/`tool_response` are present only on `PreToolUse`/`PostToolUse`.
+/// `tool_input`/`tool_response` are present only on `PreToolUse`/`PostToolUse`;
+/// `prompt` is present only on `UserPromptSubmit`, matching Claude's own
+/// `UserPromptSubmit` payload shape (see `transform_claude_user_prompt_submit_with`).
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub(crate) struct CodexHookEvent {
@@ -41,6 +45,8 @@ pub(crate) struct CodexHookEvent {
     pub(crate) tool_input: Option<Value>,
     #[serde(default)]
     pub(crate) tool_response: Option<Value>,
+    #[serde(default)]
+    pub(crate) prompt: Option<String>,
 }
 
 /// The set of Codex hook-event/tool combinations `sce hooks codex` gives
@@ -77,7 +83,7 @@ pub(super) fn run_codex_subcommand(repository_root: &Path, logger: Option<&dyn L
 }
 
 fn run_codex_subcommand_from_payload(
-    _repository_root: &Path,
+    repository_root: &Path,
     stdin_payload: &str,
 ) -> Result<String> {
     let event: CodexHookEvent = serde_json::from_str(stdin_payload)
@@ -85,7 +91,7 @@ fn run_codex_subcommand_from_payload(
 
     Ok(match classify_codex_event(&event) {
         CodexDispatchArm::UserPromptSubmit => {
-            "codex hooks: UserPromptSubmit dispatch (stub; capture lands in T07).".to_string()
+            user_prompt_submit::handle(repository_root, &event)?
         }
         CodexDispatchArm::Stop => {
             "codex hooks: Stop dispatch (stub; capture lands in T08).".to_string()
@@ -126,6 +132,7 @@ mod tests {
             tool_use_id: None,
             tool_input: None,
             tool_response: None,
+            prompt: None,
         }
     }
 
@@ -202,12 +209,8 @@ mod tests {
     }
 
     #[test]
-    fn run_codex_subcommand_from_payload_dispatches_each_supported_combination() {
+    fn run_codex_subcommand_from_payload_dispatches_each_still_stubbed_combination() {
         let cases = [
-            (
-                r#"{"hook_event_name":"UserPromptSubmit","session_id":"s1","turn_id":"t1"}"#,
-                "UserPromptSubmit",
-            ),
             (
                 r#"{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1"}"#,
                 "Stop",
