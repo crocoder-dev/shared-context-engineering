@@ -60,6 +60,15 @@ pub const INSERT_PART_SQL: &str =
     "INSERT INTO parts (type, text, message_id, session_id, generated_at_unix_ms)
 VALUES (?1, ?2, ?3, ?4, ?5)";
 
+/// Parameterized SQL for checking whether a message row already exists,
+/// used as the existence guard for
+/// [`insert_conversation_text_event_with`].
+const SELECT_MESSAGE_EXISTS_SQL: &str =
+    "SELECT 1 FROM messages WHERE session_id = ?1 AND message_id = ?2 LIMIT 1";
+
+const CONVERSATION_TEXT_EVENT_OPERATION_NAME: &str = "insert conversation text event";
+const CONVERSATION_TEXT_EVENT_RETRY_HINT: &str = "retry after the database lock clears; if the issue persists, stop other SCE processes using this database and rerun the command";
+
 /// Diff trace payload to persist in the agent trace database.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DiffTraceInsert<'a> {
@@ -328,6 +337,46 @@ fn insert_parts_with<M: DbSpec>(db: &TursoDb<M>, inputs: Vec<InsertPartInsert>) 
     );
 
     db.execute(&sql, params)
+}
+
+/// Atomically insert one conversation `messages` row and its one `parts`
+/// row: if `(message.session_id, message.message_id)` already exists, this
+/// is a no-op (`Ok(false)`); otherwise both rows insert together in one
+/// transaction (`Ok(true)`). `fail_before_part_insert` is a test-only hook
+/// forcing the transaction to fail after the message insert and before the
+/// part insert, to prove both roll back together.
+fn insert_conversation_text_event_with<M: DbSpec>(
+    db: &TursoDb<M>,
+    message: InsertMessageInsert,
+    part: InsertPartInsert,
+    fail_before_part_insert: bool,
+) -> Result<bool> {
+    let exists_params = (message.session_id.clone(), message.message_id.clone());
+    let message_params = (
+        message.session_id,
+        message.message_id,
+        message.role.to_string(),
+        message.generated_at_unix_ms,
+    );
+    let part_params = (
+        part.part_type.to_string(),
+        part.text,
+        part.message_id,
+        part.session_id,
+        part.generated_at_unix_ms,
+    );
+
+    db.execute_transactional_insert_pair_if_absent(
+        CONVERSATION_TEXT_EVENT_OPERATION_NAME,
+        CONVERSATION_TEXT_EVENT_RETRY_HINT,
+        SELECT_MESSAGE_EXISTS_SQL,
+        exists_params,
+        INSERT_MESSAGE_SQL,
+        message_params,
+        INSERT_PART_SQL,
+        part_params,
+        fail_before_part_insert,
+    )
 }
 
 fn numbered_placeholders(start: usize, count: usize) -> String {

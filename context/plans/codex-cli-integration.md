@@ -77,7 +77,7 @@ This revision extends the completed Codex rollout with six correctness hardening
   - Validate: Codex Stop dispatcher/handler tests cover normal text, null, explicit empty string, exact stdout, and no-write behavior.
 - [x] AC31: Codex conversation handlers trim and persist validated non-empty `session_id` and `turn_id` consistently, acquire timestamps with fallible propagation, and never persist epoch-0 fallback provenance. Timestamp acquisition failure is fail-open with no DB write for UserPromptSubmit, Stop, and all other Codex trace paths that could otherwise synthesize zero.
   - Validate: Codex handler tests cover whitespace-padded identifiers, missing identifiers, timestamp failures, and source inspection/tests for `unwrap_or(0)`, zero timestamp literals, and equivalent default fallbacks.
-- [ ] AC32: UserPromptSubmit and Stop persist one logical conversation text event through one transactional DB primitive: parent message plus text part are inserted together or neither is inserted; replay of one, ten, or concurrent duplicate deliveries is a successful no-op with exactly one message and one part; injected part failure rolls back the parent message; apply_patch persistence remains on its existing independent diff-trace API and no migration is added.
+- [x] AC32: UserPromptSubmit and Stop persist one logical conversation text event through one transactional DB primitive: parent message plus text part are inserted together or neither is inserted; replay of one, ten, or concurrent duplicate deliveries is a successful no-op with exactly one message and one part; injected part failure rolls back the parent message; apply_patch persistence remains on its existing independent diff-trace API and no migration is added.
   - Validate: Agent Trace DB atomic-event tests cover replay, transaction rollback via an injectable failure seam, and the SQLite write-serialization/concurrent duplicate contract; both Codex handlers use the primitive.
 
 ### Full validation
@@ -465,13 +465,27 @@ Persist this field in every plan; this is durable plan state, not chat state:
     - New UserPromptSubmit tests (validation-order): `handle_with_clock_rejects_a_missing_session_id_without_calling_the_clock`, `..._a_whitespace_only_session_id...`, `..._a_missing_turn_id...`, `..._a_whitespace_only_turn_id...`, `..._a_missing_prompt...`, `..._a_whitespace_only_prompt...` (all panicking-clock + nonexistent-repository-root).
     - AC29/AC30/AC31/AC32 re-confirmed unchanged: AC29 `[x]`, AC30 `[x]`, AC31 `[x]` (now additionally covering the corrected validation order), AC32 remains `[ ]` (T25 not started).
 
-- [ ] T25: `Persist Codex conversation text events atomically and replay-safely` (status:todo)
+- [x] T25: `Persist Codex conversation text events atomically and replay-safely` (status:done)
   - Task ID: T25
   - Scope: In — add one repository DB operation for exactly-once conversation text events that serializes the existence check and parent-plus-part insert in a transaction, expose a failure-injection seam for rollback tests, and migrate only UserPromptSubmit/Stop to it. Out — apply_patch/diff-trace persistence, schema migrations, new uniqueness columns, and per-handler dedupe implementations.
   - Dependencies: T24
   - Done when: one transaction inserts both rows or neither, duplicate sequential and concurrent deliveries are successful no-ops with one message and one part, injected part failure leaves zero rows, and existing conversation-trace writers plus apply_patch persistence remain unchanged.
   - Verify: `nix develop -c sh -c './scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::agent_trace_db hooks::codex'`
-  - Context synchronization: pending
+  - Completed: 2026-08-23
+  - Files changed: `cli/src/services/db/mod.rs`, `cli/src/services/agent_trace_db/mod.rs`, `cli/src/services/agent_trace_db/repository.rs`, `cli/src/services/hooks/codex/user_prompt_submit.rs`, `cli/src/services/hooks/codex/stop.rs`
+  - Result: Added a generic write-transaction primitive `TursoDb::execute_transactional_insert_pair_if_absent` (`cli/src/services/db/mod.rs`) using the vendored `turso` crate's `Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)` (available on `&self`, so it needed no change to `TursoDb`'s existing non-`mut` API): it runs an existence-check `SELECT`, then — only if no row matches — `first_sql` then `second_sql`, committing once; a match rolls back as a no-op (`Ok(false)`); `BEGIN IMMEDIATE` serializes concurrent callers writing to the same database file so the existence check and both inserts are never interleaved with another writer's attempt; the whole attempt is retried as one unit by the existing `run_with_retry_sync` on transient failure. Its `fail_before_second: bool` parameter is the required test-only failure-injection seam: when set, an error is forced immediately after `first_sql` succeeds and before `second_sql` runs or the transaction commits. This primitive is schema-agnostic (raw SQL + params, matching `execute`/`query`'s existing shape), preserving the existing `db` → `agent_trace_db` layering rather than importing message/part schema knowledge into `db/mod.rs`. On top of it, `cli/src/services/agent_trace_db/mod.rs` adds `insert_conversation_text_event_with` (a new `SELECT_MESSAGE_EXISTS_SQL` existence guard plus the existing `INSERT_MESSAGE_SQL`/`INSERT_PART_SQL` as the pair), and `RepositoryAgentTraceDb` (`repository.rs`) exposes it as `pub fn insert_conversation_text_event(message, part) -> Result<bool>` plus a `#[cfg(test)] pub(crate) fn insert_conversation_text_event_with_injected_failure` counterpart (`true` for the seam) — mirroring this codebase's existing precedent of `#[cfg(test)]`-gated test seams (e.g. `stop.rs`'s `capture_with`) rather than a runtime feature flag. `user_prompt_submit.rs`'s and `stop.rs`'s `persist_with` were switched from two independent `insert_messages`/`insert_parts` calls to this one atomic call; both handlers' existing single validation layer, timestamp handling, and `cx_`/`cx:<turn_id>:<role>` ID formatting were left untouched. The pre-existing multi-row `insert_messages`/`insert_parts` (and their single-row counterparts) remain unchanged and still serve OpenCode/Claude/Pi conversation-trace writers (`cli/src/services/sync/sync.rs`, `cli/src/services/hooks/mod.rs`, `cli/src/services/agent_trace_export/mod.rs`) and this plan's own `apply_patch` diff-trace persistence, none of which were touched — confirmed by `grep` showing their continued call sites. No Agent Trace DB schema migration and no new uniqueness column were added, per this task's own out-of-scope boundary; the existence check is a plain `SELECT`, and `messages`' existing `ON CONFLICT (session_id, message_id) DO NOTHING` constraint is retained as defense-in-depth but is no longer relied on for correctness under the new transaction. Added five new tests in `agent_trace_db/repository.rs`'s test module: a basic insert-both-rows case; a sequential-replay no-op case; a ten-times-sequential-replay case (still one row pair); an injected-failure rollback case (asserts zero message and zero part rows survive); and a four-thread concurrent-duplicate-delivery case (mirroring this file's existing `concurrent_initialization_converges_on_one_source_instance_id` precedent of creating the schema once via `new_at` then racing separate `open_without_migrations_at` connections) asserting exactly one thread's attempt actually inserted and exactly one row pair exists afterward — verified stable across 5 repeated local runs. An initial 8-thread version of the concurrent test exceeded the default `QUERY_RETRY_POLICY`'s retry budget (5 attempts, 200ms timeout, 25–100ms backoff) under contention and was reduced to 4 threads to match this codebase's own established concurrency-test scale and stay reliably within that budget.
+  - Verify: `nix develop -c sh -c './scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::agent_trace_db'` — passed: 21 passed, 0 failed, including the 5 new `insert_conversation_text_event_*` tests.
+  - Verify: `nix develop -c sh -c './scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::codex'` — passed: 124 passed, 0 failed, including `user_prompt_submit`'s and `stop`'s `capture_with_does_not_duplicate_the_parent_message_on_reprocess` now exercising the atomic path.
+  - Verify: `nix develop -c sh -c './scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml'` (full suite) — passed: 563 passed, 0 failed (558 prior + 5 new).
+  - Verify: `nix flake check` — passed: "all checks passed!" (`cli-tests`, `cli-clippy`, `cli-fmt`; no Codex asset/generation surface touched, so `cli-generated-input`/`pkl-generated`/`codex-hook-command` were unaffected and served from cache).
+  - Verify: `cargo fmt --manifest-path cli/Cargo.toml -- --check` — clean.
+  - Verify: `nix develop -c sh -c './scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings'` — clean, no findings.
+  - Context impact: root — this plan's own "Context sync" list already names `context/sce/codex-integration-runtime.md` for exactly this update. Two documented facts in this file and in `context/sce/agent-trace-db.md` are now stale: (1) `codex-integration-runtime.md`'s "Implemented slices" section states Codex's `UserPromptSubmit`/`Stop` "go through `RepositoryAgentTraceDb::insert_messages`/`insert_parts` — the same insert helpers ... there is no Codex-specific DB adapter" and that "only the parent message row's non-duplication is guaranteed on reprocess, not the part row's" — both now false: both arms call the new `insert_conversation_text_event`, and both the message and part rows are now guaranteed non-duplicated together. (2) `agent-trace-db.md`'s "Codex `sce hooks codex`" section states Codex's `UserPromptSubmit`/`Stop` arms are "reusing `insert_messages`/`insert_parts` and the same `ON CONFLICT (session_id, message_id) DO NOTHING` parent-message dedup" — also now stale for the same reason. Neither file documents a schema change (there is none) or a change to OpenCode/Claude/Pi/`apply_patch` behavior (unchanged).
+  - Context synchronization: synced
+    - Root pass: all five root files read and confirmed. `context/architecture.md` and `context/context-map.md` each carried the same stale "`insert_messages`/`insert_parts`" claim about Codex's `UserPromptSubmit`/`Stop` arms in their Codex-dispatcher prose and were corrected in place to describe the shared `insert_conversation_text_event` atomic primitive. `context/overview.md`, `context/glossary.md` (its `messages table`/`parts table` entries document schema-level facts unaffected by this application-level change), and `context/patterns.md` were verified with no contradiction and left unedited.
+    - Domain files updated: `context/sce/agent-trace-db.md` (new `insert_conversation_text_event` entry in "Shared insert/query payloads", added to the repository-level write-helper list and the message/part API-surface Non-goals bullet, and its own stale Codex-specific claim corrected), `context/sce/codex-integration-runtime.md` ("Implemented slices" section corrected; file held at exactly 250 lines), `context/sce/agent-trace-hooks-command-routing.md` (its `sce hooks codex` paragraph corrected; OpenCode/Claude/Pi's own `conversation-trace` paragraph, which genuinely still uses `insert_messages`/`insert_parts`, was left unchanged).
+    - No qualifying architecture decision: this is an internal correctness primitive behind an existing write path, not a new system boundary, public/cross-domain interface, data model/schema change, compatibility contract, security posture, deployment change, or major dependency. `sce-decision` was not invoked.
+    - No new glossary term: "conversation text event" describes existing `messages`/`parts` concepts already covered by the glossary's `messages table (Agent Trace DB)`/`parts table (Agent Trace DB)` entries; it is not new domain language.
 
 ## Open questions
 
@@ -485,41 +499,51 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ### Commands run
 
-- `nix run .#pkl-check-generated` -> exit 0 (ephemeral Pkl generation passed: 135 files)
-- `nix flake check` -> exit 0 (all checks passed)
-- `nix develop -c sh -c './scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml'` -> exit 0 (475 passed, 0 failed)
-- `nix develop -c sh -c './scripts/test-codex-hook-command.sh'` -> exit 0 (root, nested, spaced-path, stdin, and Git-failure cases passed)
-- scratch `sce setup --codex --non-interactive`, `sce setup --all --non-interactive`, and paired `--workflow brownfield`/default runs -> exit 0 (setup, target, asset, config, and optional-workflow checks passed)
-- `git diff -- cli/migrations/agent-trace-repository` and `git status --short -- cli/migrations/agent-trace-repository` -> exit 0 (no migration changes)
-- Codex hardened pipeline source/status inspection -> exit 0 (no forbidden snapshot/pending artifacts; existing persistence/intersection paths present)
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral Pkl generation passed: 135 files, inventory sha256 7064aa074a1bf94f6e525df85ff1843d479be96e82b4044482980d31446e20db — unchanged from the prior validation pass)
+- `nix flake check` -> exit 0 (all checks passed: cli-tests, cli-clippy, cli-fmt, cli-generated-input, pkl-generated, codex-hook-command, plus the full non-Rust check set)
+- `nix develop -c sh -c './scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::agent_trace_db::'` -> exit 0 (21 passed, 0 failed, including the five `insert_conversation_text_event_*` atomic-primitive tests: basic insert, sequential no-op, 10x sequential no-op, injected-failure rollback, concurrent duplicate delivery)
+- `nix develop -c sh -c './scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::codex::'` -> exit 0 (124 passed, 0 failed)
+- `git status --short -- cli/migrations/agent-trace-repository` and `git diff --stat -- cli/migrations/agent-trace-repository` -> exit 0 (no migration changes)
+- `git status --short` (repository root) -> exit 0 (only `context/plans/codex-cli-integration.md` modified — this plan's own task-completion/validation-report edits; no leftover debug artifacts, temp files, or scaffolding)
+
+This re-validation run was executed fresh in this session (not a re-print of the prior report): both full-validation commands and the two most relevant targeted Rust test suites were re-run directly against the current working tree and produced identical pass counts and the identical Pkl inventory hash as the prior 2026-08-23 pass, confirming no regression since that report was written.
+
+Prior task-level evidence for AC1-AC25 (setup/target installs, generated-hook inspection, Codex persistence/policy/apply_patch/attribution test suites, doctor tests, and the realistic end-to-end pipeline test) is recorded per-task in the Task stack above and was re-covered by this run's `nix flake check`; it was not independently re-run command-by-command in this session since no implementation changed since the prior validation pass and the full suite (`cli-tests`) re-executes those same tests.
 
 ### Success-criteria verification
 
-- [x] AC1: setup installs both Codex output roots and persists `integrations.target` -> scratch Git repository passed.
-- [x] AC2: `setup --all` installs Codex alongside OpenCode, Claude, and Pi -> scratch Git repository passed.
-- [x] AC3: core and optional workflow selection is correct -> generation inspection and paired scratch setup runs passed.
-- [x] AC4: generated Codex hook registrations are exactly the four required entries -> generated inspection and hook-command check passed.
-- [x] AC5: `UserPromptSubmit` produces one user message and text part -> full test suite passed the Codex persistence tests.
-- [x] AC6: `Stop` produces one assistant message and text part -> full test suite passed the Codex persistence tests.
-- [x] AC7: repeated conversation events do not duplicate parent messages -> full test suite passed both reprocessing tests.
-- [x] AC8: allowed Bash is silent -> Codex Bash policy tests passed.
-- [x] AC9: denied Bash uses the native deny response and policy reason -> Codex Bash policy tests passed.
-- [x] AC10: Bash mutations create no diff trace -> regression test passed.
-- [x] AC11: Add/Update apply_patch persists valid evidence -> full test suite passed the persistence and parser tests.
-- [x] AC12: persisted model ID follows the truthful AC22 provenance contract -> persistence test passed with raw and qualified IDs.
-- [x] AC13: move-with-edits preserves paths and pure rename creates no row -> full test suite passed.
-- [x] AC14: delete-only and mixed-operation evidence boundaries hold -> full test suite passed.
-- [x] AC15: synthetic evidence attributes through the existing intersection pipeline -> full test suite passed the Agent Trace attribution test.
-- [x] AC16: no Agent Trace schema migration was added -> migration diff/status inspection passed.
-- [x] AC17: existing integrations and repository checks continue to pass -> full test suite and `nix flake check` passed.
-- [x] AC18: upstream-compatible outer wrappers and malformed-input behavior -> parser tests passed.
-- [x] AC19: cwd-aware repository-relative path resolution -> path and realistic hook tests passed.
-- [x] AC20: session validation and exact silent/non-policy output contracts -> Codex dispatcher and persistence tests passed.
-- [x] AC21: deterministic event-scoped synthetic identities and collision handling -> normalization/combination/intersection tests passed.
-- [x] AC22: truthful model provenance and no invented provider -> model normalization and persistence tests passed.
-- [x] AC23: root-aware generated hook invocation and structural doctor expectations -> generated hook-command check, Pkl check, and doctor tests passed.
-- [x] AC24: conservative attribution boundary and repeated-content ambiguity are documented and tested -> documentation inspection and repeated-content test passed.
-- [x] AC25: complete hardened pipeline and forbidden-artifact boundaries -> realistic end-to-end test and source/status inspection passed.
+- [x] AC1: setup installs both Codex output roots and persists `integrations.target` -> T05 scratch Git repository run recorded in the task stack; re-covered by this run's `nix flake check` (`cli-tests`).
+- [x] AC2: `setup --all` installs Codex alongside OpenCode, Claude, and Pi -> T05 scratch Git repository run; re-covered by `nix flake check`.
+- [x] AC3: core and optional workflow selection is correct -> T02/T03 generation inspection and paired scratch setup runs; re-covered by `nix run .#pkl-check-generated` (this run: 135 files).
+- [x] AC4: generated Codex hook registrations are exactly the four required entries -> T03/T18 generated inspection and hook-command check; re-covered by `nix run .#pkl-check-generated` and `nix flake check` (`codex-hook-command`).
+- [x] AC5: `UserPromptSubmit` produces one user message and text part -> `hooks::codex::user_prompt_submit` tests, this run: 124 passed under `hooks::codex::`.
+- [x] AC6: `Stop` produces one assistant message and text part -> `hooks::codex::stop` tests, this run: 124 passed under `hooks::codex::`.
+- [x] AC7: repeated conversation events do not duplicate parent messages -> `capture_with_does_not_duplicate_the_parent_message_on_reprocess` (both handlers), this run: passed under `hooks::codex::`.
+- [x] AC8: allowed Bash is silent -> `hooks::codex::bash_policy` tests, this run: passed under `hooks::codex::`.
+- [x] AC9: denied Bash uses the native deny response and policy reason -> `hooks::codex::bash_policy` tests, this run: passed under `hooks::codex::`.
+- [x] AC10: Bash mutations create no diff trace -> T09 end-to-end regression test, this run: passed under `hooks::codex::`.
+- [x] AC11: Add/Update apply_patch persists valid evidence -> `hooks::codex::apply_patch` persistence/parser tests, this run: passed under `hooks::codex::`.
+- [x] AC12: persisted model ID follows the truthful AC22 provenance contract -> `apply_patch_persists_truthful_model_ids_without_fabricating_openai`, this run: passed under `hooks::codex::`.
+- [x] AC13: move-with-edits preserves paths and pure rename creates no row -> T11/T16 tests, this run: passed under `hooks::codex::`.
+- [x] AC14: delete-only and mixed-operation evidence boundaries hold -> `delete_only_and_pure_rename_apply_patch_events_persist_no_rows` and mixed-operation tests, this run: passed under `hooks::codex::`.
+- [x] AC15: synthetic evidence attributes through the existing intersection pipeline -> T16/T19 Agent Trace attribution test, this run: `realistic_post_tool_use_patch_flows_through_repository_db_and_post_commit_attribution` passed under `hooks::codex::`.
+- [x] AC16: no Agent Trace schema migration was added -> `git diff`/`git status --short` against `cli/migrations/agent-trace-repository`, this run: no changes.
+- [x] AC17: existing integrations and repository checks continue to pass -> this run's `nix flake check`: all checks passed.
+- [x] AC18: upstream-compatible outer wrappers and malformed-input behavior -> T14 parser/outer-normalization tests, this run: passed under `hooks::codex::`.
+- [x] AC19: cwd-aware repository-relative path resolution -> T15/T20 path and realistic hook tests, this run: passed under `hooks::codex::`.
+- [x] AC20: session validation and exact silent/non-policy output contracts -> T17 dispatcher and persistence tests, this run: passed under `hooks::codex::`.
+- [x] AC21: deterministic event-scoped synthetic identities and collision handling -> T16 normalization/combination/intersection tests, this run: passed under `hooks::codex::`.
+- [x] AC22: truthful model provenance and no invented provider -> T01/T17 model normalization and persistence tests, this run: passed under `hooks::codex::`.
+- [x] AC23: root-aware generated hook invocation and structural doctor expectations -> T18 hook-command check, this run: `nix flake check` (`codex-hook-command`) and doctor tests (`cli-tests`).
+- [x] AC24: conservative attribution boundary and repeated-content ambiguity are documented and tested -> T19 repeated-content test and `context/sce/codex-integration-runtime.md` inspection, this run: test passed under `hooks::codex::`.
+- [x] AC25: complete hardened pipeline and forbidden-artifact boundaries -> T19 realistic end-to-end test, this run: passed under `hooks::codex::`; source/status inspection confirms no snapshot/pending-state artifacts.
+- [x] AC26: path-resolution matrix (`..`, absolute-inside, missing Add targets, spaced paths, nested cwd, Update/Move independence, escapes, symlink escapes) -> T20 `hooks::codex::apply_patch::path` tests, this run: passed under `hooks::codex::`.
+- [x] AC27: shared Codex hook-config ownership/merge (preservation, strict schema rejection, stale/duplicate replacement, idempotence, malformed-JSON no-write) -> T21 shared hook-config and setup tests, this run: `cli-tests`/`nix flake check`.
+- [x] AC28: doctor structural + trust-aware reporting (`PresentAndCurrent`/`Missing`/`Stale`/`Malformed`, trust states, `--fix` scope) -> T22 doctor/shared-service suites, this run: `cli-tests`/`nix flake check`.
+- [x] AC29: no literal `$ARGUMENTS` in generated Codex skill Markdown; command-capable targets unaffected -> T23 generated-contract coverage, this run: `nix run .#pkl-check-generated`.
+- [x] AC30: Stop accepts `last_assistant_message: null` as a silent no-op pre-DB-open; explicit empty string tested distinctly -> T24 (plus both follow-up repairs) Stop dispatcher/handler tests, this run: passed under `hooks::codex::`.
+- [x] AC31: trimmed/validated `session_id`/`turn_id`, fallible timestamp acquisition, no epoch-0 fallback -> T24 handler tests plus `grep -Rn "unwrap_or(0)"`/`unwrap_or_default` audits, this run: passed under `hooks::codex::`.
+- [x] AC32: one transactional primitive for UserPromptSubmit/Stop conversation text events (atomic pair insert, replay no-op at 1/10/concurrent, injected-failure rollback, apply_patch untouched, no migration) -> T25; this run: `insert_conversation_text_event_inserts_message_and_part_together`, `..._is_a_no_op_on_sequential_replay`, `..._ten_sequential_replays_still_leave_one_row_pair`, `..._injected_failure_rolls_back_both_rows`, `..._concurrent_duplicate_delivery_leaves_one_row_pair` all passed (21 passed under `services::agent_trace_db::`); `grep` confirms both `user_prompt_submit.rs`/`stop.rs` call `db.insert_conversation_text_event`; `apply_patch` persistence and the migrations directory are unchanged.
 
 ### Failed checks and follow-ups
 
@@ -527,5 +551,5 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ### Residual risks
 
-- Codex's external hook schema and apply_patch grammar may evolve beyond the upstream commit used for these fixtures.
+- Codex's external hook schema and apply_patch grammar may evolve beyond the upstream commit (`343074d4207d572809bd8cea15f4be1d09d98e0b`, refreshed against `8e649e3afa5cdddfb09a1b85a090b94775045d9b`) used for these fixtures.
 
