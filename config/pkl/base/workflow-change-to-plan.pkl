@@ -1,6 +1,6 @@
 import "workflow-content.pkl" as model
 
-changeToPlanSkillBody = """
+changeToPlanSkillBody = (argumentsReference: String) -> """
 # SCE Change to Plan
 
 ## Purpose
@@ -49,12 +49,12 @@ as the workflow's final response.
 
 ## Input
 
-`$ARGUMENTS` is the change request, in free-form prose.
+`\(argumentsReference)` is the change request, in free-form prose.
 
 - The change request is required.
 - It may describe a new plan or a change to an existing plan. Do not resolve which one applies; step 2 owns that decision.
 
-When `$ARGUMENTS` is empty, report that a change request is required, state the expected argument, and stop. Do not infer a change request from the repository state or the conversation.
+When `\(argumentsReference)` is empty, report that a change request is required, state the expected argument, and stop. Do not infer a change request from the repository state or the conversation.
 
 Pass the change request to step 2 unmodified. Do not restate, summarize, or pre-scope it.
 

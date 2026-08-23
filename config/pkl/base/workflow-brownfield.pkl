@@ -64,10 +64,10 @@ local titleAndPurpose = model.semanticReference.apply(
   scopeStatement + "\n\n"
 )
 
-local renderSkillBody = (mode: model.WorkflowRenderMode) -> """
+local renderSkillBody = (mode: model.WorkflowRenderMode, argumentsReference: String) -> """
     \(titleAndPurpose.render.apply(mode))## Input
 
-    `$ARGUMENTS` is `[rebuild] [path ...]`. Parse it into two parts before any
+    `\(argumentsReference)` is `[rebuild] [path ...]`. Parse it into two parts before any
     investigation:
 
     - An optional leading literal token `rebuild`. Its presence, and only its
@@ -77,7 +77,7 @@ local renderSkillBody = (mode: model.WorkflowRenderMode) -> """
 
     Parsing rules:
 
-    - Empty `$ARGUMENTS` is valid and selects additive mode with no extra paths.
+    - Empty `\(argumentsReference)` is valid and selects additive mode with no extra paths.
     - `rebuild` is recognized only as the first token. In any later position it is a
       path.
     - Never infer `rebuild` from conversation content, repository state, or the
@@ -374,7 +374,7 @@ local structuredCommand = new model.StructuredWorkflowDocument {
     }
   }
   body = new model.WorkflowBody {
-    render = (mode: model.WorkflowRenderMode) -> renderSkillBody.apply(mode)
+    render = (mode: model.WorkflowRenderMode) -> renderSkillBody.apply(mode, "$ARGUMENTS")
   }
 }
 
@@ -383,7 +383,7 @@ local SKILL = structuredCommand.render.apply("package", "").text
 /// Custom string delimiters: the fact-ledger table row escapes its column
 /// separators as `\|`, which a default Pkl string would reject as an unknown
 /// escape sequence.
-local OUTPUT_MD = #"""
+local OUTPUT_MD = (argumentsReference: String) -> #"""
     # Brownfield output layouts
 
     Use only the applicable layout. Values come from internal workflow state.
@@ -400,7 +400,7 @@ local OUTPUT_MD = #"""
 
     Problem: {unrecognized token, misplaced `rebuild`, or unreadable path}
 
-    Received: `{$ARGUMENTS}`
+    Received: `{\#(argumentsReference)}`
 
     Nothing was investigated and nothing was written.
     ```
@@ -525,16 +525,18 @@ local brownfieldPackage = new model.SkillPackage {
   title = "SCE Brownfield"
   documents = model.packageDocuments.apply(new Listing {
     model.makeDocument.apply("SKILL.md", SKILL)
-    model.makeDocument.apply("references/output.md", OUTPUT_MD)
+    model.makeDocument.apply("references/output.md", OUTPUT_MD.apply("$ARGUMENTS"))
   })
 }
 
 structuredComposite = new model.StructuredCompositeSource {
   command = structuredCommand
+  argumentDependentCommandBody = (argumentsReference: String) -> renderSkillBody.apply("composite", argumentsReference)
+  argumentReferenceOutputDocument = (argumentsReference: String) -> model.makeDocument.apply("references/output.md", OUTPUT_MD.apply(argumentsReference))
   phases = new Listing {}
   internalDocuments = new Listing {}
   outputDocuments = new Listing {
-    model.makeDocument.apply("Brownfield output layouts", OUTPUT_MD)
+    model.makeDocument.apply("Brownfield output layouts", OUTPUT_MD.apply("$ARGUMENTS"))
   }
 }
 
