@@ -23,10 +23,11 @@ use crate::{
 };
 
 use super::{
-    insert_agent_trace_with, insert_diff_trace_with, insert_message_with, insert_messages_with,
-    insert_part_with, insert_parts_with, insert_post_commit_patch_intersection_with,
-    recent_diff_trace_patches_with, AgentTraceInsert, DiffTraceInsert, InsertMessageInsert,
-    InsertPartInsert, PostCommitPatchIntersectionInsert, RecentDiffTracePatches,
+    insert_agent_trace_with, insert_conversation_text_event_with, insert_diff_trace_with,
+    insert_message_with, insert_messages_with, insert_part_with, insert_parts_with,
+    insert_post_commit_patch_intersection_with, recent_diff_trace_patches_with, AgentTraceInsert,
+    DiffTraceInsert, InsertMessageInsert, InsertPartInsert, PostCommitPatchIntersectionInsert,
+    RecentDiffTracePatches,
 };
 
 const REPOSITORY_AGENT_TRACE_SCHEMA_SETUP_GUIDANCE: &str = "Run 'sce setup'.";
@@ -277,6 +278,33 @@ impl RepositoryAgentTraceDb {
     pub fn insert_parts(&self, inputs: Vec<InsertPartInsert>) -> Result<u64> {
         insert_parts_with(self, inputs)
     }
+
+    /// Atomically insert one conversation `messages` row and its one
+    /// `parts` row: if `(message.session_id, message.message_id)` already
+    /// exists, this is a no-op (`Ok(false)`); otherwise both rows insert
+    /// together in one transaction (`Ok(true)`). Used by conversation
+    /// text-event handlers (e.g. Codex `UserPromptSubmit`/`Stop`) in place
+    /// of separate `insert_messages`/`insert_parts` calls, so a replayed or
+    /// concurrent duplicate delivery never produces an orphaned `parts` row.
+    pub fn insert_conversation_text_event(
+        &self,
+        message: InsertMessageInsert,
+        part: InsertPartInsert,
+    ) -> Result<bool> {
+        insert_conversation_text_event_with(self, message, part, false)
+    }
+
+    /// Test-only counterpart of [`insert_conversation_text_event`] that
+    /// forces the transaction to fail after the message insert and before
+    /// the part insert, proving both statements roll back together.
+    #[cfg(test)]
+    pub(crate) fn insert_conversation_text_event_with_injected_failure(
+        &self,
+        message: InsertMessageInsert,
+        part: InsertPartInsert,
+    ) -> Result<bool> {
+        insert_conversation_text_event_with(self, message, part, true)
+    }
 }
 
 #[cfg(test)]
@@ -324,6 +352,16 @@ mod tests {
             )
             .expect("sqlite_master query should succeed");
         !rows.is_empty()
+    }
+
+    fn row_count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
+        db.query_map(&format!("SELECT COUNT(*) FROM {table}"), (), |row| {
+            row.get::<i64>(0).map_err(Into::into)
+        })
+        .expect("count query should succeed")
+        .into_iter()
+        .next()
+        .expect("count row should exist")
     }
 
     fn table_sql(db: &RepositoryAgentTraceDb, name: &str) -> String {
@@ -722,6 +760,150 @@ mod tests {
                 .expect("count row should exist");
             assert_eq!(count, expected_count, "unexpected row count for {table}");
         }
+
+        remove_test_db(&db_path);
+    }
+
+    fn conversation_text_event_fixture() -> (InsertMessageInsert, InsertPartInsert) {
+        (
+            InsertMessageInsert {
+                session_id: "cx_session-1".to_string(),
+                message_id: "cx:turn-1:user".to_string(),
+                role: MessageRole::User,
+                generated_at_unix_ms: 1_000,
+            },
+            InsertPartInsert {
+                part_type: PartType::Text,
+                text: "hello world".to_string(),
+                session_id: "cx_session-1".to_string(),
+                message_id: "cx:turn-1:user".to_string(),
+                generated_at_unix_ms: 1_000,
+            },
+        )
+    }
+
+    #[test]
+    fn insert_conversation_text_event_inserts_message_and_part_together() {
+        let db_path = unique_test_db_path("conversation-event-insert");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let (message, part) = conversation_text_event_fixture();
+
+        let inserted = db
+            .insert_conversation_text_event(message, part)
+            .expect("conversation text event insert should succeed");
+
+        assert!(inserted, "first delivery should insert both rows");
+        assert_eq!(row_count(&db, "messages"), 1);
+        assert_eq!(row_count(&db, "parts"), 1);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn insert_conversation_text_event_is_a_no_op_on_sequential_replay() {
+        let db_path = unique_test_db_path("conversation-event-replay");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+
+        let (message, part) = conversation_text_event_fixture();
+        let first = db
+            .insert_conversation_text_event(message, part)
+            .expect("first delivery should succeed");
+
+        let (message, part) = conversation_text_event_fixture();
+        let second = db
+            .insert_conversation_text_event(message, part)
+            .expect("replayed delivery should succeed");
+
+        assert!(first);
+        assert!(!second, "a replayed delivery must be a no-op");
+        assert_eq!(row_count(&db, "messages"), 1);
+        assert_eq!(row_count(&db, "parts"), 1);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn insert_conversation_text_event_ten_sequential_replays_still_leave_one_row_pair() {
+        let db_path = unique_test_db_path("conversation-event-replay-ten");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+
+        for _ in 0..10 {
+            let (message, part) = conversation_text_event_fixture();
+            db.insert_conversation_text_event(message, part)
+                .expect("every replayed delivery should succeed");
+        }
+
+        assert_eq!(row_count(&db, "messages"), 1);
+        assert_eq!(row_count(&db, "parts"), 1);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn insert_conversation_text_event_injected_failure_rolls_back_both_rows() {
+        let db_path = unique_test_db_path("conversation-event-rollback");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let (message, part) = conversation_text_event_fixture();
+
+        let error = db
+            .insert_conversation_text_event_with_injected_failure(message, part)
+            .expect_err("an injected failure before the part insert should propagate as an error");
+        assert!(error.to_string().contains("injected failure"));
+
+        assert_eq!(
+            row_count(&db, "messages"),
+            0,
+            "the message row must roll back along with the failed part insert"
+        );
+        assert_eq!(row_count(&db, "parts"), 0);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn insert_conversation_text_event_concurrent_duplicate_delivery_leaves_one_row_pair() {
+        use std::sync::Arc;
+
+        let db_path = unique_test_db_path("conversation-event-concurrent");
+
+        // Create the schema up front so every thread races only on the
+        // conversation text event insert, not schema creation, mirroring
+        // `concurrent_initialization_converges_on_one_source_instance_id`.
+        RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+
+        let db_path = Arc::new(db_path);
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let db_path = Arc::clone(&db_path);
+                std::thread::spawn(move || {
+                    let db = RepositoryAgentTraceDb::open_without_migrations_at(&*db_path)
+                        .expect("repository DB should reopen for concurrent delivery");
+                    let (message, part) = conversation_text_event_fixture();
+                    db.insert_conversation_text_event(message, part)
+                })
+            })
+            .collect();
+
+        let results: Vec<bool> = handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .expect("worker thread should not panic")
+                    .expect("every concurrent delivery attempt should succeed")
+            })
+            .collect();
+
+        assert_eq!(
+            results.iter().filter(|inserted| **inserted).count(),
+            1,
+            "exactly one concurrent delivery should have performed the insert"
+        );
+
+        let db = RepositoryAgentTraceDb::open_without_migrations_at(&*db_path)
+            .expect("repository DB should reopen for verification");
+        assert_eq!(row_count(&db, "messages"), 1);
+        assert_eq!(row_count(&db, "parts"), 1);
 
         remove_test_db(&db_path);
     }

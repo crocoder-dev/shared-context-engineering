@@ -89,19 +89,20 @@ capture" below for the other two). Both follow the same shape:
   with no write for both arms, matching `PostToolUse(apply_patch)` below.
 - `session_id` is stored as `cx_<session_id>` (idempotent) for both arms.
   `message_id` is deterministic rather than a generated UUID — `cx:<turn_id>:user`
-  for `UserPromptSubmit`, `cx:<turn_id>:assistant` for `Stop` — so that
-  reprocessing the same turn's event is a no-op for the parent message row
-  via the existing `messages` table's `ON CONFLICT (session_id, message_id)
-  DO NOTHING` semantics.
+  for `UserPromptSubmit`, `cx:<turn_id>:assistant` for `Stop`.
 - `UserPromptSubmit` persists one `role = "user"` row with a `part_type = "text"`
   part (`text = prompt`); `Stop` persists one `role = "assistant"` row with a
-  `part_type = "text"` part (`text = last_assistant_message`). Both go through
-  `RepositoryAgentTraceDb::insert_messages`/`insert_parts` — the same insert
-  helpers and `messages`/`parts` tables `conversation-trace` already writes;
-  there is no Codex-specific DB adapter.
-- The `parts` table has no uniqueness constraint (append-only, like every
-  other producer's part rows), so only the parent message row's
-  non-duplication is guaranteed on reprocess, not the part row's.
+  `part_type = "text"` part (`text = last_assistant_message`). Both call
+  `RepositoryAgentTraceDb::insert_conversation_text_event`, which runs the
+  existence check plus both inserts inside one `BEGIN IMMEDIATE` transaction
+  (`TursoDb::execute_transactional_insert_pair_if_absent` in
+  `cli/src/services/db/mod.rs`): a replayed or concurrent duplicate delivery is
+  a no-op leaving exactly one message row and one part row, not only the
+  parent message row that the plain `messages` table's own `ON CONFLICT
+  (session_id, message_id) DO NOTHING` constraint alone would guarantee. This
+  is one shared transactional primitive for both arms, not a Codex-specific DB
+  adapter; OpenCode/Claude/Pi's conversation-trace writers still use the
+  separate `insert_messages`/`insert_parts` calls unchanged.
 - The DB is opened per invocation through the same
   `open_agent_trace_db_for_hook_runtime` repository-storage resolution the
   other hook intakes use.

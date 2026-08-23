@@ -84,22 +84,22 @@ fn persist_with(
         prefixed_conversation_trace_session_id(CODEX_TOOL_NAME, validated.session_id);
     let message_id = format!("cx:{}:user", validated.turn_id);
 
-    db.insert_messages(vec![InsertMessageInsert {
-        session_id: prefixed_session_id.clone(),
-        message_id: message_id.clone(),
-        role: MessageRole::User,
-        generated_at_unix_ms,
-    }])
-    .context("Failed to insert Codex UserPromptSubmit message row.")?;
-
-    db.insert_parts(vec![InsertPartInsert {
-        part_type: PartType::Text,
-        text: validated.prompt.to_string(),
-        session_id: prefixed_session_id,
-        message_id,
-        generated_at_unix_ms,
-    }])
-    .context("Failed to insert Codex UserPromptSubmit text part row.")?;
+    db.insert_conversation_text_event(
+        InsertMessageInsert {
+            session_id: prefixed_session_id.clone(),
+            message_id: message_id.clone(),
+            role: MessageRole::User,
+            generated_at_unix_ms,
+        },
+        InsertPartInsert {
+            part_type: PartType::Text,
+            text: validated.prompt.to_string(),
+            session_id: prefixed_session_id,
+            message_id,
+            generated_at_unix_ms,
+        },
+    )
+    .context("Failed to insert Codex UserPromptSubmit message/text-part event.")?;
 
     Ok(String::new())
 }

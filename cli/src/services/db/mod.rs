@@ -277,6 +277,50 @@ fn apply_migration(
     })
 }
 
+/// Body of [`TursoDb::execute_transactional_insert_pair_if_absent`], run
+/// against an already-open transaction. Kept as a standalone `async fn` so
+/// the caller can uniformly commit on `Ok` and roll back on `Err`.
+#[allow(clippy::too_many_arguments)]
+async fn execute_insert_pair_if_absent_body(
+    tx: &turso::transaction::Transaction<'_>,
+    db_name: &str,
+    exists_sql: &str,
+    exists_params: turso::params::Params,
+    first_sql: &str,
+    first_params: turso::params::Params,
+    second_sql: &str,
+    second_params: turso::params::Params,
+    fail_before_second: bool,
+) -> Result<bool> {
+    let mut rows = tx
+        .query(exists_sql, exists_params)
+        .await
+        .map_err(|e| anyhow::anyhow!("{db_name} existence check failed: {exists_sql}: {e}"))?;
+    let already_exists = rows
+        .next()
+        .await
+        .map_err(|e| anyhow::anyhow!("{db_name} existence row fetch failed: {exists_sql}: {e}"))?
+        .is_some();
+
+    if already_exists {
+        return Ok(false);
+    }
+
+    tx.execute(first_sql, first_params)
+        .await
+        .map_err(|e| anyhow::anyhow!("{db_name} execute failed: {first_sql}: {e}"))?;
+
+    if fail_before_second {
+        anyhow::bail!("{db_name} injected failure before second statement (test-only)");
+    }
+
+    tx.execute(second_sql, second_params)
+        .await
+        .map_err(|e| anyhow::anyhow!("{db_name} execute failed: {second_sql}: {e}"))?;
+
+    Ok(true)
+}
+
 struct TursoConnectionCore<M: DbSpec> {
     conn: turso::Connection,
     runtime: tokio::runtime::Runtime,
@@ -552,6 +596,89 @@ impl<M: DbSpec> TursoDb<M> {
                         columns,
                         rows: fetched_rows,
                     })
+                })
+            },
+        )
+    }
+
+    /// Run an "insert row pair if absent" write transaction.
+    ///
+    /// If `exists_sql` (bound to `exists_params`) finds a matching row, the
+    /// transaction is rolled back as a no-op and this returns `false`.
+    /// Otherwise `first_sql` then `second_sql` execute in order inside one
+    /// `BEGIN IMMEDIATE` transaction and commit together, returning `true`.
+    /// `BEGIN IMMEDIATE` serializes concurrent callers against the same
+    /// database file, so the existence check and both inserts are never
+    /// interleaved with another writer's attempt. The whole attempt is
+    /// retried as one unit on transient failure.
+    ///
+    /// `fail_before_second` is a test-only hook: when `true`, an error is
+    /// forced immediately after `first_sql` succeeds and before `second_sql`
+    /// runs or the transaction commits, so callers can prove the whole
+    /// transaction — including the already-executed `first_sql` — rolls
+    /// back together.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_transactional_insert_pair_if_absent(
+        &self,
+        operation_name: &str,
+        retry_hint: &str,
+        exists_sql: &str,
+        exists_params: impl turso::params::IntoParams,
+        first_sql: &str,
+        first_params: impl turso::params::IntoParams,
+        second_sql: &str,
+        second_params: impl turso::params::IntoParams,
+        fail_before_second: bool,
+    ) -> Result<bool> {
+        let db_name = M::db_name();
+        let exists_params = turso::params::IntoParams::into_params(exists_params).map_err(|e| {
+            anyhow::anyhow!("{db_name} parameter conversion failed: {exists_sql}: {e}")
+        })?;
+        let first_params = turso::params::IntoParams::into_params(first_params).map_err(|e| {
+            anyhow::anyhow!("{db_name} parameter conversion failed: {first_sql}: {e}")
+        })?;
+        let second_params = turso::params::IntoParams::into_params(second_params).map_err(|e| {
+            anyhow::anyhow!("{db_name} parameter conversion failed: {second_sql}: {e}")
+        })?;
+
+        run_with_retry_sync(
+            resolve_query_retry_policy::<M>(),
+            operation_name,
+            retry_hint,
+            |_| {
+                block_on_isolated(&self.core.runtime, async {
+                    let tx = turso::transaction::Transaction::new_unchecked(
+                        &self.core.conn,
+                        turso::transaction::TransactionBehavior::Immediate,
+                    )
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{db_name} failed to begin transaction: {e}"))?;
+
+                    let outcome = execute_insert_pair_if_absent_body(
+                        &tx,
+                        db_name,
+                        exists_sql,
+                        exists_params.clone(),
+                        first_sql,
+                        first_params.clone(),
+                        second_sql,
+                        second_params.clone(),
+                        fail_before_second,
+                    )
+                    .await;
+
+                    match outcome {
+                        Ok(inserted) => {
+                            tx.commit().await.map_err(|e| {
+                                anyhow::anyhow!("{db_name} failed to commit transaction: {e}")
+                            })?;
+                            Ok(inserted)
+                        }
+                        Err(err) => {
+                            let _ = tx.rollback().await;
+                            Err(err)
+                        }
+                    }
                 })
             },
         )
