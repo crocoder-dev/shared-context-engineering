@@ -603,9 +603,9 @@ impl<M: DbSpec> TursoDb<M> {
 
     /// Run an "insert row pair if absent" write transaction.
     ///
-    /// If `exists_sql` (bound to `exists_params`) finds a matching row, the
-    /// transaction is rolled back as a no-op and this returns `false`.
-    /// Otherwise `first_sql` then `second_sql` execute in order inside one
+    /// If `exists_sql` (bound to `exists_params`) finds a matching row, no
+    /// insert statements run, the no-write transaction commits, and this
+    /// returns `false`. Otherwise `first_sql` then `second_sql` execute in order inside one
     /// `BEGIN IMMEDIATE` transaction and commit together, returning `true`.
     /// `BEGIN IMMEDIATE` serializes concurrent callers against the same
     /// database file, so the existence check and both inserts are never
