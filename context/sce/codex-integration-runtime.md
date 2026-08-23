@@ -38,20 +38,17 @@ registration structurally (present-and-current, missing, or stale, with a
 malformed whole document reported separately), so user-added valid Codex
 handlers do not appear as SCE drift and invalid Codex configuration remains
 unhealthy; `sce doctor --fix` repairs a structurally unhealthy document
-through the same merge service. Codex's own hook-trust state — whether it has
-actually marked a structurally current registration trusted, in its durable
-`$CODEX_HOME/config.toml` — is read-only for doctor and separate from this
+through the same merge service. Codex's own hook-trust state in its durable
+`$CODEX_HOME/config.toml` is read-only for doctor, separate from this
 structural check; SCE never writes trust or auto-trust state. See [the
 ADR](../decisions/2026-08-23-codex-nondestructive-hook-ownership.md) and [the
 setup install policy](setup-no-backup-policy-seam.md).
 
 ## Dispatch skeleton
 
-- STDIN carries one raw Codex hook-event JSON payload, deserialized into a
-  typed `CodexHookEvent` (`hook_event_name`, `session_id`, `turn_id`, `cwd`,
-  `model`, `tool_name`, `tool_use_id`, `tool_input`, `tool_response`,
-  `prompt`, `last_assistant_message`; only `hook_event_name` is required,
-  matching the working contract in `context/plans/codex-cli-integration.md`).
+- STDIN carries one raw Codex hook-event JSON payload into a typed
+  `CodexHookEvent` (nine documented fields; only `hook_event_name` is
+  required).
 - `classify_codex_event` matches `(hook_event_name, tool_name)` into one of
   four dispatch arms — `UserPromptSubmit`, `Stop`, `PreToolUse(Bash)`,
   `PostToolUse(apply_patch)` — with every other combination (`apply_patch`
@@ -68,11 +65,11 @@ setup install policy](setup-no-backup-policy-seam.md).
   (`cli/src/services/hooks/mod.rs`) carry a `"codex" -> cx_` arm alongside
   `oc_`/`cc_`/`pi_`, idempotent for an already-prefixed session ID.
 - `normalize_codex_model_id` trims a Codex model ID, returns `None` for blank
-  values, and otherwise preserves the reported ID unchanged. It does not infer
-  or fabricate a provider prefix because Codex exposes no separate provider
-  field. `PostToolUse(apply_patch)` calls it to derive a
-  `diff_traces.model_id` value when the event reports a model. This
-  provider-preserving rule is an accepted durable decision; see [the ADR](../decisions/2026-08-23-codex-truthful-model-provenance.md).
+  values, and otherwise preserves the reported ID unchanged — no inferred or
+  fabricated provider prefix, since Codex exposes no separate provider field.
+  `PostToolUse(apply_patch)` calls it to derive `diff_traces.model_id` when
+  the event reports a model. This provider-preserving rule is an accepted
+  durable decision; see [the ADR](../decisions/2026-08-23-codex-truthful-model-provenance.md).
 
 ## Implemented slices: `UserPromptSubmit` and `Stop` capture
 
@@ -83,9 +80,13 @@ setup install policy](setup-no-backup-policy-seam.md).
 capture" below for the other two). Both follow the same shape:
 
 - `UserPromptSubmit` requires non-empty `session_id`, `turn_id`, and
-  `prompt`; `Stop` requires non-empty `session_id`, `turn_id`, and
-  `last_assistant_message`. A missing or blank required field is a
-  validation error (logged and failed open by the outer dispatcher).
+  `prompt`. `Stop` requires non-empty `session_id`/`turn_id`; a `null`
+  `last_assistant_message` (upstream types the field `string | null`) is a
+  legitimate no-op — `stop::handle` returns silently before the Agent Trace
+  DB opens, writing no message or part. An explicit empty string is a
+  present value and still persists (unlike `null`). `session_id`/`turn_id`
+  are trimmed before use, and a timestamp-acquisition failure fails open
+  with no write for both arms, matching `PostToolUse(apply_patch)` below.
 - `session_id` is stored as `cx_<session_id>` (idempotent) for both arms.
   `message_id` is deterministic rather than a generated UUID — `cx:<turn_id>:user`
   for `UserPromptSubmit`, `cx:<turn_id>:assistant` for `Stop` — so that
@@ -124,9 +125,8 @@ no reimplemented matching and no Codex-specific DB adapter:
 - Blocked: returns Codex's own native `PreToolUse` deny response —
   `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision":
   "deny", "permissionDecisionReason": "<policy id + message>"}}` — confirmed
-  against Codex's real hook contract (`openai/codex` issue #28437) to be
-  identical in shape to Claude's own deny response
-  (`render_claude_hook_result` in `bash_policy.rs`), though built directly
+  (via `openai/codex` issue #28437) identical in shape to Claude's own deny
+  response (`render_claude_hook_result` in `bash_policy.rs`), built directly
   rather than by calling that Claude-specific function.
 
 Neither branch reads or writes `diff_traces`, a snapshot, or any
@@ -189,10 +189,10 @@ accepts; `mod.rs`'s `handle` wires the stages together and persists the result:
   when a model is reported, `tool_name = "codex"`, `tool_version = None`,
   `payload_type = "patch"` — no new persistence adapter. The event-scoped
   synthetic identity scheme is an accepted durable decision; see [the ADR](../decisions/2026-08-23-codex-event-scoped-apply-patch-evidence-identities.md).
-- The timestamp comes from `current_unix_time_ms()`; unlike every other
-  Codex arm (which falls back to epoch zero via `.unwrap_or(0)`), a
-  timestamp-acquisition failure here skips the insert entirely (fails open)
-  rather than substituting a fabricated epoch-zero value.
+- The timestamp comes from `current_unix_time_ms()`; a timestamp-acquisition
+  failure here skips the insert entirely (fails open) rather than
+  substituting a fabricated epoch-zero value, matching `UserPromptSubmit`
+  and `Stop`'s own fail-open timestamp behavior above.
 - Every path — success, empty-normalize no-op, and every fail-open branch —
   returns exactly empty stdout; Bash denial is the only structured Codex
   response.

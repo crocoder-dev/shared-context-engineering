@@ -291,7 +291,7 @@ mod tests {
             tool_input,
             tool_response: None,
             prompt: None,
-            last_assistant_message: None,
+            last_assistant_message: super::super::NullableField::Missing,
         }
     }
 

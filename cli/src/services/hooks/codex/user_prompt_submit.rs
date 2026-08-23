@@ -17,31 +17,42 @@ use super::CodexHookEvent;
 /// (`role = "user"`) and one `parts` row (`part_type = "text"`, `text = prompt`)
 /// under session `cx_<session_id>`, message `cx:<turn_id>:user`.
 pub(super) fn handle(repository_root: &Path, event: &CodexHookEvent) -> Result<String> {
+    handle_with_clock(repository_root, event, current_unix_time_ms)
+}
+
+/// Injectable-clock counterpart of `handle`. Timestamp acquisition is
+/// fallible and its failure is propagated as `Err` rather than swallowed
+/// internally, so the existing outer Codex fail-open boundary
+/// (`run_codex_subcommand` → `log_codex_fail_open`) owns logging and the
+/// empty-stdout contract for a failed clock exactly as it does for any
+/// other handler error.
+fn handle_with_clock<F>(repository_root: &Path, event: &CodexHookEvent, now: F) -> Result<String>
+where
+    F: FnOnce() -> Result<i64>,
+{
+    let generated_at_unix_ms = now()?;
+
     let db = open_agent_trace_db_for_hook_runtime(
         repository_root,
         "Failed to open Agent Trace DB for Codex UserPromptSubmit persistence.",
     )?;
 
-    capture_with(&db, event, || current_unix_time_ms().unwrap_or(0))
+    capture_with(&db, event, generated_at_unix_ms)
 }
 
 /// Injectable counterpart of `handle` for deterministic testing against an
 /// already-open Agent Trace DB.
-fn capture_with<T>(
+fn capture_with(
     db: &RepositoryAgentTraceDb,
     event: &CodexHookEvent,
-    generate_timestamp_ms: T,
-) -> Result<String>
-where
-    T: FnOnce() -> i64,
-{
-    let session_id = required_field(event.session_id.as_deref(), "session_id")?;
-    let turn_id = required_field(event.turn_id.as_deref(), "turn_id")?;
+    generated_at_unix_ms: i64,
+) -> Result<String> {
+    let session_id = required_trimmed_field(event.session_id.as_deref(), "session_id")?;
+    let turn_id = required_trimmed_field(event.turn_id.as_deref(), "turn_id")?;
     let prompt = required_field(event.prompt.as_deref(), "prompt")?;
 
     let prefixed_session_id = prefixed_conversation_trace_session_id(CODEX_TOOL_NAME, session_id);
     let message_id = format!("cx:{turn_id}:user");
-    let generated_at_unix_ms = generate_timestamp_ms();
 
     db.insert_messages(vec![InsertMessageInsert {
         session_id: prefixed_session_id.clone(),
@@ -72,6 +83,18 @@ fn required_field<'a>(value: Option<&'a str>, field_name: &str) -> Result<&'a st
     }
 }
 
+/// Validates an identifier field (`session_id`/`turn_id`) is present and
+/// non-blank, returning it trimmed so downstream prefixing/formatting never
+/// persists incidental leading/trailing whitespace.
+fn required_trimmed_field<'a>(value: Option<&'a str>, field_name: &str) -> Result<&'a str> {
+    match value.map(str::trim) {
+        Some(value) if !value.is_empty() => Ok(value),
+        _ => Err(anyhow::anyhow!(
+            "Invalid Codex UserPromptSubmit payload: field '{field_name}' must be a non-empty string."
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -80,6 +103,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    use super::super::NullableField;
     use super::*;
 
     fn unique_test_db_path(label: &str) -> PathBuf {
@@ -113,7 +137,7 @@ mod tests {
             tool_input: None,
             tool_response: None,
             prompt: Some(prompt.to_string()),
-            last_assistant_message: None,
+            last_assistant_message: NullableField::Missing,
         }
     }
 
@@ -153,7 +177,7 @@ mod tests {
         let db_path = unique_test_db_path("basic");
         let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
 
-        let output = capture_with(&db, &event("session-1", "turn-1", "hello world"), || 1_000)
+        let output = capture_with(&db, &event("session-1", "turn-1", "hello world"), 1_000)
             .expect("capture should succeed");
         assert_eq!(output, "");
 
@@ -183,7 +207,7 @@ mod tests {
         let db_path = unique_test_db_path("prefixed");
         let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
 
-        capture_with(&db, &event("cx_session-1", "turn-1", "hi"), || 1_000)
+        capture_with(&db, &event("cx_session-1", "turn-1", "hi"), 1_000)
             .expect("capture should succeed");
 
         assert_eq!(message_rows(&db)[0].0, "cx_session-1");
@@ -197,8 +221,8 @@ mod tests {
         let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
         let payload = event("session-1", "turn-1", "hello world");
 
-        capture_with(&db, &payload, || 1_000).expect("first capture should succeed");
-        capture_with(&db, &payload, || 2_000).expect("reprocessed capture should succeed");
+        capture_with(&db, &payload, 1_000).expect("first capture should succeed");
+        capture_with(&db, &payload, 2_000).expect("reprocessed capture should succeed");
 
         assert_eq!(
             message_rows(&db).len(),
@@ -216,7 +240,7 @@ mod tests {
         let mut payload = event("session-1", "turn-1", "hello world");
         payload.prompt = None;
 
-        let error = capture_with(&db, &payload, || 1_000).expect_err("missing prompt should error");
+        let error = capture_with(&db, &payload, 1_000).expect_err("missing prompt should error");
         assert!(error.to_string().contains("'prompt'"));
 
         remove_test_db(&db_path);
@@ -229,10 +253,59 @@ mod tests {
         let mut payload = event("session-1", "turn-1", "hello world");
         payload.turn_id = None;
 
-        let error =
-            capture_with(&db, &payload, || 1_000).expect_err("missing turn_id should error");
+        let error = capture_with(&db, &payload, 1_000).expect_err("missing turn_id should error");
         assert!(error.to_string().contains("'turn_id'"));
 
         remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn capture_with_trims_padded_session_and_turn_ids_before_persisting() {
+        let db_path = unique_test_db_path("trimmed-ids");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let mut payload = event("session-1", "turn-1", "hello world");
+        payload.session_id = Some(" session-1 ".to_string());
+        payload.turn_id = Some(" turn-1 ".to_string());
+
+        capture_with(&db, &payload, 1_000).expect("padded ids should persist trimmed");
+
+        assert_eq!(
+            message_rows(&db),
+            vec![(
+                "cx_session-1".to_string(),
+                "cx:turn-1:user".to_string(),
+                "user".to_string()
+            )]
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn capture_with_rejects_a_whitespace_only_turn_id() {
+        let db_path = unique_test_db_path("blank-turn-id");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let mut payload = event("session-1", "turn-1", "hello world");
+        payload.turn_id = Some("   ".to_string());
+
+        let error = capture_with(&db, &payload, 1_000).expect_err("blank turn_id should error");
+        assert!(error.to_string().contains("'turn_id'"));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn handle_with_clock_propagates_a_timestamp_failure_as_an_error_with_no_persistence() {
+        let payload = event("session-1", "turn-1", "hello world");
+
+        // A nonexistent repository root additionally proves the failed
+        // clock is consulted (and propagated) before Agent Trace DB
+        // resolution is ever attempted: a subsequent DB-open attempt
+        // against this path would fail loudly instead.
+        let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
+            Err(anyhow::anyhow!("clock failed"))
+        })
+        .expect_err("a failed clock must propagate as an error for the outer fail-open boundary");
+        assert!(error.to_string().contains("clock failed"));
     }
 }
