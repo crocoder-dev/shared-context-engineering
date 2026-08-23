@@ -92,12 +92,12 @@ local renderPersistedFormatBody = """
       one.
     """
 
-local renderSkillBody = (mode: model.WorkflowRenderMode) -> """
+local renderSkillBody = (mode: model.WorkflowRenderMode, argumentsReference: String) -> """
     \(titleAndPurpose.render.apply(mode))## Input
 
-    `$ARGUMENTS` is optional and selects the mode:
+    `\(argumentsReference)` is optional and selects the mode:
 
-    - Empty `$ARGUMENTS` selects **writer mode**.
+    - Empty `\(argumentsReference)` selects **writer mode**.
     - Exactly one whitespace-trimmed path argument selects **loader mode**.
     - Anything else — more than one token, or a token that is clearly not a path —
       is invalid input: state the expected usage (`/handover` or
@@ -241,13 +241,13 @@ local structuredCommand = new model.StructuredWorkflowDocument {
     }
   }
   body = new model.WorkflowBody {
-    render = (mode: model.WorkflowRenderMode) -> renderSkillBody.apply(mode)
+    render = (mode: model.WorkflowRenderMode) -> renderSkillBody.apply(mode, "$ARGUMENTS")
   }
 }
 
 local SKILL = structuredCommand.render.apply("package", "").text
 
-local OUTPUT_MD = """
+local OUTPUT_MD = (argumentsReference: String) -> """
     # Handover output layouts
 
     Use only the applicable layout. Values come from the resolved mode and
@@ -261,7 +261,7 @@ local OUTPUT_MD = """
     `/handover` takes no arguments (writer mode) or exactly one handover path
     (loader mode): `/handover context/handovers/<file>.md`.
 
-    Received: `{$ARGUMENTS}`
+    Received: `{\(argumentsReference)}`
     ```
 
     ## Writer blocked
@@ -352,20 +352,21 @@ local handoverPackage = new model.SkillPackage {
   documents = model.packageDocuments.apply(new Listing {
     model.makeDocument.apply("SKILL.md", SKILL)
     model.makeDocument.apply("references/handover-template.md", renderPersistedFormatBody)
-    model.makeDocument.apply("references/output.md", OUTPUT_MD)
+    model.makeDocument.apply("references/output.md", OUTPUT_MD.apply("$ARGUMENTS"))
   })
 }
 
 structuredComposite = new model.StructuredCompositeSource {
   command = structuredCommand
+  argumentDependentCommandBody = (argumentsReference: String) -> renderSkillBody.apply("composite", argumentsReference)
   referenceDocuments = new Listing {
     model.makeDocument.apply("references/handover-template.md", renderPersistedFormatBody)
-    model.makeDocument.apply("references/output.md", OUTPUT_MD)
   }
+  argumentReferenceOutputDocument = (argumentsReference: String) -> model.makeDocument.apply("references/output.md", OUTPUT_MD.apply(argumentsReference))
   phases = new Listing {}
   internalDocuments = new Listing {}
   outputDocuments = new Listing {
-    model.makeDocument.apply("Handover output layouts", OUTPUT_MD)
+    model.makeDocument.apply("Handover output layouts", OUTPUT_MD.apply("$ARGUMENTS"))
   }
 }
 

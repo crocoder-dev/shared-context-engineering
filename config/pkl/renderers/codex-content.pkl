@@ -2,10 +2,15 @@ import "../base/decision-skill.pkl" as decision
 import "common.pkl" as common
 import "workflow-composite.pkl" as workflowResults
 
+/// Current upstream Codex skill loading does not provide Claude/OpenCode-style
+/// `$ARGUMENTS` substitution into skill Markdown, so Codex skill bodies name the
+/// invocation input in prose instead of the literal, unsubstituted token.
+local codexArgumentsReference = "invocation input"
+
 /// Codex has no command-routed entrypoints — it discovers skills directly, with
 /// no per-target frontmatter beyond the shared description, matching Pi.
 skillDocuments {
-  for (path, document in workflowResults.skillDocuments.apply("")) {
+  for (path, document in workflowResults.skillDocuments.apply("", codexArgumentsReference)) {
     [path] = document
   }
   for (path, document in decision.skillDocuments.apply("")) {

@@ -77,6 +77,19 @@ local assertCodexHookInvocationContract = (artifacts: Mapping) ->
     ) "Codex hook invocation: four registrations use safe repository-root resolution"
     else throw("Codex hook invocation must resolve the Git root safely and preserve the exact four registrations")
 
+/// Current upstream Codex skill loading provides no Claude/OpenCode-style
+/// `$ARGUMENTS` substitution, so a literal, unsubstituted token in generated
+/// Codex skill Markdown would be model-visible noise rather than the invoked
+/// input.
+local assertCodexSkillsExcludeArguments = (artifacts: Mapping) ->
+  if (
+    artifacts.every((path, text) ->
+      !path.startsWith("config/.agents/skills/")
+      || !text.contains("$ARGUMENTS")
+    )
+  ) "Codex skills: no literal $ARGUMENTS in generated Markdown"
+  else throw("generated Codex skill Markdown must not contain the literal token $ARGUMENTS")
+
 hidden workflowDocuments = new Mapping {
   for (path, document in opencode.skillDocuments) {
     ["config/.opencode/skills/\(path)"] = document.text
@@ -603,6 +616,15 @@ hidden assertNextTaskReportOwnership = (documents: Mapping) ->
   ) "sce-next-task report ownership: sync report is not duplicated in output.md"
   else throw("sce-next-task output.md must not duplicate the context-sync report contract")
 
+/// Codex names the invocation input in prose instead of a literal `$ARGUMENTS`
+/// (its harness does not substitute it), so exactly these two output-layout
+/// references — the only ones quoting the received input back to the user —
+/// legitimately diverge from Pi/Claude/OpenCode's text there.
+local codexArgumentDependentReferencePaths = new Listing {
+  "sce-handover/references/output.md"
+  "sce-brownfield/references/output.md"
+}
+
 hidden assertTargetNeutralReferences = (documents: Mapping) ->
   let (opencodeReferences = new Mapping {
     for (path, text in documents) {
@@ -615,7 +637,11 @@ hidden assertTargetNeutralReferences = (documents: Mapping) ->
       opencodeReferences.every((relativePath, text) ->
         documents["config/.claude/skills/" + relativePath] == text
         && documents["config/.pi/skills/" + relativePath] == text
-        && (!documents.containsKey("config/.agents/skills/" + relativePath) || documents["config/.agents/skills/" + relativePath] == text)
+        && (
+          !documents.containsKey("config/.agents/skills/" + relativePath)
+          || documents["config/.agents/skills/" + relativePath] == text
+          || codexArgumentDependentReferencePaths.contains(relativePath)
+        )
       )
     ) "target-neutral references: Pi, Claude, and OpenCode bodies match"
     else throw("target-neutral package references differ between Pi, Claude, and OpenCode")
@@ -812,6 +838,7 @@ hidden assertValidateExcludesDecisionAndPlanSync = (documents: Mapping) ->
 contractChecks {
   ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
   ["codex-hook-invocation"] = assertCodexHookInvocationContract.apply(generatedArtifacts)
+  ["codex-skills-exclude-arguments"] = assertCodexSkillsExcludeArguments.apply(generatedArtifacts)
   ["optional-workflow-manifest"] = assertOptionalWorkflowManifest.apply(generatedArtifacts)
   ["workflow-references"] = assertWorkflowReferences.apply(workflowDocuments)
   ["workflow-helper-composition"] = assertWorkflowHelperComposition.apply(compositeWorkflowDocuments)

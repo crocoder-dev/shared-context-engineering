@@ -476,7 +476,7 @@ local renderCommitMessageStyle = (mode: model.WorkflowRenderMode) -> """
     - Overly playful tone in serious bug-fix or architectural change.
     """
 
-local commitSkillBody = """
+local commitSkillBody = (argumentsReference: String) -> """
 # SCE Commit
 
 ## Purpose
@@ -517,7 +517,7 @@ as the workflow's final response.
 
 ## Input
 
-`$ARGUMENTS` is optional. Split it into two parts before invoking the skill:
+`\(argumentsReference)` is optional. Split it into two parts before invoking the skill:
 
 `[mode-token] [commit context]`
 
@@ -531,7 +531,7 @@ A `mode-token` selects the bypass path. Its absence selects the regular path.
 Do not infer the bypass path from anything else — not from the commit context,
 not from repository state, and not from the conversation.
 
-Empty `$ARGUMENTS` is valid. It selects the regular path with no commit
+Empty `\(argumentsReference)` is valid. It selects the regular path with no commit
 context, and commit intent is inferred from the staged changes alone.
 
 Pass `commit context` to the **Atomic commit phase** unmodified. Do not restate,

@@ -96,12 +96,28 @@ class StructuredCompositeSource {
 
   /// Complete workflow body for a phase-reference package. When present, the
   /// composite renderer uses this body instead of inlining phase instructions.
-  compositeSkillBody: String? = null
+  /// Parameterized by the target's arguments-reference token so skill-mode
+  /// prose can name the invocation input without a literal `$ARGUMENTS` for a
+  /// target whose harness does not substitute it.
+  compositeSkillBody: ((String) -> String)? = null
+
+  /// The composite command body's own `## Input`/`## Workflow` text, for a
+  /// phase-free workflow (no `compositeSkillBody`) whose command body names the
+  /// invocation input directly, parameterized the same way. When present, the
+  /// generic composite renderer uses this instead of `command`'s mode-only
+  /// render, keeping that renderer's own shared preamble/appendix wrapper.
+  argumentDependentCommandBody: ((String) -> String)? = null
 
   /// Package-local documents read only when their owning workflow step runs.
   /// Phase-based workflows include output.md here; phase-free workflows keep
   /// using outputDocuments for their sole reference.
   referenceDocuments: Listing<WorkflowDocument> = new Listing {}
+
+  /// The workflow's own `references/output.md`, for a workflow whose output
+  /// layouts quote the received invocation input back to the user. Present
+  /// only where that quoting occurs; other workflows' output.md carries no
+  /// argument-dependent content and stays a plain `referenceDocuments` entry.
+  argumentReferenceOutputDocument: ((String) -> WorkflowDocument)? = null
 
   /// Phase documents still rendered as a trailing appendix. A module that
   /// states every phase inside the step that runs it lists none, and composite
@@ -182,7 +198,7 @@ validation, stops, and terminal user-visible output.
 /// four phase-based workflows. Target renderers add only supported entrypoint
 /// frontmatter; all operational and persisted-document content remains
 /// target-neutral.
-nextTaskSkillBody = """
+nextTaskSkillBody = (argumentsReference: String) -> """
 # SCE Next Task
 
 ## Purpose
@@ -231,7 +247,7 @@ Never expose an internal phase result as the workflow's final response.
 
 ## Input
 
-Parse `$ARGUMENTS` into three positional parts before invoking any phase:
+Parse `\(argumentsReference)` into three positional parts before invoking any phase:
 
 <plan-name-or-path> [task-id] [auto-approve]
 
@@ -243,7 +259,7 @@ Resolve `auto-approve` even when `task-id` is absent.
 
 A token matching neither a task ID nor `approved` is an error. Report the unrecognized token and the expected arguments, and stop. Do not guess its meaning.
 
-Pass each part only to the phase that owns it. Do not forward the raw `$ARGUMENTS` string to a phase.
+Pass each part only to the phase that owns it. Do not forward the raw `\(argumentsReference)` string to a phase.
 
 Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is the path resolved in step 1 (`plan.path`, or an entry of `candidates`), so every emitted command is directly runnable.
 
@@ -369,7 +385,7 @@ Stop.
 - Preserve completed work and evidence when a later phase fails.
 """
 
-validateSkillBody = """
+validateSkillBody = (argumentsReference: String) -> """
 # SCE Validate
 
 ## Purpose
@@ -414,13 +430,13 @@ Never expose an internal phase result as the workflow's final response.
 
 ## Input
 
-`$ARGUMENTS` is the plan name or plan path.
+`\(argumentsReference)` is the plan name or plan path.
 
 - The plan name or path is required.
 - Resolve exactly one plan. Do not invent a plan from the conversation or from
   incomplete nearby work.
 
-When `$ARGUMENTS` is empty, report that a plan name or path is required, state
+When `\(argumentsReference)` is empty, report that a plan name or path is required, state
 the expected argument, and stop. Do not infer the plan from repository state or
 the conversation.
 
