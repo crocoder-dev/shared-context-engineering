@@ -14,6 +14,7 @@ pub mod auth_db;
 pub mod bash_policy;
 pub mod capabilities;
 pub mod checkout;
+pub(crate) mod codex_hook_config;
 pub mod command_registry;
 pub mod completion;
 pub mod config;

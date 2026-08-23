@@ -89,8 +89,10 @@ own the hierarchy. Areas render in deterministic order:
 - Codex: `Skills`, `Hooks`
 
 Codex's `Hooks` area covers `.codex/hooks.json` and
-`.codex/hooks/run-sce-or-show-install-guidance.sh`. A missing or mismatched
-Codex `Hooks` asset also carries a reminder that Codex requires reviewing and
+`.codex/hooks/run-sce-or-show-install-guidance.sh`. Doctor evaluates the
+SCE-owned `.codex/hooks.json` fragment through the shared structural merge
+service, so unrelated user handlers do not make a valid file mismatched. A
+missing or mismatched Codex `Hooks` asset also carries a reminder that Codex requires reviewing and
 trusting this project's hooks inside the Codex CLI before they take effect;
 doctor diagnoses and can reinstall the on-disk file but cannot grant that
 trust.

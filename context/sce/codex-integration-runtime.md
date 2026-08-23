@@ -20,6 +20,26 @@ existing missing-`sce` stderr guidance and forwards the hook JSON STDIN
 unchanged. The exact four-registration and invocation contract is covered by
 the generated contract and `codex-hook-command` flake check. See [the ADR](../decisions/2026-08-23-codex-root-aware-hook-invocation.md).
 
+## Non-destructive hook configuration ownership
+
+`.codex/hooks.json` is a user-owned document. `sce setup --codex` and
+`--all` merge the generated SCE fragment instead of replacing the whole file.
+The shared `cli/src/services/codex_hook_config.rs` service mirrors current
+Codex deserialization: top-level `description`/`hooks` only, the eleven
+supported event names, defaulted matcher groups, and `command`, `mcp_tool`,
+`prompt`, or `agent` handlers with their typed fields. It preserves unrelated
+valid Codex fields, event groups, matcher groups, and handlers, and replaces stale or duplicate SCE-owned handlers with
+one current handler for each of the four required registrations. Ownership
+requires both `.codex/hooks/run-sce-or-show-install-guidance.sh` and the
+`sce hooks codex` command contract; a generic `sce` substring is not enough.
+Malformed or structurally invalid existing documents fail before staging, so
+the existing file remains untouched. Doctor uses the same fragment comparison,
+so user-added valid Codex handlers do not appear as SCE drift; invalid Codex
+configuration remains unhealthy. Trust state and
+auto-trust behavior are separate concerns owned by later doctor work. See
+[the ADR](../decisions/2026-08-23-codex-nondestructive-hook-ownership.md) and
+[the setup install policy](setup-no-backup-policy-seam.md).
+
 ## Dispatch skeleton
 
 - STDIN carries one raw Codex hook-event JSON payload, deserialized into a
