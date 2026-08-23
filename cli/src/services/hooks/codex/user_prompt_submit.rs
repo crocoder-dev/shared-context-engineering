@@ -20,16 +20,21 @@ pub(super) fn handle(repository_root: &Path, event: &CodexHookEvent) -> Result<S
     handle_with_clock(repository_root, event, current_unix_time_ms)
 }
 
-/// Injectable-clock counterpart of `handle`. Timestamp acquisition is
+/// Injectable-clock counterpart of `handle`. Validates `session_id`,
+/// `turn_id`, and `prompt` (via [`validate_user_prompt_submit_event`])
+/// *before* any side effect — a malformed payload never reaches timestamp
+/// acquisition or Agent Trace DB access. Timestamp acquisition is itself
 /// fallible and its failure is propagated as `Err` rather than swallowed
 /// internally, so the existing outer Codex fail-open boundary
 /// (`run_codex_subcommand` → `log_codex_fail_open`) owns logging and the
-/// empty-stdout contract for a failed clock exactly as it does for any
-/// other handler error.
+/// empty-stdout contract for both a malformed payload and a failed clock,
+/// exactly as it does for any other handler error.
 fn handle_with_clock<F>(repository_root: &Path, event: &CodexHookEvent, now: F) -> Result<String>
 where
     F: FnOnce() -> Result<i64>,
 {
+    let validated = validate_user_prompt_submit_event(event)?;
+
     let generated_at_unix_ms = now()?;
 
     let db = open_agent_trace_db_for_hook_runtime(
@@ -37,22 +42,47 @@ where
         "Failed to open Agent Trace DB for Codex UserPromptSubmit persistence.",
     )?;
 
-    capture_with(&db, event, generated_at_unix_ms)
+    persist_with(&db, &validated, generated_at_unix_ms)
 }
 
-/// Injectable counterpart of `handle` for deterministic testing against an
-/// already-open Agent Trace DB.
-fn capture_with(
-    db: &RepositoryAgentTraceDb,
+/// A Codex `UserPromptSubmit` event whose `session_id`/`turn_id` are
+/// confirmed non-blank and trimmed, and whose `prompt` is confirmed
+/// present and non-blank (but left untrimmed — prompt text is not
+/// whitespace-normalized).
+struct ValidatedUserPromptSubmit<'a> {
+    session_id: &'a str,
+    turn_id: &'a str,
+    prompt: &'a str,
+}
+
+/// The single validation layer for `UserPromptSubmit` events: every
+/// required-field check (`session_id`, `turn_id`, `prompt`) lives here so
+/// no other function re-validates the same fields with subtly different
+/// semantics. Runs before any timestamp acquisition or DB access.
+fn validate_user_prompt_submit_event(
     event: &CodexHookEvent,
-    generated_at_unix_ms: i64,
-) -> Result<String> {
+) -> Result<ValidatedUserPromptSubmit<'_>> {
     let session_id = required_trimmed_field(event.session_id.as_deref(), "session_id")?;
     let turn_id = required_trimmed_field(event.turn_id.as_deref(), "turn_id")?;
     let prompt = required_field(event.prompt.as_deref(), "prompt")?;
 
-    let prefixed_session_id = prefixed_conversation_trace_session_id(CODEX_TOOL_NAME, session_id);
-    let message_id = format!("cx:{turn_id}:user");
+    Ok(ValidatedUserPromptSubmit {
+        session_id,
+        turn_id,
+        prompt,
+    })
+}
+
+/// Persists an already-validated `UserPromptSubmit` event against an
+/// already-open Agent Trace DB. Performs no validation of its own.
+fn persist_with(
+    db: &RepositoryAgentTraceDb,
+    validated: &ValidatedUserPromptSubmit<'_>,
+    generated_at_unix_ms: i64,
+) -> Result<String> {
+    let prefixed_session_id =
+        prefixed_conversation_trace_session_id(CODEX_TOOL_NAME, validated.session_id);
+    let message_id = format!("cx:{}:user", validated.turn_id);
 
     db.insert_messages(vec![InsertMessageInsert {
         session_id: prefixed_session_id.clone(),
@@ -64,7 +94,7 @@ fn capture_with(
 
     db.insert_parts(vec![InsertPartInsert {
         part_type: PartType::Text,
-        text: prompt.to_string(),
+        text: validated.prompt.to_string(),
         session_id: prefixed_session_id,
         message_id,
         generated_at_unix_ms,
@@ -93,6 +123,21 @@ fn required_trimmed_field<'a>(value: Option<&'a str>, field_name: &str) -> Resul
             "Invalid Codex UserPromptSubmit payload: field '{field_name}' must be a non-empty string."
         )),
     }
+}
+
+/// Test-only convenience wrapper preserving the pre-refactor `capture_with`
+/// call shape (`event` + timestamp, against an already-open DB) for tests
+/// that build a full `CodexHookEvent`. Routes through the same single
+/// validation layer (`validate_user_prompt_submit_event`) as production
+/// `handle`.
+#[cfg(test)]
+fn capture_with(
+    db: &RepositoryAgentTraceDb,
+    event: &CodexHookEvent,
+    generated_at_unix_ms: i64,
+) -> Result<String> {
+    let validated = validate_user_prompt_submit_event(event)?;
+    persist_with(db, &validated, generated_at_unix_ms)
 }
 
 #[cfg(test)]
@@ -307,5 +352,77 @@ mod tests {
         })
         .expect_err("a failed clock must propagate as an error for the outer fail-open boundary");
         assert!(error.to_string().contains("clock failed"));
+    }
+
+    #[test]
+    fn handle_with_clock_rejects_a_missing_session_id_without_calling_the_clock() {
+        let mut payload = event("session-1", "turn-1", "hello world");
+        payload.session_id = None;
+
+        let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
+            panic!("clock must not be called for a malformed UserPromptSubmit payload")
+        })
+        .expect_err("missing session_id should be rejected before the clock is consulted");
+        assert!(error.to_string().contains("'session_id'"));
+    }
+
+    #[test]
+    fn handle_with_clock_rejects_a_whitespace_only_session_id_without_calling_the_clock() {
+        let mut payload = event("session-1", "turn-1", "hello world");
+        payload.session_id = Some("   ".to_string());
+
+        let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
+            panic!("clock must not be called for a malformed UserPromptSubmit payload")
+        })
+        .expect_err("whitespace-only session_id should be rejected before the clock is consulted");
+        assert!(error.to_string().contains("'session_id'"));
+    }
+
+    #[test]
+    fn handle_with_clock_rejects_a_missing_turn_id_without_calling_the_clock() {
+        let mut payload = event("session-1", "turn-1", "hello world");
+        payload.turn_id = None;
+
+        let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
+            panic!("clock must not be called for a malformed UserPromptSubmit payload")
+        })
+        .expect_err("missing turn_id should be rejected before the clock is consulted");
+        assert!(error.to_string().contains("'turn_id'"));
+    }
+
+    #[test]
+    fn handle_with_clock_rejects_a_whitespace_only_turn_id_without_calling_the_clock() {
+        let mut payload = event("session-1", "turn-1", "hello world");
+        payload.turn_id = Some("   ".to_string());
+
+        let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
+            panic!("clock must not be called for a malformed UserPromptSubmit payload")
+        })
+        .expect_err("whitespace-only turn_id should be rejected before the clock is consulted");
+        assert!(error.to_string().contains("'turn_id'"));
+    }
+
+    #[test]
+    fn handle_with_clock_rejects_a_missing_prompt_without_calling_the_clock() {
+        let mut payload = event("session-1", "turn-1", "hello world");
+        payload.prompt = None;
+
+        let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
+            panic!("clock must not be called for a malformed UserPromptSubmit payload")
+        })
+        .expect_err("missing prompt should be rejected before the clock is consulted");
+        assert!(error.to_string().contains("'prompt'"));
+    }
+
+    #[test]
+    fn handle_with_clock_rejects_a_whitespace_only_prompt_without_calling_the_clock() {
+        let mut payload = event("session-1", "turn-1", "hello world");
+        payload.prompt = Some("   ".to_string());
+
+        let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
+            panic!("clock must not be called for a malformed UserPromptSubmit payload")
+        })
+        .expect_err("whitespace-only prompt should be rejected before the clock is consulted");
+        assert!(error.to_string().contains("'prompt'"));
     }
 }
