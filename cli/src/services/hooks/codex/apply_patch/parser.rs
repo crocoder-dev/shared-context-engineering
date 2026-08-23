@@ -25,14 +25,13 @@
 //! eof_line: "*** End of File" LF
 //! ```
 //!
-//! Upstream Codex itself accepts absolute hunk paths (resolving them against
-//! the tool's own `cwd` later). This parser is deliberately more
-//! conservative than upstream, per this task's own scope: it rejects
-//! absolute paths and `..` traversal segments outright, since SCE has no
-//! equivalent downstream resolution step and normalized evidence must stay
-//! anchored inside the repository working tree.
-
-use std::path::{Component, Path};
+//! Upstream Codex itself accepts absolute hunk paths and `..` traversal
+//! segments, resolving them against the tool's own `cwd` later. This parser
+//! preserves that model: it validates only the syntactic `apply_patch` grammar
+//! and basic path representability (e.g. a non-empty path), and leaves the
+//! decision of whether a parsed path is safe and stays inside the canonical
+//! Git worktree to `resolve_codex_patch_paths` in this module's sibling
+//! `path.rs`, which runs after parsing.
 
 const BEGIN_PATCH_MARKER: &str = "*** Begin Patch";
 const END_PATCH_MARKER: &str = "*** End Patch";
@@ -93,8 +92,7 @@ pub(crate) enum CodexHunkLine {
 }
 
 /// Error produced when raw `apply_patch` text does not conform to the
-/// grammar above, or violates this parser's own conservative path
-/// validation.
+/// grammar above, or contains an unrepresentable path (e.g. empty).
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CodexPatchParseError {
@@ -349,30 +347,14 @@ fn parse_update_hunks(
     Ok((hunks, consumed))
 }
 
-/// Conservative path validation: rejects absolute paths and any `..`
-/// traversal segment. Deliberately stricter than upstream Codex, which
-/// accepts and resolves absolute hunk paths itself (see this module's own
-/// doc comment).
+/// Validates only that a parsed path is representable at all (non-empty).
+/// Absolute paths and `..` traversal segments are syntactically valid Codex
+/// `apply_patch` paths and are passed through unchanged; whether a given path
+/// is safe is decided later, against the event cwd and canonical Git
+/// worktree, by `resolve_codex_patch_paths` in `path.rs`.
 fn validate_path(path: &str) -> Result<String, CodexPatchParseError> {
     if path.is_empty() {
         return Err(error("Codex apply_patch path cannot be empty."));
-    }
-
-    let candidate = Path::new(path);
-
-    if candidate.is_absolute() {
-        return Err(error(format!(
-            "Codex apply_patch path '{path}' must not be absolute."
-        )));
-    }
-
-    if candidate
-        .components()
-        .any(|component| matches!(component, Component::ParentDir))
-    {
-        return Err(error(format!(
-            "Codex apply_patch path '{path}' must not contain '..' traversal segments."
-        )));
     }
 
     Ok(path.to_string())
@@ -772,26 +754,44 @@ mod tests {
     }
 
     #[test]
-    fn rejects_absolute_path() {
+    fn accepts_absolute_and_parent_traversal_path_syntax_unresolved() {
+        // The parser owns only the apply_patch grammar: absolute paths and
+        // `..` traversal segments are syntactically valid here and are
+        // passed through unresolved. Whether they are actually safe is
+        // `resolve_codex_patch_paths` (path.rs)'s decision, made later
+        // against the event cwd and canonical Git worktree.
         let patch = "*** Begin Patch\n\
              *** Add File: /etc/passwd\n\
              +x\n\
+             *** Delete File: ../../etc/shadow\n\
              *** End Patch";
 
-        let error = parse_codex_apply_patch(patch).expect_err("absolute path is rejected");
+        let parsed = parse_codex_apply_patch(patch)
+            .expect("absolute and parent-traversal path syntax should parse");
 
-        assert!(error.message.contains("must not be absolute"));
+        assert_eq!(
+            parsed.operations,
+            vec![
+                CodexFileOperation::Add {
+                    path: "/etc/passwd".to_string(),
+                    lines: vec!["x".to_string()],
+                },
+                CodexFileOperation::Delete {
+                    path: "../../etc/shadow".to_string(),
+                },
+            ]
+        );
     }
 
     #[test]
-    fn rejects_traversal_path() {
+    fn rejects_empty_path() {
         let patch = "*** Begin Patch\n\
-             *** Add File: ../../etc/passwd\n\
+             *** Add File: \n\
              +x\n\
              *** End Patch";
 
-        let error = parse_codex_apply_patch(patch).expect_err("traversal path is rejected");
+        let error = parse_codex_apply_patch(patch).expect_err("empty path is rejected");
 
-        assert!(error.message.contains("traversal"));
+        assert!(error.message.contains("path cannot be empty"));
     }
 }

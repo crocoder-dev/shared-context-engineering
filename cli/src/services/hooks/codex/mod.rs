@@ -222,6 +222,7 @@ mod tests {
         resolve_agent_trace_storage_at_state_root,
         resolve_agent_trace_storage_for_hook_runtime_at_state_root, AgentTraceStorageContext,
     };
+    use crate::services::patch::FileChangeKind;
 
     use super::*;
 
@@ -800,6 +801,227 @@ mod tests {
             .expect("diff trace query should succeed");
         assert_eq!(recent.loaded_count(), 0);
         assert_eq!(recent.skipped_count(), 0);
+
+        fs::remove_dir_all(&repository_root).ok();
+        fs::remove_dir_all(&state_root).ok();
+    }
+
+    // --- T20/AC26 ownership boundary: the parser accepts absolute and `..`
+    // path syntax unresolved (see apply_patch/parser.rs), and
+    // `resolve_codex_patch_paths` (apply_patch/path.rs) is the sole
+    // authority deciding whether a parsed path is safe and stays inside the
+    // canonical Git worktree. These end-to-end tests exercise the real
+    // `PostToolUse apply_patch -> parse -> cwd-aware path resolution ->
+    // normalize -> diff_traces` pipeline, not `path.rs` in isolation. ---
+
+    fn diff_trace_count(repository_root: &Path, state_root: &Path) -> usize {
+        let storage = resolve_agent_trace_storage_for_hook_runtime_at_state_root(
+            &AgentTraceStorageContext {
+                repository_root,
+                explicit_repository_id: None,
+                repository_remote: "origin",
+            },
+            state_root,
+        )
+        .expect("repository Agent Trace DB should reopen");
+        storage
+            .db
+            .recent_diff_trace_patches(0, i64::MAX)
+            .expect("diff trace query should succeed")
+            .loaded_count()
+    }
+
+    #[test]
+    fn nested_cwd_parent_traversal_path_is_accepted_and_persisted_repo_relative() {
+        let (repository_root, state_root) = initialize_repository("nested-cwd-traversal");
+        let cwd = repository_root.join("src").join("lib");
+        fs::create_dir_all(&cwd).expect("nested cwd should be created");
+
+        let payload = codex_apply_patch_payload(
+            &cwd,
+            "session-nested-traversal",
+            "custom/model",
+            "tool-nested-traversal",
+            "*** Begin Patch\n*** Add File: ../inside.rs\n+content\n*** End Patch",
+        );
+        let output = run_codex_subcommand_from_payload_at_state_root(
+            &repository_root,
+            &payload,
+            None,
+            &state_root,
+        )
+        .expect("a `..` path that stays inside the repo should be accepted");
+        assert_eq!(output, "");
+
+        let storage = resolve_agent_trace_storage_for_hook_runtime_at_state_root(
+            &AgentTraceStorageContext {
+                repository_root: &repository_root,
+                explicit_repository_id: None,
+                repository_remote: "origin",
+            },
+            &state_root,
+        )
+        .expect("repository Agent Trace DB should reopen");
+        let recent = storage
+            .db
+            .recent_diff_trace_patches(0, i64::MAX)
+            .expect("diff trace query should succeed");
+        assert_eq!(recent.loaded_count(), 1);
+        let file = &recent.patches[0].patch.files[0];
+        assert_eq!(file.kind, FileChangeKind::Added);
+        assert_eq!(file.new_path, "src/inside.rs");
+
+        fs::remove_dir_all(&repository_root).ok();
+        fs::remove_dir_all(&state_root).ok();
+    }
+
+    #[test]
+    fn absolute_path_inside_worktree_is_accepted_and_persisted_repo_relative() {
+        let (repository_root, state_root) = initialize_repository("absolute-inside");
+        let absolute_target = repository_root.join("lib.rs");
+
+        let payload = codex_apply_patch_payload(
+            &repository_root,
+            "session-absolute-inside",
+            "custom/model",
+            "tool-absolute-inside",
+            &format!(
+                "*** Begin Patch\n*** Add File: {}\n+content\n*** End Patch",
+                absolute_target.display()
+            ),
+        );
+        let output = run_codex_subcommand_from_payload_at_state_root(
+            &repository_root,
+            &payload,
+            None,
+            &state_root,
+        )
+        .expect("an absolute path inside the worktree should be accepted");
+        assert_eq!(output, "");
+
+        let storage = resolve_agent_trace_storage_for_hook_runtime_at_state_root(
+            &AgentTraceStorageContext {
+                repository_root: &repository_root,
+                explicit_repository_id: None,
+                repository_remote: "origin",
+            },
+            &state_root,
+        )
+        .expect("repository Agent Trace DB should reopen");
+        let recent = storage
+            .db
+            .recent_diff_trace_patches(0, i64::MAX)
+            .expect("diff trace query should succeed");
+        assert_eq!(recent.loaded_count(), 1);
+        let file = &recent.patches[0].patch.files[0];
+        assert_eq!(file.kind, FileChangeKind::Added);
+        assert_eq!(file.new_path, "lib.rs");
+
+        fs::remove_dir_all(&repository_root).ok();
+        fs::remove_dir_all(&state_root).ok();
+    }
+
+    #[test]
+    fn parent_traversal_path_escaping_repository_is_rejected_with_no_diff_trace() {
+        let (repository_root, state_root) = initialize_repository("traversal-escape");
+
+        let payload = codex_apply_patch_payload(
+            &repository_root,
+            "session-traversal-escape",
+            "custom/model",
+            "tool-traversal-escape",
+            "*** Begin Patch\n*** Add File: ../outside.rs\n+content\n*** End Patch",
+        );
+        let output = run_codex_subcommand_from_payload_at_state_root(
+            &repository_root,
+            &payload,
+            None,
+            &state_root,
+        )
+        .expect("a `..` path escaping the repo should fail open, not error");
+        assert_eq!(output, "");
+        assert_eq!(diff_trace_count(&repository_root, &state_root), 0);
+
+        fs::remove_dir_all(&repository_root).ok();
+        fs::remove_dir_all(&state_root).ok();
+    }
+
+    #[test]
+    fn absolute_path_outside_repository_is_rejected_with_no_diff_trace() {
+        let (repository_root, state_root) = initialize_repository("absolute-outside");
+        let outside_target = std::env::temp_dir().join(format!(
+            "sce-codex-outside-target-{}-{}.rs",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after Unix epoch")
+                .as_nanos()
+        ));
+
+        let payload = codex_apply_patch_payload(
+            &repository_root,
+            "session-absolute-outside",
+            "custom/model",
+            "tool-absolute-outside",
+            &format!(
+                "*** Begin Patch\n*** Add File: {}\n+content\n*** End Patch",
+                outside_target.display()
+            ),
+        );
+        let output = run_codex_subcommand_from_payload_at_state_root(
+            &repository_root,
+            &payload,
+            None,
+            &state_root,
+        )
+        .expect("an absolute path outside the repo should fail open, not error");
+        assert_eq!(output, "");
+        assert_eq!(diff_trace_count(&repository_root, &state_root), 0);
+
+        fs::remove_dir_all(&repository_root).ok();
+        fs::remove_dir_all(&state_root).ok();
+    }
+
+    #[test]
+    fn move_to_destination_with_valid_parent_traversal_resolves_source_and_destination_independently(
+    ) {
+        let (repository_root, state_root) = initialize_repository("move-traversal");
+        let cwd = repository_root.join("src");
+        fs::create_dir_all(&cwd).expect("src directory should be created");
+
+        let payload = codex_apply_patch_payload(
+            &cwd,
+            "session-move-traversal",
+            "custom/model",
+            "tool-move-traversal",
+            "*** Begin Patch\n*** Update File: old.rs\n*** Move to: ../moved.rs\n@@\n-old\n+new\n*** End Patch",
+        );
+        let output = run_codex_subcommand_from_payload_at_state_root(
+            &repository_root,
+            &payload,
+            None,
+            &state_root,
+        )
+        .expect("a move whose destination traverses `..` inside the repo should be accepted");
+        assert_eq!(output, "");
+
+        let storage = resolve_agent_trace_storage_for_hook_runtime_at_state_root(
+            &AgentTraceStorageContext {
+                repository_root: &repository_root,
+                explicit_repository_id: None,
+                repository_remote: "origin",
+            },
+            &state_root,
+        )
+        .expect("repository Agent Trace DB should reopen");
+        let recent = storage
+            .db
+            .recent_diff_trace_patches(0, i64::MAX)
+            .expect("diff trace query should succeed");
+        assert_eq!(recent.loaded_count(), 1);
+        let file = &recent.patches[0].patch.files[0];
+        assert_eq!(file.old_path, "src/old.rs");
+        assert_eq!(file.new_path, "moved.rs");
 
         fs::remove_dir_all(&repository_root).ok();
         fs::remove_dir_all(&state_root).ok();
