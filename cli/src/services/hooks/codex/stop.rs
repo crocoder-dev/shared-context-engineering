@@ -11,40 +11,71 @@ use super::super::{
     current_unix_time_ms, open_agent_trace_db_for_hook_runtime,
     prefixed_conversation_trace_session_id, CODEX_TOOL_NAME,
 };
-use super::CodexHookEvent;
+use super::{CodexHookEvent, NullableField};
 
 /// Captures a Codex `Stop` event as one `messages` row (`role = "assistant"`)
 /// and one `parts` row (`part_type = "text"`, `text = last_assistant_message`)
 /// under session `cx_<session_id>`, message `cx:<turn_id>:assistant`.
+///
+/// Upstream Codex's `Stop` schema requires `last_assistant_message` and
+/// types it `string | null`. This handler therefore distinguishes three
+/// cases via [`NullableField`]: a missing field is a malformed payload that
+/// errors so the outer Codex dispatcher fail-open boundary
+/// (`run_codex_subcommand` → `log_codex_fail_open`) logs it and emits exact
+/// empty stdout with no DB access; an explicit `null` is a valid,
+/// upstream-legitimate "no assistant text this turn" signal that
+/// short-circuits as a silent successful no-op *before* timestamp
+/// acquisition or the Agent Trace DB is ever opened; a present value
+/// (including an explicit empty string, persisted like any other text) is
+/// captured normally.
 pub(super) fn handle(repository_root: &Path, event: &CodexHookEvent) -> Result<String> {
-    let db = open_agent_trace_db_for_hook_runtime(
-        repository_root,
-        "Failed to open Agent Trace DB for Codex Stop persistence.",
-    )?;
+    handle_with_clock(repository_root, event, current_unix_time_ms)
+}
 
-    capture_with(&db, event, || current_unix_time_ms().unwrap_or(0))
+/// Injectable-clock counterpart of `handle`. Timestamp acquisition is
+/// fallible and its failure is propagated as `Err` rather than swallowed
+/// internally, so the existing outer Codex fail-open boundary owns logging
+/// and the empty-stdout contract for a failed clock exactly as it does for
+/// any other handler error.
+fn handle_with_clock<F>(repository_root: &Path, event: &CodexHookEvent, now: F) -> Result<String>
+where
+    F: FnOnce() -> Result<i64>,
+{
+    match &event.last_assistant_message {
+        NullableField::Missing => Err(anyhow::anyhow!(
+            "Invalid Codex Stop payload: field 'last_assistant_message' must be present."
+        )),
+        NullableField::Null => Ok(String::new()),
+        NullableField::Value(_) => {
+            let generated_at_unix_ms = now()?;
+
+            let db = open_agent_trace_db_for_hook_runtime(
+                repository_root,
+                "Failed to open Agent Trace DB for Codex Stop persistence.",
+            )?;
+
+            capture_with(&db, event, generated_at_unix_ms)
+        }
+    }
 }
 
 /// Injectable counterpart of `handle` for deterministic testing against an
 /// already-open Agent Trace DB.
-fn capture_with<T>(
+fn capture_with(
     db: &RepositoryAgentTraceDb,
     event: &CodexHookEvent,
-    generate_timestamp_ms: T,
-) -> Result<String>
-where
-    T: FnOnce() -> i64,
-{
-    let session_id = required_field(event.session_id.as_deref(), "session_id")?;
-    let turn_id = required_field(event.turn_id.as_deref(), "turn_id")?;
-    let last_assistant_message = required_field(
-        event.last_assistant_message.as_deref(),
-        "last_assistant_message",
-    )?;
+    generated_at_unix_ms: i64,
+) -> Result<String> {
+    let session_id = required_trimmed_field(event.session_id.as_deref(), "session_id")?;
+    let turn_id = required_trimmed_field(event.turn_id.as_deref(), "turn_id")?;
+    let last_assistant_message = event.last_assistant_message.as_value().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Invalid Codex Stop payload: field 'last_assistant_message' must be present for persistence."
+        )
+    })?;
 
     let prefixed_session_id = prefixed_conversation_trace_session_id(CODEX_TOOL_NAME, session_id);
     let message_id = format!("cx:{turn_id}:assistant");
-    let generated_at_unix_ms = generate_timestamp_ms();
 
     db.insert_messages(vec![InsertMessageInsert {
         session_id: prefixed_session_id.clone(),
@@ -56,7 +87,7 @@ where
 
     db.insert_parts(vec![InsertPartInsert {
         part_type: PartType::Text,
-        text: last_assistant_message.to_string(),
+        text: last_assistant_message.clone(),
         session_id: prefixed_session_id,
         message_id,
         generated_at_unix_ms,
@@ -66,9 +97,12 @@ where
     Ok(String::new())
 }
 
-fn required_field<'a>(value: Option<&'a str>, field_name: &str) -> Result<&'a str> {
-    match value {
-        Some(value) if !value.trim().is_empty() => Ok(value),
+/// Validates an identifier field (`session_id`/`turn_id`) is present and
+/// non-blank, returning it trimmed so downstream prefixing/formatting never
+/// persists incidental leading/trailing whitespace.
+fn required_trimmed_field<'a>(value: Option<&'a str>, field_name: &str) -> Result<&'a str> {
+    match value.map(str::trim) {
+        Some(value) if !value.is_empty() => Ok(value),
         _ => Err(anyhow::anyhow!(
             "Invalid Codex Stop payload: field '{field_name}' must be a non-empty string."
         )),
@@ -116,7 +150,7 @@ mod tests {
             tool_input: None,
             tool_response: None,
             prompt: None,
-            last_assistant_message: Some(last_assistant_message.to_string()),
+            last_assistant_message: NullableField::Value(last_assistant_message.to_string()),
         }
     }
 
@@ -156,7 +190,7 @@ mod tests {
         let db_path = unique_test_db_path("basic");
         let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
 
-        let output = capture_with(&db, &event("session-1", "turn-1", "hello back"), || 1_000)
+        let output = capture_with(&db, &event("session-1", "turn-1", "hello back"), 1_000)
             .expect("capture should succeed");
         assert_eq!(output, "");
 
@@ -186,7 +220,7 @@ mod tests {
         let db_path = unique_test_db_path("prefixed");
         let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
 
-        capture_with(&db, &event("cx_session-1", "turn-1", "hi"), || 1_000)
+        capture_with(&db, &event("cx_session-1", "turn-1", "hi"), 1_000)
             .expect("capture should succeed");
 
         assert_eq!(message_rows(&db)[0].0, "cx_session-1");
@@ -200,8 +234,8 @@ mod tests {
         let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
         let payload = event("session-1", "turn-1", "hello back");
 
-        capture_with(&db, &payload, || 1_000).expect("first capture should succeed");
-        capture_with(&db, &payload, || 2_000).expect("reprocessed capture should succeed");
+        capture_with(&db, &payload, 1_000).expect("first capture should succeed");
+        capture_with(&db, &payload, 2_000).expect("reprocessed capture should succeed");
 
         assert_eq!(
             message_rows(&db).len(),
@@ -217,10 +251,24 @@ mod tests {
         let db_path = unique_test_db_path("missing-last-assistant-message");
         let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
         let mut payload = event("session-1", "turn-1", "hello back");
-        payload.last_assistant_message = None;
+        payload.last_assistant_message = NullableField::Missing;
 
-        let error = capture_with(&db, &payload, || 1_000)
+        let error = capture_with(&db, &payload, 1_000)
             .expect_err("missing last_assistant_message should error");
+        assert!(error.to_string().contains("'last_assistant_message'"));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn capture_with_rejects_a_null_last_assistant_message() {
+        let db_path = unique_test_db_path("null-last-assistant-message");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let mut payload = event("session-1", "turn-1", "hello back");
+        payload.last_assistant_message = NullableField::Null;
+
+        let error = capture_with(&db, &payload, 1_000)
+            .expect_err("null last_assistant_message should error inside capture_with");
         assert!(error.to_string().contains("'last_assistant_message'"));
 
         remove_test_db(&db_path);
@@ -233,10 +281,176 @@ mod tests {
         let mut payload = event("session-1", "turn-1", "hello back");
         payload.turn_id = None;
 
-        let error =
-            capture_with(&db, &payload, || 1_000).expect_err("missing turn_id should error");
+        let error = capture_with(&db, &payload, 1_000).expect_err("missing turn_id should error");
         assert!(error.to_string().contains("'turn_id'"));
 
         remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn capture_with_trims_padded_session_and_turn_ids_before_persisting() {
+        let db_path = unique_test_db_path("trimmed-ids");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let mut payload = event(" session-1 ", " turn-1 ", "hello back");
+        payload.session_id = Some(" session-1 ".to_string());
+        payload.turn_id = Some(" turn-1 ".to_string());
+
+        capture_with(&db, &payload, 1_000).expect("padded ids should persist trimmed");
+
+        assert_eq!(
+            message_rows(&db),
+            vec![(
+                "cx_session-1".to_string(),
+                "cx:turn-1:assistant".to_string(),
+                "assistant".to_string()
+            )]
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn capture_with_rejects_a_whitespace_only_session_id() {
+        let db_path = unique_test_db_path("blank-session-id");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let mut payload = event("session-1", "turn-1", "hello back");
+        payload.session_id = Some("   ".to_string());
+
+        let error = capture_with(&db, &payload, 1_000).expect_err("blank session_id should error");
+        assert!(error.to_string().contains("'session_id'"));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn capture_with_persists_an_explicit_empty_last_assistant_message() {
+        let db_path = unique_test_db_path("explicit-empty");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let payload = event("session-1", "turn-1", "");
+
+        let output =
+            capture_with(&db, &payload, 1_000).expect("explicit empty text should persist");
+        assert_eq!(output, "");
+
+        assert_eq!(
+            part_rows(&db),
+            vec![(
+                "cx_session-1".to_string(),
+                "cx:turn-1:assistant".to_string(),
+                "text".to_string(),
+                String::new()
+            )],
+            "an explicit empty string is a present value, unlike null, and persists like any other text"
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn capture_with_persists_deserialized_raw_json_with_an_explicit_empty_string() {
+        let db_path = unique_test_db_path("raw-json-empty-string");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let payload: CodexHookEvent = serde_json::from_str(
+            r#"{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","last_assistant_message":""}"#,
+        )
+        .expect("raw JSON with an explicit empty string should deserialize");
+
+        let output = capture_with(&db, &payload, 1_000)
+            .expect("deserialized explicit empty string should persist");
+        assert_eq!(output, "");
+        assert_eq!(message_rows(&db).len(), 1);
+        assert_eq!(
+            part_rows(&db),
+            vec![(
+                "cx_s1".to_string(),
+                "cx:t1:assistant".to_string(),
+                "text".to_string(),
+                String::new()
+            )]
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn capture_with_persists_deserialized_raw_json_with_normal_text() {
+        let db_path = unique_test_db_path("raw-json-normal-text");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let payload: CodexHookEvent = serde_json::from_str(
+            r#"{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","last_assistant_message":"hello"}"#,
+        )
+        .expect("raw JSON with normal text should deserialize");
+
+        let output =
+            capture_with(&db, &payload, 1_000).expect("deserialized normal text should persist");
+        assert_eq!(output, "");
+        assert_eq!(message_rows(&db).len(), 1);
+        assert_eq!(
+            part_rows(&db),
+            vec![(
+                "cx_s1".to_string(),
+                "cx:t1:assistant".to_string(),
+                "text".to_string(),
+                "hello".to_string()
+            )]
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn handle_is_a_silent_no_op_for_a_null_last_assistant_message_without_opening_the_db() {
+        let mut payload = event("session-1", "turn-1", "unused");
+        payload.last_assistant_message = NullableField::Null;
+
+        // A nonexistent repository root proves `handle` never reaches Agent
+        // Trace DB resolution for a null `last_assistant_message`: DB opening
+        // against a nonexistent repository would otherwise fail loudly.
+        let output = handle(Path::new("/nonexistent-repository-root"), &payload)
+            .expect("null last_assistant_message should be a silent successful no-op");
+        assert_eq!(output, "");
+    }
+
+    #[test]
+    fn handle_with_clock_errors_for_a_missing_last_assistant_message_without_calling_the_clock() {
+        let mut payload = event("session-1", "turn-1", "unused");
+        payload.last_assistant_message = NullableField::Missing;
+
+        let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
+            panic!("clock must not be called for a missing last_assistant_message")
+        })
+        .expect_err("missing last_assistant_message should error");
+        assert!(error.to_string().contains("'last_assistant_message'"));
+    }
+
+    #[test]
+    fn handle_with_clock_is_a_silent_no_op_for_null_without_calling_the_clock_or_opening_the_db() {
+        let mut payload = event("session-1", "turn-1", "unused");
+        payload.last_assistant_message = NullableField::Null;
+
+        // A failing/panicking clock closure and a nonexistent repository
+        // root together prove `handle_with_clock` short-circuits before
+        // timestamp acquisition and before Agent Trace DB resolution for an
+        // explicit null.
+        let output = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
+            panic!("clock must not be called for an explicit null last_assistant_message")
+        })
+        .expect("null last_assistant_message should be a silent successful no-op");
+        assert_eq!(output, "");
+    }
+
+    #[test]
+    fn handle_with_clock_propagates_a_timestamp_failure_as_an_error_with_no_persistence() {
+        let payload = event("session-1", "turn-1", "hello back");
+
+        // A nonexistent repository root additionally proves the failed
+        // clock is consulted (and propagated) before Agent Trace DB
+        // resolution is ever attempted: a subsequent DB-open attempt
+        // against this path would fail loudly instead.
+        let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
+            Err(anyhow::anyhow!("clock failed"))
+        })
+        .expect_err("a failed clock must propagate as an error for the outer fail-open boundary");
+        assert!(error.to_string().contains("clock failed"));
     }
 }

@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 use crate::services::observability::traits::Logger;
@@ -20,6 +20,57 @@ const CODEX_HOOK_EVENT_POST_TOOL_USE: &str = "PostToolUse";
 const CODEX_HOOK_TOOL_BASH: &str = "Bash";
 const CODEX_HOOK_TOOL_APPLY_PATCH: &str = "apply_patch";
 
+/// Distinguishes a JSON field that is absent from the payload entirely
+/// (`Missing`) from one that is present with an explicit `null` (`Null`)
+/// from one that is present with a value (`Value`). A plain
+/// `#[serde(default)] Option<T>` cannot make this distinction: Serde's
+/// `Option<T>` deserializer maps JSON `null` to `None` at the *same* layer
+/// it uses for "value absent", so both missing-field and explicit-null
+/// collapse to `None`. `#[serde(default, deserialize_with = "...")]` on a
+/// field of this type keeps `Default` (→ `Missing`) for the no-field case
+/// and routes every present field (including `null`) through
+/// [`deserialize_nullable_field`], which is the only path that can produce
+/// `Null` or `Value`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) enum NullableField<T> {
+    #[default]
+    Missing,
+    Null,
+    Value(T),
+}
+
+impl<T> NullableField<T> {
+    #[cfg(test)]
+    pub(crate) fn is_missing(&self) -> bool {
+        matches!(self, NullableField::Missing)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_null(&self) -> bool {
+        matches!(self, NullableField::Null)
+    }
+
+    pub(crate) fn as_value(&self) -> Option<&T> {
+        match self {
+            NullableField::Value(value) => Some(value),
+            NullableField::Missing | NullableField::Null => None,
+        }
+    }
+}
+
+fn deserialize_nullable_field<'de, T, D>(
+    deserializer: D,
+) -> std::result::Result<NullableField<T>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Ok(match Option::<T>::deserialize(deserializer)? {
+        Some(value) => NullableField::Value(value),
+        None => NullableField::Null,
+    })
+}
+
 /// A single Codex hook lifecycle event, deserialized from the raw STDIN JSON
 /// payload `sce hooks codex` receives via
 /// `.codex/hooks/run-sce-or-show-install-guidance.sh`.
@@ -30,8 +81,11 @@ const CODEX_HOOK_TOOL_APPLY_PATCH: &str = "apply_patch";
 /// `tool_input`/`tool_response` are present only on `PreToolUse`/`PostToolUse`;
 /// `prompt` is present only on `UserPromptSubmit`, matching Claude's own
 /// `UserPromptSubmit` payload shape (see `transform_claude_user_prompt_submit_with`);
-/// `last_assistant_message` is present only on `Stop`, matching Claude's own
-/// `Stop` payload shape (see `transform_claude_stop_with`).
+/// `last_assistant_message` is present (per current upstream Codex `Stop`
+/// schema, required and typed `string | null`) only on `Stop`, matching
+/// Claude's own `Stop` payload shape (see `transform_claude_stop_with`)
+/// except that Codex allows an explicit `null` where Claude does not — see
+/// [`NullableField`].
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub(crate) struct CodexHookEvent {
@@ -54,8 +108,8 @@ pub(crate) struct CodexHookEvent {
     pub(crate) tool_response: Option<Value>,
     #[serde(default)]
     pub(crate) prompt: Option<String>,
-    #[serde(default)]
-    pub(crate) last_assistant_message: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_nullable_field")]
+    pub(crate) last_assistant_message: NullableField<String>,
 }
 
 /// The set of Codex hook-event/tool combinations `sce hooks codex` gives
@@ -182,7 +236,7 @@ mod tests {
             tool_input: None,
             tool_response: None,
             prompt: None,
-            last_assistant_message: None,
+            last_assistant_message: NullableField::Missing,
         }
     }
 
@@ -293,6 +347,194 @@ mod tests {
         let output = log_codex_fail_open(&error, None);
 
         assert_eq!(output, "");
+    }
+
+    #[derive(Clone, Default)]
+    struct RecordingLogger {
+        errors: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl Logger for RecordingLogger {
+        fn info(&self, _: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {}
+        fn debug(&self, _: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {}
+        fn warn(&self, _: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {}
+
+        fn error(&self, _event_id: &str, message: &str, _: &[(&str, &str)], _: Option<&str>) {
+            self.errors
+                .lock()
+                .expect("recording logger mutex must not be poisoned")
+                .push(message.to_string());
+        }
+
+        fn log_cli_error(&self, _error: &crate::services::error::CliError, _: Option<&str>) {}
+    }
+
+    #[test]
+    fn log_codex_fail_open_logs_a_propagated_timestamp_failure_and_returns_empty_stdout() {
+        let logger = RecordingLogger::default();
+        let error = anyhow::anyhow!("clock failed");
+
+        let output = log_codex_fail_open(&error, Some(&logger));
+
+        assert_eq!(output, "");
+        let errors = logger.errors.lock().expect("mutex must not be poisoned");
+        assert_eq!(errors.as_slice(), ["clock failed"]);
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct StopRowCounts {
+        messages: i64,
+        parts: i64,
+    }
+
+    fn stop_row_counts(
+        storage: &crate::services::agent_trace_storage::ResolvedAgentTraceStorage,
+    ) -> StopRowCounts {
+        let messages = storage
+            .db
+            .query_map("SELECT COUNT(*) FROM messages", (), |row| {
+                row.get::<i64>(0).map_err(anyhow::Error::from)
+            })
+            .expect("messages count query should succeed")[0];
+        let parts = storage
+            .db
+            .query_map("SELECT COUNT(*) FROM parts", (), |row| {
+                row.get::<i64>(0).map_err(anyhow::Error::from)
+            })
+            .expect("parts count query should succeed")[0];
+        StopRowCounts { messages, parts }
+    }
+
+    fn reopen_storage_for_counts(
+        repository_root: &Path,
+        state_root: &Path,
+    ) -> crate::services::agent_trace_storage::ResolvedAgentTraceStorage {
+        resolve_agent_trace_storage_for_hook_runtime_at_state_root(
+            &AgentTraceStorageContext {
+                repository_root,
+                explicit_repository_id: None,
+                repository_remote: "origin",
+            },
+            state_root,
+        )
+        .expect("repository Agent Trace DB should reopen")
+    }
+
+    #[test]
+    fn stop_dispatch_propagates_a_missing_last_assistant_message_field_for_the_outer_fail_open_boundary(
+    ) {
+        let (repository_root, state_root) = initialize_repository("stop-dispatch-missing-field");
+        let payload = json!({
+            "hook_event_name": "Stop",
+            "session_id": "s1",
+            "turn_id": "t1"
+        })
+        .to_string();
+
+        let error = run_codex_subcommand_from_payload_at_state_root(
+            &repository_root,
+            &payload,
+            None,
+            &state_root,
+        )
+        .expect_err(
+            "a Stop payload missing last_assistant_message must error so the outer boundary can fail open",
+        );
+        assert!(error.to_string().contains("last_assistant_message"));
+        assert_eq!(log_codex_fail_open(&error, None), "");
+
+        let storage = reopen_storage_for_counts(&repository_root, &state_root);
+        let counts = stop_row_counts(&storage);
+        assert_eq!(counts.messages, 0);
+        assert_eq!(counts.parts, 0);
+
+        fs::remove_dir_all(&repository_root).ok();
+        fs::remove_dir_all(&state_root).ok();
+    }
+
+    #[test]
+    fn stop_dispatch_is_a_silent_no_op_for_an_explicit_null_last_assistant_message() {
+        let (repository_root, state_root) = initialize_repository("stop-dispatch-null");
+        let payload = json!({
+            "hook_event_name": "Stop",
+            "session_id": "s1",
+            "turn_id": "t1",
+            "last_assistant_message": null
+        })
+        .to_string();
+
+        let output = run_codex_subcommand_from_payload_at_state_root(
+            &repository_root,
+            &payload,
+            None,
+            &state_root,
+        )
+        .expect("explicit null last_assistant_message should be a successful no-op");
+        assert_eq!(output, "");
+
+        let storage = reopen_storage_for_counts(&repository_root, &state_root);
+        let counts = stop_row_counts(&storage);
+        assert_eq!(counts.messages, 0);
+        assert_eq!(counts.parts, 0);
+
+        fs::remove_dir_all(&repository_root).ok();
+        fs::remove_dir_all(&state_root).ok();
+    }
+
+    // Explicit-empty-string and normal-text persistence *through raw JSON
+    // deserialization* are covered in `stop::tests` (e.g.
+    // `capture_with_persists_deserialized_raw_json_with_empty_string_last_assistant_message`),
+    // not here: `open_agent_trace_db_for_hook_runtime` (used by `stop::handle`
+    // for every persisting case) resolves the real default Agent Trace
+    // storage path and has no `state_root` injection seam — unlike
+    // `apply_patch`, which added one specifically for its own dispatcher
+    // tests. Missing/null above need no DB at all (they short-circuit before
+    // DB open), so they remain safe to exercise through the full
+    // `run_codex_subcommand_from_payload_at_state_root` dispatcher path.
+
+    #[test]
+    fn codex_hook_event_deserializes_missing_last_assistant_message_as_missing() {
+        let event: CodexHookEvent =
+            serde_json::from_str(r#"{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1"}"#)
+                .expect("payload without last_assistant_message should still deserialize");
+
+        assert!(event.last_assistant_message.is_missing());
+    }
+
+    #[test]
+    fn codex_hook_event_deserializes_explicit_null_last_assistant_message_as_null() {
+        let event: CodexHookEvent = serde_json::from_str(
+            r#"{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","last_assistant_message":null}"#,
+        )
+        .expect("payload with explicit null last_assistant_message should deserialize");
+
+        assert!(event.last_assistant_message.is_null());
+    }
+
+    #[test]
+    fn codex_hook_event_deserializes_empty_string_last_assistant_message_as_value() {
+        let event: CodexHookEvent = serde_json::from_str(
+            r#"{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","last_assistant_message":""}"#,
+        )
+        .expect("payload with empty string last_assistant_message should deserialize");
+
+        assert_eq!(
+            event.last_assistant_message.as_value().map(String::as_str),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn codex_hook_event_deserializes_present_text_last_assistant_message_as_value() {
+        let event: CodexHookEvent = serde_json::from_str(
+            r#"{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","last_assistant_message":"hello"}"#,
+        )
+        .expect("payload with text last_assistant_message should deserialize");
+
+        assert_eq!(
+            event.last_assistant_message.as_value().map(String::as_str),
+            Some("hello")
+        );
     }
 
     fn unique_temp_dir(label: &str) -> PathBuf {

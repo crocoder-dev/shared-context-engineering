@@ -81,6 +81,7 @@ mod tests {
 
     use serde_json::json;
 
+    use super::super::NullableField;
     use super::*;
     use crate::services::agent_trace_storage::{
         resolve_agent_trace_storage_at_state_root, AgentTraceStorageContext,
@@ -99,7 +100,7 @@ mod tests {
             tool_input,
             tool_response: None,
             prompt: None,
-            last_assistant_message: None,
+            last_assistant_message: NullableField::Missing,
         }
     }
 
