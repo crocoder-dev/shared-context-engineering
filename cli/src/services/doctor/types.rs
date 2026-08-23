@@ -213,6 +213,19 @@ pub(super) enum IntegrationContentState {
     Missing,
     Mismatch,
     ReadFailed(String),
+    /// A Codex hook registration is present but not canonical (an SCE-owned
+    /// handler exists but differs from the generated one, or duplicates
+    /// exist). Distinct from `Mismatch`, which describes a whole-file
+    /// byte/fragment comparison rather than one registration.
+    Stale,
+    /// The whole `.codex/hooks.json` document could not be structurally
+    /// validated, so no per-registration state could be determined.
+    Malformed(String),
+    /// The registration is structurally current, but Codex will not execute
+    /// it yet: disabled, never trusted, or trusted against stale content.
+    /// Carries a short machine-readable reason (`"untrusted"`, `"modified"`,
+    /// `"disabled"`, or `"unknown"`).
+    NotTrusted(String),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -246,6 +259,17 @@ pub(super) enum DoctorDisplayDetail {
     ReadFailed {
         path: PathBuf,
         error: String,
+    },
+    Stale {
+        path: PathBuf,
+    },
+    Malformed {
+        path: PathBuf,
+        error: String,
+    },
+    NotTrusted {
+        path: PathBuf,
+        reason: String,
     },
     Problem {
         summary: String,
@@ -354,6 +378,26 @@ impl IntegrationChildHealth {
                     error: error.clone(),
                 }),
             ),
+            IntegrationContentState::Stale => (
+                DoctorDisplayStatus::Fail,
+                Some(DoctorDisplayDetail::Stale {
+                    path: self.path.clone(),
+                }),
+            ),
+            IntegrationContentState::Malformed(error) => (
+                DoctorDisplayStatus::Fail,
+                Some(DoctorDisplayDetail::Malformed {
+                    path: self.path.clone(),
+                    error: error.clone(),
+                }),
+            ),
+            IntegrationContentState::NotTrusted(reason) => (
+                DoctorDisplayStatus::Warn,
+                Some(DoctorDisplayDetail::NotTrusted {
+                    path: self.path.clone(),
+                    reason: reason.clone(),
+                }),
+            ),
         };
         DoctorDisplayNode::asset(self.relative_path.clone(), status, detail)
     }
@@ -411,6 +455,8 @@ pub(crate) enum ProblemKind {
     ClaudeAssetReadFailed,
     PiAssetReadFailed,
     CodexAssetReadFailed,
+    CodexHookRegistrationMalformed,
+    CodexHookRegistrationNotTrusted,
     AgentTraceDbConnectionFailed,
     AgentTraceDbSchemaNotReady,
 }

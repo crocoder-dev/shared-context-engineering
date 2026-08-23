@@ -65,6 +65,8 @@ pub enum HealthProblemKind {
     ClaudeAssetReadFailed,
     PiAssetReadFailed,
     CodexAssetReadFailed,
+    CodexHookRegistrationMalformed,
+    CodexHookRegistrationNotTrusted,
     AgentTraceDbConnectionFailed,
     AgentTraceDbSchemaNotReady,
 }
