@@ -33,12 +33,17 @@ one current handler for each of the four required registrations. Ownership
 requires both `.codex/hooks/run-sce-or-show-install-guidance.sh` and the
 `sce hooks codex` command contract; a generic `sce` substring is not enough.
 Malformed or structurally invalid existing documents fail before staging, so
-the existing file remains untouched. Doctor uses the same fragment comparison,
-so user-added valid Codex handlers do not appear as SCE drift; invalid Codex
-configuration remains unhealthy. Trust state and
-auto-trust behavior are separate concerns owned by later doctor work. See
-[the ADR](../decisions/2026-08-23-codex-nondestructive-hook-ownership.md) and
-[the setup install policy](setup-no-backup-policy-seam.md).
+the existing file remains untouched. Doctor diagnoses each required
+registration structurally (present-and-current, missing, or stale, with a
+malformed whole document reported separately), so user-added valid Codex
+handlers do not appear as SCE drift and invalid Codex configuration remains
+unhealthy; `sce doctor --fix` repairs a structurally unhealthy document
+through the same merge service. Codex's own hook-trust state — whether it has
+actually marked a structurally current registration trusted, in its durable
+`$CODEX_HOME/config.toml` — is read-only for doctor and separate from this
+structural check; SCE never writes trust or auto-trust state. See [the
+ADR](../decisions/2026-08-23-codex-nondestructive-hook-ownership.md) and [the
+setup install policy](setup-no-backup-policy-seam.md).
 
 ## Dispatch skeleton
 

@@ -44,6 +44,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 tokio = { version = "1", default-features = false, features = ["rt", "io-util", "sync", "time"] }
+toml = "0.9"
 tracing = "0.1"
 
 uuid = { version = "1", features = ["v4", "v7"] }

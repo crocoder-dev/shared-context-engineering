@@ -434,7 +434,10 @@ fn integration_group_status(
                 IntegrationContentState::Match => DoctorDisplayStatus::Pass,
                 IntegrationContentState::Missing
                 | IntegrationContentState::Mismatch
+                | IntegrationContentState::Stale
+                | IntegrationContentState::Malformed(_)
                 | IntegrationContentState::ReadFailed(_) => DoctorDisplayStatus::Fail,
+                IntegrationContentState::NotTrusted(_) => DoctorDisplayStatus::Warn,
             })
         });
     let problem_status = report
@@ -588,6 +591,20 @@ fn render_display_detail(lines: &mut Vec<String>, detail: &DoctorDisplayDetail, 
         DoctorDisplayDetail::ReadFailed { path, error } => {
             lines.push(format!("{prefix}Path: {}", path.display()));
             lines.push(format!("{prefix}Read error: {error}"));
+        }
+        DoctorDisplayDetail::Stale { path } => {
+            lines.push(format!("{prefix}Path: {}", path.display()));
+            lines.push(format!(
+                "{prefix}Stale: this registration does not match the canonical handler."
+            ));
+        }
+        DoctorDisplayDetail::Malformed { path, error } => {
+            lines.push(format!("{prefix}Path: {}", path.display()));
+            lines.push(format!("{prefix}Malformed: {error}"));
+        }
+        DoctorDisplayDetail::NotTrusted { path, reason } => {
+            lines.push(format!("{prefix}Path: {}", path.display()));
+            lines.push(format!("{prefix}Not yet executable by Codex: {reason}"));
         }
         DoctorDisplayDetail::Problem {
             summary,

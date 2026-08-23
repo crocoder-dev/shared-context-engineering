@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use crate::services::agent_trace_db::lifecycle::diagnose_agent_trace_db_health;
 use crate::services::checkout;
 use crate::services::codex_hook_config;
+use crate::services::codex_hook_trust;
 use crate::services::config::schema::parse_file_config;
 use crate::services::config::{self, ConfigPathSource, IntegrationTargetId};
 use crate::services::default_paths::{
@@ -587,8 +588,11 @@ fn inspect_repository_integrations(
                 integration_groups.extend(pi_groups);
             }
             IntegrationTargetId::Codex => {
-                let codex_groups =
-                    collect_codex_integration_groups(resolved_root, &selected_optional_workflows);
+                let codex_groups = collect_codex_integration_groups(
+                    resolved_root,
+                    &selected_optional_workflows,
+                    &codex_hook_trust::default_trust_context(),
+                );
                 inspect_codex_integration_health(&codex_groups, problems);
                 integration_groups.extend(codex_groups);
             }
@@ -635,7 +639,76 @@ pub(super) fn repair_merge_target_configs(repository_root: &Path) -> Vec<DoctorF
         }
     }
 
+    if targets.contains(&IntegrationTargetId::Codex) {
+        let codex_groups = collect_codex_integration_groups(
+            repository_root,
+            &selected_optional_workflows,
+            &codex_hook_trust::default_trust_context(),
+        );
+        if let Some(result) =
+            repair_codex_hooks_json_if_structurally_unhealthy(repository_root, &codex_groups)
+        {
+            results.push(result);
+        }
+    }
+
     results
+}
+
+/// Repairs `.codex/hooks.json` when any required registration is
+/// structurally unhealthy (missing, stale, or the whole document is
+/// malformed). Never runs merely because a registration is not yet trusted
+/// by Codex: SCE cannot fix that, and reinstalling changes nothing about
+/// trust. Malformed documents are still attempted so the existing
+/// merge-refuses-to-overwrite-invalid-JSON behavior surfaces as a normal
+/// `Failed` fix result rather than being silently skipped.
+fn repair_codex_hooks_json_if_structurally_unhealthy(
+    repository_root: &Path,
+    groups: &[IntegrationGroupHealth],
+) -> Option<DoctorFixResultRecord> {
+    let is_structurally_unhealthy = groups
+        .iter()
+        .flat_map(|group| &group.children)
+        .filter(|child| {
+            child
+                .relative_path
+                .starts_with(&format!("{CODEX_HOOKS_JSON_RELATIVE_PATH}#"))
+        })
+        .any(|child| {
+            matches!(
+                child.content_state,
+                IntegrationContentState::Missing
+                    | IntegrationContentState::Stale
+                    | IntegrationContentState::Malformed(_)
+            )
+        });
+    if !is_structurally_unhealthy {
+        return None;
+    }
+
+    Some(
+        match repair_merge_target_asset(
+            repository_root,
+            SetupTarget::Codex,
+            CODEX_HOOKS_JSON_RELATIVE_PATH,
+        ) {
+            Ok(()) => DoctorFixResultRecord {
+                category: ProblemCategory::RepoAssets,
+                outcome: FixResult::Fixed,
+                detail: format!(
+                    "Merged canonical SCE hook registrations into '{CODEX_HOOKS_JSON_RELATIVE_PATH}'."
+                ),
+            },
+            Err(error) => DoctorFixResultRecord {
+                category: ProblemCategory::RepoAssets,
+                outcome: FixResult::Failed,
+                detail: format!(
+                    "Failed to merge canonical SCE hook registrations into \
+                     '{CODEX_HOOKS_JSON_RELATIVE_PATH}': {error}"
+                ),
+            },
+        },
+    )
 }
 
 fn repair_merge_target_if_mismatched(
@@ -924,6 +997,83 @@ fn inspect_codex_integration_health(
     push_codex_integration_missing_problems(integration_groups, problems);
     push_codex_integration_mismatch_problems(integration_groups, problems);
     push_codex_integration_read_fail_problems(integration_groups, problems);
+    push_codex_hook_malformed_problems(integration_groups, problems);
+    push_codex_hook_trust_problems(integration_groups, problems);
+}
+
+fn push_codex_hook_malformed_problems(
+    integration_groups: &[IntegrationGroupHealth],
+    problems: &mut Vec<DoctorProblem>,
+) {
+    for group in integration_groups {
+        let Some(error) = group
+            .children
+            .iter()
+            .find_map(|child| match &child.content_state {
+                IntegrationContentState::Malformed(error) => Some(error.clone()),
+                _ => None,
+            })
+        else {
+            continue;
+        };
+
+        problems.push(DoctorProblem {
+            kind: ProblemKind::CodexHookRegistrationMalformed,
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "'.codex/hooks.json' cannot be structurally validated, so its required \
+                 registrations cannot be verified: {error}"
+            ),
+            remediation: "Fix or remove the invalid '.codex/hooks.json' by hand, then rerun \
+                           'sce setup --codex' or 'sce doctor' to reinstall it; SCE will not \
+                           overwrite content it cannot safely merge."
+                .to_string(),
+            next_action: "manual_steps",
+            scope: Some(group.key),
+        });
+    }
+}
+
+fn push_codex_hook_trust_problems(
+    integration_groups: &[IntegrationGroupHealth],
+    problems: &mut Vec<DoctorProblem>,
+) {
+    for group in integration_groups {
+        let not_trusted_children = group
+            .children
+            .iter()
+            .filter_map(|child| match &child.content_state {
+                IntegrationContentState::NotTrusted(reason) => {
+                    Some((child.relative_path.as_str(), reason.as_str()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if not_trusted_children.is_empty() {
+            continue;
+        }
+
+        let details = not_trusted_children
+            .iter()
+            .map(|(relative_path, reason)| format!("'{relative_path}' ({reason})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        problems.push(DoctorProblem {
+            kind: ProblemKind::CodexHookRegistrationNotTrusted,
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Warning,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "Codex has not yet marked these current SCE hook registrations as trusted and \
+                 will not execute them: {details}."
+            ),
+            remediation: CODEX_HOOK_TRUST_GUIDANCE.to_string(),
+            next_action: "manual_steps",
+            scope: Some(group.key),
+        });
+    }
 }
 
 fn push_opencode_integration_missing_problems(
@@ -1265,7 +1415,7 @@ fn push_codex_integration_missing_problems(
 
         let missing_paths = missing_children
             .iter()
-            .map(|child| format!("'{}'", child.path.display()))
+            .map(|child| format!("'{}'", child.relative_path))
             .collect::<Vec<_>>()
             .join(", ");
         let mut remediation = format!(
@@ -1301,7 +1451,12 @@ fn push_codex_integration_mismatch_problems(
         let mismatched_children = group
             .children
             .iter()
-            .filter(|child| matches!(&child.content_state, IntegrationContentState::Mismatch))
+            .filter(|child| {
+                matches!(
+                    &child.content_state,
+                    IntegrationContentState::Mismatch | IntegrationContentState::Stale
+                )
+            })
             .collect::<Vec<_>>();
         if mismatched_children.is_empty() {
             continue;
@@ -1309,7 +1464,7 @@ fn push_codex_integration_mismatch_problems(
 
         let mismatched_paths = mismatched_children
             .iter()
-            .map(|child| format!("'{}'", child.path.display()))
+            .map(|child| format!("'{}'", child.relative_path))
             .collect::<Vec<_>>()
             .join(", ");
         let mut remediation = format!(
@@ -1677,6 +1832,7 @@ fn collect_pi_integration_groups(
 fn collect_codex_integration_groups(
     repository_root: &Path,
     selected_optional_workflows: &[String],
+    trust_context: &codex_hook_trust::TrustContext,
 ) -> Vec<IntegrationGroupHealth> {
     let codex_root = InstallTargetPaths::new(repository_root).codex_target_dir();
     let embedded_assets = iter_embedded_assets_for_setup_target_with_selection(
@@ -1686,11 +1842,18 @@ fn collect_codex_integration_groups(
     .collect::<Vec<_>>();
     let mut skill_children = Vec::new();
     let mut hook_children = Vec::new();
+    let mut hooks_json_generated_bytes: Option<&'static [u8]> = None;
 
     for asset in embedded_assets {
-        let merge_target =
-            (asset.relative_path == ".codex/hooks.json").then_some(&MergeTargetAsset::CodexHooks);
-        let child = build_integration_child_from_asset(&codex_root, asset, merge_target);
+        if asset.relative_path == CODEX_HOOKS_JSON_RELATIVE_PATH {
+            // `.codex/hooks.json` is diagnosed per required registration
+            // (structural state plus Codex's own hook-trust readiness)
+            // instead of as a single whole-file child; see
+            // `codex_hooks_json_registration_children`.
+            hooks_json_generated_bytes = Some(asset.bytes);
+            continue;
+        }
+        let child = build_integration_child_from_asset(&codex_root, asset, None);
 
         if child
             .relative_path
@@ -1703,6 +1866,15 @@ fn collect_codex_integration_groups(
         {
             hook_children.push(child);
         }
+    }
+
+    if let Some(generated_bytes) = hooks_json_generated_bytes {
+        let hooks_json_path = codex_root.join(CODEX_HOOKS_JSON_RELATIVE_PATH);
+        hook_children.extend(codex_hooks_json_registration_children(
+            &hooks_json_path,
+            generated_bytes,
+            trust_context,
+        ));
     }
 
     sort_integration_children(&mut skill_children);
@@ -1720,6 +1892,144 @@ fn collect_codex_integration_groups(
     ]
 }
 
+/// `.codex/hooks.json`'s relative path within Codex's embedded-asset set.
+const CODEX_HOOKS_JSON_RELATIVE_PATH: &str = ".codex/hooks.json";
+
+/// Build one `IntegrationChildHealth` per required Codex hook registration,
+/// combining `codex_hook_config`'s structural diagnosis with Codex's own
+/// hook-trust readiness (`codex_hook_trust`) for registrations that are
+/// structurally present. A registration only needs a trust check once it is
+/// structurally current or stale; a missing registration has no on-disk
+/// handler to hash.
+fn codex_hooks_json_registration_children(
+    hooks_json_path: &Path,
+    generated_bytes: &[u8],
+    trust_context: &codex_hook_trust::TrustContext,
+) -> Vec<IntegrationChildHealth> {
+    let existing_bytes = match fs::read(hooks_json_path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return codex_hook_registration_paths()
+                .into_iter()
+                .map(|(suffix, _event, _matcher)| IntegrationChildHealth {
+                    relative_path: format!("{CODEX_HOOKS_JSON_RELATIVE_PATH}#{suffix}"),
+                    path: hooks_json_path.to_path_buf(),
+                    content_state: IntegrationContentState::ReadFailed(error.to_string()),
+                })
+                .collect();
+        }
+    };
+
+    let document_diagnosis =
+        match codex_hook_config::diagnose_document(existing_bytes.as_deref(), generated_bytes) {
+            Ok(document_diagnosis) => document_diagnosis,
+            Err(error) => codex_hook_config::HooksDocumentDiagnosis::Malformed(error.to_string()),
+        };
+
+    match document_diagnosis {
+        codex_hook_config::HooksDocumentDiagnosis::Absent => codex_hook_registration_paths()
+            .into_iter()
+            .map(|(suffix, _event, _matcher)| IntegrationChildHealth {
+                relative_path: format!("{CODEX_HOOKS_JSON_RELATIVE_PATH}#{suffix}"),
+                path: hooks_json_path.to_path_buf(),
+                content_state: IntegrationContentState::Missing,
+            })
+            .collect(),
+        codex_hook_config::HooksDocumentDiagnosis::Malformed(error) => {
+            codex_hook_registration_paths()
+                .into_iter()
+                .map(|(suffix, _event, _matcher)| IntegrationChildHealth {
+                    relative_path: format!("{CODEX_HOOKS_JSON_RELATIVE_PATH}#{suffix}"),
+                    path: hooks_json_path.to_path_buf(),
+                    content_state: IntegrationContentState::Malformed(error.clone()),
+                })
+                .collect()
+        }
+        codex_hook_config::HooksDocumentDiagnosis::Registrations(diagnoses) => diagnoses
+            .iter()
+            .map(|registration_diagnosis| {
+                codex_hook_registration_child(
+                    hooks_json_path,
+                    registration_diagnosis,
+                    trust_context,
+                )
+            })
+            .collect(),
+    }
+}
+
+/// The four required registrations' display suffixes, in canonical order.
+fn codex_hook_registration_paths() -> [(&'static str, &'static str, Option<&'static str>); 4] {
+    [
+        ("UserPromptSubmit", "UserPromptSubmit", None),
+        ("Stop", "Stop", None),
+        ("PreToolUse(Bash)", "PreToolUse", Some("Bash")),
+        (
+            "PostToolUse(apply_patch)",
+            "PostToolUse",
+            Some("apply_patch"),
+        ),
+    ]
+}
+
+fn codex_hook_registration_child(
+    hooks_json_path: &Path,
+    diagnosis: &codex_hook_config::RegistrationDiagnosis,
+    trust_context: &codex_hook_trust::TrustContext,
+) -> IntegrationChildHealth {
+    let suffix = codex_hook_registration_paths()
+        .into_iter()
+        .find(|(_, event, matcher)| *event == diagnosis.event && *matcher == diagnosis.matcher)
+        .map_or(diagnosis.event, |(suffix, _, _)| suffix);
+    let relative_path = format!("{CODEX_HOOKS_JSON_RELATIVE_PATH}#{suffix}");
+
+    let content_state = match &diagnosis.state {
+        codex_hook_config::RegistrationStructuralState::Missing => IntegrationContentState::Missing,
+        codex_hook_config::RegistrationStructuralState::Stale => IntegrationContentState::Stale,
+        codex_hook_config::RegistrationStructuralState::PresentAndCurrent => {
+            let (Some(handler), Some(position)) = (&diagnosis.owned_handler, diagnosis.position)
+            else {
+                // Structurally impossible: `PresentAndCurrent` always carries
+                // both. Treat defensively as stale rather than panicking.
+                return IntegrationChildHealth {
+                    relative_path,
+                    path: hooks_json_path.to_path_buf(),
+                    content_state: IntegrationContentState::Stale,
+                };
+            };
+            match codex_hook_trust::trust_readiness(
+                trust_context,
+                hooks_json_path,
+                diagnosis.event,
+                diagnosis.matcher,
+                handler,
+                position,
+            ) {
+                codex_hook_trust::TrustReadiness::Trusted => IntegrationContentState::Match,
+                codex_hook_trust::TrustReadiness::Untrusted => {
+                    IntegrationContentState::NotTrusted("untrusted".to_string())
+                }
+                codex_hook_trust::TrustReadiness::Modified => {
+                    IntegrationContentState::NotTrusted("modified".to_string())
+                }
+                codex_hook_trust::TrustReadiness::Disabled => {
+                    IntegrationContentState::NotTrusted("disabled".to_string())
+                }
+                codex_hook_trust::TrustReadiness::Unknown(_) => {
+                    IntegrationContentState::NotTrusted("unknown".to_string())
+                }
+            }
+        }
+    };
+
+    IntegrationChildHealth {
+        relative_path,
+        path: hooks_json_path.to_path_buf(),
+        content_state,
+    }
+}
+
 fn sort_integration_children(children: &mut [IntegrationChildHealth]) {
     children.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
 }
@@ -1733,7 +2043,6 @@ const OPENCODE_CONFIG_RELATIVE_PATH: &str = "opencode.json";
 enum MergeTargetAsset {
     ClaudeSettings,
     OpenCodeConfig,
-    CodexHooks,
 }
 
 fn build_integration_child_from_asset(
@@ -1752,11 +2061,6 @@ fn build_integration_child_from_asset(
             &path,
             asset.bytes,
             config_merge::opencode_config_fragment_is_current,
-        ),
-        Some(MergeTargetAsset::CodexHooks) => inspect_merge_target_asset_state(
-            &path,
-            asset.bytes,
-            codex_hook_config::fragment_is_current,
         ),
         None => inspect_integration_asset_state(&path, &asset.sha256),
     };
@@ -1882,11 +2186,12 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        collect_claude_integration_groups, collect_codex_integration_groups,
+        codex_hook_trust, collect_claude_integration_groups, collect_codex_integration_groups,
         collect_hook_file_health, collect_opencode_integration_groups,
         collect_pi_integration_groups, inspect_claude_integration_health,
         inspect_codex_integration_health, resolve_doctor_integration_targets, HookContentState,
-        IntegrationArea, IntegrationContentState, IntegrationGroupHealth, IntegrationTarget,
+        IntegrationArea, IntegrationContentState, IntegrationGroupHealth, IntegrationGroupKey,
+        IntegrationTarget, ProblemKind,
     };
     use crate::services::config::IntegrationTargetId;
     use crate::services::setup::OPTIONAL_WORKFLOWS;
@@ -2019,6 +2324,18 @@ mod tests {
         );
     }
 
+    /// A `TrustContext` pointed at a codex-home directory with no
+    /// `config.toml`, so tests never depend on the real `$CODEX_HOME` or
+    /// `~/.codex` of the machine running them: every registration diagnosed
+    /// as structurally current resolves deterministically to `Untrusted`.
+    fn deterministic_untrusted_context(label: &str) -> codex_hook_trust::TrustContext {
+        codex_hook_trust::TrustContext {
+            codex_home: Some(unique_temp_repository_root(&format!(
+                "{label}-codex-home-absent"
+            ))),
+        }
+    }
+
     fn unique_temp_repository_root(label: &str) -> PathBuf {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2067,7 +2384,11 @@ mod tests {
     #[test]
     fn codex_integration_groups_split_into_skills_and_hooks_areas() {
         let root = absent_repository_root();
-        let groups = collect_codex_integration_groups(&root, &[]);
+        let groups = collect_codex_integration_groups(
+            &root,
+            &[],
+            &deterministic_untrusted_context("split-areas"),
+        );
 
         let skills_group = groups
             .iter()
@@ -2087,13 +2408,20 @@ mod tests {
             .iter()
             .find(|group| group.key.area == IntegrationArea::Hooks)
             .expect("Codex hooks group present");
-        assert!(
-            hooks_group
-                .children
-                .iter()
-                .any(|child| child.relative_path == ".codex/hooks.json"),
-            "Codex hooks group should include .codex/hooks.json"
-        );
+        for suffix in [
+            "UserPromptSubmit",
+            "Stop",
+            "PreToolUse(Bash)",
+            "PostToolUse(apply_patch)",
+        ] {
+            assert!(
+                hooks_group
+                    .children
+                    .iter()
+                    .any(|child| child.relative_path == format!(".codex/hooks.json#{suffix}")),
+                "Codex hooks group should include a .codex/hooks.json#{suffix} registration"
+            );
+        }
         assert!(
             hooks_group
                 .children
@@ -2113,7 +2441,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_hooks_json_reports_match_then_missing_problem_includes_trust_guidance() {
+    fn codex_hooks_json_reports_present_and_current_but_untrusted_then_missing() {
         let root = unique_temp_repository_root("codex-hooks");
         let codex_hooks_dir = root.join(".codex");
         std::fs::create_dir_all(&codex_hooks_dir).unwrap();
@@ -2123,31 +2451,150 @@ mod tests {
         )
         .unwrap();
 
-        let groups = collect_codex_integration_groups(&root, &[]);
-        let hooks_child = groups
+        let trust_context = deterministic_untrusted_context("codex-hooks-match");
+        let groups = collect_codex_integration_groups(&root, &[], &trust_context);
+        let registration_children = groups
             .iter()
             .flat_map(|group| &group.children)
-            .find(|child| child.relative_path == ".codex/hooks.json")
-            .expect(".codex/hooks.json child present");
-        assert!(matches!(
-            hooks_child.content_state,
-            IntegrationContentState::Match
-        ));
+            .filter(|child| child.relative_path.starts_with(".codex/hooks.json#"))
+            .collect::<Vec<_>>();
+        assert_eq!(registration_children.len(), 4);
+        for child in &registration_children {
+            assert_eq!(
+                child.content_state,
+                IntegrationContentState::NotTrusted("untrusted".to_string()),
+                "a current-but-never-trusted registration ('{}') should report not-trusted, \
+                 not a bare content mismatch",
+                child.relative_path
+            );
+        }
+
+        let mut trust_problems = Vec::new();
+        inspect_codex_integration_health(&groups, &mut trust_problems);
+        let trust_problem = trust_problems
+            .iter()
+            .find(|problem| problem.kind == ProblemKind::CodexHookRegistrationNotTrusted)
+            .expect("a not-trusted problem was reported for current registrations");
+        assert!(
+            trust_problem.remediation.contains("trust"),
+            "not-trusted remediation should mention the project hook trust/review requirement: {}",
+            trust_problem.remediation
+        );
 
         std::fs::remove_file(codex_hooks_dir.join("hooks.json")).unwrap();
 
-        let groups_after_delete = collect_codex_integration_groups(&root, &[]);
+        let groups_after_delete = collect_codex_integration_groups(&root, &[], &trust_context);
         let mut problems = Vec::new();
         inspect_codex_integration_health(&groups_after_delete, &mut problems);
 
+        let hooks_scope =
+            IntegrationGroupKey::new(IntegrationTarget::Codex, IntegrationArea::Hooks);
         let hooks_problem = problems
             .iter()
-            .find(|problem| problem.summary.contains(".codex/hooks.json"))
-            .expect("a missing .codex/hooks.json problem was reported");
+            .find(|problem| {
+                problem.kind == ProblemKind::CodexIntegrationFilesMissing
+                    && problem.scope == Some(hooks_scope)
+            })
+            .expect("a missing Codex hook registration problem was reported");
         assert!(
             hooks_problem.remediation.contains("trust"),
             "Codex hooks remediation should mention the project hook trust/review requirement: {}",
             hooks_problem.remediation
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn codex_hooks_json_stale_registration_is_repaired_preserving_unrelated_user_content() {
+        let root = unique_temp_repository_root("codex-hooks-fix");
+        let codex_hooks_dir = root.join(".codex");
+        std::fs::create_dir_all(&codex_hooks_dir).unwrap();
+
+        let existing = serde_json::json!({
+            "description": "user hooks",
+            "hooks": {
+                "Stop": [{"hooks": [
+                    {
+                        "type": "command",
+                        "command": "bash .codex/hooks/run-sce-or-show-install-guidance.sh sce hooks codex",
+                        "timeout": 30
+                    }
+                ]}],
+                "SessionStart": [{"hooks": [{"type": "command", "command": "echo user session hook"}]}]
+            }
+        });
+        let hooks_json_path = codex_hooks_dir.join("hooks.json");
+        std::fs::write(
+            &hooks_json_path,
+            serde_json::to_vec_pretty(&existing).unwrap(),
+        )
+        .unwrap();
+
+        let trust_context = deterministic_untrusted_context("codex-hooks-fix");
+        let groups = collect_codex_integration_groups(&root, &[], &trust_context);
+        let stop_child = groups
+            .iter()
+            .flat_map(|group| &group.children)
+            .find(|child| child.relative_path == ".codex/hooks.json#Stop")
+            .expect(".codex/hooks.json#Stop child present");
+        assert_eq!(stop_child.content_state, IntegrationContentState::Stale);
+
+        let fix_results = super::repair_merge_target_configs(&root);
+        assert!(
+            fix_results
+                .iter()
+                .any(|result| matches!(result.outcome, super::FixResult::Fixed)),
+            "expected the stale Codex Stop registration to be repaired: {fix_results:?}"
+        );
+
+        let repaired: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&hooks_json_path).unwrap()).unwrap();
+        assert_eq!(repaired["description"], "user hooks");
+        assert_eq!(
+            repaired["hooks"]["SessionStart"][0]["hooks"][0]["command"], "echo user session hook",
+            "unrelated user hooks must survive the repair"
+        );
+
+        let groups_after_fix = collect_codex_integration_groups(&root, &[], &trust_context);
+        for suffix in [
+            "UserPromptSubmit",
+            "Stop",
+            "PreToolUse(Bash)",
+            "PostToolUse(apply_patch)",
+        ] {
+            let child = groups_after_fix
+                .iter()
+                .flat_map(|group| &group.children)
+                .find(|child| child.relative_path == format!(".codex/hooks.json#{suffix}"))
+                .unwrap_or_else(|| panic!("expected a .codex/hooks.json#{suffix} child"));
+            assert_eq!(
+                child.content_state,
+                IntegrationContentState::NotTrusted("untrusted".to_string()),
+                "repair only fixes structure; a never-trusted registration stays not-trusted \
+                 rather than becoming falsely healthy"
+            );
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn codex_hooks_json_repair_never_runs_for_not_trusted_only_drift() {
+        let root = unique_temp_repository_root("codex-hooks-no-fix");
+        let codex_hooks_dir = root.join(".codex");
+        std::fs::create_dir_all(&codex_hooks_dir).unwrap();
+        std::fs::write(
+            codex_hooks_dir.join("hooks.json"),
+            embedded_codex_asset_bytes(".codex/hooks.json"),
+        )
+        .unwrap();
+
+        let fix_results = super::repair_merge_target_configs(&root);
+        assert!(
+            fix_results.is_empty(),
+            "a structurally current but never-trusted Codex hooks.json must never trigger a \
+             repair attempt: {fix_results:?}"
         );
 
         std::fs::remove_dir_all(&root).ok();

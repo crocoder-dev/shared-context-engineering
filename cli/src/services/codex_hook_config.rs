@@ -20,6 +20,21 @@ const REQUIRED_EVENTS: [(&str, Option<&str>); 4] = [
     ("PostToolUse", Some("apply_patch")),
 ];
 
+/// The persisted hook-state key label for one of SCE's four required Codex
+/// event names, matching upstream `hooks::hook_event_key_label`
+/// (`openai/codex` commit `8e649e3afa5cdddfb09a1b85a090b94775045d9b`,
+/// `hooks/src/lib.rs`). Only covers the events SCE registers; any other input
+/// is a programming error.
+pub(crate) fn hook_event_key_label(event: &str) -> &'static str {
+    match event {
+        "UserPromptSubmit" => "user_prompt_submit",
+        "Stop" => "stop",
+        "PreToolUse" => "pre_tool_use",
+        "PostToolUse" => "post_tool_use",
+        other => unreachable!("unexpected Codex hook event name '{other}'"),
+    }
+}
+
 /// Merge the canonical generated Codex hooks into an existing file.
 ///
 /// A missing file is installed verbatim. An existing file is parsed and
@@ -51,28 +66,192 @@ pub(crate) fn merge_or_create(
     Ok(serialized.into_bytes())
 }
 
-/// Returns whether the existing file already contains exactly the current SCE
-/// fragment. Unrelated valid Codex configuration is intentionally ignored.
-pub(crate) fn fragment_is_current(existing_bytes: &[u8], generated_bytes: &[u8]) -> Result<bool> {
-    let existing: Value = serde_json::from_slice(existing_bytes)
-        .context("Existing Codex hook config must contain valid JSON")?;
-    validate_document(&existing, "existing Codex hook config")?;
-    let generated: Value = serde_json::from_slice(generated_bytes)
-        .context("Generated Codex hook config must contain valid JSON")?;
-    let registrations = validate_generated_document_value(&generated)?;
-    Ok(merge_document(
-        existing.clone(),
-        &registrations,
-        "existing Codex hook config",
-    )? == existing)
-}
-
 #[derive(Clone)]
 struct Registration {
     event: &'static str,
     matcher: Option<&'static str>,
     group: Value,
     handler: Value,
+}
+
+/// The structural state of one required Codex hook registration, independent
+/// of Codex's own separate hook-trust bookkeeping (see `codex_hook_trust`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RegistrationStructuralState {
+    /// Exactly one SCE-owned handler exists anywhere for this event, it sits
+    /// in the registration's canonical matcher group, and it matches the
+    /// canonical generated handler byte-for-byte.
+    PresentAndCurrent,
+    /// No SCE-owned handler exists in any matcher group for this event.
+    Missing,
+    /// An SCE-owned handler exists somewhere for this event, but the
+    /// registration is not `PresentAndCurrent`: more than one owned handler
+    /// (whether duplicated within one group or spread across groups), one
+    /// sitting in the wrong matcher group, or one whose content does not
+    /// match the canonical generated handler.
+    Stale,
+}
+
+/// One required Codex hook registration's structural diagnosis, carrying the
+/// existing owned handler JSON (when present) so callers can compute Codex's
+/// own trust hash for it without re-parsing the document.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RegistrationDiagnosis {
+    pub(crate) event: &'static str,
+    pub(crate) matcher: Option<&'static str>,
+    pub(crate) state: RegistrationStructuralState,
+    pub(crate) owned_handler: Option<Value>,
+    /// Position of the matching matcher group among `hooks.<event>`, and of
+    /// the owned handler within that group's `hooks` array, exactly as
+    /// upstream's `hook_key` enumerates them. `None` when no owned handler
+    /// was found (state is `Missing`), since there is nothing to key.
+    pub(crate) position: Option<(usize, usize)>,
+}
+
+/// Whole-document diagnosis backing `sce doctor`'s Codex hook-registration
+/// reporting. `Malformed` covers both unparsable JSON and JSON that fails
+/// Codex's own structural schema; either way no per-registration state can be
+/// determined and the document cannot be safely merged.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum HooksDocumentDiagnosis {
+    Absent,
+    Malformed(String),
+    Registrations(Vec<RegistrationDiagnosis>),
+}
+
+/// Diagnose each required registration's structural state without writing
+/// anything. Mirrors `merge_or_create`'s validation rules exactly so a
+/// `PresentAndCurrent` result here always implies a no-op merge.
+pub(crate) fn diagnose_document(
+    existing_bytes: Option<&[u8]>,
+    generated_bytes: &[u8],
+) -> Result<HooksDocumentDiagnosis> {
+    let Some(existing_bytes) = existing_bytes else {
+        return Ok(HooksDocumentDiagnosis::Absent);
+    };
+
+    let existing: Value = match serde_json::from_slice(existing_bytes) {
+        Ok(value) => value,
+        Err(error) => {
+            return Ok(HooksDocumentDiagnosis::Malformed(format!(
+                "Existing Codex hook config must contain valid JSON: {error}"
+            )))
+        }
+    };
+    if let Err(error) = validate_document(&existing, "existing Codex hook config") {
+        return Ok(HooksDocumentDiagnosis::Malformed(error.to_string()));
+    }
+
+    let generated: Value = serde_json::from_slice(generated_bytes)
+        .context("Generated Codex hook config must contain valid JSON")?;
+    let registrations = validate_generated_document_value(&generated)?;
+
+    let hooks = existing
+        .get(CODEX_HOOKS_ROOT)
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+
+    let diagnoses = registrations
+        .iter()
+        .map(|registration| diagnose_registration(&hooks, registration))
+        .collect();
+
+    Ok(HooksDocumentDiagnosis::Registrations(diagnoses))
+}
+
+/// One SCE-owned handler found while scanning every matcher group for an
+/// event, tagged with where it sits and whether that group is the
+/// registration's canonical matcher group.
+struct OwnedHandlerSighting {
+    group_index: usize,
+    handler_index: usize,
+    handler: Value,
+    in_canonical_group: bool,
+}
+
+/// Diagnose one required registration by scanning **every** matcher group
+/// under `hooks.<event>`, not just the first one whose matcher matches.
+/// Setup's merge (`merge_event_groups`) strips SCE-owned handlers from every
+/// group for the event, so a duplicate or misplaced SCE handler sitting in a
+/// second group is exactly as stale as one in the first; scoping discovery
+/// to only the first matching group would let such a document read
+/// `PresentAndCurrent` even though `merge_or_create` would still rewrite it.
+fn diagnose_registration(
+    hooks: &Map<String, Value>,
+    registration: &Registration,
+) -> RegistrationDiagnosis {
+    let missing = || RegistrationDiagnosis {
+        event: registration.event,
+        matcher: registration.matcher,
+        state: RegistrationStructuralState::Missing,
+        owned_handler: None,
+        position: None,
+    };
+
+    let groups = hooks
+        .get(registration.event)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let mut sightings = Vec::new();
+    for (group_index, group) in groups.iter().enumerate() {
+        let Some(group_object) = group.as_object() else {
+            continue;
+        };
+        let in_canonical_group = group_matches(group_object, registration.matcher);
+        let Some(handlers) = group_object.get("hooks").and_then(Value::as_array) else {
+            continue;
+        };
+        for (handler_index, handler) in handlers.iter().enumerate() {
+            if !handler_is_sce_owned(handler) {
+                continue;
+            }
+            sightings.push(OwnedHandlerSighting {
+                group_index,
+                handler_index,
+                handler: handler.clone(),
+                in_canonical_group,
+            });
+        }
+    }
+
+    let Some((only, [])) = sightings.split_first() else {
+        return match sightings.first() {
+            None => missing(),
+            // More than one SCE-owned handler anywhere for this event:
+            // always stale, whatever their placement. Surface the first as
+            // diagnostic context; it is not necessarily "the" canonical one.
+            Some(first) => RegistrationDiagnosis {
+                event: registration.event,
+                matcher: registration.matcher,
+                state: RegistrationStructuralState::Stale,
+                owned_handler: Some(first.handler.clone()),
+                position: Some((first.group_index, first.handler_index)),
+            },
+        };
+    };
+
+    if only.in_canonical_group && only.handler == registration.handler {
+        RegistrationDiagnosis {
+            event: registration.event,
+            matcher: registration.matcher,
+            state: RegistrationStructuralState::PresentAndCurrent,
+            owned_handler: Some(only.handler.clone()),
+            position: Some((only.group_index, only.handler_index)),
+        }
+    } else {
+        // Exactly one owned handler, but either in the wrong matcher group
+        // or not byte-identical to the canonical generated handler.
+        RegistrationDiagnosis {
+            event: registration.event,
+            matcher: registration.matcher,
+            state: RegistrationStructuralState::Stale,
+            owned_handler: Some(only.handler.clone()),
+            position: Some((only.group_index, only.handler_index)),
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -451,52 +630,119 @@ fn merge_document(
     Ok(existing)
 }
 
+/// Merge one event's matcher groups so the result matches exactly what
+/// `diagnose_registration` calls `PresentAndCurrent`: if the existing
+/// document already has exactly one SCE-owned handler, it sits in a matcher
+/// group that satisfies `matcher`, and it is byte-identical to
+/// `current_handler`, the groups are returned completely untouched —
+/// wherever that handler already lives, including a non-first matching
+/// group. Relocating an already-canonical handler merely because an earlier
+/// matcher group happens to exist would make `merge_or_create` rewrite a
+/// document `diagnose_document` calls current, breaking the
+/// `PresentAndCurrent` ⇒ no-op invariant those two functions must share.
+///
+/// Otherwise every SCE-owned handler across every group is removed and
+/// exactly one canonical handler is (re)inserted at a deterministic
+/// position: preferring the first matcher-matching group that already held
+/// an owned handler (replacing it in place), then the first
+/// matcher-matching group at all (appending to it), then a freshly appended
+/// `canonical_group` when no matcher-matching group exists. No group is
+/// ever deleted, and non-owned handlers/groups are never touched.
 fn merge_event_groups(
     groups: Vec<Value>,
     matcher: Option<&str>,
     current_handler: &Value,
     canonical_group: &Value,
 ) -> Vec<Value> {
-    let mut inserted = false;
-    let mut merged_groups = Vec::with_capacity(groups.len().saturating_add(1));
+    let mut owned_sightings: Vec<(usize, usize)> = Vec::new();
+    let mut canonical_group_sightings: Vec<(usize, usize)> = Vec::new();
+    let mut first_matching_group_index: Option<usize> = None;
 
-    for group in groups {
+    for (group_index, group) in groups.iter().enumerate() {
         let Some(group_object) = group.as_object() else {
             continue;
         };
-        let matcher_matches = group_matches(group_object, matcher);
-        let handlers = group_object
-            .get("hooks")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let has_owned = handlers.iter().any(handler_is_sce_owned);
-        if !has_owned && !matcher_matches {
-            merged_groups.push(group);
+        let is_canonical_group = group_matches(group_object, matcher);
+        if is_canonical_group && first_matching_group_index.is_none() {
+            first_matching_group_index = Some(group_index);
+        }
+        let Some(handlers) = group_object.get("hooks").and_then(Value::as_array) else {
             continue;
+        };
+        for (handler_index, handler) in handlers.iter().enumerate() {
+            if !handler_is_sce_owned(handler) {
+                continue;
+            }
+            owned_sightings.push((group_index, handler_index));
+            if is_canonical_group {
+                canonical_group_sightings.push((group_index, handler_index));
+            }
         }
+    }
 
-        let mut group = group;
-        let group_object = group.as_object_mut().expect("validated group object");
-        let mut handlers = group_object
-            .remove("hooks")
-            .and_then(|value| value.as_array().cloned())
-            .unwrap_or_default();
-        let first_owned = handlers.iter().position(handler_is_sce_owned);
+    if let [(group_index, handler_index)] = owned_sightings.as_slice() {
+        let (group_index, handler_index) = (*group_index, *handler_index);
+        if canonical_group_sightings.len() == 1 {
+            let existing_handler = groups
+                .get(group_index)
+                .and_then(|group| group.get("hooks"))
+                .and_then(Value::as_array)
+                .and_then(|handlers| handlers.get(handler_index));
+            if existing_handler == Some(current_handler) {
+                return groups;
+            }
+        }
+    }
+
+    // Repair. Prefer the (first, by document order) group that already held
+    // a canonical-matcher owned handler, so collapsing duplicates keeps the
+    // earliest one in place; otherwise the first group whose matcher
+    // already matches, even if it never held an owned handler; otherwise
+    // fall back to appending a fresh canonical group below.
+    let target_group_index = canonical_group_sightings
+        .first()
+        .map(|(group_index, _)| *group_index)
+        .or(first_matching_group_index);
+
+    let mut merged_groups = groups;
+    let mut insert_at_in_target: Option<usize> = None;
+
+    for (group_index, group) in merged_groups.iter_mut().enumerate() {
+        let Some(group_object) = group.as_object_mut() else {
+            continue;
+        };
+        let Some(handlers) = group_object.get_mut("hooks").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        if target_group_index == Some(group_index) {
+            insert_at_in_target = handlers.iter().position(handler_is_sce_owned);
+        }
         handlers.retain(|handler| !handler_is_sce_owned(handler));
+    }
 
-        if matcher_matches && !inserted {
-            let insert_at = first_owned.unwrap_or(handlers.len()).min(handlers.len());
+    match target_group_index {
+        Some(group_index) => {
+            let group_object = merged_groups[group_index]
+                .as_object_mut()
+                .expect("validated group object");
+            // A defaulted group (upstream's `#[serde(default)] hooks: Vec<...>`)
+            // may carry no "hooks" key at all; create an empty array so there
+            // is somewhere to insert the canonical handler.
+            let handlers = group_object
+                .entry("hooks".to_string())
+                .or_insert_with(|| Value::Array(Vec::new()))
+                .as_array_mut()
+                .expect("validated group's hooks field is a JSON array");
+            let insert_at = insert_at_in_target
+                .unwrap_or(handlers.len())
+                .min(handlers.len());
             handlers.insert(insert_at, current_handler.clone());
-            inserted = true;
         }
-        group_object.insert("hooks".to_string(), Value::Array(handlers));
-        merged_groups.push(group);
+        None => {
+            merged_groups.push(canonical_group.clone());
+        }
     }
 
-    if !inserted {
-        merged_groups.push(canonical_group.clone());
-    }
     merged_groups
 }
 
@@ -757,7 +1003,13 @@ mod tests {
         let first = merge_or_create(None, &generated(), "hooks.json").unwrap();
         let second = merge_or_create(Some(&first), &generated(), "hooks.json").unwrap();
         assert_eq!(first, second);
-        assert!(fragment_is_current(&first, &generated()).unwrap());
+        let document_diagnosis = diagnose_document(Some(&first), &generated()).unwrap();
+        let HooksDocumentDiagnosis::Registrations(diagnoses) = document_diagnosis else {
+            panic!("expected per-registration diagnoses");
+        };
+        assert!(diagnoses
+            .iter()
+            .all(|diagnosis| diagnosis.state == RegistrationStructuralState::PresentAndCurrent));
     }
 
     #[test]
@@ -787,5 +1039,412 @@ mod tests {
         let error = merge_or_create(Some(existing), &generated(), ".codex/hooks.json").unwrap_err();
         assert!(error.to_string().contains(".codex/hooks.json"));
         assert_eq!(existing, br#"{\"hooks\":{\"Stop\":\"not-an-array\"}}"#);
+    }
+
+    fn registration<'a>(
+        diagnoses: &'a [RegistrationDiagnosis],
+        event: &str,
+    ) -> &'a RegistrationDiagnosis {
+        diagnoses
+            .iter()
+            .find(|diagnosis| diagnosis.event == event)
+            .unwrap_or_else(|| panic!("no diagnosis for event '{event}'"))
+    }
+
+    #[test]
+    fn diagnose_document_reports_absent_for_a_missing_file() {
+        assert_eq!(
+            diagnose_document(None, &generated()).unwrap(),
+            HooksDocumentDiagnosis::Absent
+        );
+    }
+
+    #[test]
+    fn diagnose_document_reports_malformed_for_invalid_json() {
+        let document_diagnosis = diagnose_document(
+            Some(br#"{\"hooks\":{\"Stop\":\"not-an-array\"}}"#),
+            &generated(),
+        )
+        .unwrap();
+        assert!(matches!(
+            document_diagnosis,
+            HooksDocumentDiagnosis::Malformed(_)
+        ));
+    }
+
+    #[test]
+    fn diagnose_document_reports_malformed_for_codex_invalid_structure() {
+        let existing = serde_json::to_vec(&json!({"custom": true})).unwrap();
+        let document_diagnosis = diagnose_document(Some(&existing), &generated()).unwrap();
+        assert!(matches!(
+            document_diagnosis,
+            HooksDocumentDiagnosis::Malformed(_)
+        ));
+    }
+
+    #[test]
+    fn diagnose_document_reports_missing_registrations_for_an_empty_valid_document() {
+        let existing = serde_json::to_vec(&json!({})).unwrap();
+        let document_diagnosis = diagnose_document(Some(&existing), &generated()).unwrap();
+        let HooksDocumentDiagnosis::Registrations(diagnoses) = document_diagnosis else {
+            panic!("expected a validated document with per-registration diagnoses");
+        };
+        assert_eq!(diagnoses.len(), 4);
+        for diagnosis in &diagnoses {
+            assert_eq!(diagnosis.state, RegistrationStructuralState::Missing);
+            assert!(diagnosis.owned_handler.is_none());
+            assert!(diagnosis.position.is_none());
+        }
+    }
+
+    #[test]
+    fn diagnose_document_reports_present_and_current_after_a_fresh_merge() {
+        let installed = merge_or_create(None, &generated(), "hooks.json").unwrap();
+        let document_diagnosis = diagnose_document(Some(&installed), &generated()).unwrap();
+        let HooksDocumentDiagnosis::Registrations(diagnoses) = document_diagnosis else {
+            panic!("expected per-registration diagnoses");
+        };
+        for diagnosis in &diagnoses {
+            assert_eq!(
+                diagnosis.state,
+                RegistrationStructuralState::PresentAndCurrent
+            );
+            assert!(diagnosis.owned_handler.is_some());
+            assert_eq!(diagnosis.position, Some((0, 0)));
+        }
+    }
+
+    #[test]
+    fn diagnose_document_reports_stale_for_a_legacy_owned_handler() {
+        let existing = json!({
+            "hooks": {
+                "Stop": [{"hooks": [
+                    {"type": "command", "command": "bash .codex/hooks/run-sce-or-show-install-guidance.sh sce hooks codex", "timeout": 30}
+                ]}]
+            }
+        });
+        let existing_bytes = serde_json::to_vec(&existing).unwrap();
+        let document_diagnosis = diagnose_document(Some(&existing_bytes), &generated()).unwrap();
+        let HooksDocumentDiagnosis::Registrations(diagnoses) = document_diagnosis else {
+            panic!("expected per-registration diagnoses");
+        };
+        let stop = registration(&diagnoses, "Stop");
+        assert_eq!(stop.state, RegistrationStructuralState::Stale);
+        assert_eq!(stop.position, Some((0, 0)));
+        assert_eq!(
+            registration(&diagnoses, "UserPromptSubmit").state,
+            RegistrationStructuralState::Missing
+        );
+    }
+
+    #[test]
+    fn diagnose_document_reports_stale_for_duplicate_owned_handlers() {
+        let owned_command = "bash .codex/hooks/run-sce-or-show-install-guidance.sh sce hooks codex";
+        let existing = json!({
+            "hooks": {
+                "Stop": [{"hooks": [
+                    {"type": "command", "command": owned_command},
+                    {"type": "command", "command": owned_command}
+                ]}]
+            }
+        });
+        let existing_bytes = serde_json::to_vec(&existing).unwrap();
+        let document_diagnosis = diagnose_document(Some(&existing_bytes), &generated()).unwrap();
+        let HooksDocumentDiagnosis::Registrations(diagnoses) = document_diagnosis else {
+            panic!("expected per-registration diagnoses");
+        };
+        assert_eq!(
+            registration(&diagnoses, "Stop").state,
+            RegistrationStructuralState::Stale
+        );
+    }
+
+    #[test]
+    fn diagnose_document_treats_an_owned_handler_in_the_wrong_matcher_group_as_stale() {
+        // Codex still discovers this handler (it just never dispatches for a
+        // Bash PreToolUse call, since the matcher does not match); doctor
+        // must not report "nothing is here" when something structurally
+        // wrong is actually present.
+        let owned_command = "bash .codex/hooks/run-sce-or-show-install-guidance.sh sce hooks codex";
+        let existing = json!({
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": "Write", "hooks": [{"type": "command", "command": owned_command}]}
+                ]
+            }
+        });
+        let existing_bytes = serde_json::to_vec(&existing).unwrap();
+        let document_diagnosis = diagnose_document(Some(&existing_bytes), &generated()).unwrap();
+        let HooksDocumentDiagnosis::Registrations(diagnoses) = document_diagnosis else {
+            panic!("expected per-registration diagnoses");
+        };
+        assert_eq!(
+            registration(&diagnoses, "PreToolUse").state,
+            RegistrationStructuralState::Stale
+        );
+    }
+
+    const CANONICAL_COMMAND: &str = "root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || exit 0; exec bash \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" sce hooks codex";
+
+    #[test]
+    fn diagnose_document_reports_stale_for_a_canonical_handler_duplicated_in_a_second_matcher_group(
+    ) {
+        let existing = json!({
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": "Bash", "hooks": [{"type": "command", "command": CANONICAL_COMMAND}]},
+                    {"matcher": "Bash", "hooks": [{"type": "command", "command": CANONICAL_COMMAND}]}
+                ]
+            }
+        });
+        let existing_bytes = serde_json::to_vec(&existing).unwrap();
+        let document_diagnosis = diagnose_document(Some(&existing_bytes), &generated()).unwrap();
+        let HooksDocumentDiagnosis::Registrations(diagnoses) = document_diagnosis else {
+            panic!("expected per-registration diagnoses");
+        };
+        assert_eq!(
+            registration(&diagnoses, "PreToolUse").state,
+            RegistrationStructuralState::Stale,
+            "an owned handler duplicated across two matcher groups must not read PresentAndCurrent, \
+             since merge_or_create would still collapse it to one handler"
+        );
+    }
+
+    #[test]
+    fn diagnose_document_finds_the_canonical_handler_in_a_non_first_matcher_group() {
+        let existing = json!({
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo user only"}]},
+                    {"matcher": "Bash", "hooks": [{"type": "command", "command": CANONICAL_COMMAND}]}
+                ]
+            }
+        });
+        let existing_bytes = serde_json::to_vec(&existing).unwrap();
+        let document_diagnosis = diagnose_document(Some(&existing_bytes), &generated()).unwrap();
+        let HooksDocumentDiagnosis::Registrations(diagnoses) = document_diagnosis else {
+            panic!("expected per-registration diagnoses");
+        };
+        let pre_tool_use = registration(&diagnoses, "PreToolUse");
+        assert_eq!(
+            pre_tool_use.state,
+            RegistrationStructuralState::PresentAndCurrent
+        );
+        assert_eq!(
+            pre_tool_use.position,
+            Some((1, 0)),
+            "position must name the second group, not wrongly default to the first"
+        );
+    }
+
+    #[test]
+    fn diagnose_document_reports_stale_for_a_canonical_handler_plus_a_wrong_matcher_duplicate() {
+        let owned_command = "bash .codex/hooks/run-sce-or-show-install-guidance.sh sce hooks codex";
+        let existing = json!({
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": "Bash", "hooks": [{"type": "command", "command": CANONICAL_COMMAND}]},
+                    {"matcher": "Write", "hooks": [{"type": "command", "command": owned_command}]}
+                ]
+            }
+        });
+        let existing_bytes = serde_json::to_vec(&existing).unwrap();
+        let document_diagnosis = diagnose_document(Some(&existing_bytes), &generated()).unwrap();
+        let HooksDocumentDiagnosis::Registrations(diagnoses) = document_diagnosis else {
+            panic!("expected per-registration diagnoses");
+        };
+        assert_eq!(
+            registration(&diagnoses, "PreToolUse").state,
+            RegistrationStructuralState::Stale,
+            "a canonical placement plus any other owned handler anywhere must still read Stale"
+        );
+    }
+
+    #[test]
+    fn diagnose_document_reports_missing_when_every_group_holds_only_non_owned_handlers() {
+        let existing = json!({
+            "hooks": {
+                "Stop": [
+                    {"hooks": [{"type": "command", "command": "echo one"}]},
+                    {"hooks": [{"type": "command", "command": "echo two"}]}
+                ]
+            }
+        });
+        let existing_bytes = serde_json::to_vec(&existing).unwrap();
+        let document_diagnosis = diagnose_document(Some(&existing_bytes), &generated()).unwrap();
+        let HooksDocumentDiagnosis::Registrations(diagnoses) = document_diagnosis else {
+            panic!("expected per-registration diagnoses");
+        };
+        assert_eq!(
+            registration(&diagnoses, "Stop").state,
+            RegistrationStructuralState::Missing
+        );
+    }
+
+    #[test]
+    fn diagnose_document_finds_the_canonical_handler_mixed_with_arbitrary_user_handlers() {
+        let existing = json!({
+            "hooks": {
+                "Stop": [{"hooks": [
+                    {"type": "command", "command": "echo user one"},
+                    {"type": "command", "command": CANONICAL_COMMAND},
+                    {"type": "command", "command": "echo user two"}
+                ]}]
+            }
+        });
+        let existing_bytes = serde_json::to_vec(&existing).unwrap();
+        let document_diagnosis = diagnose_document(Some(&existing_bytes), &generated()).unwrap();
+        let HooksDocumentDiagnosis::Registrations(diagnoses) = document_diagnosis else {
+            panic!("expected per-registration diagnoses");
+        };
+        let stop = registration(&diagnoses, "Stop");
+        assert_eq!(stop.state, RegistrationStructuralState::PresentAndCurrent);
+        assert_eq!(stop.position, Some((0, 1)));
+    }
+
+    #[test]
+    fn present_and_current_implies_merge_or_create_is_a_semantic_no_op() {
+        let canonical = merge_or_create(None, &generated(), "hooks.json").unwrap();
+        let document_diagnosis = diagnose_document(Some(&canonical), &generated()).unwrap();
+        let HooksDocumentDiagnosis::Registrations(diagnoses) = document_diagnosis else {
+            panic!("expected per-registration diagnoses");
+        };
+        assert!(diagnoses
+            .iter()
+            .all(|diagnosis| diagnosis.state == RegistrationStructuralState::PresentAndCurrent));
+
+        let merged_again = merge_or_create(Some(&canonical), &generated(), "hooks.json").unwrap();
+        let canonical_value: Value = serde_json::from_slice(&canonical).unwrap();
+        let merged_again_value: Value = serde_json::from_slice(&merged_again).unwrap();
+        assert_eq!(
+            canonical_value, merged_again_value,
+            "PresentAndCurrent for every registration must imply merge_or_create is a no-op"
+        );
+    }
+
+    /// A matrix proving `merge_or_create` never rewrites a document every
+    /// registration is diagnosed `PresentAndCurrent` for, including the
+    /// specific relocation bug: a canonical handler already sitting in a
+    /// *non-first* matcher group must stay exactly where it is, not be
+    /// moved into an earlier matcher group merely because one exists.
+    #[test]
+    fn merge_or_create_is_a_no_op_for_every_present_and_current_placement() {
+        let user_prompt_submit =
+            json!({"hooks": [{"type": "command", "command": CANONICAL_COMMAND}]});
+        let stop = json!({"hooks": [{"type": "command", "command": CANONICAL_COMMAND}]});
+        let post_tool_use = json!({"matcher": "apply_patch", "hooks": [{"type": "command", "command": CANONICAL_COMMAND}]});
+
+        let cases: Vec<(&str, Value)> = vec![
+            (
+                "canonical handler in the only (first) matching group",
+                json!({
+                    "hooks": {
+                        "UserPromptSubmit": [user_prompt_submit.clone()],
+                        "Stop": [stop.clone()],
+                        "PreToolUse": [
+                            {"matcher": "Bash", "hooks": [{"type": "command", "command": CANONICAL_COMMAND}]}
+                        ],
+                        "PostToolUse": [post_tool_use.clone()]
+                    }
+                }),
+            ),
+            (
+                "canonical handler in a second matching group, behind a user-only first group",
+                json!({
+                    "hooks": {
+                        "UserPromptSubmit": [user_prompt_submit.clone()],
+                        "Stop": [stop.clone()],
+                        "PreToolUse": [
+                            {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo user only"}]},
+                            {"matcher": "Bash", "hooks": [{"type": "command", "command": CANONICAL_COMMAND}]}
+                        ],
+                        "PostToolUse": [post_tool_use.clone()]
+                    }
+                }),
+            ),
+            (
+                "canonical handler mixed with arbitrary user handlers in the same group",
+                json!({
+                    "hooks": {
+                        "UserPromptSubmit": [user_prompt_submit.clone()],
+                        "Stop": [stop.clone()],
+                        "PreToolUse": [{
+                            "matcher": "Bash",
+                            "hooks": [
+                                {"type": "command", "command": "echo user one"},
+                                {"type": "command", "command": CANONICAL_COMMAND},
+                                {"type": "command", "command": "echo user two"}
+                            ]
+                        }],
+                        "PostToolUse": [post_tool_use.clone()]
+                    }
+                }),
+            ),
+        ];
+
+        for (label, existing) in cases {
+            let existing_bytes = serde_json::to_vec(&existing).unwrap();
+            let document_diagnosis =
+                diagnose_document(Some(&existing_bytes), &generated()).unwrap();
+            let HooksDocumentDiagnosis::Registrations(diagnoses) = document_diagnosis else {
+                panic!("case '{label}': expected per-registration diagnoses");
+            };
+            assert!(
+                diagnoses
+                    .iter()
+                    .all(|diagnosis| diagnosis.state
+                        == RegistrationStructuralState::PresentAndCurrent),
+                "case '{label}': every registration must diagnose PresentAndCurrent, got {diagnoses:?}"
+            );
+
+            let merged_bytes =
+                merge_or_create(Some(&existing_bytes), &generated(), "hooks.json").unwrap();
+            let existing_value: Value = serde_json::from_slice(&existing_bytes).unwrap();
+            let merged_value: Value = serde_json::from_slice(&merged_bytes).unwrap();
+            assert_eq!(
+                existing_value, merged_value,
+                "case '{label}': merge_or_create must be a semantic no-op when every \
+                 registration is already PresentAndCurrent"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_relocates_a_wrong_matcher_owned_handler_into_the_correct_matcher_group() {
+        let owned_command = "bash .codex/hooks/run-sce-or-show-install-guidance.sh sce hooks codex";
+        let existing = json!({
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo user only"}]},
+                    {"matcher": "Write", "hooks": [{"type": "command", "command": owned_command}]}
+                ]
+            }
+        });
+        let existing_bytes = serde_json::to_vec(&existing).unwrap();
+        let merged_bytes =
+            merge_or_create(Some(&existing_bytes), &generated(), "hooks.json").unwrap();
+        let merged: Value = serde_json::from_slice(&merged_bytes).unwrap();
+
+        let bash_group = &merged["hooks"]["PreToolUse"][0];
+        assert_eq!(bash_group["matcher"], "Bash");
+        assert_eq!(bash_group["hooks"][0]["command"], "echo user only");
+        assert_eq!(bash_group["hooks"][1]["command"], CANONICAL_COMMAND);
+
+        let write_group = &merged["hooks"]["PreToolUse"][1];
+        assert_eq!(write_group["matcher"], "Write");
+        assert_eq!(
+            write_group["hooks"].as_array().unwrap().len(),
+            0,
+            "the misplaced handler must be removed from the Write group, not left duplicated"
+        );
+
+        let document_diagnosis = diagnose_document(Some(&merged_bytes), &generated()).unwrap();
+        let HooksDocumentDiagnosis::Registrations(diagnoses) = document_diagnosis else {
+            panic!("expected per-registration diagnoses");
+        };
+        assert_eq!(
+            registration(&diagnoses, "PreToolUse").state,
+            RegistrationStructuralState::PresentAndCurrent
+        );
     }
 }

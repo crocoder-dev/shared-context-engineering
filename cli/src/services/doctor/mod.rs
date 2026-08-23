@@ -329,6 +329,12 @@ fn doctor_problem_kind(kind: HealthProblemKind) -> ProblemKind {
         HealthProblemKind::ClaudeAssetReadFailed => ProblemKind::ClaudeAssetReadFailed,
         HealthProblemKind::PiAssetReadFailed => ProblemKind::PiAssetReadFailed,
         HealthProblemKind::CodexAssetReadFailed => ProblemKind::CodexAssetReadFailed,
+        HealthProblemKind::CodexHookRegistrationMalformed => {
+            ProblemKind::CodexHookRegistrationMalformed
+        }
+        HealthProblemKind::CodexHookRegistrationNotTrusted => {
+            ProblemKind::CodexHookRegistrationNotTrusted
+        }
         HealthProblemKind::AgentTraceDbConnectionFailed => {
             ProblemKind::AgentTraceDbConnectionFailed
         }
@@ -391,6 +397,12 @@ fn health_problem_kind(kind: ProblemKind) -> HealthProblemKind {
         ProblemKind::ClaudeAssetReadFailed => HealthProblemKind::ClaudeAssetReadFailed,
         ProblemKind::PiAssetReadFailed => HealthProblemKind::PiAssetReadFailed,
         ProblemKind::CodexAssetReadFailed => HealthProblemKind::CodexAssetReadFailed,
+        ProblemKind::CodexHookRegistrationMalformed => {
+            HealthProblemKind::CodexHookRegistrationMalformed
+        }
+        ProblemKind::CodexHookRegistrationNotTrusted => {
+            HealthProblemKind::CodexHookRegistrationNotTrusted
+        }
         ProblemKind::AgentTraceDbConnectionFailed => {
             HealthProblemKind::AgentTraceDbConnectionFailed
         }

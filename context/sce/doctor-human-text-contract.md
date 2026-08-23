@@ -88,14 +88,25 @@ own the hierarchy. Areas render in deterministic order:
 - Pi: `Extensions`, `Prompts`, `Skills`
 - Codex: `Skills`, `Hooks`
 
-Codex's `Hooks` area covers `.codex/hooks.json` and
-`.codex/hooks/run-sce-or-show-install-guidance.sh`. Doctor evaluates the
-SCE-owned `.codex/hooks.json` fragment through the shared structural merge
-service, so unrelated user handlers do not make a valid file mismatched. A
-missing or mismatched Codex `Hooks` asset also carries a reminder that Codex requires reviewing and
-trusting this project's hooks inside the Codex CLI before they take effect;
-doctor diagnoses and can reinstall the on-disk file but cannot grant that
-trust.
+Codex's `Hooks` area covers `.codex/hooks/run-sce-or-show-install-guidance.sh`
+plus one row per required `.codex/hooks.json` registration
+(`UserPromptSubmit`, `Stop`, `PreToolUse(Bash)`, `PostToolUse(apply_patch)`)
+instead of one whole-file row. Doctor classifies each registration
+structurally — `[PASS]` when present and canonical, `[MISS]` when absent,
+`[FAIL]` when stale (an SCE-owned handler exists but does not match the
+canonical one) or when the whole document cannot be structurally validated —
+so unrelated user handlers never make a structurally valid document look
+mismatched. `sce doctor --fix` repairs a structurally unhealthy
+`.codex/hooks.json` through the same merge service used by `sce setup`.
+
+A structurally current registration is further gated on whether Codex has
+actually marked it trusted, by reading (never writing) Codex's own durable
+`$CODEX_HOME/config.toml` hook-trust state: `[PASS]` only when trusted;
+`[WARN]` when enabled but never yet trusted, trusted against different
+content, or explicitly disabled by the user's Codex config, or when trust
+state could not be determined. This is the first `Integrations`-hierarchy use
+of `[WARN]`, since Codex hook trust is a manual step in the Codex CLI that
+`sce doctor --fix` cannot perform and never attempts.
 
 Healthy areas render one concise `[PASS]` row and never list installed files.
 The report and JSON payload still retain the complete inspected asset facts for
@@ -113,9 +124,11 @@ child fact or missing-file problem.
 
 The compact text layout is intentionally a human-facing contract change. JSON
 field names, identity/path/problem detail, readiness classification, exit-code
-semantics, stream ownership, diagnosis read-only behavior, and fix behavior
-remain unchanged. Scripts should use `--format json` rather than parse compact
-text.
+semantics, and stream ownership remain unchanged by the text-layout redesign.
+Diagnosis stays read-only, and fix behavior only ever repairs SCE-owned
+structural content it can safely reinstall — it never writes trust or consent
+state, on Codex or any other target. Scripts should use `--format json` rather
+than parse compact text.
 
 See also [doctor operator contract](agent-trace-hook-doctor.md) and [CLI command
 surface](../cli/cli-command-surface.md).
