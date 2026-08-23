@@ -845,6 +845,7 @@ mod install {
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    use crate::services::codex_hook_config;
     use crate::services::default_paths::InstallTargetPaths;
     use crate::services::security::{ensure_directory_is_writable, redact_sensitive_text};
 
@@ -1376,6 +1377,12 @@ mod install {
             && relative_path == default_paths::repo_file::OPENCODE_MANIFEST
     }
 
+    /// True for Codex's user-owned hook registry, which is merged rather than
+    /// overwritten so setup preserves unrelated Codex handlers and settings.
+    fn is_codex_hooks_merge_target(target: SetupTarget, relative_path: &str) -> bool {
+        target == SetupTarget::Codex && relative_path == ".codex/hooks.json"
+    }
+
     fn install_single_asset_with_rename<F>(
         target: SetupTarget,
         destination_root: &Path,
@@ -1434,6 +1441,22 @@ mod install {
                 None
             };
             config_merge::merge_or_create_opencode_config(
+                existing_bytes.as_deref(),
+                asset.bytes,
+                &destination.display().to_string(),
+            )?
+        } else if is_codex_hooks_merge_target(target, asset.relative_path) {
+            let existing_bytes = if destination.is_file() {
+                Some(fs::read(&destination).with_context(|| {
+                    format!(
+                        "Failed to read existing setup asset '{}' for merge",
+                        destination.display()
+                    )
+                })?)
+            } else {
+                None
+            };
+            codex_hook_config::merge_or_create(
                 existing_bytes.as_deref(),
                 asset.bytes,
                 &destination.display().to_string(),
@@ -2162,6 +2185,83 @@ mod tests {
         assert!(!repo.join(".agents/.codex").exists());
 
         let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn install_merges_codex_hooks_and_replaces_stale_owned_handlers_idempotently() {
+        let repo = init_git_repo("install-merges-codex-hooks");
+        let hooks_path = repo.join(".codex/hooks.json");
+        fs::create_dir_all(hooks_path.parent().unwrap()).expect("create Codex directory");
+        let stale_command = "bash .codex/hooks/run-sce-or-show-install-guidance.sh sce hooks codex";
+        let existing = json!({
+            "description": "user hooks",
+            "hooks": {
+                "UserPromptSubmit": [{"hooks": [
+                    {"type": "command", "command": "echo user"},
+                    {"type": "command", "command": stale_command}
+                ]}],
+                "SessionStart": [{"hooks": [{"type": "command", "command": "echo session"}]}]
+            }
+        });
+        fs::write(&hooks_path, serde_json::to_vec(&existing).unwrap()).expect("seed hooks config");
+        let selection: Vec<String> = every_optional_workflow()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+
+        install_embedded_setup_assets(&repo, SetupTarget::Codex, &selection)
+            .expect("first Codex install should succeed");
+        let first = fs::read(&hooks_path).expect("read merged hooks config");
+        install_embedded_setup_assets(&repo, SetupTarget::Codex, &selection)
+            .expect("second Codex install should succeed");
+        let second = fs::read(&hooks_path).expect("read merged hooks config again");
+        assert_eq!(first, second);
+
+        let merged: serde_json::Value = serde_json::from_slice(&second).unwrap();
+        assert_eq!(merged["description"], "user hooks");
+        assert_eq!(
+            merged["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+            "echo session"
+        );
+        assert_eq!(
+            merged["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"],
+            "echo user"
+        );
+        assert_eq!(merged["hooks"].as_object().unwrap().len(), 5);
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn invalid_codex_hooks_are_not_modified() {
+        let invalid_documents = [
+            br#"{\"hooks\":{"#.to_vec(),
+            serde_json::to_vec(&json!({"custom": true})).unwrap(),
+            serde_json::to_vec(&json!({"hooks": {"Stop": [{"matcher": 42}]}})).unwrap(),
+            serde_json::to_vec(&json!({"hooks": {"Stop": [{"hooks": "invalid"}]}})).unwrap(),
+            serde_json::to_vec(&json!({"hooks": {"Stop": [{"hooks": [{"nonsense": true}]}]}}))
+                .unwrap(),
+            serde_json::to_vec(&json!({"hooks": {"Stop": [{"hooks": [{"type": "unknown"}]}]}}))
+                .unwrap(),
+        ];
+        let selection: Vec<String> = every_optional_workflow()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+
+        for (index, original) in invalid_documents.iter().enumerate() {
+            let repo = init_git_repo(&format!("install-rejects-malformed-codex-hooks-{index}"));
+            let hooks_path = repo.join(".codex/hooks.json");
+            fs::create_dir_all(hooks_path.parent().unwrap()).expect("create Codex directory");
+            fs::write(&hooks_path, original).expect("seed malformed hooks config");
+
+            let error = install_embedded_setup_assets(&repo, SetupTarget::Codex, &selection)
+                .expect_err("malformed Codex hooks should fail setup");
+            assert!(error.to_string().contains(".codex/hooks.json"));
+            assert_eq!(fs::read(&hooks_path).unwrap(), original.as_slice());
+
+            let _ = fs::remove_dir_all(&repo);
+        }
     }
 
     #[test]

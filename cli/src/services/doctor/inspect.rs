@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 
 use crate::services::agent_trace_db::lifecycle::diagnose_agent_trace_db_health;
 use crate::services::checkout;
+use crate::services::codex_hook_config;
 use crate::services::config::schema::parse_file_config;
 use crate::services::config::{self, ConfigPathSource, IntegrationTargetId};
 use crate::services::default_paths::{
@@ -1687,7 +1688,9 @@ fn collect_codex_integration_groups(
     let mut hook_children = Vec::new();
 
     for asset in embedded_assets {
-        let child = build_integration_child_from_asset(&codex_root, asset, None);
+        let merge_target =
+            (asset.relative_path == ".codex/hooks.json").then_some(&MergeTargetAsset::CodexHooks);
+        let child = build_integration_child_from_asset(&codex_root, asset, merge_target);
 
         if child
             .relative_path
@@ -1730,6 +1733,7 @@ const OPENCODE_CONFIG_RELATIVE_PATH: &str = "opencode.json";
 enum MergeTargetAsset {
     ClaudeSettings,
     OpenCodeConfig,
+    CodexHooks,
 }
 
 fn build_integration_child_from_asset(
@@ -1748,6 +1752,11 @@ fn build_integration_child_from_asset(
             &path,
             asset.bytes,
             config_merge::opencode_config_fragment_is_current,
+        ),
+        Some(MergeTargetAsset::CodexHooks) => inspect_merge_target_asset_state(
+            &path,
+            asset.bytes,
+            codex_hook_config::fragment_is_current,
         ),
         None => inspect_integration_asset_state(&path, &asset.sha256),
     };
