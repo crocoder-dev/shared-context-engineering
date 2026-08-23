@@ -17,17 +17,21 @@ use super::{CodexHookEvent, NullableField};
 /// and one `parts` row (`part_type = "text"`, `text = last_assistant_message`)
 /// under session `cx_<session_id>`, message `cx:<turn_id>:assistant`.
 ///
-/// Upstream Codex's `Stop` schema requires `last_assistant_message` and
-/// types it `string | null`. This handler therefore distinguishes three
-/// cases via [`NullableField`]: a missing field is a malformed payload that
-/// errors so the outer Codex dispatcher fail-open boundary
-/// (`run_codex_subcommand` → `log_codex_fail_open`) logs it and emits exact
-/// empty stdout with no DB access; an explicit `null` is a valid,
-/// upstream-legitimate "no assistant text this turn" signal that
-/// short-circuits as a silent successful no-op *before* timestamp
-/// acquisition or the Agent Trace DB is ever opened; a present value
-/// (including an explicit empty string, persisted like any other text) is
-/// captured normally.
+/// Upstream Codex's `Stop` schema requires `session_id`, `turn_id`, and
+/// `last_assistant_message` (typed `string | null`) on every Stop payload.
+/// This handler validates all three *before* any side effect — timestamp
+/// acquisition, Agent Trace DB access, or persistence — via
+/// [`validate_stop_event`]. A missing/blank `session_id` or `turn_id`, or a
+/// missing `last_assistant_message`, is a malformed payload that errors so
+/// the outer Codex dispatcher fail-open boundary (`run_codex_subcommand` →
+/// `log_codex_fail_open`) logs it and emits exact empty stdout with no DB
+/// access — this is true even for an otherwise-valid explicit `null`: a
+/// null Stop with a blank/missing identifier is still malformed and must
+/// not reach the null no-op path. Only once identifiers and presence are
+/// confirmed valid does an explicit `null` short-circuit as a silent
+/// successful no-op *before* timestamp acquisition or the Agent Trace DB is
+/// ever opened; a present value (including an explicit empty string,
+/// persisted like any other text) is captured normally.
 pub(super) fn handle(repository_root: &Path, event: &CodexHookEvent) -> Result<String> {
     handle_with_clock(repository_root, event, current_unix_time_ms)
 }
@@ -41,41 +45,76 @@ fn handle_with_clock<F>(repository_root: &Path, event: &CodexHookEvent, now: F) 
 where
     F: FnOnce() -> Result<i64>,
 {
-    match &event.last_assistant_message {
-        NullableField::Missing => Err(anyhow::anyhow!(
-            "Invalid Codex Stop payload: field 'last_assistant_message' must be present."
-        )),
-        NullableField::Null => Ok(String::new()),
-        NullableField::Value(_) => {
-            let generated_at_unix_ms = now()?;
+    let validated = validate_stop_event(event)?;
 
-            let db = open_agent_trace_db_for_hook_runtime(
-                repository_root,
-                "Failed to open Agent Trace DB for Codex Stop persistence.",
-            )?;
+    let Some(last_assistant_message) = validated.last_assistant_message else {
+        return Ok(String::new());
+    };
 
-            capture_with(&db, event, generated_at_unix_ms)
-        }
-    }
+    let generated_at_unix_ms = now()?;
+
+    let db = open_agent_trace_db_for_hook_runtime(
+        repository_root,
+        "Failed to open Agent Trace DB for Codex Stop persistence.",
+    )?;
+
+    persist_with(
+        &db,
+        &validated,
+        last_assistant_message,
+        generated_at_unix_ms,
+    )
 }
 
-/// Injectable counterpart of `handle` for deterministic testing against an
-/// already-open Agent Trace DB.
-fn capture_with(
-    db: &RepositoryAgentTraceDb,
-    event: &CodexHookEvent,
-    generated_at_unix_ms: i64,
-) -> Result<String> {
+/// A Codex `Stop` event whose `session_id`/`turn_id` are confirmed
+/// non-blank and trimmed, and whose `last_assistant_message` presence has
+/// already been confirmed (a missing field cannot produce a `ValidatedStop`
+/// at all). `None` here means an explicit upstream `null` — the valid
+/// "no assistant text this turn" no-op signal; `Some` carries a present
+/// value (including an explicit empty string).
+#[derive(Debug)]
+struct ValidatedStop<'a> {
+    session_id: &'a str,
+    turn_id: &'a str,
+    last_assistant_message: Option<&'a str>,
+}
+
+/// The single validation layer for `Stop` events: every required-field
+/// check (`session_id`, `turn_id`, `last_assistant_message` presence) lives
+/// here so no other function re-validates the same fields with subtly
+/// different semantics. Runs before any timestamp acquisition or DB access.
+fn validate_stop_event(event: &CodexHookEvent) -> Result<ValidatedStop<'_>> {
     let session_id = required_trimmed_field(event.session_id.as_deref(), "session_id")?;
     let turn_id = required_trimmed_field(event.turn_id.as_deref(), "turn_id")?;
-    let last_assistant_message = event.last_assistant_message.as_value().ok_or_else(|| {
-        anyhow::anyhow!(
-            "Invalid Codex Stop payload: field 'last_assistant_message' must be present for persistence."
-        )
-    })?;
+    let last_assistant_message = match &event.last_assistant_message {
+        NullableField::Missing => {
+            return Err(anyhow::anyhow!(
+                "Invalid Codex Stop payload: field 'last_assistant_message' must be present."
+            ))
+        }
+        NullableField::Null => None,
+        NullableField::Value(text) => Some(text.as_str()),
+    };
 
-    let prefixed_session_id = prefixed_conversation_trace_session_id(CODEX_TOOL_NAME, session_id);
-    let message_id = format!("cx:{turn_id}:assistant");
+    Ok(ValidatedStop {
+        session_id,
+        turn_id,
+        last_assistant_message,
+    })
+}
+
+/// Persists an already-validated `Stop` event with a known-present
+/// assistant message against an already-open Agent Trace DB. Performs no
+/// validation of its own.
+fn persist_with(
+    db: &RepositoryAgentTraceDb,
+    validated: &ValidatedStop<'_>,
+    last_assistant_message: &str,
+    generated_at_unix_ms: i64,
+) -> Result<String> {
+    let prefixed_session_id =
+        prefixed_conversation_trace_session_id(CODEX_TOOL_NAME, validated.session_id);
+    let message_id = format!("cx:{}:assistant", validated.turn_id);
 
     db.insert_messages(vec![InsertMessageInsert {
         session_id: prefixed_session_id.clone(),
@@ -87,7 +126,7 @@ fn capture_with(
 
     db.insert_parts(vec![InsertPartInsert {
         part_type: PartType::Text,
-        text: last_assistant_message.clone(),
+        text: last_assistant_message.to_string(),
         session_id: prefixed_session_id,
         message_id,
         generated_at_unix_ms,
@@ -106,6 +145,27 @@ fn required_trimmed_field<'a>(value: Option<&'a str>, field_name: &str) -> Resul
         _ => Err(anyhow::anyhow!(
             "Invalid Codex Stop payload: field '{field_name}' must be a non-empty string."
         )),
+    }
+}
+
+/// Test-only convenience wrapper preserving the pre-refactor `capture_with`
+/// call shape (`event` + timestamp, against an already-open DB) for tests
+/// that build a full `CodexHookEvent`. Routes through the same single
+/// validation layer (`validate_stop_event`) as production `handle`, so it
+/// exercises identical semantics — including the null no-op — rather than
+/// re-implementing validation.
+#[cfg(test)]
+fn capture_with(
+    db: &RepositoryAgentTraceDb,
+    event: &CodexHookEvent,
+    generated_at_unix_ms: i64,
+) -> Result<String> {
+    let validated = validate_stop_event(event)?;
+    match validated.last_assistant_message {
+        Some(last_assistant_message) => {
+            persist_with(db, &validated, last_assistant_message, generated_at_unix_ms)
+        }
+        None => Ok(String::new()),
     }
 }
 
@@ -261,15 +321,17 @@ mod tests {
     }
 
     #[test]
-    fn capture_with_rejects_a_null_last_assistant_message() {
+    fn capture_with_is_a_no_op_for_a_null_last_assistant_message() {
         let db_path = unique_test_db_path("null-last-assistant-message");
         let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
         let mut payload = event("session-1", "turn-1", "hello back");
         payload.last_assistant_message = NullableField::Null;
 
-        let error = capture_with(&db, &payload, 1_000)
-            .expect_err("null last_assistant_message should error inside capture_with");
-        assert!(error.to_string().contains("'last_assistant_message'"));
+        let output = capture_with(&db, &payload, 1_000)
+            .expect("null last_assistant_message is a valid no-op, not an error");
+        assert_eq!(output, "");
+        assert_eq!(message_rows(&db).len(), 0);
+        assert_eq!(part_rows(&db).len(), 0);
 
         remove_test_db(&db_path);
     }
@@ -452,5 +514,127 @@ mod tests {
         })
         .expect_err("a failed clock must propagate as an error for the outer fail-open boundary");
         assert!(error.to_string().contains("clock failed"));
+    }
+
+    #[test]
+    fn handle_with_clock_rejects_a_null_stop_with_a_missing_session_id_without_calling_the_clock() {
+        let mut payload = event("session-1", "turn-1", "unused");
+        payload.session_id = None;
+        payload.last_assistant_message = NullableField::Null;
+
+        let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
+            panic!("clock must not be called for a malformed Stop payload")
+        })
+        .expect_err("a null Stop with a missing session_id must still be rejected as malformed");
+        assert!(error.to_string().contains("'session_id'"));
+    }
+
+    #[test]
+    fn handle_with_clock_rejects_a_null_stop_with_an_empty_session_id_without_calling_the_clock() {
+        let mut payload = event("session-1", "turn-1", "unused");
+        payload.session_id = Some(String::new());
+        payload.last_assistant_message = NullableField::Null;
+
+        let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
+            panic!("clock must not be called for a malformed Stop payload")
+        })
+        .expect_err("a null Stop with an empty session_id must still be rejected as malformed");
+        assert!(error.to_string().contains("'session_id'"));
+    }
+
+    #[test]
+    fn handle_with_clock_rejects_a_null_stop_with_a_whitespace_only_session_id_without_calling_the_clock(
+    ) {
+        let mut payload = event("session-1", "turn-1", "unused");
+        payload.session_id = Some("   ".to_string());
+        payload.last_assistant_message = NullableField::Null;
+
+        let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
+            panic!("clock must not be called for a malformed Stop payload")
+        })
+        .expect_err(
+            "a null Stop with a whitespace-only session_id must still be rejected as malformed",
+        );
+        assert!(error.to_string().contains("'session_id'"));
+    }
+
+    #[test]
+    fn handle_with_clock_rejects_a_null_stop_with_a_missing_turn_id_without_calling_the_clock() {
+        let mut payload = event("session-1", "turn-1", "unused");
+        payload.turn_id = None;
+        payload.last_assistant_message = NullableField::Null;
+
+        let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
+            panic!("clock must not be called for a malformed Stop payload")
+        })
+        .expect_err("a null Stop with a missing turn_id must still be rejected as malformed");
+        assert!(error.to_string().contains("'turn_id'"));
+    }
+
+    #[test]
+    fn handle_with_clock_rejects_a_null_stop_with_an_empty_turn_id_without_calling_the_clock() {
+        let mut payload = event("session-1", "turn-1", "unused");
+        payload.turn_id = Some(String::new());
+        payload.last_assistant_message = NullableField::Null;
+
+        let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
+            panic!("clock must not be called for a malformed Stop payload")
+        })
+        .expect_err("a null Stop with an empty turn_id must still be rejected as malformed");
+        assert!(error.to_string().contains("'turn_id'"));
+    }
+
+    #[test]
+    fn handle_with_clock_rejects_a_null_stop_with_a_whitespace_only_turn_id_without_calling_the_clock(
+    ) {
+        let mut payload = event("session-1", "turn-1", "unused");
+        payload.turn_id = Some("   ".to_string());
+        payload.last_assistant_message = NullableField::Null;
+
+        let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
+            panic!("clock must not be called for a malformed Stop payload")
+        })
+        .expect_err(
+            "a null Stop with a whitespace-only turn_id must still be rejected as malformed",
+        );
+        assert!(error.to_string().contains("'turn_id'"));
+    }
+
+    #[test]
+    fn handle_with_clock_is_a_silent_no_op_for_null_with_padded_ids_without_calling_the_clock() {
+        let mut payload = event("session-1", "turn-1", "unused");
+        payload.session_id = Some(" session-1 ".to_string());
+        payload.turn_id = Some(" turn-1 ".to_string());
+        payload.last_assistant_message = NullableField::Null;
+
+        // Padded-but-otherwise-valid identifiers must validate under their
+        // trimmed representation even though a null Stop persists nothing.
+        let output = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
+            panic!("clock must not be called for an explicit null last_assistant_message")
+        })
+        .expect("a null Stop with padded-but-valid identifiers should still be a successful no-op");
+        assert_eq!(output, "");
+    }
+
+    #[test]
+    fn validate_stop_event_rejects_a_missing_last_assistant_message_with_valid_ids() {
+        let mut payload = event("session-1", "turn-1", "unused");
+        payload.last_assistant_message = NullableField::Missing;
+
+        let error = validate_stop_event(&payload)
+            .expect_err("missing last_assistant_message should be rejected");
+        assert!(error.to_string().contains("'last_assistant_message'"));
+    }
+
+    #[test]
+    fn validate_stop_event_returns_none_for_an_explicit_null_with_valid_ids() {
+        let mut payload = event("session-1", "turn-1", "unused");
+        payload.last_assistant_message = NullableField::Null;
+
+        let validated =
+            validate_stop_event(&payload).expect("valid ids with a null message should validate");
+        assert_eq!(validated.session_id, "session-1");
+        assert_eq!(validated.turn_id, "turn-1");
+        assert_eq!(validated.last_assistant_message, None);
     }
 }

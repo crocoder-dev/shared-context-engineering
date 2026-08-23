@@ -50,6 +50,7 @@ impl<T> NullableField<T> {
         matches!(self, NullableField::Null)
     }
 
+    #[cfg(test)]
     pub(crate) fn as_value(&self) -> Option<&T> {
         match self {
             NullableField::Value(value) => Some(value),
