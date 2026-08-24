@@ -8,17 +8,126 @@ The enum values for worktrees, scopes, trees, hook events, and attempts are fini
 
 `ScopeId` is the durable identity of an AI scope/session in this model. `ActorKind` identifies the harness. A separate `SessionId` is unnecessary unless one session can own multiple independent scopes.
 
+## Protocol architecture
+
+The model preserves the protocol boundary:
+
+```text
+read durable worktree state at revision R
+        ↓
+take speculative Git snapshot
+        ↓
+derive transition
+        ↓
+DB transaction / CAS
+        ↓
+fresh → commit
+stale → reject/retry
+```
+
+`worktreeTrees` is the abstract current worktree tree. Git commands and snapshot mechanics are not modeled.
+
 ## Event identity
 
 Hook replay identity is scoped by `ScopeId` and `EventId` through `EventKey`. The real implementation must provide an equivalent uniqueness guarantee. If hook IDs are not unique per scope, the database key must include the actual delivery namespace, such as worktree, harness, session, and hook ID.
 
-## Recovery policy
+## Failure and durability boundary
 
-Recovery is conservative. It establishes a new cursor baseline, clears the failure state, and closes every active scope on that worktree. A fresh scope is required before exclusive AI attribution can resume. This prevents mutations made before recovery from being inherited by an old scope.
+`worktrees.cursorTree`, `worktrees.revision`, scope state, `processedEvents`, and `mutationEvents` represent state durably stored in the Agent Trace database.
 
-## Failure abstraction
+A snapshot failure occurs while the database is healthy. `taint(worktree)` therefore records `SnapshotFailure` in the durable worktree state, invalidating subsequent speculative attempts until recovery.
 
-`SnapshotFailure` and `DatabaseFailure` both taint the worktree and invalidate speculative attempts. They intentionally share the same attribution consequence: evidence can become unscoped, but never stronger. Concrete filesystem, Git, SQLite, and retry mechanics remain outside this model.
+Database unavailability is different. `databaseFailure(worktree)` changes only:
+
+```text
+externalTaint: Set[WorktreeId]
+```
+
+`externalTaint` is the abstract external durability boundary: conceptually, the filesystem `TAINTED` marker that can survive an unavailable database. It is not a database row and does not model marker paths or filesystem syscalls.
+
+Thus the model does **not** perform this contradictory transition:
+
+```text
+DB write fails
+    ↓
+update DB-backed revision or tainted flag
+```
+
+Instead:
+
+```text
+DB operation fails
+    ↓
+durable DB protocol state remains unchanged
+    ↓
+externalTaint contains the worktree
+```
+
+While externally tainted, normal attempts cannot commit evidence. Recovery represents the next successful SCE invocation:
+
+```text
+observe externalTaint
+    ↓
+snapshot current worktree
+    ↓
+establish current tree as the new cursor baseline
+    ↓
+produce no evidence for the skipped interval
+    ↓
+abandon every active scope on the worktree
+    ↓
+commit recovery to DB
+    ↓
+clear externalTaint
+```
+
+Recovery does not close scopes: no trustworthy normal close boundary was observed. A new scope must start before exclusive attribution can resume. No filesystem details, SQLite/Turso internals, retries, or OS crash timing are modeled.
+
+## Scope lifecycle
+
+A scope has one of four statuses:
+
+- `NeverSeen` — no accepted start has been observed;
+- `Active` — eligible to contribute to attribution;
+- `Closed` — ended at a trustworthy normal close boundary;
+- `Abandoned` — ended without a trustworthy final observation boundary.
+
+`Closed` and `Abandoned` are terminal. `Abandon(scope)` changes only an active scope to `Abandoned`; it never reactivates a terminal scope. An abandoned scope must not receive exclusive attribution for the unobserved gap preceding abandonment.
+
+If a new scope starts on the same worktree with the same actor while that actor already has an active scope, the model performs stale-scope rollover atomically:
+
+```text
+old same-actor active scopes → Abandoned
+observe/rebaseline current worktree conservatively
+new scope → Active
+```
+
+The old cursor-to-current-tree gap produces no exclusive evidence for the old scope. A different actor does not trigger rollover: existing scopes remain active, and subsequent work is `AiContended` while two or more scopes are active.
+
+Attribution remains:
+
+- zero active AI scopes → `IneligibleUnscoped`;
+- one active AI scope → `AiExclusive(scope)`;
+- two or more active AI scopes → `AiContended`.
+
+Failure and external-taint states can only weaken attribution to `IneligibleUnscoped`; they never strengthen it.
+
+## Verification properties and scenarios
+
+The model includes safety properties covering:
+
+- database failure not mutating durable protocol state;
+- external taint not strengthening attribution;
+- recovery baseline before clearing external taint;
+- recovery and rollover abandoning active scopes;
+- closed and abandoned terminality;
+- no exclusive evidence for an abandoned unobserved gap;
+- same-actor rollover and different-actor contention;
+- `AiExclusive` requiring exactly one active scope;
+- `AiContended` requiring multiple active scopes;
+- CAS/replay safety and cursor/evidence consistency.
+
+Deterministic runs cover database-unavailable state preservation, external-taint recovery, abandoned-scope non-reactivation, same-actor rollover, and different-actor contention.
 
 ## Implementation refinement
 
@@ -28,10 +137,12 @@ The Rust/SQL implementation should map these model elements explicitly:
 | --- | --- |
 | `worktrees.cursorTree` | durable per-worktree cursor row |
 | `worktrees.revision` | transaction CAS revision |
+| `worktrees.tainted` / `failureKind` | durable snapshot-failure state when the DB is healthy |
+| `externalTaint` | external durability signal, such as the filesystem taint marker |
 | `processedEvents` | durable replay/idempotency key table or column |
-| `scopes` | durable scope lifecycle records |
+| `scopes` | durable scope lifecycle records, including abandonment |
 | `attempts` | transient speculative observation state |
 | `cursorHistory` | verification ledger; production may use mutation/evidence rows |
 | `mutationEvents` | durable mutation evidence and attribution |
 
-The transaction that accepts an attempt is the linearization point: it must validate revision, cursor, and replay identity before writing evidence, advancing the cursor, and changing lifecycle state atomically.
+The transaction that accepts an attempt is the linearization point: it must validate revision, cursor, and replay identity before writing evidence, advancing the cursor, and changing lifecycle state atomically. Database-unavailable handling is outside that transaction because the transaction cannot update the durable protocol state.
