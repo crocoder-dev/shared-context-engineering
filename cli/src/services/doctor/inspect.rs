@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use crate::services::agent_trace_db::lifecycle::diagnose_agent_trace_db_health;
 use crate::services::checkout;
 use crate::services::codex_hook_config;
+use crate::services::codex_hook_policy::CodexHookPolicyReadiness;
 use crate::services::codex_hook_trust;
 use crate::services::config::schema::parse_file_config;
 use crate::services::config::{self, ConfigPathSource, IntegrationTargetId};
@@ -37,12 +38,14 @@ pub(super) fn build_report_with_lifecycle_problems(
     repository_root: &Path,
     dependencies: &DoctorDependencies<'_>,
     lifecycle_problems: Vec<DoctorProblem>,
+    codex_policy_readiness: &CodexHookPolicyReadiness,
 ) -> HookDoctorReport {
     let mut report = build_report_without_service_owned_problem_checks(
         mode,
         repository_root,
         dependencies,
         lifecycle_problems,
+        codex_policy_readiness,
     );
     report.checkout_identity = collect_checkout_identity_health(repository_root);
     report.agent_trace_db = collect_agent_trace_db_health(repository_root, &mut report.problems);
@@ -63,6 +66,7 @@ fn build_report_without_service_owned_problem_checks(
     repository_root: &Path,
     dependencies: &DoctorDependencies<'_>,
     mut problems: Vec<DoctorProblem>,
+    codex_policy_readiness: &CodexHookPolicyReadiness,
 ) -> HookDoctorReport {
     let global_state = collect_global_state_locations(repository_root, dependencies);
     let checkout_identity = collect_checkout_identity_health(repository_root);
@@ -146,6 +150,7 @@ fn build_report_without_service_owned_problem_checks(
         bare_repository,
         detected_repository_root.as_deref(),
         &mut problems,
+        codex_policy_readiness,
     );
 
     HookDoctorReport {
@@ -532,6 +537,7 @@ fn inspect_repository_integrations(
     bare_repository: bool,
     detected_repository_root: Option<&Path>,
     problems: &mut Vec<DoctorProblem>,
+    codex_policy_readiness: &CodexHookPolicyReadiness,
 ) -> Vec<IntegrationGroupHealth> {
     if !git_available || bare_repository {
         return Vec::new();
@@ -592,6 +598,7 @@ fn inspect_repository_integrations(
                     resolved_root,
                     &selected_optional_workflows,
                     &codex_hook_trust::default_trust_context(),
+                    codex_policy_readiness,
                 );
                 inspect_codex_integration_health(&codex_groups, problems);
                 integration_groups.extend(codex_groups);
@@ -602,13 +609,23 @@ fn inspect_repository_integrations(
     integration_groups
 }
 
+/// `codex_policy_readiness` is accepted only to build `collect_codex_integration_groups`'
+/// per-registration content state; it never influences which files get
+/// repaired here (see `repair_codex_hooks_json_if_structurally_unhealthy`,
+/// which looks only at structural state). `sce doctor --fix` never writes
+/// Codex policy or trust state — both are Codex-owned and read-only from
+/// SCE's perspective.
+///
 /// Repairs each merge-target asset (`.claude/settings.json`,
 /// `.opencode/opencode.json`) whose SCE-owned fragment is currently missing or
 /// stale, by reinstalling just that asset through the same merge-install path
 /// `sce setup` uses. Assets whose fragment is already current are left
 /// untouched, and a fully missing integration is left to the existing
 /// "reinstall assets" guidance rather than being created here.
-pub(super) fn repair_merge_target_configs(repository_root: &Path) -> Vec<DoctorFixResultRecord> {
+pub(super) fn repair_merge_target_configs(
+    repository_root: &Path,
+    codex_policy_readiness: &CodexHookPolicyReadiness,
+) -> Vec<DoctorFixResultRecord> {
     let targets = resolve_doctor_integration_targets(repository_root);
     let selected_optional_workflows = persisted_optional_workflows(repository_root);
     let mut results = Vec::new();
@@ -644,6 +661,7 @@ pub(super) fn repair_merge_target_configs(repository_root: &Path) -> Vec<DoctorF
             repository_root,
             &selected_optional_workflows,
             &codex_hook_trust::default_trust_context(),
+            codex_policy_readiness,
         );
         if let Some(result) =
             repair_codex_hooks_json_if_structurally_unhealthy(repository_root, &codex_groups)
@@ -998,6 +1016,8 @@ fn inspect_codex_integration_health(
     push_codex_integration_mismatch_problems(integration_groups, problems);
     push_codex_integration_read_fail_problems(integration_groups, problems);
     push_codex_hook_malformed_problems(integration_groups, problems);
+    push_codex_hook_policy_blocked_problems(integration_groups, problems);
+    push_codex_hook_policy_unknown_problems(integration_groups, problems);
     push_codex_hook_trust_problems(integration_groups, problems);
 }
 
@@ -1029,6 +1049,95 @@ fn push_codex_hook_malformed_problems(
             remediation: "Fix or remove the invalid '.codex/hooks.json' by hand, then rerun \
                            'sce setup --codex' or 'sce doctor' to reinstall it; SCE will not \
                            overwrite content it cannot safely merge."
+                .to_string(),
+            next_action: "manual_steps",
+            scope: Some(group.key),
+        });
+    }
+}
+
+/// Remediation for `PolicyBlocked` is deliberately administrative: SCE cannot
+/// change Codex's enterprise/managed policy, so it must never suggest
+/// re-trusting or reinstalling the hook (that would not fix anything).
+const CODEX_HOOK_POLICY_BLOCKED_REMEDIATION: &str =
+    "Ask the Codex administrator to allow project hooks or provide the SCE hook through an \
+     allowed managed-hook mechanism. 'sce doctor --fix' cannot repair this: it is a Codex \
+     enterprise/managed policy setting, not an SCE-owned file.";
+
+fn push_codex_hook_policy_blocked_problems(
+    integration_groups: &[IntegrationGroupHealth],
+    problems: &mut Vec<DoctorProblem>,
+) {
+    for group in integration_groups {
+        let blocked_children = group
+            .children
+            .iter()
+            .filter(|child| {
+                matches!(
+                    child.content_state,
+                    IntegrationContentState::PolicyBlocked(_)
+                )
+            })
+            .map(|child| child.relative_path.as_str())
+            .collect::<Vec<_>>();
+        if blocked_children.is_empty() {
+            continue;
+        }
+
+        let details = blocked_children.join(", ");
+        problems.push(DoctorProblem {
+            kind: ProblemKind::CodexHookRegistrationPolicyBlocked,
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "Codex project hooks are disabled by the effective allow_managed_hooks_only \
+                 policy. SCE registrations in '.codex/hooks.json' will not be loaded by Codex: \
+                 {details}."
+            ),
+            remediation: CODEX_HOOK_POLICY_BLOCKED_REMEDIATION.to_string(),
+            next_action: "manual_steps",
+            scope: Some(group.key),
+        });
+    }
+}
+
+fn push_codex_hook_policy_unknown_problems(
+    integration_groups: &[IntegrationGroupHealth],
+    problems: &mut Vec<DoctorProblem>,
+) {
+    for group in integration_groups {
+        let unknown_children = group
+            .children
+            .iter()
+            .filter_map(|child| match &child.content_state {
+                IntegrationContentState::PolicyUnknown(reason) => {
+                    Some((child.relative_path.as_str(), reason.as_str()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let Some((_, reason)) = unknown_children.first().copied() else {
+            continue;
+        };
+
+        let details = unknown_children
+            .iter()
+            .map(|(relative_path, _)| format!("'{relative_path}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        problems.push(DoctorProblem {
+            kind: ProblemKind::CodexHookRegistrationPolicyUnknown,
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Warning,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "Unable to determine whether Codex policy permits project hooks: {reason}. \
+                 These current SCE registrations cannot be confirmed healthy: {details}."
+            ),
+            remediation: "Ensure the 'codex' CLI is installed and reachable on PATH, then rerun \
+                           'sce doctor' so it can re-probe Codex's effective hook-discovery \
+                           policy; 'sce doctor --fix' cannot repair this."
                 .to_string(),
             next_action: "manual_steps",
             scope: Some(group.key),
@@ -1833,6 +1942,7 @@ fn collect_codex_integration_groups(
     repository_root: &Path,
     selected_optional_workflows: &[String],
     trust_context: &codex_hook_trust::TrustContext,
+    policy_readiness: &CodexHookPolicyReadiness,
 ) -> Vec<IntegrationGroupHealth> {
     let codex_root = InstallTargetPaths::new(repository_root).codex_target_dir();
     let embedded_assets = iter_embedded_assets_for_setup_target_with_selection(
@@ -1874,6 +1984,7 @@ fn collect_codex_integration_groups(
             &hooks_json_path,
             generated_bytes,
             trust_context,
+            policy_readiness,
         ));
     }
 
@@ -1896,15 +2007,19 @@ fn collect_codex_integration_groups(
 const CODEX_HOOKS_JSON_RELATIVE_PATH: &str = ".codex/hooks.json";
 
 /// Build one `IntegrationChildHealth` per required Codex hook registration,
-/// combining `codex_hook_config`'s structural diagnosis with Codex's own
-/// hook-trust readiness (`codex_hook_trust`) for registrations that are
-/// structurally present. A registration only needs a trust check once it is
-/// structurally current or stale; a missing registration has no on-disk
-/// handler to hash.
+/// combining `codex_hook_config`'s structural diagnosis with Codex's
+/// effective hook-discovery policy readiness (`codex_hook_policy`) and its
+/// own hook-trust readiness (`codex_hook_trust`) for registrations that are
+/// structurally present. A registration only needs a policy/trust check once
+/// it is structurally current; a missing or stale registration has no
+/// on-disk canonical handler for Codex to ever load, so policy/trust do not
+/// apply. `policy_readiness` is probed once per doctor invocation by the
+/// caller and reused here for all four registrations.
 fn codex_hooks_json_registration_children(
     hooks_json_path: &Path,
     generated_bytes: &[u8],
     trust_context: &codex_hook_trust::TrustContext,
+    policy_readiness: &CodexHookPolicyReadiness,
 ) -> Vec<IntegrationChildHealth> {
     let existing_bytes = match fs::read(hooks_json_path) {
         Ok(bytes) => Some(bytes),
@@ -1953,6 +2068,7 @@ fn codex_hooks_json_registration_children(
                     hooks_json_path,
                     registration_diagnosis,
                     trust_context,
+                    policy_readiness,
                 )
             })
             .collect(),
@@ -1973,10 +2089,18 @@ fn codex_hook_registration_paths() -> [(&'static str, &'static str, Option<&'sta
     ]
 }
 
+/// Human-readable explanation for `IntegrationContentState::PolicyBlocked`,
+/// shared by both the per-registration content state and the aggregate
+/// problem summary so their wording stays in sync.
+const CODEX_HOOK_POLICY_BLOCKED_REASON: &str =
+    "Codex's effective 'allow_managed_hooks_only' policy is enabled, so Codex will not load \
+     this project-owned (non-managed) '.codex/hooks.json' registration.";
+
 fn codex_hook_registration_child(
     hooks_json_path: &Path,
     diagnosis: &codex_hook_config::RegistrationDiagnosis,
     trust_context: &codex_hook_trust::TrustContext,
+    policy_readiness: &CodexHookPolicyReadiness,
 ) -> IntegrationChildHealth {
     let suffix = codex_hook_registration_paths()
         .into_iter()
@@ -1984,6 +2108,13 @@ fn codex_hook_registration_child(
         .map_or(diagnosis.event, |(suffix, _, _)| suffix);
     let relative_path = format!("{CODEX_HOOKS_JSON_RELATIVE_PATH}#{suffix}");
 
+    // Decision order (AC28): structural state wins first (a missing or stale
+    // registration has no canonical on-disk handler for Codex to ever load,
+    // so policy/trust cannot apply); only a structurally current registration
+    // is further gated on Codex's effective hook-discovery *policy*, and only
+    // once policy allows project hooks at all is per-handler *trust*
+    // consulted. Policy and trust are independent dimensions — see
+    // `codex_hook_policy` and `codex_hook_trust`'s module documentation.
     let content_state = match &diagnosis.state {
         codex_hook_config::RegistrationStructuralState::Missing => IntegrationContentState::Missing,
         codex_hook_config::RegistrationStructuralState::Stale => IntegrationContentState::Stale,
@@ -1998,26 +2129,37 @@ fn codex_hook_registration_child(
                     content_state: IntegrationContentState::Stale,
                 };
             };
-            match codex_hook_trust::trust_readiness(
-                trust_context,
-                hooks_json_path,
-                diagnosis.event,
-                diagnosis.matcher,
-                handler,
-                position,
-            ) {
-                codex_hook_trust::TrustReadiness::Trusted => IntegrationContentState::Match,
-                codex_hook_trust::TrustReadiness::Untrusted => {
-                    IntegrationContentState::NotTrusted("untrusted".to_string())
+
+            match policy_readiness {
+                CodexHookPolicyReadiness::PolicyBlocked => IntegrationContentState::PolicyBlocked(
+                    CODEX_HOOK_POLICY_BLOCKED_REASON.to_string(),
+                ),
+                CodexHookPolicyReadiness::Unknown(reason) => {
+                    IntegrationContentState::PolicyUnknown(reason.clone())
                 }
-                codex_hook_trust::TrustReadiness::Modified => {
-                    IntegrationContentState::NotTrusted("modified".to_string())
-                }
-                codex_hook_trust::TrustReadiness::Disabled => {
-                    IntegrationContentState::NotTrusted("disabled".to_string())
-                }
-                codex_hook_trust::TrustReadiness::Unknown(_) => {
-                    IntegrationContentState::NotTrusted("unknown".to_string())
+                CodexHookPolicyReadiness::ProjectHooksAllowed => {
+                    match codex_hook_trust::trust_readiness(
+                        trust_context,
+                        hooks_json_path,
+                        diagnosis.event,
+                        diagnosis.matcher,
+                        handler,
+                        position,
+                    ) {
+                        codex_hook_trust::TrustReadiness::Trusted => IntegrationContentState::Match,
+                        codex_hook_trust::TrustReadiness::Untrusted => {
+                            IntegrationContentState::NotTrusted("untrusted".to_string())
+                        }
+                        codex_hook_trust::TrustReadiness::Modified => {
+                            IntegrationContentState::NotTrusted("modified".to_string())
+                        }
+                        codex_hook_trust::TrustReadiness::Disabled => {
+                            IntegrationContentState::NotTrusted("disabled".to_string())
+                        }
+                        codex_hook_trust::TrustReadiness::Unknown(_) => {
+                            IntegrationContentState::NotTrusted("unknown".to_string())
+                        }
+                    }
                 }
             }
         }
@@ -2186,12 +2328,14 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        codex_hook_trust, collect_claude_integration_groups, collect_codex_integration_groups,
+        codex_hook_config, codex_hook_registration_child, codex_hook_trust,
+        collect_claude_integration_groups, collect_codex_integration_groups,
         collect_hook_file_health, collect_opencode_integration_groups,
         collect_pi_integration_groups, inspect_claude_integration_health,
-        inspect_codex_integration_health, resolve_doctor_integration_targets, HookContentState,
-        IntegrationArea, IntegrationContentState, IntegrationGroupHealth, IntegrationGroupKey,
-        IntegrationTarget, ProblemKind,
+        inspect_codex_integration_health, resolve_doctor_integration_targets,
+        CodexHookPolicyReadiness, HookContentState, IntegrationArea, IntegrationContentState,
+        IntegrationGroupHealth, IntegrationGroupKey, IntegrationTarget, ProblemKind,
+        ProblemSeverity,
     };
     use crate::services::config::IntegrationTargetId;
     use crate::services::setup::OPTIONAL_WORKFLOWS;
@@ -2336,6 +2480,12 @@ mod tests {
         }
     }
 
+    /// Deterministic "policy allows project hooks" reading, so existing
+    /// trust-focused tests keep exercising only the trust dimension.
+    fn allowed_policy() -> CodexHookPolicyReadiness {
+        CodexHookPolicyReadiness::ProjectHooksAllowed
+    }
+
     fn unique_temp_repository_root(label: &str) -> PathBuf {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2388,6 +2538,7 @@ mod tests {
             &root,
             &[],
             &deterministic_untrusted_context("split-areas"),
+            &allowed_policy(),
         );
 
         let skills_group = groups
@@ -2452,7 +2603,8 @@ mod tests {
         .unwrap();
 
         let trust_context = deterministic_untrusted_context("codex-hooks-match");
-        let groups = collect_codex_integration_groups(&root, &[], &trust_context);
+        let groups =
+            collect_codex_integration_groups(&root, &[], &trust_context, &allowed_policy());
         let registration_children = groups
             .iter()
             .flat_map(|group| &group.children)
@@ -2483,7 +2635,8 @@ mod tests {
 
         std::fs::remove_file(codex_hooks_dir.join("hooks.json")).unwrap();
 
-        let groups_after_delete = collect_codex_integration_groups(&root, &[], &trust_context);
+        let groups_after_delete =
+            collect_codex_integration_groups(&root, &[], &trust_context, &allowed_policy());
         let mut problems = Vec::new();
         inspect_codex_integration_health(&groups_after_delete, &mut problems);
 
@@ -2511,19 +2664,7 @@ mod tests {
         let codex_hooks_dir = root.join(".codex");
         std::fs::create_dir_all(&codex_hooks_dir).unwrap();
 
-        let existing = serde_json::json!({
-            "description": "user hooks",
-            "hooks": {
-                "Stop": [{"hooks": [
-                    {
-                        "type": "command",
-                        "command": "bash .codex/hooks/run-sce-or-show-install-guidance.sh sce hooks codex",
-                        "timeout": 30
-                    }
-                ]}],
-                "SessionStart": [{"hooks": [{"type": "command", "command": "echo user session hook"}]}]
-            }
-        });
+        let existing = stale_stop_registration_fixture();
         let hooks_json_path = codex_hooks_dir.join("hooks.json");
         std::fs::write(
             &hooks_json_path,
@@ -2532,7 +2673,8 @@ mod tests {
         .unwrap();
 
         let trust_context = deterministic_untrusted_context("codex-hooks-fix");
-        let groups = collect_codex_integration_groups(&root, &[], &trust_context);
+        let groups =
+            collect_codex_integration_groups(&root, &[], &trust_context, &allowed_policy());
         let stop_child = groups
             .iter()
             .flat_map(|group| &group.children)
@@ -2540,7 +2682,7 @@ mod tests {
             .expect(".codex/hooks.json#Stop child present");
         assert_eq!(stop_child.content_state, IntegrationContentState::Stale);
 
-        let fix_results = super::repair_merge_target_configs(&root);
+        let fix_results = super::repair_merge_target_configs(&root, &allowed_policy());
         assert!(
             fix_results
                 .iter()
@@ -2556,7 +2698,8 @@ mod tests {
             "unrelated user hooks must survive the repair"
         );
 
-        let groups_after_fix = collect_codex_integration_groups(&root, &[], &trust_context);
+        let groups_after_fix =
+            collect_codex_integration_groups(&root, &[], &trust_context, &allowed_policy());
         for suffix in [
             "UserPromptSubmit",
             "Stop",
@@ -2590,7 +2733,7 @@ mod tests {
         )
         .unwrap();
 
-        let fix_results = super::repair_merge_target_configs(&root);
+        let fix_results = super::repair_merge_target_configs(&root, &allowed_policy());
         assert!(
             fix_results.is_empty(),
             "a structurally current but never-trusted Codex hooks.json must never trigger a \
@@ -2684,7 +2827,7 @@ mod tests {
             IntegrationContentState::Mismatch
         ));
 
-        let fix_results = super::repair_merge_target_configs(&root);
+        let fix_results = super::repair_merge_target_configs(&root, &allowed_policy());
         assert!(
             fix_results
                 .iter()
@@ -2767,7 +2910,7 @@ mod tests {
             IntegrationContentState::Mismatch
         ));
 
-        let fix_results = super::repair_merge_target_configs(&root);
+        let fix_results = super::repair_merge_target_configs(&root, &allowed_policy());
         assert!(
             fix_results
                 .iter()
@@ -2930,5 +3073,408 @@ mod tests {
         assert_eq!(pre_commit_after.content_state, HookContentState::Current);
 
         std::fs::remove_dir_all(&repo).ok();
+    }
+
+    // -- Codex hook-discovery *policy* readiness (T22/AC28 repair) ----------
+
+    fn bare_command_handler_json() -> serde_json::Value {
+        serde_json::json!({
+            "type": "command",
+            "command": "true"
+        })
+    }
+
+    /// A `Stop` registration whose command identifies it as SCE-owned but
+    /// whose JSON shape does not match the canonical generated handler
+    /// (extra `timeout`, no `async`), so structural diagnosis reports
+    /// `Stale`. Reused everywhere a deterministic stale fixture is needed.
+    fn stale_stop_registration_fixture() -> serde_json::Value {
+        serde_json::json!({
+            "description": "user hooks",
+            "hooks": {
+                "Stop": [{"hooks": [
+                    {
+                        "type": "command",
+                        "command": "bash .codex/hooks/run-sce-or-show-install-guidance.sh sce hooks codex",
+                        "timeout": 30
+                    }
+                ]}],
+                "SessionStart": [{"hooks": [{"type": "command", "command": "echo user session hook"}]}]
+            }
+        })
+    }
+
+    /// Writes `[hooks.state."<key for hooks_json/event/position>"]` plus
+    /// `body` verbatim into a fresh `$CODEX_HOME/config.toml`, mirroring
+    /// `codex_hook_trust::tests::write_state_toml`, so doctor-level tests can
+    /// drive `codex_hook_registration_child`'s trust branch deterministically
+    /// without depending on the real `$CODEX_HOME`.
+    fn write_trust_state(
+        dir: &std::path::Path,
+        label: &str,
+        hooks_json_path: &std::path::Path,
+        event: &str,
+        position: (usize, usize),
+        body: &str,
+    ) -> codex_hook_trust::TrustContext {
+        let absolute = std::fs::canonicalize(hooks_json_path).unwrap();
+        let key = format!(
+            "{}:{}:{}:{}",
+            absolute.display(),
+            codex_hook_config::hook_event_key_label(event),
+            position.0,
+            position.1
+        );
+        let escaped_key = key.replace('\\', "\\\\").replace('"', "\\\"");
+        let codex_home = dir.join(format!("codex-home-{label}"));
+        std::fs::create_dir_all(&codex_home).unwrap();
+        std::fs::write(
+            codex_home.join("config.toml"),
+            format!("[hooks.state.\"{escaped_key}\"]\n{body}\n"),
+        )
+        .unwrap();
+        codex_hook_trust::TrustContext {
+            codex_home: Some(codex_home),
+        }
+    }
+
+    fn present_and_current_diagnosis(
+        event: &'static str,
+        matcher: Option<&'static str>,
+        handler: serde_json::Value,
+    ) -> codex_hook_config::RegistrationDiagnosis {
+        codex_hook_config::RegistrationDiagnosis {
+            event,
+            matcher,
+            state: codex_hook_config::RegistrationStructuralState::PresentAndCurrent,
+            owned_handler: Some(handler),
+            position: Some((0, 0)),
+        }
+    }
+
+    #[test]
+    fn registration_child_is_match_when_trusted_and_policy_allows_project_hooks() {
+        let root = unique_temp_repository_root("policy-trusted-match");
+        let hooks_json_path = root.join("hooks.json");
+        std::fs::write(&hooks_json_path, "{}").unwrap();
+        let handler = bare_command_handler_json();
+        let hash = codex_hook_trust::hash_command_handler("Stop", None, &handler).unwrap();
+        let trust_context = write_trust_state(
+            &root,
+            "trusted",
+            &hooks_json_path,
+            "Stop",
+            (0, 0),
+            &format!("trusted_hash = \"{hash}\""),
+        );
+        let diagnosis = present_and_current_diagnosis("Stop", None, handler);
+
+        let child = codex_hook_registration_child(
+            &hooks_json_path,
+            &diagnosis,
+            &trust_context,
+            &CodexHookPolicyReadiness::ProjectHooksAllowed,
+        );
+        assert_eq!(child.content_state, IntegrationContentState::Match);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The main regression test for this repair: a structurally current,
+    /// fully trusted registration must still report `PolicyBlocked` (not
+    /// `Match`) when Codex's effective `allow_managed_hooks_only` policy
+    /// excludes project hooks, and the resulting problem must name policy,
+    /// never trust, as the cause.
+    #[test]
+    fn registration_child_is_policy_blocked_even_when_structurally_current_and_trusted() {
+        let root = unique_temp_repository_root("policy-blocked-trusted");
+        let hooks_json_path = root.join("hooks.json");
+        std::fs::write(&hooks_json_path, "{}").unwrap();
+        let handler = bare_command_handler_json();
+        let hash = codex_hook_trust::hash_command_handler("Stop", None, &handler).unwrap();
+        let trust_context = write_trust_state(
+            &root,
+            "blocked-but-trusted",
+            &hooks_json_path,
+            "Stop",
+            (0, 0),
+            &format!("trusted_hash = \"{hash}\""),
+        );
+        let diagnosis = present_and_current_diagnosis("Stop", None, handler);
+
+        let child = codex_hook_registration_child(
+            &hooks_json_path,
+            &diagnosis,
+            &trust_context,
+            &CodexHookPolicyReadiness::PolicyBlocked,
+        );
+        assert!(
+            matches!(
+                child.content_state,
+                IntegrationContentState::PolicyBlocked(_)
+            ),
+            "a trusted handler must still report PolicyBlocked when Codex's effective policy \
+             excludes project hooks: {:?}",
+            child.content_state
+        );
+        assert_ne!(
+            child.content_state,
+            IntegrationContentState::Match,
+            "trust alone must never make a policy-blocked registration report healthy"
+        );
+
+        let groups = vec![IntegrationGroupHealth::new(
+            IntegrationGroupKey::new(IntegrationTarget::Codex, IntegrationArea::Hooks),
+            vec![child],
+        )];
+        let mut problems = Vec::new();
+        inspect_codex_integration_health(&groups, &mut problems);
+        let policy_problem = problems
+            .iter()
+            .find(|problem| problem.kind == ProblemKind::CodexHookRegistrationPolicyBlocked)
+            .expect("a policy-blocked problem was reported");
+        assert_eq!(policy_problem.severity, ProblemSeverity::Error);
+        assert!(
+            !problems
+                .iter()
+                .any(|problem| problem.kind == ProblemKind::CodexHookRegistrationNotTrusted),
+            "policy blocking must short-circuit before trust is ever reported as the cause"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn registration_child_modified_trust_is_unaffected_by_allowed_policy() {
+        let root = unique_temp_repository_root("policy-allowed-modified");
+        let hooks_json_path = root.join("hooks.json");
+        std::fs::write(&hooks_json_path, "{}").unwrap();
+        let handler = bare_command_handler_json();
+        let trust_context = write_trust_state(
+            &root,
+            "modified",
+            &hooks_json_path,
+            "Stop",
+            (0, 0),
+            "trusted_hash = \"sha256:stale\"",
+        );
+        let diagnosis = present_and_current_diagnosis("Stop", None, handler);
+
+        let child = codex_hook_registration_child(
+            &hooks_json_path,
+            &diagnosis,
+            &trust_context,
+            &CodexHookPolicyReadiness::ProjectHooksAllowed,
+        );
+        assert_eq!(
+            child.content_state,
+            IntegrationContentState::NotTrusted("modified".to_string())
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn registration_child_disabled_trust_is_unaffected_by_allowed_policy() {
+        let root = unique_temp_repository_root("policy-allowed-disabled");
+        let hooks_json_path = root.join("hooks.json");
+        std::fs::write(&hooks_json_path, "{}").unwrap();
+        let handler = bare_command_handler_json();
+        let hash = codex_hook_trust::hash_command_handler("Stop", None, &handler).unwrap();
+        let trust_context = write_trust_state(
+            &root,
+            "disabled",
+            &hooks_json_path,
+            "Stop",
+            (0, 0),
+            &format!("trusted_hash = \"{hash}\"\nenabled = false"),
+        );
+        let diagnosis = present_and_current_diagnosis("Stop", None, handler);
+
+        let child = codex_hook_registration_child(
+            &hooks_json_path,
+            &diagnosis,
+            &trust_context,
+            &CodexHookPolicyReadiness::ProjectHooksAllowed,
+        );
+        assert_eq!(
+            child.content_state,
+            IntegrationContentState::NotTrusted("disabled".to_string())
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn registration_child_is_policy_unknown_when_the_probe_could_not_determine_policy() {
+        let root = unique_temp_repository_root("policy-unknown");
+        let hooks_json_path = root.join("hooks.json");
+        std::fs::write(&hooks_json_path, "{}").unwrap();
+        let handler = bare_command_handler_json();
+        let hash = codex_hook_trust::hash_command_handler("Stop", None, &handler).unwrap();
+        let trust_context = write_trust_state(
+            &root,
+            "unknown-policy",
+            &hooks_json_path,
+            "Stop",
+            (0, 0),
+            &format!("trusted_hash = \"{hash}\""),
+        );
+        let diagnosis = present_and_current_diagnosis("Stop", None, handler);
+
+        let child = codex_hook_registration_child(
+            &hooks_json_path,
+            &diagnosis,
+            &trust_context,
+            &CodexHookPolicyReadiness::Unknown("codex executable not found".to_string()),
+        );
+        match &child.content_state {
+            IntegrationContentState::PolicyUnknown(reason) => {
+                assert!(reason.contains("codex executable not found"));
+            }
+            other => panic!("expected PolicyUnknown, got {other:?}"),
+        }
+        assert_ne!(child.content_state, IntegrationContentState::Match);
+
+        let groups = vec![IntegrationGroupHealth::new(
+            IntegrationGroupKey::new(IntegrationTarget::Codex, IntegrationArea::Hooks),
+            vec![child],
+        )];
+        let mut problems = Vec::new();
+        inspect_codex_integration_health(&groups, &mut problems);
+        let unknown_problem = problems
+            .iter()
+            .find(|problem| problem.kind == ProblemKind::CodexHookRegistrationPolicyUnknown)
+            .expect("a policy-unknown problem was reported");
+        assert_eq!(unknown_problem.severity, ProblemSeverity::Warning);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn structural_missing_state_wins_over_a_blocked_or_unknown_policy() {
+        let root = absent_repository_root();
+        for policy in [
+            CodexHookPolicyReadiness::PolicyBlocked,
+            CodexHookPolicyReadiness::Unknown("probe failed".to_string()),
+        ] {
+            let groups = collect_codex_integration_groups(
+                &root,
+                &[],
+                &deterministic_untrusted_context("structural-missing-wins"),
+                &policy,
+            );
+            let registration_children = groups
+                .iter()
+                .flat_map(|group| &group.children)
+                .filter(|child| child.relative_path.starts_with(".codex/hooks.json#"))
+                .collect::<Vec<_>>();
+            assert_eq!(registration_children.len(), 4);
+            for child in registration_children {
+                assert_eq!(
+                    child.content_state,
+                    IntegrationContentState::Missing,
+                    "a missing registration must stay Missing regardless of policy: {policy:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn structural_stale_state_wins_over_a_blocked_policy() {
+        let root = unique_temp_repository_root("codex-hooks-stale-policy");
+        let codex_hooks_dir = root.join(".codex");
+        std::fs::create_dir_all(&codex_hooks_dir).unwrap();
+        std::fs::write(
+            codex_hooks_dir.join("hooks.json"),
+            serde_json::to_vec_pretty(&stale_stop_registration_fixture()).unwrap(),
+        )
+        .unwrap();
+
+        let trust_context = deterministic_untrusted_context("codex-hooks-stale-policy");
+        let groups = collect_codex_integration_groups(
+            &root,
+            &[],
+            &trust_context,
+            &CodexHookPolicyReadiness::PolicyBlocked,
+        );
+        let stop_child = groups
+            .iter()
+            .flat_map(|group| &group.children)
+            .find(|child| child.relative_path == ".codex/hooks.json#Stop")
+            .expect(".codex/hooks.json#Stop child present");
+        assert_eq!(
+            stop_child.content_state,
+            IntegrationContentState::Stale,
+            "a stale registration must not be reclassified as PolicyBlocked"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn policy_readiness_is_reused_unchanged_across_all_four_registrations() {
+        let root = unique_temp_repository_root("codex-hooks-policy-reused");
+        let codex_hooks_dir = root.join(".codex");
+        std::fs::create_dir_all(&codex_hooks_dir).unwrap();
+        std::fs::write(
+            codex_hooks_dir.join("hooks.json"),
+            embedded_codex_asset_bytes(".codex/hooks.json"),
+        )
+        .unwrap();
+
+        let trust_context = deterministic_untrusted_context("codex-hooks-policy-reused");
+        let groups = collect_codex_integration_groups(
+            &root,
+            &[],
+            &trust_context,
+            &CodexHookPolicyReadiness::PolicyBlocked,
+        );
+        let registration_children = groups
+            .iter()
+            .flat_map(|group| &group.children)
+            .filter(|child| child.relative_path.starts_with(".codex/hooks.json#"))
+            .collect::<Vec<_>>();
+        assert_eq!(registration_children.len(), 4);
+        for child in registration_children {
+            assert!(
+                matches!(
+                    child.content_state,
+                    IntegrationContentState::PolicyBlocked(_)
+                ),
+                "the single probed policy value must apply identically to every one of the \
+                 four registrations, not be re-probed per registration: '{}' was {:?}",
+                child.relative_path,
+                child.content_state
+            );
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn fix_never_modifies_policy_or_trust_state_for_a_structurally_current_document() {
+        let root = unique_temp_repository_root("codex-hooks-fix-policy-noop");
+        let codex_hooks_dir = root.join(".codex");
+        std::fs::create_dir_all(&codex_hooks_dir).unwrap();
+        std::fs::write(
+            codex_hooks_dir.join("hooks.json"),
+            embedded_codex_asset_bytes(".codex/hooks.json"),
+        )
+        .unwrap();
+
+        for policy in [
+            CodexHookPolicyReadiness::PolicyBlocked,
+            CodexHookPolicyReadiness::Unknown("probe failed".to_string()),
+        ] {
+            let fix_results = super::repair_merge_target_configs(&root, &policy);
+            assert!(
+                fix_results.is_empty(),
+                "'--fix' must never attempt to repair a structurally current document merely \
+                 because policy is blocked/unknown ({policy:?}): {fix_results:?}"
+            );
+        }
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }

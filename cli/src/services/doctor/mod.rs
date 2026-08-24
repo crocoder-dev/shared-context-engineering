@@ -5,6 +5,7 @@ use std::process::Command;
 use anyhow::{Context, Result};
 
 use crate::app::{ContextWithRepoRoot, HasRepoRoot};
+use crate::services::codex_hook_policy;
 use crate::services::default_paths::{resolve_sce_default_locations, resolve_state_data_root};
 use crate::services::lifecycle::{
     lifecycle_providers, FixOutcome, HealthCategory, HealthFixability, HealthProblem,
@@ -52,6 +53,13 @@ struct DoctorDependencies<'a> {
     resolve_state_root: &'a dyn Fn() -> Result<PathBuf>,
     resolve_global_config_path: &'a dyn Fn() -> Result<PathBuf>,
     validate_config_file: &'a dyn Fn(&Path) -> Result<()>,
+    /// Probes Codex's effective hook-discovery policy
+    /// (`allow_managed_hooks_only`). Invoked exactly once per doctor
+    /// invocation (see `execute_doctor_with_lifecycle_providers`) and reused
+    /// for every Codex integration inspection within that invocation —
+    /// initial report, `--fix`, and final report alike — never once per
+    /// registration.
+    probe_codex_hook_policy: &'a dyn Fn() -> codex_hook_policy::CodexHookPolicyReadiness,
 }
 
 struct DoctorExecution {
@@ -98,6 +106,7 @@ fn execute_doctor_with_context(
                 Ok(resolve_sce_default_locations()?.global_config_file())
             },
             validate_config_file: &crate::services::config::validate_config_file,
+            probe_codex_hook_policy: &codex_hook_policy::probe_default,
         },
     )
 }
@@ -108,6 +117,11 @@ fn execute_doctor_with_lifecycle_providers(
     context: &impl HasRepoRoot,
     dependencies: &DoctorDependencies<'_>,
 ) -> DoctorExecution {
+    // Probed exactly once per doctor invocation, then reused for every
+    // Codex integration inspection below (initial report, `--fix`, and final
+    // report alike) instead of once per registration or once per report.
+    let policy_readiness = (dependencies.probe_codex_hook_policy)();
+
     let providers = lifecycle_providers(true);
     let initial_problems = diagnose_lifecycle_providers(context, &providers);
     let initial_doctor_problems = initial_problems
@@ -119,6 +133,7 @@ fn execute_doctor_with_lifecycle_providers(
         repository_root,
         dependencies,
         initial_doctor_problems,
+        &policy_readiness,
     );
 
     if request.mode != DoctorMode::Fix {
@@ -129,7 +144,10 @@ fn execute_doctor_with_lifecycle_providers(
     }
 
     let mut fix_results = fix_lifecycle_providers(context, &providers, &initial_problems);
-    fix_results.extend(repair_merge_target_configs(repository_root));
+    fix_results.extend(repair_merge_target_configs(
+        repository_root,
+        &policy_readiness,
+    ));
     let final_problems = diagnose_lifecycle_providers(context, &providers);
     let final_doctor_problems = final_problems
         .into_iter()
@@ -140,6 +158,7 @@ fn execute_doctor_with_lifecycle_providers(
         repository_root,
         dependencies,
         final_doctor_problems,
+        &policy_readiness,
     );
     fix_results.extend(build_manual_fix_results(&final_report));
 
@@ -335,6 +354,12 @@ fn doctor_problem_kind(kind: HealthProblemKind) -> ProblemKind {
         HealthProblemKind::CodexHookRegistrationNotTrusted => {
             ProblemKind::CodexHookRegistrationNotTrusted
         }
+        HealthProblemKind::CodexHookRegistrationPolicyBlocked => {
+            ProblemKind::CodexHookRegistrationPolicyBlocked
+        }
+        HealthProblemKind::CodexHookRegistrationPolicyUnknown => {
+            ProblemKind::CodexHookRegistrationPolicyUnknown
+        }
         HealthProblemKind::AgentTraceDbConnectionFailed => {
             ProblemKind::AgentTraceDbConnectionFailed
         }
@@ -402,6 +427,12 @@ fn health_problem_kind(kind: ProblemKind) -> HealthProblemKind {
         }
         ProblemKind::CodexHookRegistrationNotTrusted => {
             HealthProblemKind::CodexHookRegistrationNotTrusted
+        }
+        ProblemKind::CodexHookRegistrationPolicyBlocked => {
+            HealthProblemKind::CodexHookRegistrationPolicyBlocked
+        }
+        ProblemKind::CodexHookRegistrationPolicyUnknown => {
+            HealthProblemKind::CodexHookRegistrationPolicyUnknown
         }
         ProblemKind::AgentTraceDbConnectionFailed => {
             HealthProblemKind::AgentTraceDbConnectionFailed

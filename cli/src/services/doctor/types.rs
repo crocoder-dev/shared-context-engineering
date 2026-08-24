@@ -226,6 +226,18 @@ pub(super) enum IntegrationContentState {
     /// Carries a short machine-readable reason (`"untrusted"`, `"modified"`,
     /// `"disabled"`, or `"unknown"`).
     NotTrusted(String),
+    /// The registration is structurally current, but Codex's effective
+    /// hook-discovery policy (`allow_managed_hooks_only = true`) discards
+    /// every project-owned hook source, so Codex will never even consider
+    /// this handler — independent of, and checked before, trust readiness.
+    /// Carries a human-readable explanation.
+    PolicyBlocked(String),
+    /// Whether Codex's effective hook-discovery policy allows project hooks
+    /// could not be determined (no Codex executable, probe failure, timeout,
+    /// malformed response, etc.). Never treated as healthy: AC28 requires
+    /// proof Codex will actually execute the registration, and an unknown
+    /// policy is not proof. Carries a human-readable reason.
+    PolicyUnknown(String),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -268,6 +280,14 @@ pub(super) enum DoctorDisplayDetail {
         error: String,
     },
     NotTrusted {
+        path: PathBuf,
+        reason: String,
+    },
+    PolicyBlocked {
+        path: PathBuf,
+        reason: String,
+    },
+    PolicyUnknown {
         path: PathBuf,
         reason: String,
     },
@@ -398,6 +418,20 @@ impl IntegrationChildHealth {
                     reason: reason.clone(),
                 }),
             ),
+            IntegrationContentState::PolicyBlocked(reason) => (
+                DoctorDisplayStatus::Fail,
+                Some(DoctorDisplayDetail::PolicyBlocked {
+                    path: self.path.clone(),
+                    reason: reason.clone(),
+                }),
+            ),
+            IntegrationContentState::PolicyUnknown(reason) => (
+                DoctorDisplayStatus::Warn,
+                Some(DoctorDisplayDetail::PolicyUnknown {
+                    path: self.path.clone(),
+                    reason: reason.clone(),
+                }),
+            ),
         };
         DoctorDisplayNode::asset(self.relative_path.clone(), status, detail)
     }
@@ -457,6 +491,8 @@ pub(crate) enum ProblemKind {
     CodexAssetReadFailed,
     CodexHookRegistrationMalformed,
     CodexHookRegistrationNotTrusted,
+    CodexHookRegistrationPolicyBlocked,
+    CodexHookRegistrationPolicyUnknown,
     AgentTraceDbConnectionFailed,
     AgentTraceDbSchemaNotReady,
 }

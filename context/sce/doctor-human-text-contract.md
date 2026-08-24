@@ -99,14 +99,25 @@ so unrelated user handlers never make a structurally valid document look
 mismatched. `sce doctor --fix` repairs a structurally unhealthy
 `.codex/hooks.json` through the same merge service used by `sce setup`.
 
-A structurally current registration is further gated on whether Codex has
-actually marked it trusted, by reading (never writing) Codex's own durable
-`$CODEX_HOME/config.toml` hook-trust state: `[PASS]` only when trusted;
-`[WARN]` when enabled but never yet trusted, trusted against different
-content, or explicitly disabled by the user's Codex config, or when trust
-state could not be determined. This is the first `Integrations`-hierarchy use
-of `[WARN]`, since Codex hook trust is a manual step in the Codex CLI that
-`sce doctor --fix` cannot perform and never attempts.
+A structurally current registration is further gated on Codex's effective
+hook-discovery *policy* before trust is ever consulted. Doctor probes the
+installed `codex` binary's own composed `allow_managed_hooks_only`
+requirement once per invocation (`codex app-server --stdio`'s read-only
+`configRequirements/read`, bounded by a strict timeout) and reuses that one
+result for all four registrations: `[FAIL]` when the effective policy
+excludes project hooks (`allow_managed_hooks_only = true` — this is an
+Error-severity, administrative-only problem, since SCE cannot change Codex's
+managed/enterprise policy), `[WARN]` when the policy could not be determined
+(no `codex` executable, probe failure, timeout, malformed response). Only
+once policy allows project hooks is the registration further gated on
+whether Codex has actually marked it trusted, by reading (never writing)
+Codex's own durable `$CODEX_HOME/config.toml` hook-trust state: `[PASS]` only
+when trusted; `[WARN]` when enabled but never yet trusted, trusted against
+different content, or explicitly disabled by the user's Codex config, or when
+trust state could not be determined. This is the first `Integrations`-hierarchy
+use of `[WARN]`, since both Codex hook trust and Codex hook-discovery policy
+are outside anything `sce doctor --fix` can perform and it never attempts
+either.
 
 Healthy areas render one concise `[PASS]` row and never list installed files.
 The report and JSON payload still retain the complete inspected asset facts for

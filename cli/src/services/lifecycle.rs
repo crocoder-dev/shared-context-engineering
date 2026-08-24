@@ -67,6 +67,8 @@ pub enum HealthProblemKind {
     CodexAssetReadFailed,
     CodexHookRegistrationMalformed,
     CodexHookRegistrationNotTrusted,
+    CodexHookRegistrationPolicyBlocked,
+    CodexHookRegistrationPolicyUnknown,
     AgentTraceDbConnectionFailed,
     AgentTraceDbSchemaNotReady,
 }

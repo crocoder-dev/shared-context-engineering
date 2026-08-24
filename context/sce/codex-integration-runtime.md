@@ -44,6 +44,30 @@ structural check; SCE never writes trust or auto-trust state. See [the
 ADR](../decisions/2026-08-23-codex-nondestructive-hook-ownership.md) and [the
 setup install policy](setup-no-backup-policy-seam.md).
 
+An executable SCE project hook requires a third, independent dimension
+beyond structure and trust: Codex's effective hook-discovery *policy*.
+Current upstream Codex (`hooks/src/engine/discovery.rs`
+`HookDiscoveryPolicy::allows`: `!allow_managed_hooks_only || source.is_managed`)
+discards every non-managed hook source — including SCE's project
+`.codex/hooks.json` registrations (`HookSource::Project`, non-managed) — when
+the effective, admin-controlled `allow_managed_hooks_only` requirement is
+`true`. That requirement lives only in `requirements.toml`/managed
+configuration layers (never plain `config.toml`) and is composed from
+multiple possible sources (system `requirements.toml`, legacy managed
+config, MDM managed preferences, backend-delivered enterprise policy), so SCE
+cannot safely re-derive it by reading any single file. `cli/src/services/codex_hook_policy.rs`
+instead asks the installed `codex` binary for its own composed answer over
+`codex app-server --stdio`'s read-only `configRequirements/read` method,
+bounded by a strict timeout with the child process always terminated and
+reaped. Doctor probes this exactly once per invocation and reuses the result
+for all four registrations. A structurally current registration is only
+`Match`/healthy when policy allows project hooks *and* it is durably trusted;
+`allow_managed_hooks_only = true` reports it `PolicyBlocked` (an
+Error-severity, manual-only problem) even when fully trusted, and a probe
+failure reports `PolicyUnknown` (Warning-severity, manual-only) rather than
+ever defaulting to healthy. `sce doctor --fix` cannot change Codex's
+managed/enterprise policy and never attempts to.
+
 ## Dispatch skeleton
 
 - STDIN carries one raw Codex hook-event JSON payload into a typed
