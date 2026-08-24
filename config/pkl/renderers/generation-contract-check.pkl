@@ -4,6 +4,7 @@ import "opencode-content.pkl" as opencode
 import "claude-content.pkl" as claude
 import "pi-content.pkl" as pi
 import "codex-content.pkl" as codex
+import "codex-metadata.pkl" as codexMetadata
 
 /// Build the expected inventory from each target's independently checked
 /// document inventory plus the retained non-workflow assets. This deliberately
@@ -89,6 +90,36 @@ local assertCodexSkillsExcludeArguments = (artifacts: Mapping) ->
     )
   ) "Codex skills: no literal $ARGUMENTS in generated Markdown"
   else throw("generated Codex skill Markdown must not contain the literal token $ARGUMENTS")
+
+/// The six catalog workflows' generated `agents/openai.yaml` paths, keyed by
+/// the catalog command slug so each can be checked against its own
+/// catalog-derived `CodexSkillMetadata`.
+local expectedCodexMetadataArtifactPaths = new Mapping {
+  for (slug, workflow in catalog.workflows) {
+    ["config/.agents/skills/\(workflow.skillSlug)/agents/openai.yaml"] = slug
+  }
+}
+
+/// Every generated Codex `agents/openai.yaml` derives its `interface` values
+/// from the shared workflow catalog and disables implicit invocation, since
+/// each catalog workflow is a stateful SCE lifecycle transition that must not
+/// auto-trigger from conversational relevance alone; `sce-decision` has no
+/// user-facing entrypoint on any target and keeps no such file.
+local assertCodexSkillMetadataContract = (artifacts: Mapping) ->
+  if (
+    expectedCodexMetadataArtifactPaths.every((path, slug) ->
+      let (text = artifacts[path])
+        let (meta = codexMetadata.metadataByCommandSlug[slug])
+          text.contains("allow_implicit_invocation: false")
+          && text.contains("display_name: \"\(meta.displayName)\"")
+          && text.contains("short_description: \"\(meta.shortDescription)\"")
+          && text.contains("default_prompt: \"\(meta.defaultPrompt)\"")
+    )
+    && artifacts.every((path, _) ->
+      !path.contains("/skills/sce-decision/") || !path.endsWith("agents/openai.yaml")
+    )
+  ) "Codex skill metadata: catalog-derived interface values and implicit-invocation policy present, sce-decision excluded"
+  else throw("Codex skill metadata must derive interface values from the workflow catalog, disable implicit invocation, and exclude sce-decision")
 
 hidden workflowDocuments = new Mapping {
   for (path, document in opencode.skillDocuments) {
@@ -306,10 +337,12 @@ local forbiddenWorkflowReferenceTokens = new Listing {
 /// Six cross-target workflow packages, with package-local phase references and
 /// supporting documents on the four phase-based workflows, plus the decision
 /// package and retained non-workflow assets, across OpenCode, Claude, Pi, and
-/// Codex, plus Codex's `.codex/hooks.json` and its install-guidance hook
-/// script. Stating the total as a literal makes an unintended inventory
-/// change fail here instead of silently becoming the new expectation.
-local expectedArtifactPathCount = 135
+/// Codex, plus Codex's `.codex/hooks.json`, its install-guidance hook script,
+/// and its six per-workflow `agents/openai.yaml` files (one per catalog
+/// workflow, excluding `sce-decision`). Stating the total as a literal makes
+/// an unintended inventory change fail here instead of silently becoming the
+/// new expectation.
+local expectedArtifactPathCount = 141
 
 local assertExactArtifactPaths = (actual: Mapping) ->
   if (
@@ -839,6 +872,7 @@ contractChecks {
   ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
   ["codex-hook-invocation"] = assertCodexHookInvocationContract.apply(generatedArtifacts)
   ["codex-skills-exclude-arguments"] = assertCodexSkillsExcludeArguments.apply(generatedArtifacts)
+  ["codex-skill-metadata"] = assertCodexSkillMetadataContract.apply(generatedArtifacts)
   ["optional-workflow-manifest"] = assertOptionalWorkflowManifest.apply(generatedArtifacts)
   ["workflow-references"] = assertWorkflowReferences.apply(workflowDocuments)
   ["workflow-helper-composition"] = assertWorkflowHelperComposition.apply(compositeWorkflowDocuments)
