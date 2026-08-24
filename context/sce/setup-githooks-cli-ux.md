@@ -26,7 +26,7 @@ Validation is deterministic and enforced during setup option resolution:
 - `--repo` may only be provided once and must include a value
 - `--repo` path is canonicalized and must resolve to an existing directory before hook setup runs
 - repository-required hook flows fail before config or hook writes when the target directory is not a git repository, with actionable guidance to run `git init` and rerun `sce setup`
-- all `sce setup` modes (config-only, hooks-only, combined, and interactive) require the current directory to be inside a git repository before any setup writes begin; the `ensure_git_repository` preflight check in `cli/src/app.rs` enforces this gate consistently across all invocation shapes
+- all `sce setup` modes (config-only, hooks-only, combined, interactive, and `--bootstrap-context`) require an initialized Git repository and a URL for the effective `agent_trace.repository_remote` before prompts or writes; `setup::command` uses the configured name, defaulting to `origin`, and reports typed `NotGitRepository` or `NotGitRemote` failures without echoing remote URLs
 
 Target-install mode contract:
 
@@ -67,4 +67,5 @@ When config install and hook install run together, CLI output is deterministic: 
 
 - `cli/src/app.rs`
 - `cli/src/services/setup/mod.rs`
+- `cli/src/services/setup/command.rs`
 - `cli/src/command_surface.rs`

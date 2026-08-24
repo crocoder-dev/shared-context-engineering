@@ -11,13 +11,13 @@ Task `setup-repo-gate-and-local-config-bootstrap` T02, `turso-local-db-sync` T04
 - If `.sce/config.json` already exists, the bootstrap step returns `Ok(())` immediately and leaves the file untouched — no merge, no reformat, no overwrite.
 - The parent `.sce/` directory is created via `fs::create_dir_all` if missing.
 - The setup flow also bootstraps the canonical local DB through `LocalDbLifecycle::setup` and the Agent Trace DB through `AgentTraceDbLifecycle::setup`; both use the shared `TursoDb<M: DbSpec>` adapter.
-- Config/DB bootstrap runs after the git-repo gate (`ensure_git_repository`) and after context baseline bootstrap, and before config/hooks dispatch, so it applies to all normal setup modes: config-only, hooks-only, combined, and interactive.
+- Config/DB bootstrap runs after both repository preflights (`ensure_git_repository` and the effective named-remote URL check) and after context baseline bootstrap, and before config/hooks dispatch, so it applies to all normal setup modes: config-only, hooks-only, combined, and interactive.
 
 ## Context baseline bootstrap
 
 - `sce setup --bootstrap-context` is a non-interactive context-only mode and must be used alone (no target, hooks, non-interactive, or `--repo` flags).
-- Context-only setup ensures the Git-repository gate, then creates the baseline durable-context tree and exits without lifecycle providers, integration installs, or prompts.
-- Every normal successful setup path also calls the same additive context bootstrap after the Git gate and before lifecycle/config install work.
+- Context-only setup ensures both repository preflights, then creates the baseline durable-context tree and exits without lifecycle providers, integration installs, or prompts.
+- Every normal successful setup path also calls the same additive context bootstrap after both preflights and before lifecycle/config install work.
 - Baseline paths: `context/overview.md`, `context/architecture.md`, `context/patterns.md`, `context/glossary.md`, `context/context-map.md`, `context/plans/`, `context/handovers/`, `context/decisions/`, `context/tmp/`, and `context/tmp/.gitignore`.
 - Create-if-missing only: existing files and directory contents are left untouched; missing individual paths are restored even when `context/` already exists.
 - New Markdown files use neutral headings/placeholders; `context-map.md` links baseline entry points without inventing repository details; `context/tmp/.gitignore` ignores scratch content while retaining itself (`*\n!.gitignore\n`).
@@ -53,11 +53,11 @@ The same write also records the run's resolved optional-workflow selection under
 - `cli/src/services/agent_trace_db/lifecycle.rs` implements `AgentTraceDbLifecycle::setup()` for Agent Trace DB initialization.
 - Repo-local config bootstrap uses `RepoPaths::sce_config_file()` and `RepoPaths::sce_dir()`; context baseline bootstrap uses the shared context accessors including `RepoPaths::context_tmp_gitignore_file()`.
 - The canonical payload constant is `REPO_LOCAL_CONFIG_BOOTSTRAP_PAYLOAD`.
-- `cli/src/services/setup/command.rs` runs `bootstrap_context_baseline` immediately after `ensure_git_repository`. Context-only requests return there. Normal modes then derive a repo-root-scoped `AppContext` and aggregate lifecycle providers in config → local_db → auth_db → agent_trace_db → hooks order; `ConfigLifecycle::setup()` calls `bootstrap_repo_local_config(...)`, `LocalDbLifecycle::setup()` initializes the local DB, `AuthDbLifecycle::setup()` initializes the auth DB, and `AgentTraceDbLifecycle::setup()` initializes the Agent Trace DB.
+- `cli/src/services/setup/command.rs` resolves the effective `agent_trace.repository_remote` and runs both repository preflights before `bootstrap_context_baseline`. Context-only requests return after the baseline. Normal modes then derive a repo-root-scoped `AppContext` and aggregate lifecycle providers in config → local_db → auth_db → agent_trace_db → hooks order; `ConfigLifecycle::setup()` calls `bootstrap_repo_local_config(...)`, `LocalDbLifecycle::setup()` initializes the local DB, `AuthDbLifecycle::setup()` initializes the auth DB, and `AgentTraceDbLifecycle::setup()` initializes the Agent Trace DB.
 
 ## Relationship to other setup contracts
 
-- The git-repo gate (`ensure_git_repository`) remains the precondition for every setup write path, including context-only bootstrap.
+- The Git-repo gate (`ensure_git_repository`) and effective named-remote URL preflight remain the preconditions for every setup write path, including context-only bootstrap.
 - Context baseline bootstrap is independent of config/DB/hooks install and runs before those steps on normal setup paths.
 - Local bootstrap (repo config + local DB init) is independent of config install and hook install; it runs before both after context baseline bootstrap.
 - The bootstrap payload matches the `$schema` declaration accepted by startup config loading and the Pkl-authored JSON Schema embedded from Cargo `OUT_DIR`.

@@ -1,11 +1,11 @@
 use anyhow::Context;
 
 use crate::app::ContextWithRepoRoot;
-use crate::services::error::CliError;
+use crate::services::error::{CliError, UserError};
 use crate::services::lifecycle::{
     lifecycle_providers, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
 };
-use crate::services::setup;
+use crate::services::{config, setup};
 
 pub struct SetupCommand {
     pub request: setup::SetupRequest,
@@ -22,8 +22,7 @@ impl SetupCommand {
 
         // The repository root is resolved before any prompt so the interactive
         // optional-workflow prompt can pre-check the persisted selection.
-        let repository_root =
-            setup::ensure_git_repository(&setup_start_path).map_err(CliError::runtime)?;
+        let repository_root = resolve_setup_repository(&setup_start_path)?;
 
         let setup_dispatch = if self.request.context_only {
             None
@@ -100,6 +99,18 @@ impl SetupCommand {
 
         Ok(sections.join("\n\n"))
     }
+}
+
+fn resolve_setup_repository(start_path: &std::path::Path) -> Result<std::path::PathBuf, CliError> {
+    let repository_root = setup::ensure_git_repository(start_path)
+        .map_err(|source| CliError::user_with_source(UserError::NotGitRepository, source))?;
+    let storage_config = config::resolve_agent_trace_storage_runtime_config(&repository_root)
+        .map_err(CliError::runtime)?;
+
+    setup::ensure_git_remote(&repository_root, &storage_config.repository_remote)
+        .map_err(|source| CliError::user_with_source(UserError::NotGitRemote, source))?;
+
+    Ok(repository_root)
 }
 
 fn setup_required_hooks_outcome_from_lifecycle(
