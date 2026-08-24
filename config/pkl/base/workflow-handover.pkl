@@ -92,7 +92,7 @@ local renderPersistedFormatBody = """
       one.
     """
 
-local renderSkillBody = (mode: model.WorkflowRenderMode, argumentsReference: String) -> """
+local renderSkillBody = (mode: model.WorkflowRenderMode, argumentsReference: String, invocationExample: String) -> """
     \(titleAndPurpose.render.apply(mode))## Input
 
     `\(argumentsReference)` is optional and selects the mode:
@@ -106,7 +106,7 @@ local renderSkillBody = (mode: model.WorkflowRenderMode, argumentsReference: Str
     Never infer the mode from conversation content or repository state. Only the
     presence or absence of a path argument decides it.
 
-    ## Workflow
+    \(model.invocationExampleParagraph.apply(invocationExample))## Workflow
 
     Follow exactly one path.
 
@@ -241,7 +241,7 @@ local structuredCommand = new model.StructuredWorkflowDocument {
     }
   }
   body = new model.WorkflowBody {
-    render = (mode: model.WorkflowRenderMode) -> renderSkillBody.apply(mode, "$ARGUMENTS")
+    render = (mode: model.WorkflowRenderMode) -> renderSkillBody.apply(mode, "$ARGUMENTS", "")
   }
 }
 
@@ -358,7 +358,7 @@ local handoverPackage = new model.SkillPackage {
 
 structuredComposite = new model.StructuredCompositeSource {
   command = structuredCommand
-  argumentDependentCommandBody = (argumentsReference: String) -> renderSkillBody.apply("composite", argumentsReference)
+  argumentDependentCommandBody = (argumentsReference: String, invocationExample: String) -> renderSkillBody.apply("composite", argumentsReference, invocationExample)
   referenceDocuments = new Listing {
     model.makeDocument.apply("references/handover-template.md", renderPersistedFormatBody)
   }

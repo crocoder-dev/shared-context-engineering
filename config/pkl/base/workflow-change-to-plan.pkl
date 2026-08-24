@@ -1,6 +1,6 @@
 import "workflow-content.pkl" as model
 
-changeToPlanSkillBody = (argumentsReference: String) -> """
+changeToPlanSkillBody = (argumentsReference: String, invocationExample: String) -> """
 # SCE Change to Plan
 
 ## Purpose
@@ -60,7 +60,7 @@ Pass the change request to step 2 unmodified. Do not restate, summarize, or pre-
 
 Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is the path resolved in step 2 (`plan.path`, or an entry of `candidates`), so every emitted command is directly runnable.
 
-## Workflow
+\(model.invocationExampleParagraph.apply(invocationExample))## Workflow
 
 ### 1. Load durable context
 

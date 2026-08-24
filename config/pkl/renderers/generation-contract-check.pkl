@@ -91,6 +91,20 @@ local assertCodexSkillsExcludeArguments = (artifacts: Mapping) ->
   ) "Codex skills: no literal $ARGUMENTS in generated Markdown"
   else throw("generated Codex skill Markdown must not contain the literal token $ARGUMENTS")
 
+/// Codex's `agents/openai.yaml` disables implicit invocation for the six
+/// catalog workflows, so their SKILL.md `## Input` sections must each name a
+/// concrete, own-slug `$sce-{slug}` invocation example alongside the
+/// `invocation input` prose — the only way to reach these skills is `/skills`
+/// discovery or explicit `$sce-<slug>` invocation.
+local assertCodexSkillInvocationExamples = (artifacts: Mapping) ->
+  if (
+    expectedCodexMetadataArtifactPaths.every((_, slug) ->
+      let (skillSlug = catalog.workflows[slug].skillSlug)
+        artifacts["config/.agents/skills/\(skillSlug)/SKILL.md"].contains("`$\(skillSlug)")
+    )
+  ) "Codex skill invocation examples: each Input section names its own $sce-{slug}"
+  else throw("generated Codex SKILL.md must name a concrete $sce-{slug} invocation example in its Input section")
+
 /// The six catalog workflows' generated `agents/openai.yaml` paths, keyed by
 /// the catalog command slug so each can be checked against its own
 /// catalog-derived `CodexSkillMetadata`.
@@ -872,6 +886,7 @@ contractChecks {
   ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
   ["codex-hook-invocation"] = assertCodexHookInvocationContract.apply(generatedArtifacts)
   ["codex-skills-exclude-arguments"] = assertCodexSkillsExcludeArguments.apply(generatedArtifacts)
+  ["codex-skill-invocation-examples"] = assertCodexSkillInvocationExamples.apply(generatedArtifacts)
   ["codex-skill-metadata"] = assertCodexSkillMetadataContract.apply(generatedArtifacts)
   ["optional-workflow-manifest"] = assertOptionalWorkflowManifest.apply(generatedArtifacts)
   ["workflow-references"] = assertWorkflowReferences.apply(workflowDocuments)

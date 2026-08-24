@@ -40,9 +40,9 @@ local renderStructuredPhase = (document: model.StructuredWorkflowDocument) ->
 local renderStructuredInternalDocument = (document: model.WorkflowDocument) ->
   "## Internal persisted-document format: \(document.path)\n\n" + document.text
 
-local renderCanonicalWorkflow = (workflow: CompositeWorkflow, argumentsReference: String) ->
+local renderCanonicalWorkflow = (workflow: CompositeWorkflow, argumentsReference: String, invocationExample: String) ->
   if (workflow.structuredSource.argumentDependentCommandBody != null)
-    workflow.structuredSource.argumentDependentCommandBody.apply(argumentsReference)
+    workflow.structuredSource.argumentDependentCommandBody.apply(argumentsReference, invocationExample)
   else
     workflow.structuredSource.command.render.apply("composite", "").text
 
@@ -81,7 +81,7 @@ local renderInternalDocuments = (workflow: CompositeWorkflow) ->
 /// section between the preamble and the first instruction. A phase appendix is
 /// emitted only for phases a module still lists; once every phase is stated at
 /// the step that runs it, the listing is empty and no appendix heading renders.
-local renderSkill = (workflow: CompositeWorkflow, extraFrontmatterLines: String, argumentsReference: String) -> new model.WorkflowDocument {
+local renderSkill = (workflow: CompositeWorkflow, extraFrontmatterLines: String, argumentsReference: String, invocationExample: String) -> new model.WorkflowDocument {
   path = "SKILL.md"
   text = if (workflow.structuredSource.compositeSkillBody != null)
     """
@@ -91,7 +91,7 @@ local renderSkill = (workflow: CompositeWorkflow, extraFrontmatterLines: String,
       \(workflow.description)
     \(extraFrontmatterLines)---
 
-    \(workflow.structuredSource.compositeSkillBody.apply(argumentsReference))
+    \(workflow.structuredSource.compositeSkillBody.apply(argumentsReference, invocationExample))
     """
   else
     new Listing {
@@ -128,7 +128,7 @@ local renderSkill = (workflow: CompositeWorkflow, extraFrontmatterLines: String,
 
       \(model.helperSkillCompositionRule)
       """
-      renderCanonicalWorkflow.apply(workflow, argumentsReference)
+      renderCanonicalWorkflow.apply(workflow, argumentsReference, invocationExample)
       when (workflow.structuredSource.phases.length > 0) {
         "## Embedded phase behavior\n\n" + renderPhases.apply(workflow)
       }
@@ -225,12 +225,14 @@ workflows = new Mapping {
 }
 
 /// Each target renders the same package-relative workflow documents and differs
-/// only in the frontmatter its skill entrypoint carries and, for a target whose
-/// harness does not substitute `$ARGUMENTS` into skill Markdown, the prose that
-/// names the skill's invocation input.
-hidden skillDocuments = (extraSkillFrontmatterLines: String, argumentsReference: String) -> new Mapping {
+/// only in the frontmatter its skill entrypoint carries, for a target whose
+/// harness does not substitute `$ARGUMENTS` into skill Markdown the prose that
+/// names the skill's invocation input, and, per workflow slug, an optional
+/// concrete `$sce-{slug}` invocation example appended to `## Input` (empty for
+/// a target that needs none).
+hidden skillDocuments = (extraSkillFrontmatterLines: String, argumentsReference: String, invocationExample: (String) -> String) -> new Mapping {
   for (_, workflow in workflows) {
-    ["\(workflow.skillSlug)/SKILL.md"] = renderSkill.apply(workflow, extraSkillFrontmatterLines, argumentsReference)
+    ["\(workflow.skillSlug)/SKILL.md"] = renderSkill.apply(workflow, extraSkillFrontmatterLines, argumentsReference, invocationExample.apply(workflow.skillSlug))
     when (workflow.structuredSource.argumentReferenceOutputDocument != null) {
       ["\(workflow.skillSlug)/references/output.md"] = workflow.structuredSource.argumentReferenceOutputDocument.apply(argumentsReference)
     }

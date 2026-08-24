@@ -67,7 +67,7 @@ commands {
 /// relative paths stay flattened for deterministic generation, and only skill
 /// entrypoints carry OpenCode-supported metadata.
 skillDocuments {
-  for (path, document in workflowResults.skillDocuments.apply("compatibility: \(metadata.skillCompatibility)\n", "$ARGUMENTS")) {
+  for (path, document in workflowResults.skillDocuments.apply("compatibility: \(metadata.skillCompatibility)\n", "$ARGUMENTS", (_) -> "")) {
     [path] = document
   }
   for (path, document in decision.skillDocuments.apply("compatibility: \(metadata.skillCompatibility)\n")) {

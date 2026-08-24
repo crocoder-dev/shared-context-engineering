@@ -10,6 +10,26 @@ import "workflow-composite.pkl" as workflowResults
 /// invocation input in prose instead of the literal, unsubstituted token.
 local codexArgumentsReference = "invocation input"
 
+/// A concrete, runnable `$sce-{slug}` invocation example per catalog workflow,
+/// appended to Codex's rendered `## Input` section alongside the prose above.
+/// Codex's `/skills` UI and explicit `$sce-<slug>` invocation are the only ways
+/// to reach these skills once `agents/openai.yaml` disables implicit invocation,
+/// so the Input section states one concretely rather than only in the abstract.
+/// Authored once here, directly against each workflow's own argument shape;
+/// there is no cross-target canonical source for it, the same as the
+/// `default_prompt` text in `codex-metadata.pkl`.
+local invocationExamplesBySkillSlug = new Mapping {
+  ["sce-change-to-plan"] = "$sce-change-to-plan \"add dark mode to settings\""
+  ["sce-next-task"] = "$sce-next-task my-plan T03 approved"
+  ["sce-validate"] = "$sce-validate my-plan"
+  ["sce-commit"] = "$sce-commit oneshot"
+  ["sce-handover"] = "$sce-handover context/handovers/2026-08-24-session.md"
+  ["sce-brownfield"] = "$sce-brownfield rebuild docs/"
+}
+
+local invocationExampleForSkillSlug = (skillSlug: String) ->
+  if (invocationExamplesBySkillSlug.containsKey(skillSlug)) invocationExamplesBySkillSlug[skillSlug] else ""
+
 /// Codex has no command-routed entrypoints — it discovers skills directly, with
 /// no per-target frontmatter beyond the shared description, matching Pi. Each
 /// of the six catalog workflow skills additionally carries `agents/openai.yaml`,
@@ -17,7 +37,7 @@ local codexArgumentsReference = "invocation input"
 /// reachable only via explicit `$sce-<slug>` invocation or `/skills` discovery.
 /// `sce-decision` has no user-facing entrypoint on any target and is excluded.
 skillDocuments {
-  for (path, document in workflowResults.skillDocuments.apply("", codexArgumentsReference)) {
+  for (path, document in workflowResults.skillDocuments.apply("", codexArgumentsReference, invocationExampleForSkillSlug)) {
     [path] = document
   }
   for (slug, rendered in metadata.renderedByCommandSlug) {
