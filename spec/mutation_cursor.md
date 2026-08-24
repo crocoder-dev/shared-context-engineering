@@ -33,7 +33,7 @@ Hook replay identity is scoped by `ScopeId` and `EventId` through `EventKey`. Th
 
 ## Failure and durability boundary
 
-`worktrees.cursorTree`, `worktrees.revision`, scope state, `processedEvents`, and `mutationEvents` represent state durably stored in the Agent Trace database.
+`worktrees.cursorTree`, `worktrees.revision`, scope state, `processedEvents`, and `mutationEvents` represent state durably stored in the Agent Trace database. `worktrees.needsRebaseline` is a durable protocol marker for an ambiguous cursor interval; it is distinct from both snapshot failure and external database taint.
 
 A snapshot failure occurs while the database is healthy. `taint(worktree)` therefore records `SnapshotFailure` in the durable worktree state, invalidating subsequent speculative attempts until recovery.
 
@@ -63,7 +63,20 @@ durable DB protocol state remains unchanged
 externalTaint contains the worktree
 ```
 
-While externally tainted, normal attempts cannot commit evidence. Recovery represents the next successful SCE invocation:
+While externally tainted, normal attempts cannot commit evidence. Recovery represents the next successful SCE invocation. The same recovery action also handles a healthy worktree marked `needsRebaseline`; in that case it preserves surviving active scopes because only the skipped interval is ambiguous:
+
+```text
+observe current worktree
+    ↓
+establish current tree as the new cursor baseline
+    ↓
+produce no evidence for the skipped interval
+    ↓
+clear needsRebaseline
+```
+
+For external taint or snapshot failure, recovery retains the stronger existing behavior of abandoning active scopes. The external-taint recovery path is:
+
 
 ```text
 observe externalTaint
@@ -81,7 +94,7 @@ commit recovery to DB
 clear externalTaint
 ```
 
-Recovery does not close scopes: no trustworthy normal close boundary was observed. A new scope must start before exclusive attribution can resume. No filesystem details, SQLite/Turso internals, retries, or OS crash timing are modeled.
+Taint or external-taint recovery abandons active scopes because no trustworthy normal close boundary was observed. Healthy `needsRebaseline` recovery instead preserves surviving active scopes: only the ambiguous skipped interval is discarded, and those scopes may resume attribution after the new baseline. No filesystem details, SQLite/Turso internals, retries, or OS crash timing are modeled.
 
 ## Scope lifecycle
 
@@ -92,7 +105,7 @@ A scope has one of four statuses:
 - `Closed` — ended at a trustworthy normal close boundary;
 - `Abandoned` — ended without a trustworthy final observation boundary.
 
-`Closed` and `Abandoned` are terminal. `Abandon(scope)` changes only an active scope to `Abandoned`; it never reactivates a terminal scope. An abandoned scope must not receive exclusive attribution for the unobserved gap preceding abandonment.
+`Closed` and `Abandoned` are terminal. `Abandon(scope)` changes only an active scope to `Abandoned`; it never reactivates a terminal scope. It increments the worktree revision, leaves the cursor unchanged, and sets `needsRebaseline`. Until recovery establishes a new baseline, normal observations emit no mutation evidence. An abandoned scope must not receive exclusive attribution for the unobserved gap preceding abandonment.
 
 If a new scope starts on the same worktree with the same actor while that actor already has an active scope, the model performs stale-scope rollover atomically:
 
@@ -116,6 +129,8 @@ Failure and external-taint states can only weaken attribution to `IneligibleUnsc
 
 The model includes safety properties covering:
 
+- standalone abandonment requiring a conservative rebaseline;
+- protocol history proving mutation evidence crosses only trustworthy cursor states;
 - database failure not mutating durable protocol state;
 - external taint not strengthening attribution;
 - recovery baseline before clearing external taint;
