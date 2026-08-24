@@ -1,5 +1,8 @@
 import "../base/decision-skill.pkl" as decision
+import "../base/workflow-catalog.pkl" as catalog
+import "../base/workflow-content.pkl" as model
 import "common.pkl" as common
+import "codex-metadata.pkl" as metadata
 import "workflow-composite.pkl" as workflowResults
 
 /// Current upstream Codex skill loading does not provide Claude/OpenCode-style
@@ -8,10 +11,20 @@ import "workflow-composite.pkl" as workflowResults
 local codexArgumentsReference = "invocation input"
 
 /// Codex has no command-routed entrypoints — it discovers skills directly, with
-/// no per-target frontmatter beyond the shared description, matching Pi.
+/// no per-target frontmatter beyond the shared description, matching Pi. Each
+/// of the six catalog workflow skills additionally carries `agents/openai.yaml`,
+/// disabling implicit invocation so these stateful lifecycle workflows are
+/// reachable only via explicit `$sce-<slug>` invocation or `/skills` discovery.
+/// `sce-decision` has no user-facing entrypoint on any target and is excluded.
 skillDocuments {
   for (path, document in workflowResults.skillDocuments.apply("", codexArgumentsReference)) {
     [path] = document
+  }
+  for (slug, rendered in metadata.renderedByCommandSlug) {
+    ["\(catalog.workflows[slug].skillSlug)/agents/openai.yaml"] = new model.WorkflowDocument {
+      path = "agents/openai.yaml"
+      text = rendered
+    }
   }
   for (path, document in decision.skillDocuments.apply("")) {
     [path] = document

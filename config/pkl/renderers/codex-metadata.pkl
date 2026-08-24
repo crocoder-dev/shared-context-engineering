@@ -1,8 +1,8 @@
 // Typed Codex skill-interface metadata and the pure `agents/openai.yaml`
-// renderer for the six catalog workflow skills. Wiring this output into
-// `codex-content.pkl`'s exposed skill-document map is a later task; this
-// module only defines the model, the per-workflow authored values, and the
-// render function, and evaluates standalone.
+// renderer for the six catalog workflow skills, wired into
+// `codex-content.pkl`'s exposed skill-document map. This module defines the
+// model, the per-workflow authored values, and the render function, and also
+// evaluates standalone.
 //
 // Confirmed upstream `agents/openai.yaml` schema
 // (developers.openai.com/codex/skills, redirects to

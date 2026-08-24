@@ -65,6 +65,18 @@ local expectedSkillDocumentPaths = new Mapping {
   ["sce-decision/references/adr-template.md"] = true
 }
 
+/// Codex additionally carries `agents/openai.yaml` for each of the six catalog
+/// workflow skills, disabling implicit invocation; `sce-decision` has no
+/// user-facing entrypoint on any target and keeps no such file.
+local expectedCodexSkillDocumentPaths = new Mapping {
+  for (path, _ in expectedSkillDocumentPaths) {
+    [path] = true
+  }
+  for (_, workflow in catalog.workflows) {
+    ["\(workflow.skillSlug)/agents/openai.yaml"] = true
+  }
+}
+
 local opencodeAgents = new Mapping {
   for (slug, document in opencode.agents) {
     [slug] = document
@@ -143,7 +155,7 @@ inventoryChecks {
   for (slug, document in piCommands) {
     ["pi-command-route-\(slug)"] = assertCommandRoute.apply("Pi", slug, document.text)
   }
-  ["codex-skill-documents"] = assertExactKeys.apply(codexSkillDocuments, expectedSkillDocumentPaths, "Codex skill document")
+  ["codex-skill-documents"] = assertExactKeys.apply(codexSkillDocuments, expectedCodexSkillDocumentPaths, "Codex skill document")
 }
 
 /// Force rendering after exact inventory checks so target-specific metadata
