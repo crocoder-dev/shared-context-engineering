@@ -25,13 +25,14 @@ It complements the numeric process exit-code classes documented in `context/sce/
 - High-frequency parse/invocation failures use explicit `Try:` remediations instead of generic usage-only hints.
 - Top-level unknown command/option messages include targeted retry guidance (`sce --help` and command-local `sce <command> --help`).
 - Setup invocation validation failures (`--repo` without `--hooks`, mutually exclusive target flags, unexpected args) include concrete valid alternatives.
+- Setup repository preflight failures use fixed `UserError::NotGitRepository` and `UserError::NotGitRemote` sentences with `git init` and `git remote add <name> <url>` remediation; their runtime technical sources may retain the configured remote name but never the remote URL.
 - Hooks invocation validation failures (missing hook subcommand, missing `commit-msg` message file, unknown subcommand) include command-form examples that are copyable for retry automation.
-- This actionable-message normalization is owned by parser/validation paths in `cli/src/app.rs`, `cli/src/services/setup/mod.rs`, and `cli/src/services/hooks/mod.rs`.
+- This actionable-message normalization is owned by parser/validation paths in `cli/src/app.rs`, `cli/src/services/setup/mod.rs`, `cli/src/services/setup/command.rs`, and `cli/src/services/hooks/mod.rs`.
 
 ## Ownership
 
 - `FailureClass` in `cli/src/services/error.rs` owns class selection and stable code assignment (`FailureClass::code()`).
-- `CliError::{User,Internal}` in `cli/src/services/error.rs` is the typed CLI-boundary error type; `CliError::code()`/`CliError::class()` delegate to the failure class. `CliError::User` carries a catalog `UserError` (currently only `NotAuthenticated`) for expected, deliberately-explained failures; `CliError::Internal` carries a live `anyhow::Error` source for every other failure. `CliError::User` may also carry an optional preserved technical `source`, kept for observability only and never rendered to the terminal.
+- `CliError::{User,Internal}` in `cli/src/services/error.rs` is the typed CLI-boundary error type; `CliError::code()`/`CliError::class()` delegate to the failure class. `CliError::User` carries a catalog `UserError` (`NotAuthenticated`, `NotGitRepository`, or `NotGitRemote`) for expected, deliberately-explained failures; `CliError::Internal` carries a live `anyhow::Error` source for every other failure. `CliError::User` may also carry an optional preserved technical `source`, kept for observability only and never rendered to the terminal.
 - `UserError` in `cli/src/services/error.rs` is the closed catalog of deliberately presented terminal failures. It has no arbitrary-message variant (no `Message(String)`/`Custom(...)` escape hatch): every entry is a fixed, reviewed sentence returned by `UserError::message()`, keyed for structured logging by `UserError::key()`.
 - Command and domain layers construct and return a `CliError`; they do not format terminal text, apply styling, or decide authentication/user-error semantics from string matching. `app_support` is the sole owner of turning a `CliError` into the final stderr sentence.
 - `Logger::log_cli_error` in `cli/src/services/observability.rs` owns structured error logging with `sce.error.{code}` event IDs.

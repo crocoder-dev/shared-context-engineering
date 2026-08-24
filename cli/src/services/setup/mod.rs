@@ -424,6 +424,24 @@ pub fn ensure_git_repository(directory: &Path) -> Result<PathBuf> {
     install::ensure_git_repository(directory)
 }
 
+/// Preflight check that verifies the named Git remote has a configured URL.
+/// The URL itself is intentionally discarded so callers can preserve a
+/// technical diagnostic without echoing credential-bearing remote values.
+pub fn ensure_git_remote(repository_root: &Path, remote_name: &str) -> Result<()> {
+    if crate::services::repository_identity::resolve::lookup_remote_url(
+        repository_root,
+        remote_name,
+    )
+    .is_some()
+    {
+        return Ok(());
+    }
+
+    bail!(
+        "Git remote '{remote_name}' has no configured URL. Try: run 'git remote add {remote_name} <url>', then rerun 'sce setup'."
+    )
+}
+
 /// Bootstraps the repo-local `.sce/config.json` file if it does not already exist.
 ///
 /// Creates the `.sce/` parent directory as needed, then writes the canonical
