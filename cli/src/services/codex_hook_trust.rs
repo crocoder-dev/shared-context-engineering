@@ -1,5 +1,19 @@
-//! Read-only diagnosis of Codex's own hook-trust bookkeeping for SCE-owned
-//! `.codex/hooks.json` registrations.
+//! Read-only diagnosis of Codex's own per-handler hook-*trust* bookkeeping
+//! (enabled / `trusted_hash`) for SCE-owned `.codex/hooks.json`
+//! registrations.
+//!
+//! This is deliberately only one of two independent dimensions Codex
+//! requires before it will actually execute a project hook handler. This
+//! module answers "given an eligible hook *source*, has this handler been
+//! enabled and durably trusted?" — it says nothing about whether Codex
+//! considers the *source* (SCE's project `.codex/hooks.json`) eligible at
+//! all. That second dimension is effective hook-discovery *policy*
+//! (`allow_managed_hooks_only`), owned entirely by `codex_hook_policy`. A
+//! project registration is only executable when both are satisfied:
+//! structurally current, policy-eligible, *and* trusted. See
+//! `codex_hook_policy`'s module documentation for why policy cannot be
+//! determined by reading any file this module could read, and for the
+//! upstream discovery-policy source references.
 //!
 //! Mirrors current upstream `openai/codex` (commit
 //! `8e649e3afa5cdddfb09a1b85a090b94775045d9b`):
@@ -45,8 +59,13 @@ const EVENTS_SUPPORTING_ADDITIONAL_CONTEXT: [&str; 4] = [
 /// project-owned (non-managed) handlers in `.codex/hooks.json`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum TrustReadiness {
-    /// Enabled and `trusted_hash` matches the handler's current hash: Codex
-    /// will execute this handler.
+    /// Enabled and `trusted_hash` matches the handler's current hash: this
+    /// handler is durably trusted. This alone does **not** mean Codex will
+    /// execute it — `Trusted` says nothing about whether Codex's
+    /// hook-discovery policy considers this project handler's *source*
+    /// eligible at all (see `codex_hook_policy`). The accurate reading is
+    /// "the current non-managed handler is enabled and durably trusted,
+    /// assuming Codex policy permits this hook source."
     Trusted,
     /// Enabled but no `trusted_hash` is recorded for this handler yet.
     Untrusted,
@@ -208,7 +227,7 @@ fn state_key(
 /// [<one normalized handler>]}` shape, canonicalize (recursively sort object
 /// keys, matching `fingerprint::canonical_json`), and SHA-256 the compact
 /// JSON encoding.
-fn hash_command_handler(
+pub(crate) fn hash_command_handler(
     event: &str,
     matcher: Option<&str>,
     handler: &Value,

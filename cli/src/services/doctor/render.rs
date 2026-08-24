@@ -436,8 +436,10 @@ fn integration_group_status(
                 | IntegrationContentState::Mismatch
                 | IntegrationContentState::Stale
                 | IntegrationContentState::Malformed(_)
-                | IntegrationContentState::ReadFailed(_) => DoctorDisplayStatus::Fail,
-                IntegrationContentState::NotTrusted(_) => DoctorDisplayStatus::Warn,
+                | IntegrationContentState::ReadFailed(_)
+                | IntegrationContentState::PolicyBlocked(_) => DoctorDisplayStatus::Fail,
+                IntegrationContentState::NotTrusted(_)
+                | IntegrationContentState::PolicyUnknown(_) => DoctorDisplayStatus::Warn,
             })
         });
     let problem_status = report
@@ -605,6 +607,16 @@ fn render_display_detail(lines: &mut Vec<String>, detail: &DoctorDisplayDetail, 
         DoctorDisplayDetail::NotTrusted { path, reason } => {
             lines.push(format!("{prefix}Path: {}", path.display()));
             lines.push(format!("{prefix}Not yet executable by Codex: {reason}"));
+        }
+        DoctorDisplayDetail::PolicyBlocked { path, reason } => {
+            lines.push(format!("{prefix}Path: {}", path.display()));
+            lines.push(format!("{prefix}Blocked by Codex policy: {reason}"));
+        }
+        DoctorDisplayDetail::PolicyUnknown { path, reason } => {
+            lines.push(format!("{prefix}Path: {}", path.display()));
+            lines.push(format!(
+                "{prefix}Codex hook-discovery policy could not be determined: {reason}"
+            ));
         }
         DoctorDisplayDetail::Problem {
             summary,

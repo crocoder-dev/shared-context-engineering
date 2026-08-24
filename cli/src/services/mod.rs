@@ -15,6 +15,7 @@ pub mod bash_policy;
 pub mod capabilities;
 pub mod checkout;
 pub(crate) mod codex_hook_config;
+pub(crate) mod codex_hook_policy;
 pub(crate) mod codex_hook_trust;
 pub mod command_registry;
 pub mod completion;
