@@ -15,7 +15,7 @@ commands {
 /// writing package used internally during synchronization, with no target-
 /// specific skill frontmatter.
 skillDocuments {
-  for (path, document in workflowResults.skillDocuments.apply("", "$ARGUMENTS")) {
+  for (path, document in workflowResults.skillDocuments.apply("", "$ARGUMENTS", (_) -> "")) {
     [path] = document
   }
   for (path, document in decision.skillDocuments.apply("")) {

@@ -6,17 +6,17 @@ Extends the existing, completed Codex integration (`context/plans/codex-cli-inte
 
 ## Acceptance criteria
 
-- [ ] AC1: Each of the six catalog-registered workflow skills generates `.agents/skills/{slug}/agents/openai.yaml` containing a `policy: allow_implicit_invocation: false` block and an `interface` block whose `display_name`/`short_description` are derived from the workflow catalog's `title`/`description`.
+- [x] AC1: Each of the six catalog-registered workflow skills generates `.agents/skills/{slug}/agents/openai.yaml` containing a `policy: allow_implicit_invocation: false` block and an `interface` block whose `display_name`/`short_description` are derived from the workflow catalog's `title`/`description`.
   - Validate: `nix run .#pkl-generate -- "$(mktemp -d)"` then inspect `.agents/skills/{sce-change-to-plan,sce-next-task,sce-validate,sce-commit,sce-handover,sce-brownfield}/agents/openai.yaml`; `nix run .#pkl-check-generated`.
-- [ ] AC2: `sce-decision` continues to generate no `agents/openai.yaml` and keeps its current (implicit-eligible) invocation policy, since it is an internal helper invoked by `/next-task`'s own instructions rather than a user-facing entrypoint.
+- [x] AC2: `sce-decision` continues to generate no `agents/openai.yaml` and keeps its current (implicit-eligible) invocation policy, since it is an internal helper invoked by `/next-task`'s own instructions rather than a user-facing entrypoint.
   - Validate: `nix run .#pkl-check-generated` assertion; direct inspection of `.agents/skills/sce-decision/` shows only `SKILL.md` and `references/adr-template.md`.
-- [ ] AC3: Every generated Codex `SKILL.md`'s `## Input` section states a concrete `$sce-{slug}` invocation example and contains no literal `$ARGUMENTS`.
+- [x] AC3: Every generated Codex `SKILL.md`'s `## Input` section states a concrete `$sce-{slug}` invocation example and contains no literal `$ARGUMENTS`.
   - Validate: direct inspection of generated Codex skill bodies; `nix run .#pkl-check-generated`.
-- [ ] AC4: `sce setup --codex --non-interactive` installs each workflow's `agents/openai.yaml` beside its `SKILL.md`, honors the existing `integrations.optional_workflows` selection for `sce-brownfield` (installed only when selected), never installs one for `sce-decision`, and `sce doctor`'s Codex `Skills` group reports the new files as healthy rather than missing or stale.
+- [x] AC4: `sce setup --codex --non-interactive` installs each workflow's `agents/openai.yaml` beside its `SKILL.md`, honors the existing `integrations.optional_workflows` selection for `sce-brownfield` (installed only when selected), never installs one for `sce-decision`, and `sce doctor`'s Codex `Skills` group reports the new files as healthy rather than missing or stale.
   - Validate: in a scratch Git repository, run `sce setup --codex --non-interactive` with and without `--workflow brownfield`, then `sce doctor`, and inspect the installed tree and doctor output.
-- [ ] AC5: No `.codex/prompts/`, `.codex/commands/`, or other new custom-slash-command mechanism is introduced; `.codex/hooks.json`, the install-guidance hook script, the `sce hooks codex` dispatcher, Bash policy delegation, and `apply_patch` evidence capture are unchanged.
+- [x] AC5: No `.codex/prompts/`, `.codex/commands/`, or other new custom-slash-command mechanism is introduced; `.codex/hooks.json`, the install-guidance hook script, the `sce hooks codex` dispatcher, Bash policy delegation, and `apply_patch` evidence capture are unchanged.
   - Validate: `git diff` shows no new path under `.codex/`; `nix flake check`.
-- [ ] AC6: OpenCode, Claude, and Pi generated output (commands, skills, agents, settings) is unchanged.
+- [x] AC6: OpenCode, Claude, and Pi generated output (commands, skills, agents, settings) is unchanged.
   - Validate: `nix run .#pkl-check-generated`; diff each target's generated payload against its pre-change output.
 
 ### Full validation
@@ -82,14 +82,52 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: Localized to the Codex renderer/check layer. `context/architecture.md`, `context/context-map.md`, and `context/overview.md` describe the Codex renderer's generated-artifact set and count, which this task changed (135 → 141; new per-workflow `agents/openai.yaml`); `context/sce/codex-integration-runtime.md` documents Codex's `$sce-*`/`allow_implicit_invocation` convention, which this task made real by wiring the previously-unwired `codex-metadata.pkl` renderer. Both are listed under this plan's Context sync and remain pending until the synchronization phase updates them.
   - Context synchronization: synced
 
-- [ ] T03: `Add explicit $sce-<slug> invocation example to Codex's generated Input section` (status:todo)
+- [x] T03: `Add explicit $sce-<slug> invocation example to Codex's generated Input section` (status:complete)
   - Task ID: T03
   - Scope: In — extend the existing target-specific `argumentsReference` parameterization in `workflow-composite.pkl`/`workflow-content.pkl` so Codex's rendered `## Input` section states a concrete `$sce-{slug}` example beside its existing "invocation input" prose, without introducing `$ARGUMENTS`; extend `generation-contract-check.pkl`'s existing no-`$ARGUMENTS`/target-neutral-reference assertions to cover the new line; confirm OpenCode/Claude/Pi command and skill bodies are unchanged. Out — any other `SKILL.md` section; any hook/runtime code.
   - Dependencies: T01, T02
   - Done when: each generated `.agents/skills/{slug}/SKILL.md`'s `## Input` section names a `$sce-{slug}` example, contains no `$ARGUMENTS`, and OpenCode/Claude/Pi generated payloads are byte-identical to their pre-task output.
   - Verify: `nix run .#pkl-check-generated`; direct diff of OpenCode/Claude/Pi generated payload before and after this task.
-  - Context synchronization: pending
+  - Completed: 2026-08-24
+  - Files changed: `config/pkl/base/workflow-content.pkl`, `config/pkl/base/workflow-change-to-plan.pkl`, `config/pkl/base/workflow-commit.pkl`, `config/pkl/base/workflow-handover.pkl`, `config/pkl/base/workflow-brownfield.pkl`, `config/pkl/renderers/workflow-composite.pkl`, `config/pkl/renderers/codex-content.pkl`, `config/pkl/renderers/claude-content.pkl`, `config/pkl/renderers/opencode-content.pkl`, `config/pkl/renderers/pi-content.pkl`, `config/pkl/renderers/generation-contract-check.pkl`
+  - Result: Added a shared `model.invocationExampleParagraph` helper (empty when its input is empty, otherwise a `For example: \`{example}\`.` paragraph) and threaded a second `invocationExample: String` parameter alongside every workflow's existing `argumentsReference: String` parameter — through `nextTaskSkillBody`/`validateSkillBody` (`workflow-content.pkl`), `changeToPlanSkillBody`, `commitSkillBody`, and handover's/brownfield's `renderSkillBody` (plus their dead-code "package" render call sites), then through `workflow-composite.pkl`'s `StructuredCompositeSource.compositeSkillBody`/`argumentDependentCommandBody` types, `renderCanonicalWorkflow`, `renderSkill`, and the `skillDocuments` function (whose new third parameter is `(String) -> String`, keyed by skill slug, so each workflow gets its own example). `codex-content.pkl` supplies `invocationExamplesBySkillSlug`, one authored `$sce-{slug} ...` command per catalog workflow (e.g. `$sce-next-task my-plan T03 approved`, `$sce-validate my-plan`), inserted into each `## Input` section immediately before `## Workflow`. `claude-content.pkl`/`opencode-content.pkl`/`pi-content.pkl` pass a no-op `(_) -> ""` for the new parameter, so their rendered `## Input` text is unaffected. Added `assertCodexSkillInvocationExamples` to `generation-contract-check.pkl`, registered as `codex-skill-invocation-examples`, asserting each of the six generated Codex `SKILL.md` files contains its own `` `$sce-{slug}` `` string.
+  - Verify (actual): `nix run .#pkl-generate -- "$(mktemp -d)"` — inspected each of the six generated `.agents/skills/{slug}/SKILL.md` `## Input` sections; each now ends with `For example: \`$sce-{slug} ...\`.` immediately before `## Workflow`, with no blank-line-run or duplicated-heading artifacts. `nix run .#pkl-check-generated` — passed, "Ephemeral Pkl generation passed: 141 files" (same count and inventory hash as pre-task), confirming the new/updated contract checks (including the new `codex-skill-invocation-examples` assertion) all pass. Direct `diff -rq` of the generated `config/.claude`, `config/.opencode`, and `config/.pi` trees before and after this task's changes — no differences, confirming OpenCode/Claude/Pi payloads stayed byte-identical. Grepped generated Codex SKILL.md files for `$ARGUMENTS` — none present (unchanged from the existing `codex-skills-exclude-arguments` guarantee).
+  - Context impact: Localized to the Codex renderer/check layer, same class of change as T02. This plan's Context sync entries (`context/architecture.md`, `context/context-map.md`, `context/overview.md`, `context/sce/codex-integration-runtime.md`) describe the `$sce-*` explicit-invocation convention and generated-artifact set; this task adds the concrete per-workflow invocation example to that convention's generated output without changing the artifact count or the `allow_implicit_invocation` mechanism those files already describe. Remains pending until the synchronization phase updates them.
+  - Context synchronization: synced
 
 ## Open questions
 
 None. The change request specifies the exact policy behavior and the one genuinely unresolved technical detail — the upstream `agents/openai.yaml` schema — was confirmed against the current OpenAI Codex documentation before writing this plan rather than guessed at (see Assumptions). The remaining choice this plan makes on the user's behalf, the per-workflow `default_prompt` wording, is a reversible content detail recorded under Assumptions rather than a scope, criteria, or ordering question.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-08-24
+
+### Commands run
+
+- `nix run .#pkl-check-generated` -> exit 0 (Ephemeral Pkl generation passed: 141 files, inventory sha256 b90b604be32d61a4dc774fd3ded5518e6d3949ad35cbce52d778e4b4d2deea7e)
+- `nix flake check` -> exit 0 (all checks passed, including `cli-tests`, `cli-clippy`, `cli-fmt`, `pkl-generated`, `codex-hook-command`)
+- `nix run .#pkl-generate -- "$(mktemp -d)"` -> exit 0 (generated tree inspected for AC1/AC2/AC3 evidence)
+- `nix build .#sce` -> exit 0 (built CLI binary for AC4 scratch-repo verification)
+- `sce setup --codex --non-interactive` (scratch repo, no `--workflow brownfield`) -> exit 0 (installed 31 files; 5 `agents/openai.yaml`, none for `sce-brownfield`/`sce-decision`)
+- `sce setup --codex --workflow brownfield --non-interactive` (scratch repo) -> exit 0 (installed 34 files; all 6 `agents/openai.yaml` present)
+- `sce doctor` (both scratch repos) -> exit 0 (Codex `Skills` group `[PASS]` in both; unrelated pre-existing `Hooks` trust `[WARN]` and missing-git-hooks `[FAIL]` from omitting `--hooks`, out of this plan's scope)
+- `diff -rq` of `.claude`/`.opencode`/`.pi` generated trees, pre-plan baseline commit `0d023586` vs. current working tree -> no differences (AC6)
+
+### Success-criteria verification
+
+- [x] AC1: Six catalog workflows generate `agents/openai.yaml` with `policy.allow_implicit_invocation: false` and catalog-derived `interface` -> inspected all six generated files; each contains exactly `interface.{display_name,short_description,default_prompt}` and `policy.allow_implicit_invocation: false`.
+- [x] AC2: `sce-decision` has no `agents/openai.yaml` -> inspected `.agents/skills/sce-decision/`; contains only `SKILL.md` and `references/adr-template.md`.
+- [x] AC3: Every generated Codex `SKILL.md`'s `## Input` ends with a `$sce-{slug}` example; no `$ARGUMENTS` anywhere -> inspected all seven skill bodies (six catalog workflows plus `sce-decision`, which correctly has no example); `grep -rl '\$ARGUMENTS'` over generated Codex skills returned nothing.
+- [x] AC4: `sce setup --codex --non-interactive` installs `agents/openai.yaml` honoring the brownfield selection; `sce doctor` reports Codex `Skills` healthy -> verified in two scratch repos (with and without `--workflow brownfield`); file counts (31 and 34) and `Skills` `[PASS]` confirmed in both.
+- [x] AC5: No new `.codex/` path; hook/dispatcher/Bash-policy/`apply_patch` machinery unchanged -> `git diff --stat -- .codex/` empty; `nix flake check` passed including `codex-hook-command`.
+- [x] AC6: OpenCode/Claude/Pi generated output unchanged -> `diff -rq` of freshly generated `.claude`/`.opencode`/`.pi` trees against a worktree built from the pre-plan baseline commit `0d023586` showed zero differences.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- None identified.

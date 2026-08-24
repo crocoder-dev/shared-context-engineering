@@ -476,7 +476,7 @@ local renderCommitMessageStyle = (mode: model.WorkflowRenderMode) -> """
     - Overly playful tone in serious bug-fix or architectural change.
     """
 
-local commitSkillBody = (argumentsReference: String) -> """
+local commitSkillBody = (argumentsReference: String, invocationExample: String) -> """
 # SCE Commit
 
 ## Purpose
@@ -540,7 +540,7 @@ summarize, or pre-scope it. Never pass the `mode-token` as commit context.
 Staged changes are the source of truth for what is being committed. This
 command never stages, unstages, or modifies files.
 
-## Workflow
+\(model.invocationExampleParagraph.apply(invocationExample))## Workflow
 
 Follow exactly one path.
 

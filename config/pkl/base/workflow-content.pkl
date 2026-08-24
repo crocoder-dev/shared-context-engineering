@@ -98,15 +98,17 @@ class StructuredCompositeSource {
   /// composite renderer uses this body instead of inlining phase instructions.
   /// Parameterized by the target's arguments-reference token so skill-mode
   /// prose can name the invocation input without a literal `$ARGUMENTS` for a
-  /// target whose harness does not substitute it.
-  compositeSkillBody: ((String) -> String)? = null
+  /// target whose harness does not substitute it, and by a target-specific
+  /// concrete `$sce-{slug}` invocation example appended to `## Input` (empty
+  /// for targets that need none).
+  compositeSkillBody: ((String, String) -> String)? = null
 
   /// The composite command body's own `## Input`/`## Workflow` text, for a
   /// phase-free workflow (no `compositeSkillBody`) whose command body names the
   /// invocation input directly, parameterized the same way. When present, the
   /// generic composite renderer uses this instead of `command`'s mode-only
   /// render, keeping that renderer's own shared preamble/appendix wrapper.
-  argumentDependentCommandBody: ((String) -> String)? = null
+  argumentDependentCommandBody: ((String, String) -> String)? = null
 
   /// Package-local documents read only when their owning workflow step runs.
   /// Phase-based workflows include output.md here; phase-free workflows keep
@@ -185,6 +187,14 @@ hidden commandBanner = (workflowName: String) -> packageOnlyBlock.apply("\(workf
 hidden inlinePhaseBody = (phaseBody: WorkflowBody) ->
   compositeOnlyBlock.apply(phaseBody.render.apply("composite"))
 
+/// A concrete `$sce-{slug}` invocation example appended to a skill's `## Input`
+/// section. Only Codex needs this: its skill loading has no `$ARGUMENTS`-style
+/// substitution, so its Input section otherwise names the invocation input only
+/// in prose. Empty for every other target, so their rendered Markdown is
+/// byte-identical to before this paragraph existed.
+hidden invocationExampleParagraph = (invocationExample: String) ->
+  if (invocationExample.isEmpty) "" else "For example: `\(invocationExample)`.\n\n"
+
 /// Non-SCE skills may help with work inside the active workflow step without
 /// becoming an alternate owner of the workflow's control flow.
 helperSkillCompositionRule = """
@@ -198,7 +208,7 @@ validation, stops, and terminal user-visible output.
 /// four phase-based workflows. Target renderers add only supported entrypoint
 /// frontmatter; all operational and persisted-document content remains
 /// target-neutral.
-nextTaskSkillBody = (argumentsReference: String) -> """
+nextTaskSkillBody = (argumentsReference: String, invocationExample: String) -> """
 # SCE Next Task
 
 ## Purpose
@@ -263,7 +273,7 @@ Pass each part only to the phase that owns it. Do not forward the raw `\(argumen
 
 Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is the path resolved in step 1 (`plan.path`, or an entry of `candidates`), so every emitted command is directly runnable.
 
-## Workflow
+\(invocationExampleParagraph.apply(invocationExample))## Workflow
 
 ### 1. Review the task
 
@@ -385,7 +395,7 @@ Stop.
 - Preserve completed work and evidence when a later phase fails.
 """
 
-validateSkillBody = (argumentsReference: String) -> """
+validateSkillBody = (argumentsReference: String, invocationExample: String) -> """
 # SCE Validate
 
 ## Purpose
@@ -447,7 +457,7 @@ Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is
 the path carried by the **Validation phase** in its Markdown result (`Plan:`, or a
 candidate path), so every emitted command is directly runnable.
 
-## Workflow
+\(invocationExampleParagraph.apply(invocationExample))## Workflow
 
 ### 1. Validate the plan
 

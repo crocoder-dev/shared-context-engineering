@@ -64,7 +64,7 @@ local titleAndPurpose = model.semanticReference.apply(
   scopeStatement + "\n\n"
 )
 
-local renderSkillBody = (mode: model.WorkflowRenderMode, argumentsReference: String) -> """
+local renderSkillBody = (mode: model.WorkflowRenderMode, argumentsReference: String, invocationExample: String) -> """
     \(titleAndPurpose.render.apply(mode))## Input
 
     `\(argumentsReference)` is `[rebuild] [path ...]`. Parse it into two parts before any
@@ -89,7 +89,7 @@ local renderSkillBody = (mode: model.WorkflowRenderMode, argumentsReference: Str
     `references/output.md` naming the offending token, and stop. Do not guess the
     token's meaning, and do not investigate or write anything.
 
-    ## Workflow
+    \(model.invocationExampleParagraph.apply(invocationExample))## Workflow
 
     ### 1. Confirm the context root
 
@@ -374,7 +374,7 @@ local structuredCommand = new model.StructuredWorkflowDocument {
     }
   }
   body = new model.WorkflowBody {
-    render = (mode: model.WorkflowRenderMode) -> renderSkillBody.apply(mode, "$ARGUMENTS")
+    render = (mode: model.WorkflowRenderMode) -> renderSkillBody.apply(mode, "$ARGUMENTS", "")
   }
 }
 
@@ -531,7 +531,7 @@ local brownfieldPackage = new model.SkillPackage {
 
 structuredComposite = new model.StructuredCompositeSource {
   command = structuredCommand
-  argumentDependentCommandBody = (argumentsReference: String) -> renderSkillBody.apply("composite", argumentsReference)
+  argumentDependentCommandBody = (argumentsReference: String, invocationExample: String) -> renderSkillBody.apply("composite", argumentsReference, invocationExample)
   argumentReferenceOutputDocument = (argumentsReference: String) -> model.makeDocument.apply("references/output.md", OUTPUT_MD.apply(argumentsReference))
   phases = new Listing {}
   internalDocuments = new Listing {}

@@ -96,7 +96,7 @@ commands {
 /// Claude has six command-routed workflow packages plus the standalone
 /// decision-writing package used internally during synchronization.
 skillDocuments {
-  for (path, document in workflowResults.skillDocuments.apply("compatibility: claude\n", "$ARGUMENTS")) {
+  for (path, document in workflowResults.skillDocuments.apply("compatibility: claude\n", "$ARGUMENTS", (_) -> "")) {
     [path] = document
   }
   for (path, document in decision.skillDocuments.apply("compatibility: claude\n")) {
