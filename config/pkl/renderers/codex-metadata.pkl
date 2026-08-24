@@ -1,0 +1,69 @@
+// Typed Codex skill-interface metadata and the pure `agents/openai.yaml`
+// renderer for the six catalog workflow skills. Wiring this output into
+// `codex-content.pkl`'s exposed skill-document map is a later task; this
+// module only defines the model, the per-workflow authored values, and the
+// render function, and evaluates standalone.
+//
+// Confirmed upstream `agents/openai.yaml` schema
+// (developers.openai.com/codex/skills, redirects to
+// learn.chatgpt.com/docs/build-skills; confirmed 2026-08-24): three
+// top-level sections — `interface` (`display_name`, `short_description`,
+// `icon_small`, `icon_large`, `brand_color`, `default_prompt`, all
+// optional), `policy.allow_implicit_invocation` (boolean, default `true`),
+// and `dependencies.tools`. This module authors only
+// `interface.{display_name,short_description,default_prompt}` and
+// `policy.allow_implicit_invocation = false` — every catalog workflow is a
+// stateful SCE lifecycle transition that must not auto-trigger from
+// conversational relevance alone.
+import "../base/workflow-catalog.pkl" as catalog
+
+class CodexSkillMetadata {
+  displayName: String
+  shortDescription: String
+  defaultPrompt: String
+}
+
+/// `default_prompt` has no cross-target catalog counterpart (unlike
+/// `display_name`/`short_description`, which reuse the catalog's
+/// `title`/`description` verbatim); each value is authored once here as a
+/// short imperative sentence describing what invoking the workflow does.
+local defaultPrompts: Mapping<String, String> = new Mapping {
+  ["change-to-plan"] = "Turn this change request into an SCE plan."
+  ["next-task"] = "Review, approve, implement, verify, and synchronize the next SCE plan task."
+  ["validate"] = "Validate this completed SCE plan and record final validation evidence."
+  ["commit"] = "Analyze staged changes and run the SCE commit workflow."
+  ["handover"] = "Write an SCE session handover document, or load one for continuation."
+  ["brownfield"] = "Reconstruct durable SCE context from this repository's own evidence."
+}
+
+/// Keyed by `commandSlug`, matching `catalog.workflows`.
+metadataByCommandSlug: Mapping<String, CodexSkillMetadata> = new Mapping {
+  for (slug, workflow in catalog.workflows) {
+    [slug] = new CodexSkillMetadata {
+      displayName = workflow.title
+      shortDescription = workflow.description
+      defaultPrompt = defaultPrompts[slug]
+    }
+  }
+}
+
+/// Pure render: `interface` plus `policy.allow_implicit_invocation: false`,
+/// no other top-level keys. Every value here is plain authored catalog text
+/// with no YAML-special characters, so a double-quoted scalar needs no
+/// general escaping helper.
+local render = (metadata: CodexSkillMetadata) -> """
+interface:
+  display_name: "\(metadata.displayName)"
+  short_description: "\(metadata.shortDescription)"
+  default_prompt: "\(metadata.defaultPrompt)"
+policy:
+  allow_implicit_invocation: false
+"""
+
+/// Rendered `agents/openai.yaml` text per catalog workflow command slug.
+/// Evaluating this module standalone exercises every workflow's output.
+renderedByCommandSlug: Mapping<String, String> = new Mapping {
+  for (slug, metadata in metadataByCommandSlug) {
+    [slug] = render.apply(metadata)
+  }
+}

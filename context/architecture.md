@@ -34,6 +34,7 @@ Current target renderer helper modules:
 - `config/pkl/renderers/claude-metadata.pkl`
 - `config/pkl/renderers/metadata-coverage-check.pkl`
 - `config/pkl/renderers/generation-contract-check.pkl`
+- `config/pkl/renderers/codex-metadata.pkl` (typed Codex skill-interface metadata plus a pure `agents/openai.yaml` renderer for the six catalog workflow skills — `interface.{display_name,short_description,default_prompt}` derived from/authored alongside the catalog, and `policy.allow_implicit_invocation: false`; standalone as of this module, not yet wired into `codex-content.pkl`'s emitted skill documents)
 - `config/pkl/generate.pkl` (single multi-file generation entrypoint)
 - `config/pkl/generator-inputs.txt` (machine-readable repository-relative declaration of canonical Pkl and referenced plugin/extension inputs)
 - `scripts/produce-cli-generated-input.sh` (canonical generated-input producer for input discovery, two-pass evaluation, determinism and input-mutation checks, exact payload/input inventories, atomic publication, and temporary-state cleanup; consumed by the repository Cargo wrapper, generated-output check, package-fallback preparation, and Nix `cliGeneratedInput` derivation)
