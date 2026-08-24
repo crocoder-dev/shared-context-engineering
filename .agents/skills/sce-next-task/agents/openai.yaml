@@ -1,0 +1,6 @@
+interface:
+  display_name: "SCE Next Task"
+  short_description: "Review, approve, implement, verify, and synchronize one SCE plan task"
+  default_prompt: "Review, approve, implement, verify, and synchronize the next SCE plan task."
+policy:
+  allow_implicit_invocation: false

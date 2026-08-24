@@ -1,0 +1,6 @@
+interface:
+  display_name: "SCE Change to Plan"
+  short_description: "Turn one change request into a scoped SCE plan in one self-contained workflow"
+  default_prompt: "Turn this change request into an SCE plan."
+policy:
+  allow_implicit_invocation: false

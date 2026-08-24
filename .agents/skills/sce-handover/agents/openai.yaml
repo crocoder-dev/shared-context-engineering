@@ -1,0 +1,6 @@
+interface:
+  display_name: "SCE Handover"
+  short_description: "Write a session handover document, or load one for continuation"
+  default_prompt: "Write an SCE session handover document, or load one for continuation."
+policy:
+  allow_implicit_invocation: false
