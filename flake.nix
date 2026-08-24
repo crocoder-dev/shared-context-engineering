@@ -63,6 +63,29 @@
           };
         });
 
+        quintLanguageServerPackage = pkgs.buildNpmPackage {
+          pname = "quint-language-server";
+          version = "0.19.0";
+          src = pkgs.fetchurl {
+            url = "https://registry.npmjs.org/@informalsystems/quint-language-server/-/quint-language-server-0.19.0.tgz";
+            hash = "sha256-gNoz7Pu+/TO/Vp86IB8tfZ9vHN78L7eRllITNtsnGFY=";
+          };
+          postPatch = "cp ${./nix/quint-language-server/package-lock.json} package-lock.json";
+          npmDepsHash = "sha256-zw8hBTxOUAcKgJrK1J+0APwtGv+2Cv22LcNHogaNBPc=";
+          dontNpmBuild = true;
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+          installPhase = ''
+            mkdir -p "$out/lib/node_modules/@informalsystems/quint-language-server" "$out/bin"
+            cp -r . "$out/lib/node_modules/@informalsystems/quint-language-server/"
+            makeWrapper "${pkgs.nodejs}/bin/node" "$out/bin/quint-language-server" \
+              --add-flags "$out/lib/node_modules/@informalsystems/quint-language-server/out/src/server.js"
+          '';
+          meta = {
+            description = "Language Server for the Quint specification language";
+            mainProgram = "quint-language-server";
+          };
+        };
+
         rustVersion = "1.95.0";
 
         rustToolchain = pkgs.rust-bin.stable.${rustVersion}.default.override {
@@ -479,6 +502,8 @@
             jq
             pkl
             pkl-lsp
+            quint
+            quintLanguageServerPackage
             typescript
             typescript-language-server
             vscode-json-languageserver
@@ -499,6 +524,8 @@
           echo "- biome: $(version_of biome)"
           echo "- pkl: $(version_of pkl)"
           echo "- pkl-lsp: $(version_of pkl-lsp)"
+          echo "- quint: $(version_of quint)"
+          echo "- quint-language-server: available"
           echo "- tsc: $(version_of tsc)"
           echo "- tsserver-lsp: $(version_of typescript-language-server)"
           echo "- rust: $(version_of rustc)"
@@ -1502,6 +1529,8 @@
           sce-release = sceReleasePackage;
           ci-checks = ciChecks;
           bun = bunPackage;
+          quint = pkgs.quint;
+          quint-language-server = quintLanguageServerPackage;
           turso = tursoPackage;
           default = scePackage;
         };
