@@ -495,7 +495,13 @@ mod tests {
             .expect("temporary repository should have a name")
             .to_str()
             .expect("temporary repository name should be UTF-8");
-        let path = format!("../../../../{parent_path}/{root_name}/clamped.rs");
+        // Overshoot past the filesystem root by a wide margin: `TMPDIR` depth
+        // varies by platform (e.g. macOS's `/var/folders/xx/yyyy/T/` nests
+        // deeper than Linux's `/tmp/`), so a fixed `..` count that clamps on
+        // one platform can undershoot the root on another.
+        let cwd_depth = cwd.components().count();
+        let excess_traversal = "../".repeat(cwd_depth + 8);
+        let path = format!("{excess_traversal}{parent_path}/{root_name}/clamped.rs");
 
         let result = resolve_codex_patch_path(&root, &cwd.to_string_lossy(), &path)
             .expect("excessive parent traversal should clamp at filesystem root");
