@@ -1,15 +1,16 @@
 {
   "$schema": "https://sce.crocoder.dev/config.json",
+  "agent_trace": {
+    "auto_sync": true
+  },
   "integrations": {
     "optional_workflows": [],
     "target": [
       "claude",
       "opencode",
-      "pi"
+      "pi",
+      "codex"
     ]
-  },
-  "agent_trace": {
-    "auto_sync": true
   },
   "log_dir": "context/tmp",
   "log_level": "error",

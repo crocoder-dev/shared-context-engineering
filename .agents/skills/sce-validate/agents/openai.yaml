@@ -1,0 +1,6 @@
+interface:
+  display_name: "SCE Validate"
+  short_description: "Validate one completed SCE plan and record final validation evidence"
+  default_prompt: "Validate this completed SCE plan and record final validation evidence."
+policy:
+  allow_implicit_invocation: false

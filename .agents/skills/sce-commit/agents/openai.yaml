@@ -1,0 +1,6 @@
+interface:
+  display_name: "SCE Commit"
+  short_description: "Analyze staged changes and run the regular or explicit bypass commit workflow"
+  default_prompt: "Analyze staged changes and run the SCE commit workflow."
+policy:
+  allow_implicit_invocation: false
