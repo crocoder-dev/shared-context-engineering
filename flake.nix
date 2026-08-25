@@ -70,8 +70,12 @@
             url = "https://registry.npmjs.org/@informalsystems/quint-language-server/-/quint-language-server-0.19.0.tgz";
             hash = "sha256-gNoz7Pu+/TO/Vp86IB8tfZ9vHN78L7eRllITNtsnGFY=";
           };
-          postPatch = "cp ${./nix/quint-language-server/package-lock.json} package-lock.json";
-          npmDepsHash = "sha256-zw8hBTxOUAcKgJrK1J+0APwtGv+2Cv22LcNHogaNBPc=";
+          postPatch = ''
+            cp ${./nix/quint-language-server/package-lock.json} package-lock.json
+            ${pkgs.jq}/bin/jq '.overrides = {"tar": "^7.5.21"}' package.json > package.json.tmp
+            mv package.json.tmp package.json
+          '';
+          npmDepsHash = "sha256-+ldzECIo3yC9RgNC1U0U15HrM+IcYX8v00JFdzoMCog=";
           dontNpmBuild = true;
           nativeBuildInputs = [ pkgs.makeWrapper ];
           installPhase = ''
