@@ -89,6 +89,13 @@ module mutation_cursor {
     preservedScopes: Set[ScopeId],
   }
 
+  type RecoveryCheckpoint = {
+    worktreeId: WorktreeId,
+    observedTree: TreeId,
+    resultingCursor: TreeId,
+    clearedExternalTaint: bool,
+  }
+
   type MutationEvent = {
     worktreeId: WorktreeId,
     revision: int,
@@ -250,6 +257,7 @@ module mutation_cursor {
   var scopeHistory: Set[ScopeCheckpoint]
   var abandonHistory: Set[AbandonCheckpoint]
   var startHistory: Set[StartCheckpoint]
+  var recoveryHistory: Set[RecoveryCheckpoint]
   var taintHistory: Set[DurableStateCheckpoint]
   var evidenceAttempts: Set[AttemptId]
   var mutationEvents: Set[MutationEvent]
@@ -382,6 +390,7 @@ module mutation_cursor {
     scopeHistory' = Set(),
     abandonHistory' = Set(),
     startHistory' = Set(),
+    recoveryHistory' = Set(),
     taintHistory' = Set(),
     evidenceAttempts' = Set(),
     mutationEvents' = Set(),
@@ -401,6 +410,7 @@ module mutation_cursor {
     scopeHistory' = scopeHistory,
     abandonHistory' = abandonHistory,
     startHistory' = startHistory,
+    recoveryHistory' = recoveryHistory,
     taintHistory' = taintHistory,
     evidenceAttempts' = evidenceAttempts,
     mutationEvents' = mutationEvents,
@@ -420,6 +430,7 @@ module mutation_cursor {
     scopeHistory' = scopeHistory,
     abandonHistory' = abandonHistory,
     startHistory' = startHistory,
+    recoveryHistory' = recoveryHistory,
     taintHistory' = taintHistory,
     evidenceAttempts' = evidenceAttempts,
     mutationEvents' = mutationEvents,
@@ -453,6 +464,7 @@ module mutation_cursor {
         scopeHistory' = scopeHistory,
         abandonHistory' = abandonHistory,
         startHistory' = startHistory,
+        recoveryHistory' = recoveryHistory,
         taintHistory' = taintHistory,
         evidenceAttempts' = evidenceAttempts,
         mutationEvents' = mutationEvents,
@@ -529,6 +541,7 @@ module mutation_cursor {
         scopeHistory' = scopeHistory,
         abandonHistory' = abandonHistory,
         startHistory' = startHistory,
+        recoveryHistory' = recoveryHistory,
         taintHistory' = taintHistory,
         evidenceAttempts' = evidenceAttempts,
         mutationEvents' = mutationEvents,
@@ -659,6 +672,7 @@ module mutation_cursor {
         scopeHistory' = nextScopeHistory,
         abandonHistory' = abandonHistory,
         startHistory' = nextStartHistory,
+        recoveryHistory' = recoveryHistory,
         taintHistory' = taintHistory,
         evidenceAttempts' = nextEvidenceAttempts,
         mutationEvents' = mutationEvents.union(emitted),
@@ -701,6 +715,7 @@ module mutation_cursor {
         scopeHistory' = scopeHistory,
         abandonHistory' = abandonHistory,
         startHistory' = startHistory,
+        recoveryHistory' = recoveryHistory,
         taintHistory' = taintHistory,
         evidenceAttempts' = evidenceAttempts,
         mutationEvents' = mutationEvents,
@@ -726,6 +741,7 @@ module mutation_cursor {
         scopeHistory' = scopeHistory,
         abandonHistory' = abandonHistory,
         startHistory' = startHistory,
+        recoveryHistory' = recoveryHistory,
         taintHistory' = taintHistory.union(Set(durableStateFor(worktree))),
         evidenceAttempts' = evidenceAttempts,
         mutationEvents' = mutationEvents,
@@ -783,6 +799,7 @@ module mutation_cursor {
           cursorTree: state.cursorTree,
         })),
         startHistory' = startHistory,
+        recoveryHistory' = recoveryHistory,
         taintHistory' = taintHistory,
         evidenceAttempts' = evidenceAttempts,
         mutationEvents' = mutationEvents,
@@ -852,6 +869,12 @@ module mutation_cursor {
         scopeHistory' = scopeHistory,
         abandonHistory' = abandonHistory,
         startHistory' = startHistory,
+        recoveryHistory' = recoveryHistory.union(Set({
+          worktreeId: worktree,
+          observedTree: worktreeTrees.get(worktree),
+          resultingCursor: worktreeTrees.get(worktree),
+          clearedExternalTaint: externalTaint.contains(worktree),
+        })),
         taintHistory' = taintHistory,
         evidenceAttempts' = evidenceAttempts,
         mutationEvents' = mutationEvents,
@@ -937,14 +960,11 @@ module mutation_cursor {
       attributionFor(worktree) == IneligibleUnscoped
   })
 
-  val RecoveryClearsExternalTaintOnlyAfterBaseline = WORKTREES.forall(worktree => {
-    externalTaint.contains(worktree) or
-      cursorHistory.exists(checkpoint =>
-        checkpoint.worktreeId == worktree and
-        checkpoint.revision == worktrees.get(worktree).revision and
-        checkpoint.cursorTree == worktrees.get(worktree).cursorTree
-      )
-  })
+  val RecoveryClearsExternalTaintOnlyAfterBaseline =
+    recoveryHistory.forall(checkpoint =>
+      checkpoint.clearedExternalTaint implies
+        checkpoint.resultingCursor == checkpoint.observedTree
+    )
 
   val ScopeActorIdentityIsStable = SCOPES.forall(scope => {
     scopes.get(scope).actorKind == scopeActor(scope)
@@ -1173,7 +1193,7 @@ module mutation_cursor {
 
   // Uniqueness and cross-referencing checks over the growing history logs
   // (mutationEvents, cursorHistory, protocolHistory, scopeHistory,
-  // abandonHistory). These are the most expensive conjuncts to verify since
+  // abandonHistory, recoveryHistory). These are the most expensive conjuncts to verify since
   // their cost scales with trace depth, so they are split out to be checked
   // in their own CI job rather than serialized with the rest of Safety.
   val SafetyHistory = and {
@@ -1480,6 +1500,12 @@ module mutation_cursor {
       .then(recover(WT0))
       .expect(worktrees.get(WT0).cursorTree == Tree2)
       .expect(not(externalTaint.contains(WT0)))
+      .expect(recoveryHistory.exists(checkpoint =>
+        checkpoint.worktreeId == WT0 and
+        checkpoint.observedTree == Tree2 and
+        checkpoint.resultingCursor == Tree2 and
+        checkpoint.clearedExternalTaint
+      ))
       .expect(scopes.get(Scope0).status == Abandoned)
       .expect(mutationEvents.size() == 0)
       .expect(evidenceAttempts.size() == 0)
