@@ -35,7 +35,7 @@ Hook replay identity is scoped by `ScopeId` and `EventId` through `EventKey`. Th
 
 `worktrees.cursorTree`, `worktrees.revision`, scope state, `processedEvents`, and `mutationEvents` represent state durably stored in the Agent Trace database. `worktrees.needsRebaseline` is a durable protocol marker for an ambiguous cursor interval; it is distinct from both snapshot failure and external database taint.
 
-A snapshot failure occurs while the database is healthy. `taint(worktree)` therefore records `SnapshotFailure` in the durable worktree state, invalidating subsequent speculative attempts until recovery.
+A snapshot failure occurs while the database is healthy. `taint(worktree)` therefore records `SnapshotFailure` in the durable worktree state and increments the worktree revision. This invalidates speculative attempts that were already prepared before the failure. It does not quarantine later attempts: once a subsequent snapshot is prepared against the tainted state and the normal freshness checks pass, it may advance the cursor. Because failure states weaken attribution, any evidence emitted while tainted is `IneligibleUnscoped` until recovery.
 
 Database unavailability is different. `databaseFailure(worktree)` changes only:
 
@@ -75,23 +75,22 @@ produce no evidence for the skipped interval
 clear needsRebaseline
 ```
 
-For external taint or snapshot failure, recovery retains the stronger existing behavior of abandoning active scopes. The external-taint recovery path is:
-
+For external taint or snapshot failure, recovery retains the stronger existing behavior of abandoning active scopes. The recovery path is:
 
 ```text
-observe externalTaint
+observe taint or externalTaint
     ↓
 snapshot current worktree
     ↓
 establish current tree as the new cursor baseline
     ↓
-produce no evidence for the skipped interval
+produce no evidence for the recovery baseline
     ↓
 abandon every active scope on the worktree
     ↓
 commit recovery to DB
     ↓
-clear externalTaint
+clear the taint/failure state and externalTaint
 ```
 
 Taint or external-taint recovery abandons active scopes because no trustworthy normal close boundary was observed. Healthy `needsRebaseline` recovery instead preserves surviving active scopes: only the ambiguous skipped interval is discarded, and those scopes may resume attribution after the new baseline. No filesystem details, SQLite/Turso internals, retries, or OS crash timing are modeled.
