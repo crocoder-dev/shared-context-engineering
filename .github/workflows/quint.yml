@@ -51,7 +51,7 @@ jobs:
         run: echo "No Quint specification changes detected; validation skipped."
 
   quint:
-    name: Quint gate
+    name: Quint checks
     needs: detect
     if: needs.detect.outputs.quint == 'true'
     runs-on: ubuntu-latest
@@ -120,3 +120,33 @@ jobs:
 
       - name: Verify ${{ matrix.invariant }}
         run: nix run .#quint -- verify spec/mutation_cursor.qnt --invariant=${{ matrix.invariant }} --max-steps=${{ matrix.max_steps }}
+
+  gate:
+    name: Quint gate
+    if: always()
+    needs:
+      - detect
+      - quint
+      - quint-verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Quint result
+        env:
+          CHANGED: ${{ needs.detect.outputs.quint }}
+          CHECK_RESULT: ${{ needs.quint.result }}
+          VERIFY_RESULT: ${{ needs.quint-verify.result }}
+        run: |
+          if [ "$CHANGED" != "true" ]; then
+            echo "No Quint changes."
+            exit 0
+          fi
+
+          if [ "$CHECK_RESULT" != "success" ]; then
+            echo "Quint typecheck/tests failed."
+            exit 1
+          fi
+
+          if [ "$VERIFY_RESULT" != "success" ]; then
+            echo "Quint safety verification failed."
+            exit 1
+          fi
