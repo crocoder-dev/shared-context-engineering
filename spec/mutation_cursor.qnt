@@ -69,13 +69,6 @@ module mutation_cursor {
     needsRebaseline: bool,
   }
 
-  type RolloverCheckpoint = {
-    worktreeId: WorktreeId,
-    revision: int,
-    cursorTree: TreeId,
-    abandonedScopes: Set[ScopeId],
-  }
-
   type ScopeCheckpoint = {
     worktreeId: WorktreeId,
     revision: int,
@@ -117,7 +110,6 @@ module mutation_cursor {
     everTerminal: Set[ScopeId],
     cursorHistory: Set[CursorCheckpoint],
     protocolHistory: Set[ProtocolCheckpoint],
-    rolloverHistory: Set[RolloverCheckpoint],
     scopeHistory: Set[ScopeCheckpoint],
     abandonHistory: Set[AbandonCheckpoint],
     startHistory: Set[StartCheckpoint],
@@ -255,7 +247,6 @@ module mutation_cursor {
   var attempts: AttemptId -> AttemptState
   var cursorHistory: Set[CursorCheckpoint]
   var protocolHistory: Set[ProtocolCheckpoint]
-  var rolloverHistory: Set[RolloverCheckpoint]
   var scopeHistory: Set[ScopeCheckpoint]
   var abandonHistory: Set[AbandonCheckpoint]
   var startHistory: Set[StartCheckpoint]
@@ -268,12 +259,6 @@ module mutation_cursor {
       val state = scopes.get(scope)
       state.worktreeId == worktree and isLive(state.status)
     })
-
-  def sameActorLiveScopes(
-    worktree: WorktreeId,
-    actor: ActorKind
-  ): Set[ScopeId] =
-    liveScopesOn(worktree).filter(scope => scopes.get(scope).actorKind == actor)
 
   def durableStateFor(worktree: WorktreeId): DurableStateCheckpoint = {
     worktreeId: worktree,
@@ -294,9 +279,6 @@ module mutation_cursor {
     protocolHistory: protocolHistory.filter(checkpoint =>
       checkpoint.worktreeId == worktree
     ),
-    rolloverHistory: rolloverHistory.filter(checkpoint =>
-      checkpoint.worktreeId == worktree
-    ),
     scopeHistory: scopeHistory.filter(checkpoint =>
       checkpoint.worktreeId == worktree
     ),
@@ -312,27 +294,6 @@ module mutation_cursor {
     mutationEvents: mutationEvents.filter(event =>
       event.worktreeId == worktree
     ),
-  }
-
-  def rolloverScope(
-    scope: ScopeId,
-    worktree: WorktreeId,
-    actor: ActorKind
-  ): ScopeState = {
-    val oldScope = scopes.get(scope)
-    if (
-      oldScope.worktreeId == worktree and
-      isLive(oldScope.status) and
-      oldScope.actorKind == actor
-    ) {
-      {
-        status: Abandoned,
-        actorKind: oldScope.actorKind,
-        worktreeId: oldScope.worktreeId,
-      }
-    } else {
-      oldScope
-    }
   }
 
   def attributionFor(worktree: WorktreeId): Attribution = {
@@ -418,7 +379,6 @@ module mutation_cursor {
         needsRebaseline: false,
       }
     ),
-    rolloverHistory' = Set(),
     scopeHistory' = Set(),
     abandonHistory' = Set(),
     startHistory' = Set(),
@@ -438,7 +398,6 @@ module mutation_cursor {
     attempts' = attempts,
     cursorHistory' = cursorHistory,
     protocolHistory' = protocolHistory,
-    rolloverHistory' = rolloverHistory,
     scopeHistory' = scopeHistory,
     abandonHistory' = abandonHistory,
     startHistory' = startHistory,
@@ -458,7 +417,6 @@ module mutation_cursor {
     attempts' = attempts,
     cursorHistory' = cursorHistory,
     protocolHistory' = protocolHistory,
-    rolloverHistory' = rolloverHistory,
     scopeHistory' = scopeHistory,
     abandonHistory' = abandonHistory,
     startHistory' = startHistory,
@@ -492,7 +450,6 @@ module mutation_cursor {
         }),
         cursorHistory' = cursorHistory,
         protocolHistory' = protocolHistory,
-        rolloverHistory' = rolloverHistory,
         scopeHistory' = scopeHistory,
         abandonHistory' = abandonHistory,
         startHistory' = startHistory,
@@ -510,7 +467,6 @@ module mutation_cursor {
     val state = worktrees.get(worktree)
     val scope = boundaryScope(boundary)
     val currentScope = scopes.get(scope)
-    val event = boundaryEvent(boundary)
     val fresh =
       planned.status == Prepared and
       not(externalTaint.contains(worktree)) and
@@ -529,14 +485,9 @@ module mutation_cursor {
         true
       }
     val accepted = fresh
-    val rollover =
-      isStart(boundary) and
-      currentScope.status == NeverSeen and
-      sameActorLiveScopes(worktree, currentScope.actorKind).size() > 0
     val observedChange = accepted and observes and
       planned.beforeTree != planned.afterTree
-    val changed = observedChange and not(rollover) and
-      not(state.needsRebaseline)
+    val changed = observedChange and not(state.needsRebaseline)
     val advancesRevision = accepted and (not(isFlush(boundary)) or observedChange)
     val live = liveScopesOn(worktree)
     val attribution = attributionFor(worktree)
@@ -575,7 +526,6 @@ module mutation_cursor {
         }),
         cursorHistory' = cursorHistory,
         protocolHistory' = protocolHistory,
-        rolloverHistory' = rolloverHistory,
         scopeHistory' = scopeHistory,
         abandonHistory' = abandonHistory,
         startHistory' = startHistory,
@@ -584,19 +534,9 @@ module mutation_cursor {
         mutationEvents' = mutationEvents,
       }
     } else {
-      val rolloverScopes =
-        if (rollover) {
-          scopes
-            .set(Scope0, rolloverScope(Scope0, worktree, currentScope.actorKind))
-            .set(Scope1, rolloverScope(Scope1, worktree, currentScope.actorKind))
-            .set(Scope2, rolloverScope(Scope2, worktree, currentScope.actorKind))
-            .set(Scope3, rolloverScope(Scope3, worktree, currentScope.actorKind))
-        } else {
-          scopes
-        }
       val nextScope =
         if (isStart(boundary) and currentScope.status == NeverSeen) {
-          rolloverScopes.set(scope, {
+          scopes.set(scope, {
             status: Active,
             actorKind: currentScope.actorKind,
             worktreeId: worktree,
@@ -614,7 +554,7 @@ module mutation_cursor {
           scopes
         }
       val nextCursor =
-        if (observes and (not(state.needsRebaseline) or rollover)) {
+        if (observes and not(state.needsRebaseline)) {
           planned.afterTree
         } else {
           state.cursorTree
@@ -626,7 +566,7 @@ module mutation_cursor {
             revision: state.revision + 1,
             tainted: state.tainted,
             failureKind: state.failureKind,
-            needsRebaseline: if (rollover) false else state.needsRebaseline,
+            needsRebaseline: state.needsRebaseline,
           })
         } else {
           worktrees
@@ -652,20 +592,6 @@ module mutation_cursor {
         } else {
           protocolHistory
         }
-      val nextRolloverHistory =
-        if (rollover) {
-          rolloverHistory.union(Set({
-            worktreeId: worktree,
-            revision: state.revision + 1,
-            cursorTree: nextCursor,
-            abandonedScopes: sameActorLiveScopes(
-              worktree,
-              currentScope.actorKind
-            ),
-          }))
-        } else {
-          rolloverHistory
-        }
       val nextScopeHistory =
         if (isStart(boundary) and currentScope.status == NeverSeen) {
           scopeHistory.union(
@@ -682,11 +608,7 @@ module mutation_cursor {
           scopeHistory
         }
       val nextStartHistory =
-        if (
-          isStart(boundary) and
-          currentScope.status == NeverSeen and
-          not(rollover)
-        ) {
+        if (isStart(boundary) and currentScope.status == NeverSeen) {
           startHistory.union(Set({
             worktreeId: worktree,
             revision: state.revision + 1,
@@ -710,11 +632,7 @@ module mutation_cursor {
           scopeStartCount
         }
       val nextTerminal =
-        if (rollover) {
-          everTerminal.union(
-            sameActorLiveScopes(worktree, currentScope.actorKind)
-          )
-        } else if (isClose(boundary) and
+        if (isClose(boundary) and
           (currentScope.status == NeverSeen or isLive(currentScope.status))) {
           everTerminal.union(Set(scope))
         } else {
@@ -738,7 +656,6 @@ module mutation_cursor {
         }),
         cursorHistory' = nextHistory,
         protocolHistory' = nextProtocolHistory,
-        rolloverHistory' = nextRolloverHistory,
         scopeHistory' = nextScopeHistory,
         abandonHistory' = abandonHistory,
         startHistory' = nextStartHistory,
@@ -781,7 +698,6 @@ module mutation_cursor {
           cursorTree: state.cursorTree,
           needsRebaseline: state.needsRebaseline,
         })),
-        rolloverHistory' = rolloverHistory,
         scopeHistory' = scopeHistory,
         abandonHistory' = abandonHistory,
         startHistory' = startHistory,
@@ -807,7 +723,6 @@ module mutation_cursor {
         attempts' = attempts,
         cursorHistory' = cursorHistory,
         protocolHistory' = protocolHistory,
-        rolloverHistory' = rolloverHistory,
         scopeHistory' = scopeHistory,
         abandonHistory' = abandonHistory,
         startHistory' = startHistory,
@@ -855,7 +770,6 @@ module mutation_cursor {
           cursorTree: state.cursorTree,
           needsRebaseline: true,
         })),
-        rolloverHistory' = rolloverHistory,
         scopeHistory' = scopeHistory.union(Set({
           worktreeId: worktree,
           revision: state.revision + 1,
@@ -935,7 +849,6 @@ module mutation_cursor {
           cursorTree: worktreeTrees.get(worktree),
           needsRebaseline: false,
         })),
-        rolloverHistory' = rolloverHistory,
         scopeHistory' = scopeHistory,
         abandonHistory' = abandonHistory,
         startHistory' = startHistory,
@@ -1207,39 +1120,7 @@ module mutation_cursor {
       )
     })
 
-  val SameActorRolloverAbandonsOldScope = rolloverHistory.forall(rollover => {
-    rollover.abandonedScopes.size() > 0 and
-      rollover.abandonedScopes.forall(scope =>
-        scopeHistory.exists(checkpoint =>
-          checkpoint.worktreeId == rollover.worktreeId and
-          checkpoint.revision == rollover.revision and
-          checkpoint.scope == scope and
-          checkpoint.status == Abandoned
-        )
-      )
-  })
-
-  val SameActorRolloverDoesNotClaimOldGap = rolloverHistory.forall(rollover => {
-    cursorHistory.exists(checkpoint =>
-      checkpoint.worktreeId == rollover.worktreeId and
-      checkpoint.revision == rollover.revision and
-      checkpoint.cursorTree == rollover.cursorTree
-    ) and
-    protocolHistory.exists(checkpoint =>
-      checkpoint.worktreeId == rollover.worktreeId and
-      checkpoint.revision == rollover.revision and
-      checkpoint.cursorTree == rollover.cursorTree and
-      not(checkpoint.needsRebaseline)
-    ) and
-    mutationEvents.forall(event =>
-      not(
-        event.worktreeId == rollover.worktreeId and
-        event.revision == rollover.revision
-      )
-    )
-  })
-
-  val DifferentActorStartDoesNotAbandonExistingScope =
+  val StartDoesNotAbandonExistingScopes =
     startHistory.forall(start =>
       start.preservedScopes.forall(scope =>
         scopeHistory.exists(checkpoint =>
@@ -1309,15 +1190,13 @@ module mutation_cursor {
     RecoveryClearsExternalTaintOnlyAfterBaseline,
   }
 
-  // Attribution and rollover semantics.
+  // Attribution and scope-start semantics.
   val SafetyAttribution = and {
     AttributionMatchesObservedScopes,
     AiExclusiveRequiresExactlyOneActiveScope,
     AiContendedRequiresMultipleActiveScopes,
     AbandonDoesNotEmitExclusiveEvidenceForUnobservedGap,
-    SameActorRolloverAbandonsOldScope,
-    SameActorRolloverDoesNotClaimOldGap,
-    DifferentActorStartDoesNotAbandonExistingScope,
+    StartDoesNotAbandonExistingScopes,
   }
 
   val Safety = and {
@@ -1672,20 +1551,22 @@ module mutation_cursor {
       .expect(abandonHistory.size() == 1)
       .expect(Safety)
 
-  run testSameActorRolloverAbandonsOldScope =
+  run testSameActorStartKeepsExistingScopeContended =
     init
       .then(prepare(Attempt0, Start({ scope: Scope0, event: Event0 })))
       .then(commitAttempt(Attempt0))
-      .then(mutate(WT0, Tree1))
       .then(prepare(Attempt1, Start({ scope: Scope1, event: Event1 })))
       .then(commitAttempt(Attempt1))
-      .expect(scopes.get(Scope0).status == Abandoned)
+      .then(mutate(WT0, Tree1))
+      .then(prepare(Attempt2, Flush(WT0)))
+      .then(commitAttempt(Attempt2))
+      .expect(scopes.get(Scope0).status == Active)
       .expect(scopes.get(Scope1).status == Active)
-      .expect(worktrees.get(WT0).cursorTree == Tree1)
-      .expect(mutationEvents.size() == 0)
       .expect(
-        mutationEvents.forall(event =>
-          event.attribution != AiExclusive(Scope0)
+        mutationEvents.exists(event =>
+          event.afterTree == Tree1 and
+          event.activeScopes.size() == 2 and
+          event.attribution == AiContended
         )
       )
       .expect(Safety)

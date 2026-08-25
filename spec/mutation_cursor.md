@@ -107,15 +107,14 @@ A scope has one of four statuses:
 
 `Closed` and `Abandoned` are terminal. `Abandon(scope)` changes only an active scope to `Abandoned`; it never reactivates a terminal scope. It increments the worktree revision, leaves the cursor unchanged, and sets `needsRebaseline`. Until recovery establishes a new baseline, normal observations emit no mutation evidence. An abandoned scope must not receive exclusive attribution for the unobserved gap preceding abandonment.
 
-If a new scope starts on the same worktree with the same actor while that actor already has an active scope, the model performs stale-scope rollover atomically:
+Starting a new scope never infers that an existing scope is stale from `ActorKind`. Existing active scopes remain active regardless of harness type, and the new scope becomes active independently:
 
 ```text
-old same-actor active scopes → Abandoned
-observe/rebaseline current worktree conservatively
+existing active scopes → remain Active
 new scope → Active
 ```
 
-The old cursor-to-current-tree gap produces no exclusive evidence for the old scope. A different actor does not trigger rollover: existing scopes remain active, and subsequent work is `AiContended` while two or more scopes are active.
+`ScopeId` is the session/scope identity. If a real session is stale, production must establish that through an explicit session/process/generation guarantee and invoke abandonment or recovery; harness type alone is not sufficient. Until then, subsequent work is `AiContended` while two or more scopes are active.
 
 Attribution remains:
 
@@ -134,15 +133,15 @@ The model includes safety properties covering:
 - database failure not mutating durable protocol state;
 - external taint not strengthening attribution;
 - recovery baseline before clearing external taint;
-- recovery and rollover abandoning active scopes;
+- recovery abandoning active scopes;
 - closed and abandoned terminality;
 - no exclusive evidence for an abandoned unobserved gap;
-- same-actor rollover and different-actor contention;
+- same-actor and different-actor contention;
 - `AiExclusive` requiring exactly one active scope;
 - `AiContended` requiring multiple active scopes;
 - CAS/replay safety and cursor/evidence consistency.
 
-Deterministic runs cover database-unavailable state preservation, external-taint recovery, abandoned-scope non-reactivation, same-actor rollover, and different-actor contention.
+Deterministic runs cover database-unavailable state preservation, external-taint recovery, abandoned-scope non-reactivation, and same-actor and different-actor contention.
 
 ## Implementation refinement
 
