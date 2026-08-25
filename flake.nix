@@ -72,10 +72,10 @@
           };
           postPatch = ''
             cp ${./nix/quint-language-server/package-lock.json} package-lock.json
-            ${pkgs.jq}/bin/jq '.overrides = {"tar": "^7.5.21"}' package.json > package.json.tmp
+            ${pkgs.jq}/bin/jq '.overrides = {"tar": "^7.5.21", "adm-zip": "^0.6.0"}' package.json > package.json.tmp
             mv package.json.tmp package.json
           '';
-          npmDepsHash = "sha256-+ldzECIo3yC9RgNC1U0U15HrM+IcYX8v00JFdzoMCog=";
+          npmDepsHash = "sha256-WueIhunZ6mP7ahKAEXIpDIoAIDr9PqW2MN6olCFODPw=";
           dontNpmBuild = true;
           nativeBuildInputs = [ pkgs.makeWrapper ];
           installPhase = ''
