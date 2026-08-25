@@ -13,6 +13,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use anyhow::{bail, Context, Result};
+
 use super::{
     repository_identity_from_explicit, repository_identity_from_remote_url, RepositoryIdentity,
     RepositoryIdentityError,
@@ -124,21 +126,55 @@ pub fn resolve_repository_identity_with_lookup(
 /// Returns `None` when git is unavailable, the directory is not a
 /// repository, or the remote has no URL.
 pub fn lookup_remote_url(repository_root: &Path, remote_name: &str) -> Option<String> {
+    lookup_remote_url_strict(repository_root, remote_name)
+        .ok()
+        .flatten()
+}
+
+/// Reads a named Git remote URL while distinguishing a missing URL from a
+/// failure to execute or interpret the lookup.
+pub fn lookup_remote_url_strict(
+    repository_root: &Path,
+    remote_name: &str,
+) -> Result<Option<String>> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repository_root)
         .args(["config", "--get", &format!("remote.{remote_name}.url")])
         .output()
-        .ok()?;
+        .with_context(|| {
+            format!(
+                "Failed to look up Git remote '{remote_name}' URL in '{}'",
+                repository_root.display()
+            )
+        })?;
+
     if !output.status.success() {
-        return None;
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if output.status.code() == Some(1) && stderr.is_empty() {
+            return Ok(None);
+        }
+
+        let diagnostic = if stderr.is_empty() {
+            String::from("git config exited with a non-zero status")
+        } else {
+            crate::services::security::redact_sensitive_text(&stderr)
+        };
+        bail!(
+            "Failed to look up Git remote '{remote_name}' URL in '{}': {diagnostic}",
+            repository_root.display()
+        );
     }
-    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    let url = String::from_utf8(output.stdout)
+        .context("Git remote lookup output contained invalid UTF-8")?
+        .trim()
+        .to_string();
     if url.is_empty() {
-        None
-    } else {
-        Some(url)
+        return Ok(None);
     }
+
+    Ok(Some(url))
 }
 
 #[cfg(test)]

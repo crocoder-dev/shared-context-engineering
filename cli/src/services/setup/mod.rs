@@ -12,6 +12,49 @@ pub mod command;
 pub(crate) mod config_merge;
 pub(crate) mod hook_merge;
 
+#[derive(Debug)]
+struct NotGitRepositoryError {
+    directory: PathBuf,
+}
+
+impl std::fmt::Display for NotGitRepositoryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Directory '{}' is not a git repository. Try: run 'git init' in '{}', then rerun 'sce setup'.",
+            self.directory.display(),
+            self.directory.display()
+        )
+    }
+}
+
+impl std::error::Error for NotGitRepositoryError {}
+
+#[derive(Debug)]
+struct MissingGitRemoteError {
+    remote_name: String,
+}
+
+impl std::fmt::Display for MissingGitRemoteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Git remote '{}' has no configured URL. Try: run 'git remote add {} <url>', then rerun 'sce setup'.",
+            self.remote_name, self.remote_name
+        )
+    }
+}
+
+impl std::error::Error for MissingGitRemoteError {}
+
+pub(crate) fn is_not_git_repository_error(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<NotGitRepositoryError>().is_some()
+}
+
+pub(crate) fn is_missing_git_remote_error(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<MissingGitRemoteError>().is_some()
+}
+
 /// Canonical JSON payload for a newly bootstrapped repo-local `.sce/config.json`.
 /// Contains only the `$schema` declaration pointing to the SCE config JSON Schema.
 fn repo_local_config_bootstrap_payload() -> String {
@@ -428,18 +471,18 @@ pub fn ensure_git_repository(directory: &Path) -> Result<PathBuf> {
 /// The URL itself is intentionally discarded so callers can preserve a
 /// technical diagnostic without echoing credential-bearing remote values.
 pub fn ensure_git_remote(repository_root: &Path, remote_name: &str) -> Result<()> {
-    if crate::services::repository_identity::resolve::lookup_remote_url(
+    let remote_url = crate::services::repository_identity::resolve::lookup_remote_url_strict(
         repository_root,
         remote_name,
-    )
-    .is_some()
-    {
+    )?;
+
+    if remote_url.is_some() {
         return Ok(());
     }
 
-    bail!(
-        "Git remote '{remote_name}' has no configured URL. Try: run 'git remote add {remote_name} <url>', then rerun 'sce setup'."
-    )
+    Err(anyhow::Error::new(MissingGitRemoteError {
+        remote_name: remote_name.to_string(),
+    }))
 }
 
 /// Bootstraps the repo-local `.sce/config.json` file if it does not already exist.
@@ -1147,29 +1190,12 @@ mod install {
     }
 
     fn resolve_git_repository_root(repository_root: &Path) -> Result<PathBuf> {
-        let repository_root_output = run_git_command_in_directory(
+        run_git_command_in_directory(
             repository_root,
             &["rev-parse", "--show-toplevel"],
             "Failed to resolve repository root. Ensure '--repo' points to an accessible git repository.",
         )
-        .map_err(|error| map_setup_non_git_repository_error(repository_root, error))?;
-        Ok(PathBuf::from(repository_root_output))
-    }
-
-    fn map_setup_non_git_repository_error(
-        repository_root: &Path,
-        error: anyhow::Error,
-    ) -> anyhow::Error {
-        let message = error.to_string();
-        if message.contains("not a git repository") {
-            anyhow::anyhow!(
-                "Directory '{}' is not a git repository. Try: run 'git init' in '{}', then rerun 'sce setup'.",
-                repository_root.display(),
-                repository_root.display()
-            )
-        } else {
-            error
-        }
+        .map(PathBuf::from)
     }
 
     fn resolve_git_hooks_directory(repository_root: &Path) -> Result<PathBuf> {
@@ -1206,6 +1232,11 @@ mod install {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if args == ["rev-parse", "--show-toplevel"] && stderr.contains("not a git repository") {
+                return Err(anyhow::Error::new(super::NotGitRepositoryError {
+                    directory: repository_root.to_path_buf(),
+                }));
+            }
             let diagnostic = if stderr.is_empty() {
                 String::from("git command exited with a non-zero status")
             } else {
