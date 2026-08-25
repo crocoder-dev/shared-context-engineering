@@ -91,8 +91,8 @@ module mutation_cursor {
 
   type RecoveryCheckpoint = {
     worktreeId: WorktreeId,
+    revision: int,
     observedTree: TreeId,
-    resultingCursor: TreeId,
     clearedExternalTaint: bool,
   }
 
@@ -871,8 +871,8 @@ module mutation_cursor {
         startHistory' = startHistory,
         recoveryHistory' = recoveryHistory.union(Set({
           worktreeId: worktree,
+          revision: state.revision + 1,
           observedTree: worktreeTrees.get(worktree),
-          resultingCursor: worktreeTrees.get(worktree),
           clearedExternalTaint: externalTaint.contains(worktree),
         })),
         taintHistory' = taintHistory,
@@ -961,9 +961,13 @@ module mutation_cursor {
   })
 
   val RecoveryClearsExternalTaintOnlyAfterBaseline =
-    recoveryHistory.forall(checkpoint =>
-      checkpoint.clearedExternalTaint implies
-        checkpoint.resultingCursor == checkpoint.observedTree
+    recoveryHistory.forall(recovery =>
+      recovery.clearedExternalTaint implies
+        cursorHistory.exists(cursor =>
+          cursor.worktreeId == recovery.worktreeId and
+          cursor.revision == recovery.revision and
+          cursor.cursorTree == recovery.observedTree
+        )
     )
 
   val ScopeActorIdentityIsStable = SCOPES.forall(scope => {
@@ -1130,7 +1134,10 @@ module mutation_cursor {
     event.attribution == AiContended implies event.activeScopes.size() >= 2
   })
 
-  val AbandonDoesNotEmitExclusiveEvidenceForUnobservedGap =
+  // This checks only that each mutation has a trustworthy preceding
+  // protocol checkpoint; it does not establish an abandonment or attribution
+  // fact.
+  val MutationEventsHaveTrustworthyPrecedingProtocolCheckpoint =
     mutationEvents.forall(event => {
       protocolHistory.exists(before =>
         before.worktreeId == event.worktreeId and
@@ -1152,7 +1159,9 @@ module mutation_cursor {
       )
     )
 
-  val StaleAttemptsDoNotCommitEvidence = ATTEMPTS.forall(id => {
+  // Directional only: rejected attempts have no evidence. This does not
+  // claim that every stale attempt is rejected.
+  val RejectedAttemptsDoNotEmitEvidence = ATTEMPTS.forall(id => {
     attempts.get(id).status != Rejected or not(evidenceAttempts.contains(id))
   })
 
@@ -1188,7 +1197,7 @@ module mutation_cursor {
     DatabaseFailureDoesNotMutateDurableProtocolState,
     ExternalTaintNeverStrengthensAttribution,
     NeedsRebaselineSuppressesAttribution,
-    StaleAttemptsDoNotCommitEvidence,
+    RejectedAttemptsDoNotEmitEvidence,
   }
 
   // Uniqueness and cross-referencing checks over the growing history logs
@@ -1207,6 +1216,7 @@ module mutation_cursor {
     AbandonHistoryUniquePerWorktreeRevisionScope,
     MutationEventsMatchCursorHistory,
     MutationEventsCrossOnlyTrustworthyProtocolStates,
+    MutationEventsHaveTrustworthyPrecedingProtocolCheckpoint,
     RecoveryClearsExternalTaintOnlyAfterBaseline,
   }
 
@@ -1215,7 +1225,6 @@ module mutation_cursor {
     AttributionMatchesObservedScopes,
     AiExclusiveRequiresExactlyOneActiveScope,
     AiContendedRequiresMultipleActiveScopes,
-    AbandonDoesNotEmitExclusiveEvidenceForUnobservedGap,
     StartDoesNotAbandonExistingScopes,
   }
 
@@ -1502,8 +1511,8 @@ module mutation_cursor {
       .expect(not(externalTaint.contains(WT0)))
       .expect(recoveryHistory.exists(checkpoint =>
         checkpoint.worktreeId == WT0 and
+        checkpoint.revision == worktrees.get(WT0).revision and
         checkpoint.observedTree == Tree2 and
-        checkpoint.resultingCursor == Tree2 and
         checkpoint.clearedExternalTaint
       ))
       .expect(scopes.get(Scope0).status == Abandoned)

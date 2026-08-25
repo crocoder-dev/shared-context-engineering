@@ -134,7 +134,7 @@ The model includes safety properties covering:
 - recovery baseline before clearing external taint;
 - recovery abandoning active scopes;
 - closed and abandoned terminality;
-- no exclusive evidence for an abandoned unobserved gap;
+- mutation evidence has a trustworthy preceding protocol checkpoint;
 - same-actor and different-actor contention;
 - `AiExclusive` requiring exactly one active scope;
 - `AiContended` requiring multiple active scopes;
