@@ -40,7 +40,7 @@ jobs:
             exit 0
           fi
 
-          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -Eq '\.qnt$'; then
+          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -Eq '(\.qnt$|^\.github/workflows/quint\.yml$|^flake\.nix$|^flake\.lock$)'; then
             echo "quint=true" >> "$GITHUB_OUTPUT"
           else
             echo "quint=false" >> "$GITHUB_OUTPUT"
@@ -85,6 +85,7 @@ jobs:
     needs: detect
     if: needs.detect.outputs.quint == 'true'
     runs-on: ubuntu-latest
+    # SafetyCore at depth 10 still exceeds 15 minutes locally.
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -119,7 +120,12 @@ jobs:
           use-gha-cache: true
 
       - name: Verify ${{ matrix.invariant }}
-        run: nix run .#quint -- verify spec/mutation_cursor.qnt --invariant=${{ matrix.invariant }} --max-steps=${{ matrix.max_steps }}
+        run: >
+          nix run .#quint --
+          verify spec/mutation_cursor.qnt
+          --step=verifyStep
+          --invariant=${{ matrix.invariant }}
+          --max-steps=${{ matrix.max_steps }}
 
   gate:
     name: Quint gate
