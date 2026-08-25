@@ -57,7 +57,7 @@ The same write also records the run's resolved optional-workflow selection under
 
 ## Relationship to other setup contracts
 
-- The Git-repo gate (`ensure_git_repository`) and effective named-remote URL preflight remain the preconditions for every setup write path, including context-only bootstrap.
+- The Git-repo gate (`ensure_git_repository`) and effective named-remote URL preflight remain the preconditions for every setup write path, including context-only bootstrap. The gate classifies only an explicit Git `not a git repository` result and an actually missing/empty named-remote URL as typed user errors; Git/process/configuration and remote-lookup execution failures remain runtime errors with technical sources preserved.
 - Context baseline bootstrap is independent of config/DB/hooks install and runs before those steps on normal setup paths.
 - Local bootstrap (repo config + local DB init) is independent of config install and hook install; it runs before both after context baseline bootstrap.
 - The bootstrap payload matches the `$schema` declaration accepted by startup config loading and the Pkl-authored JSON Schema embedded from Cargo `OUT_DIR`.

@@ -38,7 +38,8 @@ Example: `git@GitHub.com:Acme/Widgets.git`, `ssh://git@github.com:22/Acme/Widget
 
 - `resolve_repository_identity(repository_root, explicit_identity, remote_name)` — process-spawning entrypoint.
 - `resolve_repository_identity_with_lookup(explicit, remote_name, lookup)` — precedence core with injectable remote lookup for tests/callers.
-- `lookup_remote_url(repository_root, remote_name) -> Option<String>` — returns `None` when git is unavailable, the directory is not a repository, or the remote has no URL.
+- `lookup_remote_url_strict(repository_root, remote_name) -> Result<Option<String>>` — distinguishes a missing/empty remote URL (`Ok(None)`) from Git process, configuration, or output failures (`Err`); setup uses this strict seam.
+- `lookup_remote_url(repository_root, remote_name) -> Option<String>` — compatibility lookup used by repository-identity resolution; it preserves the existing fail-to-missing behavior by collapsing strict lookup failures to `None`.
 - `ResolvedRepositoryIdentity { identity, source }` with `RepositoryIdentitySource::{ExplicitConfig, RemoteUrl { remote_name }}` — source is retained for later diagnostics rendering (T10).
 - `RepositoryIdentityResolutionError::{InvalidExplicitIdentity, InvalidRemoteUrl, MissingIdentity}` — every `Display` message includes `.sce/config.json` guidance naming the `agent_trace.*` keys; variants carry only the configured remote name, never URLs or identity values.
 
@@ -49,6 +50,7 @@ Local paths are never used implicitly: a local-path remote URL fails canonicaliz
 - The returned canonical identity and repository ID never contain userinfo/credentials.
 - `RepositoryIdentityError` variants (`EmptyExplicitIdentity`, `EmptyRemoteUrl`, `UnsupportedRemoteUrl`, `MissingHost`, `MissingPath`, `InvalidPort`) are fieldless and their `Display` messages never echo the raw input, so credential-bearing URLs cannot leak through diagnostics.
 - `RepositoryIdentityResolutionError` follows the same rule: it never echoes remote URLs or explicit identity values; only operator-chosen remote names appear in messages.
+- Setup does not reuse the compatibility collapse for its preflight: only an explicit missing URL becomes `NotGitRemote`, while remote lookup execution failures remain `CliError::Internal` runtime errors with their technical sources.
 
 ## Status
 

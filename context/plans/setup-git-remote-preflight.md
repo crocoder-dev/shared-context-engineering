@@ -16,6 +16,13 @@ operators stable, actionable messages explaining `git init` or
 resolution and `lookup_remote_url` implementations; this change does not test
 remote network reachability or redesign repository identity resolution.
 
+Correction to the completed preflight implementation: narrow typed error
+classification so only Git's explicit `not a git repository` failure becomes
+`NotGitRepository`, and only an actually missing configured remote URL becomes
+`NotGitRemote`. Git process-launch, permission, bare-repository, malformed
+repository, and remote-lookup execution failures must remain runtime errors
+with their technical sources intact.
+
 ## Acceptance criteria
 
 How this plan is proven complete. Each criterion is observable and names the
@@ -45,6 +52,12 @@ performs final validation.
   and remote URLs are not echoed in diagnostics.
   - Validate: Existing CLI error tests plus the new setup error tests pass, and
     the full repository check suite succeeds.
+- [x] AC5: Setup classifies only the explicit missing-repository and missing-
+  remote conditions as typed user errors; Git/process/configuration failures
+  remain runtime errors and retain their technical sources.
+  - Validate: Focused setup and repository-identity tests cover a missing Git
+    repository, missing remote URL, Git launch/non-repository edge failures,
+    and remote lookup execution failures with exact `CliError` classification.
 
 ### Full validation
 
@@ -65,6 +78,8 @@ which criterion they map to.
   repository preflights precede context/config/database/bootstrap side effects.
 - `context/sce/cli-error-code-taxonomy.md` — add the two setup-specific
   `UserError` catalog entries and preserve-source rendering contract.
+- `context/cli/repository-identity.md` — document the strict remote-lookup
+  distinction used by setup while preserving repository-identity behavior.
 
 ## Task context synchronization lifecycle
 
@@ -86,10 +101,10 @@ Persist this field in every plan; this is durable plan state, not chat state:
   canonicalization changes, changes to Agent Trace identity precedence,
   changes to `doctor`, and changes to setup flags or successful output.
 - **Constraints:** Reuse `setup::ensure_git_repository`, the existing config
-  resolver for `agent_trace.repository_remote`, and
-  `repository_identity::resolve::lookup_remote_url`; preserve stdout/stderr
-  and stable `SCE-ERR-RUNTIME` behavior for `UserError` failures; do not expose
-  raw credential-bearing remote URLs.
+  resolver for `agent_trace.repository_remote`, and the repository-identity
+  remote lookup seam; preserve stdout/stderr and stable `SCE-ERR-RUNTIME`
+  behavior for non-user failures; do not expose raw credential-bearing remote
+  URLs.
 - **Non-goal:** Accepting any arbitrary Git remote when the configured SCE
   remote is missing; setup must validate the remote Agent Trace will use.
 
@@ -130,8 +145,21 @@ Persist this field in every plan; this is durable plan state, not chat state:
    - Files changed: `cli/src/services/error.rs`, `cli/src/services/setup/command.rs`, `context/overview.md`, `context/cli/cli-command-surface.md`, `context/sce/setup-githooks-cli-ux.md`, `context/sce/setup-repo-local-config-bootstrap.md`, `context/sce/cli-error-code-taxonomy.md`, `context/plans/setup-git-remote-preflight.md`
    - Result: Wired setup dispatch through a pre-prompt Git-root and configured-remote gate. The effective `agent_trace.repository_remote` is resolved with the existing config resolver and defaults to `origin`; missing prerequisites map through `CliError::user_with_source` to typed `NotGitRepository` or `NotGitRemote` diagnostics while preserving technical sources without rendering remote URLs. Added command-level coverage for missing Git, missing origin, configured origin, configured alternate remotes, and unrelated remotes, and documented the ordering and ownership across durable setup/error context.
    - Verify: Focused setup preflight tests passed (6 tests). `nix flake check` passed all repository checks; an earlier full-check failure was an unrelated flaky Agent Trace row-count test and passed on rerun.
-   - Context impact: Root — setup is now governed by a repository-wide Git-plus-configured-remote preflight and the typed CLI error catalog; updated root setup/error summaries and the authoritative setup/bootstrap/error domain contracts.
-    - Context synchronization: synced
+    - Context impact: Root — setup is now governed by a repository-wide Git-plus-configured-remote preflight and the typed CLI error catalog; updated root setup/error summaries and the authoritative setup/bootstrap/error domain contracts.
+     - Context synchronization: synced
+
+- [x] T03: `Narrow setup preflight error classification` (status:done)
+  - Task ID: T03
+  - Scope: In — distinguish the exact `not a git repository` Git failure from other `rev-parse` execution failures; distinguish a missing/empty configured remote URL from failures running the remote lookup; preserve technical `CliError::Internal` runtime classification for the latter cases; add focused regression coverage and update the setup/error/repository-identity context contracts. Out — remote network reachability, repository identity precedence, doctor behavior, and changes to successful setup output.
+  - Dependencies: T02
+  - Done when: A missing Git repository still renders `NotGitRepository`, a missing configured remote URL still renders `NotGitRemote`, and Git launch/permission/bare/malformed-repository plus remote lookup execution failures render as runtime errors with their original sources; credential-bearing remote URLs remain absent from user-facing diagnostics.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml repository_identity`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml error`
+  - Completed: 2026-08-25
+  - Files changed: `cli/src/services/error.rs`, `cli/src/services/repository_identity/resolve.rs`, `cli/src/services/setup/command.rs`, `cli/src/services/setup/mod.rs`, `context/cli/repository-identity.md`, `context/overview.md`, `context/plans/setup-git-remote-preflight.md`, `context/sce/cli-error-code-taxonomy.md`, `context/sce/setup-githooks-cli-ux.md`, `context/sce/setup-repo-local-config-bootstrap.md`
+  - Result: Added strict remote URL lookup that preserves execution/configuration failures while retaining compatibility fail-to-missing behavior for repository identity resolution. Setup now emits typed errors only for Git's explicit missing-repository failure and missing configured remote URL, mapping all other preflight failures to runtime `CliError::Internal` errors with technical sources preserved. Added command, setup, repository-identity, and error regression coverage plus updated durable setup/error/identity contracts.
+  - Verify: `setup` passed with 69 tests; `repository_identity` passed with 25 tests; `error` passed with 46 tests.
+  - Context impact: Root — setup preflight error classification and the repository-identity remote lookup boundary now distinguish expected missing prerequisites from runtime execution failures; durable root setup/error/identity contracts were updated.
+  - Context synchronization: synced
 
 ## Open questions
 
@@ -141,20 +169,22 @@ non-network validation boundary were resolved during discussion.
 ## Validation Report
 
 **Status:** validated  
-**Date:** 2026-08-24
+**Date:** 2026-08-25
 
 ### Commands run
 
 - `nix flake check` -> exit 0 (all repository checks passed)
-- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml error` -> exit 0 (35 tests passed)
-- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup` -> exit 0 (67 tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup` -> exit 0 (69 tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml repository_identity` -> exit 0 (25 tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml error` -> exit 0 (46 tests passed)
 
 ### Success-criteria verification
 
-- [x] AC1: `sce setup` reports a typed, actionable `NotGitRepository` failure and performs no setup writes -> command-level preflight test passed for a non-repository directory.
-- [x] AC2: `sce setup` reports a typed, actionable `NotGitRemote` failure and performs no setup writes -> command-level missing-origin test passed; error tests confirmed remote-add guidance.
-- [x] AC3: Remote validation uses the resolved `agent_trace.repository_remote` name -> setup tests passed for default `origin`, configured alternate remotes, and rejection of unrelated remotes.
-- [x] AC4: Existing setup behavior and user-error rendering remain compatible without exposing remote URLs -> error and setup test filters plus the full repository check passed; source-preservation tests passed without rendered URL leakage.
+- [x] AC1: `sce setup` reports a typed, actionable `NotGitRepository` failure and performs no setup writes -> setup preflight tests passed for a non-repository directory and preserved the `git init` guidance.
+- [x] AC2: `sce setup` reports a typed, actionable `NotGitRemote` failure and performs no setup writes -> setup and error tests passed for missing configured remotes and preserved `git remote add <name> <url>` guidance.
+- [x] AC3: Remote validation uses the resolved `agent_trace.repository_remote` name -> setup and repository-identity tests passed for default `origin`, configured alternate remotes, and rejection of unrelated remotes.
+- [x] AC4: Existing setup behavior and user-error rendering remain compatible without exposing remote URLs -> full repository checks and focused setup/error tests passed, including source preservation and credential-safe diagnostics.
+- [x] AC5: Setup classifies only explicit missing-repository and missing-remote conditions as typed user errors -> setup, repository-identity, and error tests passed for missing prerequisites, Git/runtime edge failures, strict remote lookup failures, preserved sources, and safe diagnostics.
 
 ### Failed checks and follow-ups
 

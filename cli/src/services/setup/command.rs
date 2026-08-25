@@ -102,13 +102,25 @@ impl SetupCommand {
 }
 
 fn resolve_setup_repository(start_path: &std::path::Path) -> Result<std::path::PathBuf, CliError> {
-    let repository_root = setup::ensure_git_repository(start_path)
-        .map_err(|source| CliError::user_with_source(UserError::NotGitRepository, source))?;
+    let repository_root = setup::ensure_git_repository(start_path).map_err(|source| {
+        if setup::is_not_git_repository_error(&source) {
+            CliError::user_with_source(UserError::NotGitRepository, source)
+        } else {
+            CliError::runtime(source)
+        }
+    })?;
     let storage_config = config::resolve_agent_trace_storage_runtime_config(&repository_root)
         .map_err(CliError::runtime)?;
 
-    setup::ensure_git_remote(&repository_root, &storage_config.repository_remote)
-        .map_err(|source| CliError::user_with_source(UserError::NotGitRemote, source))?;
+    setup::ensure_git_remote(&repository_root, &storage_config.repository_remote).map_err(
+        |source| {
+            if setup::is_missing_git_remote_error(&source) {
+                CliError::user_with_source(UserError::NotGitRemote, source)
+            } else {
+                CliError::runtime(source)
+            }
+        },
+    )?;
 
     Ok(repository_root)
 }
