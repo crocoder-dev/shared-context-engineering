@@ -12,10 +12,11 @@ permissions:
   contents: read
 
 jobs:
-  quint:
-    name: Quint gate
+  detect:
+    name: Detect Quint changes
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    outputs:
+      quint: ${{ steps.changes.outputs.quint }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
@@ -45,29 +46,77 @@ jobs:
             echo "quint=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: No Quint changes
+        if: steps.changes.outputs.quint != 'true'
+        run: echo "No Quint specification changes detected; validation skipped."
+
+  quint:
+    name: Quint gate
+    needs: detect
+    if: needs.detect.outputs.quint == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Install Nix
-        if: steps.changes.outputs.quint == 'true'
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
 
       - name: Enable Magic Nix Cache
-        if: steps.changes.outputs.quint == 'true'
         uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
           use-flakehub: false
           use-gha-cache: true
 
       - name: Typecheck Quint spec
-        if: steps.changes.outputs.quint == 'true'
         run: nix run .#quint -- typecheck spec/mutation_cursor.qnt
 
       - name: Run Quint tests
-        if: steps.changes.outputs.quint == 'true'
         run: nix run .#quint -- test spec/mutation_cursor.qnt
 
-      - name: Verify Quint safety invariant
-        if: steps.changes.outputs.quint == 'true'
-        run: nix run .#quint -- verify spec/mutation_cursor.qnt --invariant=Safety
+  quint-verify:
+    name: Verify Quint safety invariant (${{ matrix.invariant }})
+    needs: detect
+    if: needs.detect.outputs.quint == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # SafetyHistory does nested forall/exists over history logs that grow
+        # every step, so its BMC cost blows up with trace depth (this is what
+        # timed out the single combined Safety invariant at step 4). It gets
+        # a shorter trace bound; the cheaper groups keep the full default depth.
+        include:
+          - invariant: SafetyCore
+            max_steps: 10
+          - invariant: SafetyAttribution
+            max_steps: 8
+          - invariant: SafetyHistory
+            max_steps: 5
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
 
-      - name: No Quint changes
-        if: steps.changes.outputs.quint != 'true'
-        run: echo "No Quint specification changes detected; validation skipped."
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Enable Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Verify ${{ matrix.invariant }}
+        run: nix run .#quint -- verify spec/mutation_cursor.qnt --invariant=${{ matrix.invariant }} --max-steps=${{ matrix.max_steps }}
