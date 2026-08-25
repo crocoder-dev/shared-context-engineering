@@ -108,6 +108,23 @@ module mutation_cursor {
     boundary: Boundary,
   }
 
+  type DurableStateCheckpoint = {
+    worktreeId: WorktreeId,
+    worktree: WorktreeState,
+    scopes: ScopeId -> ScopeState,
+    processedEvents: Set[EventKey],
+    scopeStartCount: ScopeId -> int,
+    everTerminal: Set[ScopeId],
+    cursorHistory: Set[CursorCheckpoint],
+    protocolHistory: Set[ProtocolCheckpoint],
+    rolloverHistory: Set[RolloverCheckpoint],
+    scopeHistory: Set[ScopeCheckpoint],
+    abandonHistory: Set[AbandonCheckpoint],
+    startHistory: Set[StartCheckpoint],
+    evidenceAttempts: Set[AttemptId],
+    mutationEvents: Set[MutationEvent],
+  }
+
   val WORKTREES: Set[WorktreeId] = Set(WT0, WT1)
   val SCOPES: Set[ScopeId] = Set(Scope0, Scope1, Scope2, Scope3)
   val TREES: Set[TreeId] = Set(Tree0, Tree1, Tree2, Tree3)
@@ -242,6 +259,7 @@ module mutation_cursor {
   var scopeHistory: Set[ScopeCheckpoint]
   var abandonHistory: Set[AbandonCheckpoint]
   var startHistory: Set[StartCheckpoint]
+  var taintHistory: Set[DurableStateCheckpoint]
   var evidenceAttempts: Set[AttemptId]
   var mutationEvents: Set[MutationEvent]
 
@@ -256,6 +274,45 @@ module mutation_cursor {
     actor: ActorKind
   ): Set[ScopeId] =
     liveScopesOn(worktree).filter(scope => scopes.get(scope).actorKind == actor)
+
+  def durableStateFor(worktree: WorktreeId): DurableStateCheckpoint = {
+    worktreeId: worktree,
+    worktree: worktrees.get(worktree),
+    scopes: SCOPES.filter(scope => scopeWorktree(scope) == worktree).mapBy(
+      scope => scopes.get(scope)
+    ),
+    processedEvents: processedEvents.filter(event =>
+      scopeWorktree(event.scopeId) == worktree
+    ),
+    scopeStartCount: SCOPES.filter(scope => scopeWorktree(scope) == worktree).mapBy(
+      scope => scopeStartCount.get(scope)
+    ),
+    everTerminal: everTerminal.filter(scope => scopeWorktree(scope) == worktree),
+    cursorHistory: cursorHistory.filter(checkpoint =>
+      checkpoint.worktreeId == worktree
+    ),
+    protocolHistory: protocolHistory.filter(checkpoint =>
+      checkpoint.worktreeId == worktree
+    ),
+    rolloverHistory: rolloverHistory.filter(checkpoint =>
+      checkpoint.worktreeId == worktree
+    ),
+    scopeHistory: scopeHistory.filter(checkpoint =>
+      checkpoint.worktreeId == worktree
+    ),
+    abandonHistory: abandonHistory.filter(checkpoint =>
+      checkpoint.worktreeId == worktree
+    ),
+    startHistory: startHistory.filter(checkpoint =>
+      checkpoint.worktreeId == worktree
+    ),
+    evidenceAttempts: evidenceAttempts.filter(attempt =>
+      boundaryWorktree(attempts.get(attempt).boundary) == worktree
+    ),
+    mutationEvents: mutationEvents.filter(event =>
+      event.worktreeId == worktree
+    ),
+  }
 
   def rolloverScope(
     scope: ScopeId,
@@ -365,6 +422,7 @@ module mutation_cursor {
     scopeHistory' = Set(),
     abandonHistory' = Set(),
     startHistory' = Set(),
+    taintHistory' = Set(),
     evidenceAttempts' = Set(),
     mutationEvents' = Set(),
   }
@@ -384,6 +442,7 @@ module mutation_cursor {
     scopeHistory' = scopeHistory,
     abandonHistory' = abandonHistory,
     startHistory' = startHistory,
+    taintHistory' = taintHistory,
     evidenceAttempts' = evidenceAttempts,
     mutationEvents' = mutationEvents,
   }
@@ -403,6 +462,7 @@ module mutation_cursor {
     scopeHistory' = scopeHistory,
     abandonHistory' = abandonHistory,
     startHistory' = startHistory,
+    taintHistory' = taintHistory,
     evidenceAttempts' = evidenceAttempts,
     mutationEvents' = mutationEvents,
   }
@@ -436,6 +496,7 @@ module mutation_cursor {
         scopeHistory' = scopeHistory,
         abandonHistory' = abandonHistory,
         startHistory' = startHistory,
+        taintHistory' = taintHistory,
         evidenceAttempts' = evidenceAttempts,
         mutationEvents' = mutationEvents,
       }
@@ -518,6 +579,7 @@ module mutation_cursor {
         scopeHistory' = scopeHistory,
         abandonHistory' = abandonHistory,
         startHistory' = startHistory,
+        taintHistory' = taintHistory,
         evidenceAttempts' = evidenceAttempts,
         mutationEvents' = mutationEvents,
       }
@@ -680,6 +742,7 @@ module mutation_cursor {
         scopeHistory' = nextScopeHistory,
         abandonHistory' = abandonHistory,
         startHistory' = nextStartHistory,
+        taintHistory' = taintHistory,
         evidenceAttempts' = nextEvidenceAttempts,
         mutationEvents' = mutationEvents.union(emitted),
       }
@@ -722,6 +785,7 @@ module mutation_cursor {
         scopeHistory' = scopeHistory,
         abandonHistory' = abandonHistory,
         startHistory' = startHistory,
+        taintHistory' = taintHistory,
         evidenceAttempts' = evidenceAttempts,
         mutationEvents' = mutationEvents,
       }
@@ -747,6 +811,7 @@ module mutation_cursor {
         scopeHistory' = scopeHistory,
         abandonHistory' = abandonHistory,
         startHistory' = startHistory,
+        taintHistory' = taintHistory.union(Set(durableStateFor(worktree))),
         evidenceAttempts' = evidenceAttempts,
         mutationEvents' = mutationEvents,
       }
@@ -757,7 +822,7 @@ module mutation_cursor {
     val worktree = oldScope.worktreeId
     val state = worktrees.get(worktree)
 
-    if (not(isLive(oldScope.status))) {
+    if (not(isLive(oldScope.status)) or externalTaint.contains(worktree)) {
       stutter
     } else {
       all {
@@ -804,6 +869,7 @@ module mutation_cursor {
           cursorTree: state.cursorTree,
         })),
         startHistory' = startHistory,
+        taintHistory' = taintHistory,
         evidenceAttempts' = evidenceAttempts,
         mutationEvents' = mutationEvents,
       }
@@ -873,6 +939,7 @@ module mutation_cursor {
         scopeHistory' = scopeHistory,
         abandonHistory' = abandonHistory,
         startHistory' = startHistory,
+        taintHistory' = taintHistory,
         evidenceAttempts' = evidenceAttempts,
         mutationEvents' = mutationEvents,
       }
@@ -948,10 +1015,9 @@ module mutation_cursor {
   })
 
   val DatabaseFailureDoesNotMutateDurableProtocolState =
-    externalTaint.forall(worktree => {
-      worktrees.get(worktree).tainted ==
-        (worktrees.get(worktree).failureKind != Healthy)
-    })
+    externalTaint.forall(worktree =>
+      taintHistory.contains(durableStateFor(worktree))
+    )
 
   val ExternalTaintNeverStrengthensAttribution = WORKTREES.forall(worktree => {
     externalTaint.contains(worktree) implies
@@ -1510,6 +1576,20 @@ module mutation_cursor {
       .expect(mutationEvents.size() == 0)
       .expect(evidenceAttempts.size() == 0)
       .expect(externalTaint.contains(WT0))
+      .expect(Safety)
+
+  run testAbandonDisabledDuringExternalTaint =
+    init
+      .then(prepare(Attempt0, Start({ scope: Scope0, event: Event0 })))
+      .then(commitAttempt(Attempt0))
+      .then(databaseFailure(WT0))
+      .then(abandon(Scope0))
+      .expect(worktrees.get(WT0).revision == 1)
+      .expect(not(worktrees.get(WT0).needsRebaseline))
+      .expect(scopes.get(Scope0).status == Active)
+      .expect(abandonHistory.size() == 0)
+      .expect(externalTaint.contains(WT0))
+      .expect(taintHistory.contains(durableStateFor(WT0)))
       .expect(Safety)
 
   run testExternalTaintRecoveryAbandonsScopeAndBaselines =
