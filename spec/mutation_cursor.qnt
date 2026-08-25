@@ -83,6 +83,13 @@ module mutation_cursor {
     status: ScopeStatus,
   }
 
+  type AbandonCheckpoint = {
+    worktreeId: WorktreeId,
+    revision: int,
+    scope: ScopeId,
+    cursorTree: TreeId,
+  }
+
   type StartCheckpoint = {
     worktreeId: WorktreeId,
     revision: int,
@@ -233,6 +240,7 @@ module mutation_cursor {
   var protocolHistory: Set[ProtocolCheckpoint]
   var rolloverHistory: Set[RolloverCheckpoint]
   var scopeHistory: Set[ScopeCheckpoint]
+  var abandonHistory: Set[AbandonCheckpoint]
   var startHistory: Set[StartCheckpoint]
   var evidenceAttempts: Set[AttemptId]
   var mutationEvents: Set[MutationEvent]
@@ -355,6 +363,7 @@ module mutation_cursor {
     ),
     rolloverHistory' = Set(),
     scopeHistory' = Set(),
+    abandonHistory' = Set(),
     startHistory' = Set(),
     evidenceAttempts' = Set(),
     mutationEvents' = Set(),
@@ -373,6 +382,7 @@ module mutation_cursor {
     protocolHistory' = protocolHistory,
     rolloverHistory' = rolloverHistory,
     scopeHistory' = scopeHistory,
+    abandonHistory' = abandonHistory,
     startHistory' = startHistory,
     evidenceAttempts' = evidenceAttempts,
     mutationEvents' = mutationEvents,
@@ -391,6 +401,7 @@ module mutation_cursor {
     protocolHistory' = protocolHistory,
     rolloverHistory' = rolloverHistory,
     scopeHistory' = scopeHistory,
+    abandonHistory' = abandonHistory,
     startHistory' = startHistory,
     evidenceAttempts' = evidenceAttempts,
     mutationEvents' = mutationEvents,
@@ -423,6 +434,7 @@ module mutation_cursor {
         protocolHistory' = protocolHistory,
         rolloverHistory' = rolloverHistory,
         scopeHistory' = scopeHistory,
+        abandonHistory' = abandonHistory,
         startHistory' = startHistory,
         evidenceAttempts' = evidenceAttempts,
         mutationEvents' = mutationEvents,
@@ -504,6 +516,7 @@ module mutation_cursor {
         protocolHistory' = protocolHistory,
         rolloverHistory' = rolloverHistory,
         scopeHistory' = scopeHistory,
+        abandonHistory' = abandonHistory,
         startHistory' = startHistory,
         evidenceAttempts' = evidenceAttempts,
         mutationEvents' = mutationEvents,
@@ -665,6 +678,7 @@ module mutation_cursor {
         protocolHistory' = nextProtocolHistory,
         rolloverHistory' = nextRolloverHistory,
         scopeHistory' = nextScopeHistory,
+        abandonHistory' = abandonHistory,
         startHistory' = nextStartHistory,
         evidenceAttempts' = nextEvidenceAttempts,
         mutationEvents' = mutationEvents.union(emitted),
@@ -706,6 +720,7 @@ module mutation_cursor {
         })),
         rolloverHistory' = rolloverHistory,
         scopeHistory' = scopeHistory,
+        abandonHistory' = abandonHistory,
         startHistory' = startHistory,
         evidenceAttempts' = evidenceAttempts,
         mutationEvents' = mutationEvents,
@@ -730,6 +745,7 @@ module mutation_cursor {
         protocolHistory' = protocolHistory,
         rolloverHistory' = rolloverHistory,
         scopeHistory' = scopeHistory,
+        abandonHistory' = abandonHistory,
         startHistory' = startHistory,
         evidenceAttempts' = evidenceAttempts,
         mutationEvents' = mutationEvents,
@@ -775,7 +791,18 @@ module mutation_cursor {
           needsRebaseline: true,
         })),
         rolloverHistory' = rolloverHistory,
-        scopeHistory' = scopeHistory,
+        scopeHistory' = scopeHistory.union(Set({
+          worktreeId: worktree,
+          revision: state.revision + 1,
+          scope: scope,
+          status: Abandoned,
+        })),
+        abandonHistory' = abandonHistory.union(Set({
+          worktreeId: worktree,
+          revision: state.revision + 1,
+          scope: scope,
+          cursorTree: state.cursorTree,
+        })),
         startHistory' = startHistory,
         evidenceAttempts' = evidenceAttempts,
         mutationEvents' = mutationEvents,
@@ -844,6 +871,7 @@ module mutation_cursor {
         })),
         rolloverHistory' = rolloverHistory,
         scopeHistory' = scopeHistory,
+        abandonHistory' = abandonHistory,
         startHistory' = startHistory,
         evidenceAttempts' = evidenceAttempts,
         mutationEvents' = mutationEvents,
@@ -1015,6 +1043,41 @@ module mutation_cursor {
     })
   })
 
+  val AbandonCreatesRebaselineRequirement = abandonHistory.forall(abandon => {
+    protocolHistory.exists(checkpoint =>
+      checkpoint.worktreeId == abandon.worktreeId and
+      checkpoint.revision == abandon.revision and
+      checkpoint.cursorTree == abandon.cursorTree and
+      checkpoint.needsRebaseline
+    ) and
+    cursorHistory.exists(checkpoint =>
+      checkpoint.worktreeId == abandon.worktreeId and
+      checkpoint.revision == abandon.revision - 1 and
+      checkpoint.cursorTree == abandon.cursorTree
+    ) and
+    scopeHistory.exists(checkpoint =>
+      checkpoint.worktreeId == abandon.worktreeId and
+      checkpoint.revision == abandon.revision and
+      checkpoint.scope == abandon.scope and
+      checkpoint.status == Abandoned
+    ) and
+    mutationEvents.forall(event =>
+      not(
+        event.worktreeId == abandon.worktreeId and
+        event.revision == abandon.revision
+      )
+    )
+  })
+
+  val AbandonHistoryUniquePerWorktreeRevisionScope =
+    abandonHistory.forall(left => {
+      abandonHistory.forall(right => {
+        (left.worktreeId == right.worktreeId and
+          left.revision == right.revision and
+          left.scope == right.scope) implies left == right
+      })
+    })
+
   val MutationEventsMatchCursorHistory = mutationEvents.forall(event => {
     cursorHistory.exists(before =>
       before.worktreeId == event.worktreeId and
@@ -1173,6 +1236,8 @@ module mutation_cursor {
     ProtocolHistoryUniquePerWorktreeRevision,
     ProtocolHistoryHasCurrentState,
     ScopeHistoryUniquePerWorktreeRevision,
+    AbandonCreatesRebaselineRequirement,
+    AbandonHistoryUniquePerWorktreeRevisionScope,
     MutationEventsMatchCursorHistory,
     MutationFailureKindMatchesTaint,
     MutationEventsCrossOnlyTrustworthyProtocolStates,
@@ -1470,6 +1535,12 @@ module mutation_cursor {
       .expect(worktrees.get(WT0).cursorTree == Tree0)
       .expect(worktrees.get(WT0).needsRebaseline)
       .expect(mutationEvents.size() == 0)
+      .expect(abandonHistory.exists(checkpoint =>
+        checkpoint.worktreeId == WT0 and
+        checkpoint.scope == Scope0 and
+        checkpoint.revision == worktrees.get(WT0).revision and
+        checkpoint.cursorTree == Tree0
+      ))
       .then(prepare(Attempt2, Flush(WT0)))
       .then(commitAttempt(Attempt2))
       .expect(worktrees.get(WT0).cursorTree == Tree0)
@@ -1516,6 +1587,7 @@ module mutation_cursor {
       .then(commitAttempt(Attempt1))
       .expect(scopes.get(Scope0).status == Abandoned)
       .expect(scopeStartCount.get(Scope0) == 1)
+      .expect(abandonHistory.size() == 1)
       .expect(Safety)
 
   run testSameActorRolloverAbandonsOldScope =
