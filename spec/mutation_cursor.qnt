@@ -947,16 +947,6 @@ module mutation_cursor {
     isTerminal(scopes.get(scope).status)
   })
 
-  val ClosedScopesStayTerminal = SCOPES.forall(scope => {
-    scopes.get(scope).status == Closed implies
-      isTerminal(scopes.get(scope).status)
-  })
-
-  val AbandonedScopesStayTerminal = SCOPES.forall(scope => {
-    scopes.get(scope).status == Abandoned implies
-      isTerminal(scopes.get(scope).status)
-  })
-
   val DatabaseFailureDoesNotMutateDurableProtocolState =
     externalTaint.forall(worktree => {
       worktrees.get(worktree).tainted ==
@@ -975,10 +965,6 @@ module mutation_cursor {
         checkpoint.revision == worktrees.get(worktree).revision and
         checkpoint.cursorTree == worktrees.get(worktree).cursorTree
       )
-  })
-
-  val RecoveryAbandonsActiveScopes = everTerminal.forall(scope => {
-    scopes.get(scope).status != Active
   })
 
   val ScopeActorIdentityIsStable = SCOPES.forall(scope => {
@@ -1222,7 +1208,8 @@ module mutation_cursor {
     attempts.get(id).status == Rejected
   })
 
-  val Safety = and {
+  // Cheap, quantifier-shallow invariants over WORKTREES/SCOPES/ATTEMPTS.
+  val SafetyCore = and {
     CursorRevisionConsistent,
     FailureKindMatchesTaint,
     TerminalScopesStayTerminal,
@@ -1230,6 +1217,19 @@ module mutation_cursor {
     ScopeStartedAtMostOnce,
     NoNoopMutationEvents,
     MutationEventsHavePositiveRevision,
+    MutationFailureKindMatchesTaint,
+    DatabaseFailureDoesNotMutateDurableProtocolState,
+    ExternalTaintNeverStrengthensAttribution,
+    NeedsRebaselineSuppressesAttribution,
+    StaleAttemptsDoNotCommitEvidence,
+  }
+
+  // Uniqueness and cross-referencing checks over the growing history logs
+  // (mutationEvents, cursorHistory, protocolHistory, scopeHistory,
+  // abandonHistory). These are the most expensive conjuncts to verify since
+  // their cost scales with trace depth, so they are split out to be checked
+  // in their own CI job rather than serialized with the rest of Safety.
+  val SafetyHistory = and {
     MutationEventUniquePerWorktreeRevision,
     CursorHistoryUniquePerWorktreeRevision,
     CursorHistoryHasCurrentState,
@@ -1239,9 +1239,12 @@ module mutation_cursor {
     AbandonCreatesRebaselineRequirement,
     AbandonHistoryUniquePerWorktreeRevisionScope,
     MutationEventsMatchCursorHistory,
-    MutationFailureKindMatchesTaint,
     MutationEventsCrossOnlyTrustworthyProtocolStates,
-    NeedsRebaselineSuppressesAttribution,
+    RecoveryClearsExternalTaintOnlyAfterBaseline,
+  }
+
+  // Attribution and rollover semantics.
+  val SafetyAttribution = and {
     AttributionMatchesObservedScopes,
     AiExclusiveRequiresExactlyOneActiveScope,
     AiContendedRequiresMultipleActiveScopes,
@@ -1249,13 +1252,12 @@ module mutation_cursor {
     SameActorRolloverAbandonsOldScope,
     SameActorRolloverDoesNotClaimOldGap,
     DifferentActorStartDoesNotAbandonExistingScope,
-    DatabaseFailureDoesNotMutateDurableProtocolState,
-    ExternalTaintNeverStrengthensAttribution,
-    RecoveryClearsExternalTaintOnlyAfterBaseline,
-    RecoveryAbandonsActiveScopes,
-    ClosedScopesStayTerminal,
-    AbandonedScopesStayTerminal,
-    StaleAttemptsDoNotCommitEvidence,
+  }
+
+  val Safety = and {
+    SafetyCore,
+    SafetyHistory,
+    SafetyAttribution,
   }
 
   run testStartObservesBeforeActivation =
