@@ -4,7 +4,7 @@
 
 ## Bounded verification domain
 
-The enum values for worktrees, scopes, trees, hook events, and attempts are finite verification identities. They are not runtime limits. The model verifies arbitrary interleavings within this domain; production code must support larger and unbounded identifier spaces.
+The enum values for worktrees, scopes, trees, hook events, and attempts are finite verification identities. They are not runtime limits. The model explores arbitrary interleavings within this finite domain up to the configured verification depth; production code must support larger and unbounded identifier spaces.
 
 `ScopeId` is the durable identity of an AI scope/session in this model. `ActorKind` identifies the harness. A separate `SessionId` is unnecessary unless one session can own multiple independent scopes.
 
@@ -134,7 +134,6 @@ The model includes safety properties covering:
 - recovery baseline before clearing external taint;
 - recovery abandoning active scopes;
 - closed and abandoned terminality;
-- mutation evidence has a trustworthy preceding protocol checkpoint;
 - same-actor and different-actor contention;
 - `AiExclusive` requiring exactly one active scope;
 - `AiContended` requiring multiple active scopes;

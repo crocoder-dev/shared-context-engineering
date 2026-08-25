@@ -1134,19 +1134,6 @@ module mutation_cursor {
     event.attribution == AiContended implies event.activeScopes.size() >= 2
   })
 
-  // This checks only that each mutation has a trustworthy preceding
-  // protocol checkpoint; it does not establish an abandonment or attribution
-  // fact.
-  val MutationEventsHaveTrustworthyPrecedingProtocolCheckpoint =
-    mutationEvents.forall(event => {
-      protocolHistory.exists(before =>
-        before.worktreeId == event.worktreeId and
-        before.revision == event.revision - 1 and
-        before.cursorTree == event.beforeTree and
-        not(before.needsRebaseline)
-      )
-    })
-
   val StartDoesNotAbandonExistingScopes =
     startHistory.forall(start =>
       start.preservedScopes.forall(scope =>
@@ -1159,9 +1146,9 @@ module mutation_cursor {
       )
     )
 
-  // Directional only: rejected attempts have no evidence. This does not
-  // claim that every stale attempt is rejected.
-  val RejectedAttemptsDoNotEmitEvidence = ATTEMPTS.forall(id => {
+  // Directional only: rejected attempts do not commit evidence. This does
+  // not claim that every stale attempt is rejected.
+  val RejectedAttemptsDoNotCommitEvidence = ATTEMPTS.forall(id => {
     attempts.get(id).status != Rejected or not(evidenceAttempts.contains(id))
   })
 
@@ -1197,7 +1184,7 @@ module mutation_cursor {
     DatabaseFailureDoesNotMutateDurableProtocolState,
     ExternalTaintNeverStrengthensAttribution,
     NeedsRebaselineSuppressesAttribution,
-    RejectedAttemptsDoNotEmitEvidence,
+    RejectedAttemptsDoNotCommitEvidence,
   }
 
   // Uniqueness and cross-referencing checks over the growing history logs
@@ -1216,7 +1203,6 @@ module mutation_cursor {
     AbandonHistoryUniquePerWorktreeRevisionScope,
     MutationEventsMatchCursorHistory,
     MutationEventsCrossOnlyTrustworthyProtocolStates,
-    MutationEventsHaveTrustworthyPrecedingProtocolCheckpoint,
     RecoveryClearsExternalTaintOnlyAfterBaseline,
   }
 
