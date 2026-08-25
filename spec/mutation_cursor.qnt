@@ -108,19 +108,11 @@ module mutation_cursor {
     boundary: Boundary,
   }
 
-  type DurableStateCheckpoint = {
+  type DurableProtocolCheckpoint = {
     worktreeId: WorktreeId,
     worktree: WorktreeState,
     scopes: ScopeId -> ScopeState,
     processedEvents: Set[EventKey],
-    scopeStartCount: ScopeId -> int,
-    everTerminal: Set[ScopeId],
-    cursorHistory: Set[CursorCheckpoint],
-    protocolHistory: Set[ProtocolCheckpoint],
-    scopeHistory: Set[ScopeCheckpoint],
-    abandonHistory: Set[AbandonCheckpoint],
-    startHistory: Set[StartCheckpoint],
-    evidenceAttempts: Set[AttemptId],
     mutationEvents: Set[MutationEvent],
   }
 
@@ -147,6 +139,14 @@ module mutation_cursor {
     Attempt4,
     Attempt5
   )
+
+  // Representative identities used by symbolic verification. General
+  // simulation and deterministic scenarios retain the canonical domains above.
+  val VERIFY_ATTEMPTS: Set[AttemptId] = Set(Attempt0, Attempt1, Attempt2)
+  val VERIFY_EVENTS: Set[EventId] = Set(Event0, Event1, Event2)
+  val VERIFY_TREES: Set[TreeId] = Set(Tree0, Tree1, Tree2)
+  val VERIFY_SCOPES: Set[ScopeId] = SCOPES
+  val VERIFY_WORKTREES: Set[WorktreeId] = WORKTREES
 
   pure def scopeWorktree(scope: ScopeId): WorktreeId =
     match scope {
@@ -258,7 +258,7 @@ module mutation_cursor {
   var abandonHistory: Set[AbandonCheckpoint]
   var startHistory: Set[StartCheckpoint]
   var recoveryHistory: Set[RecoveryCheckpoint]
-  var taintHistory: Set[DurableStateCheckpoint]
+  var taintHistory: Set[DurableProtocolCheckpoint]
   var evidenceAttempts: Set[AttemptId]
   var mutationEvents: Set[MutationEvent]
 
@@ -268,7 +268,7 @@ module mutation_cursor {
       state.worktreeId == worktree and isLive(state.status)
     })
 
-  def durableStateFor(worktree: WorktreeId): DurableStateCheckpoint = {
+  def durableProtocolStateFor(worktree: WorktreeId): DurableProtocolCheckpoint = {
     worktreeId: worktree,
     worktree: worktrees.get(worktree),
     scopes: SCOPES.filter(scope => scopeWorktree(scope) == worktree).mapBy(
@@ -276,28 +276,6 @@ module mutation_cursor {
     ),
     processedEvents: processedEvents.filter(event =>
       scopeWorktree(event.scopeId) == worktree
-    ),
-    scopeStartCount: SCOPES.filter(scope => scopeWorktree(scope) == worktree).mapBy(
-      scope => scopeStartCount.get(scope)
-    ),
-    everTerminal: everTerminal.filter(scope => scopeWorktree(scope) == worktree),
-    cursorHistory: cursorHistory.filter(checkpoint =>
-      checkpoint.worktreeId == worktree
-    ),
-    protocolHistory: protocolHistory.filter(checkpoint =>
-      checkpoint.worktreeId == worktree
-    ),
-    scopeHistory: scopeHistory.filter(checkpoint =>
-      checkpoint.worktreeId == worktree
-    ),
-    abandonHistory: abandonHistory.filter(checkpoint =>
-      checkpoint.worktreeId == worktree
-    ),
-    startHistory: startHistory.filter(checkpoint =>
-      checkpoint.worktreeId == worktree
-    ),
-    evidenceAttempts: evidenceAttempts.filter(attempt =>
-      boundaryWorktree(attempts.get(attempt).boundary) == worktree
     ),
     mutationEvents: mutationEvents.filter(event =>
       event.worktreeId == worktree
@@ -436,41 +414,43 @@ module mutation_cursor {
     mutationEvents' = mutationEvents,
   }
 
-  action prepare(attempt: AttemptId, boundary: Boundary): bool = {
-    val oldAttempt = attempts.get(attempt)
+  action prepareAvailable(attempt: AttemptId, boundary: Boundary): bool = {
+    val worktree = boundaryWorktree(boundary)
+    val state = worktrees.get(worktree)
 
-    if (oldAttempt.status != Available) {
-      stutter
-    } else {
-      val worktree = boundaryWorktree(boundary)
-      val state = worktrees.get(worktree)
-      all {
-        worktrees' = worktrees,
-        scopes' = scopes,
-        worktreeTrees' = worktreeTrees,
-        externalTaint' = externalTaint,
-        processedEvents' = processedEvents,
-        scopeStartCount' = scopeStartCount,
-        everTerminal' = everTerminal,
-        attempts' = attempts.set(attempt, {
-          status: Prepared,
-          boundary: boundary,
-          expectedRevision: state.revision,
-          beforeTree: state.cursorTree,
-          afterTree: worktreeTrees.get(worktree),
-        }),
-        cursorHistory' = cursorHistory,
-        protocolHistory' = protocolHistory,
-        scopeHistory' = scopeHistory,
-        abandonHistory' = abandonHistory,
-        startHistory' = startHistory,
-        recoveryHistory' = recoveryHistory,
-        taintHistory' = taintHistory,
-        evidenceAttempts' = evidenceAttempts,
-        mutationEvents' = mutationEvents,
-      }
+    all {
+      worktrees' = worktrees,
+      scopes' = scopes,
+      worktreeTrees' = worktreeTrees,
+      externalTaint' = externalTaint,
+      processedEvents' = processedEvents,
+      scopeStartCount' = scopeStartCount,
+      everTerminal' = everTerminal,
+      attempts' = attempts.set(attempt, {
+        status: Prepared,
+        boundary: boundary,
+        expectedRevision: state.revision,
+        beforeTree: state.cursorTree,
+        afterTree: worktreeTrees.get(worktree),
+      }),
+      cursorHistory' = cursorHistory,
+      protocolHistory' = protocolHistory,
+      scopeHistory' = scopeHistory,
+      abandonHistory' = abandonHistory,
+      startHistory' = startHistory,
+      recoveryHistory' = recoveryHistory,
+      taintHistory' = taintHistory,
+      evidenceAttempts' = evidenceAttempts,
+      mutationEvents' = mutationEvents,
     }
   }
+
+  action prepare(attempt: AttemptId, boundary: Boundary): bool =
+    if (attempts.get(attempt).status != Available) {
+      stutter
+    } else {
+      prepareAvailable(attempt, boundary)
+    }
 
   action commitAttempt(attempt: AttemptId): bool = {
     val planned = attempts.get(attempt)
@@ -680,130 +660,214 @@ module mutation_cursor {
     }
   }
 
-  action taint(worktree: WorktreeId): bool = {
+  action taintHealthy(worktree: WorktreeId): bool = {
     val state = worktrees.get(worktree)
 
-    if (state.tainted or externalTaint.contains(worktree)) {
+    all {
+      worktrees' = worktrees.set(worktree, {
+        cursorTree: state.cursorTree,
+        revision: state.revision + 1,
+        tainted: true,
+        failureKind: SnapshotFailure,
+        needsRebaseline: state.needsRebaseline,
+      }),
+      scopes' = scopes,
+      worktreeTrees' = worktreeTrees,
+      externalTaint' = externalTaint,
+      processedEvents' = processedEvents,
+      scopeStartCount' = scopeStartCount,
+      everTerminal' = everTerminal,
+      attempts' = attempts,
+      cursorHistory' = cursorHistory.union(Set({
+        worktreeId: worktree,
+        revision: state.revision + 1,
+        cursorTree: state.cursorTree,
+      })),
+      protocolHistory' = protocolHistory.union(Set({
+        worktreeId: worktree,
+        revision: state.revision + 1,
+        cursorTree: state.cursorTree,
+        needsRebaseline: state.needsRebaseline,
+      })),
+      scopeHistory' = scopeHistory,
+      abandonHistory' = abandonHistory,
+      startHistory' = startHistory,
+      recoveryHistory' = recoveryHistory,
+      taintHistory' = taintHistory,
+      evidenceAttempts' = evidenceAttempts,
+      mutationEvents' = mutationEvents,
+    }
+  }
+
+  action taint(worktree: WorktreeId): bool =
+    if (
+      worktrees.get(worktree).tainted or
+      externalTaint.contains(worktree)
+    ) {
       stutter
     } else {
-      all {
-        worktrees' = worktrees.set(worktree, {
-          cursorTree: state.cursorTree,
-          revision: state.revision + 1,
-          tainted: true,
-          failureKind: SnapshotFailure,
-          needsRebaseline: state.needsRebaseline,
-        }),
-        scopes' = scopes,
-        worktreeTrees' = worktreeTrees,
-        externalTaint' = externalTaint,
-        processedEvents' = processedEvents,
-        scopeStartCount' = scopeStartCount,
-        everTerminal' = everTerminal,
-        attempts' = attempts,
-        cursorHistory' = cursorHistory.union(Set({
-          worktreeId: worktree,
-          revision: state.revision + 1,
-          cursorTree: state.cursorTree,
-        })),
-        protocolHistory' = protocolHistory.union(Set({
-          worktreeId: worktree,
-          revision: state.revision + 1,
-          cursorTree: state.cursorTree,
-          needsRebaseline: state.needsRebaseline,
-        })),
-        scopeHistory' = scopeHistory,
-        abandonHistory' = abandonHistory,
-        startHistory' = startHistory,
-        recoveryHistory' = recoveryHistory,
-        taintHistory' = taintHistory,
-        evidenceAttempts' = evidenceAttempts,
-        mutationEvents' = mutationEvents,
-      }
+      taintHealthy(worktree)
     }
+
+  action recordDatabaseFailure(worktree: WorktreeId): bool = all {
+    worktrees' = worktrees,
+    scopes' = scopes,
+    worktreeTrees' = worktreeTrees,
+    externalTaint' = externalTaint.union(Set(worktree)),
+    processedEvents' = processedEvents,
+    scopeStartCount' = scopeStartCount,
+    everTerminal' = everTerminal,
+    attempts' = attempts,
+    cursorHistory' = cursorHistory,
+    protocolHistory' = protocolHistory,
+    scopeHistory' = scopeHistory,
+    abandonHistory' = abandonHistory,
+    startHistory' = startHistory,
+    recoveryHistory' = recoveryHistory,
+    taintHistory' = taintHistory.union(Set(durableProtocolStateFor(worktree))),
+    evidenceAttempts' = evidenceAttempts,
+    mutationEvents' = mutationEvents,
   }
 
   action databaseFailure(worktree: WorktreeId): bool =
     if (externalTaint.contains(worktree)) {
       stutter
     } else {
-      all {
-        worktrees' = worktrees,
-        scopes' = scopes,
-        worktreeTrees' = worktreeTrees,
-        externalTaint' = externalTaint.union(Set(worktree)),
-        processedEvents' = processedEvents,
-        scopeStartCount' = scopeStartCount,
-        everTerminal' = everTerminal,
-        attempts' = attempts,
-        cursorHistory' = cursorHistory,
-        protocolHistory' = protocolHistory,
-        scopeHistory' = scopeHistory,
-        abandonHistory' = abandonHistory,
-        startHistory' = startHistory,
-        recoveryHistory' = recoveryHistory,
-        taintHistory' = taintHistory.union(Set(durableStateFor(worktree))),
-        evidenceAttempts' = evidenceAttempts,
-        mutationEvents' = mutationEvents,
-      }
+      recordDatabaseFailure(worktree)
     }
 
-  action abandon(scope: ScopeId): bool = {
+  action abandonLiveScope(scope: ScopeId): bool = {
     val oldScope = scopes.get(scope)
     val worktree = oldScope.worktreeId
     val state = worktrees.get(worktree)
 
-    if (not(isLive(oldScope.status)) or externalTaint.contains(worktree)) {
+    all {
+      worktrees' = worktrees.set(worktree, {
+        cursorTree: state.cursorTree,
+        revision: state.revision + 1,
+        tainted: state.tainted,
+        failureKind: state.failureKind,
+        needsRebaseline: true,
+      }),
+      scopes' = scopes.set(scope, {
+        status: Abandoned,
+        actorKind: oldScope.actorKind,
+        worktreeId: oldScope.worktreeId,
+      }),
+      worktreeTrees' = worktreeTrees,
+      externalTaint' = externalTaint,
+      processedEvents' = processedEvents,
+      scopeStartCount' = scopeStartCount,
+      everTerminal' = everTerminal.union(Set(scope)),
+      attempts' = attempts,
+      cursorHistory' = cursorHistory.union(Set({
+        worktreeId: worktree,
+        revision: state.revision + 1,
+        cursorTree: state.cursorTree,
+      })),
+      protocolHistory' = protocolHistory.union(Set({
+        worktreeId: worktree,
+        revision: state.revision + 1,
+        cursorTree: state.cursorTree,
+        needsRebaseline: true,
+      })),
+      scopeHistory' = scopeHistory.union(Set({
+        worktreeId: worktree,
+        revision: state.revision + 1,
+        scope: scope,
+        status: Abandoned,
+      })),
+      abandonHistory' = abandonHistory.union(Set({
+        worktreeId: worktree,
+        revision: state.revision + 1,
+        scope: scope,
+        cursorTree: state.cursorTree,
+      })),
+      startHistory' = startHistory,
+      recoveryHistory' = recoveryHistory,
+      taintHistory' = taintHistory,
+      evidenceAttempts' = evidenceAttempts,
+      mutationEvents' = mutationEvents,
+    }
+  }
+
+  action abandon(scope: ScopeId): bool = {
+    val oldScope = scopes.get(scope)
+
+    if (
+      not(isLive(oldScope.status)) or
+      externalTaint.contains(oldScope.worktreeId)
+    ) {
       stutter
     } else {
-      all {
-        worktrees' = worktrees.set(worktree, {
-          cursorTree: state.cursorTree,
-          revision: state.revision + 1,
-          tainted: state.tainted,
-          failureKind: state.failureKind,
-          needsRebaseline: true,
-        }),
-        scopes' = scopes.set(scope, {
-          status: Abandoned,
-          actorKind: oldScope.actorKind,
-          worktreeId: oldScope.worktreeId,
-        }),
-        worktreeTrees' = worktreeTrees,
-        externalTaint' = externalTaint,
-        processedEvents' = processedEvents,
-        scopeStartCount' = scopeStartCount,
-        everTerminal' = everTerminal.union(Set(scope)),
-        attempts' = attempts,
-        cursorHistory' = cursorHistory.union(Set({
-          worktreeId: worktree,
-          revision: state.revision + 1,
-          cursorTree: state.cursorTree,
-        })),
-        protocolHistory' = protocolHistory.union(Set({
-          worktreeId: worktree,
-          revision: state.revision + 1,
-          cursorTree: state.cursorTree,
-          needsRebaseline: true,
-        })),
-        scopeHistory' = scopeHistory.union(Set({
-          worktreeId: worktree,
-          revision: state.revision + 1,
-          scope: scope,
-          status: Abandoned,
-        })),
-        abandonHistory' = abandonHistory.union(Set({
-          worktreeId: worktree,
-          revision: state.revision + 1,
-          scope: scope,
-          cursorTree: state.cursorTree,
-        })),
-        startHistory' = startHistory,
-        recoveryHistory' = recoveryHistory,
-        taintHistory' = taintHistory,
-        evidenceAttempts' = evidenceAttempts,
-        mutationEvents' = mutationEvents,
-      }
+      abandonLiveScope(scope)
+    }
+  }
+
+  action recoverNeeded(worktree: WorktreeId): bool = {
+    val state = worktrees.get(worktree)
+    val abandonLiveScopes = state.tainted or externalTaint.contains(worktree)
+
+    all {
+      worktrees' = worktrees.set(worktree, {
+        cursorTree: worktreeTrees.get(worktree),
+        revision: state.revision + 1,
+        tainted: false,
+        failureKind: Healthy,
+        needsRebaseline: false,
+      }),
+      scopes' = if (abandonLiveScopes) {
+        SCOPES.mapBy(scopeId => {
+          val oldScope = scopes.get(scopeId)
+          if (
+            oldScope.worktreeId == worktree and
+            isLive(oldScope.status)
+          ) {
+            {
+              status: Abandoned,
+              actorKind: oldScope.actorKind,
+              worktreeId: oldScope.worktreeId,
+            }
+          } else {
+            oldScope
+          }
+        })
+      } else {
+        scopes
+      },
+      worktreeTrees' = worktreeTrees,
+      externalTaint' = externalTaint.exclude(Set(worktree)),
+      processedEvents' = processedEvents,
+      scopeStartCount' = scopeStartCount,
+      everTerminal' = if (abandonLiveScopes) {
+        everTerminal.union(liveScopesOn(worktree))
+      } else {
+        everTerminal
+      },
+      attempts' = attempts,
+      cursorHistory' = cursorHistory.union(Set({
+        worktreeId: worktree,
+        revision: state.revision + 1,
+        cursorTree: worktreeTrees.get(worktree),
+      })),
+      protocolHistory' = protocolHistory.union(Set({
+        worktreeId: worktree,
+        revision: state.revision + 1,
+        cursorTree: worktreeTrees.get(worktree),
+        needsRebaseline: false,
+      })),
+      scopeHistory' = scopeHistory,
+      abandonHistory' = abandonHistory,
+      startHistory' = startHistory,
+      recoveryHistory' = recoveryHistory.union(Set({
+        worktreeId: worktree,
+        revision: state.revision + 1,
+        observedTree: worktreeTrees.get(worktree),
+        clearedExternalTaint: externalTaint.contains(worktree),
+      })),
+      taintHistory' = taintHistory,
+      evidenceAttempts' = evidenceAttempts,
+      mutationEvents' = mutationEvents,
     }
   }
 
@@ -817,68 +881,7 @@ module mutation_cursor {
     ) {
       stutter
     } else {
-      val abandonLiveScopes = state.tainted or externalTaint.contains(worktree)
-      all {
-        worktrees' = worktrees.set(worktree, {
-          cursorTree: worktreeTrees.get(worktree),
-          revision: state.revision + 1,
-          tainted: false,
-          failureKind: Healthy,
-          needsRebaseline: false,
-        }),
-        scopes' = if (abandonLiveScopes) {
-          SCOPES.mapBy(scopeId => {
-            val oldScope = scopes.get(scopeId)
-            if (
-              oldScope.worktreeId == worktree and
-              isLive(oldScope.status)
-            ) {
-              {
-                status: Abandoned,
-                actorKind: oldScope.actorKind,
-                worktreeId: oldScope.worktreeId,
-              }
-            } else {
-              oldScope
-            }
-          })
-        } else {
-          scopes
-        },
-        worktreeTrees' = worktreeTrees,
-        externalTaint' = externalTaint.exclude(Set(worktree)),
-        processedEvents' = processedEvents,
-        scopeStartCount' = scopeStartCount,
-        everTerminal' = if (abandonLiveScopes) {
-          everTerminal.union(liveScopesOn(worktree))
-        } else {
-          everTerminal
-        },
-        attempts' = attempts,
-        cursorHistory' = cursorHistory.union(Set({
-          worktreeId: worktree,
-          revision: state.revision + 1,
-          cursorTree: worktreeTrees.get(worktree),
-        })),
-        protocolHistory' = protocolHistory.union(Set({
-          worktreeId: worktree,
-          revision: state.revision + 1,
-          cursorTree: worktreeTrees.get(worktree),
-          needsRebaseline: false,
-        })),
-        scopeHistory' = scopeHistory,
-        abandonHistory' = abandonHistory,
-        startHistory' = startHistory,
-        recoveryHistory' = recoveryHistory.union(Set({
-          worktreeId: worktree,
-          revision: state.revision + 1,
-          observedTree: worktreeTrees.get(worktree),
-          clearedExternalTaint: externalTaint.contains(worktree),
-        })),
-        taintHistory' = taintHistory,
-        evidenceAttempts' = evidenceAttempts,
-        mutationEvents' = mutationEvents,
-      }
+      recoverNeeded(worktree)
     }
   }
 
@@ -926,6 +929,104 @@ module mutation_cursor {
     abandon(scope)
   }
 
+  action verifyMutate: bool = {
+    nondet worktree = VERIFY_WORKTREES.oneOf()
+    nondet tree = VERIFY_TREES.oneOf()
+
+    all {
+      tree != worktreeTrees.get(worktree),
+      mutate(worktree, tree),
+    }
+  }
+
+  action verifyPrepareHook: bool = {
+    nondet attempt = VERIFY_ATTEMPTS.oneOf()
+    nondet scope = VERIFY_SCOPES.oneOf()
+    nondet event = VERIFY_EVENTS.oneOf()
+
+    all {
+      attempts.get(attempt).status == Available,
+      any {
+        prepareAvailable(attempt, Start({ scope: scope, event: event })),
+        prepareAvailable(attempt, Advance({ scope: scope, event: event })),
+        prepareAvailable(attempt, Close({ scope: scope, event: event })),
+      },
+    }
+  }
+
+  action verifyPrepareFlush: bool = {
+    nondet attempt = VERIFY_ATTEMPTS.oneOf()
+    nondet worktree = VERIFY_WORKTREES.oneOf()
+
+    all {
+      attempts.get(attempt).status == Available,
+      prepareAvailable(attempt, Flush(worktree)),
+    }
+  }
+
+  action verifyCommit: bool = {
+    nondet attempt = VERIFY_ATTEMPTS.oneOf()
+
+    all {
+      attempts.get(attempt).status == Prepared,
+      commitAttempt(attempt),
+    }
+  }
+
+  action verifyTaint: bool = {
+    nondet worktree = VERIFY_WORKTREES.oneOf()
+    val state = worktrees.get(worktree)
+
+    all {
+      not(state.tainted),
+      not(externalTaint.contains(worktree)),
+      taintHealthy(worktree),
+    }
+  }
+
+  action verifyRecover: bool = {
+    nondet worktree = VERIFY_WORKTREES.oneOf()
+    val state = worktrees.get(worktree)
+
+    all {
+      state.tainted or
+        externalTaint.contains(worktree) or
+        state.needsRebaseline,
+      recoverNeeded(worktree),
+    }
+  }
+
+  action verifyDatabaseFailure: bool = {
+    nondet worktree = VERIFY_WORKTREES.oneOf()
+
+    all {
+      not(externalTaint.contains(worktree)),
+      recordDatabaseFailure(worktree),
+    }
+  }
+
+  action verifyAbandon: bool = {
+    nondet scope = VERIFY_SCOPES.oneOf()
+    val state = scopes.get(scope)
+
+    all {
+      isLive(state.status),
+      not(externalTaint.contains(state.worktreeId)),
+      abandonLiveScope(scope),
+    }
+  }
+
+  action verifyStep: bool = any {
+    verifyMutate,
+    verifyPrepareHook,
+    verifyPrepareFlush,
+    verifyCommit,
+    verifyTaint,
+    verifyRecover,
+    verifyDatabaseFailure,
+    verifyAbandon,
+  }
+
   action step: bool = any {
     randomMutate,
     randomPrepare,
@@ -952,7 +1053,7 @@ module mutation_cursor {
 
   val DatabaseFailureDoesNotMutateDurableProtocolState =
     externalTaint.forall(worktree =>
-      taintHistory.contains(durableStateFor(worktree))
+      taintHistory.contains(durableProtocolStateFor(worktree))
     )
 
   val ExternalTaintNeverStrengthensAttribution = WORKTREES.forall(worktree => {
@@ -1483,7 +1584,7 @@ module mutation_cursor {
       .expect(scopes.get(Scope0).status == Active)
       .expect(abandonHistory.size() == 0)
       .expect(externalTaint.contains(WT0))
-      .expect(taintHistory.contains(durableStateFor(WT0)))
+      .expect(taintHistory.contains(durableProtocolStateFor(WT0)))
       .expect(Safety)
 
   run testExternalTaintRecoveryAbandonsScopeAndBaselines =
@@ -1621,6 +1722,16 @@ module mutation_cursor {
       .then(commitAttempt(Attempt2))
       .expect(scopes.get(Scope0).status == Active)
       .expect(scopes.get(Scope3).status == Active)
+      .expect(worktrees.get(WT0).cursorTree == Tree1)
+      .expect(worktrees.get(WT0).revision == 2)
       .expect(worktrees.get(WT1).cursorTree == Tree0)
+      .then(taint(WT1))
+      .then(mutate(WT1, Tree2))
+      .then(recover(WT1))
+      .expect(worktrees.get(WT0).cursorTree == Tree1)
+      .expect(worktrees.get(WT0).revision == 2)
+      .expect(scopes.get(Scope0).status == Active)
+      .expect(worktrees.get(WT1).cursorTree == Tree2)
+      .expect(scopes.get(Scope3).status == Abandoned)
       .expect(Safety)
 }

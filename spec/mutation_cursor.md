@@ -4,7 +4,9 @@
 
 ## Bounded verification domain
 
-The enum values for worktrees, scopes, trees, hook events, and attempts are finite verification identities. They are not runtime limits. The model explores arbitrary interleavings within this finite domain up to the configured verification depth; production code must support larger and unbounded identifier spaces.
+The enum values for worktrees, scopes, trees, hook events, and attempts are finite verification identities. They are not runtime limits. The model explores arbitrary interleavings within this finite domain up to the configured verification depth; production code must support larger and unbounded identifier spaces. CI's symbolic verification uses representative subsets of attempts, events, and trees (`Attempt0..2`, `Event0..2`, and `Tree0..2`) to reduce symmetric search; general simulation and deterministic tests retain access to the complete canonical domains.
+
+CI selects `verifyStep`, which includes only enabled protocol actions, excludes no-op mutations, and omits explicit stuttering. The canonical `step` remains available for unrestricted simulation. Because the CI identity subsets are smaller, the bounded CI claim applies to those representative domains rather than every canonical identity.
 
 `ScopeId` is the durable identity of an AI scope/session in this model. `ActorKind` identifies the harness. A separate `SessionId` is unnecessary unless one session can own multiple independent scopes.
 
@@ -33,7 +35,7 @@ Hook replay identity is scoped by `ScopeId` and `EventId` through `EventKey`. Th
 
 ## Failure and durability boundary
 
-`worktrees.cursorTree`, `worktrees.revision`, scope state, `processedEvents`, and `mutationEvents` represent state durably stored in the Agent Trace database. `worktrees.needsRebaseline` is a durable protocol marker for an ambiguous cursor interval; it is distinct from both snapshot failure and external database taint.
+`worktrees.cursorTree`, `worktrees.revision`, scope state, `processedEvents`, and `mutationEvents` represent state durably stored in the Agent Trace database. `worktrees.needsRebaseline` is a durable protocol marker for an ambiguous cursor interval; it is distinct from both snapshot failure and external database taint. Verification-only histories and attempt bookkeeping are intentionally excluded from database-failure checkpoints.
 
 A snapshot failure occurs while the database is healthy. `taint(worktree)` therefore records `SnapshotFailure` in the durable worktree state and increments the worktree revision. This invalidates speculative attempts that were already prepared before the failure. It does not quarantine later attempts: once a subsequent snapshot is prepared against the tainted state and the normal freshness checks pass, it may advance the cursor. Because failure states weaken attribution, any evidence emitted while tainted is `IneligibleUnscoped` until recovery.
 
