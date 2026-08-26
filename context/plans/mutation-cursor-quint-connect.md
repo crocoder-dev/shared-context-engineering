@@ -539,7 +539,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     this plan's own scope, not skipped here.
   - Context synchronization: synced
 
-- [ ] T03: `Keep randomPrepare a single step alternative while making it Connect-observable` (status:todo)
+- [x] T03: `Keep randomPrepare a single step alternative while making it Connect-observable` (status:done)
   - Task ID: T03
   - Scope: In — `spec/mutation_cursor.qnt`'s `randomPrepare`/`step` only:
     keep `randomPrepare` as one `step` branch (no four-way top-level split);
@@ -564,7 +564,48 @@ Persist this field in every plan; this is durable plan state, not chat state:
     SafetyAttribution SafetyHistory --max-samples=5000 --max-steps=20`; a
     manual diff confirming `step`'s alternative list is unchanged from the
     pre-refactor baseline (same eight names, no new top-level branches).
-  - Context synchronization: pending
+  - Completed: 2026-08-27
+  - Files changed: `spec/mutation_cursor.qnt`
+  - Result: Confirmed the smallest option (no structural change) is already
+    sufficient — no code change to `randomPrepare` or `step`. `prepare`
+    (T02) unconditionally sets `mbtAction' = MbtPrepare({attempt, boundary})`
+    on both its `prepareAvailable` path and its guarded `mbtStutterAs(...)`
+    path, and `boundary` there is always the exact concrete `Boundary` value
+    passed to whichever of `randomPrepare`'s five inner `any` alternatives
+    fired (`Start`/`Advance`/`Close` with concrete `scope`/`event`, or
+    `Flush` with a concrete `WorktreeId`). This means the driver, dispatching
+    on the `MbtAction::MbtPrepare` variant, already receives which boundary
+    kind was selected and its full concrete arguments — no dedicated
+    `PrepareKind`-style nondet choice is needed. T01's flagged open question
+    about Quint Connect's `extract_nondet_from_sum_type` requiring a
+    `Record`-shaped value applies to the top-level nondet-picked action type
+    (`MbtAction`, already all-record per AC11/T02), not to `Boundary` as a
+    nested field inside `MbtPrepare`'s record — decoding a nested field with
+    mixed record/bare-scalar variants (`Flush(WorktreeId)`) is an ordinary
+    serde adjacently-tagged-enum concern for T04's DTOs, unrelated to
+    Connect's nondet-extraction mechanism. Added a five-line comment above
+    `randomPrepare` documenting this conclusion (why it stays a single
+    branch with no extra instrumentation) so a future change doesn't
+    reintroduce a four-way split or redundant `PrepareKind` field. `step`'s
+    eight top-level alternatives and `randomPrepare`'s inner `any` block are
+    otherwise byte-for-byte unchanged (confirmed by `git diff`).
+  - Verify outcomes: `nix run .#quint -- typecheck spec/mutation_cursor.qnt`
+    — passed (exit 0, no errors). `nix run .#quint -- test
+    spec/mutation_cursor.qnt` — passed (exit 0). `nix run .#quint -- run
+    spec/mutation_cursor.qnt --step=verifyStep --invariants SafetyCore
+    SafetyAttribution SafetyHistory --max-samples=5000 --max-steps=20` —
+    "[ok] No violation found" (5000 traces, up to 21 steps). Manual diff
+    (`git diff spec/mutation_cursor.qnt`) confirms the only change is the
+    added comment; `step`'s alternative list and `randomPrepare`'s body are
+    unchanged from the pre-task baseline.
+  - Context impact: none. Only `spec/mutation_cursor.qnt` changed, and the
+    change is a documentation-only comment above `randomPrepare` recording a
+    design conclusion — no state variable, action, invariant, or semantic
+    behavior was added or altered. `step`'s structure, `mbtAction`'s shape,
+    and every action's transition logic are exactly as T02 left them. No
+    driver or Rust code exists yet (T04), so there is nothing downstream to
+    resynchronize.
+  - Context synchronization: synced
 
 - [ ] T04: `Build the MBT driver, ID mapping, and comparable model state` (status:todo)
   - Task ID: T04
