@@ -346,7 +346,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Pin quint-connect as a CLI dev-dependency` (status:todo)
+- [x] T01: `Pin quint-connect as a CLI dev-dependency` (status:done)
   - Task ID: T01
   - Scope: In — confirm the current `quint-connect` crate name/version and API
     shape against the upstream README and
@@ -365,7 +365,70 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Verify: `./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml`;
     `nix run .#regenerate-cargo-sources` then `git diff --stat
     packaging/flatpak/cargo-sources.json` shows no residual diff.
-  - Context synchronization: pending
+  - Completed: 2026-08-27
+  - Files changed: `cli/Cargo.toml`, `cli/Cargo.lock`,
+    `nix/flatpak/cargo-sources.nix`, `packaging/flatpak/cargo-sources.json`
+  - Result: Added `quint-connect = "0.1.2"` (confirmed current via crates.io
+    API; matches the plan's placeholder guess) under a new
+    `[dev-dependencies]` section in `cli/Cargo.toml` — no change under
+    `[dependencies]`. `cargo build` regenerated `cli/Cargo.lock` with
+    `quint-connect`, `quint-connect-macros`, and transitive deps (`itf`,
+    `colored`, `similar`, `jiff`, `rand 0.9`, etc. — coexists fine with the
+    crate's own `rand 0.8`). Discovered that `nix run .#regenerate-cargo-sources`
+    is a no-op against a stale `Cargo.lock` unless the fixed-output
+    derivation's pinned `outputHash` in `nix/flatpak/cargo-sources.nix` is
+    bumped first (Nix reuses the existing store path for that hash and never
+    re-invokes the generator) — confirmed this is the established convention
+    via `git log`/`git show eb5e6154` (the prior Turso 0.7.0 bump did the same
+    hash-then-regenerate two-step). Set a dummy `outputHash`, captured the
+    real hash from the resulting Nix hash-mismatch error
+    (`sha256-p8fzi7KWNltCEopHvXFmswASt9ov7UWxh/XU8mGLgH0=`), wrote that in,
+    then regenerated `packaging/flatpak/cargo-sources.json` (351 added
+    lines, 6 `quint-connect`/`quint-connect-macros` entries); a second
+    regeneration run produced an identical file (idempotent).
+    API-shape research for T02/T04 (recorded for handoff, not itself
+    verified by T01's done-when): `quint-connect` 0.1.2
+    (`github.com/informalsystems/quint-connect`, Apache-2.0) exposes
+    `Driver`/`State<D>` traits, a `Config { state, nondet }` struct for
+    locating comparable state and nondet-action paths in nested Quint state,
+    and `#[quint_test(spec, test)]`/`#[quint_run(spec, max_samples, ...)]` +
+    `switch!(step { Variant(args) => ... })` for dispatch. Its generic sum-type
+    deserialization (`#[serde(tag = "tag", content = "value")]`) supports
+    unit, newtype/tuple, and record/struct variants, so `MbtAction`'s planned
+    all-record-payload design (AC11) is plausible — but neither shipped
+    example (`two_phase_commit`, `tictactoe`) actually uses a record/struct
+    action variant; both only exercise unit and bare-scalar tuple variants
+    (e.g. `SpontaneouslyPrepares(node)`, `MoveO(coordinate)`) via `switch!`.
+    Separately, the crate's `nondet`-path extraction (`extract_nondet_from_sum_type`
+    in `connect/src/trace/mod.rs`) specifically requires the picked value to
+    deserialize as a `Record` (or an empty tuple) — flag this for T02/T03 to
+    verify directly against a record-payload `MbtAction` before relying on it,
+    since it wasn't directly evidenced upstream.
+  - Verify outcomes: `./scripts/run-cli-cargo.sh build --manifest-path
+    cli/Cargo.toml` — passed (`Finished dev profile`); `nix run
+    .#regenerate-cargo-sources` then `git diff --stat
+    packaging/flatpak/cargo-sources.json` — passed, shows the new-dependency
+    diff with no further change on a second run; `nix build
+    .#checks.x86_64-linux.cargo-sources-parity` — passed (no diff reported).
+  - Context impact: Root context synchronized.
+
+    Adding `quint-connect` introduced the CLI's first dev-only dependency, so
+    the dependency baseline references in:
+
+    - `context/overview.md`
+    - `context/architecture.md`
+    - `context/glossary.md`
+
+    were updated to distinguish production dependencies from the new
+    dev/test-only `quint-connect` dependency.
+
+    Additionally, `context/sce/flatpak-distribution-patterns.md` was updated
+    with the fixed-output-hash regeneration procedure discovered while
+    refreshing `packaging/flatpak/cargo-sources.json`.
+
+    These are documentation/context synchronization changes only; they
+    introduce no new runtime architecture or production interface.
+  - Context synchronization: synced
 
 - [ ] T02: `Add operation-preserving MBT action-transport instrumentation to the spec` (status:todo)
   - Task ID: T02
