@@ -33,13 +33,13 @@ non-goals.
 
 ## Acceptance criteria
 
-- [ ] AC1: The mutation-cursor protocol module has an explicit Rust home under
+- [x] AC1: The mutation-cursor protocol module has an explicit Rust home under
       `cli/src/services/mutation_trace` with zero Git/DB/filesystem/environment/network/
       async/lock I/O in its pure transition logic, and operates over an explicit `ProtocolState`
       aggregate (`worktrees`/`scopes`/`external_taint`/`processed_events`/`attempts`/
       `mutation_events`) rather than free-floating leaf values.
   - Validate: `grep -RnE "std::(fs|process|env)|tokio|reqwest|turso" cli/src/services/mutation_trace` returns nothing; manual inspection of imports and the `ProtocolState` type.
-- [ ] AC2: `Start`/`Advance`/`Close` hook boundaries and the non-hook `Flush` boundary compute
+- [x] AC2: `Start`/`Advance`/`Close` hook boundaries and the non-hook `Flush` boundary compute
       `accepted`/`observes`/`observedChange`/`changed`/`advancesRevision` and transition scope
       status and worktree cursor/revision exactly as `commitAttempt` specifies
       (`spec/mutation_cursor.qnt:455-661`), including CAS freshness rejection
@@ -51,7 +51,7 @@ non-goals.
       whose `advancesRevision` follows from `accepted` alone. `prepare` takes the currently
       observed tree as an explicit input parameter rather than obtaining it itself.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`
-- [ ] AC3: Attribution (`IneligibleUnscoped`/`AiExclusive`/`AiContended`,
+- [x] AC3: Attribution (`IneligibleUnscoped`/`AiExclusive`/`AiContended`,
       `spec/mutation_cursor.qnt:285-301`) and mutation-event emission match `commitAttempt`'s
       `changed` gate exactly (`observedChange and not needsRebaseline`), computed from the
       *pre-transition* live-scope set exactly as `commitAttempt` computes `live`/`attribution`
@@ -60,27 +60,27 @@ non-goals.
       attributes to the scope it is about to close — including the `Flush` boundary and
       failure/taint/`needsRebaseline` attribution overrides.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`
-- [ ] AC4: Snapshot-failure taint (`taintHealthy`/`taint`, `spec/mutation_cursor.qnt:663-710`)
+- [x] AC4: Snapshot-failure taint (`taintHealthy`/`taint`, `spec/mutation_cursor.qnt:663-710`)
       changes only `tainted`/`failureKind`/`revision`; database failure
       (`recordDatabaseFailure`/`databaseFailure`, `spec/mutation_cursor.qnt:712-737`) changes
       only `externalTaint`. Neither ever changes the cursor.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`
-- [ ] AC5: Abandonment (`abandonLiveScope`/`abandon`, `spec/mutation_cursor.qnt:739-805`) is
+- [x] AC5: Abandonment (`abandonLiveScope`/`abandon`, `spec/mutation_cursor.qnt:739-805`) is
       terminal, sets `needsRebaseline`, never moves the cursor, and preserves the scope's
       `actor_kind` and `worktree_id` (scope identity stability); a terminal scope can never be
       reactivated or abandoned again, and abandoning a `NeverSeen`, `Closed`, or `Abandoned`
       (non-live) scope is a no-op.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`
-- [ ] AC6: Recovery (`recoverNeeded`/`recover`, `spec/mutation_cursor.qnt:807-886`), given the
+- [x] AC6: Recovery (`recoverNeeded`/`recover`, `spec/mutation_cursor.qnt:807-886`), given the
       currently observed tree as an explicit input rather than reading Git itself, re-baselines
       the cursor to that observed tree and clears taint/`needsRebaseline`/`externalTaint`,
       abandoning live scopes only on the taint/`externalTaint` recovery path and preserving them
       on the `needsRebaseline`-only path.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`
-- [ ] AC7: No rejected or stale attempt ever advances the revision, moves the cursor, or emits
+- [x] AC7: No rejected or stale attempt ever advances the revision, moves the cursor, or emits
       mutation evidence, across multi-action sequences.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` (sequence/invariant tests from T07)
-- [ ] AC8: The formal specification stays untouched and green, and no existing production code
+- [x] AC8: The formal specification stays untouched and green, and no existing production code
       path calls the new module.
   - Validate: `git diff --stat spec/mutation_cursor.qnt` is empty; `grep -rn "mutation_trace" cli/src/services/hooks cli/src/services/agent_trace.rs` finds no call sites; `nix run .#quint -- typecheck spec/mutation_cursor.qnt && nix run .#quint -- test spec/mutation_cursor.qnt`
 
@@ -1022,6 +1022,47 @@ Persist this field in every plan; this is durable plan state, not chat state:
     wiring into any hook, command, or database call site, matching AC8 and the plan's own
     non-goals.
 
+  - Post-review correction (second pass): the first checked-u64 correction over-constrained
+    commit acceptance by requiring revision headroom unconditionally. Quint's no-change `Flush`
+    is accepted without revision advancement, so the Rust guard was narrowed to only commits that
+    would actually advance revision. Added a regression test for a no-change `Flush` at
+    `u64::MAX` committing successfully with revision unchanged.
+
+    `ResolvedAttempt::evaluate` now computes `would_advance_revision` (`!is_flush(boundary) ||
+    tree_changed`) before deciding `accepted`, and only requires
+    `next_revision(worktree_state.revision).is_some()` when that flag is true — a non-`Flush`
+    always advances revision when accepted, so it always needs headroom; a `Flush` needs headroom
+    only when it also observes a real tree change. `ResolvedAttempt::apply` now computes
+    `advanced_revision` as `Option<u64>`, `Some` only when `evaluation.advances_revision` is true,
+    and updates the worktree only in that case, so a no-change `Flush` leaves the worktree
+    (cursor, revision, everything) completely untouched instead of panicking on an unconditional
+    `next_revision(...).expect(...)`. The `MutationEvent` revision field unwraps
+    `advanced_revision` with `.expect("changed implies advances_revision")`, sound because
+    `changed` can only be true when `observed_change` (hence `advances_revision`) is also true.
+    The existing `commit_does_not_wrap_revision_at_u64_max` test was renamed to
+    `commit_that_would_advance_is_rejected_at_u64_max` for clarity (unchanged logic — a `Start`
+    boundary always advances revision when accepted, so it is still correctly rejected at
+    `u64::MAX`); a new `no_change_flush_commits_at_u64_max_without_advancing_revision` test proves
+    the paired case: a `Flush` observing no tree change at `revision: u64::MAX` is accepted,
+    committed, and leaves the worktree's revision at `u64::MAX` with no `MutationEvent`. Together
+    the two tests encode that headroom is required for advancement, not for acceptance in general.
+    Updated the stale "unconditional" wording in `protocol.rs`'s `evaluate` rustdoc, `mod.rs`'s
+    bounded-integer refinement section, and
+    `context/cli/mutation-trace-revision-refinement.md` to describe the conditional guard.
+  - Verify outcomes (post-review correction):
+    - `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` — passed,
+      75/75 tests (74 from the first pass + 1 net add: one test renamed, one new test added).
+    - `./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml` — passed.
+    - `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
+      — passed clean.
+    - `cargo fmt --manifest-path cli/Cargo.toml -- --check` — passed.
+    - `nix run .#quint -- typecheck spec/mutation_cursor.qnt` — passed (spec untouched).
+    - `nix run .#quint -- test spec/mutation_cursor.qnt` — passed (spec untouched).
+    - `git diff --stat -- spec/mutation_cursor.qnt spec/mutation_cursor.md` — empty.
+    - `grep -Rni "unconditional" cli/src/services/mutation_trace context/cli/mutation-trace-revision-refinement.md context/plans/mutation-cursor-protocol-kernel.md`
+      — no remaining claim that commit revision headroom is required unconditionally (this note's
+      own prose describing the *old, corrected* behavior is the only remaining match, by design).
+
 ## Open questions
 
 None. The request pre-authorizes following the current `spec/mutation_cursor.qnt` over its own
@@ -1033,3 +1074,39 @@ reshaping (T02 absorbing `Flush` commit evaluation, T03's pre-transition live-sc
 T04's dependency correction, T05's `NeverSeen` no-op case, T06's explicit `observed_tree`
 parameter, and T07's full-scenario/refinement-matrix requirements) was fully specified by the
 user, leaving nothing to ask.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-08-26
+
+### Commands run
+
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` -> exit 0 (680 passed; 0 failed)
+- `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` -> exit 0 (clean, no warnings)
+- `cargo fmt --manifest-path cli/Cargo.toml -- --check` -> exit 0 (no diff)
+- `nix run .#quint -- typecheck spec/mutation_cursor.qnt` -> exit 0 (typechecks)
+- `nix run .#quint -- test spec/mutation_cursor.qnt` -> exit 0 (mutation_cursor test suite passed)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` -> exit 0 (75 passed; 0 failed)
+- `grep -RnE "std::(fs|process|env)|tokio|reqwest|turso" cli/src/services/mutation_trace` -> exit 1 (no matches)
+- `git diff --stat spec/mutation_cursor.qnt` -> exit 0 (empty; spec untouched)
+- `grep -rn "mutation_trace" cli/src/services/hooks cli/src/services/agent_trace.rs` -> exit 1 (no matches)
+
+### Success-criteria verification
+
+- [x] AC1: pure module has no Git/DB/FS/env/network/async/lock I/O and an explicit `ProtocolState` aggregate -> forbidden-import grep returned no matches; manual inspection of `mod.rs`/`types.rs`/`protocol.rs` imports found only `std::collections::{BTreeMap, BTreeSet}`; `ProtocolState` at `cli/src/services/mutation_trace/types.rs:292-299` has exactly the fields `worktrees`/`scopes`/`external_taint`/`processed_events`/`attempts`/`mutation_events`
+- [x] AC2: hook/`Flush` boundary commit evaluation matches `commitAttempt` exactly -> `mutation_trace` test suite (75/75) includes T02's prepare/commit, accepted-but-non-observing, and `Flush`-vs-hook `advancesRevision` tests, all passing
+- [x] AC3: attribution/mutation-event emission from pre-transition live scopes -> T03's `mutation_trace` tests (live-scope/attribution variants, `Start`/`Close` pre-transition cases) pass within the same 75/75 run
+- [x] AC4: snapshot-failure taint and database-failure external-taint field-exact scoping -> T04's `mutation_trace` tests (field-exact diffs, no-op guards) pass within the same run
+- [x] AC5: abandonment terminality, identity stability, and no-op cases -> T05's `mutation_trace` tests pass within the same run
+- [x] AC6: recovery re-baselining and conditional live-scope abandonment -> T06's `mutation_trace` tests pass within the same run
+- [x] AC7: rejected/stale attempts never advance revision, move the cursor, or emit evidence across sequences -> T07's cross-action sequence and invariant-named tests pass within the same run
+- [x] AC8: spec untouched and green, no production call site -> `git diff --stat spec/mutation_cursor.qnt` empty, `grep` for `mutation_trace` in `cli/src/services/hooks`/`agent_trace.rs` found nothing, and both Quint commands passed
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- None identified.
