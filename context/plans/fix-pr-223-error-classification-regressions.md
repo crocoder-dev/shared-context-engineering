@@ -8,19 +8,19 @@ The fixes are deliberately split into three independently testable atomic commit
 
 ## Acceptance criteria
 
-- [ ] AC1: Initial control-plane, stream-terminal, and stream-refresh `ControlPlaneError::Storage` failures all classify as `auth.storage_unavailable`; stream authentication remains `auth.not_authenticated`; other control-plane/runtime failures remain `general.unexpected_failure`, with technical `TraceSyncError` sources attached.
+- [x] AC1: Initial control-plane, stream-terminal, and stream-refresh `ControlPlaneError::Storage` failures all classify as `auth.storage_unavailable`; stream authentication remains `auth.not_authenticated`; other control-plane/runtime failures remain `general.unexpected_failure`, with technical `TraceSyncError` sources attached.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml sync::command` and `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml sync::`; inspect the classifier to confirm it remains unchanged and uses typed predicates rather than human-readable strings.
-- [ ] AC2: Setup emits `setup.not_git_repository` only when the setup domain positively identifies a target as outside a Git repository; nonexistent, inaccessible, process, malformed-output, and unrelated filesystem failures classify as `general.unexpected_failure`, and both typed paths preserve technical sources.
+- [x] AC2: Setup emits `setup.not_git_repository` only when the setup domain positively identifies a target as outside a Git repository; nonexistent, inaccessible, process, malformed-output, and unrelated filesystem failures classify as `general.unexpected_failure`, and both typed paths preserve technical sources.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup::`; inspect the setup classifier for typed `GitRepositoryResolutionError` matching with no CLI-layer string matching.
-- [ ] AC3: `sce auth logout` with no stored credentials succeeds with the existing text and JSON state-query semantics, including `credentials_removed: false`; deleting stored credentials still succeeds with `credentials_removed: true`.
+- [x] AC3: `sce auth logout` with no stored credentials succeeds with the existing text and JSON state-query semantics, including `credentials_removed: false`; deleting stored credentials still succeeds with `credentials_removed: true`.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auth_command::` plus focused text/JSON assertions for absent and present credentials.
-- [ ] AC4: `sce auth whoami` with no stored credentials succeeds with the existing unauthenticated text guidance and JSON payload (`authentication_state: unauthenticated`, `has_stored_credentials: false`), while authenticated `/me` failures retain typed `NotAuthenticated`, `AuthStorageUnavailable`, or `UnexpectedFailure` mappings and technical sources.
+- [x] AC4: `sce auth whoami` with no stored credentials succeeds with the existing unauthenticated text guidance and JSON payload (`authentication_state: unauthenticated`, `has_stored_credentials: false`), while authenticated `/me` failures retain typed `NotAuthenticated`, `AuthStorageUnavailable`, or `UnexpectedFailure` mappings and technical sources.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auth_command::` plus focused missing-credential and authenticated-failure assertions.
-- [ ] AC5: Genuine auth storage failures retain `auth.storage_unavailable`, stored credentials rejected by the Control Plane retain `auth.not_authenticated`, and all genuine failures retain exit code `4`, stdout/stderr routing, and machine-readable JSON contracts.
+- [x] AC5: Genuine auth storage failures retain `auth.storage_unavailable`, stored credentials rejected by the Control Plane retain `auth.not_authenticated`, and all genuine failures retain exit code `4`, stdout/stderr routing, and machine-readable JSON contracts.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auth_command::` and `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml app_support::`.
-- [ ] AC6: The closed `UserError` catalog and typed-error architecture remain intact: no arbitrary message variant, no CLI-boundary human-readable string classification, no rollback to the pre-PR architecture, and no new ADR for this regression repair.
+- [x] AC6: The closed `UserError` catalog and typed-error architecture remain intact: no arbitrary message variant, no CLI-boundary human-readable string classification, no rollback to the pre-PR architecture, and no new ADR for this regression repair.
   - Validate: inspect `cli/src/services/error.rs`, `cli/src/services/sync/command.rs`, and `cli/src/services/setup/command.rs`; confirm no `UserError::Message`/`Custom` variant and no CLI-layer error-string matching.
-- [ ] AC7: Durable context accurately documents sync storage propagation, positive-only setup repository classification, and successful unauthenticated auth state queries, with no stale claim that missing logout/whoami credentials are `NotAuthenticated` failures.
+- [x] AC7: Durable context accurately documents sync storage propagation, positive-only setup repository classification, and successful unauthenticated auth state queries, with no stale claim that missing logout/whoami credentials are `NotAuthenticated` failures.
   - Validate: `nix run .#pkl-check-generated` and targeted inspection of the context files listed under Context sync.
 
 ### Full validation
@@ -103,3 +103,41 @@ Persist this field in every plan; this is durable plan state, not chat state:
 ## Open questions
 
 None. The request specifies the three regressions, the required typed boundaries, preserved contracts, tests, context updates, atomic commit messages, and final validation commands. The code inspection confirms the regressions are present at the stated PR head; no smaller change covers all three independent user-visible failures.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-08-26
+
+### Commands run
+
+- `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` -> exit 0 (format check passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml -- -D warnings` -> exit 0 (clippy passed with warnings denied)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` -> exit 0 (622 tests passed)
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral generation parity passed)
+- `nix flake check` -> exit 0 (all checks passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml sync::command` -> exit 0 (9 tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml sync::` -> exit 0 (66 tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup::` -> exit 0 (67 tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auth_command::` -> exit 0 (5 tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml app_support::` -> exit 0 (5 tests passed)
+- Authorized inspection of `cli/src/services/error.rs`, `cli/src/services/sync/command.rs`, and `cli/src/services/setup/command.rs` -> passed (closed catalog and typed classifier boundaries confirmed; no arbitrary variants or CLI string matching)
+- Authorized inspection of the four Context sync files -> passed (sync storage propagation, positive-only setup classification, and successful unauthenticated auth state queries are documented)
+
+### Success-criteria verification
+
+- [x] AC1: Initial, terminal-stream, and refresh-stream storage failures classify as `auth.storage_unavailable`; authentication and other failures retain their classifications and sources -> focused sync suites passed.
+- [x] AC2: Setup uses positive-only non-Git classification and preserves sources for non-Git and unexpected resolution failures -> focused setup suite passed.
+- [x] AC3: Logout is idempotent and preserves text/JSON credential-removal semantics -> focused auth suite passed.
+- [x] AC4: Unauthenticated whoami succeeds with text/JSON state reports and authenticated failures retain typed mappings and sources -> focused auth suite passed.
+- [x] AC5: Auth storage/authentication failures and output contracts retain their mappings and runtime behavior -> focused auth and app-support suites passed.
+- [x] AC6: Closed `UserError` catalog and typed, non-string CLI boundaries remain intact -> authorized source inspection passed.
+- [x] AC7: Durable context documents the corrected behavior -> `pkl-check-generated` and authorized context inspection passed.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- None identified.

@@ -326,9 +326,21 @@ fn render_login_refresh_result(tokens: &StoredTokens, format: AuthFormat) -> Res
 }
 
 fn render_logout_result(deleted: bool, format: AuthFormat) -> Result<String> {
+    render_logout_result_with_color_policy(
+        deleted,
+        format,
+        crate::services::style::supports_color(),
+    )
+}
+
+fn render_logout_result_with_color_policy(
+    deleted: bool,
+    format: AuthFormat,
+    color_enabled: bool,
+) -> Result<String> {
     match format {
         AuthFormat::Text => Ok(if deleted {
-            success("Logged out")
+            crate::services::style::success_with_color_policy("Logged out", color_enabled)
         } else {
             value("No user logged in")
         }),
@@ -344,10 +356,20 @@ fn render_logout_result(deleted: bool, format: AuthFormat) -> Result<String> {
 }
 
 fn render_unauthenticated_whoami(format: AuthFormat) -> Result<String> {
+    render_unauthenticated_whoami_with_color_policy(
+        format,
+        crate::services::style::supports_color(),
+    )
+}
+
+fn render_unauthenticated_whoami_with_color_policy(
+    format: AuthFormat,
+    color_enabled: bool,
+) -> Result<String> {
     match format {
         AuthFormat::Text => Ok(format!(
             "You are not logged in. Please log in using the {} command.",
-            success("sce auth login")
+            crate::services::style::success_with_color_policy("sce auth login", color_enabled)
         )),
         AuthFormat::Json => serde_json::to_string_pretty(&json!({
             "status": "ok",
@@ -441,11 +463,13 @@ mod tests {
     #[test]
     fn logout_text_reports_whether_credentials_were_removed() {
         assert_eq!(
-            render_logout_result(false, AuthFormat::Text).expect("logout should render"),
+            render_logout_result_with_color_policy(false, AuthFormat::Text, false)
+                .expect("logout should render"),
             "No user logged in"
         );
         assert_eq!(
-            render_logout_result(true, AuthFormat::Text).expect("logout should render"),
+            render_logout_result_with_color_policy(true, AuthFormat::Text, false)
+                .expect("logout should render"),
             "Logged out"
         );
     }
@@ -453,11 +477,13 @@ mod tests {
     #[test]
     fn logout_json_reports_whether_credentials_were_removed() {
         let absent: serde_json::Value = serde_json::from_str(
-            &render_logout_result(false, AuthFormat::Json).expect("logout should render"),
+            &render_logout_result_with_color_policy(false, AuthFormat::Json, false)
+                .expect("logout should render"),
         )
         .expect("logout JSON should be valid");
         let present: serde_json::Value = serde_json::from_str(
-            &render_logout_result(true, AuthFormat::Json).expect("logout should render"),
+            &render_logout_result_with_color_policy(true, AuthFormat::Json, false)
+                .expect("logout should render"),
         )
         .expect("logout JSON should be valid");
 
@@ -470,7 +496,7 @@ mod tests {
     #[test]
     fn unauthenticated_whoami_renders_text_guidance() {
         assert_eq!(
-            render_unauthenticated_whoami(AuthFormat::Text)
+            render_unauthenticated_whoami_with_color_policy(AuthFormat::Text, false)
                 .expect("unauthenticated whoami should render"),
             "You are not logged in. Please log in using the sce auth login command."
         );
@@ -479,7 +505,7 @@ mod tests {
     #[test]
     fn unauthenticated_whoami_json_reports_state() {
         let report: serde_json::Value = serde_json::from_str(
-            &render_unauthenticated_whoami(AuthFormat::Json)
+            &render_unauthenticated_whoami_with_color_policy(AuthFormat::Json, false)
                 .expect("unauthenticated whoami should render"),
         )
         .expect("whoami JSON should be valid");
