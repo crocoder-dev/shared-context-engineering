@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::protocol::{attribution_for, commit, live_scopes_on, prepare};
+use super::protocol::{attribution_for, commit, database_failure, live_scopes_on, prepare, taint};
 use super::types::*;
 
 fn worktree(id: &str) -> WorktreeId {
@@ -980,4 +980,97 @@ fn commit_close_on_the_sole_live_scope_that_also_observes_a_change_still_counts_
     let event = outcome.state.mutation_events.iter().next().unwrap();
     assert_eq!(event.attribution, Attribution::AiExclusive(scope("scope0")));
     assert_eq!(event.active_scopes, BTreeSet::from([scope("scope0")]));
+}
+
+#[test]
+fn taint_changes_exactly_tainted_failure_kind_and_revision() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 3));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    let next = taint(&state, &worktree("wt0"));
+
+    let tainted = next.worktrees.get(&worktree("wt0")).unwrap();
+    assert!(tainted.tainted);
+    assert_eq!(tainted.failure_kind, FailureKind::SnapshotFailure);
+    assert_eq!(tainted.revision, 4);
+    assert_eq!(tainted.cursor_tree, tree("tree0"));
+    assert!(!tainted.needs_rebaseline);
+
+    assert_eq!(next.scopes, state.scopes);
+    assert_eq!(next.external_taint, state.external_taint);
+    assert_eq!(next.processed_events, state.processed_events);
+    assert_eq!(next.attempts, state.attempts);
+    assert_eq!(next.mutation_events, state.mutation_events);
+}
+
+#[test]
+fn taint_is_a_no_op_when_already_tainted() {
+    let mut state = ProtocolState::default();
+    state.worktrees.insert(
+        worktree("wt0"),
+        WorktreeState {
+            cursor_tree: tree("tree0"),
+            revision: 0,
+            tainted: true,
+            failure_kind: FailureKind::SnapshotFailure,
+            needs_rebaseline: false,
+        },
+    );
+
+    let next = taint(&state, &worktree("wt0"));
+
+    assert_eq!(next, state);
+}
+
+#[test]
+fn taint_is_a_no_op_when_externally_tainted() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.external_taint.insert(worktree("wt0"));
+
+    let next = taint(&state, &worktree("wt0"));
+
+    assert_eq!(next, state);
+}
+
+#[test]
+fn database_failure_changes_exactly_external_taint() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 3));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    let next = database_failure(&state, &worktree("wt0"));
+
+    assert_eq!(next.external_taint, BTreeSet::from([worktree("wt0")]));
+    assert_eq!(next.worktrees, state.worktrees);
+    assert_eq!(next.scopes, state.scopes);
+    assert_eq!(next.processed_events, state.processed_events);
+    assert_eq!(next.attempts, state.attempts);
+    assert_eq!(next.mutation_events, state.mutation_events);
+}
+
+#[test]
+fn database_failure_is_a_no_op_when_already_externally_tainted() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.external_taint.insert(worktree("wt0"));
+
+    let next = database_failure(&state, &worktree("wt0"));
+
+    assert_eq!(next, state);
 }
