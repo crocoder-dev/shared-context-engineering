@@ -494,7 +494,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     materialization are new pure logic added to an already-unreferenced module; no existing
     behavior, hook, or command changed.
 
-- [ ] T04: `Implement snapshot-failure taint and database-failure external-taint actions` (status:todo)
+- [x] T04: `Implement snapshot-failure taint and database-failure external-taint actions` (status:done)
   - Task ID: T04
   - Scope: In — in `protocol.rs`, pure transitions refining `taintHealthy`/`taint`
     (`spec/mutation_cursor.qnt:663-710`) and `recordDatabaseFailure`/`databaseFailure`
@@ -511,7 +511,45 @@ Persist this field in every plan; this is durable plan state, not chat state:
     durable worktree/scope field equal to before, and both actions are no-ops on an
     already-tainted/already-externally-tainted worktree.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`.
-  - Context synchronization: pending
+  - Context synchronization: synced
+  - Completed: 2026-08-26
+  - Files changed:
+    - `cli/src/services/mutation_trace/protocol.rs` (added `taint`, `database_failure`; updated
+      module doc comment to cite `spec/mutation_cursor.qnt:663-737`)
+    - `cli/src/services/mutation_trace/tests.rs` (5 new tests: `taint` field-exact-diff and
+      already-tainted/externally-tainted no-ops; `database_failure` field-exact-diff and
+      already-externally-tainted no-op; imported `database_failure`/`taint`)
+  - Result: Added `taint(state, worktree)` (refining `taintHealthy`/`taint`,
+    `spec/mutation_cursor.qnt:663-710`) and `database_failure(state, worktree)` (refining
+    `recordDatabaseFailure`/`databaseFailure`, `spec/mutation_cursor.qnt:712-737`) to
+    `protocol.rs`. `taint` sets `tainted=true`/`failure_kind=SnapshotFailure`, advances
+    `revision` by one, and leaves `cursor_tree`/`needs_rebaseline` unchanged; it is a guarded
+    no-op (state returned unchanged) when the worktree is already `tainted`, already in
+    `external_taint`, or has no durable state — the last case has no Quint counterpart (Quint's
+    `worktree` always resolves within its finite domain) and follows the same defensive-no-op
+    convention `prepare`/`commit` already use for an unresolvable worktree. `database_failure`
+    inserts the worktree into `external_taint` and touches nothing else; it is a guarded no-op
+    when the worktree is already in `external_taint`, matching Quint's guard exactly (Quint's
+    `recordDatabaseFailure` has no worktree-existence precondition). Neither function reads or
+    writes `scopes`, `processed_events`, `attempts`, or `mutation_events`. No production call
+    site references the module.
+  - Verify outcomes:
+    - `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` — passed,
+      41/41 tests (36 from T01-T03 + 5 new).
+    - `./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml` — passed.
+    - `grep -RnE "std::(fs|process|env)|tokio|reqwest|turso" cli/src/services/mutation_trace` —
+      no matches (AC1 spot-check).
+    - `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
+      — passed, no warnings.
+    - `cargo fmt --manifest-path cli/Cargo.toml -- --check` — passed, no diff.
+    - `nix run .#quint -- typecheck spec/mutation_cursor.qnt` — passed.
+    - `nix run .#quint -- test spec/mutation_cursor.qnt` — passed.
+    - `git diff --stat -- spec/mutation_cursor.qnt spec/mutation_cursor.md` — empty (spec
+      untouched, AC8 spot-check).
+    - `grep -rn "mutation_trace" cli/src/services/hooks cli/src/services/agent_trace.rs` — no
+      matches (AC8 spot-check).
+  - Context impact: Classification: domain. `taint`/`database_failure` are new pure logic added
+    to an already-unreferenced module; no existing behavior, hook, or command changed.
 
 - [ ] T05: `Implement scope abandonment` (status:todo)
   - Task ID: T05
