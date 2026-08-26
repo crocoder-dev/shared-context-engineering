@@ -88,13 +88,17 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Result: Setup repository-root resolution now returns a typed classification, mapping only Git-confirmed non-repository directories to `NotGitRepository` and preserving technical sources while mapping other resolution failures to `UnexpectedFailure`; focused tests cover real non-Git and nonexistent paths plus both sourced CLI mappings.
   - Context impact: domain — `context/cli/cli-command-surface.md`, `context/sce/cli-error-code-taxonomy.md`, and `context/architecture.md` now document positive-only setup repository classification and technical-source preservation; the five root context files require verification during synchronization.
 
-- [ ] T03: `Restore idempotent auth state-query semantics` (status:todo)
+- [x] T03: `Restore idempotent auth state-query semantics` (status:done)
   - Task ID: T03
   - Scope: In — restore `render_logout_result(deleted, format)` and make absent-token logout a successful result; add `render_unauthenticated_whoami(format)` and make missing credentials a successful unauthenticated-state result; retain typed storage and authenticated Control Plane mappings, technical sources, existing successful JSON fields, and genuine failure behavior; add focused text/JSON tests for missing and removed credentials plus authenticated failure tests; update auth command surface, taxonomy, and architecture context wording. Out — changing login renewal/device flow, adding a new user-error catalog entry, or creating an ADR.
   - Dependencies: none
   - Done when: missing-token logout and whoami return `Ok(...)` with their existing text/JSON contracts, token deletion still reports success, authenticated `/me` and storage failures retain their typed errors and sources, and context no longer claims that observing logged-out state is `NotAuthenticated`.
-  - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auth_command::`; `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml app_support::`.
-  - Context synchronization: pending
+  - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auth_command::` — passed (5 tests); `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml app_support::` — passed (5 tests).
+  - Completed: 2026-08-26
+  - Files changed: `cli/src/services/auth_command/mod.rs`, `context/architecture.md`, `context/cli/cli-command-surface.md`, `context/sce/cli-error-code-taxonomy.md`
+  - Result: Logout now succeeds idempotently and reports whether credentials were removed; unauthenticated whoami now returns its documented text/JSON state report, while authenticated and storage failures retain typed mappings and technical sources. Focused regression tests cover both output formats and authenticated failure classification.
+  - Context impact: domain — auth command state-query behavior, CLI error taxonomy, and architecture documentation; these context files now distinguish successful unauthenticated observation from genuine authentication failures.
+  - Context synchronization: synced
 
 ## Open questions
 
