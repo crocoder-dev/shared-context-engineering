@@ -128,19 +128,32 @@
 //! `abandon`, `recover` — routes through the private `next_revision`
 //! (`revision.checked_add(1)`) helper in `protocol.rs` rather than a raw
 //! `+ 1`, so a worktree already at `revision: u64::MAX` cannot be advanced
-//! and cannot wrap to `0`. `commit`'s `accepted` gate folds this check in
-//! unconditionally (a would-be-overflowing attempt is rejected exactly like
-//! a stale one, with no cursor movement, scope transition, processed-
-//! `EventKey` insertion, or `MutationEvent`); `taint`/`abandon`/`recover`
-//! treat it as an additional guarded no-op alongside their existing
-//! existence/precondition guards. This has no Quint counterpart — Quint's
-//! `revision` never needs such a guard — so it is a Rust-only refinement
-//! precondition, verified by `commit_does_not_wrap_revision_at_u64_max`,
-//! `taint_does_not_wrap_revision_at_u64_max`,
+//! and cannot wrap to `0`. `taint`/`abandon`/`recover` always advance
+//! revision when they execute, so each treats the headroom check as an
+//! additional guarded no-op alongside their existing existence/precondition
+//! guards, verified by `taint_does_not_wrap_revision_at_u64_max`,
 //! `abandon_does_not_wrap_revision_at_u64_max`, and
 //! `recover_does_not_wrap_revision_at_u64_max`, each starting from
-//! `revision: u64::MAX` and proving the action is a no-op (or, for `commit`,
-//! a rejection) rather than a wrap.
+//! `revision: u64::MAX` and proving the action is a no-op rather than a
+//! wrap.
+//!
+//! `commit`'s `accepted` gate requires headroom only when this commit would
+//! actually advance the worktree's revision: a non-`Flush` boundary always
+//! advances revision when accepted, and a `Flush` advances revision only
+//! when it observes a real tree change, so headroom is required for
+//! non-`Flush` commits and for a `Flush` with an observed change, but *not*
+//! for a `Flush` that observes no change — that commit may still succeed at
+//! `revision: u64::MAX`, matching Quint's `commitAttempt`, since nothing
+//! about it needs to advance. A rejected (would-be-overflowing) attempt is
+//! rejected exactly like a stale one, with no cursor movement, scope
+//! transition, processed-`EventKey` insertion, or `MutationEvent`. This
+//! headroom guard has no Quint counterpart — Quint's `revision` never needs
+//! one — so it is a Rust-only refinement precondition, verified by
+//! `commit_that_would_advance_is_rejected_at_u64_max` (a commit that would
+//! advance revision is rejected at `u64::MAX`) and
+//! `no_change_flush_commits_at_u64_max_without_advancing_revision` (a
+//! no-change `Flush` still commits successfully at `u64::MAX`, with revision
+//! unchanged).
 
 pub mod protocol;
 pub mod types;
