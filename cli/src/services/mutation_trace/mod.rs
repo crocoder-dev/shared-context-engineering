@@ -2,10 +2,11 @@
 //! `spec/mutation_cursor.qnt` mutation-cursor protocol.
 //!
 //! This module defines the protocol's domain/state types, pure accessors,
-//! and `prepare`/`commitAttempt` transition logic for all four boundary
-//! kinds; attribution/mutation-event materialization and the taint/failure/
-//! abandon/recovery actions are not yet implemented. No Git, database,
-//! filesystem, environment, network, async, or lock I/O is performed here.
+//! `prepare`/`commitAttempt` transition logic for all four boundary kinds,
+//! attribution derivation, and mutation-event materialization. Snapshot-
+//! failure taint, database-failure external taint, abandonment, and
+//! recovery are not yet implemented. No Git, database, filesystem,
+//! environment, network, async, or lock I/O is performed here.
 //! The module is not yet wired into any hook, command, or database call
 //! site: that integration, along with the `coordinator.rs` (imperative
 //! shell), `git_snapshot.rs` (isolated Git snapshot capture), and `store.rs`
