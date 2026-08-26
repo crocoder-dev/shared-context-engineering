@@ -925,6 +925,11 @@ module mutation_cursor {
     mutate(worktree, tree)
   }
 
+  // Stays a single top-level `step` alternative. `prepare` already sets
+  // `mbtAction' = MbtPrepare({ attempt, boundary })` on every path, and
+  // `boundary` here is the exact concrete value passed to whichever inner
+  // `any` branch fires, so Quint Connect already exposes which boundary kind
+  // was selected without a dedicated `PrepareKind` choice.
   action randomPrepare: bool = {
     nondet attempt = ATTEMPTS.oneOf()
     nondet scope = SCOPES.oneOf()
