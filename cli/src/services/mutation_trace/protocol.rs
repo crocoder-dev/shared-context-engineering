@@ -1,9 +1,11 @@
 //! Pure transition logic for the mutation-cursor protocol.
 //!
 //! Refines `liveScopesOn`/`attributionFor` (`spec/mutation_cursor.qnt:265-301`),
-//! `mkMutationEvent` (`spec/mutation_cursor.qnt:303-323`), and
+//! `mkMutationEvent` (`spec/mutation_cursor.qnt:303-323`),
 //! `prepareAvailable`/`prepare`/`commitAttempt`
-//! (`spec/mutation_cursor.qnt:417-661`). Every function here takes and
+//! (`spec/mutation_cursor.qnt:417-661`), and
+//! `taintHealthy`/`taint`/`recordDatabaseFailure`/`databaseFailure`
+//! (`spec/mutation_cursor.qnt:663-737`). Every function here takes and
 //! returns plain [`super::types::ProtocolState`] values; none performs Git,
 //! database, filesystem, environment, network, async, or lock I/O.
 
@@ -325,4 +327,50 @@ impl ResolvedAttempt {
 
         next
     }
+}
+
+/// Marks `worktree`'s Git snapshot capture as tainted by a snapshot failure.
+/// Refines `taintHealthy`/`taint` (`spec/mutation_cursor.qnt:663-710`).
+///
+/// Sets `tainted=true` and `failure_kind=SnapshotFailure`, advances
+/// `revision` by one, and leaves `cursor_tree`/`needs_rebaseline` untouched.
+/// A guarded no-op (refining Quint's `stutter`) when `worktree` is already
+/// `tainted`, already in `external_taint`, or has no durable state.
+pub fn taint(state: &ProtocolState, worktree: &WorktreeId) -> ProtocolState {
+    let Some(worktree_state) = state.worktrees.get(worktree) else {
+        return state.clone();
+    };
+    if worktree_state.tainted || state.external_taint.contains(worktree) {
+        return state.clone();
+    }
+
+    let mut next = state.clone();
+    next.worktrees.insert(
+        worktree.clone(),
+        WorktreeState {
+            cursor_tree: worktree_state.cursor_tree.clone(),
+            revision: worktree_state.revision + 1,
+            tainted: true,
+            failure_kind: FailureKind::SnapshotFailure,
+            needs_rebaseline: worktree_state.needs_rebaseline,
+        },
+    );
+    next
+}
+
+/// Records a database failure for `worktree` by adding it to
+/// `external_taint`. Refines `recordDatabaseFailure`/`databaseFailure`
+/// (`spec/mutation_cursor.qnt:712-737`).
+///
+/// Changes `external_taint` only; every other durable worktree/scope field
+/// stays as it was. A guarded no-op (refining Quint's `stutter`) when
+/// `worktree` is already in `external_taint`.
+pub fn database_failure(state: &ProtocolState, worktree: &WorktreeId) -> ProtocolState {
+    if state.external_taint.contains(worktree) {
+        return state.clone();
+    }
+
+    let mut next = state.clone();
+    next.external_taint.insert(worktree.clone());
+    next
 }
