@@ -421,7 +421,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `context/architecture.md`, `context/glossary.md`, and `context/patterns.md` were verified and
     found not contradicted; no edit needed. No qualifying architecture decision.
 
-- [ ] T03: `Implement attribution and mutation-event materialization from pre-transition live scopes` (status:todo)
+- [x] T03: `Implement attribution and mutation-event materialization from pre-transition live scopes` (status:done)
   - Task ID: T03
   - Scope: In — in `protocol.rs`, a pure function refining `attributionFor`
     (`spec/mutation_cursor.qnt:285-301`) computing `IneligibleUnscoped`/`AiExclusive(scope)`/
@@ -445,7 +445,54 @@ Persist this field in every plan; this is durable plan state, not chat state:
     excludes the newly-activated scope; a `Close` on the sole live scope that also observes a
     change emits an event whose attribution still counts that scope as live.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`.
-  - Context synchronization: pending
+  - Context synchronization: synced
+  - Completed: 2026-08-26
+  - Files changed:
+    - `cli/src/services/mutation_trace/protocol.rs` (added `live_scopes_on`, `attribution_for`;
+      wired `MutationEvent` materialization into `ResolvedAttempt::apply`, gated by
+      `evaluation.changed`; updated `commit`/`CommitEvaluation` doc comments to reflect that
+      mutation-event materialization is now implemented, and dropped stale `T03`-referencing
+      comment text per repository convention)
+    - `cli/src/services/mutation_trace/tests.rs` (11 new tests: `live_scopes_on` filtering;
+      `attribution_for`'s zero/one/multiple-live-scope and
+      unhealthy/externally-tainted/needs-rebaseline-forces-`IneligibleUnscoped` cases; `commit`
+      emitting no event on a no-op tree change, exactly one event with correct
+      attribution/boundary/revision on a real change via `Advance` (which does not itself alter
+      the scope set), `Start` on `NeverSeen` excluding the newly-activated scope from
+      attribution, and `Close` on the sole live scope still counting it as live)
+  - Result: Added `live_scopes_on(state, worktree)` (refining `liveScopesOn`,
+    `spec/mutation_cursor.qnt:265-269`, filtering the known `state.scopes` map by
+    `worktree_id`/`is_live()` since this refinement has no fixed `SCOPES` universe to filter) and
+    `attribution_for(state, worktree)` (refining `attributionFor`,
+    `spec/mutation_cursor.qnt:285-301`) to `protocol.rs`, both `pub` so `tests.rs` can exercise
+    them directly as pure functions. Wired `MutationEvent` construction (refining
+    `mkMutationEvent`, `spec/mutation_cursor.qnt:303-323`) into `ResolvedAttempt::apply`,
+    inserted into `next.mutation_events` when `evaluation.changed`, computed by calling
+    `live_scopes_on`/`attribution_for` against `apply`'s own `state: &ProtocolState` parameter —
+    the pre-transition state `commit` passes through unmutated, since `apply` clones it into
+    `next` and only ever mutates `next` — matching `commitAttempt`'s own `live`/`attribution`
+    computation at `spec/mutation_cursor.qnt:484-485`, which precedes the `nextScope` `val` at
+    line 530. No new fields were added to `CommitEvaluation`; `changed` (already computed by T02)
+    is the sole gate, per the task's own scope. No production call site references the module.
+  - Verify outcomes:
+    - `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` — passed,
+      36/36 tests (25 from T01+T02 + 11 new).
+    - `./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml` — passed.
+    - `grep -RnE "std::(fs|process|env)|tokio|reqwest|turso" cli/src/services/mutation_trace` —
+      no matches (AC1 spot-check).
+    - `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
+      — passed, no warnings.
+    - `cargo fmt --manifest-path cli/Cargo.toml -- --check` — passed, no diff (after running
+      `cargo fmt`).
+    - `nix run .#quint -- typecheck spec/mutation_cursor.qnt` — passed.
+    - `nix run .#quint -- test spec/mutation_cursor.qnt` — passed.
+    - `git diff --stat -- spec/mutation_cursor.qnt spec/mutation_cursor.md` — empty (spec
+      untouched, AC8 spot-check).
+    - `grep -rn "mutation_trace" cli/src/services/hooks cli/src/services/agent_trace.rs` — no
+      matches (AC8 spot-check).
+  - Context impact: Classification: domain. `attribution_for`/`live_scopes_on`/mutation-event
+    materialization are new pure logic added to an already-unreferenced module; no existing
+    behavior, hook, or command changed.
 
 - [ ] T04: `Implement snapshot-failure taint and database-failure external-taint actions` (status:todo)
   - Task ID: T04
