@@ -7,26 +7,43 @@ command, or database call site; that integration is out of scope for the
 
 ## Current state
 
-Only the domain-types slice exists so far (`mutation-cursor-protocol-kernel`
-plan, task T01). `types.rs` defines the protocol's state and pure accessors;
-transition, attribution, failure/recovery, and cross-action test coverage land
-in later tasks of the same plan. Registered in `cli/src/services/mod.rs` with
-`#[allow(dead_code)]`, matching the existing precedent for modules not yet
-consumed by production call sites (`bash_policy`, `repository_identity`,
+Domain types plus `prepare`/`commit` transition logic exist so far
+(`mutation-cursor-protocol-kernel` plan, tasks T01-T02). `types.rs` defines
+the protocol's state (including the `ProtocolState` aggregate) and pure
+accessors; `protocol.rs` implements `prepare` and `commit` (all four boundary
+kinds — `Start`/`Advance`/`Close`/`Flush` — in one pass), refining
+`prepareAvailable`/`prepare`/`commitAttempt`. Attribution/mutation-event
+materialization, failure/recovery actions, and cross-action test coverage
+land in later tasks of the same plan. Registered in `cli/src/services/mod.rs`
+with `#[allow(dead_code)]`, matching the existing precedent for modules not
+yet consumed by production call sites (`bash_policy`, `repository_identity`,
 `agent_trace_export`).
+
+`commit` computes but does not act on `changed`: it exposes the flag on a
+returned `CommitEvaluation` so a later task can gate `MutationEvent`
+materialization on it without recomputing it.
 
 ## Module layout
 
 - `mod.rs` — public module boundary and module-level doc comment.
-- `types.rs` — state/domain types and pure accessors (`WorktreeState`,
-  `ScopeState`, `AttemptState`, `MutationEvent`, `Boundary`, `Attribution`,
-  and the identity/status/failure-kind types they compose from).
+- `types.rs` — state/domain types and pure accessors (`ProtocolState`,
+  `WorktreeState`, `ScopeState`, `AttemptState`, `MutationEvent`, `Boundary`,
+  `Attribution`, and the identity/status/failure-kind types they compose
+  from).
+- `protocol.rs` — pure transition logic: `prepare` (refining
+  `prepareAvailable`/`prepare`) and `commit` (refining `commitAttempt`),
+  returning a `CommitOutcome` that pairs the resulting `ProtocolState` with a
+  `CommitEvaluation` (`accepted`/`observes`/`observed_change`/`changed`/
+  `advances_revision`).
 - `tests.rs` — `#[cfg(test)]` coverage for the current slice, sibling to
   `mod.rs`.
 
 The module performs no Git, database, filesystem, environment, network,
-async, or lock I/O: `types.rs` and later `protocol.rs` only ever receive and
-return plain domain values.
+async, or lock I/O: `types.rs` and `protocol.rs` only ever receive and
+return plain domain values — `prepare` takes the currently observed tree as
+an explicit `TreeId` parameter rather than reading Git itself; `commit`
+operates on the tree already captured in the prepared `AttemptState`
+(`before_tree`/`after_tree`) and takes no tree input of its own.
 
 ## Refinement decisions vs. the Quint model
 
@@ -66,6 +83,72 @@ Two consequences follow from that choice:
 types, they represent real, closed sets (supported harnesses; snapshot
 health), not bounded verification domains.
 
+## Runtime scope materialization
+
+The Quint model's `SCOPES` universe is finite: `init` populates every
+possible `ScopeId` with a `ScopeState` up front (`scopes' =
+SCOPES.mapBy(scope => { status: NeverSeen, actorKind: scopeActor(scope),
+worktreeId: scopeWorktree(scope) })`), so by the time any boundary is
+evaluated, `scopeActor`/`scopeWorktree` already resolve for that scope — its
+identity is a static fact of the model, not something a transition
+establishes.
+
+This module's `ScopeId` is an unbounded runtime string (see "Refinement
+decisions" above), so `ProtocolState.scopes` cannot be prepopulated with
+every possible scope the way `init` does. Materializing a newly observed
+scope's durable identity — `status: NeverSeen`, its `actor_kind`, and its
+`worktree_id` — is therefore an **adapter/store responsibility, not a
+protocol transition**:
+
+- Quint: a finite universe means every `ScopeState` value already exists at
+  `init`.
+- Rust production: an unbounded identifier space means `ScopeState` is
+  lazily materialized by the persistence/adapter layer *before* the scope's
+  `ScopeId` is ever passed into `prepare`/`commit`.
+
+Before invoking the pure protocol with a hook boundary (`Start`/`Advance`/
+`Close`) that references a `ScopeId`, the surrounding coordinator/store
+projection must ensure that scope already exists in `ProtocolState.scopes`.
+`prepare`/`commit` do not infer identity from hook context, command type, or
+any other heuristic: they never choose a default worktree, choose a default
+actor, or synthesize a new `NeverSeen` scope. `boundary_worktree` returning
+`None` for an unregistered scope, and `prepare`/`commit`'s resulting no-op,
+are exactly this boundary — a missing `ScopeId` is unresolved protocol
+input, not a scope the protocol may create.
+
+### Identity immutability
+
+Once a `ScopeId` is materialized, its `actor_kind` and `worktree_id` are
+immutable identity facts for the lifetime of that scope. Only lifecycle
+`status` transitions, exactly as the protocol already governs:
+
+```text
+NeverSeen -> Active -> Closed
+NeverSeen -> Closed
+Active -> Abandoned
+```
+
+If a future adapter observes an existing `ScopeId` with a conflicting
+`actor_kind` or `worktree_id`, that is an identity/protocol error to reject
+and report — never a record to silently overwrite. This is the concrete
+adapter-side half of `ScopeActorIdentityIsStable` (`spec/mutation_cursor.qnt`);
+the protocol-side half is that no transition in `protocol.rs` ever writes
+`actor_kind`/`worktree_id` (only `status` fields change).
+
+### Missing scope vs. `NeverSeen` scope
+
+These are not equivalent:
+
+- A **missing** `ScopeId` (absent from `ProtocolState.scopes`) means its
+  identity has not been materialized — invalid/unresolved protocol input.
+- An **existing** `ScopeState { status: NeverSeen, .. }` is a known,
+  materialized scope identity that simply has not yet had an accepted
+  `Start`.
+
+The production entry path never calls `prepare`/`commit` with the first
+case; the no-op behavior for a missing scope is a defensive kernel property,
+not a path the coordinator is expected to exercise.
+
 ## Target end-state architecture
 
 The plan's file split anticipates three later seams this module does not yet
@@ -75,7 +158,7 @@ layout:
 ```mermaid
 flowchart LR
     coordinator["coordinator.rs\n(imperative shell:\nDB load, Git snapshot,\nCAS/retry, persist)"]
-    protocol["protocol.rs\n(pure transitions —\nthis plan)"]
+    protocol["protocol.rs\n(pure transitions —\nprepare/commit exist;\nattribution/failure/\nrecovery land later)"]
     git_snapshot["git_snapshot.rs\n(isolated Git object store,\ntemporary index, tree capture/diff)"]
     store["store.rs\n(cursor/revision, scopes,\nprocessed events, mutation\nevidence, CAS transaction)"]
 
@@ -84,9 +167,22 @@ flowchart LR
     coordinator --> store
 ```
 
-`protocol.rs` (added by later tasks in this plan) stays free of any Git
-object, DB row, or CAS transaction concept; `coordinator.rs`, `git_snapshot.rs`,
-and `store.rs` are not created by this plan.
+Each seam's responsibility, once built:
+
+- **`coordinator.rs`** — receives hook/session identity, resolves the scope's
+  actor/worktree identity, asks `store.rs` to load or materialize the scope,
+  obtains a `ProtocolState`, and calls the pure protocol.
+- **`store.rs`** — loads durable scope records; atomically creates a new
+  scope record as `NeverSeen` when appropriate; never remaps `actor_kind`/
+  `worktree_id` for an existing `ScopeId` (see "Runtime scope
+  materialization" above).
+- **`protocol.rs`** — assumes referenced scopes are already represented in
+  `ProtocolState.scopes`; validates and transitions lifecycle state only.
+
+`protocol.rs` stays free of any Git object, DB row, or CAS transaction
+concept, and gains no such dependency as later tasks in this plan fill in its
+attribution/failure/recovery logic; `coordinator.rs`, `git_snapshot.rs`, and
+`store.rs` are not created by this plan.
 
 ## Authoritative source
 
