@@ -516,26 +516,51 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Files changed:
     - `cli/src/services/mutation_trace/protocol.rs` (added `taint`, `database_failure`; updated
       module doc comment to cite `spec/mutation_cursor.qnt:663-737`)
-    - `cli/src/services/mutation_trace/tests.rs` (5 new tests: `taint` field-exact-diff and
-      already-tainted/externally-tainted no-ops; `database_failure` field-exact-diff and
-      already-externally-tainted no-op; imported `database_failure`/`taint`)
+    - `cli/src/services/mutation_trace/tests.rs` (7 new tests: `taint` field-exact-diff,
+      already-tainted/externally-tainted/unknown-worktree no-ops; `database_failure`
+      field-exact-diff, already-externally-tainted/unknown-worktree no-ops; imported
+      `database_failure`/`taint`)
   - Result: Added `taint(state, worktree)` (refining `taintHealthy`/`taint`,
     `spec/mutation_cursor.qnt:663-710`) and `database_failure(state, worktree)` (refining
     `recordDatabaseFailure`/`databaseFailure`, `spec/mutation_cursor.qnt:712-737`) to
-    `protocol.rs`. `taint` sets `tainted=true`/`failure_kind=SnapshotFailure`, advances
-    `revision` by one, and leaves `cursor_tree`/`needs_rebaseline` unchanged; it is a guarded
-    no-op (state returned unchanged) when the worktree is already `tainted`, already in
-    `external_taint`, or has no durable state — the last case has no Quint counterpart (Quint's
-    `worktree` always resolves within its finite domain) and follows the same defensive-no-op
-    convention `prepare`/`commit` already use for an unresolvable worktree. `database_failure`
-    inserts the worktree into `external_taint` and touches nothing else; it is a guarded no-op
-    when the worktree is already in `external_taint`, matching Quint's guard exactly (Quint's
-    `recordDatabaseFailure` has no worktree-existence precondition). Neither function reads or
-    writes `scopes`, `processed_events`, `attempts`, or `mutation_events`. No production call
-    site references the module.
+    `protocol.rs`. `taint` and `database_failure` both require a known worktree in
+    `ProtocolState`. For known worktrees they refine the Quint actions exactly: `taint` sets
+    `tainted=true`/`failure_kind=SnapshotFailure`, advances `revision` by one, and leaves
+    `cursor_tree`/`needs_rebaseline` unchanged; `database_failure` inserts the worktree into
+    `external_taint` and touches nothing else. For unknown runtime `WorktreeId` values the Rust
+    kernel defensively stutters, because that state is outside Quint's finite initialized
+    domain: Quint's `WorktreeId` ranges over the finite `WORKTREES` universe and `init`
+    materializes a `WorktreeState` for every member, so `recordDatabaseFailure` has no explicit
+    worktree-existence guard because every `WorktreeId` already resolves there — that omission
+    is not evidence that arbitrary unknown worktrees are valid Quint input, it is a consequence
+    of `WorktreeId` being a closed, pre-populated domain. This refinement's `WorktreeId` is an
+    unbounded runtime string, so that implicit precondition becomes an explicit runtime/kernel
+    contract: both actions are a guarded no-op (state returned unchanged) when the worktree is
+    already `tainted` (taint only)/already in `external_taint`, or has no durable state,
+    matching the same defensive-no-op convention `prepare`/`commit` already use for an
+    unresolvable worktree and keeping `external_taint ⊆ ProtocolState.worktrees` an invariant of
+    every state this module can produce. Neither function reads or writes `scopes`,
+    `processed_events`, `attempts`, or `mutation_events`. No production call site references the
+    module.
+    **Post-review correction (PR #238 review):** the original `database_failure` had no
+    worktree-existence guard, so `database_failure(state, &WorktreeId("unknown"))` against a
+    state with no `"unknown"` entry in `ProtocolState.worktrees` inserted `"unknown"` into
+    `external_taint` anyway — a state with no Quint counterpart, since Quint's `WorktreeId` has
+    no "unknown" case to represent. The original Result text's claim that "Quint's
+    `recordDatabaseFailure` has no worktree-existence precondition" was accurate about the Quint
+    source but misleadingly read as license for the same gap in the refinement; it described a
+    fact about the finite Quint domain, not a rule to carry over into the unbounded Rust one.
+    Fixed: `database_failure` now returns `state.clone()` unchanged when
+    `!state.worktrees.contains_key(worktree)`, before its existing `external_taint.contains`
+    check, matching `taint`'s existing unknown-worktree guard exactly. `taint`'s implementation
+    already had the correct behavior; only its test coverage and doc comment were extended to
+    state the rationale explicitly. Normal T04 semantics for a known worktree are unchanged by
+    this correction.
   - Verify outcomes:
     - `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` — passed,
-      41/41 tests (36 from T01-T03 + 5 new).
+      43/43 tests (36 from T01-T03 + 5 original T04 + 2 from the post-review correction:
+      `taint_is_a_no_op_for_an_unknown_worktree`,
+      `database_failure_is_a_no_op_for_an_unknown_worktree`).
     - `./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml` — passed.
     - `grep -RnE "std::(fs|process|env)|tokio|reqwest|turso" cli/src/services/mutation_trace` —
       no matches (AC1 spot-check).
@@ -548,8 +573,14 @@ Persist this field in every plan; this is durable plan state, not chat state:
       untouched, AC8 spot-check).
     - `grep -rn "mutation_trace" cli/src/services/hooks cli/src/services/agent_trace.rs` — no
       matches (AC8 spot-check).
+    - Manual review of every `external_taint` mutation site in `protocol.rs` confirms
+      `database_failure` is the sole insertion path and is now existence-guarded, so no test or
+      code path can produce `external_taint` containing a `WorktreeId` absent from
+      `ProtocolState.worktrees`.
   - Context impact: Classification: domain. `taint`/`database_failure` are new pure logic added
-    to an already-unreferenced module; no existing behavior, hook, or command changed.
+    to an already-unreferenced module; no existing behavior, hook, or command changed. The
+    post-review correction is a refinement-boundary fix to already-domain-classified logic, not
+    a new classification.
 
 - [ ] T05: `Implement scope abandonment` (status:todo)
   - Task ID: T05
@@ -559,8 +590,13 @@ Persist this field in every plan; this is durable plan state, not chat state:
     records the scope as terminal, preserves the scope's `actor_kind` and `worktree_id`
     unchanged (scope identity stability), and is a guarded no-op for any non-live scope —
     Quint's guard is "not live", so `NeverSeen`, `Closed`, and `Abandoned` all stutter — or for
-    a live scope on an externally tainted worktree; tests land in `tests.rs`. Out — recovery
-    (T06).
+    a live scope on an externally tainted worktree; tests land in `tests.rs`. `abandon` resolves
+    its owning worktree through the referenced scope's own materialized `ScopeState.worktree_id`
+    (per the runtime worktree materialization contract in
+    `context/cli/mutation-trace-protocol.md`), so that worktree must also already exist in
+    `ProtocolState.worktrees` — an unknown scope or a scope whose worktree is unresolvable is a
+    guarded no-op, matching `taint`/`database_failure`'s existence guard rather than inventing a
+    separate contract. Out — recovery (T06).
   - Dependencies: T04
   - Done when: tests prove abandoning a live scope sets `Abandoned`+`needsRebaseline` without
     moving the cursor and without changing `actor_kind`/`worktree_id`; abandoning a `NeverSeen`
@@ -580,14 +616,17 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `tainted`/`failureKind`/`needsRebaseline`/`externalTaint`, advances revision, and abandons
     every live scope on the worktree only when recovering from `tainted` or external taint — a
     healthy worktree with only `needsRebaseline` set preserves its live scopes; guarded no-op
-    when the worktree is healthy, not externally tainted, and does not need rebaseline; tests
-    land in `tests.rs`. Out — none remaining; this completes the action set.
+    when the worktree is healthy, not externally tainted, and does not need rebaseline; also a
+    guarded no-op when `worktree` itself is absent from `ProtocolState.worktrees` (the same
+    runtime worktree materialization contract T04/T05 already follow — see
+    `context/cli/mutation-trace-protocol.md`); tests land in `tests.rs`. Out — none remaining;
+    this completes the action set.
   - Dependencies: T05
   - Done when: tests prove taint/external-taint recovery abandons every live scope on that
     worktree while a `needsRebaseline`-only recovery preserves them, both paths clear
     `externalTaint`/`tainted`/`failureKind`/`needsRebaseline` and rebaseline the cursor to
-    `observed_tree`, and recovery is a no-op on an already-healthy worktree with no rebaseline
-    need.
+    `observed_tree`; recovery is a no-op on an already-healthy worktree with no rebaseline need;
+    and recovery is a no-op when `worktree` is unknown to `ProtocolState.worktrees`.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`.
   - Context synchronization: pending
 
