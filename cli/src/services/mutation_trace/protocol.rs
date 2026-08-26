@@ -5,8 +5,9 @@
 //! `prepareAvailable`/`prepare`/`commitAttempt`
 //! (`spec/mutation_cursor.qnt:417-661`), and
 //! `taintHealthy`/`taint`/`recordDatabaseFailure`/`databaseFailure`
-//! (`spec/mutation_cursor.qnt:663-737`), and `abandonLiveScope`/`abandon`
-//! (`spec/mutation_cursor.qnt:739-805`). Every function here takes and
+//! (`spec/mutation_cursor.qnt:663-737`), `abandonLiveScope`/`abandon`
+//! (`spec/mutation_cursor.qnt:739-805`), and `recoverNeeded`/`recover`
+//! (`spec/mutation_cursor.qnt:807-886`). Every function here takes and
 //! returns plain [`super::types::ProtocolState`] values; none performs Git,
 //! database, filesystem, environment, network, async, or lock I/O.
 
@@ -445,5 +446,71 @@ pub fn abandon(state: &ProtocolState, scope: &ScopeId) -> ProtocolState {
             worktree_id: scope_state.worktree_id.clone(),
         },
     );
+    next
+}
+
+/// Recovers `worktree`, re-baselining its cursor to the currently observed
+/// tree and clearing its failure/rebaseline state. Refines
+/// `recoverNeeded`/`recover` (`spec/mutation_cursor.qnt:807-886`).
+///
+/// `observed_tree` corresponds to Quint's `worktreeTrees.get(worktree)`: the
+/// currently observed tree, supplied by the caller rather than read
+/// internally, since the pure kernel performs no Git I/O — the same
+/// explicit-input contract [`prepare`] follows.
+///
+/// Sets `cursor_tree=observed_tree`, `tainted=false`,
+/// `failure_kind=Healthy`, `needs_rebaseline=false`, advances `revision` by
+/// one, and removes `worktree` from `external_taint`. When the worktree was
+/// `tainted` or externally tainted, every live scope on it is transitioned to
+/// `Abandoned` (preserving `actor_kind`/`worktree_id`); a worktree recovering
+/// only from `needs_rebaseline` preserves its live scopes untouched.
+///
+/// A guarded no-op (refining Quint's `stutter`) when the worktree is already
+/// healthy, not externally tainted, and does not need rebaseline, or when
+/// `worktree` has no durable state — the same existence contract
+/// [`taint`]/[`database_failure`]/[`abandon`] enforce.
+pub fn recover(
+    state: &ProtocolState,
+    worktree: &WorktreeId,
+    observed_tree: TreeId,
+) -> ProtocolState {
+    let Some(worktree_state) = state.worktrees.get(worktree) else {
+        return state.clone();
+    };
+    let externally_tainted = state.external_taint.contains(worktree);
+    if !worktree_state.tainted && !externally_tainted && !worktree_state.needs_rebaseline {
+        return state.clone();
+    }
+
+    let abandon_live_scopes = worktree_state.tainted || externally_tainted;
+
+    let mut next = state.clone();
+    next.worktrees.insert(
+        worktree.clone(),
+        WorktreeState {
+            cursor_tree: observed_tree,
+            revision: worktree_state.revision + 1,
+            tainted: false,
+            failure_kind: FailureKind::Healthy,
+            needs_rebaseline: false,
+        },
+    );
+    next.external_taint.remove(worktree);
+
+    if abandon_live_scopes {
+        for (scope_id, scope_state) in &state.scopes {
+            if scope_state.worktree_id == *worktree && scope_state.is_live() {
+                next.scopes.insert(
+                    scope_id.clone(),
+                    ScopeState {
+                        status: ScopeStatus::Abandoned,
+                        actor_kind: scope_state.actor_kind,
+                        worktree_id: scope_state.worktree_id.clone(),
+                    },
+                );
+            }
+        }
+    }
+
     next
 }
