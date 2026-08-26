@@ -56,6 +56,9 @@ to close.
 - `tests.rs` — `#[cfg(test)]` coverage for the current slice, sibling to
   `mod.rs`.
 
+See [mutation-trace-revision-refinement.md](mutation-trace-revision-refinement.md)
+for the Quint `int` → Rust `u64` worktree-revision refinement all four enforce.
+
 The module performs no Git, database, filesystem, environment, network,
 async, or lock I/O: `types.rs` and `protocol.rs` only ever receive and
 return plain domain values — `prepare` takes the currently observed tree as
@@ -202,16 +205,14 @@ guard — `abandon` resolves it through the referenced scope's own materialized
 module can produce, since `database_failure` is the sole path that inserts
 into `external_taint`.
 
-Future responsibility split, mirroring "Runtime scope materialization"
-above: the coordinator/store layer resolves and materializes worktree
-identity/state and loads a `ProtocolState`; `protocol.rs` transitions only
-already-known worktrees and is not the layer that materializes them.
+Future responsibility split (mirrors "Runtime scope materialization" above):
+the coordinator/store layer resolves/materializes worktree identity/state and
+loads a `ProtocolState`; `protocol.rs` only transitions already-known ones.
 
 ## Target end-state architecture
 
 The plan's file split anticipates three later seams this module does not yet
-implement, recorded here so a later plan does not have to rediscover the
-layout:
+implement, recorded here so a later plan does not rediscover the layout:
 
 ```mermaid
 flowchart LR
@@ -237,14 +238,13 @@ Each seam's responsibility, once built:
 - **`protocol.rs`** — assumes referenced scopes are already represented in
   `ProtocolState.scopes`; validates and transitions lifecycle state only.
 
-`protocol.rs` stays free of any Git object, DB row, or CAS transaction
-concept, now that its full action set is implemented; `coordinator.rs`,
-`git_snapshot.rs`, and `store.rs` are not created by this plan.
+`protocol.rs` stays free of any Git object, DB row, or CAS transaction concept
+even with its full action set implemented; `coordinator.rs`/`git_snapshot.rs`/
+`store.rs` are not created by this plan.
 
 ## Authoritative source
 
 `spec/mutation_cursor.qnt` (verified Quint model) and `spec/mutation_cursor.md`
-(model-boundary and implementation-refinement notes) remain the authoritative
-description of protocol behavior; this module's doc comments cite concrete
-spec line ranges per type/function. See `context/plans/mutation-cursor-protocol-kernel.md`
-for current build-out status across tasks.
+(model-boundary/implementation-refinement notes) remain authoritative; doc
+comments cite concrete spec line ranges per type/function. See
+`context/plans/mutation-cursor-protocol-kernel.md` for build-out status.
