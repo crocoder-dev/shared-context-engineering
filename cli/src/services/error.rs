@@ -90,7 +90,7 @@ impl UserError {
                     .to_string()
             }
             Self::NotGitRemote { remote_name } => format!(
-                "The Git repository has no configured URL for remote '{remote_name}'. Please run `git remote add {remote_name} <url>`, then retry."
+                "The Git repository has no configured URL for remote '{remote_name}'. Please run `git remote add <remote> <url>`, then retry."
             ),
         }
     }
