@@ -8,19 +8,21 @@ command, or database call site; that integration is out of scope for the
 ## Current state
 
 Domain types, `prepare`/`commit` transition logic, attribution/mutation-event
-materialization, snapshot-failure/database-failure taint actions, and scope
-abandonment exist so far (`mutation-cursor-protocol-kernel` plan, tasks
-T01-T05). `types.rs` defines the protocol's state (including the
-`ProtocolState` aggregate) and pure accessors; `protocol.rs` implements
-`prepare` and `commit` (all four boundary kinds — `Start`/`Advance`/`Close`/
-`Flush` — in one pass), refining `prepareAvailable`/`prepare`/
-`commitAttempt`, `live_scopes_on`/`attribution_for`, refining
-`liveScopesOn`/`attributionFor`, `taint`/`database_failure`, refining
-`taintHealthy`/`taint`/`recordDatabaseFailure`/`databaseFailure`, and
-`abandon`, refining `abandonLiveScope`/`abandon`. Recovery and cross-action
-test coverage land in later tasks of the same plan (T06-T07). Registered in
-`cli/src/services/mod.rs` with `#[allow(dead_code)]`, matching the existing
-precedent for modules not yet consumed by production call sites
+materialization, snapshot-failure/database-failure taint actions, scope
+abandonment, and recovery exist so far (`mutation-cursor-protocol-kernel`
+plan, tasks T01-T06) — this is the module's full action set. `types.rs`
+defines the protocol's state (including the `ProtocolState` aggregate) and
+pure accessors; `protocol.rs` implements `prepare` and `commit` (all four
+boundary kinds — `Start`/`Advance`/`Close`/`Flush` — in one pass, refining
+`prepareAvailable`/`prepare`/`commitAttempt`), `live_scopes_on`/
+`attribution_for` (refining `liveScopesOn`/`attributionFor`),
+`taint`/`database_failure` (refining
+`taintHealthy`/`taint`/`recordDatabaseFailure`/`databaseFailure`), `abandon`
+(refining `abandonLiveScope`/`abandon`), and `recover` (refining
+`recoverNeeded`/`recover`). Cross-action sequence/invariant test coverage and
+the Quint refinement matrix land in the plan's remaining task (T07).
+Registered in `cli/src/services/mod.rs` with `#[allow(dead_code)]`, matching
+the existing precedent for modules not yet consumed by production call sites
 (`bash_policy`, `repository_identity`, `agent_trace_export`).
 
 `commit` materializes exactly one `MutationEvent` into `mutation_events` when
@@ -46,8 +48,10 @@ to close.
   `liveScopesOn`/`attributionFor`), each callable standalone or via `commit`'s
   internal `MutationEvent` materialization; `taint` (refining
   `taintHealthy`/`taint`), `database_failure` (refining
-  `recordDatabaseFailure`/`databaseFailure`), and `abandon` (refining
-  `abandonLiveScope`/`abandon`), each a guarded no-op action independent of
+  `recordDatabaseFailure`/`databaseFailure`), `abandon` (refining
+  `abandonLiveScope`/`abandon`), and `recover` (refining
+  `recoverNeeded`/`recover`, taking the currently observed tree as an
+  explicit `TreeId` parameter), each a guarded no-op action independent of
   `prepare`/`commit`.
 - `tests.rs` — `#[cfg(test)]` coverage for the current slice, sibling to
   `mod.rs`.
@@ -167,7 +171,7 @@ not a path the coordinator is expected to exercise.
 
 The same representation/refinement boundary applies to `WorktreeId`, one
 level up from scope identity, and governs `taint`/`database_failure`/
-`abandon` (and will govern `recover`):
+`abandon`/`recover`:
 
 - **Quint**: `WorktreeId` ranges over the finite `WORKTREES` universe, and
   `init` materializes a `WorktreeState` for every member up front — every
@@ -190,9 +194,9 @@ A **missing** `WorktreeId` (absent from `ProtocolState.worktrees`) is not
 equivalent to a **healthy** `WorktreeState` (`tainted: false`,
 `failure_kind: Healthy`, ...): the former means the protocol has no
 materialized state for that identity at all, while the latter means the
-identity is known and currently healthy. `taint`, `database_failure`, and
-`abandon` all enforce this distinction with the same existence guard —
-`abandon` resolves it through the referenced scope's own materialized
+identity is known and currently healthy. `taint`, `database_failure`,
+`abandon`, and `recover` all enforce this distinction with the same existence
+guard — `abandon` resolves it through the referenced scope's own materialized
 `worktree_id` rather than taking a `WorktreeId` directly — which keeps
 `external_taint ⊆ ProtocolState.worktrees` an invariant of every state this
 module can produce, since `database_failure` is the sole path that inserts
@@ -212,7 +216,7 @@ layout:
 ```mermaid
 flowchart LR
     coordinator["coordinator.rs\n(imperative shell:\nDB load, Git snapshot,\nCAS/retry, persist)"]
-    protocol["protocol.rs\n(pure transitions —\nprepare/commit/attribution/\ntaint/abandon exist;\nrecovery lands later)"]
+    protocol["protocol.rs\n(pure transitions —\nprepare/commit/attribution/\ntaint/abandon/recover\nall implemented)"]
     git_snapshot["git_snapshot.rs\n(isolated Git object store,\ntemporary index, tree capture/diff)"]
     store["store.rs\n(cursor/revision, scopes,\nprocessed events, mutation\nevidence, CAS transaction)"]
 
@@ -234,9 +238,8 @@ Each seam's responsibility, once built:
   `ProtocolState.scopes`; validates and transitions lifecycle state only.
 
 `protocol.rs` stays free of any Git object, DB row, or CAS transaction
-concept, and gains no such dependency as the later task in this plan fills in
-its remaining recovery logic; `coordinator.rs`, `git_snapshot.rs`, and
-`store.rs` are not created by this plan.
+concept, now that its full action set is implemented; `coordinator.rs`,
+`git_snapshot.rs`, and `store.rs` are not created by this plan.
 
 ## Authoritative source
 

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::protocol::{
-    abandon, attribution_for, commit, database_failure, live_scopes_on, prepare, taint,
+    abandon, attribution_for, commit, database_failure, live_scopes_on, prepare, recover, taint,
 };
 use super::types::*;
 
@@ -1275,4 +1275,153 @@ fn abandon_is_a_no_op_when_the_scopes_worktree_has_no_durable_state() {
     let next = abandon(&state, &scope("scope0"));
 
     assert_eq!(next, state);
+}
+
+#[test]
+fn recover_from_snapshot_taint_abandons_live_scopes_and_rebaselines_cursor() {
+    let mut state = ProtocolState::default();
+    state.worktrees.insert(
+        worktree("wt0"),
+        WorktreeState {
+            cursor_tree: tree("tree0"),
+            revision: 3,
+            tainted: true,
+            failure_kind: FailureKind::SnapshotFailure,
+            needs_rebaseline: false,
+        },
+    );
+    state
+        .worktrees
+        .insert(worktree("wt1"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+    state.scopes.insert(
+        scope("scope1"),
+        scope_with_status(ScopeStatus::Closed, worktree("wt0")),
+    );
+    state.scopes.insert(
+        scope("scope2"),
+        scope_with_status(ScopeStatus::Active, worktree("wt1")),
+    );
+
+    let next = recover(&state, &worktree("wt0"), tree("tree1"));
+
+    let recovered = next.worktrees.get(&worktree("wt0")).unwrap();
+    assert_eq!(recovered.cursor_tree, tree("tree1"));
+    assert_eq!(recovered.revision, 4);
+    assert!(!recovered.tainted);
+    assert_eq!(recovered.failure_kind, FailureKind::Healthy);
+    assert!(!recovered.needs_rebaseline);
+    assert_eq!(
+        next.worktrees.get(&worktree("wt1")),
+        state.worktrees.get(&worktree("wt1"))
+    );
+
+    assert_eq!(
+        next.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::Abandoned
+    );
+    assert_eq!(
+        next.scopes.get(&scope("scope0")).unwrap().worktree_id,
+        worktree("wt0")
+    );
+    assert_eq!(
+        next.scopes.get(&scope("scope1")),
+        state.scopes.get(&scope("scope1"))
+    );
+    assert_eq!(
+        next.scopes.get(&scope("scope2")),
+        state.scopes.get(&scope("scope2"))
+    );
+
+    assert_eq!(next.external_taint, state.external_taint);
+    assert_eq!(next.processed_events, state.processed_events);
+    assert_eq!(next.attempts, state.attempts);
+    assert_eq!(next.mutation_events, state.mutation_events);
+}
+
+#[test]
+fn recover_from_external_taint_abandons_live_scopes_and_clears_external_taint() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 2));
+    state.external_taint.insert(worktree("wt0"));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    let next = recover(&state, &worktree("wt0"), tree("tree1"));
+
+    let recovered = next.worktrees.get(&worktree("wt0")).unwrap();
+    assert_eq!(recovered.cursor_tree, tree("tree1"));
+    assert_eq!(recovered.revision, 3);
+    assert!(!recovered.tainted);
+    assert_eq!(recovered.failure_kind, FailureKind::Healthy);
+    assert!(!recovered.needs_rebaseline);
+
+    assert!(!next.external_taint.contains(&worktree("wt0")));
+    assert_eq!(
+        next.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::Abandoned
+    );
+}
+
+#[test]
+fn recover_with_only_needs_rebaseline_preserves_live_scopes() {
+    let mut state = ProtocolState::default();
+    state.worktrees.insert(
+        worktree("wt0"),
+        WorktreeState {
+            cursor_tree: tree("tree0"),
+            revision: 1,
+            tainted: false,
+            failure_kind: FailureKind::Healthy,
+            needs_rebaseline: true,
+        },
+    );
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    let next = recover(&state, &worktree("wt0"), tree("tree1"));
+
+    let recovered = next.worktrees.get(&worktree("wt0")).unwrap();
+    assert_eq!(recovered.cursor_tree, tree("tree1"));
+    assert_eq!(recovered.revision, 2);
+    assert!(!recovered.tainted);
+    assert_eq!(recovered.failure_kind, FailureKind::Healthy);
+    assert!(!recovered.needs_rebaseline);
+
+    assert_eq!(
+        next.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::Active
+    );
+    assert_eq!(next.scopes, state.scopes);
+}
+
+#[test]
+fn recover_is_a_no_op_on_an_already_healthy_worktree_with_no_rebaseline_need() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+
+    let next = recover(&state, &worktree("wt0"), tree("tree1"));
+
+    assert_eq!(next, state);
+}
+
+#[test]
+fn recover_is_a_no_op_for_an_unknown_worktree() {
+    let state = ProtocolState::default();
+
+    let next = recover(&state, &worktree("unknown"), tree("tree1"));
+
+    assert_eq!(next, state);
+    assert!(!next.worktrees.contains_key(&worktree("unknown")));
 }
