@@ -582,7 +582,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     post-review correction is a refinement-boundary fix to already-domain-classified logic, not
     a new classification.
 
-- [ ] T05: `Implement scope abandonment` (status:todo)
+- [x] T05: `Implement scope abandonment` (status:done)
   - Task ID: T05
   - Scope: In — in `protocol.rs`, a pure transition refining `abandonLiveScope`/`abandon`
     (`spec/mutation_cursor.qnt:739-805`): transitions a live scope to `Abandoned`, sets the
@@ -604,7 +604,69 @@ Persist this field in every plan; this is durable plan state, not chat state:
     (never reactivates a terminal scope); abandoning a live scope on an externally tainted
     worktree is a no-op.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`.
-  - Context synchronization: pending
+  - Context synchronization: synced
+  - Completed: 2026-08-26
+  - Files changed:
+    - `cli/src/services/mutation_trace/protocol.rs` (added `abandon`; updated module doc comment
+      to cite `spec/mutation_cursor.qnt:739-805`; added `ScopeState` to the `types` import)
+    - `cli/src/services/mutation_trace/tests.rs` (9 new tests: live-scope abandonment field-exact
+      diff, preservation of a second live scope on the same worktree, `NeverSeen`/`Closed`/
+      `Abandoned` no-ops, externally-tainted-worktree no-op, a snapshot-tainted-worktree success
+      case, unknown-scope no-op, and a no-op when the scope's own worktree has no durable state;
+      imported `abandon`)
+    - `cli/src/services/mutation_trace/mod.rs` (post-completion correction: module doc comment
+      updated to list scope abandonment as implemented; see below)
+  - Result: Added `abandon(state, scope)` to `protocol.rs`, refining `abandonLiveScope`/`abandon`
+    (`spec/mutation_cursor.qnt:739-805`). Resolves the scope's `ScopeState`; guards (returning
+    `state.clone()` unchanged) when the scope is unknown, not live (`NeverSeen`, `Closed`, or
+    `Abandoned` all stutter, so a terminal scope can never be reactivated or abandoned again), on
+    an externally tainted worktree, or when the scope's own `worktree_id` has no durable
+    `WorktreeState` — this last case has no Quint counterpart (the model's finite `SCOPES`
+    universe guarantees every referenced worktree already resolves) and follows the same
+    existence-guard convention `taint`/`database_failure` established in T04. On a live,
+    non-externally-tainted scope: advances the owning worktree's `revision` by one, sets
+    `needs_rebaseline=true`, leaves `cursor_tree`/`tainted`/`failure_kind` unchanged, and sets the
+    scope to `Abandoned` while copying its existing `actor_kind`/`worktree_id` forward unchanged
+    (scope identity stability). No other scope, `external_taint`, `processed_events`, `attempts`,
+    or `mutation_events` entry is touched. No production call site references the module.
+
+    **Abandonment is blocked by `external_taint`, not by snapshot taint.** A snapshot-tainted
+    worktree (`tainted=true`, `failure_kind=SnapshotFailure`) may still abandon an `Active` scope;
+    the transition preserves `tainted=true`/`failure_kind=SnapshotFailure` unchanged while setting
+    `needs_rebaseline=true` and advancing `revision`, exactly as Quint's `abandon` guard states —
+    it checks `not(isLive(...)) or externalTaint.contains(...)` only, with no `tainted` guard.
+    `SnapshotFailure` is degraded snapshot state; `external_taint` is the hard barrier that blocks
+    abandonment. This distinction is now covered by an explicit regression test (below) so it
+    cannot be accidentally lost.
+
+    **Post-completion cleanup (PR #238 follow-up):** `mod.rs`'s module doc comment still read
+    "Scope abandonment and recovery are not yet implemented," stale after this task implemented
+    `abandon`. Fixed to list scope abandonment as implemented and state only recovery remains,
+    preserving the existing no-I/O and not-yet-wired language. Added
+    `abandon_succeeds_for_a_live_scope_on_a_snapshot_tainted_worktree` to `tests.rs`, proving a
+    snapshot-tainted (but not externally tainted) worktree still permits abandonment with taint
+    fields preserved; the existing
+    `abandon_is_a_no_op_for_a_live_scope_on_an_externally_tainted_worktree` test was left
+    unchanged, so the two tests together encode snapshot-taint-allows/external-taint-blocks as a
+    durable pair. No protocol behavior changed — `abandon`'s guard already matched the Quint
+    source exactly; this cleanup corrected stale documentation and closed a test-coverage gap.
+  - Verify outcomes:
+    - `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` — passed,
+      52/52 tests (43 from T01-T04 + 9 new).
+    - `./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml` — passed.
+    - `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
+      — passed, no warnings.
+    - `cargo fmt --manifest-path cli/Cargo.toml -- --check` — passed, no diff.
+    - `nix run .#quint -- typecheck spec/mutation_cursor.qnt` — passed.
+    - `nix run .#quint -- test spec/mutation_cursor.qnt` — passed.
+    - `grep -RnE "std::(fs|process|env)|tokio|reqwest|turso" cli/src/services/mutation_trace` —
+      no matches (AC1 spot-check).
+    - `grep -rn "mutation_trace" cli/src/services/hooks cli/src/services/agent_trace.rs` — no
+      matches (AC8 spot-check).
+    - `git diff --stat -- spec/mutation_cursor.qnt spec/mutation_cursor.md` — empty (spec
+      untouched, AC8 spot-check).
+  - Context impact: Classification: domain. `abandon` is new pure logic added to an
+    already-unreferenced module; no existing behavior, hook, or command changed.
 
 - [ ] T06: `Implement recovery with an explicit observed-tree input` (status:todo)
   - Task ID: T06
