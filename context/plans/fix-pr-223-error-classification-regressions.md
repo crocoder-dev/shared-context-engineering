@@ -76,13 +76,17 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Result: Stream credential-storage failures now propagate through the typed sync error predicate and classify as `auth.storage_unavailable`; terminal and refresh cases are covered by focused tests with preserved technical sources.
   - Context impact: domain — `context/cli/sync-command.md` now accurately documents typed credential-storage classification across all sync failure paths; no root context files require changes.
 
-- [ ] T02: `Type setup repository-root resolution before the CLI boundary` (status:todo)
+- [x] T02: `Type setup repository-root resolution before the CLI boundary` (status:done)
   - Task ID: T02
   - Scope: In — introduce a narrow setup-owned `GitRepositoryResolutionError` distinguishing positively identified non-Git directories from unexpected resolution failures; preserve the original technical source through `Display`/`Error`; return it from `ensure_git_repository`; classify it in `setup/command.rs` as `NotGitRepository` or `UnexpectedFailure`; add real non-Git-directory, nonexistent-path, and source-preservation tests; update setup taxonomy/context wording. Out — typing every later setup operation, changing setup success behavior, or matching strings in the command layer.
   - Dependencies: none
   - Done when: a valid temporary non-Git directory maps to `setup.not_git_repository`, a definitely nonexistent path maps to `general.unexpected_failure`, both `CliError::User` variants contain technical sources, and only the setup domain recognizes Git's diagnostic.
-  - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup::`; `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml -- -D warnings`.
-  - Context synchronization: pending
+  - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup::` — passed (64 tests); `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml -- -D warnings` — passed.
+  - Context synchronization: synced
+  - Completed: 2026-08-26
+  - Files changed: `cli/src/services/setup/mod.rs`, `cli/src/services/setup/command.rs`, `context/cli/cli-command-surface.md`, `context/sce/cli-error-code-taxonomy.md`, `context/architecture.md`
+  - Result: Setup repository-root resolution now returns a typed classification, mapping only Git-confirmed non-repository directories to `NotGitRepository` and preserving technical sources while mapping other resolution failures to `UnexpectedFailure`; focused tests cover real non-Git and nonexistent paths plus both sourced CLI mappings.
+  - Context impact: domain — `context/cli/cli-command-surface.md`, `context/sce/cli-error-code-taxonomy.md`, and `context/architecture.md` now document positive-only setup repository classification and technical-source preservation; the five root context files require verification during synchronization.
 
 - [ ] T03: `Restore idempotent auth state-query semantics` (status:todo)
   - Task ID: T03
