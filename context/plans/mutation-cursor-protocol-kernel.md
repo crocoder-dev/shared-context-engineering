@@ -5,33 +5,59 @@
 Establish a pure, dependency-free Rust refinement of the verified `spec/mutation_cursor.qnt`
 protocol under a new `cli/src/services/mutation_trace` module, split as `mod.rs` (public module
 boundary), `types.rs` (state/domain types), `protocol.rs` (pure transition logic), and
-`tests.rs`. The module represents the protocol's state (`WorktreeState`, `ScopeState`,
-`AttemptState`), its pure transitions (prepare/commit attempts for `Start`/`Advance`/`Close`/
-`Flush` boundaries, attribution derivation, snapshot-failure taint, database-failure external
-taint, scope abandonment, and recovery), and its result/attribution/mutation-event types, with
-deterministic tests that mirror the spec's invariants. This is new behavior: no Rust
-implementation of this protocol exists today, and the module performs no Git, database,
-filesystem, environment, network, or lock I/O. `coordinator.rs`, `git_snapshot.rs`, and
-`store.rs` — the imperative-shell orchestration, isolated Git snapshot capture, and DB-backed
-CAS persistence seams in the target end-state architecture — are acknowledged as the layout the
-protocol module will grow into, but are not created in this PR; `protocol.rs` is not wired into
-any existing hook, command, or database call site. That integration is explicitly out of scope
-and left for a later plan.
+`tests.rs`. The module represents the protocol's state as an explicit `ProtocolState` aggregate
+(`worktrees`, `scopes`, `external_taint`, `processed_events`, `attempts`, `mutation_events`) over
+the existing leaf types (`WorktreeState`, `ScopeState`, `AttemptState`), its pure transitions
+(prepare/commit evaluation for `Start`/`Advance`/`Close`/`Flush` boundaries, attribution
+derivation, snapshot-failure taint, database-failure external taint, scope abandonment, and
+recovery — the last two taking the currently observed tree as an explicit input rather than
+reading Git themselves), and its result/attribution/mutation-event types, with deterministic
+tests that mirror the spec's invariants. This is new behavior: no Rust implementation of this
+protocol exists today, and the module performs no Git, database, filesystem, environment,
+network, or lock I/O. `coordinator.rs`, `git_snapshot.rs`, and `store.rs` — the imperative-shell
+orchestration, isolated Git snapshot capture, and DB-backed CAS persistence seams in the target
+end-state architecture — are acknowledged as the layout the protocol module will grow into, but
+are not created in this PR; `protocol.rs` is not wired into any existing hook, command, or
+database call site. That integration is explicitly out of scope and left for a later plan.
+
+This revision reshapes the T02-T07 task stack after a review of the first pass: it makes the
+`accepted`/`observes`/`observedChange`/`changed`/`advancesRevision` distinction in `commitAttempt`
+explicit per task (they are not equivalent — an accepted-but-non-observing hook still advances
+the revision without moving the cursor), moves all four boundary kinds' commit evaluation
+(including `Flush`) into one task instead of splitting `Flush` semantics across tasks, adds the
+`externalTaint` freshness guard explicitly, requires attribution/mutation-event materialization
+to use the *pre-transition* live-scope set exactly as `commitAttempt` computes it (before
+`nextScope` is applied), and replaces "at least three" multi-action sequence tests with a
+requirement to cover every named scenario. It does not change the module's scope, file layout, or
+non-goals.
 
 ## Acceptance criteria
 
 - [ ] AC1: The mutation-cursor protocol module has an explicit Rust home under
       `cli/src/services/mutation_trace` with zero Git/DB/filesystem/environment/network/
-      async/lock I/O in its pure transition logic.
-  - Validate: `grep -RnE "std::(fs|process|env)|tokio|reqwest|turso" cli/src/services/mutation_trace` returns nothing; manual inspection of imports.
-- [ ] AC2: `Start`/`Advance`/`Close` hook boundaries transition scope status and worktree
-      cursor/revision exactly as `commitAttempt` specifies (`spec/mutation_cursor.qnt:455-661`),
-      including CAS freshness rejection (`expectedRevision`/`beforeTree` mismatch) and replay
-      rejection via processed `EventKey`s.
+      async/lock I/O in its pure transition logic, and operates over an explicit `ProtocolState`
+      aggregate (`worktrees`/`scopes`/`external_taint`/`processed_events`/`attempts`/
+      `mutation_events`) rather than free-floating leaf values.
+  - Validate: `grep -RnE "std::(fs|process|env)|tokio|reqwest|turso" cli/src/services/mutation_trace` returns nothing; manual inspection of imports and the `ProtocolState` type.
+- [ ] AC2: `Start`/`Advance`/`Close` hook boundaries and the non-hook `Flush` boundary compute
+      `accepted`/`observes`/`observedChange`/`changed`/`advancesRevision` and transition scope
+      status and worktree cursor/revision exactly as `commitAttempt` specifies
+      (`spec/mutation_cursor.qnt:455-661`), including CAS freshness rejection
+      (`expectedRevision`/`beforeTree` mismatch), the `externalTaint` freshness guard, and replay
+      rejection via processed `EventKey`s. An accepted-but-non-observing hook (for example a
+      fresh `Start` on an already-`Active` scope, or an invalid `Advance`/`Close`) still advances
+      the revision and records the event as processed while the cursor and scope remain
+      unchanged; `Flush`'s `advancesRevision` requires `observedChange`, unlike hook boundaries
+      whose `advancesRevision` follows from `accepted` alone. `prepare` takes the currently
+      observed tree as an explicit input parameter rather than obtaining it itself.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`
-- [ ] AC3: Attribution (`IneligibleUnscoped`/`AiExclusive`/`AiContended`, `spec/mutation_cursor.qnt:285-301`)
-      and mutation-event emission match `commitAttempt`'s `changed` gate exactly
-      (`observedChange and not needsRebaseline`), including the `Flush` boundary and
+- [ ] AC3: Attribution (`IneligibleUnscoped`/`AiExclusive`/`AiContended`,
+      `spec/mutation_cursor.qnt:285-301`) and mutation-event emission match `commitAttempt`'s
+      `changed` gate exactly (`observedChange and not needsRebaseline`), computed from the
+      *pre-transition* live-scope set exactly as `commitAttempt` computes `live`/`attribution`
+      before applying `nextScope` — a `Start` boundary's emitted event never attributes the
+      mutation to the scope it is about to activate, and a `Close` boundary's emitted event still
+      attributes to the scope it is about to close — including the `Flush` boundary and
       failure/taint/`needsRebaseline` attribution overrides.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`
 - [ ] AC4: Snapshot-failure taint (`taintHealthy`/`taint`, `spec/mutation_cursor.qnt:663-710`)
@@ -40,13 +66,16 @@ and left for a later plan.
       only `externalTaint`. Neither ever changes the cursor.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`
 - [ ] AC5: Abandonment (`abandonLiveScope`/`abandon`, `spec/mutation_cursor.qnt:739-805`) is
-      terminal, sets `needsRebaseline`, and never moves the cursor; a terminal scope can never
-      be reactivated or abandoned again.
+      terminal, sets `needsRebaseline`, never moves the cursor, and preserves the scope's
+      `actor_kind` and `worktree_id` (scope identity stability); a terminal scope can never be
+      reactivated or abandoned again, and abandoning a `NeverSeen`, `Closed`, or `Abandoned`
+      (non-live) scope is a no-op.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`
-- [ ] AC6: Recovery (`recoverNeeded`/`recover`, `spec/mutation_cursor.qnt:807-886`) re-baselines
-      the cursor and clears taint/`needsRebaseline`/`externalTaint`, abandoning live scopes only
-      on the taint/`externalTaint` recovery path and preserving them on the
-      `needsRebaseline`-only path.
+- [ ] AC6: Recovery (`recoverNeeded`/`recover`, `spec/mutation_cursor.qnt:807-886`), given the
+      currently observed tree as an explicit input rather than reading Git itself, re-baselines
+      the cursor to that observed tree and clears taint/`needsRebaseline`/`externalTaint`,
+      abandoning live scopes only on the taint/`externalTaint` recovery path and preserving them
+      on the `needsRebaseline`-only path.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`
 - [ ] AC7: No rejected or stale attempt ever advances the revision, moves the cursor, or emits
       mutation evidence, across multi-action sequences.
@@ -105,7 +134,8 @@ Persist this field in every plan; this is durable plan state, not chat state:
   `bash_policy`, `repository_identity` in `cli/src/services/mod.rs`); `types.rs` and
   `protocol.rs` stay free of any reference to `coordinator.rs`/`git_snapshot.rs`/`store.rs`
   concerns (Git objects, DB rows, CAS transactions) — the protocol layer only ever receives and
-  returns plain domain values.
+  returns plain domain values, including the observed-tree inputs to `prepare` and `recover`,
+  which are plain `TreeId` values supplied by the caller.
 - **Non-goal:** wiring this protocol into any hook, command, or database layer; Git/SQLite/
   filesystem adapters for its inputs; a full Rust-vs-Quint model/PBT test harness; implementing
   `coordinator.rs`, `git_snapshot.rs`, or `store.rs`.
@@ -144,6 +174,55 @@ Persist this field in every plan; this is durable plan state, not chat state:
   capture and diff), and `store.rs` (protocol persistence interface: cursor/revision, scopes,
   processed events, mutation evidence, CAS transaction) are the later-PR seams this layout
   leaves room for, and are recorded in the new context file but not created here.
+- `ProtocolState` (T02) is a plain aggregate of the existing leaf types keyed by their identity
+  newtypes (`BTreeMap<WorktreeId, WorktreeState>`, `BTreeMap<ScopeId, ScopeState>`,
+  `BTreeSet<WorktreeId>` for `external_taint`, `BTreeSet<EventKey>` for `processed_events`,
+  `BTreeMap<AttemptId, AttemptState>` for `attempts`, `BTreeSet<MutationEvent>` for
+  `mutation_events`), mirroring the Quint state machine's top-level `worktrees`/`scopes`/
+  `externalTaint`/`processedEvents`/`attempts`/`mutationEvents` variables
+  (`spec/mutation_cursor.qnt:2-14`). Quint's verification-only histories (`cursorHistory`,
+  `protocolHistory`, `scopeHistory`, `abandonHistory`, `startHistory`, `recoveryHistory`,
+  `taintHistory`, `evidenceAttempts`, `scopeStartCount`, `everTerminal`) are not represented in
+  `ProtocolState`; T07's refinement matrix records them as verification-only.
+  `BTreeMap`/`BTreeSet` are chosen over `HashMap`/`HashSet` for deterministic iteration order in
+  tests, matching the repository's existing `BTreeMap` usage in `cli/src/services/patch.rs`.
+- `prepare` and `recover` take the currently observed tree as an explicit `TreeId` parameter
+  (`prepare(state, attempt, boundary, observed_tree)`, `recover(state, worktree, observed_tree)`)
+  rather than reading it internally, because the pure kernel must not perform Git I/O; the
+  observed tree corresponds to Quint's `worktreeTrees.get(worktree)`, which a future
+  `git_snapshot.rs`/`coordinator.rs` adapter will supply from real Git state.
+- **Runtime scope materialization is an adapter/store responsibility, not a protocol
+  transition.** The Quint model's `SCOPES` universe is finite and every `ScopeState` entry is
+  created by `init` (`scopes' = SCOPES.mapBy(scope => { status: NeverSeen, actorKind:
+  scopeActor(scope), worktreeId: scopeWorktree(scope) })`), so `scopeActor`/`scopeWorktree`
+  already resolve for any `ScopeId` before any boundary is evaluated. This refinement's
+  `ScopeId` is an unbounded runtime string (see the identity-refinement assumption above), so
+  `ProtocolState.scopes` cannot be prepopulated the way `init` does. Before the surrounding
+  coordinator/store projection calls `prepare` with a hook boundary (`Start`/`Advance`/`Close`)
+  referencing a `ScopeId`, it must ensure that scope already exists in `ProtocolState.scopes`
+  with its durable identity — `status: NeverSeen`, the correct `actor_kind`, and the correct
+  `worktree_id`. Once a `ScopeId` exists, its `actor_kind`/`worktree_id` association is
+  immutable for the lifetime of that scope: the pure protocol never invents, remaps, or
+  implicitly materializes scope identity, and a future adapter that observes an existing
+  `ScopeId` with a conflicting `actor_kind`/`worktree_id` must treat that as an
+  identity/protocol error rather than silently overwriting the record. A missing `ScopeId` is
+  therefore not equivalent to a `NeverSeen` one: a missing entry means identity has not been
+  materialized (invalid/unresolved protocol input, which `prepare`/`commit` already handle as a
+  no-op — see T02's Result), while an existing `ScopeState { status: NeverSeen, .. }` is a known,
+  materialized scope identity that simply has not yet had an accepted `Start`. Once built,
+  `coordinator.rs` receives hook/session identity, resolves the scope's actor/worktree identity,
+  asks `store.rs` to load or materialize the scope, obtains a `ProtocolState`, and calls the
+  pure protocol; `store.rs` loads durable scope records and atomically creates a new one as
+  `NeverSeen` when appropriate, but never remaps `actor_kind`/`worktree_id` for an existing
+  `ScopeId`; `protocol.rs` assumes referenced scopes are already represented and only validates/
+  transitions lifecycle state (see `context/cli/mutation-trace-protocol.md`, "Runtime scope
+  materialization", for the full contract). Future `coordinator.rs`/`store.rs` integration tests
+  (not implemented by this plan) must cover: a new scope's materialization producing exactly
+  `{ status: NeverSeen, actor_kind, worktree_id }`; idempotent re-materialization of an
+  already-known identical `(ScopeId, actor_kind, worktree_id)` never resetting an `Active`/
+  `Closed`/`Abandoned` scope back to `NeverSeen`; rejection of a conflicting `actor_kind` for an
+  existing `ScopeId`; rejection of a conflicting `worktree_id` for an existing `ScopeId`; and
+  preservation of lifecycle status across identity materialization/checking in every case.
 
 ## Task stack
 
@@ -193,7 +272,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `worktree` from the boundary before any scope lookup, so a stored worktree that could
     diverge from the boundary's own scope would let a caller act on the wrong worktree's state,
     a state the Quint type cannot represent. Fixed: `Boundary::Start`/`Advance`/`Close` now
-    carry only `scope`/`event` (field-for-field with the Quint constructors); `Flush` is
+    carry only `scope`/`event`, field-for-field with the Quint constructors; `Flush` is
     unchanged.
     **Post-review correction 2 (PR #238 review):** correction 1's
     `boundary_worktree(boundary, scope: Option<&ScopeState>)` still let a caller pass an
@@ -229,43 +308,142 @@ Persist this field in every plan; this is durable plan state, not chat state:
     mention) were all updated at T01 completion; this correction pass updated the domain file's
     description of the `boundary_worktree` refinement to match the keyed-lookup design.
 
-- [ ] T02: `Implement prepare/commit attempt transition for Start/Advance/Close boundaries` (status:todo)
+- [x] T02: `Implement the protocol aggregate state, explicit observation inputs, and prepare/commit evaluation for every boundary` (status:done)
   - Task ID: T02
-  - Scope: In — in `protocol.rs`, pure transition function(s) refining
-    `prepareAvailable`/`prepare`/`commitAttempt` (`spec/mutation_cursor.qnt:417-661`) for
-    `Start`/`Advance`/`Close` boundaries: CAS freshness check (`expectedRevision ==
-    worktree.revision` and `beforeTree == worktree.cursorTree`), replay rejection via the
-    processed `EventKey` set, the boundary-specific `observes` rule (Start requires
-    `NeverSeen`; Advance requires live; Close accepts `NeverSeen` or live), scope lifecycle
-    transition (`NeverSeen`→`Active` on Start, →`Closed` on Close), cursor advancement gated by
-    `observes` and worktree `needsRebaseline`, and attempt status transitions
-    (`Available`→`Prepared`→`Committed`/`Rejected`); tests land in `tests.rs`. Out — `Flush`
-    boundary and attribution/mutation-event emission (T03); taint/database-failure/abandon/
-    recovery actions (T04-T06).
+  - Scope: In —
+    - In `types.rs`, define the `ProtocolState` aggregate (`worktrees`, `scopes`,
+      `external_taint`, `processed_events`, `attempts`, `mutation_events`) described in
+      Assumptions, mirroring the Quint state machine's top-level state variables
+      (`spec/mutation_cursor.qnt:2-14`). Verification-only Quint histories are not represented.
+    - In `protocol.rs`, `prepare` refining `prepareAvailable`/`prepare`
+      (`spec/mutation_cursor.qnt:417-453`), taking the currently observed tree as an explicit
+      `TreeId` input (e.g. `prepare(state, attempt, boundary, observed_tree)`) rather than
+      reading it internally; `observed_tree` corresponds to Quint's
+      `worktreeTrees.get(worktree)` at the boundary's resolved worktree.
+    - In `protocol.rs`, a commit-evaluation function refining `commitAttempt`
+      (`spec/mutation_cursor.qnt:455-661`) for **all four** boundary kinds (`Start`, `Advance`,
+      `Close`, `Flush`) in one pass: compute `accepted` (`fresh`: prepared status, worktree not
+      in `external_taint`, `expectedRevision == revision`, `beforeTree == cursorTree`, and for
+      hook boundaries the `EventKey` not already in `processed_events`), `observes` (`Start`
+      requires `NeverSeen`; `Advance` requires live; `Close` accepts `NeverSeen` or live;
+      `Flush` is always `true`), `observedChange` (`accepted and observes and beforeTree !=
+      afterTree`), `changed` (`observedChange and not needsRebaseline` — expose this as a
+      computed flag but do **not** construct a `MutationEvent` from it; that is T03's job), and
+      `advancesRevision` (`accepted and (not isFlush(boundary) or observedChange)`); apply scope
+      lifecycle transitions (`NeverSeen`→`Active` on accepted `Start`, →`Closed` on accepted
+      `Close`), cursor advancement (`afterTree` when `observes and not needsRebaseline`,
+      otherwise unchanged), attempt status transitions (`Prepared`→`Committed` on `accepted`,
+      →`Rejected` otherwise), and processed-`EventKey` recording for accepted hook boundaries.
+    - Tests land in `tests.rs`.
+  - Out — attribution derivation and `MutationEvent` materialization (T03); taint/
+    database-failure/abandon/recovery actions (T04-T06).
   - Dependencies: T01
-  - Done when: a state-sequence test proves prepare→commit accepts a fresh Start, rejects a
-    stale-revision or stale-`beforeTree` attempt without mutating worktree/scope/cursor state,
-    rejects a replayed `EventKey`, and transitions scope status correctly for Start and Close.
+  - Done when:
+    - a state-sequence test proves prepare→commit accepts a fresh `Start`, rejects a
+      stale-revision or stale-`beforeTree` attempt without mutating worktree/scope/cursor
+      state, rejects a replayed `EventKey`, rejects an attempt whose worktree is in
+      `external_taint` even with a fresh revision/`beforeTree`, and transitions scope status
+      correctly for `Start` and `Close`;
+    - a test proves an accepted-but-non-observing hook — a fresh `Start` on an already-`Active`
+      scope, and the equivalent invalid `Advance`/`Close` cases — results in: attempt →
+      `Committed`, event key → processed, revision → increments, cursor → unchanged, scope →
+      unchanged, and `changed` is `false`;
+    - a test proves `Flush`'s `advancesRevision` is `false` when `observedChange` is `false`
+      (a no-op tree), distinguishing it from hook boundaries whose `advancesRevision` follows
+      from `accepted` alone.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`.
-  - Context synchronization: pending
+  - Context synchronization: synced
+  - Completed: 2026-08-26
+  - Files changed:
+    - `cli/src/services/mutation_trace/types.rs` (added `ProtocolState`; added `Ord`/`PartialOrd`
+      derives to `FailureKind`, `Attribution`, `Boundary`, `MutationEvent` so `MutationEvent` can
+      live in a `BTreeSet`)
+    - `cli/src/services/mutation_trace/protocol.rs` (new; `prepare`, `commit`, `CommitEvaluation`,
+      `CommitOutcome`, and the private `ResolvedAttempt` helper)
+    - `cli/src/services/mutation_trace/mod.rs` (registered `pub mod protocol;`; module doc comment
+      updated to reflect that transition logic now exists)
+    - `cli/src/services/mutation_trace/tests.rs` (11 new tests for `prepare`/`commit`; added
+      `attempt_id`/`healthy_worktree`/`scope_with_status` builders)
+  - Result: Implemented `ProtocolState` (`worktrees`/`scopes`/`external_taint`/`processed_events`/
+    `attempts`/`mutation_events`) and, in `protocol.rs`, `prepare` (refining
+    `prepareAvailable`/`prepare`, taking the observed tree as an explicit `TreeId` parameter) and
+    `commit` (refining `commitAttempt`) for all four boundary kinds in one pass. `commit` is split
+    into a private `ResolvedAttempt` helper (`resolve`/`evaluate`/`apply`) to stay under Clippy's
+    line-count lint; `evaluate` returns a `CommitEvaluation` (`accepted`/`observes`/
+    `observed_change`/`changed`/`advances_revision`) that `apply` and T03 both consume, so
+    `changed` is exposed as a computed flag without constructing a `MutationEvent` — `commit`
+    leaves `mutation_events` untouched, as scoped. The scope-transition guards for `Start`/`Close`
+    reuse `evaluate`'s own `observes` flag rather than re-deriving the same `NeverSeen`/live check
+    a second time, since the two are provably identical per `commitAttempt`'s own definition of
+    `observes`. `prepare` and `commit` are no-ops (state unchanged, evaluation flags all `false`)
+    when the boundary's worktree cannot be resolved (an unregistered scope for a hook boundary) or
+    has no durable state — an attempt only reaches `commit` via a successful `prepare`, which
+    already refuses to prepare against an unresolvable worktree, so this is a defensive default
+    rather than a path any required test exercises. No production call site references the
+    module.
+    **Post-review clarification (PR #238 review):** `prepare(Start/Advance/Close)` requires the
+    referenced `ScopeId` to already exist in `ProtocolState.scopes`; unknown scopes are not
+    materialized by the protocol. This is intentional, not a gap — runtime scope materialization
+    is an adapter/store responsibility, not a protocol transition (see Assumptions: "Runtime
+    scope materialization is an adapter/store responsibility, not a protocol transition"). No
+    code changed for this clarification: the existing `prepare`/`commit` no-op behavior for an
+    unresolvable worktree (an unregistered scope for a hook boundary), described above, already
+    matches this contract exactly; only the contract itself was made explicit.
+  - Verify outcomes:
+    - `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` — passed,
+      25/25 tests (14 from T01 + 11 new: fresh `Start` activation, `Close` scope transition, stale
+      revision/`beforeTree` rejection, replay rejection, external-taint rejection, three
+      accepted-but-non-observing cases — `Start` on `Active`, `Advance` on `NeverSeen`, `Close` on
+      `Abandoned` — and two `Flush` cases proving `advancesRevision` requires `observedChange`
+      unlike hook boundaries).
+    - `./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml` — passed.
+    - `grep -RnE "std::(fs|process|env)|tokio|reqwest|turso" cli/src/services/mutation_trace` — no
+      matches (AC1 spot-check).
+    - `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
+      — passed after splitting `commit` (`too_many_lines`), allowing
+      `clippy::struct_excessive_bools` on `CommitEvaluation` (precedented at
+      `cli/src/services/setup/mod.rs:194`), and replacing a redundant closure with a method
+      reference.
+    - `cargo fmt --manifest-path cli/Cargo.toml -- --check` — passed, no diff (after running
+      `cargo fmt`).
+    - `nix run .#quint -- typecheck spec/mutation_cursor.qnt` — passed.
+    - `nix run .#quint -- test spec/mutation_cursor.qnt` — passed.
+    - `git diff --stat -- spec/mutation_cursor.qnt spec/mutation_cursor.md` — empty (spec
+      untouched).
+    - `grep -rn "mutation_trace" cli/src/services/hooks cli/src/services/agent_trace.rs` — no
+      matches (AC8 spot-check).
+  - Context impact: Classification: domain. `protocol.rs` is new pure transition logic added to an
+    already-unreferenced module; no existing behavior, hook, or command changed. Synchronized in
+    the same session as implementation: `context/cli/mutation-trace-protocol.md` (Current
+    state/Module layout/target-architecture sections updated to describe `protocol.rs`'s
+    `prepare`/`commit`), `context/context-map.md` (summary line updated), and `context/overview.md`
+    (one-line mention corrected) — all three were stale, describing the module as types-only.
+    `context/architecture.md`, `context/glossary.md`, and `context/patterns.md` were verified and
+    found not contradicted; no edit needed. No qualifying architecture decision.
 
-- [ ] T03: `Implement attribution and mutation-event emission` (status:todo)
+- [ ] T03: `Implement attribution and mutation-event materialization from pre-transition live scopes` (status:todo)
   - Task ID: T03
   - Scope: In — in `protocol.rs`, a pure function refining `attributionFor`
     (`spec/mutation_cursor.qnt:285-301`) computing `IneligibleUnscoped`/`AiExclusive(scope)`/
     `AiContended` from live scopes plus worktree `failureKind`/`externalTaint`/
-    `needsRebaseline`; wire mutation-event construction (refining `mkMutationEvent`,
-    `spec/mutation_cursor.qnt:303-323`) into the T02 commit transition, gated by `changed`
-    (`observedChange and not needsRebaseline`) exactly as `commitAttempt` computes it,
-    including the `Flush` boundary special-casing and the no-op exclusion (`beforeTree ==
-    afterTree` emits nothing); tests land in `tests.rs`. Out — taint/failure/abandon/recovery
-    state changes (T04-T06).
+    `needsRebaseline`; wire `MutationEvent` construction (refining `mkMutationEvent`,
+    `spec/mutation_cursor.qnt:303-323`) into T02's commit evaluation, gated by the `changed`
+    flag T02 already computes. Compute `live`/`attribution` from the **pre-transition** scope
+    set exactly as `commitAttempt` computes them — before `nextScope` is applied
+    (`spec/mutation_cursor.qnt:484-485` precede the `nextScope` `val` at line 530): a `Start`
+    boundary's emitted event never attributes the mutation to the scope it is about to
+    activate (that scope is not yet counted as live), and a `Close` boundary's emitted event
+    still attributes to the scope it is about to close (that scope is still counted as live).
+    Tests land in `tests.rs`. Out — taint/failure/abandon/recovery state changes (T04-T06); no
+    new commit boundary or `Flush` semantics (already covered by T02).
   - Dependencies: T02
-  - Done when: tests prove zero/one/multiple live scopes map to the three attribution
-    variants, an unhealthy `failureKind`/external taint/`needsRebaseline` forces
-    `IneligibleUnscoped` even with active scopes, a no-op tree change emits no mutation event,
-    and a real change emits exactly one event carrying the correct attribution/boundary/
-    revision.
+  - Done when: tests prove zero/one/multiple pre-transition live scopes map to the three
+    attribution variants; an unhealthy `failureKind`/external taint/`needsRebaseline` forces
+    `IneligibleUnscoped` even with active scopes; a no-op tree change emits no mutation event; a
+    real change emits exactly one event carrying the correct attribution/boundary/revision; a
+    `Start` on a `NeverSeen` scope that also observes a change emits an event whose attribution
+    excludes the newly-activated scope; a `Close` on the sole live scope that also observes a
+    change emits an event whose attribution still counts that scope as live.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`.
   - Context synchronization: pending
 
@@ -279,7 +457,8 @@ Persist this field in every plan; this is durable plan state, not chat state:
     failure adds the worktree to `externalTaint` only, touching no other durable worktree/scope
     field, and is a guarded no-op when already externally tainted; tests land in `tests.rs`.
     Out — abandonment (T05), recovery (T06).
-  - Dependencies: T03
+  - Dependencies: T02 (taint/database-failure semantics do not depend on attribution or
+    mutation-event materialization)
   - Done when: tests prove `taint` changes exactly `tainted`/`failureKind`/`revision` and
     nothing else, `databaseFailure` changes exactly `externalTaint` and leaves every other
     durable worktree/scope field equal to before, and both actions are no-ops on an
@@ -292,55 +471,163 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Scope: In — in `protocol.rs`, a pure transition refining `abandonLiveScope`/`abandon`
     (`spec/mutation_cursor.qnt:739-805`): transitions a live scope to `Abandoned`, sets the
     owning worktree's `needsRebaseline=true`, advances revision, leaves `cursorTree` untouched,
-    records the scope as terminal, and is a guarded no-op for a non-live scope or an externally
-    tainted worktree; tests land in `tests.rs`. Out — recovery (T06).
+    records the scope as terminal, preserves the scope's `actor_kind` and `worktree_id`
+    unchanged (scope identity stability), and is a guarded no-op for any non-live scope —
+    Quint's guard is "not live", so `NeverSeen`, `Closed`, and `Abandoned` all stutter — or for
+    a live scope on an externally tainted worktree; tests land in `tests.rs`. Out — recovery
+    (T06).
   - Dependencies: T04
   - Done when: tests prove abandoning a live scope sets `Abandoned`+`needsRebaseline` without
-    moving the cursor, abandoning an already-terminal (`Closed`/`Abandoned`) scope is
-    rejected/no-op (never reactivates a terminal scope), and abandoning on an externally
-    tainted worktree is a no-op.
+    moving the cursor and without changing `actor_kind`/`worktree_id`; abandoning a `NeverSeen`
+    scope is a no-op; abandoning an already-terminal (`Closed`/`Abandoned`) scope is a no-op
+    (never reactivates a terminal scope); abandoning a live scope on an externally tainted
+    worktree is a no-op.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`.
   - Context synchronization: pending
 
-- [ ] T06: `Implement recovery` (status:todo)
+- [ ] T06: `Implement recovery with an explicit observed-tree input` (status:todo)
   - Task ID: T06
   - Scope: In — in `protocol.rs`, a pure transition refining `recoverNeeded`/`recover`
-    (`spec/mutation_cursor.qnt:807-886`): re-baselines `cursorTree` to the current observed
-    worktree tree, clears `tainted`/`failureKind`/`needsRebaseline`/`externalTaint`, advances
-    revision, and abandons every live scope on the worktree only when recovering from `tainted`
-    or external taint — a healthy worktree with only `needsRebaseline` set preserves its live
-    scopes; guarded no-op when the worktree is healthy, not externally tainted, and does not
-    need rebaseline; tests land in `tests.rs`. Out — none remaining; this completes the action
-    set.
+    (`spec/mutation_cursor.qnt:807-886`), taking the currently observed tree as an explicit
+    `TreeId` input (e.g. `recover(state, worktree, observed_tree)`) rather than obtaining it
+    itself — the core must not ambiguously "get the current tree"; that is the future Git
+    adapter's responsibility. Re-baselines `cursorTree` to `observed_tree`, clears
+    `tainted`/`failureKind`/`needsRebaseline`/`externalTaint`, advances revision, and abandons
+    every live scope on the worktree only when recovering from `tainted` or external taint — a
+    healthy worktree with only `needsRebaseline` set preserves its live scopes; guarded no-op
+    when the worktree is healthy, not externally tainted, and does not need rebaseline; tests
+    land in `tests.rs`. Out — none remaining; this completes the action set.
   - Dependencies: T05
   - Done when: tests prove taint/external-taint recovery abandons every live scope on that
     worktree while a `needsRebaseline`-only recovery preserves them, both paths clear
-    `externalTaint`/`tainted`/`failureKind`/`needsRebaseline` and rebaseline the cursor to the
-    current tree, and recovery is a no-op on an already-healthy worktree with no rebaseline
+    `externalTaint`/`tainted`/`failureKind`/`needsRebaseline` and rebaseline the cursor to
+    `observed_tree`, and recovery is a no-op on an already-healthy worktree with no rebaseline
     need.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`.
   - Context synchronization: pending
 
 - [ ] T07: `Add cross-action state-sequence and invariant tests, and the Quint refinement matrix` (status:todo)
   - Task ID: T07
-  - Scope: In — in `tests.rs`, complete state-machine sequence tests spanning multiple actions
-    (concurrent scopes producing `AiContended` evidence then reverting to `AiExclusive`;
-    taint→recover; database-failure→recover; abandon→`needsRebaseline`→recover-with-preserved-
-    survivors; replay of a committed `EventKey`; stale-attempt rejection never advancing
-    revision or emitting evidence); invariant-style tests named to mirror the Quint invariants
-    this module refines (`CursorRevisionConsistent`, `FailureKindMatchesTaint`,
-    `TerminalScopesStayTerminal`, `DatabaseFailureDoesNotMutateDurableProtocolState`,
+  - Scope: In — in `tests.rs`, complete state-machine sequence tests spanning multiple actions;
+    every scenario below is required, not "at least three":
+    1. Two scopes `Active` on the same worktree, with a mutation observed while both are live
+       producing `AiContended` evidence; then a `Close` boundary reduces live scopes to one —
+       because `Close`'s own commit computes `live`/`attribution` from the **pre-close** live
+       set, if that same `Close` also observes a mutation it still emits `AiContended` evidence,
+       not `AiExclusive`; a subsequent mutation observed after the close, with exactly one live
+       scope remaining, is where `AiExclusive` evidence first appears.
+    2. Taint → recover (abandons live scopes, rebaselines cursor).
+    3. Database failure → recover (clears external taint, rebaselines cursor).
+    4. Abandon → `needsRebaseline` → recover-with-preserved-survivors (a second, still-live
+       scope on the same worktree survives a `needsRebaseline`-only recovery).
+    5. Replay of a committed `EventKey` (rejected, no state change).
+    6. Stale-attempt rejection (stale revision or `beforeTree`) never advances revision, moves
+       the cursor, or emits evidence.
+    7. Competing prepared attempts (a real CAS race, not a manually constructed stale
+       `AttemptState`): `prepare` two attempts `A`/`B` against the same worktree at revision 0;
+       `commit(A)` is accepted (`Committed`, revision → 1); `commit(B)` is then rejected because
+       its `expected_revision` (0) no longer matches the worktree's revision (1) — revision stays
+       1, the cursor is unchanged by `B`, and `B` emits no evidence.
+    8. Taint invalidates a prepared attempt: `prepare(A)` at revision `R`; `taint(worktree)`
+       advances the worktree to revision `R + 1`; `commit(A)` is then rejected as stale (its
+       `expected_revision` no longer matches) — no cursor movement and no evidence from `A`. This
+       is a cross-action consequence of Quint's snapshot-failure taint semantics, not something a
+       single-action test can show.
+    Invariant-style tests named to mirror the Quint invariants this module refines
+    (`CursorRevisionConsistent`, `FailureKindMatchesTaint`, `TerminalScopesStayTerminal`,
+    `DatabaseFailureDoesNotMutateDurableProtocolState`,
     `ExternalTaintNeverStrengthensAttribution`, `RecoveryClearsExternalTaintOnlyAfterBaseline`,
     `NoNoopMutationEvents`, `AiExclusiveRequiresExactlyOneActiveScope`,
     `AiContendedRequiresMultipleActiveScopes`, `RejectedAttemptsDoNotCommitEvidence` —
     `spec/mutation_cursor.qnt:1041-1274`); in `mod.rs`, a module-level rustdoc refinement matrix
-    mapping every Quint action/result/invariant this module refines to its Rust counterpart,
-    plus a short note on the `coordinator.rs`/`git_snapshot.rs`/`store.rs` seams this layout
-    leaves for later PRs. Out — none; this is the closing task.
+    classifying every relevant Quint action/result/invariant this module refines — including
+    `ScopeActorIdentityIsStable`, `ScopeStartedAtMostOnce`, `MutationEventsHavePositiveRevision`,
+    `MutationEventUniquePerWorktreeRevision`, `MutationFailureKindMatchesTaint`,
+    `AttributionMatchesObservedScopes`, `NeedsRebaselineSuppressesAttribution`,
+    `StartDoesNotAbandonExistingScopes`.
+
+    **The matrix must classify Quint verification variables/checkpoint ledgers separately from
+    the semantic invariants stated over them — a verification-only data structure is not the
+    same thing as a verification-only invariant.** Model instrumentation may be verification-only;
+    the protocol property proved with that instrumentation may still be a required production
+    invariant, so a property's classification is never inferred solely from the fact that Quint
+    happens to state it using a history variable. Two categories, classified independently:
+
+    - **Verification-only model instrumentation** — the concrete Quint checkpoint types and
+      history/counter variables that exist only to state or prove properties, with no Rust
+      production equivalent: `CursorCheckpoint`, `ProtocolCheckpoint`, `ScopeCheckpoint`,
+      `AbandonCheckpoint`, `StartCheckpoint`, `RecoveryCheckpoint`,
+      `DurableProtocolCheckpoint`, and the variables `cursorHistory`/`protocolHistory`/
+      `scopeHistory`/`abandonHistory`/`startHistory`/`recoveryHistory`/`taintHistory`/
+      `evidenceAttempts`/`scopeStartCount`/`everTerminal`. Each of these is classified
+      `verification-only / intentionally omitted` in the matrix, since `ProtocolState` does not
+      materialize Quint's histories, unless a future production adapter turns out to need a
+      direct equivalent for another reason.
+    - **Semantic properties expressed using that instrumentation** — classified independently,
+      by what the Rust code actually does, into: implemented directly, enforced by Rust type,
+      preserved by transition tests, verification-only / intentionally omitted, or external
+      adapter responsibility. At minimum:
+      - `TerminalScopesStayTerminal` (Quint mechanism: `everTerminal`) — **preserved by
+        transition tests**: `Closed`/`Abandoned` are terminal, and no Rust transition may move
+        either back to `NeverSeen` or `Active`. Require a test that reaches a terminal state
+        through real transitions and then exercises a later boundary against it to prove it
+        cannot reactivate — not merely constructing a terminal `ScopeState` and inspecting it.
+      - `ScopeStartedAtMostOnce` (Quint mechanism: `scopeStartCount`) — **preserved by
+        transition tests**: only `Start` on `NeverSeen` activates a scope; require a sequence
+        proving a second `Start` (fresh `EventKey`) on an already-`Active` scope is
+        accepted-but-non-observing and the scope remains `Active`, and that `Start` on a
+        terminal (`Closed`/`Abandoned`) scope never reactivates it.
+      - `RejectedAttemptsDoNotCommitEvidence` (Quint mechanism: `evidenceAttempts`) —
+        **preserved by transition tests**: rejected, stale, replayed, and external-taint-rejected
+        attempts must not emit `MutationEvent` evidence; tested once T03 exists.
+      - `StartDoesNotAbandonExistingScopes` (Quint mechanism: `startHistory`/`scopeHistory`) —
+        **preserved by transition tests**: starting one scope must not alter another
+        already-active scope; require an actual multi-scope sequence, not an isolated single-scope
+        test.
+      - `RecoveryClearsExternalTaintOnlyAfterBaseline` (Quint mechanism:
+        `recoveryHistory`/`cursorHistory`) — **preserved by transition tests**: recovery
+        establishes `observed_tree` as the new cursor baseline in the same pure transition that
+        clears `external_taint`; the histories are omitted, but the semantic ordering/effect
+        remains a required test.
+      - `DatabaseFailureDoesNotMutateDurableProtocolState` (Quint mechanism:
+        `taintHistory`/`durableProtocolStateFor`) — **preserved by transition tests**:
+        `database_failure` changes only `external_taint` and leaves every other durable
+        worktree/scope field unchanged.
+      - `ScopeActorIdentityIsStable` — **preserved by transition tests + external adapter
+        responsibility** (already established, preserved here): no transition in `protocol.rs`
+        ever mutates `actor_kind`/`worktree_id`, and future scope materialization must reject a
+        conflicting identity rather than overwrite it.
+
+      Quint's finite `SCOPES` universe and its `init`-time `ScopeState` population classify as
+      **external adapter responsibility**: the Rust refinement's unbounded `ScopeId` space means
+      scope identity is materialized at runtime by the future coordinator/store layer rather than
+      at protocol startup (see Assumptions: "Runtime scope materialization").
+
+    Make the matrix auditable: for each entry, name the Quint element, whether it is
+    instrumentation or a semantic property, its Rust counterpart (if any), its classification,
+    and the concrete test or enforcement mechanism that backs a non-verification-only
+    classification — a markdown table is one reasonable way to do this, but any rustdoc layout
+    that carries the same information per entry satisfies the requirement. Add a short note on
+    the `coordinator.rs`/`git_snapshot.rs`/`store.rs` seams this layout leaves for later PRs.
+    Out — none; this is the closing task.
   - Dependencies: T06
-  - Done when: the named invariant tests exist and pass, at least three multi-action sequence
-    tests exist and pass, and the module doc comment contains a refinement matrix a reviewer
-    can audit against `spec/mutation_cursor.qnt`.
+  - Done when:
+    1. all eight named multi-action sequence tests exist and pass;
+    2. every named semantic invariant has an explicit Rust enforcement classification
+       (implemented directly, enforced by Rust type, preserved by transition tests, external
+       adapter responsibility, or verification-only / intentionally omitted) backed by a named
+       test or mechanism;
+    3. verification-only model instrumentation (the checkpoint types and history/counter
+       variables listed above) is classified separately from the semantic invariants stated
+       using it;
+    4. no semantic property is classified verification-only merely because Quint states it using
+       a history/checkpoint variable — a property lands there only when it truly has no
+       production semantic meaning;
+    5. the module doc comment contains a refinement matrix that names the concrete Rust test or
+       enforcement mechanism for each production-semantic invariant, auditable against
+       `spec/mutation_cursor.qnt`, including Quint's finite `SCOPES`/`init` population as
+       external adapter responsibility and `ScopeActorIdentityIsStable` as jointly preserved by
+       transition tests and external adapter responsibility.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`; `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`; `cargo fmt --manifest-path cli/Cargo.toml -- --check`.
   - Context synchronization: pending
 
@@ -350,4 +637,8 @@ None. The request pre-authorizes following the current `spec/mutation_cursor.qnt
 illustrative examples, which resolves the one substantive doubt (see Assumptions); the module's
 value and scope are otherwise well-specified and not duplicated by any existing code. The
 `coordinator.rs`/`git_snapshot.rs`/`store.rs` roadmap is recorded as context for later plans
-rather than as work here, consistent with this plan's own non-goals.
+rather than as work here, consistent with this plan's own non-goals. This revision's task
+reshaping (T02 absorbing `Flush` commit evaluation, T03's pre-transition live-scope requirement,
+T04's dependency correction, T05's `NeverSeen` no-op case, T06's explicit `observed_tree`
+parameter, and T07's full-scenario/refinement-matrix requirements) was fully specified by the
+user, leaving nothing to ask.
