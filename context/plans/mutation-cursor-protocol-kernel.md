@@ -880,7 +880,11 @@ Persist this field in every plan; this is durable plan state, not chat state:
     - `cli/src/services/mutation_trace/mod.rs` (module doc comment extended with the Quint
       refinement matrix: verification-only model instrumentation classified separately from
       semantic properties, each semantic property's Rust counterpart/classification/backing test
-      named in a table, and a note on the `coordinator.rs`/`git_snapshot.rs`/`store.rs` seams)
+      named in a table, and a note on the `coordinator.rs`/`git_snapshot.rs`/`store.rs` seams;
+      corrected post-review, see below)
+    - `cli/src/services/mutation_trace/protocol.rs` (post-review correction: added the private
+      `next_revision` checked-arithmetic helper and routed `commit`/`taint`/`abandon`/`recover`
+      through it instead of a raw `revision + 1`; see below)
   - Result: Added the plan's 8 required multi-action state-sequence tests and 4 invariant-named
     tests to `tests.rs`, all reaching their preconditions through real `prepare`/`commit`/`taint`/
     `database_failure`/`abandon`/`recover` transitions rather than manually constructed state,
@@ -923,18 +927,70 @@ Persist this field in every plan; this is durable plan state, not chat state:
     verification-only status merely from the presence of a history variable. Quint's finite
     `SCOPES`/`WORKTREES`/`init` population is recorded as external adapter responsibility, and
     `ScopeActorIdentityIsStable` as jointly preserved-by-tests-and-external-adapter-responsibility,
-    matching the task's explicit requirement. No production logic in `protocol.rs`/`types.rs`
-    changed; this task only added tests and documentation. No production call site references the
-    module. This completes the task stack the plan scoped for `cli/src/services/mutation_trace/`.
+    matching the task's explicit requirement. No production call site references the module. This
+    completes the task stack the plan scoped for `cli/src/services/mutation_trace/`.
+
+    **Post-review correction (PR #238 review):** the original refinement matrix and one algorithm
+    detail had three defects.
+
+    First, three semantic invariants (`AbandonCreatesRebaselineRequirement`,
+    `MutationEventsMatchCursorHistory`, `MutationEventsCrossOnlyTrustworthyProtocolStates`) were
+    misclassified `verification-only`, having been placed there because Quint states them using
+    history/checkpoint variables (`abandonHistory`/`protocolHistory`/`cursorHistory`/
+    `scopeHistory`), not because the properties themselves lack production meaning — the exact
+    "verification-only data structure ≠ verification-only invariant" distinction the task's own
+    instructions required. All three were moved into the semantic-properties table: the first is
+    backed by `abandon_transitions_a_live_scope_without_moving_the_cursor_or_changing_identity`
+    (already asserted `mutation_events` unchanged, so no new test was needed); the second is backed
+    by existing T03/T07 tests since `apply` derives an emitted event's `before_tree`/`after_tree`/
+    revision from the same values the worktree update itself uses; the third needed a new direct
+    regression test, `needs_rebaseline_suppresses_mutation_event_even_when_commit_observes_a_real_tree_change`,
+    since no existing test drove `commit`'s full `accepted && observes && observed_change` path
+    against a `needs_rebaseline` worktree to prove `changed` still comes out `false` and no cursor
+    movement or `MutationEvent` results.
+
+    Second, `AiExclusiveRequiresExactlyOneActiveScope` was classified "enforced by Rust type",
+    which is false: `Attribution::AiExclusive(ScopeId)` does not itself make an inconsistent scope
+    count unrepresentable — a caller can construct it with any `ScopeId` regardless of
+    `ProtocolState.scopes`. The guarantee is algorithmic (`attribution_for` only reaches that
+    branch when `live.len() == 1`), so the classification was corrected to "implemented directly +
+    preserved by transition tests". A full audit of the matrix found no other row making an
+    unsound "enforced by Rust type" claim.
+
+    Third, every revision-advancing transition (`commit`, `taint`, `abandon`, `recover`) used a raw
+    `worktree_state.revision + 1`, silently assuming a Rust `u64` can always refine Quint's
+    unbounded `revision: int`. At `revision == u64::MAX` this would wrap to `0` in release mode,
+    violating `MutationEventsHavePositiveRevision`/`MutationEventUniquePerWorktreeRevision`/CAS
+    freshness reasoning. Fixed with checked arithmetic rather than a documented precondition: added
+    a private `next_revision(revision: u64) -> Option<u64>` (`revision.checked_add(1)`) in
+    `protocol.rs`, and routed all four actions through it. `commit`'s `evaluate` now folds
+    `next_revision(...).is_some()` into `accepted` unconditionally (so an overflow behaves exactly
+    like a stale/rejected attempt — no cursor movement, scope transition, processed-`EventKey`
+    insertion, or `MutationEvent` — decided before `apply` ever touches state, per the "no partial
+    commit" requirement); `apply` computes the checked `advanced_revision` once and reuses it for
+    both the worktree update and any emitted `MutationEvent`'s revision field, removing the
+    remaining raw `+ 1` there too. `taint`/`abandon`/`recover` each gained the same guard as an
+    additional no-op precondition alongside their existing existence/precondition guards. Four new
+    tests (`commit_does_not_wrap_revision_at_u64_max`, `taint_does_not_wrap_revision_at_u64_max`,
+    `abandon_does_not_wrap_revision_at_u64_max`, `recover_does_not_wrap_revision_at_u64_max`) each
+    start from `revision: u64::MAX` and prove the action is a no-op (a rejection, for `commit`)
+    rather than a wrap. The matrix gained a new "Bounded-integer revision refinement" section
+    documenting this as a Rust-only refinement precondition with no Quint counterpart. A manual
+    audit of every `revision + 1`/`.revision + 1` occurrence in `cli/src/services/mutation_trace/`
+    after this correction found none remaining; all five sites (the worktree update and mutation-
+    event revision inside `commit`'s `apply`, plus one each in `taint`/`abandon`/`recover`) now go
+    through `next_revision`.
   - Verify outcomes:
     - `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` — passed,
-      69/69 tests (57 from T01-T06 + 12 new).
+      74/74 tests (57 from T01-T06 + 12 from T07's first pass + 5 from this correction: 1 direct
+      `needs_rebaseline`/`MutationEventsCrossOnlyTrustworthyProtocolStates` regression test and 4
+      revision-overflow no-op/rejection tests).
     - `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
-      — passed after switching the new `prepare_and_commit` test helper's `attempt` parameter from
-      by-value to `&AttemptId` (`clippy::needless_pass_by_value`, since the helper only ever cloned
-      it for `prepare` and borrowed it for `commit`, never consuming the owned value itself).
+      — passed clean on this correction (first pass required switching the new
+      `prepare_and_commit` test helper's `attempt` parameter from by-value to `&AttemptId` for
+      `clippy::needless_pass_by_value`; this correction introduced no new clippy findings).
     - `cargo fmt --manifest-path cli/Cargo.toml -- --check` — passed after running `cargo fmt`
-      (two multi-line expressions in the new tests needed re-wrapping).
+      (several new multi-line expressions in this correction's new tests needed re-wrapping).
     - `./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml` — passed (implied by the
       test run above).
     - `grep -RnE "std::(fs|process|env)|tokio|reqwest|turso" cli/src/services/mutation_trace` — no
@@ -943,15 +999,28 @@ Persist this field in every plan; this is durable plan state, not chat state:
       matches (AC8 spot-check).
     - `git diff --stat -- spec/mutation_cursor.qnt spec/mutation_cursor.md` — empty (spec
       untouched, AC8 spot-check).
+    - Manual audit: `grep -n "revision + 1" cli/src/services/mutation_trace/*.rs` — no matches
+      outside a doc-comment prose mention (updated to describe the new checked helper); every
+      revision-advancing site now calls `next_revision`.
     - `nix run .#quint -- typecheck spec/mutation_cursor.qnt` — passed.
     - `nix run .#quint -- test spec/mutation_cursor.qnt` — passed.
   - Context impact: Classification: domain. New tests and an expanded module-doc refinement matrix
-    were added to an already-unreferenced, already-domain-classified module; no existing behavior,
-    hook, or command changed, and no new production logic was introduced. This is also the plan's
-    closing implementation task: the full `mutation_trace` module (`mod.rs`/`types.rs`/
-    `protocol.rs`/`tests.rs`) described in the plan's Change summary now exists, tested, and
-    documented, with no wiring into any hook, command, or database call site, matching AC8 and the
-    plan's own non-goals.
+    were added to an already-unreferenced, already-domain-classified module; the post-review
+    correction's `next_revision` checked-arithmetic helper is a small refinement-boundary fix to
+    already-domain-classified logic (matching T04's precedent), not a new classification — no
+    existing behavior, hook, or command outside the module changed. Context synchronized in the
+    same session as this correction: `context/cli/mutation-trace-protocol.md` (bounded-revision
+    pointer added, kept at exactly 250 lines by tightening nearby prose) and a new focused domain
+    file, `context/cli/mutation-trace-revision-refinement.md` (the Quint `int` → Rust `u64`
+    worktree-revision refinement, `next_revision`, and the four overflow tests), linked from both
+    the protocol domain file and `context/context-map.md`. `context/overview.md`,
+    `context/architecture.md`, `context/glossary.md`, and `context/patterns.md` were verified and
+    found not contradicted; this is an internal, file-scoped refinement detail, not repository-wide
+    terminology, so no root-file edit or glossary entry was warranted. This is also the plan's
+    closing implementation task: the full `mutation_trace` module (`mod.rs`/`types.rs`/`protocol.rs`/
+    `tests.rs`) described in the plan's Change summary now exists, tested, and documented, with no
+    wiring into any hook, command, or database call site, matching AC8 and the plan's own
+    non-goals.
 
 ## Open questions
 
