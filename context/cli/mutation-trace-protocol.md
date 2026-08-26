@@ -7,21 +7,26 @@ command, or database call site; that integration is out of scope for the
 
 ## Current state
 
-Domain types plus `prepare`/`commit` transition logic exist so far
-(`mutation-cursor-protocol-kernel` plan, tasks T01-T02). `types.rs` defines
-the protocol's state (including the `ProtocolState` aggregate) and pure
-accessors; `protocol.rs` implements `prepare` and `commit` (all four boundary
-kinds — `Start`/`Advance`/`Close`/`Flush` — in one pass), refining
-`prepareAvailable`/`prepare`/`commitAttempt`. Attribution/mutation-event
-materialization, failure/recovery actions, and cross-action test coverage
-land in later tasks of the same plan. Registered in `cli/src/services/mod.rs`
-with `#[allow(dead_code)]`, matching the existing precedent for modules not
-yet consumed by production call sites (`bash_policy`, `repository_identity`,
-`agent_trace_export`).
+Domain types, `prepare`/`commit` transition logic, and attribution/
+mutation-event materialization exist so far (`mutation-cursor-protocol-kernel`
+plan, tasks T01-T03). `types.rs` defines the protocol's state (including the
+`ProtocolState` aggregate) and pure accessors; `protocol.rs` implements
+`prepare` and `commit` (all four boundary kinds — `Start`/`Advance`/`Close`/
+`Flush` — in one pass), refining `prepareAvailable`/`prepare`/
+`commitAttempt`, plus `live_scopes_on`/`attribution_for`, refining
+`liveScopesOn`/`attributionFor`. Failure/recovery actions and cross-action
+test coverage land in later tasks of the same plan. Registered in
+`cli/src/services/mod.rs` with `#[allow(dead_code)]`, matching the existing
+precedent for modules not yet consumed by production call sites
+(`bash_policy`, `repository_identity`, `agent_trace_export`).
 
-`commit` computes but does not act on `changed`: it exposes the flag on a
-returned `CommitEvaluation` so a later task can gate `MutationEvent`
-materialization on it without recomputing it.
+`commit` materializes exactly one `MutationEvent` into `mutation_events` when
+`changed` is true, with `active_scopes`/`attribution` computed by
+`live_scopes_on`/`attribution_for` against the state as it existed *before*
+the same call's own scope-lifecycle transition — a `Start` boundary's emitted
+event never attributes the mutation to the scope it is about to activate, and
+a `Close` boundary's emitted event still attributes to the scope it is about
+to close.
 
 ## Module layout
 
@@ -34,7 +39,9 @@ materialization on it without recomputing it.
   `prepareAvailable`/`prepare`) and `commit` (refining `commitAttempt`),
   returning a `CommitOutcome` that pairs the resulting `ProtocolState` with a
   `CommitEvaluation` (`accepted`/`observes`/`observed_change`/`changed`/
-  `advances_revision`).
+  `advances_revision`); `live_scopes_on` and `attribution_for` (refining
+  `liveScopesOn`/`attributionFor`), each callable standalone or via `commit`'s
+  internal `MutationEvent` materialization.
 - `tests.rs` — `#[cfg(test)]` coverage for the current slice, sibling to
   `mod.rs`.
 
@@ -158,7 +165,7 @@ layout:
 ```mermaid
 flowchart LR
     coordinator["coordinator.rs\n(imperative shell:\nDB load, Git snapshot,\nCAS/retry, persist)"]
-    protocol["protocol.rs\n(pure transitions —\nprepare/commit exist;\nattribution/failure/\nrecovery land later)"]
+    protocol["protocol.rs\n(pure transitions —\nprepare/commit/attribution\nexist; failure/recovery\nland later)"]
     git_snapshot["git_snapshot.rs\n(isolated Git object store,\ntemporary index, tree capture/diff)"]
     store["store.rs\n(cursor/revision, scopes,\nprocessed events, mutation\nevidence, CAS transaction)"]
 
@@ -181,8 +188,8 @@ Each seam's responsibility, once built:
 
 `protocol.rs` stays free of any Git object, DB row, or CAS transaction
 concept, and gains no such dependency as later tasks in this plan fill in its
-attribution/failure/recovery logic; `coordinator.rs`, `git_snapshot.rs`, and
-`store.rs` are not created by this plan.
+failure/recovery logic; `coordinator.rs`, `git_snapshot.rs`, and `store.rs`
+are not created by this plan.
 
 ## Authoritative source
 
