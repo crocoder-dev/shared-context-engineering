@@ -1,9 +1,11 @@
 //! Pure transition logic for the mutation-cursor protocol.
 //!
-//! Refines `spec/mutation_cursor.qnt:417-661` (`prepareAvailable`/`prepare`/
-//! `commitAttempt`). Every function here takes and returns plain
-//! [`super::types::ProtocolState`] values; none performs Git, database,
-//! filesystem, environment, network, async, or lock I/O.
+//! Refines `liveScopesOn`/`attributionFor` (`spec/mutation_cursor.qnt:265-301`),
+//! `mkMutationEvent` (`spec/mutation_cursor.qnt:303-323`), and
+//! `prepareAvailable`/`prepare`/`commitAttempt`
+//! (`spec/mutation_cursor.qnt:417-661`). Every function here takes and
+//! returns plain [`super::types::ProtocolState`] values; none performs Git,
+//! database, filesystem, environment, network, async, or lock I/O.
 
 use std::collections::BTreeSet;
 
