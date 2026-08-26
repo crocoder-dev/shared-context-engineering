@@ -49,7 +49,7 @@ pub enum ActorKind {
 }
 
 /// Snapshot-failure state of a worktree. Refines `FailureKind` (`spec/mutation_cursor.qnt:22`).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum FailureKind {
     Healthy,
     SnapshotFailure,
@@ -75,7 +75,7 @@ pub enum AttemptStatus {
 
 /// Mutation-evidence attribution for a worktree. Refines `Attribution`
 /// (`spec/mutation_cursor.qnt:26-29`).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Attribution {
     IneligibleUnscoped,
     AiExclusive(ScopeId),
@@ -94,7 +94,7 @@ pub enum Attribution {
 /// own scope's true (durable, assigned-for-life) worktree, a state the
 /// Quint type cannot represent. See [`boundary_worktree`] for how this
 /// refinement resolves a hook boundary's worktree without that field.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Boundary {
     Start { scope: ScopeId, event: EventId },
     Advance { scope: ScopeId, event: EventId },
@@ -133,7 +133,7 @@ pub struct AttemptState {
 
 /// Durable mutation evidence emitted by a committed attempt. Refines
 /// `MutationEvent` (`spec/mutation_cursor.qnt:99-109`).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct MutationEvent {
     pub worktree_id: WorktreeId,
     pub revision: u64,
@@ -277,4 +277,23 @@ pub fn is_close(boundary: &Boundary) -> bool {
 /// Refines `isFlush` (`spec/mutation_cursor.qnt:230-234`).
 pub fn is_flush(boundary: &Boundary) -> bool {
     matches!(boundary, Boundary::Flush { .. })
+}
+
+/// The protocol's full durable-plus-transient state. Refines the top-level
+/// state variables `worktrees`/`scopes`/`externalTaint`/`processedEvents`/
+/// `attempts`/`mutationEvents` (`spec/mutation_cursor.qnt:2-14`).
+///
+/// Quint's verification-only histories (`cursorHistory`, `protocolHistory`,
+/// `scopeHistory`, `abandonHistory`, `startHistory`, `recoveryHistory`,
+/// `taintHistory`, `evidenceAttempts`, `scopeStartCount`, `everTerminal`) are
+/// not represented here; they exist only to state invariants over the
+/// verified spec and have no role in the protocol's own behavior.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProtocolState {
+    pub worktrees: std::collections::BTreeMap<WorktreeId, WorktreeState>,
+    pub scopes: std::collections::BTreeMap<ScopeId, ScopeState>,
+    pub external_taint: std::collections::BTreeSet<WorktreeId>,
+    pub processed_events: std::collections::BTreeSet<EventKey>,
+    pub attempts: std::collections::BTreeMap<AttemptId, AttemptState>,
+    pub mutation_events: std::collections::BTreeSet<MutationEvent>,
 }
