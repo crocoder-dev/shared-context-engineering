@@ -1,6 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use super::protocol::{commit, prepare};
+use super::protocol::{attribution_for, commit, live_scopes_on, prepare};
 use super::types::*;
 
 fn worktree(id: &str) -> WorktreeId {
@@ -721,4 +721,263 @@ fn flush_advances_revision_when_it_observes_a_real_tree_change() {
     let worktree_state = outcome.state.worktrees.get(&worktree("wt0")).unwrap();
     assert_eq!(worktree_state.revision, 1);
     assert_eq!(worktree_state.cursor_tree, tree("tree1"));
+}
+
+#[test]
+fn live_scopes_on_filters_by_worktree_and_liveness() {
+    let mut state = ProtocolState::default();
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+    state.scopes.insert(
+        scope("scope1"),
+        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
+    );
+    state.scopes.insert(
+        scope("scope2"),
+        scope_with_status(ScopeStatus::Active, worktree("wt1")),
+    );
+
+    let live = live_scopes_on(&state, &worktree("wt0"));
+    assert_eq!(live, BTreeSet::from([scope("scope0")]));
+}
+
+#[test]
+fn attribution_for_is_ineligible_unscoped_when_no_scope_is_live() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+
+    assert_eq!(
+        attribution_for(&state, &worktree("wt0")),
+        Attribution::IneligibleUnscoped
+    );
+}
+
+#[test]
+fn attribution_for_is_ai_exclusive_for_exactly_one_live_scope() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    assert_eq!(
+        attribution_for(&state, &worktree("wt0")),
+        Attribution::AiExclusive(scope("scope0"))
+    );
+}
+
+#[test]
+fn attribution_for_is_ai_contended_for_multiple_live_scopes() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+    state.scopes.insert(
+        scope("scope1"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    assert_eq!(
+        attribution_for(&state, &worktree("wt0")),
+        Attribution::AiContended
+    );
+}
+
+#[test]
+fn attribution_for_is_ineligible_unscoped_when_worktree_has_a_snapshot_failure_even_with_an_active_scope(
+) {
+    let mut state = ProtocolState::default();
+    state.worktrees.insert(
+        worktree("wt0"),
+        WorktreeState {
+            cursor_tree: tree("tree0"),
+            revision: 0,
+            tainted: true,
+            failure_kind: FailureKind::SnapshotFailure,
+            needs_rebaseline: false,
+        },
+    );
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    assert_eq!(
+        attribution_for(&state, &worktree("wt0")),
+        Attribution::IneligibleUnscoped
+    );
+}
+
+#[test]
+fn attribution_for_is_ineligible_unscoped_when_worktree_is_externally_tainted_even_with_an_active_scope(
+) {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.external_taint.insert(worktree("wt0"));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    assert_eq!(
+        attribution_for(&state, &worktree("wt0")),
+        Attribution::IneligibleUnscoped
+    );
+}
+
+#[test]
+fn attribution_for_is_ineligible_unscoped_when_worktree_needs_rebaseline_even_with_an_active_scope()
+{
+    let mut state = ProtocolState::default();
+    state.worktrees.insert(
+        worktree("wt0"),
+        WorktreeState {
+            cursor_tree: tree("tree0"),
+            revision: 0,
+            tainted: false,
+            failure_kind: FailureKind::Healthy,
+            needs_rebaseline: true,
+        },
+    );
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    assert_eq!(
+        attribution_for(&state, &worktree("wt0")),
+        Attribution::IneligibleUnscoped
+    );
+}
+
+#[test]
+fn commit_emits_no_mutation_event_for_a_no_op_tree_change() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
+    );
+
+    let prepared = prepare(
+        &state,
+        attempt_id("attempt0"),
+        start_boundary(),
+        tree("tree0"),
+    );
+    let outcome = commit(&prepared, &attempt_id("attempt0"));
+
+    assert!(!outcome.evaluation.changed);
+    assert!(outcome.state.mutation_events.is_empty());
+}
+
+#[test]
+fn commit_emits_exactly_one_mutation_event_with_correct_attribution_boundary_and_revision_for_a_real_change(
+) {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    // Advance never changes the scope set, so the pre- and post-transition
+    // live scopes are identical: attribution is unambiguously AiExclusive.
+    let prepared = prepare(
+        &state,
+        attempt_id("attempt0"),
+        advance_boundary(),
+        tree("tree1"),
+    );
+    let outcome = commit(&prepared, &attempt_id("attempt0"));
+
+    assert!(outcome.evaluation.changed);
+    assert_eq!(outcome.state.mutation_events.len(), 1);
+    let event = outcome.state.mutation_events.iter().next().unwrap();
+    assert_eq!(event.worktree_id, worktree("wt0"));
+    assert_eq!(event.revision, 1);
+    assert_eq!(event.before_tree, tree("tree0"));
+    assert_eq!(event.after_tree, tree("tree1"));
+    assert_eq!(event.boundary, advance_boundary());
+    assert_eq!(event.attribution, Attribution::AiExclusive(scope("scope0")));
+    assert_eq!(event.active_scopes, BTreeSet::from([scope("scope0")]));
+}
+
+#[test]
+fn commit_start_on_a_never_seen_scope_that_also_observes_a_change_excludes_the_newly_activated_scope_from_attribution(
+) {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
+    );
+
+    let prepared = prepare(
+        &state,
+        attempt_id("attempt0"),
+        start_boundary(),
+        tree("tree1"),
+    );
+    let outcome = commit(&prepared, &attempt_id("attempt0"));
+
+    assert!(outcome.evaluation.changed);
+    assert_eq!(
+        outcome.state.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::Active
+    );
+    assert_eq!(outcome.state.mutation_events.len(), 1);
+    let event = outcome.state.mutation_events.iter().next().unwrap();
+    assert_eq!(event.attribution, Attribution::IneligibleUnscoped);
+    assert!(event.active_scopes.is_empty());
+}
+
+#[test]
+fn commit_close_on_the_sole_live_scope_that_also_observes_a_change_still_counts_it_as_live_in_attribution(
+) {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    let prepared = prepare(
+        &state,
+        attempt_id("attempt0"),
+        close_boundary(),
+        tree("tree1"),
+    );
+    let outcome = commit(&prepared, &attempt_id("attempt0"));
+
+    assert!(outcome.evaluation.changed);
+    assert_eq!(
+        outcome.state.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::Closed
+    );
+    assert_eq!(outcome.state.mutation_events.len(), 1);
+    let event = outcome.state.mutation_events.iter().next().unwrap();
+    assert_eq!(event.attribution, Attribution::AiExclusive(scope("scope0")));
+    assert_eq!(event.active_scopes, BTreeSet::from([scope("scope0")]));
 }
