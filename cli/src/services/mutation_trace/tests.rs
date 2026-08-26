@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::protocol::{attribution_for, commit, database_failure, live_scopes_on, prepare, taint};
+use super::protocol::{
+    abandon, attribution_for, commit, database_failure, live_scopes_on, prepare, taint,
+};
 use super::types::*;
 
 fn worktree(id: &str) -> WorktreeId {
@@ -1093,4 +1095,184 @@ fn database_failure_is_a_no_op_for_an_unknown_worktree() {
 
     assert_eq!(next, state);
     assert!(!next.external_taint.contains(&worktree("unknown")));
+}
+
+#[test]
+fn abandon_transitions_a_live_scope_without_moving_the_cursor_or_changing_identity() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 3));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    let next = abandon(&state, &scope("scope0"));
+
+    let abandoned = next.scopes.get(&scope("scope0")).unwrap();
+    assert_eq!(abandoned.status, ScopeStatus::Abandoned);
+    assert_eq!(abandoned.actor_kind, ActorKind::Codex);
+    assert_eq!(abandoned.worktree_id, worktree("wt0"));
+
+    let owning_worktree = next.worktrees.get(&worktree("wt0")).unwrap();
+    assert!(owning_worktree.needs_rebaseline);
+    assert_eq!(owning_worktree.revision, 4);
+    assert_eq!(owning_worktree.cursor_tree, tree("tree0"));
+    assert!(!owning_worktree.tainted);
+    assert_eq!(owning_worktree.failure_kind, FailureKind::Healthy);
+
+    assert_eq!(next.external_taint, state.external_taint);
+    assert_eq!(next.processed_events, state.processed_events);
+    assert_eq!(next.attempts, state.attempts);
+    assert_eq!(next.mutation_events, state.mutation_events);
+}
+
+#[test]
+fn abandon_preserves_other_live_scopes_on_the_same_worktree() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+    state.scopes.insert(
+        scope("scope1"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    let next = abandon(&state, &scope("scope0"));
+
+    assert_eq!(
+        next.scopes.get(&scope("scope1")),
+        state.scopes.get(&scope("scope1"))
+    );
+}
+
+#[test]
+fn abandon_is_a_no_op_for_a_never_seen_scope() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
+    );
+
+    let next = abandon(&state, &scope("scope0"));
+
+    assert_eq!(next, state);
+}
+
+#[test]
+fn abandon_is_a_no_op_for_an_already_closed_scope() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Closed, worktree("wt0")),
+    );
+
+    let next = abandon(&state, &scope("scope0"));
+
+    assert_eq!(next, state);
+}
+
+#[test]
+fn abandon_is_a_no_op_for_an_already_abandoned_scope() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Abandoned, worktree("wt0")),
+    );
+
+    let next = abandon(&state, &scope("scope0"));
+
+    assert_eq!(next, state);
+}
+
+#[test]
+fn abandon_is_a_no_op_for_a_live_scope_on_an_externally_tainted_worktree() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+    state.external_taint.insert(worktree("wt0"));
+
+    let next = abandon(&state, &scope("scope0"));
+
+    assert_eq!(next, state);
+}
+
+#[test]
+fn abandon_succeeds_for_a_live_scope_on_a_snapshot_tainted_worktree() {
+    let mut state = ProtocolState::default();
+    state.worktrees.insert(
+        worktree("wt0"),
+        WorktreeState {
+            cursor_tree: tree("tree0"),
+            revision: 3,
+            tainted: true,
+            failure_kind: FailureKind::SnapshotFailure,
+            needs_rebaseline: false,
+        },
+    );
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    let next = abandon(&state, &scope("scope0"));
+
+    let abandoned = next.scopes.get(&scope("scope0")).unwrap();
+    assert_eq!(abandoned.status, ScopeStatus::Abandoned);
+    assert_eq!(abandoned.actor_kind, ActorKind::Codex);
+    assert_eq!(abandoned.worktree_id, worktree("wt0"));
+
+    let owning_worktree = next.worktrees.get(&worktree("wt0")).unwrap();
+    assert_eq!(owning_worktree.revision, 4);
+    assert_eq!(owning_worktree.cursor_tree, tree("tree0"));
+    assert!(owning_worktree.tainted);
+    assert_eq!(owning_worktree.failure_kind, FailureKind::SnapshotFailure);
+    assert!(owning_worktree.needs_rebaseline);
+
+    assert_eq!(next.external_taint, state.external_taint);
+    assert_eq!(next.processed_events, state.processed_events);
+    assert_eq!(next.attempts, state.attempts);
+    assert_eq!(next.mutation_events, state.mutation_events);
+}
+
+#[test]
+fn abandon_is_a_no_op_for_an_unknown_scope() {
+    let state = ProtocolState::default();
+
+    let next = abandon(&state, &scope("unknown"));
+
+    assert_eq!(next, state);
+    assert!(!next.scopes.contains_key(&scope("unknown")));
+}
+
+#[test]
+fn abandon_is_a_no_op_when_the_scopes_worktree_has_no_durable_state() {
+    let mut state = ProtocolState::default();
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    let next = abandon(&state, &scope("scope0"));
+
+    assert_eq!(next, state);
 }
