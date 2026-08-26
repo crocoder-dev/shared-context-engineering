@@ -430,7 +430,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     introduce no new runtime architecture or production interface.
   - Context synchronization: synced
 
-- [ ] T02: `Add operation-preserving MBT action-transport instrumentation to the spec` (status:todo)
+- [x] T02: `Add operation-preserving MBT action-transport instrumentation to the spec` (status:done)
   - Task ID: T02
   - Scope: In — `spec/mutation_cursor.qnt`: define a verification-only
     `MbtAction` sum type where every argument-carrying variant is a record
@@ -476,7 +476,68 @@ Persist this field in every plan; this is durable plan state, not chat state:
     inspection of one guarded `prepare` call and one guarded `recover` (or
     `abandon`) call, confirming their operation-specific `MbtAction` — not
     `MbtStutter` — is recorded.
-  - Context synchronization: pending
+  - Completed: 2026-08-27
+  - Files changed: `spec/mutation_cursor.qnt`
+  - Result: Added a verification-only `MbtAction` sum type (all argument-
+    carrying variants are records, even single-field ones — `MbtInit`,
+    `MbtMutate({worktree,tree})`, `MbtPrepare({attempt,boundary})`,
+    `MbtCommit({attempt})`, `MbtTaint({worktree})`,
+    `MbtDatabaseFailure({worktree})`, `MbtAbandon({scope})`,
+    `MbtRecover({worktree})`, unit `MbtStutter`) and a new `mbtAction:
+    MbtAction` state variable, assigned in every action, read by nothing else.
+    Replaced `stutter`'s inline field list with a new shared
+    `mbtStutterAs(taken: MbtAction): bool` action — identical to the old
+    `stutter` body except it takes the `MbtAction` to record as a parameter;
+    `stutter` itself is now `mbtStutterAs(MbtStutter)`. Audited all six
+    candidate actions per the plan's Assumptions: `prepare`, `taint`,
+    `databaseFailure`, `abandon`, and `recover` each had a guarded/no-op
+    branch that called the shared top-level `stutter` directly — each now
+    calls `mbtStutterAs(<its own MbtVariant>(...))` instead, so the guarded
+    branch never overwrites `mbtAction'` with `MbtStutter`.  `commitAttempt`
+    does have an analogous no-op path (the existing `not(accepted)` branch,
+    which never called `stutter` — it already inlined its own field list) —
+    both its not-accepted and accepted branches now additionally set
+    `mbtAction' = MbtCommit({attempt: attempt})`. No other field assignment
+    in any action changed (confirmed by `git diff`: every non-`mbtAction'`
+    line is unchanged context). `MbtStutter` is now reachable only from the
+    explicit top-level `stutter` action. `step`, `randomPrepare`, and every
+    other `random*` action were not touched (out of scope, deferred to T03).
+    A parameter named `action` in the new shared helper collided with the
+    `action` keyword and had to be renamed to `taken` — not itself a design
+    decision, just a naming fix required to typecheck.
+  - Verify outcomes: `nix run .#quint -- typecheck spec/mutation_cursor.qnt`
+    — passed, no errors. `nix run .#quint -- test spec/mutation_cursor.qnt`
+    — passed (exit 0, all existing `run` scenarios including the 8 named
+    deterministic ones still pass). `nix run .#quint -- run
+    spec/mutation_cursor.qnt --step=verifyStep --invariants SafetyCore
+    SafetyAttribution SafetyHistory --max-samples=5000 --max-steps=20` —
+    "[ok] No violation found" (5000 traces, up to 21 steps). Manual diff of
+    the non-`mbtAction` semantic-variable assignments before/after this task
+    — `git diff spec/mutation_cursor.qnt` shows only added `mbtAction'`
+    lines and `stutter` → `mbtStutterAs(...)` call-site substitutions; no
+    other variable's assignment expression changed anywhere in the file, so
+    there is no divergence to check trace-by-trace. Manual trace inspection
+    of a guarded `prepare` (re-preparing `Attempt0` after it was already
+    committed), a guarded `recover` (on `WT0` with no taint/rebaseline
+    need), and a guarded `abandon` (on `Scope0` while still `NeverSeen`) —
+    added as temporary `run` scenarios appended to the spec, run with `quint
+    test --match 'tempTest.*'`, all 4 passed (including a control case
+    confirming the explicit top-level `stutter` action still records
+    `MbtStutter`), then removed before this commit; the working tree carries
+    only the permanent instrumentation, not the temporary scenarios.
+  - Context impact: none. Only `spec/mutation_cursor.qnt` changed, and the
+    change is purely additive/internal to the spec (a verification-only type,
+    state variable, and guarded-branch instrumentation never read by any
+    other action, invariant, or Rust code — no driver exists yet). It does
+    not alter the pure Rust refinement `context/cli/mutation-trace-protocol.md`
+    describes (that doc covers `prepare`/`commit`/etc. semantics, which this
+    task explicitly left unchanged and verified unchanged), and does not touch
+    the production-vs-dev dependency baseline `context/overview.md`,
+    `context/architecture.md`, and `context/glossary.md` already record for
+    the in-progress `mutation-cursor-quint-connect` harness (from T01). The
+    corrected-pipeline architecture write-up is explicitly deferred to T06 by
+    this plan's own scope, not skipped here.
+  - Context synchronization: synced
 
 - [ ] T03: `Keep randomPrepare a single step alternative while making it Connect-observable` (status:todo)
   - Task ID: T03
