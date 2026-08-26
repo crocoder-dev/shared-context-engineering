@@ -23,6 +23,7 @@ impl SetupCommand {
         // The repository root is resolved before any prompt so the interactive
         // optional-workflow prompt can pre-check the persisted selection.
         let repository_root = resolve_setup_repository(&setup_start_path)?;
+        setup::validate_existing_repo_local_config(&repository_root).map_err(CliError::runtime)?
 
         let setup_dispatch = if self.request.context_only {
             None

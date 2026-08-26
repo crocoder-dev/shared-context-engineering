@@ -153,13 +153,7 @@ pub(crate) fn resolve_agent_trace_auto_sync_runtime_config(
 pub(crate) fn resolve_agent_trace_storage_runtime_config(
     cwd: &Path,
 ) -> Result<ResolvedAgentTraceStorageRuntimeConfig> {
-    let runtime = resolve_runtime_config_with(
-        &ConfigRequest {
-            report_format: ReportFormat::Text,
-            config_path: None,
-            log_level: None,
-            timeout_ms: None,
-        },
+    resolve_agent_trace_storage_runtime_config_with(
         cwd,
         |key| std::env::var(key).ok(),
         |path| {
@@ -168,7 +162,41 @@ pub(crate) fn resolve_agent_trace_storage_runtime_config(
         },
         Path::exists,
         resolve_default_global_config_path,
+    )
+}
+
+fn resolve_agent_trace_storage_runtime_config_with<FEnv, FRead, FGlobalPath>(
+    cwd: &Path,
+    env_lookup: FEnv,
+    read_file: FRead,
+    path_exists: fn(&Path) -> bool,
+    resolve_global_config_path: FGlobalPath,
+) -> Result<ResolvedAgentTraceStorageRuntimeConfig>
+where
+    FEnv: Fn(&str) -> Option<String>,
+    FRead: Fn(&Path) -> Result<String>,
+    FGlobalPath: Fn() -> Result<PathBuf>,
+{
+    let runtime = resolve_runtime_config_with(
+        &ConfigRequest {
+            report_format: ReportFormat::Text,
+            config_path: None,
+            log_level: None,
+            timeout_ms: None,
+        },
+        cwd,
+        env_lookup,
+        read_file,
+        path_exists,
+        resolve_global_config_path,
     )?;
+
+    if !runtime.validation_errors.is_empty() {
+        bail!(
+            "Agent Trace storage config resolution failed because a discovered config file is invalid: {}",
+            runtime.validation_errors.join(" | ")
+        );
+    }
 
     Ok(ResolvedAgentTraceStorageRuntimeConfig {
         repository_id: runtime.agent_trace_repository_id.value,

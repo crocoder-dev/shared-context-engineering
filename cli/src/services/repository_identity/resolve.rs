@@ -141,6 +141,7 @@ pub fn lookup_remote_url_strict(
         .arg("-C")
         .arg(repository_root)
         .args(["config", "--get", &format!("remote.{remote_name}.url")])
+        .env("LC_ALL", "C")
         .output()
         .with_context(|| {
             format!(

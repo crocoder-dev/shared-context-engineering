@@ -485,6 +485,24 @@ pub fn ensure_git_remote(repository_root: &Path, remote_name: &str) -> Result<()
     }))
 }
 
+/// Validates an existing repo-local `.sce/config.json` before setup performs
+/// any other repository or lifecycle work. An absent config remains eligible
+/// for the normal bootstrap path.
+pub fn validate_existing_repo_local_config(repository_root: &Path) -> Result<()> {
+    let config_file = RepoPaths::new(repository_root).sce_config_file();
+    if !config_file.exists() {
+        return Ok(());
+    }
+
+    crate::services::config::validate_config_file(&config_file).with_context(|| {
+        format!(
+            "Setup preflight rejected invalid repo-local config file '{}'",
+            config_file.display()
+        )
+    })
+}
+}
+
 /// Bootstraps the repo-local `.sce/config.json` file if it does not already exist.
 ///
 /// Creates the `.sce/` parent directory as needed, then writes the canonical
@@ -1221,6 +1239,7 @@ mod install {
         let output = Command::new("git")
             .args(args)
             .current_dir(repository_root)
+            .env("LC_ALL", "C")
             .output()
             .with_context(|| {
                 format!(

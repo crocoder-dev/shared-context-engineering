@@ -33,7 +33,7 @@ Example: `git@GitHub.com:Acme/Widgets.git`, `ssh://git@github.com:22/Acme/Widget
 `repository_identity/resolve.rs` applies the repository identity precedence at runtime:
 
 1. Explicit `agent_trace.repository_id` config value (trim-only canonicalization; invalid explicit values error, they do not fall back to remotes).
-2. URL of the configured Git remote (`agent_trace.repository_remote`, default `origin`), read via `git config --get remote.<name>.url`.
+2. URL of the configured Git remote (`agent_trace.repository_remote`, default `origin`), read via `git config --get remote.<name>.url` with `LC_ALL=C` for locale-stable output.
 3. Otherwise an actionable error pointing at `.sce/config.json`.
 
 - `resolve_repository_identity(repository_root, explicit_identity, remote_name)` — process-spawning entrypoint.
