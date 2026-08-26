@@ -193,13 +193,24 @@ mod tests {
     }
 
     #[test]
-    fn stream_storage_failure_does_not_classify_as_storage_unavailable() {
+    fn stream_terminal_storage_failure_classifies_as_storage_unavailable() {
         assert_user_error(
             TraceSyncError::Stream {
                 stream: "prompts",
                 source: StreamSyncError::Terminal(ControlPlaneError::Storage("disk".to_string())),
             },
-            "general.unexpected_failure",
+            "auth.storage_unavailable",
+        );
+    }
+
+    #[test]
+    fn stream_refresh_storage_failure_classifies_as_storage_unavailable() {
+        assert_user_error(
+            TraceSyncError::Stream {
+                stream: "prompts",
+                source: StreamSyncError::Refresh(ControlPlaneError::Storage("disk".to_string())),
+            },
+            "auth.storage_unavailable",
         );
     }
 }

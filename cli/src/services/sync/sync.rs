@@ -147,12 +147,14 @@ impl TraceSyncError {
         }
     }
 
-    /// True when the initial control-plane failure came from local credential
-    /// storage. Stream failures never carry storage errors.
+    /// True when the failure came from local credential storage, whether it
+    /// surfaced during the initial state request or a stream batch/refresh
+    /// path.
     pub fn is_storage_failure(&self) -> bool {
         match self {
             Self::ControlPlane(error) => error.is_storage_failure(),
-            Self::Runtime(_) | Self::Stream { .. } => false,
+            Self::Stream { source, .. } => source.is_storage_failure(),
+            Self::Runtime(_) => false,
         }
     }
 }

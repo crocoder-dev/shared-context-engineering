@@ -108,17 +108,15 @@ matching. An authentication failure from the initial `/state` call, a stream
 batch request, or a stream reconciliation `/state` refresh
 (`ControlPlaneError::MissingCredentials` or `AuthenticationFailed`) classifies
 as `CliError::User { error: UserError::NotAuthenticated, .. }`. A credential
-storage failure (`ControlPlaneError::Storage`) from the initial `/state` call
-classifies as `CliError::User { error: UserError::AuthStorageUnavailable, .. }`.
-Stream failures never classify as credential-storage user errors; their
-authentication failures still use `NotAuthenticated`. Both user cases preserve
-the technical error as their optional source. Every other `ControlPlaneError`
-(`Forbidden`, `BadRequest`, `Transport`, `ServerError`, `InvalidResponse`,
-`Protocol`) and runtime failures classify as
+storage failure (`ControlPlaneError::Storage`) from the initial `/state` call,
+a stream batch request, or a stream reconciliation `/state` refresh classifies
+as `CliError::User { error: UserError::AuthStorageUnavailable, .. }`.
+Stream authentication failures still use `NotAuthenticated`. Both user cases
+preserve the technical error as their optional source. Every other
+`ControlPlaneError` (`Forbidden`, `BadRequest`, `Transport`, `ServerError`,
+`InvalidResponse`, `Protocol`) and runtime failures classify as
 `CliError::User { error: UserError::UnexpectedFailure, .. }`; the technical
-source remains available for observability. Stream credential-storage failures
-also use `UnexpectedFailure`, because storage classification applies only to
-the initial control-plane failure.
+source remains available for observability.
 `sync/command.rs` builds no friendly sentence and applies no terminal styling
 itself — `app_support` renders the catalog message for user cases. See [CLI error-code
 taxonomy](../sce/cli-error-code-taxonomy.md) for the full `CliError`/`UserError`
