@@ -741,7 +741,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: Classification: domain. `recover` is new pure logic added to an
     already-unreferenced module; no existing behavior, hook, or command changed.
 
-- [ ] T07: `Add cross-action state-sequence and invariant tests, and the Quint refinement matrix` (status:todo)
+- [x] T07: `Add cross-action state-sequence and invariant tests, and the Quint refinement matrix` (status:done)
   - Task ID: T07
   - Scope: In — in `tests.rs`, complete state-machine sequence tests spanning multiple actions;
     every scenario below is required, not "at least three":
@@ -864,7 +864,94 @@ Persist this field in every plan; this is durable plan state, not chat state:
        external adapter responsibility and `ScopeActorIdentityIsStable` as jointly preserved by
        transition tests and external adapter responsibility.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`; `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`; `cargo fmt --manifest-path cli/Cargo.toml -- --check`.
-  - Context synchronization: pending
+  - Context synchronization: synced
+  - Completed: 2026-08-26
+  - Files changed:
+    - `cli/src/services/mutation_trace/tests.rs` (12 new tests: the 8 required cross-action
+      sequences — contended-to-exclusive attribution transition across a `Close`, taint→recover,
+      database-failure→recover, abandon→needsRebaseline-only-recover-preserves-a-survivor, replay
+      of a committed `EventKey`, a stale attempt invalidated by an intervening `Flush` commit,
+      competing prepared attempts resolved by CAS, and taint invalidating a prepared attempt — plus
+      4 invariant-named tests (`ScopeStartedAtMostOnce`+`TerminalScopesStayTerminal` via a real
+      start→restart→close→reopen-attempt sequence, `TerminalScopesStayTerminal` via a real
+      abandon→reopen-attempt sequence, `StartDoesNotAbandonExistingScopes` via a two-scope
+      sequence, and `RejectedAttemptsDoNotCommitEvidence` via a mixed accept/reject sequence);
+      added a `prepare_and_commit` test helper used throughout)
+    - `cli/src/services/mutation_trace/mod.rs` (module doc comment extended with the Quint
+      refinement matrix: verification-only model instrumentation classified separately from
+      semantic properties, each semantic property's Rust counterpart/classification/backing test
+      named in a table, and a note on the `coordinator.rs`/`git_snapshot.rs`/`store.rs` seams)
+  - Result: Added the plan's 8 required multi-action state-sequence tests and 4 invariant-named
+    tests to `tests.rs`, all reaching their preconditions through real `prepare`/`commit`/`taint`/
+    `database_failure`/`abandon`/`recover` transitions rather than manually constructed state,
+    using a new `prepare_and_commit` helper to keep the sequences readable. Scenario 1 chains
+    Advance→Close→Advance on a two-scope worktree to prove `Close`'s own commit computes
+    attribution from the pre-close live-scope set (still `AiContended` even though it is about to
+    close one of the two live scopes), with `AiExclusive` appearing only once a strictly later
+    commit observes just one remaining live scope. Scenarios 2-4 chain
+    `taint`/`database_failure`/`abandon` into `recover`, proving live-scope abandonment on the
+    taint/external-taint paths and live-scope preservation on the `needsRebaseline`-only path.
+    Scenario 5 reaches a processed `EventKey` via a real prior commit before replaying it (unlike
+    T02's single-action replay test, which seeds `processed_events` directly). Scenario 6
+    invalidates a prepared attempt via an unrelated intervening `Flush` commit (distinct from
+    scenarios 7-8's mechanisms). Scenario 7 prepares two attempts against the same baseline and
+    shows the second is rejected by CAS once the first commits — a real race, not a constructed
+    stale `AttemptState`. Scenario 8 shows `taint` advancing the worktree revision stales an
+    already-prepared attempt. The 4 invariant-named tests close the gap T07 explicitly called out:
+    T02-era tests proved `TerminalScopesStayTerminal`/`ScopeStartedAtMostOnce` by constructing a
+    terminal/active `ScopeState` directly, where the new tests reach `Closed`/`Abandoned` through
+    real `Start`→`Close`/`abandon` transitions and then prove a subsequent `Start` cannot
+    reactivate the scope; a new two-scope sequence proves starting one scope leaves an unrelated
+    already-active scope's `ScopeState` byte-for-byte unchanged; a mixed accept/reject sequence
+    proves the rejected attempt contributes no `MutationEvent` beyond what the accepted one
+    produced. `mod.rs`'s module doc comment gained a full refinement matrix per the task's two-
+    category requirement: a verification-only instrumentation list (the checkpoint types, history/
+    counter variables, and the invariants that only restate consistency of that instrumentation
+    itself, plus the model's witness/reachability invariants), and a semantic-properties table
+    naming, for every property in the task's own "at minimum" list plus the remaining named
+    invariants from `spec/mutation_cursor.qnt:1041-1274` this module has production-relevant
+    coverage for, its Rust counterpart, classification, and the concrete backing test — reusing
+    existing T01-T06 tests as evidence where they already cover a property (e.g.
+    `DatabaseFailureDoesNotMutateDurableProtocolState`,
+    `RecoveryClearsExternalTaintOnlyAfterBaseline`, `ScopeActorIdentityIsStable`,
+    `ExternalTaintNeverStrengthensAttribution`, `NeedsRebaselineSuppressesAttribution`,
+    `AttributionMatchesObservedScopes`) rather than duplicating coverage, and citing the new T07
+    tests where the task required a real-transition sequence that did not previously exist. The
+    matrix explicitly separates two invariants (`RejectedAttemptsDoNotCommitEvidence`,
+    `StartDoesNotAbandonExistingScopes`) that Quint states via history variables but that remain
+    production-semantic in this module, per the task's own warning against inferring
+    verification-only status merely from the presence of a history variable. Quint's finite
+    `SCOPES`/`WORKTREES`/`init` population is recorded as external adapter responsibility, and
+    `ScopeActorIdentityIsStable` as jointly preserved-by-tests-and-external-adapter-responsibility,
+    matching the task's explicit requirement. No production logic in `protocol.rs`/`types.rs`
+    changed; this task only added tests and documentation. No production call site references the
+    module. This completes the task stack the plan scoped for `cli/src/services/mutation_trace/`.
+  - Verify outcomes:
+    - `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` — passed,
+      69/69 tests (57 from T01-T06 + 12 new).
+    - `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
+      — passed after switching the new `prepare_and_commit` test helper's `attempt` parameter from
+      by-value to `&AttemptId` (`clippy::needless_pass_by_value`, since the helper only ever cloned
+      it for `prepare` and borrowed it for `commit`, never consuming the owned value itself).
+    - `cargo fmt --manifest-path cli/Cargo.toml -- --check` — passed after running `cargo fmt`
+      (two multi-line expressions in the new tests needed re-wrapping).
+    - `./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml` — passed (implied by the
+      test run above).
+    - `grep -RnE "std::(fs|process|env)|tokio|reqwest|turso" cli/src/services/mutation_trace` — no
+      matches (AC1 spot-check).
+    - `grep -rn "mutation_trace" cli/src/services/hooks cli/src/services/agent_trace.rs` — no
+      matches (AC8 spot-check).
+    - `git diff --stat -- spec/mutation_cursor.qnt spec/mutation_cursor.md` — empty (spec
+      untouched, AC8 spot-check).
+    - `nix run .#quint -- typecheck spec/mutation_cursor.qnt` — passed.
+    - `nix run .#quint -- test spec/mutation_cursor.qnt` — passed.
+  - Context impact: Classification: domain. New tests and an expanded module-doc refinement matrix
+    were added to an already-unreferenced, already-domain-classified module; no existing behavior,
+    hook, or command changed, and no new production logic was introduced. This is also the plan's
+    closing implementation task: the full `mutation_trace` module (`mod.rs`/`types.rs`/
+    `protocol.rs`/`tests.rs`) described in the plan's Change summary now exists, tested, and
+    documented, with no wiring into any hook, command, or database call site, matching AC8 and the
+    plan's own non-goals.
 
 ## Open questions
 
