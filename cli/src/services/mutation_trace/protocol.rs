@@ -5,11 +5,54 @@
 //! [`super::types::ProtocolState`] values; none performs Git, database,
 //! filesystem, environment, network, async, or lock I/O.
 
+use std::collections::BTreeSet;
+
 use super::types::{
     boundary_event_key, boundary_scope, boundary_worktree, is_advance, is_close, is_flush, is_hook,
-    is_start, AttemptId, AttemptState, AttemptStatus, Boundary, ProtocolState, ScopeId,
-    ScopeStatus, TreeId, WorktreeId, WorktreeState,
+    is_start, AttemptId, AttemptState, AttemptStatus, Attribution, Boundary, FailureKind,
+    MutationEvent, ProtocolState, ScopeId, ScopeStatus, TreeId, WorktreeId, WorktreeState,
 };
+
+/// The live scopes belonging to `worktree`, read from `state`. Refines
+/// `liveScopesOn` (`spec/mutation_cursor.qnt:265-269`).
+///
+/// The Quint function filters a fixed `SCOPES` universe by
+/// `worktreeId == worktree and isLive(status)`. This refinement's `ScopeId`
+/// space is unbounded (see `types.rs`'s module doc comment), so it filters
+/// the known `state.scopes` map by the same predicate instead.
+pub fn live_scopes_on(state: &ProtocolState, worktree: &WorktreeId) -> BTreeSet<ScopeId> {
+    state
+        .scopes
+        .iter()
+        .filter(|(_, scope_state)| scope_state.worktree_id == *worktree && scope_state.is_live())
+        .map(|(scope_id, _)| scope_id.clone())
+        .collect()
+}
+
+/// The mutation-evidence attribution for `worktree`, read from `state`.
+/// Refines `attributionFor` (`spec/mutation_cursor.qnt:285-301`).
+///
+/// `IneligibleUnscoped` when the worktree is unhealthy, externally tainted,
+/// needs rebaseline, or has no live scopes; `AiExclusive` for exactly one
+/// live scope; `AiContended` for more than one. An unresolvable worktree (no
+/// durable state) also yields `IneligibleUnscoped`, matching the "no live
+/// scopes" case, since the Quint model's `worktree` always resolves within
+/// its finite domain and has no equivalent missing case to refine.
+pub fn attribution_for(state: &ProtocolState, worktree: &WorktreeId) -> Attribution {
+    let live = live_scopes_on(state, worktree);
+    let unhealthy = state
+        .worktrees
+        .get(worktree)
+        .is_none_or(|w| w.failure_kind != FailureKind::Healthy || w.needs_rebaseline);
+
+    if unhealthy || state.external_taint.contains(worktree) || live.is_empty() {
+        Attribution::IneligibleUnscoped
+    } else if live.len() == 1 {
+        Attribution::AiExclusive(live.into_iter().next().expect("live has exactly one scope"))
+    } else {
+        Attribution::AiContended
+    }
+}
 
 /// Prepares `attempt` against `boundary`, snapshotting the worktree's current
 /// `revision`/`cursor_tree` as the attempt's CAS baseline and `observed_tree`
@@ -62,8 +105,7 @@ pub fn prepare(
 
 /// The computed evaluation flags `commitAttempt` derives before applying its
 /// state transition, exposed for callers that need them without
-/// reconstructing them from the returned state (T03's attribution/
-/// mutation-event materialization depends on `changed`).
+/// reconstructing them from the returned state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct CommitEvaluation {
@@ -79,8 +121,8 @@ pub struct CommitEvaluation {
     pub observes: bool,
     /// `accepted and observes and before_tree != after_tree`.
     pub observed_change: bool,
-    /// `observed_change and not needs_rebaseline`. Exposed as a computed
-    /// flag only; constructing a `MutationEvent` from it is T03's job.
+    /// `observed_change and not needs_rebaseline`. Gates whether [`commit`]
+    /// materializes a `MutationEvent` for this attempt.
     pub changed: bool,
     /// `accepted and (not is_flush(boundary) or observed_change)`.
     pub advances_revision: bool,
@@ -101,16 +143,24 @@ pub struct CommitOutcome {
 /// On rejection (`accepted == false`), only the attempt's own status moves to
 /// `Rejected` (or stays as-is if it was never `Prepared`); no other durable
 /// state changes, so a rejected or stale attempt never advances the
-/// revision, moves the cursor, marks its event processed, or (T03) emits
-/// mutation evidence.
+/// revision, moves the cursor, marks its event processed, or emits mutation
+/// evidence.
 ///
 /// On acceptance, applies scope lifecycle transitions
 /// (`NeverSeen`→`Active` on an accepted, observing `Start`; →`Closed` on an
 /// accepted, observing `Close`), cursor advancement (`after_tree` when
 /// `observes and not needs_rebaseline`, otherwise unchanged), revision
-/// advancement and the attempt's `Committed` status, and processed-event-key
-/// recording for hook boundaries. `mutation_events` is left untouched; T03
-/// wires materialization in behind the returned `changed` flag.
+/// advancement and the attempt's `Committed` status, processed-event-key
+/// recording for hook boundaries, and — when `changed` — materializes exactly
+/// one `MutationEvent` (refining `mkMutationEvent`,
+/// `spec/mutation_cursor.qnt:303-323`) whose `active_scopes`/`attribution`
+/// are computed by [`live_scopes_on`]/[`attribution_for`] against the
+/// **pre-transition** state passed into this call, exactly as `commitAttempt`
+/// computes `live`/`attribution` before applying `nextScope`
+/// (`spec/mutation_cursor.qnt:484-485` precede the `nextScope` `val` at line
+/// 530): a `Start` boundary's emitted event never attributes the mutation to
+/// the scope it is about to activate, and a `Close` boundary's emitted event
+/// still attributes to the scope it is about to close.
 ///
 /// A no-op (evaluation flags all `false`, state unchanged) when `attempt` has
 /// no prepared record or its boundary's worktree cannot be resolved — an
@@ -251,6 +301,20 @@ impl ResolvedAttempt {
             if let Some(key) = boundary_event_key(&self.boundary) {
                 next.processed_events.insert(key);
             }
+        }
+
+        if evaluation.changed {
+            next.mutation_events.insert(MutationEvent {
+                worktree_id: self.worktree.clone(),
+                revision: self.worktree_state.revision + 1,
+                before_tree: self.planned.before_tree.clone(),
+                after_tree: self.planned.after_tree.clone(),
+                active_scopes: live_scopes_on(state, &self.worktree),
+                tainted: self.worktree_state.tainted,
+                failure_kind: self.worktree_state.failure_kind,
+                attribution: attribution_for(state, &self.worktree),
+                boundary: self.boundary.clone(),
+            });
         }
 
         if let Some(entry) = next.attempts.get_mut(attempt) {
