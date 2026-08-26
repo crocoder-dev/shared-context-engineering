@@ -9,20 +9,20 @@ command, or database call site; that integration is out of scope for the
 
 Domain types, `prepare`/`commit` transition logic, attribution/mutation-event
 materialization, snapshot-failure/database-failure taint actions, scope
-abandonment, and recovery exist so far (`mutation-cursor-protocol-kernel`
-plan, tasks T01-T06) — this is the module's full action set. `types.rs`
-defines the protocol's state (including the `ProtocolState` aggregate) and
-pure accessors; `protocol.rs` implements `prepare` and `commit` (all four
-boundary kinds — `Start`/`Advance`/`Close`/`Flush` — in one pass, refining
+abandonment, and recovery are all implemented. `types.rs` defines the
+protocol's state (including the `ProtocolState` aggregate) and pure
+accessors; `protocol.rs` implements `prepare` and `commit` (all four boundary
+kinds — `Start`/`Advance`/`Close`/`Flush` — in one pass, refining
 `prepareAvailable`/`prepare`/`commitAttempt`), `live_scopes_on`/
 `attribution_for` (refining `liveScopesOn`/`attributionFor`),
 `taint`/`database_failure` (refining
 `taintHealthy`/`taint`/`recordDatabaseFailure`/`databaseFailure`), `abandon`
 (refining `abandonLiveScope`/`abandon`), and `recover` (refining
-`recoverNeeded`/`recover`). Cross-action sequence/invariant test coverage and
-the Quint refinement matrix land in the plan's remaining task (T07).
-Registered in `cli/src/services/mod.rs` with `#[allow(dead_code)]`, matching
-the existing precedent for modules not yet consumed by production call sites
+`recoverNeeded`/`recover`). Cross-action sequence/invariant tests and a
+module-level Quint refinement matrix (`mod.rs`) close out the
+`mutation-cursor-protocol-kernel` plan's task stack (T01-T07). Registered in
+`cli/src/services/mod.rs` with `#[allow(dead_code)]`, matching the existing
+precedent for modules not yet consumed by production call sites
 (`bash_policy`, `repository_identity`, `agent_trace_export`).
 
 `commit` materializes exactly one `MutationEvent` into `mutation_events` when
