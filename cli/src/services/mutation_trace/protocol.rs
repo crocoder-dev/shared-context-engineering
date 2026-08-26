@@ -5,7 +5,8 @@
 //! `prepareAvailable`/`prepare`/`commitAttempt`
 //! (`spec/mutation_cursor.qnt:417-661`), and
 //! `taintHealthy`/`taint`/`recordDatabaseFailure`/`databaseFailure`
-//! (`spec/mutation_cursor.qnt:663-737`). Every function here takes and
+//! (`spec/mutation_cursor.qnt:663-737`), and `abandonLiveScope`/`abandon`
+//! (`spec/mutation_cursor.qnt:739-805`). Every function here takes and
 //! returns plain [`super::types::ProtocolState`] values; none performs Git,
 //! database, filesystem, environment, network, async, or lock I/O.
 
@@ -14,7 +15,8 @@ use std::collections::BTreeSet;
 use super::types::{
     boundary_event_key, boundary_scope, boundary_worktree, is_advance, is_close, is_flush, is_hook,
     is_start, AttemptId, AttemptState, AttemptStatus, Attribution, Boundary, FailureKind,
-    MutationEvent, ProtocolState, ScopeId, ScopeStatus, TreeId, WorktreeId, WorktreeState,
+    MutationEvent, ProtocolState, ScopeId, ScopeState, ScopeStatus, TreeId, WorktreeId,
+    WorktreeState,
 };
 
 /// The live scopes belonging to `worktree`, read from `state`. Refines
@@ -390,5 +392,58 @@ pub fn database_failure(state: &ProtocolState, worktree: &WorktreeId) -> Protoco
 
     let mut next = state.clone();
     next.external_taint.insert(worktree.clone());
+    next
+}
+
+/// Abandons `scope`, ending its lifecycle. Refines `abandonLiveScope`/`abandon`
+/// (`spec/mutation_cursor.qnt:739-805`).
+///
+/// Transitions the scope to `Abandoned`, preserving its `actor_kind` and
+/// `worktree_id` (scope identity stability), sets the owning worktree's
+/// `needs_rebaseline=true`, advances `revision` by one, and leaves
+/// `cursor_tree`/`tainted`/`failure_kind` untouched. A guarded no-op (refining
+/// Quint's `stutter`) when the scope is not live — `NeverSeen`, `Closed`, and
+/// `Abandoned` all stutter, so a terminal scope can never be reactivated or
+/// abandoned again — or when its worktree is externally tainted.
+///
+/// Quint's `abandon` resolves the owning worktree unconditionally from
+/// `scopes.get(scope).worktreeId`, because the model's finite `SCOPES`
+/// universe guarantees every `ScopeId` already has a `ScopeState`. This
+/// refinement's `ScopeId` is an unbounded runtime value with no such
+/// guarantee (see the runtime scope materialization contract in
+/// `context/cli/mutation-trace-protocol.md`), so an unknown scope, or a scope
+/// whose own `worktree_id` has no durable `WorktreeState`, is also a guarded
+/// no-op — the same existence contract [`taint`]/[`database_failure`]
+/// enforce.
+pub fn abandon(state: &ProtocolState, scope: &ScopeId) -> ProtocolState {
+    let Some(scope_state) = state.scopes.get(scope) else {
+        return state.clone();
+    };
+    if !scope_state.is_live() || state.external_taint.contains(&scope_state.worktree_id) {
+        return state.clone();
+    }
+    let Some(worktree_state) = state.worktrees.get(&scope_state.worktree_id) else {
+        return state.clone();
+    };
+
+    let mut next = state.clone();
+    next.worktrees.insert(
+        scope_state.worktree_id.clone(),
+        WorktreeState {
+            cursor_tree: worktree_state.cursor_tree.clone(),
+            revision: worktree_state.revision + 1,
+            tainted: worktree_state.tainted,
+            failure_kind: worktree_state.failure_kind,
+            needs_rebaseline: true,
+        },
+    );
+    next.scopes.insert(
+        scope.clone(),
+        ScopeState {
+            status: ScopeStatus::Abandoned,
+            actor_kind: scope_state.actor_kind,
+            worktree_id: scope_state.worktree_id.clone(),
+        },
+    );
     next
 }
