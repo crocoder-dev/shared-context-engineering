@@ -7,15 +7,17 @@ command, or database call site; that integration is out of scope for the
 
 ## Current state
 
-Domain types, `prepare`/`commit` transition logic, and attribution/
-mutation-event materialization exist so far (`mutation-cursor-protocol-kernel`
-plan, tasks T01-T03). `types.rs` defines the protocol's state (including the
-`ProtocolState` aggregate) and pure accessors; `protocol.rs` implements
-`prepare` and `commit` (all four boundary kinds — `Start`/`Advance`/`Close`/
-`Flush` — in one pass), refining `prepareAvailable`/`prepare`/
-`commitAttempt`, plus `live_scopes_on`/`attribution_for`, refining
-`liveScopesOn`/`attributionFor`. Failure/recovery actions and cross-action
-test coverage land in later tasks of the same plan. Registered in
+Domain types, `prepare`/`commit` transition logic, attribution/mutation-event
+materialization, and snapshot-failure/database-failure taint actions exist so
+far (`mutation-cursor-protocol-kernel` plan, tasks T01-T04). `types.rs`
+defines the protocol's state (including the `ProtocolState` aggregate) and
+pure accessors; `protocol.rs` implements `prepare` and `commit` (all four
+boundary kinds — `Start`/`Advance`/`Close`/`Flush` — in one pass), refining
+`prepareAvailable`/`prepare`/`commitAttempt`, `live_scopes_on`/
+`attribution_for`, refining `liveScopesOn`/`attributionFor`, and `taint`/
+`database_failure`, refining `taintHealthy`/`taint`/`recordDatabaseFailure`/
+`databaseFailure`. Scope abandonment, recovery, and cross-action test
+coverage land in later tasks of the same plan. Registered in
 `cli/src/services/mod.rs` with `#[allow(dead_code)]`, matching the existing
 precedent for modules not yet consumed by production call sites
 (`bash_policy`, `repository_identity`, `agent_trace_export`).
@@ -41,7 +43,10 @@ to close.
   `CommitEvaluation` (`accepted`/`observes`/`observed_change`/`changed`/
   `advances_revision`); `live_scopes_on` and `attribution_for` (refining
   `liveScopesOn`/`attributionFor`), each callable standalone or via `commit`'s
-  internal `MutationEvent` materialization.
+  internal `MutationEvent` materialization; `taint` (refining
+  `taintHealthy`/`taint`) and `database_failure` (refining
+  `recordDatabaseFailure`/`databaseFailure`), each a guarded no-op action
+  independent of `prepare`/`commit`.
 - `tests.rs` — `#[cfg(test)]` coverage for the current slice, sibling to
   `mod.rs`.
 
@@ -165,7 +170,7 @@ layout:
 ```mermaid
 flowchart LR
     coordinator["coordinator.rs\n(imperative shell:\nDB load, Git snapshot,\nCAS/retry, persist)"]
-    protocol["protocol.rs\n(pure transitions —\nprepare/commit/attribution\nexist; failure/recovery\nland later)"]
+    protocol["protocol.rs\n(pure transitions —\nprepare/commit/attribution/\ntaint exist; abandon/\nrecovery land later)"]
     git_snapshot["git_snapshot.rs\n(isolated Git object store,\ntemporary index, tree capture/diff)"]
     store["store.rs\n(cursor/revision, scopes,\nprocessed events, mutation\nevidence, CAS transaction)"]
 
@@ -188,8 +193,8 @@ Each seam's responsibility, once built:
 
 `protocol.rs` stays free of any Git object, DB row, or CAS transaction
 concept, and gains no such dependency as later tasks in this plan fill in its
-failure/recovery logic; `coordinator.rs`, `git_snapshot.rs`, and `store.rs`
-are not created by this plan.
+remaining abandonment/recovery logic; `coordinator.rs`, `git_snapshot.rs`,
+and `store.rs` are not created by this plan.
 
 ## Authoritative source
 
