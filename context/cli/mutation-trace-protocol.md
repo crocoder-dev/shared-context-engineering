@@ -45,16 +45,19 @@ Two consequences follow from that choice:
   `ScopeState` instead of a lookup over `ScopeId`.
 - `Boundary::Start`/`Advance`/`Close` carry only `scope`/`event`, exactly
   like the Quint constructors (`spec/mutation_cursor.qnt:31-35`) — no
-  independent `worktree` field. An earlier version of this module added one
-  so `boundary_worktree` could stay a pure function of `Boundary` alone;
-  review caught that this was unfaithful, since it let a boundary claim a
-  worktree inconsistent with its own scope's true assignment, a state the
-  Quint type cannot represent. `boundary_worktree(boundary, scope:
-  Option<&ScopeState>)` now resolves a hook boundary's worktree from the
-  associated scope's own durable state instead, mirroring how
-  `commitAttempt`/`prepareAvailable` (`spec/mutation_cursor.qnt:418,458`)
+  independent `worktree` field, so a boundary can never claim a worktree
+  inconsistent with its own scope's true assignment, a state the Quint type
+  cannot represent. `boundary_worktree(boundary, scopes: &BTreeMap<ScopeId,
+  ScopeState>)` resolves a hook boundary's worktree by reading the `ScopeId`
+  out of the boundary and looking up that exact key in `scopes`, mirroring
+  how `commitAttempt`/`prepareAvailable` (`spec/mutation_cursor.qnt:418,458`)
   resolve it from `scopeWorktree(data.scope)` rather than from the boundary
-  itself.
+  itself. The Rust refinement does not accept an arbitrary `ScopeState`
+  alongside a boundary: the boundary's own `ScopeId` is the only key ever
+  used to look one up, preserving the Quint relationship
+  `scopeWorktree(boundary.scope)`. The result is `None` when that key is
+  absent from `scopes`; `Flush` carries its worktree directly and does not
+  consult `scopes` at all.
 - `boundary_scope`/`boundary_event`/`boundary_event_key` return
   `Option<_>` (`None` for `Flush`) rather than mirroring the Quint model's
   arbitrary `Scope0`/`Event0` placeholder default.

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use super::types::*;
 
 fn worktree(id: &str) -> WorktreeId {
@@ -43,12 +45,25 @@ fn flush_boundary() -> Boundary {
     }
 }
 
-fn scope_state_in(worktree_id: WorktreeId) -> ScopeState {
-    ScopeState {
-        status: ScopeStatus::Active,
-        actor_kind: ActorKind::Codex,
-        worktree_id,
-    }
+fn scopes() -> BTreeMap<ScopeId, ScopeState> {
+    BTreeMap::from([
+        (
+            scope("scope0"),
+            ScopeState {
+                status: ScopeStatus::Active,
+                actor_kind: ActorKind::Codex,
+                worktree_id: worktree("wt0"),
+            },
+        ),
+        (
+            scope("scope1"),
+            ScopeState {
+                status: ScopeStatus::Active,
+                actor_kind: ActorKind::ClaudeCode,
+                worktree_id: worktree("wt1"),
+            },
+        ),
+    ])
 }
 
 #[test]
@@ -81,48 +96,55 @@ fn scope_state_accessors_mirror_stored_fields() {
 }
 
 #[test]
-fn boundary_worktree_resolves_via_scope_for_hook_boundaries() {
-    let scope_state = scope_state_in(worktree("wt0"));
+fn boundary_worktree_looks_up_the_scope_named_by_the_boundary() {
+    let scopes = scopes();
+
+    // Start/Advance/Close all name scope0, which the map assigns to wt0.
+    // The presence of scope1 on a different worktree must not affect this.
     assert_eq!(
-        boundary_worktree(&start_boundary(), Some(&scope_state)),
+        boundary_worktree(&start_boundary(), &scopes),
         Some(worktree("wt0"))
     );
     assert_eq!(
-        boundary_worktree(&advance_boundary(), Some(&scope_state)),
+        boundary_worktree(&advance_boundary(), &scopes),
         Some(worktree("wt0"))
     );
     assert_eq!(
-        boundary_worktree(&close_boundary(), Some(&scope_state)),
+        boundary_worktree(&close_boundary(), &scopes),
         Some(worktree("wt0"))
     );
 }
 
 #[test]
-fn boundary_worktree_resolves_directly_for_flush() {
-    // Flush needs no scope context: it carries its own worktree.
+fn boundary_worktree_is_keyed_by_the_boundarys_own_scope_id() {
+    // A boundary naming a different scope resolves to that scope's own
+    // worktree, proving the lookup is keyed by the boundary's ScopeId rather
+    // than an arbitrary caller-supplied worktree.
+    let scopes = scopes();
+    let boundary = Boundary::Start {
+        scope: scope("scope1"),
+        event: event("event0"),
+    };
+    assert_eq!(boundary_worktree(&boundary, &scopes), Some(worktree("wt1")));
+}
+
+#[test]
+fn boundary_worktree_is_none_for_a_scope_missing_from_the_map() {
+    let scopes = scopes();
+    let boundary = Boundary::Start {
+        scope: scope("missing_scope"),
+        event: event("event0"),
+    };
+    assert_eq!(boundary_worktree(&boundary, &scopes), None);
+}
+
+#[test]
+fn boundary_worktree_resolves_directly_for_flush_ignoring_the_scope_map() {
+    let empty_scopes = BTreeMap::new();
     assert_eq!(
-        boundary_worktree(&flush_boundary(), None),
+        boundary_worktree(&flush_boundary(), &empty_scopes),
         Some(worktree("wt0"))
     );
-}
-
-#[test]
-fn boundary_worktree_reflects_the_scopes_own_worktree_not_a_guess() {
-    // A hook boundary's worktree always comes from its scope's true, durable
-    // assignment; it is never independently stored on the boundary itself,
-    // so an unrelated worktree's scope state cannot be mistaken for it.
-    let scope_state = scope_state_in(worktree("wt1"));
-    assert_eq!(
-        boundary_worktree(&start_boundary(), Some(&scope_state)),
-        Some(worktree("wt1"))
-    );
-}
-
-#[test]
-fn boundary_worktree_is_none_for_hook_boundary_without_scope_context() {
-    assert_eq!(boundary_worktree(&start_boundary(), None), None);
-    assert_eq!(boundary_worktree(&advance_boundary(), None), None);
-    assert_eq!(boundary_worktree(&close_boundary(), None), None);
 }
 
 #[test]
@@ -223,5 +245,31 @@ fn mutation_event_carries_attribution_and_active_scopes() {
     assert_eq!(
         mutation_event.attribution,
         Attribution::AiExclusive(scope("scope0"))
+    );
+}
+
+/// Final semantic check: proves the lookup is keyed by each boundary's own
+/// `scope`, with no parameter through which a caller can independently
+/// inject a worktree for a hook boundary.
+#[test]
+fn boundary_worktree_final_semantic_check() {
+    let scopes = scopes();
+
+    let start_scope0 = Boundary::Start {
+        scope: scope("scope0"),
+        event: event("event0"),
+    };
+    assert_eq!(
+        boundary_worktree(&start_scope0, &scopes),
+        Some(worktree("wt0"))
+    );
+
+    let start_scope1 = Boundary::Start {
+        scope: scope("scope1"),
+        event: event("event0"),
+    };
+    assert_eq!(
+        boundary_worktree(&start_scope1, &scopes),
+        Some(worktree("wt1"))
     );
 }
