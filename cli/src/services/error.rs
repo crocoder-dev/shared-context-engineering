@@ -50,44 +50,48 @@ impl FailureClass {
 
 /// Catalog of expected, deliberately-explained failures presented to the user
 /// as a friendly diagnostic instead of a technical error chain.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(clippy::enum_variant_names)]
 pub enum UserError {
     #[allow(dead_code)]
     NotAuthenticated,
     NotGitRepository,
-    NotGitRemote,
+    NotGitRemote {
+        remote_name: String,
+    },
 }
 
 impl UserError {
-    pub fn class(self) -> FailureClass {
+    pub fn class(&self) -> FailureClass {
         match self {
-            Self::NotAuthenticated | Self::NotGitRepository | Self::NotGitRemote => {
+            Self::NotAuthenticated | Self::NotGitRepository | Self::NotGitRemote { .. } => {
                 FailureClass::Runtime
             }
         }
     }
 
     #[allow(dead_code)]
-    pub fn key(self) -> &'static str {
+    pub fn key(&self) -> &'static str {
         match self {
             Self::NotAuthenticated => "auth.not_authenticated",
             Self::NotGitRepository => "setup.not_git_repository",
-            Self::NotGitRemote => "setup.not_git_remote",
+            Self::NotGitRemote { .. } => "setup.not_git_remote",
         }
     }
 
-    pub fn message(self) -> &'static str {
+    pub fn message(&self) -> String {
         match self {
             Self::NotAuthenticated => {
                 "You are not logged in. Please log in using the `sce auth login` command."
+                    .to_string()
             }
             Self::NotGitRepository => {
                 "The target directory is not a Git repository. Please run `git init`, then retry."
+                    .to_string()
             }
-            Self::NotGitRemote => {
-                "The Git repository has no configured remote URL. Please run `git remote add <name> <url>`, then retry."
-            }
+            Self::NotGitRemote { remote_name } => format!(
+                "The Git repository has no configured URL for remote '{remote_name}'. Please run `git remote add {remote_name} <url>`, then retry."
+            ),
         }
     }
 }

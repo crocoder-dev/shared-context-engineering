@@ -23,6 +23,12 @@ classification so only Git's explicit `not a git repository` failure becomes
 repository, and remote-lookup execution failures must remain runtime errors
 with their technical sources intact.
 
+Revision requested after the completed preflight: make `NotGitRemote` retain the
+configured remote name so the user-facing diagnostic identifies the actual
+missing remote (for example, `upstream`) and gives matching `git remote add`
+guidance. The existing source-preservation, URL-safety, and narrow
+classification rules remain unchanged.
+
 ## Acceptance criteria
 
 How this plan is proven complete. Each criterion is observable and names the
@@ -58,6 +64,14 @@ performs final validation.
   - Validate: Focused setup and repository-identity tests cover a missing Git
     repository, missing remote URL, Git launch/non-repository edge failures,
     and remote lookup execution failures with exact `CliError` classification.
+- [x] AC6: `UserError::NotGitRemote` retains the configured remote name and its
+  rendered diagnostic identifies that name in both the missing-URL explanation
+  and the `git remote add <name> <url>` remediation, without exposing any remote
+  URL.
+  - Validate: Error and setup tests construct/render the `upstream` case,
+    assert the structured variant carries `remote_name: "upstream"`, assert the
+    message names `upstream` in both places, and assert a credential-bearing URL
+    is absent from the diagnostic.
 
 ### Full validation
 
@@ -116,9 +130,10 @@ Persist this field in every plan; this is durable plan state, not chat state:
 - An explicit `agent_trace.repository_id` does not waive the remote preflight;
   the requested setup contract requires a Git remote independently of identity
   fallback behavior.
-- `UserError` messages remain fixed catalog sentences; the configured remote
-  name is retained in the technical source for diagnostics/tests rather than
-  being added as a payload field to the enum.
+- The earlier assumption that `UserError` messages remain remote-agnostic fixed
+  sentences is superseded by this revision: `NotGitRemote` carries the
+  configured remote name, while the URL itself remains excluded from the user
+  error payload and rendered diagnostic.
 
 ## Task stack
 
@@ -161,30 +176,44 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: Root — setup preflight error classification and the repository-identity remote lookup boundary now distinguish expected missing prerequisites from runtime execution failures; durable root setup/error/identity contracts were updated.
   - Context synchronization: synced
 
+ - [x] T04: `Preserve the configured remote name in NotGitRemote` (status:done)
+   - Task ID: T04
+   - Scope: In — change `UserError::NotGitRemote` into a payload-bearing variant, update its catalog methods and setup mapping to carry the resolved `agent_trace.repository_remote` name, assert the named diagnostic/remediation and credential-safe rendering in focused tests, and update `context/overview.md`, `context/cli/cli-command-surface.md`, `context/sce/cli-error-code-taxonomy.md`, and `context/sce/setup-githooks-cli-ux.md`. Out — remote lookup semantics, preflight ordering/classification, remote URL canonicalization, doctor behavior, and successful setup output.
+   - Dependencies: T03
+   - Done when: A missing configured `upstream` remote renders a typed `NotGitRemote { remote_name: "upstream" }` diagnostic that names `upstream` in the no-URL explanation and in `git remote add upstream <url>` guidance; `NotGitRepository`, runtime classification, technical source preservation, and URL redaction remain unchanged.
+   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml error`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup`
+   - Completed: 2026-08-26
+   - Files changed: `cli/src/services/app_support.rs`, `cli/src/services/error.rs`, `cli/src/services/setup/command.rs`, `cli/src/services/setup/mod.rs`, `context/cli/cli-command-surface.md`, `context/overview.md`, `context/plans/setup-git-remote-preflight.md`, `context/sce/cli-error-code-taxonomy.md`, `context/sce/setup-githooks-cli-ux.md`
+   - Result: Made `UserError::NotGitRemote` carry the resolved remote name, rendered that name in the missing-URL explanation and matching `git remote add` remediation, and passed the configured name through setup classification. Added focused catalog and setup-source tests proving name retention, source preservation, and credential-safe rendering; updated the durable setup and error contracts.
+   - Verify: `error` passed with 45 tests; `setup` passed with 65 tests.
+   - Context impact: Root — the typed CLI error catalog and setup preflight diagnostic contract now carry the effective configured remote name; updated the root setup/error summaries and authoritative CLI setup/error UX contracts listed in the task scope.
+   - Context synchronization: synced
+
 ## Open questions
 
-None. The remote selection rule, mandatory scope, error classification, and
-non-network validation boundary were resolved during discussion.
+None. The remote selection rule, payload shape, mandatory scope, error
+classification, and non-network validation boundary are resolved.
 
 ## Validation Report
 
 **Status:** validated  
-**Date:** 2026-08-25
+**Date:** 2026-08-26
 
 ### Commands run
 
-- `nix flake check` -> exit 0 (all repository checks passed)
-- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup` -> exit 0 (69 tests passed)
-- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml repository_identity` -> exit 0 (25 tests passed)
-- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml error` -> exit 0 (46 tests passed)
+- `nix flake check` -> exit 0 (all checks passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup` -> exit 0 (65 tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml repository_identity` -> exit 0 (24 tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml error` -> exit 0 (45 tests passed)
 
 ### Success-criteria verification
 
 - [x] AC1: `sce setup` reports a typed, actionable `NotGitRepository` failure and performs no setup writes -> setup preflight tests passed for a non-repository directory and preserved the `git init` guidance.
 - [x] AC2: `sce setup` reports a typed, actionable `NotGitRemote` failure and performs no setup writes -> setup and error tests passed for missing configured remotes and preserved `git remote add <name> <url>` guidance.
 - [x] AC3: Remote validation uses the resolved `agent_trace.repository_remote` name -> setup and repository-identity tests passed for default `origin`, configured alternate remotes, and rejection of unrelated remotes.
-- [x] AC4: Existing setup behavior and user-error rendering remain compatible without exposing remote URLs -> full repository checks and focused setup/error tests passed, including source preservation and credential-safe diagnostics.
+- [x] AC4: Existing setup behavior and user-error rendering remain compatible, while technical error sources remain available to observability and remote URLs are not echoed in diagnostics -> focused setup and error tests passed, and the full repository check passed.
 - [x] AC5: Setup classifies only explicit missing-repository and missing-remote conditions as typed user errors -> setup, repository-identity, and error tests passed for missing prerequisites, Git/runtime edge failures, strict remote lookup failures, preserved sources, and safe diagnostics.
+- [x] AC6: `UserError::NotGitRemote` retains the configured remote name and renders credential-safe named guidance -> error and setup tests passed for `upstream`, including structured name retention, both diagnostic mentions, and URL redaction.
 
 ### Failed checks and follow-ups
 

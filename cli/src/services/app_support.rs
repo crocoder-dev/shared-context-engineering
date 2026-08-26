@@ -184,7 +184,7 @@ fn write_error_diagnostic_with_color_policy<W: Write>(
         }
         CliError::User {
             error: user_error, ..
-        } => user_error.message().to_string(),
+        } => user_error.message(),
     };
     let styled_message = services::style::error_text_with_color_policy(
         &services::security::redact_sensitive_text(&rendered),
@@ -328,7 +328,7 @@ mod tests {
 
         let rendered = String::from_utf8(stderr).expect("stderr is valid utf8");
         let redacted_message =
-            services::security::redact_sensitive_text(UserError::NotAuthenticated.message());
+            services::security::redact_sensitive_text(&UserError::NotAuthenticated.message());
         assert!(rendered.contains(&redacted_message));
     }
 
