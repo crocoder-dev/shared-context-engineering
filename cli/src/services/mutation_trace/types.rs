@@ -195,20 +195,28 @@ impl ScopeState {
 /// The worktree a boundary applies to. Refines `boundaryWorktree`
 /// (`spec/mutation_cursor.qnt:172-178`).
 ///
-/// A `Flush` boundary carries its worktree directly. A hook boundary
-/// (`Start`/`Advance`/`Close`) does not (see the [`Boundary`] doc comment),
-/// so resolving its worktree requires the associated scope's own durable
-/// state — the caller looks it up by [`boundary_scope`] exactly as
-/// `commitAttempt`-equivalent logic already must, to evaluate the boundary's
-/// `observes` rule, and passes it here. `scope` is ignored for `Flush` and
-/// the result is `None` for a hook boundary whose scope was not supplied
-/// (for example, an unknown scope).
-pub fn boundary_worktree(boundary: &Boundary, scope: Option<&ScopeState>) -> Option<WorktreeId> {
+/// For `Start`/`Advance`/`Close`, the function reads the `ScopeId` from the
+/// boundary and resolves that exact key in the supplied protocol scope
+/// state, mirroring how the Quint function derives the result from
+/// `scopeWorktree(data.scope)` rather than from an independently stored
+/// value (see the [`Boundary`] doc comment). It does not accept an arbitrary
+/// `ScopeState` alongside the boundary: the boundary's own `ScopeId` is the
+/// only key ever used to look one up, so no caller can supply a worktree
+/// inconsistent with the boundary's scope. The result is `None` when that
+/// key is absent from `scopes` (for example, an unknown or not-yet-created
+/// scope).
+///
+/// For `Flush`, the worktree is carried directly by the boundary and
+/// `scopes` is not consulted.
+pub fn boundary_worktree(
+    boundary: &Boundary,
+    scopes: &std::collections::BTreeMap<ScopeId, ScopeState>,
+) -> Option<WorktreeId> {
     match boundary {
         Boundary::Flush { worktree } => Some(worktree.clone()),
-        Boundary::Start { .. } | Boundary::Advance { .. } | Boundary::Close { .. } => {
-            scope.map(ScopeState::scope_worktree)
-        }
+        Boundary::Start { scope, .. }
+        | Boundary::Advance { scope, .. }
+        | Boundary::Close { scope, .. } => scopes.get(scope).map(ScopeState::scope_worktree),
     }
 }
 
