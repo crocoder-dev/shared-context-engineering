@@ -170,7 +170,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Completed: 2026-08-26
   - Files changed:
     - `cli/src/services/mod.rs` (registered `pub mod mutation_trace;` with `#[allow(dead_code)]`)
-    - `cli/src/services/mutation_trace/mod.rs` (new)
+    - `cli/src/services/mutation_trace/mod.rs` (new; module doc comment corrected post-review, see below)
     - `cli/src/services/mutation_trace/types.rs` (new; corrected post-review, see below)
     - `cli/src/services/mutation_trace/tests.rs` (new; corrected post-review, see below)
   - Result: Added the `mutation_trace` module skeleton with all state/domain types
@@ -184,7 +184,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     local design decision remains (recorded in Assumptions below): identity types
     (`WorktreeId`/`ScopeId`/`TreeId`/`EventId`/`AttemptId`) are opaque `String`-wrapping
     newtypes rather than the Quint model's fixed enums.
-    **Post-review correction (PR #238 review):** the original `Boundary` shape gave
+    **Post-review correction 1 (PR #238 review):** the original `Boundary` shape gave
     `Start`/`Advance`/`Close` an independent `worktree: WorktreeId` field so
     `boundary_worktree` could stay a pure function of `Boundary` alone. This was unfaithful:
     the Quint `Boundary` type (`spec/mutation_cursor.qnt:31-35`) never stores a worktree for a
@@ -194,26 +194,40 @@ Persist this field in every plan; this is durable plan state, not chat state:
     diverge from the boundary's own scope would let a caller act on the wrong worktree's state,
     a state the Quint type cannot represent. Fixed: `Boundary::Start`/`Advance`/`Close` now
     carry only `scope`/`event` (field-for-field with the Quint constructors); `Flush` is
-    unchanged. `boundary_worktree(boundary, scope: Option<&ScopeState>)` now resolves a hook
-    boundary's worktree from the associated scope's own durable `ScopeState` (via
-    `ScopeState::scope_worktree`) rather than from a redundant boundary field, returning `None`
-    when no scope context is supplied. `tests.rs` gained regression coverage proving a hook
-    boundary's resolved worktree tracks its scope's actual assignment and is `None` without
-    scope context.
+    unchanged.
+    **Post-review correction 2 (PR #238 review):** correction 1's
+    `boundary_worktree(boundary, scope: Option<&ScopeState>)` still let a caller pass an
+    arbitrary `ScopeState` alongside the boundary with no proof it belonged to the boundary's
+    own `scope` — a test literally constructed `Boundary::Start { scope: scope0, .. }` alongside
+    an unrelated `ScopeState { worktree_id: wt1, .. }` and got `wt1` back. Fixed: the signature
+    is now `boundary_worktree(boundary, scopes: &BTreeMap<ScopeId, ScopeState>)`; for
+    `Start`/`Advance`/`Close` it reads the `ScopeId` out of the boundary and looks up that exact
+    key in `scopes` (returning `None` when the key is absent), so the boundary's own scope is
+    the only key ever used — no parameter lets a caller inject a worktree independent of it.
+    `Flush` is unaffected (it carries its own worktree and ignores `scopes`). `tests.rs` was
+    rewritten: the misleading `boundary_worktree_reflects_the_scopes_own_worktree_not_a_guess`
+    test (which had proved the bug) was replaced with tests keyed off a two-scope map spanning
+    two worktrees, proving each hook boundary resolves via its own `scope` regardless of what
+    else is in the map, that a missing scope yields `None`, and that `Flush` ignores the map
+    entirely. `mod.rs`'s module doc comment was also reworded to drop task/plan references
+    (repository convention: source comments should not cite the current task, fix, or PR).
   - Verify outcomes:
     - `./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml` — passed.
     - `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` — passed,
-      13/13 tests (10 original + 3 added by the post-review correction).
+      14/14 tests (10 original + 3 from correction 1 + 1 net add from correction 2's rewrite).
     - `grep -RnE "std::(fs|process|env)|tokio|reqwest|turso" cli/src/services/mutation_trace` —
       no matches (AC1 spot-check).
     - `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` — passed, no warnings.
     - `cargo fmt --manifest-path cli/Cargo.toml -- --check` — passed, no diff.
+    - `nix run .#quint -- typecheck spec/mutation_cursor.qnt` — passed.
+    - `nix run .#quint -- test spec/mutation_cursor.qnt` — passed.
+    - `git diff -- spec/mutation_cursor.qnt spec/mutation_cursor.md` — empty (spec untouched).
   - Context impact: Classification: minor. A new, currently-unreferenced module exists under
     `cli/src/services/`; no existing behavior, hook, or command changed. Context synchronized
     in the same session as implementation: `context/cli/mutation-trace-protocol.md` (new domain
     file), `context/context-map.md` (new entry), and `context/overview.md` (one-sentence
     mention) were all updated at T01 completion; this correction pass updated the domain file's
-    description of the `Boundary`/`boundary_worktree` refinement to match the fixed design.
+    description of the `boundary_worktree` refinement to match the keyed-lookup design.
 
 - [ ] T02: `Implement prepare/commit attempt transition for Start/Advance/Close boundaries` (status:todo)
   - Task ID: T02
