@@ -76,10 +76,7 @@ pub fn run_login(format: AuthFormat) -> Result<String, CliError> {
 
 pub fn run_logout(format: AuthFormat) -> Result<String, CliError> {
     let deleted = token_storage::delete_tokens().map_err(auth_storage_error)?;
-    if !deleted {
-        return Err(CliError::user(UserError::NotAuthenticated));
-    }
-    render_logout_success(format).map_err(unexpected_auth_command_error)
+    render_logout_result(deleted, format).map_err(unexpected_auth_command_error)
 }
 
 pub fn run_whoami(format: AuthFormat) -> Result<String, CliError> {
@@ -87,7 +84,7 @@ pub fn run_whoami(format: AuthFormat) -> Result<String, CliError> {
         .map_err(auth_storage_error)?
         .is_none()
     {
-        return Err(CliError::user(UserError::NotAuthenticated));
+        return render_unauthenticated_whoami(format).map_err(unexpected_auth_command_error);
     }
 
     let cwd = std::env::current_dir()
@@ -328,17 +325,38 @@ fn render_login_refresh_result(tokens: &StoredTokens, format: AuthFormat) -> Res
     }
 }
 
-fn render_logout_success(format: AuthFormat) -> Result<String> {
+fn render_logout_result(deleted: bool, format: AuthFormat) -> Result<String> {
     match format {
-        AuthFormat::Text => Ok(success("Logged out")),
+        AuthFormat::Text => Ok(if deleted {
+            success("Logged out")
+        } else {
+            value("No user logged in")
+        }),
         AuthFormat::Json => serde_json::to_string_pretty(&json!({
             "status": "ok",
             "command": NAME,
             "subcommand": "logout",
             "authenticated": false,
-            "credentials_removed": true,
+            "credentials_removed": deleted,
         }))
         .context("failed to serialize auth logout report to JSON. Try: rerun 'sce auth logout --format json'."),
+    }
+}
+
+fn render_unauthenticated_whoami(format: AuthFormat) -> Result<String> {
+    match format {
+        AuthFormat::Text => Ok(format!(
+            "You are not logged in. Please log in using the {} command.",
+            success("sce auth login")
+        )),
+        AuthFormat::Json => serde_json::to_string_pretty(&json!({
+            "status": "ok",
+            "command": NAME,
+            "subcommand": "whoami",
+            "authentication_state": "unauthenticated",
+            "has_stored_credentials": false,
+        }))
+        .context("failed to serialize auth whoami report to JSON. Try: rerun 'sce auth whoami --format json'."),
     }
 }
 
@@ -414,4 +432,94 @@ fn auth_storage_error(error: crate::services::token_storage::TokenStorageError) 
 
 fn unexpected_auth_command_error(error: anyhow::Error) -> CliError {
     CliError::user_with_source(UserError::UnexpectedFailure, error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logout_text_reports_whether_credentials_were_removed() {
+        assert_eq!(
+            render_logout_result(false, AuthFormat::Text).expect("logout should render"),
+            "No user logged in"
+        );
+        assert_eq!(
+            render_logout_result(true, AuthFormat::Text).expect("logout should render"),
+            "Logged out"
+        );
+    }
+
+    #[test]
+    fn logout_json_reports_whether_credentials_were_removed() {
+        let absent: serde_json::Value = serde_json::from_str(
+            &render_logout_result(false, AuthFormat::Json).expect("logout should render"),
+        )
+        .expect("logout JSON should be valid");
+        let present: serde_json::Value = serde_json::from_str(
+            &render_logout_result(true, AuthFormat::Json).expect("logout should render"),
+        )
+        .expect("logout JSON should be valid");
+
+        assert_eq!(absent["status"], "ok");
+        assert_eq!(absent["authenticated"], false);
+        assert_eq!(absent["credentials_removed"], false);
+        assert_eq!(present["credentials_removed"], true);
+    }
+
+    #[test]
+    fn unauthenticated_whoami_renders_text_guidance() {
+        assert_eq!(
+            render_unauthenticated_whoami(AuthFormat::Text)
+                .expect("unauthenticated whoami should render"),
+            "You are not logged in. Please log in using the sce auth login command."
+        );
+    }
+
+    #[test]
+    fn unauthenticated_whoami_json_reports_state() {
+        let report: serde_json::Value = serde_json::from_str(
+            &render_unauthenticated_whoami(AuthFormat::Json)
+                .expect("unauthenticated whoami should render"),
+        )
+        .expect("whoami JSON should be valid");
+
+        assert_eq!(report["status"], "ok");
+        assert_eq!(report["command"], "auth");
+        assert_eq!(report["subcommand"], "whoami");
+        assert_eq!(report["authentication_state"], "unauthenticated");
+        assert_eq!(report["has_stored_credentials"], false);
+    }
+
+    #[test]
+    fn authenticated_whoami_failures_keep_typed_errors_and_sources() {
+        let cases = [
+            (
+                ControlPlaneError::AuthenticationFailed("expired".to_string()),
+                UserError::NotAuthenticated,
+            ),
+            (
+                ControlPlaneError::Storage("database unavailable".to_string()),
+                UserError::AuthStorageUnavailable,
+            ),
+            (
+                ControlPlaneError::Transport("connection refused".to_string()),
+                UserError::UnexpectedFailure,
+            ),
+        ];
+
+        for (control_plane_error, expected_user_error) in cases {
+            let mapped = map_whoami_control_plane_error(&control_plane_error);
+            match mapped {
+                CliError::User {
+                    error,
+                    source: Some(source),
+                } => {
+                    assert_eq!(error, expected_user_error);
+                    assert!(!source.to_string().is_empty());
+                }
+                _ => panic!("authenticated whoami failure lost its typed source"),
+            }
+        }
+    }
 }
