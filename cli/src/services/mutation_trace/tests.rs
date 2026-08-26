@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use super::protocol::{commit, prepare};
 use super::types::*;
 
 fn worktree(id: &str) -> WorktreeId {
@@ -16,6 +17,28 @@ fn event(id: &str) -> EventId {
 
 fn tree(id: &str) -> TreeId {
     TreeId(id.to_string())
+}
+
+fn attempt_id(id: &str) -> AttemptId {
+    AttemptId(id.to_string())
+}
+
+fn healthy_worktree(cursor_tree: TreeId, revision: u64) -> WorktreeState {
+    WorktreeState {
+        cursor_tree,
+        revision,
+        tainted: false,
+        failure_kind: FailureKind::Healthy,
+        needs_rebaseline: false,
+    }
+}
+
+fn scope_with_status(status: ScopeStatus, worktree_id: WorktreeId) -> ScopeState {
+    ScopeState {
+        status,
+        actor_kind: ActorKind::Codex,
+        worktree_id,
+    }
 }
 
 fn start_boundary() -> Boundary {
@@ -272,4 +295,430 @@ fn boundary_worktree_final_semantic_check() {
         boundary_worktree(&start_scope1, &scopes),
         Some(worktree("wt1"))
     );
+}
+
+#[test]
+fn prepare_then_commit_accepts_a_fresh_start_and_activates_the_scope() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
+    );
+
+    let prepared = prepare(
+        &state,
+        attempt_id("attempt0"),
+        start_boundary(),
+        tree("tree1"),
+    );
+    let prepared_attempt = prepared
+        .attempts
+        .get(&attempt_id("attempt0"))
+        .expect("attempt was prepared");
+    assert_eq!(prepared_attempt.status, AttemptStatus::Prepared);
+    assert_eq!(prepared_attempt.expected_revision, 0);
+    assert_eq!(prepared_attempt.before_tree, tree("tree0"));
+    assert_eq!(prepared_attempt.after_tree, tree("tree1"));
+
+    let outcome = commit(&prepared, &attempt_id("attempt0"));
+    assert!(outcome.evaluation.accepted);
+    assert!(outcome.evaluation.observes);
+    assert!(outcome.evaluation.observed_change);
+    assert!(outcome.evaluation.changed);
+    assert!(outcome.evaluation.advances_revision);
+
+    assert_eq!(
+        outcome
+            .state
+            .attempts
+            .get(&attempt_id("attempt0"))
+            .unwrap()
+            .status,
+        AttemptStatus::Committed
+    );
+    assert_eq!(
+        outcome.state.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::Active
+    );
+    let committed_worktree = outcome.state.worktrees.get(&worktree("wt0")).unwrap();
+    assert_eq!(committed_worktree.revision, 1);
+    assert_eq!(committed_worktree.cursor_tree, tree("tree1"));
+    assert!(outcome.state.processed_events.contains(&EventKey {
+        scope_id: scope("scope0"),
+        event_id: event("event0"),
+    }));
+}
+
+#[test]
+fn commit_transitions_scope_to_closed_on_an_accepted_observing_close() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    let prepared = prepare(
+        &state,
+        attempt_id("attempt0"),
+        close_boundary(),
+        tree("tree1"),
+    );
+    let outcome = commit(&prepared, &attempt_id("attempt0"));
+
+    assert!(outcome.evaluation.accepted);
+    assert!(outcome.evaluation.observes);
+    assert_eq!(
+        outcome.state.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::Closed
+    );
+    assert_eq!(
+        outcome
+            .state
+            .worktrees
+            .get(&worktree("wt0"))
+            .unwrap()
+            .cursor_tree,
+        tree("tree1")
+    );
+}
+
+#[test]
+fn commit_rejects_a_stale_revision_attempt_without_mutating_state() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 1));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
+    );
+    state.attempts.insert(
+        attempt_id("attempt0"),
+        AttemptState {
+            status: AttemptStatus::Prepared,
+            boundary: start_boundary(),
+            expected_revision: 0,
+            before_tree: tree("tree0"),
+            after_tree: tree("tree1"),
+        },
+    );
+    let before = state.clone();
+
+    let outcome = commit(&state, &attempt_id("attempt0"));
+
+    assert!(!outcome.evaluation.accepted);
+    assert!(!outcome.evaluation.observed_change);
+    assert!(!outcome.evaluation.advances_revision);
+    assert_eq!(outcome.state.worktrees, before.worktrees);
+    assert_eq!(outcome.state.scopes, before.scopes);
+    assert_eq!(outcome.state.processed_events, before.processed_events);
+    assert_eq!(
+        outcome
+            .state
+            .attempts
+            .get(&attempt_id("attempt0"))
+            .unwrap()
+            .status,
+        AttemptStatus::Rejected
+    );
+}
+
+#[test]
+fn commit_rejects_a_stale_before_tree_attempt_without_mutating_state() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree_current"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
+    );
+    state.attempts.insert(
+        attempt_id("attempt0"),
+        AttemptState {
+            status: AttemptStatus::Prepared,
+            boundary: start_boundary(),
+            expected_revision: 0,
+            before_tree: tree("tree_stale"),
+            after_tree: tree("tree1"),
+        },
+    );
+    let before = state.clone();
+
+    let outcome = commit(&state, &attempt_id("attempt0"));
+
+    assert!(!outcome.evaluation.accepted);
+    assert_eq!(outcome.state.worktrees, before.worktrees);
+    assert_eq!(outcome.state.scopes, before.scopes);
+    assert_eq!(
+        outcome
+            .state
+            .attempts
+            .get(&attempt_id("attempt0"))
+            .unwrap()
+            .status,
+        AttemptStatus::Rejected
+    );
+}
+
+#[test]
+fn commit_rejects_a_replayed_event_key_without_mutating_state() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
+    );
+    state.processed_events.insert(EventKey {
+        scope_id: scope("scope0"),
+        event_id: event("event0"),
+    });
+    state.attempts.insert(
+        attempt_id("attempt0"),
+        AttemptState {
+            status: AttemptStatus::Prepared,
+            boundary: start_boundary(),
+            expected_revision: 0,
+            before_tree: tree("tree0"),
+            after_tree: tree("tree1"),
+        },
+    );
+    let before = state.clone();
+
+    let outcome = commit(&state, &attempt_id("attempt0"));
+
+    assert!(!outcome.evaluation.accepted);
+    assert_eq!(outcome.state.worktrees, before.worktrees);
+    assert_eq!(outcome.state.scopes, before.scopes);
+    assert_eq!(
+        outcome
+            .state
+            .attempts
+            .get(&attempt_id("attempt0"))
+            .unwrap()
+            .status,
+        AttemptStatus::Rejected
+    );
+}
+
+#[test]
+fn commit_rejects_an_externally_tainted_worktree_even_with_a_fresh_revision_and_before_tree() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
+    );
+    state.external_taint.insert(worktree("wt0"));
+    state.attempts.insert(
+        attempt_id("attempt0"),
+        AttemptState {
+            status: AttemptStatus::Prepared,
+            boundary: start_boundary(),
+            expected_revision: 0,
+            before_tree: tree("tree0"),
+            after_tree: tree("tree1"),
+        },
+    );
+
+    let outcome = commit(&state, &attempt_id("attempt0"));
+
+    assert!(!outcome.evaluation.accepted);
+    assert_eq!(
+        outcome
+            .state
+            .worktrees
+            .get(&worktree("wt0"))
+            .unwrap()
+            .revision,
+        0
+    );
+    assert_eq!(
+        outcome.state.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::NeverSeen
+    );
+}
+
+#[test]
+fn accepted_but_non_observing_start_on_an_already_active_scope_advances_revision_without_moving_cursor_or_scope(
+) {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    let prepared = prepare(
+        &state,
+        attempt_id("attempt0"),
+        start_boundary(),
+        tree("tree1"),
+    );
+    let outcome = commit(&prepared, &attempt_id("attempt0"));
+
+    assert!(outcome.evaluation.accepted);
+    assert!(!outcome.evaluation.observes);
+    assert!(!outcome.evaluation.observed_change);
+    assert!(!outcome.evaluation.changed);
+    assert!(outcome.evaluation.advances_revision);
+
+    let committed_worktree = outcome.state.worktrees.get(&worktree("wt0")).unwrap();
+    assert_eq!(committed_worktree.revision, 1);
+    assert_eq!(committed_worktree.cursor_tree, tree("tree0"));
+    assert_eq!(
+        outcome.state.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::Active
+    );
+    assert_eq!(
+        outcome
+            .state
+            .attempts
+            .get(&attempt_id("attempt0"))
+            .unwrap()
+            .status,
+        AttemptStatus::Committed
+    );
+    assert!(outcome.state.processed_events.contains(&EventKey {
+        scope_id: scope("scope0"),
+        event_id: event("event0"),
+    }));
+}
+
+#[test]
+fn accepted_but_non_observing_advance_on_a_never_seen_scope_advances_revision_without_moving_cursor(
+) {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
+    );
+
+    let prepared = prepare(
+        &state,
+        attempt_id("attempt0"),
+        advance_boundary(),
+        tree("tree1"),
+    );
+    let outcome = commit(&prepared, &attempt_id("attempt0"));
+
+    assert!(outcome.evaluation.accepted);
+    assert!(!outcome.evaluation.observes);
+    assert!(!outcome.evaluation.changed);
+    assert!(outcome.evaluation.advances_revision);
+    assert_eq!(
+        outcome
+            .state
+            .worktrees
+            .get(&worktree("wt0"))
+            .unwrap()
+            .cursor_tree,
+        tree("tree0")
+    );
+    assert_eq!(
+        outcome.state.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::NeverSeen
+    );
+}
+
+#[test]
+fn accepted_but_non_observing_close_on_a_terminal_scope_advances_revision_without_reactivating_it()
+{
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Abandoned, worktree("wt0")),
+    );
+
+    let prepared = prepare(
+        &state,
+        attempt_id("attempt0"),
+        close_boundary(),
+        tree("tree1"),
+    );
+    let outcome = commit(&prepared, &attempt_id("attempt0"));
+
+    assert!(outcome.evaluation.accepted);
+    assert!(!outcome.evaluation.observes);
+    assert!(!outcome.evaluation.changed);
+    assert!(outcome.evaluation.advances_revision);
+    assert_eq!(
+        outcome.state.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::Abandoned
+    );
+}
+
+#[test]
+fn flush_does_not_advance_revision_on_a_no_op_tree_unlike_hook_boundaries() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+
+    let prepared = prepare(
+        &state,
+        attempt_id("attempt0"),
+        flush_boundary(),
+        tree("tree0"),
+    );
+    let outcome = commit(&prepared, &attempt_id("attempt0"));
+
+    assert!(outcome.evaluation.accepted);
+    assert!(outcome.evaluation.observes);
+    assert!(!outcome.evaluation.observed_change);
+    assert!(!outcome.evaluation.changed);
+    assert!(!outcome.evaluation.advances_revision);
+
+    let worktree_state = outcome.state.worktrees.get(&worktree("wt0")).unwrap();
+    assert_eq!(worktree_state.revision, 0);
+    assert_eq!(
+        outcome
+            .state
+            .attempts
+            .get(&attempt_id("attempt0"))
+            .unwrap()
+            .status,
+        AttemptStatus::Committed
+    );
+}
+
+#[test]
+fn flush_advances_revision_when_it_observes_a_real_tree_change() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+
+    let prepared = prepare(
+        &state,
+        attempt_id("attempt0"),
+        flush_boundary(),
+        tree("tree1"),
+    );
+    let outcome = commit(&prepared, &attempt_id("attempt0"));
+
+    assert!(outcome.evaluation.accepted);
+    assert!(outcome.evaluation.observed_change);
+    assert!(outcome.evaluation.advances_revision);
+    let worktree_state = outcome.state.worktrees.get(&worktree("wt0")).unwrap();
+    assert_eq!(worktree_state.revision, 1);
+    assert_eq!(worktree_state.cursor_tree, tree("tree1"));
 }
