@@ -229,15 +229,16 @@ impl ResolvedAttempt {
     /// Refines the `fresh`/`observes`/`accepted`/`observedChange`/`changed`/
     /// `advancesRevision` computation at `spec/mutation_cursor.qnt:462-483`.
     ///
-    /// `accepted` additionally requires the worktree's revision to have
-    /// headroom to advance ([`next_revision`]) — a Rust-only refinement
-    /// guard with no Quint counterpart, since Quint's `revision` is
-    /// unbounded. This is deliberately unconditional on whether the
-    /// boundary would actually advance the revision (a `Flush` observing no
-    /// change would not), because [`ResolvedAttempt::apply`] must never
-    /// discover a would-be overflow after `accepted` was already decided;
-    /// keeping the guard uniform here means every accepted commit is proven
-    /// safe to advance before any state is touched.
+    /// `accepted` additionally requires revision headroom
+    /// ([`next_revision`]) — a Rust-only refinement guard with no Quint
+    /// counterpart, since Quint's `revision` is unbounded — but only when
+    /// this commit would actually advance the worktree's revision.
+    /// Non-`Flush` commits always advance revision when accepted, so they
+    /// always require headroom. A `Flush` advances revision only when it
+    /// observes a real tree change, so a fresh no-change `Flush` may still
+    /// commit at `revision: u64::MAX`, matching Quint: [`ResolvedAttempt::apply`]
+    /// never advances the revision for such a commit, so there is nothing
+    /// for the guard to protect there.
     fn evaluate(&self, state: &ProtocolState) -> CommitEvaluation {
         let current_scope = self
             .scope_id
@@ -260,9 +261,14 @@ impl ResolvedAttempt {
         } else {
             true
         };
-        let accepted = fresh && next_revision(self.worktree_state.revision).is_some();
-        let observed_change =
-            accepted && observes && self.planned.before_tree != self.planned.after_tree;
+
+        let tree_changed = observes && self.planned.before_tree != self.planned.after_tree;
+        let would_advance_revision = !is_flush(&self.boundary) || tree_changed;
+        let has_revision_headroom =
+            !would_advance_revision || next_revision(self.worktree_state.revision).is_some();
+
+        let accepted = fresh && has_revision_headroom;
+        let observed_change = accepted && tree_changed;
         let changed = observed_change && !self.worktree_state.needs_rebaseline;
         let advances_revision = accepted && (!is_flush(&self.boundary) || observed_change);
 
@@ -294,12 +300,20 @@ impl ResolvedAttempt {
             return next;
         }
 
-        // `accepted` already proved (in `evaluate`) that advancing the
-        // worktree's revision cannot wrap; this recomputes the same checked
-        // value rather than trusting a stored flag, so this function has no
-        // raw `+ 1` of its own.
-        let advanced_revision = next_revision(self.worktree_state.revision)
-            .expect("accepted requires revision headroom, see `evaluate`");
+        // `evaluate` already proved that advancing the worktree's revision
+        // cannot wrap whenever `advances_revision` is true; this recomputes
+        // the same checked value rather than trusting a stored flag, so this
+        // function has no raw `+ 1` of its own. When `advances_revision` is
+        // false (a fresh no-change `Flush`), no headroom was required or
+        // proved, so no next revision is computed at all.
+        let advanced_revision = if evaluation.advances_revision {
+            Some(
+                next_revision(self.worktree_state.revision)
+                    .expect("advancing revision requires headroom, see `evaluate`"),
+            )
+        } else {
+            None
+        };
 
         // `observes` already encodes the exact scope-status guard
         // `commitAttempt` repeats for its own scope transition (`NeverSeen`
@@ -323,7 +337,7 @@ impl ResolvedAttempt {
             self.worktree_state.cursor_tree.clone()
         };
 
-        if evaluation.advances_revision {
+        if let Some(advanced_revision) = advanced_revision {
             next.worktrees.insert(
                 self.worktree.clone(),
                 WorktreeState {
@@ -343,9 +357,10 @@ impl ResolvedAttempt {
         }
 
         if evaluation.changed {
+            let revision = advanced_revision.expect("changed implies advances_revision");
             next.mutation_events.insert(MutationEvent {
                 worktree_id: self.worktree.clone(),
-                revision: advanced_revision,
+                revision,
                 before_tree: self.planned.before_tree.clone(),
                 after_tree: self.planned.after_tree.clone(),
                 active_scopes: live_scopes_on(state, &self.worktree),
