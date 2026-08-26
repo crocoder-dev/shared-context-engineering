@@ -13,24 +13,6 @@ pub(crate) mod config_merge;
 pub(crate) mod hook_merge;
 
 #[derive(Debug)]
-struct NotGitRepositoryError {
-    directory: PathBuf,
-}
-
-impl std::fmt::Display for NotGitRepositoryError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Directory '{}' is not a git repository. Try: run 'git init' in '{}', then rerun 'sce setup'.",
-            self.directory.display(),
-            self.directory.display()
-        )
-    }
-}
-
-impl std::error::Error for NotGitRepositoryError {}
-
-#[derive(Debug)]
 struct MissingGitRemoteError {
     remote_name: String,
 }
@@ -46,10 +28,6 @@ impl std::fmt::Display for MissingGitRemoteError {
 }
 
 impl std::error::Error for MissingGitRemoteError {}
-
-pub(crate) fn is_not_git_repository_error(error: &anyhow::Error) -> bool {
-    error.downcast_ref::<NotGitRepositoryError>().is_some()
-}
 
 pub(crate) fn is_missing_git_remote_error(error: &anyhow::Error) -> bool {
     error.downcast_ref::<MissingGitRemoteError>().is_some()
@@ -90,6 +68,22 @@ impl std::error::Error for GitRepositoryResolutionError {
         match self {
             Self::NotGitRepository(source) | Self::Unexpected(source) => Some(source.as_ref()),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GitExitKind {
+    NotRepository,
+    Other,
+}
+
+const NOT_GIT_REPOSITORY_PREFIX: &str = "fatal: not a git repository";
+
+fn classify_git_exit(stderr: &str) -> GitExitKind {
+    if stderr.starts_with(NOT_GIT_REPOSITORY_PREFIX) {
+        GitExitKind::NotRepository
+    } else {
+        GitExitKind::Other
     }
 }
 
@@ -490,7 +484,7 @@ pub fn persisted_optional_workflows(repository_root: &Path) -> Vec<String> {
 /// Preflight check that verifies the given directory is inside a git repository.
 /// Returns the resolved repository root path on success, or a typed error that
 /// distinguishes a Git-confirmed non-repository directory from other failures.
-pub fn ensure_git_repository(directory: &Path) -> Result<PathBuf> {
+pub fn ensure_git_repository(directory: &Path) -> Result<PathBuf, GitRepositoryResolutionError> {
     install::ensure_git_repository(directory)
 }
 
@@ -957,11 +951,12 @@ mod install {
     use super::config_merge;
     use super::hook_merge;
     use super::{
-        cleanup_path_if_exists, concrete_targets_for, embedded_assets_for_concrete_target,
-        hook_install_recovery_guidance, iter_embedded_assets_for_setup_target_with_selection,
-        iter_required_hook_assets, setup_install_recovery_guidance, EmbeddedAsset,
-        GitRepositoryResolutionError, RequiredHookInstallResult, RequiredHookInstallStatus,
-        RequiredHooksInstallOutcome, SetupInstallOutcome, SetupInstallTargetResult, SetupTarget,
+        classify_git_exit, cleanup_path_if_exists, concrete_targets_for,
+        embedded_assets_for_concrete_target, hook_install_recovery_guidance,
+        iter_embedded_assets_for_setup_target_with_selection, iter_required_hook_assets,
+        setup_install_recovery_guidance, EmbeddedAsset, GitExitKind, GitRepositoryResolutionError,
+        RequiredHookInstallResult, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
+        SetupInstallOutcome, SetupInstallTargetResult, SetupTarget,
     };
     use crate::services::default_paths;
     use crate::services::default_paths::claude_asset;
@@ -971,7 +966,9 @@ mod install {
         Ok(resolve_git_repository_root(&normalized_repository_root)?)
     }
 
-    pub(super) fn ensure_git_repository(directory: &Path) -> Result<PathBuf> {
+    pub(super) fn ensure_git_repository(
+        directory: &Path,
+    ) -> Result<PathBuf, GitRepositoryResolutionError> {
         resolve_git_repository_root(directory)
     }
 
@@ -1233,13 +1230,35 @@ mod install {
         Ok(canonical_repository_root)
     }
 
-    fn resolve_git_repository_root(repository_root: &Path) -> Result<PathBuf> {
-        run_git_command_in_directory(
+    fn resolve_git_repository_root(
+        repository_root: &Path,
+    ) -> Result<PathBuf, GitRepositoryResolutionError> {
+        let repository_root_output = run_git_command_in_directory(
             repository_root,
             &["rev-parse", "--show-toplevel"],
             "Failed to resolve repository root. Ensure '--repo' points to an accessible git repository.",
         )
-        .map(PathBuf::from)
+        .map_err(map_setup_repository_resolution_error)?;
+        Ok(PathBuf::from(repository_root_output))
+    }
+
+    fn map_setup_repository_resolution_error(
+        error: GitCommandError,
+    ) -> GitRepositoryResolutionError {
+        let is_not_repository = matches!(
+            &error,
+            GitCommandError::NonZeroExit {
+                kind: GitExitKind::NotRepository,
+                ..
+            }
+        );
+        let source = anyhow::Error::new(error);
+
+        if is_not_repository {
+            GitRepositoryResolutionError::NotGitRepository(source)
+        } else {
+            GitRepositoryResolutionError::Unexpected(source)
+        }
     }
 
     fn resolve_git_hooks_directory(repository_root: &Path) -> Result<PathBuf> {
@@ -1257,45 +1276,124 @@ mod install {
         Ok(repository_root.join(hooks_directory))
     }
 
+    #[derive(Debug)]
+    enum GitCommandError {
+        Spawn {
+            context: String,
+            directory: PathBuf,
+            source: std::io::Error,
+        },
+        NonZeroExit {
+            context: String,
+            directory: PathBuf,
+            status: std::process::ExitStatus,
+            kind: GitExitKind,
+            diagnostic: String,
+        },
+        InvalidUtf8 {
+            context: String,
+            source: std::string::FromUtf8Error,
+        },
+        EmptyOutput {
+            context: String,
+            directory: PathBuf,
+        },
+    }
+
+    impl std::fmt::Display for GitCommandError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Spawn {
+                    context,
+                    directory,
+                    source,
+                } => write!(
+                    f,
+                    "{context} (directory: '{}'): {source}",
+                    directory.display()
+                ),
+                Self::NonZeroExit {
+                    context,
+                    directory,
+                    status,
+                    diagnostic,
+                    ..
+                } => write!(
+                    f,
+                    "{context} (directory: '{}', status: {status:?}) {diagnostic}",
+                    directory.display()
+                ),
+                Self::InvalidUtf8 { context, source } => {
+                    write!(
+                        f,
+                        "{context}: git command output contained invalid UTF-8: {source}"
+                    )
+                }
+                Self::EmptyOutput { context, directory } => write!(
+                    f,
+                    "{context} (directory: '{}'): git command returned empty output",
+                    directory.display()
+                ),
+            }
+        }
+    }
+
+    impl std::error::Error for GitCommandError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            match self {
+                Self::Spawn { source, .. } => Some(source),
+                Self::InvalidUtf8 { source, .. } => Some(source),
+                Self::NonZeroExit { .. } | Self::EmptyOutput { .. } => None,
+            }
+        }
+    }
+
     fn run_git_command_in_directory(
         repository_root: &Path,
         args: &[&str],
         context_message: &str,
-    ) -> Result<String> {
+    ) -> std::result::Result<String, GitCommandError> {
         let output = Command::new("git")
+            .env("LC_ALL", "C")
+            .env("LANG", "C")
+            .env_remove("LANGUAGE")
             .args(args)
             .current_dir(repository_root)
-            .env("LC_ALL", "C")
             .output()
-            .with_context(|| {
-                format!(
-                    "{} (directory: '{}')",
-                    context_message,
-                    repository_root.display()
-                )
+            .map_err(|source| GitCommandError::Spawn {
+                context: context_message.to_string(),
+                directory: repository_root.to_path_buf(),
+                source,
             })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            if args == ["rev-parse", "--show-toplevel"] && stderr.contains("not a git repository") {
-                return Err(anyhow::Error::new(super::NotGitRepositoryError {
-                    directory: repository_root.to_path_buf(),
-                }));
-            }
+            let kind = classify_git_exit(&stderr);
             let diagnostic = if stderr.is_empty() {
                 String::from("git command exited with a non-zero status")
             } else {
                 redact_sensitive_text(&stderr)
             };
-            bail!("{context_message} {diagnostic}");
+            return Err(GitCommandError::NonZeroExit {
+                context: context_message.to_string(),
+                directory: repository_root.to_path_buf(),
+                status: output.status,
+                kind,
+                diagnostic,
+            });
         }
 
-        let stdout = String::from_utf8(output.stdout)
-            .context("git command output contained invalid UTF-8")?
-            .trim()
-            .to_string();
+        let stdout =
+            String::from_utf8(output.stdout).map_err(|source| GitCommandError::InvalidUtf8 {
+                context: context_message.to_string(),
+                source,
+            })?;
+        let stdout = stdout.trim().to_string();
         if stdout.is_empty() {
-            bail!("{context_message} git command returned empty output");
+            return Err(GitCommandError::EmptyOutput {
+                context: context_message.to_string(),
+                directory: repository_root.to_path_buf(),
+            });
         }
 
         Ok(stdout)
