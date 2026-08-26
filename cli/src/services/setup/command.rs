@@ -154,3 +154,22 @@ fn setup_required_hooks_outcome_from_lifecycle(
             .collect(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(label: &str) -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after Unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "sce-setup-command-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).expect("create temporary directory");
+        directory
+    }
+}
