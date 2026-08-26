@@ -668,7 +668,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: Classification: domain. `abandon` is new pure logic added to an
     already-unreferenced module; no existing behavior, hook, or command changed.
 
-- [ ] T06: `Implement recovery with an explicit observed-tree input` (status:todo)
+- [x] T06: `Implement recovery with an explicit observed-tree input` (status:done)
   - Task ID: T06
   - Scope: In — in `protocol.rs`, a pure transition refining `recoverNeeded`/`recover`
     (`spec/mutation_cursor.qnt:807-886`), taking the currently observed tree as an explicit
@@ -690,7 +690,56 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `observed_tree`; recovery is a no-op on an already-healthy worktree with no rebaseline need;
     and recovery is a no-op when `worktree` is unknown to `ProtocolState.worktrees`.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`.
-  - Context synchronization: pending
+  - Context synchronization: synced
+  - Completed: 2026-08-26
+  - Files changed:
+    - `cli/src/services/mutation_trace/protocol.rs` (added `recover`; updated module doc comment
+      to cite `spec/mutation_cursor.qnt:807-886`)
+    - `cli/src/services/mutation_trace/tests.rs` (5 new tests: taint-recovery abandons live
+      scopes and rebaselines cursor while preserving a different-worktree scope and a
+      terminal same-worktree scope untouched; external-taint recovery abandons live scopes and
+      clears `external_taint`; `needsRebaseline`-only recovery preserves live scopes; no-op on
+      an already-healthy worktree with no rebaseline need; no-op for an unknown worktree;
+      imported `recover`)
+    - `cli/src/services/mutation_trace/mod.rs` (module doc comment updated to state recovery is
+      implemented, dropping "Recovery is not yet implemented")
+  - Result: Added `recover(state, worktree, observed_tree)` to `protocol.rs`, refining
+    `recoverNeeded`/`recover` (`spec/mutation_cursor.qnt:807-886`), taking the currently observed
+    tree as an explicit `TreeId` parameter rather than obtaining it itself, matching the same
+    explicit-input contract `prepare` already follows. Guards (returning `state.clone()`
+    unchanged) when `worktree` has no durable state (the same existence-guard convention
+    `taint`/`database_failure`/`abandon` established) or when the worktree is already healthy,
+    not externally tainted, and does not need rebaseline. On a worktree that does need recovery:
+    sets `cursor_tree=observed_tree`, `tainted=false`, `failure_kind=Healthy`,
+    `needs_rebaseline=false`, advances `revision` by one, and removes `worktree` from
+    `external_taint`. Whether recovery abandons live scopes is computed once, before mutation, as
+    `worktree_state.tainted || externally_tainted` (both read from the pre-transition state), so a
+    worktree recovering only from `needs_rebaseline` preserves every live scope on it untouched,
+    while a taint- or external-taint-recovering worktree transitions every one of its live scopes
+    to `Abandoned`, preserving each scope's `actor_kind`/`worktree_id` (scope identity stability).
+    Only scopes belonging to the recovered worktree are touched; scopes on other worktrees and
+    already-terminal scopes on the same worktree are left exactly as they were. This completes the
+    action set the plan scoped for `protocol.rs`; T07 (cross-action sequence/invariant tests and
+    the refinement matrix) is the only remaining task. No production call site references the
+    module.
+  - Verify outcomes:
+    - `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` — passed,
+      57/57 tests (52 from T01-T05 + 5 new).
+    - `./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml` — passed.
+    - `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
+      — passed, no warnings.
+    - `cargo fmt --manifest-path cli/Cargo.toml -- --check` — passed, no diff (after running
+      `cargo fmt`).
+    - `nix run .#quint -- typecheck spec/mutation_cursor.qnt` — passed.
+    - `nix run .#quint -- test spec/mutation_cursor.qnt` — passed.
+    - `grep -RnE "std::(fs|process|env)|tokio|reqwest|turso" cli/src/services/mutation_trace` — no
+      matches (AC1 spot-check).
+    - `grep -rn "mutation_trace" cli/src/services/hooks cli/src/services/agent_trace.rs` — no
+      matches (AC8 spot-check).
+    - `git diff --stat -- spec/mutation_cursor.qnt spec/mutation_cursor.md` — empty (spec
+      untouched, AC8 spot-check).
+  - Context impact: Classification: domain. `recover` is new pure logic added to an
+    already-unreferenced module; no existing behavior, hook, or command changed.
 
 - [ ] T07: `Add cross-action state-sequence and invariant tests, and the Quint refinement matrix` (status:todo)
   - Task ID: T07
