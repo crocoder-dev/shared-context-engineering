@@ -39,8 +39,12 @@ where
     style_if(text, supports_color(), f)
 }
 
-pub(crate) fn success_with_stderr_color_policy(text: &str, color_enabled: bool) -> String {
+pub(crate) fn success_with_color_policy(text: &str, color_enabled: bool) -> String {
     style_if(text, color_enabled, |s| s.green().bold().to_string())
+}
+
+pub(crate) fn success_with_stderr_color_policy(text: &str, color_enabled: bool) -> String {
+    success_with_color_policy(text, color_enabled)
 }
 
 #[must_use]
