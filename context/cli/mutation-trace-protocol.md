@@ -161,6 +161,44 @@ The production entry path never calls `prepare`/`commit` with the first
 case; the no-op behavior for a missing scope is a defensive kernel property,
 not a path the coordinator is expected to exercise.
 
+## Runtime worktree materialization
+
+The same representation/refinement boundary applies to `WorktreeId`, one
+level up from scope identity, and governs `taint`/`database_failure` (and
+will govern `abandon`/`recover`):
+
+- **Quint**: `WorktreeId` ranges over the finite `WORKTREES` universe, and
+  `init` materializes a `WorktreeState` for every member up front — every
+  `WorktreeId` already resolves before any action runs. This is why
+  `recordDatabaseFailure` (`spec/mutation_cursor.qnt:712-737`) states no
+  explicit worktree-existence guard: there is no state for it to guard
+  against. That omission is a fact about the closed, pre-populated Quint
+  domain, not evidence that an arbitrary unknown worktree is valid protocol
+  input.
+- **Rust production**: `WorktreeId` is an unbounded opaque runtime string, so
+  `ProtocolState.worktrees` contains only worktrees a future coordinator/
+  store layer has actually materialized. Every pure protocol action requires
+  its target `WorktreeId` to already exist in `ProtocolState.worktrees`; an
+  unknown `WorktreeId` is invalid/unresolved kernel input and causes a
+  defensive no-op, exactly as an unregistered `ScopeId` does for `prepare`/
+  `commit`. The pure kernel never creates a `WorktreeState`, infers one, or
+  synthesizes a worktree from context.
+
+A **missing** `WorktreeId` (absent from `ProtocolState.worktrees`) is not
+equivalent to a **healthy** `WorktreeState` (`tainted: false`,
+`failure_kind: Healthy`, ...): the former means the protocol has no
+materialized state for that identity at all, while the latter means the
+identity is known and currently healthy. `taint` and `database_failure` both
+enforce this distinction with the same existence guard, which keeps
+`external_taint ⊆ ProtocolState.worktrees` an invariant of every state this
+module can produce, since `database_failure` is the sole path that inserts
+into `external_taint`.
+
+Future responsibility split, mirroring "Runtime scope materialization"
+above: the coordinator/store layer resolves and materializes worktree
+identity/state and loads a `ProtocolState`; `protocol.rs` transitions only
+already-known worktrees and is not the layer that materializes them.
+
 ## Target end-state architecture
 
 The plan's file split anticipates three later seams this module does not yet
