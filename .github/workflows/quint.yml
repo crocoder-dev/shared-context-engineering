@@ -40,22 +40,22 @@ jobs:
             exit 0
           fi
 
-          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -Eq '(\.qnt$|^\.github/workflows/quint\.yml$|^flake\.nix$|^flake\.lock$)'; then
+          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -Eq '(\.qnt$|^\.github/workflows/quint\.yml$|^\.github/workflows/quint-deep-verify\.yml$|^flake\.nix$|^flake\.lock$)'; then
             echo "quint=true" >> "$GITHUB_OUTPUT"
           else
             echo "quint=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: No Quint changes
+      - name: No Quint-relevant changes
         if: steps.changes.outputs.quint != 'true'
-        run: echo "No Quint specification changes detected; validation skipped."
+        run: echo "No Quint-relevant changes; validation skipped."
 
-  quint:
+  quint-checks:
     name: Quint checks
     needs: detect
     if: needs.detect.outputs.quint == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
@@ -80,79 +80,48 @@ jobs:
       - name: Run Quint tests
         run: nix run .#quint -- test spec/mutation_cursor.qnt
 
-  quint-verify:
-    name: Verify Quint safety invariant (${{ matrix.invariant }})
-    needs: detect
-    if: needs.detect.outputs.quint == 'true'
-    runs-on: ubuntu-latest
-    # SafetyCore at depth 10 still exceeds 15 minutes locally.
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        # SafetyHistory does nested forall/exists over history logs that grow
-        # every step, so its BMC cost blows up with trace depth (this is what
-        # timed out the single combined Safety invariant at step 4). It gets
-        # a shorter trace bound; the cheaper groups keep the full default depth.
-        include:
-          - invariant: SafetyCore
-            max_steps: 10
-          - invariant: SafetyAttribution
-            max_steps: 8
-          - invariant: SafetyHistory
-            max_steps: 5
-    steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
-        with:
-          egress-policy: audit
-
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-
-      - name: Enable Magic Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-        with:
-          use-flakehub: false
-          use-gha-cache: true
-
-      - name: Verify ${{ matrix.invariant }}
+      - name: Randomized Quint safety check
         run: >
           nix run .#quint --
-          verify spec/mutation_cursor.qnt
+          run spec/mutation_cursor.qnt
           --step=verifyStep
-          --invariant=${{ matrix.invariant }}
-          --max-steps=${{ matrix.max_steps }}
+          --invariants SafetyCore SafetyAttribution SafetyHistory
+          --max-samples=5000
+          --max-steps=20
 
   gate:
     name: Quint gate
     if: always()
     needs:
       - detect
-      - quint
-      - quint-verify
+      - quint-checks
     runs-on: ubuntu-latest
     steps:
       - name: Check Quint result
         env:
           CHANGED: ${{ needs.detect.outputs.quint }}
-          CHECK_RESULT: ${{ needs.quint.result }}
-          VERIFY_RESULT: ${{ needs.quint-verify.result }}
+          DETECT_RESULT: ${{ needs.detect.result }}
+          CHECK_RESULT: ${{ needs.quint-checks.result }}
         run: |
-          if [ "$CHANGED" != "true" ]; then
-            echo "No Quint changes."
-            exit 0
-          fi
-
-          if [ "$CHECK_RESULT" != "success" ]; then
-            echo "Quint typecheck/tests failed."
+          if [ "$DETECT_RESULT" != "success" ]; then
+            echo "Quint change detection failed (result: $DETECT_RESULT)."
             exit 1
           fi
 
-          if [ "$VERIFY_RESULT" != "success" ]; then
-            echo "Quint safety verification failed."
+          case "$CHANGED" in
+            false)
+              echo "No Quint-relevant changes; validation skipped."
+              exit 0
+              ;;
+            true)
+              ;;
+            *)
+              echo "Quint change detection produced an invalid result: $CHANGED"
+              exit 1
+              ;;
+          esac
+
+          if [ "$CHECK_RESULT" != "success" ]; then
+            echo "Quint validation failed (result: $CHECK_RESULT)."
             exit 1
           fi

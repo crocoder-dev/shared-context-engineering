@@ -1,0 +1,56 @@
+name: Quint Deep Verification
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quint-verify:
+    name: Verify Quint safety invariant (${{ matrix.invariant }})
+    runs-on: ubuntu-latest
+    # Symbolic bounded verification is intentionally outside the required PR path.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # These bounds reflect the model-checking cost of each invariant group.
+        include:
+          - invariant: SafetyCore
+            max_steps: 10
+          - invariant: SafetyAttribution
+            max_steps: 8
+          - invariant: SafetyHistory
+            max_steps: 5
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Enable Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Verify ${{ matrix.invariant }}
+        run: >
+          nix run .#quint --
+          verify spec/mutation_cursor.qnt
+          --step=verifyStep
+          --invariant=${{ matrix.invariant }}
+          --max-steps=${{ matrix.max_steps }}
