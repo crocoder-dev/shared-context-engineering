@@ -188,7 +188,7 @@ Investigations T08 (`turso default-features = false`) and T09 (isolating the
 with rationale in the benchmark doc. Final after-change numbers and remaining
 bottlenecks are captured in T11.
 
-This phase establishes compile-safe extension seams with a dependency baseline (`anyhow`, `chrono`, `clap`, `clap_complete`, `dirs`, `hmac`, `inquire`, `jsonschema`, `keyring-core`, `murmur3`, `owo-colors`, `rand`, `reqwest`, `serde`, `serde_json`, `sha2`, `tokio`, `toml`, `tracing`, `turso`, `uuid`, plus target-specific keyring backends); no CLI dev-dependencies are currently declared. Per-user local Turso DB and Agent Trace DB bootstrap/health coverage now exist through setup/doctor flows; the user-invocable `sce sync` command is now fully implemented including rendering (see above), and broader runtime integrations remain deferred.
+This phase establishes compile-safe extension seams with a dependency baseline (`anyhow`, `chrono`, `clap`, `clap_complete`, `dirs`, `hmac`, `inquire`, `jsonschema`, `keyring-core`, `murmur3`, `owo-colors`, `rand`, `reqwest`, `serde`, `serde_json`, `sha2`, `tokio`, `toml`, `tracing`, `turso`, `uuid`, plus target-specific keyring backends); `[dev-dependencies]` now carries `quint-connect`, dev/test-only, for the in-progress `mutation-cursor-quint-connect` model-based-testing harness. Per-user local Turso DB and Agent Trace DB bootstrap/health coverage now exist through setup/doctor flows; the user-invocable `sce sync` command is now fully implemented including rendering (see above), and broader runtime integrations remain deferred.
 
 ## SCE plan/code role boundary
 
