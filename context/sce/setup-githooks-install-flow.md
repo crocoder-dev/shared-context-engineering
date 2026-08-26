@@ -22,6 +22,9 @@ For the provided repository path, setup resolves git truth before any writes:
 1. `git rev-parse --show-toplevel`
 2. `git rev-parse --git-path hooks`
 
+The production Git runner sets `LC_ALL=C` for both commands so repository-path
+parsing and diagnostics remain locale-stable.
+
 Before those git operations, setup canonicalizes/validates the user-provided repository path (`--repo`) as an existing directory.
 
 If the hooks path is relative, it is resolved against the git toplevel.
