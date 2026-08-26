@@ -1042,6 +1042,16 @@ fn taint_is_a_no_op_when_externally_tainted() {
 }
 
 #[test]
+fn taint_is_a_no_op_for_an_unknown_worktree() {
+    let state = ProtocolState::default();
+
+    let next = taint(&state, &worktree("unknown"));
+
+    assert_eq!(next, state);
+    assert!(!next.worktrees.contains_key(&worktree("unknown")));
+}
+
+#[test]
 fn database_failure_changes_exactly_external_taint() {
     let mut state = ProtocolState::default();
     state
@@ -1073,4 +1083,14 @@ fn database_failure_is_a_no_op_when_already_externally_tainted() {
     let next = database_failure(&state, &worktree("wt0"));
 
     assert_eq!(next, state);
+}
+
+#[test]
+fn database_failure_is_a_no_op_for_an_unknown_worktree() {
+    let state = ProtocolState::default();
+
+    let next = database_failure(&state, &worktree("unknown"));
+
+    assert_eq!(next, state);
+    assert!(!next.external_taint.contains(&worktree("unknown")));
 }

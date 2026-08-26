@@ -336,6 +336,13 @@ impl ResolvedAttempt {
 /// `revision` by one, and leaves `cursor_tree`/`needs_rebaseline` untouched.
 /// A guarded no-op (refining Quint's `stutter`) when `worktree` is already
 /// `tainted`, already in `external_taint`, or has no durable state.
+///
+/// The last case has no Quint counterpart: `WorktreeId` ranges over the
+/// finite `WORKTREES` universe there, and `init` materializes a
+/// `WorktreeState` for every member, so every `WorktreeId` already resolves.
+/// This refinement's `WorktreeId` is an unbounded runtime value, so an
+/// unknown worktree is unresolved kernel input rather than a state `taint`
+/// may create — the same existence contract [`database_failure`] enforces.
 pub fn taint(state: &ProtocolState, worktree: &WorktreeId) -> ProtocolState {
     let Some(worktree_state) = state.worktrees.get(worktree) else {
         return state.clone();
@@ -364,9 +371,20 @@ pub fn taint(state: &ProtocolState, worktree: &WorktreeId) -> ProtocolState {
 ///
 /// Changes `external_taint` only; every other durable worktree/scope field
 /// stays as it was. A guarded no-op (refining Quint's `stutter`) when
-/// `worktree` is already in `external_taint`.
+/// `worktree` is already in `external_taint` or has no durable state.
+///
+/// Quint's `WorktreeId` ranges over the finite `WORKTREES` universe, and
+/// `init` materializes a `WorktreeState` for every member, so
+/// `recordDatabaseFailure` has no explicit existence guard because there is
+/// no state for it to guard against — every `WorktreeId` already resolves.
+/// This refinement's `WorktreeId` is an unbounded runtime value, so a
+/// referenced worktree must already exist in `ProtocolState.worktrees`
+/// before this action may operate on it; an unknown `WorktreeId` is
+/// unresolved kernel input, not a worktree this action may bring into
+/// existence, and keeping `external_taint` a subset of known worktrees
+/// matches `taint`'s own existence guard.
 pub fn database_failure(state: &ProtocolState, worktree: &WorktreeId) -> ProtocolState {
-    if state.external_taint.contains(worktree) {
+    if !state.worktrees.contains_key(worktree) || state.external_taint.contains(worktree) {
         return state.clone();
     }
 
