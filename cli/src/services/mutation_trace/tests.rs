@@ -2105,8 +2105,13 @@ fn needs_rebaseline_suppresses_mutation_event_even_when_commit_observes_a_real_t
 // must refuse to wrap past `u64::MAX` rather than commit partial or wrapped
 // state.
 
+// A commit that would advance revision is rejected at `u64::MAX`: headroom
+// is required for advancement, not for acceptance in general. Paired with
+// `no_change_flush_commits_at_u64_max_without_advancing_revision` below,
+// which proves the other half — a commit that would NOT advance revision
+// (a no-change `Flush`) is accepted at `u64::MAX`.
 #[test]
-fn commit_does_not_wrap_revision_at_u64_max() {
+fn commit_that_would_advance_is_rejected_at_u64_max() {
     let mut state = ProtocolState::default();
     state
         .worktrees
@@ -2151,6 +2156,68 @@ fn commit_does_not_wrap_revision_at_u64_max() {
             .status,
         AttemptStatus::Rejected
     );
+}
+
+// T07 post-review correction: the first checked-u64 guard required revision
+// headroom for every accepted commit, even a no-change `Flush` that would
+// not advance revision. Quint's `commitAttempt` accepts and commits that
+// case without advancing revision, so a fresh no-change `Flush` at
+// `revision: u64::MAX` must commit successfully rather than being rejected
+// for headroom it does not need.
+#[test]
+fn no_change_flush_commits_at_u64_max_without_advancing_revision() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), u64::MAX));
+    let before = state.clone();
+
+    let outcome = prepare_and_commit(
+        &state,
+        &attempt_id("attempt0"),
+        flush_boundary(),
+        tree("tree0"),
+    );
+
+    assert!(outcome.evaluation.accepted);
+    assert!(outcome.evaluation.observes);
+    assert!(!outcome.evaluation.observed_change);
+    assert!(!outcome.evaluation.changed);
+    assert!(
+        !outcome.evaluation.advances_revision,
+        "a no-change Flush must not advance revision even when accepted"
+    );
+
+    assert_eq!(
+        outcome
+            .state
+            .attempts
+            .get(&attempt_id("attempt0"))
+            .unwrap()
+            .status,
+        AttemptStatus::Committed
+    );
+
+    let committed_worktree = outcome.state.worktrees.get(&worktree("wt0")).unwrap();
+    assert_eq!(
+        committed_worktree.revision,
+        u64::MAX,
+        "revision must stay at u64::MAX; a no-change Flush requires no headroom"
+    );
+    assert_eq!(committed_worktree.cursor_tree, tree("tree0"));
+    assert_eq!(
+        outcome.state.worktrees.get(&worktree("wt0")).unwrap(),
+        before.worktrees.get(&worktree("wt0")).unwrap(),
+        "the worktree must be otherwise unchanged"
+    );
+
+    assert!(
+        outcome.state.mutation_events.is_empty(),
+        "no MutationEvent may be emitted for a no-change Flush"
+    );
+    assert_eq!(outcome.state.processed_events, before.processed_events);
+    assert_eq!(outcome.state.scopes, before.scopes);
+    assert_eq!(outcome.state.external_taint, before.external_taint);
 }
 
 #[test]

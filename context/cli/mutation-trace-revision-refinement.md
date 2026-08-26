@@ -30,16 +30,36 @@ fn next_revision(revision: u64) -> Option<u64> {
 
 Every revision-advancing site routes through it instead of a raw `+ 1`:
 
-- **`commit`** — `ResolvedAttempt::evaluate`'s `accepted` flag folds in
-  `next_revision(worktree_state.revision).is_some()`, unconditionally, regardless of
-  whether this particular boundary would actually advance the revision (a `Flush`
-  observing no change would not). An attempt that would overflow is rejected exactly
-  like a stale one: no cursor movement, no scope-lifecycle transition, no
-  processed-`EventKey` insertion, no `MutationEvent`. This decision is made before
-  `ResolvedAttempt::apply` ever touches state, so `commit` never discovers an overflow
-  partway through applying a transition. `apply` computes the checked
-  `advanced_revision` once and reuses it for both the worktree update and any emitted
-  `MutationEvent`'s revision field.
+- **`commit`** — revision headroom is required only for transitions that actually
+  advance the revision:
+
+  ```text
+  commit:
+      non-Flush                -> headroom required
+      Flush with observed change -> headroom required
+      Flush with no observed change -> no headroom required, even at u64::MAX
+
+  taint / abandon / recover:
+      always advance when they execute -> headroom always required
+  ```
+
+  `ResolvedAttempt::evaluate` computes `would_advance_revision` (`!is_flush(boundary) ||
+  tree_changed`) before deciding `accepted`, and only requires
+  `next_revision(worktree_state.revision).is_some()` when `would_advance_revision` is
+  true. A non-`Flush` boundary always advances revision when accepted, so it always
+  needs headroom. A `Flush` advances revision only when it observes a real tree change
+  (`advances_revision = accepted && (!is_flush(boundary) || observed_change)`), so a
+  fresh no-change `Flush` may commit at `revision: u64::MAX` — matching Quint's
+  `commitAttempt`, which accepts and commits that case without advancing revision. An
+  attempt that *would* overflow is rejected exactly like a stale one: no cursor
+  movement, no scope-lifecycle transition, no processed-`EventKey` insertion, no
+  `MutationEvent`. This decision is made before `ResolvedAttempt::apply` ever touches
+  state, so `commit` never discovers an overflow partway through applying a transition.
+  `apply` computes the checked `advanced_revision` only when `evaluation.advances_revision`
+  is true (`None` otherwise), reuses it for the worktree update, and reuses it again for
+  any emitted `MutationEvent`'s revision field — `changed` can only be true when
+  `advances_revision` is also true, so that reuse never has to synthesize a revision
+  for a non-advancing commit.
 - **`taint`**, **`abandon`**, **`recover`** — each treats `next_revision` returning
   `None` as an additional guarded no-op, alongside their existing existence/
   precondition guards (unknown worktree, already-tainted, non-live scope, and so on).
@@ -55,13 +75,21 @@ Checked arithmetic makes the boundary executable instead of assumed.
 
 ## Test coverage
 
-`tests.rs` has one test per revision-advancing action, each starting from
-`revision: u64::MAX` and proving the guard holds rather than wrapping:
+`tests.rs` has one no-wrap test per unconditionally-advancing action, each starting
+from `revision: u64::MAX` and proving the guard holds rather than wrapping:
 
-- `commit_does_not_wrap_revision_at_u64_max` (proves rejection, not a wrap)
 - `taint_does_not_wrap_revision_at_u64_max`
 - `abandon_does_not_wrap_revision_at_u64_max`
 - `recover_does_not_wrap_revision_at_u64_max`
+
+`commit` gets two tests, together encoding that headroom is required for
+advancement, not for acceptance in general:
+
+- `commit_that_would_advance_is_rejected_at_u64_max` — a `Start` boundary (always
+  advances revision when accepted) at `revision: u64::MAX` is rejected, not wrapped.
+- `no_change_flush_commits_at_u64_max_without_advancing_revision` — a `Flush`
+  boundary observing no tree change at `revision: u64::MAX` commits successfully,
+  with `revision` staying at `u64::MAX` and no `MutationEvent` emitted.
 
 ## Adapter responsibility
 
