@@ -26,7 +26,7 @@ Validation is deterministic and enforced during setup option resolution:
 - `--repo` may only be provided once and must include a value
 - `--repo` path is canonicalized and must resolve to an existing directory before hook setup runs
 - repository-required hook flows fail before config or hook writes when the target directory is not a git repository, with actionable guidance to run `git init` and rerun `sce setup`
-- all `sce setup` modes (config-only, hooks-only, combined, interactive, and `--bootstrap-context`) require an initialized Git repository and a URL for the effective `agent_trace.repository_remote` before prompts or writes; `setup::command` uses the configured name, defaulting to `origin`, and reports typed `NotGitRepository` or `NotGitRemote` failures without echoing remote URLs only for the explicit missing-repository and missing-URL cases. Git/process/configuration failures remain runtime diagnostics with their technical sources preserved.
+- all `sce setup` modes (config-only, hooks-only, combined, interactive, and `--bootstrap-context`) require an initialized Git repository and a URL for the effective `agent_trace.repository_remote` before prompts or writes; `setup::command` uses the configured name, defaulting to `origin`, and reports typed `NotGitRepository` or `NotGitRemote { remote_name }` failures. A missing configured remote is named in both the no-URL explanation and matching `git remote add <name> <url>` guidance, while remote URLs are never echoed. These typed failures apply only to the explicit missing-repository and missing-URL cases; Git/process/configuration failures remain runtime diagnostics with their technical sources preserved.
 
 Target-install mode contract:
 

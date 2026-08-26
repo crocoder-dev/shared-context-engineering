@@ -501,7 +501,6 @@ pub fn validate_existing_repo_local_config(repository_root: &Path) -> Result<()>
         )
     })
 }
-}
 
 /// Bootstraps the repo-local `.sce/config.json` file if it does not already exist.
 ///
