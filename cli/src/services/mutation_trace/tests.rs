@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::protocol::{
     abandon, attribution_for, commit, database_failure, live_scopes_on, prepare, recover, taint,
+    CommitOutcome,
 };
 use super::types::*;
 
@@ -89,6 +90,18 @@ fn scopes() -> BTreeMap<ScopeId, ScopeState> {
             },
         ),
     ])
+}
+
+/// Prepares and immediately commits `attempt` against `boundary`, the shape
+/// every state-sequence test below chains repeatedly.
+fn prepare_and_commit(
+    state: &ProtocolState,
+    attempt: &AttemptId,
+    boundary: Boundary,
+    observed_tree: TreeId,
+) -> CommitOutcome {
+    let prepared = prepare(state, attempt.clone(), boundary, observed_tree);
+    commit(&prepared, attempt)
 }
 
 #[test]
@@ -1424,4 +1437,612 @@ fn recover_is_a_no_op_for_an_unknown_worktree() {
 
     assert_eq!(next, state);
     assert!(!next.worktrees.contains_key(&worktree("unknown")));
+}
+
+// T07: cross-action state-sequence tests. Each of the eight scenarios below
+// is required by the plan; none is a single-action test already covered by
+// T01-T06.
+
+#[test]
+fn attribution_transitions_from_contended_to_exclusive_across_a_close_boundary() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+    state.scopes.insert(
+        scope("scope1"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    // Both scopes are live: an Advance observing a real change is AiContended.
+    let step_a = prepare_and_commit(
+        &state,
+        &attempt_id("attempt_a"),
+        Boundary::Advance {
+            scope: scope("scope0"),
+            event: event("event_a"),
+        },
+        tree("tree1"),
+    );
+    assert!(step_a.evaluation.changed);
+    let event_a = step_a
+        .state
+        .mutation_events
+        .iter()
+        .find(|e| e.revision == 1)
+        .expect("advance emitted a mutation event at revision 1");
+    assert_eq!(event_a.attribution, Attribution::AiContended);
+    assert_eq!(
+        event_a.active_scopes,
+        BTreeSet::from([scope("scope0"), scope("scope1")])
+    );
+
+    // Close also observes a change; because commitAttempt computes live
+    // scopes *before* nextScope closes scope0, this still emits AiContended,
+    // not AiExclusive.
+    let step_b = prepare_and_commit(
+        &step_a.state,
+        &attempt_id("attempt_b"),
+        Boundary::Close {
+            scope: scope("scope0"),
+            event: event("event_b"),
+        },
+        tree("tree2"),
+    );
+    assert!(step_b.evaluation.changed);
+    assert_eq!(
+        step_b.state.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::Closed
+    );
+    let event_b = step_b
+        .state
+        .mutation_events
+        .iter()
+        .find(|e| e.revision == 2)
+        .expect("close emitted a mutation event at revision 2");
+    assert_eq!(event_b.attribution, Attribution::AiContended);
+    assert_eq!(
+        event_b.active_scopes,
+        BTreeSet::from([scope("scope0"), scope("scope1")])
+    );
+
+    // Now only scope1 is live: the next observed change is where AiExclusive
+    // first appears.
+    let step_c = prepare_and_commit(
+        &step_b.state,
+        &attempt_id("attempt_c"),
+        Boundary::Advance {
+            scope: scope("scope1"),
+            event: event("event_c"),
+        },
+        tree("tree3"),
+    );
+    assert!(step_c.evaluation.changed);
+    let event_c = step_c
+        .state
+        .mutation_events
+        .iter()
+        .find(|e| e.revision == 3)
+        .expect("advance emitted a mutation event at revision 3");
+    assert_eq!(
+        event_c.attribution,
+        Attribution::AiExclusive(scope("scope1"))
+    );
+    assert_eq!(event_c.active_scopes, BTreeSet::from([scope("scope1")]));
+}
+
+#[test]
+fn taint_then_recover_abandons_live_scopes_and_rebaselines_cursor() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    let tainted = taint(&state, &worktree("wt0"));
+    let tainted_worktree = tainted.worktrees.get(&worktree("wt0")).unwrap();
+    assert!(tainted_worktree.tainted);
+    assert_eq!(tainted_worktree.failure_kind, FailureKind::SnapshotFailure);
+    assert_eq!(tainted_worktree.revision, 1);
+
+    let recovered = recover(&tainted, &worktree("wt0"), tree("tree1"));
+    let recovered_worktree = recovered.worktrees.get(&worktree("wt0")).unwrap();
+    assert_eq!(recovered_worktree.cursor_tree, tree("tree1"));
+    assert_eq!(recovered_worktree.revision, 2);
+    assert!(!recovered_worktree.tainted);
+    assert_eq!(recovered_worktree.failure_kind, FailureKind::Healthy);
+    assert!(!recovered_worktree.needs_rebaseline);
+    assert_eq!(
+        recovered.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::Abandoned
+    );
+}
+
+#[test]
+fn database_failure_then_recover_clears_external_taint_and_rebaselines_cursor() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+
+    let failed = database_failure(&state, &worktree("wt0"));
+    assert!(failed.external_taint.contains(&worktree("wt0")));
+    assert_eq!(
+        failed.worktrees.get(&worktree("wt0")),
+        state.worktrees.get(&worktree("wt0"))
+    );
+
+    let recovered = recover(&failed, &worktree("wt0"), tree("tree1"));
+    assert!(!recovered.external_taint.contains(&worktree("wt0")));
+    let recovered_worktree = recovered.worktrees.get(&worktree("wt0")).unwrap();
+    assert_eq!(recovered_worktree.cursor_tree, tree("tree1"));
+    assert_eq!(recovered_worktree.revision, 1);
+    assert!(!recovered_worktree.tainted);
+    assert_eq!(recovered_worktree.failure_kind, FailureKind::Healthy);
+    assert!(!recovered_worktree.needs_rebaseline);
+}
+
+#[test]
+fn abandon_then_needs_rebaseline_only_recovery_preserves_a_second_live_scope() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+    state.scopes.insert(
+        scope("scope1"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    let abandoned = abandon(&state, &scope("scope0"));
+    let abandoned_worktree = abandoned.worktrees.get(&worktree("wt0")).unwrap();
+    assert!(abandoned_worktree.needs_rebaseline);
+    assert!(!abandoned_worktree.tainted);
+    assert_eq!(
+        abandoned.scopes.get(&scope("scope1")).unwrap().status,
+        ScopeStatus::Active
+    );
+
+    let recovered = recover(&abandoned, &worktree("wt0"), tree("tree1"));
+    let recovered_worktree = recovered.worktrees.get(&worktree("wt0")).unwrap();
+    assert_eq!(recovered_worktree.cursor_tree, tree("tree1"));
+    assert!(!recovered_worktree.needs_rebaseline);
+    assert_eq!(
+        recovered.scopes.get(&scope("scope1")).unwrap().status,
+        ScopeStatus::Active,
+        "a needsRebaseline-only recovery must preserve a still-live scope"
+    );
+    assert_eq!(
+        recovered.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::Abandoned
+    );
+}
+
+#[test]
+fn replay_of_a_committed_event_key_is_rejected_without_mutating_state() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
+    );
+
+    let first = prepare_and_commit(
+        &state,
+        &attempt_id("attempt_first"),
+        start_boundary(),
+        tree("tree1"),
+    );
+    assert!(first.evaluation.accepted);
+
+    // The CAS baseline is fresh (matches the post-commit worktree state);
+    // only the replayed EventKey (scope0/event0, same as `start_boundary`)
+    // should cause rejection.
+    let before = first.state.clone();
+    let replay = prepare_and_commit(
+        &first.state,
+        &attempt_id("attempt_replay"),
+        start_boundary(),
+        tree("tree2"),
+    );
+
+    assert!(!replay.evaluation.accepted);
+    assert_eq!(replay.state.worktrees, before.worktrees);
+    assert_eq!(replay.state.scopes, before.scopes);
+    assert_eq!(replay.state.mutation_events, before.mutation_events);
+    assert_eq!(
+        replay
+            .state
+            .attempts
+            .get(&attempt_id("attempt_replay"))
+            .unwrap()
+            .status,
+        AttemptStatus::Rejected
+    );
+}
+
+#[test]
+fn stale_attempt_prepared_before_an_intervening_flush_commit_is_rejected_without_advancing_revision_or_moving_cursor(
+) {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
+    );
+
+    // Prepare the eventual stale attempt first, baselined at revision 0.
+    let prepared_stale = prepare(
+        &state,
+        attempt_id("attempt_stale"),
+        start_boundary(),
+        tree("tree_target"),
+    );
+
+    // An unrelated Flush commits and advances the worktree before the
+    // prepared attempt above is ever committed.
+    let intervened = prepare_and_commit(
+        &prepared_stale,
+        &attempt_id("attempt_flush"),
+        flush_boundary(),
+        tree("tree_mid"),
+    );
+    assert!(intervened.evaluation.accepted);
+    assert_eq!(
+        intervened
+            .state
+            .worktrees
+            .get(&worktree("wt0"))
+            .unwrap()
+            .revision,
+        1
+    );
+
+    let before = intervened.state.clone();
+    let outcome = commit(&intervened.state, &attempt_id("attempt_stale"));
+
+    assert!(!outcome.evaluation.accepted);
+    assert!(!outcome.evaluation.advances_revision);
+    assert_eq!(outcome.state.worktrees, before.worktrees);
+    assert_eq!(outcome.state.scopes, before.scopes);
+    assert_eq!(outcome.state.mutation_events, before.mutation_events);
+    assert_eq!(outcome.state.processed_events, before.processed_events);
+    assert_eq!(
+        outcome
+            .state
+            .attempts
+            .get(&attempt_id("attempt_stale"))
+            .unwrap()
+            .status,
+        AttemptStatus::Rejected
+    );
+}
+
+#[test]
+fn competing_prepared_attempts_the_second_to_commit_is_rejected_by_cas() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+
+    // Both A and B are prepared against the same revision-0 baseline.
+    let prepared_a = prepare(
+        &state,
+        attempt_id("attempt_a"),
+        flush_boundary(),
+        tree("tree_a"),
+    );
+    let prepared_both = prepare(
+        &prepared_a,
+        attempt_id("attempt_b"),
+        flush_boundary(),
+        tree("tree_b"),
+    );
+
+    let outcome_a = commit(&prepared_both, &attempt_id("attempt_a"));
+    assert!(outcome_a.evaluation.accepted);
+    let worktree_after_a = outcome_a.state.worktrees.get(&worktree("wt0")).unwrap();
+    assert_eq!(worktree_after_a.revision, 1);
+    assert_eq!(worktree_after_a.cursor_tree, tree("tree_a"));
+
+    let before = outcome_a.state.clone();
+    let outcome_b = commit(&outcome_a.state, &attempt_id("attempt_b"));
+
+    assert!(!outcome_b.evaluation.accepted);
+    assert_eq!(outcome_b.state.worktrees, before.worktrees);
+    assert_eq!(outcome_b.state.mutation_events, before.mutation_events);
+    assert_eq!(
+        outcome_b
+            .state
+            .attempts
+            .get(&attempt_id("attempt_b"))
+            .unwrap()
+            .status,
+        AttemptStatus::Rejected
+    );
+}
+
+#[test]
+fn taint_invalidates_a_prepared_attempt_via_stale_revision() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
+    );
+
+    let prepared = prepare(
+        &state,
+        attempt_id("attempt0"),
+        start_boundary(),
+        tree("tree1"),
+    );
+    let tainted = taint(&prepared, &worktree("wt0"));
+    assert_eq!(
+        tainted
+            .attempts
+            .get(&attempt_id("attempt0"))
+            .unwrap()
+            .status,
+        AttemptStatus::Prepared,
+        "taint does not touch attempt state directly"
+    );
+
+    let before = tainted.clone();
+    let outcome = commit(&tainted, &attempt_id("attempt0"));
+
+    assert!(!outcome.evaluation.accepted);
+    assert_eq!(outcome.state.worktrees, before.worktrees);
+    assert_eq!(outcome.state.scopes, before.scopes);
+    assert_eq!(outcome.state.mutation_events, before.mutation_events);
+    assert_eq!(
+        outcome
+            .state
+            .attempts
+            .get(&attempt_id("attempt0"))
+            .unwrap()
+            .status,
+        AttemptStatus::Rejected
+    );
+}
+
+// T07: invariant-style tests, named to mirror the Quint invariants this
+// module refines. Each reaches its precondition through real transitions
+// rather than a manually constructed state, per the task's own requirement.
+
+#[test]
+fn scope_started_at_most_once_and_stays_terminal_after_a_real_close() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
+    );
+
+    let started = prepare_and_commit(
+        &state,
+        &attempt_id("attempt_start"),
+        start_boundary(),
+        tree("tree1"),
+    );
+    assert_eq!(
+        started.state.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::Active
+    );
+
+    // ScopeStartedAtMostOnce: a second Start (fresh EventKey) on an
+    // already-Active scope is accepted-but-non-observing and does not
+    // re-run activation.
+    let restarted = prepare_and_commit(
+        &started.state,
+        &attempt_id("attempt_restart"),
+        Boundary::Start {
+            scope: scope("scope0"),
+            event: event("event_restart"),
+        },
+        tree("tree2"),
+    );
+    assert!(restarted.evaluation.accepted);
+    assert!(!restarted.evaluation.observes);
+    assert_eq!(
+        restarted.state.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::Active
+    );
+    assert_eq!(
+        restarted
+            .state
+            .worktrees
+            .get(&worktree("wt0"))
+            .unwrap()
+            .cursor_tree,
+        tree("tree1"),
+        "a non-observing restart must not move the cursor"
+    );
+
+    let closed = prepare_and_commit(
+        &restarted.state,
+        &attempt_id("attempt_close"),
+        Boundary::Close {
+            scope: scope("scope0"),
+            event: event("event_close"),
+        },
+        tree("tree3"),
+    );
+    assert_eq!(
+        closed.state.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::Closed
+    );
+
+    // TerminalScopesStayTerminal: a Start against the now-Closed scope
+    // cannot reactivate it.
+    let reopen_attempt = prepare_and_commit(
+        &closed.state,
+        &attempt_id("attempt_reopen"),
+        Boundary::Start {
+            scope: scope("scope0"),
+            event: event("event_reopen"),
+        },
+        tree("tree4"),
+    );
+    assert!(!reopen_attempt.evaluation.observes);
+    assert_eq!(
+        reopen_attempt
+            .state
+            .scopes
+            .get(&scope("scope0"))
+            .unwrap()
+            .status,
+        ScopeStatus::Closed
+    );
+}
+
+#[test]
+fn start_on_a_scope_abandoned_via_a_real_transition_never_reactivates_it() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
+    );
+
+    let started = prepare_and_commit(
+        &state,
+        &attempt_id("attempt_start"),
+        start_boundary(),
+        tree("tree1"),
+    );
+    let abandoned = abandon(&started.state, &scope("scope0"));
+    assert_eq!(
+        abandoned.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::Abandoned
+    );
+
+    let reopen_attempt = prepare_and_commit(
+        &abandoned,
+        &attempt_id("attempt_reopen"),
+        Boundary::Start {
+            scope: scope("scope0"),
+            event: event("event_reopen"),
+        },
+        tree("tree2"),
+    );
+    assert!(!reopen_attempt.evaluation.observes);
+    assert_eq!(
+        reopen_attempt
+            .state
+            .scopes
+            .get(&scope("scope0"))
+            .unwrap()
+            .status,
+        ScopeStatus::Abandoned
+    );
+}
+
+#[test]
+fn start_does_not_abandon_existing_scopes_multi_scope_sequence() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+    state.scopes.insert(
+        scope("scope1"),
+        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
+    );
+    let scope0_before = state.scopes.get(&scope("scope0")).unwrap().clone();
+
+    let outcome = prepare_and_commit(
+        &state,
+        &attempt_id("attempt_start"),
+        Boundary::Start {
+            scope: scope("scope1"),
+            event: event("event0"),
+        },
+        tree("tree1"),
+    );
+
+    assert_eq!(
+        outcome.state.scopes.get(&scope("scope1")).unwrap().status,
+        ScopeStatus::Active
+    );
+    assert_eq!(
+        outcome.state.scopes.get(&scope("scope0")).unwrap(),
+        &scope0_before,
+        "starting scope1 must not alter the already-active scope0"
+    );
+}
+
+#[test]
+fn rejected_attempts_do_not_commit_evidence_across_a_mixed_accept_reject_sequence() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
+    );
+
+    let prepared_start = prepare(
+        &state,
+        attempt_id("attempt_start"),
+        start_boundary(),
+        tree("tree1"),
+    );
+    let prepared_both = prepare(
+        &prepared_start,
+        attempt_id("attempt_advance"),
+        Boundary::Advance {
+            scope: scope("scope0"),
+            event: event("event_advance"),
+        },
+        tree("tree2"),
+    );
+
+    let accepted = commit(&prepared_both, &attempt_id("attempt_start"));
+    assert!(accepted.evaluation.accepted);
+    assert!(accepted.evaluation.changed);
+
+    let rejected = commit(&accepted.state, &attempt_id("attempt_advance"));
+    assert!(!rejected.evaluation.accepted);
+    assert_eq!(
+        rejected
+            .state
+            .attempts
+            .get(&attempt_id("attempt_advance"))
+            .unwrap()
+            .status,
+        AttemptStatus::Rejected
+    );
+
+    // RejectedAttemptsDoNotCommitEvidence: the rejected Advance must not have
+    // added any mutation evidence beyond what the accepted Start produced.
+    assert_eq!(
+        rejected.state.mutation_events,
+        accepted.state.mutation_events
+    );
+    assert_eq!(rejected.state.mutation_events.len(), 1);
 }
