@@ -2046,3 +2046,197 @@ fn rejected_attempts_do_not_commit_evidence_across_a_mixed_accept_reject_sequenc
     );
     assert_eq!(rejected.state.mutation_events.len(), 1);
 }
+
+// T07 post-review correction: `needsRebaseline` must suppress mutation
+// evidence even when `commit` genuinely observes a real tree change
+// (`MutationEventsCrossOnlyTrustworthyProtocolStates`).
+
+#[test]
+fn needs_rebaseline_suppresses_mutation_event_even_when_commit_observes_a_real_tree_change() {
+    let mut state = ProtocolState::default();
+    state.worktrees.insert(
+        worktree("wt0"),
+        WorktreeState {
+            cursor_tree: tree("tree0"),
+            revision: 0,
+            tainted: false,
+            failure_kind: FailureKind::Healthy,
+            needs_rebaseline: true,
+        },
+    );
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    let outcome = prepare_and_commit(
+        &state,
+        &attempt_id("attempt0"),
+        Boundary::Advance {
+            scope: scope("scope0"),
+            event: event("event0"),
+        },
+        tree("tree1"),
+    );
+
+    assert!(outcome.evaluation.accepted);
+    assert!(outcome.evaluation.observes);
+    assert!(outcome.evaluation.observed_change);
+    assert!(
+        !outcome.evaluation.changed,
+        "needs_rebaseline must suppress mutation evidence even though a real change was observed"
+    );
+
+    let committed_worktree = outcome.state.worktrees.get(&worktree("wt0")).unwrap();
+    assert_eq!(
+        committed_worktree.cursor_tree,
+        tree("tree0"),
+        "cursor must not move while needs_rebaseline is set"
+    );
+    assert!(committed_worktree.needs_rebaseline);
+    assert!(
+        outcome.state.mutation_events.is_empty(),
+        "no MutationEvent may be emitted while needs_rebaseline is set"
+    );
+}
+
+// T07 post-review correction: Quint's `revision: int` is unbounded; this
+// refinement's `revision: u64` is not, so every revision-advancing action
+// must refuse to wrap past `u64::MAX` rather than commit partial or wrapped
+// state.
+
+#[test]
+fn commit_does_not_wrap_revision_at_u64_max() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), u64::MAX));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
+    );
+    let before = state.clone();
+
+    let outcome = prepare_and_commit(
+        &state,
+        &attempt_id("attempt0"),
+        start_boundary(),
+        tree("tree1"),
+    );
+
+    assert!(
+        !outcome.evaluation.accepted,
+        "a commit that would advance revision past u64::MAX must be rejected, not wrapped"
+    );
+    assert_eq!(outcome.state.worktrees, before.worktrees);
+    assert_eq!(outcome.state.scopes, before.scopes);
+    assert_eq!(outcome.state.processed_events, before.processed_events);
+    assert_eq!(outcome.state.mutation_events, before.mutation_events);
+    assert_eq!(
+        outcome
+            .state
+            .worktrees
+            .get(&worktree("wt0"))
+            .unwrap()
+            .revision,
+        u64::MAX,
+        "revision must never wrap to 0"
+    );
+    assert_eq!(
+        outcome
+            .state
+            .attempts
+            .get(&attempt_id("attempt0"))
+            .unwrap()
+            .status,
+        AttemptStatus::Rejected
+    );
+}
+
+#[test]
+fn taint_does_not_wrap_revision_at_u64_max() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), u64::MAX));
+
+    let next = taint(&state, &worktree("wt0"));
+
+    assert_eq!(
+        next, state,
+        "taint must be a no-op rather than wrap revision"
+    );
+    assert_eq!(
+        next.worktrees.get(&worktree("wt0")).unwrap().revision,
+        u64::MAX
+    );
+    assert!(!next.worktrees.get(&worktree("wt0")).unwrap().tainted);
+}
+
+#[test]
+fn abandon_does_not_wrap_revision_at_u64_max() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), u64::MAX));
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    let next = abandon(&state, &scope("scope0"));
+
+    assert_eq!(
+        next, state,
+        "abandon must be a no-op rather than wrap revision"
+    );
+    assert_eq!(
+        next.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::Active,
+        "the scope must not be abandoned if doing so cannot be recorded safely"
+    );
+    assert_eq!(
+        next.worktrees.get(&worktree("wt0")).unwrap().revision,
+        u64::MAX
+    );
+}
+
+#[test]
+fn recover_does_not_wrap_revision_at_u64_max() {
+    let mut state = ProtocolState::default();
+    state.worktrees.insert(
+        worktree("wt0"),
+        WorktreeState {
+            cursor_tree: tree("tree0"),
+            revision: u64::MAX,
+            tainted: false,
+            failure_kind: FailureKind::Healthy,
+            needs_rebaseline: true,
+        },
+    );
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    let next = recover(&state, &worktree("wt0"), tree("tree1"));
+
+    assert_eq!(
+        next, state,
+        "recover must be a no-op rather than wrap revision, even though needs_rebaseline would otherwise trigger it"
+    );
+    assert_eq!(
+        next.worktrees.get(&worktree("wt0")).unwrap().revision,
+        u64::MAX
+    );
+    assert!(
+        next.worktrees
+            .get(&worktree("wt0"))
+            .unwrap()
+            .needs_rebaseline
+    );
+    assert_eq!(
+        next.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::Active
+    );
+}
