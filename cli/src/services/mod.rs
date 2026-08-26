@@ -28,6 +28,8 @@ pub mod help;
 pub mod hooks;
 pub mod lifecycle;
 pub mod local_db;
+#[allow(dead_code)]
+pub mod mutation_trace;
 pub mod observability;
 pub mod output_format;
 pub mod parse;
