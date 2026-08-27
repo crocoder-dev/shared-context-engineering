@@ -119,13 +119,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Add migration 003 for mutation-trace protocol tables` (status:todo)
+- [x] T01: `Add migration 003 for mutation-trace protocol tables` (status:done)
   - Task ID: T01
   - Scope: In — `cli/migrations/agent-trace-repository/003_mutation_trace_protocol.sql` defining `mutation_trace_worktrees` (revision `BLOB` constrained by `CHECK (typeof(revision) = 'blob' AND length(revision) = 8)`), `mutation_trace_scopes` (+ `idx_mutation_trace_scopes_worktree` and a new composite `idx_mutation_trace_scopes_worktree_status` index on `(worktree_id, status)` for the bounded hot-path scope lookup), `mutation_trace_processed_events`, `mutation_trace_events` (+ the same `typeof`/`length` revision `CHECK`, plus payload-consistency `CHECK` constraints), and `mutation_trace_event_active_scopes`. Out — any Rust code consuming these tables (T02+).
   - Dependencies: none
   - Done when: a fresh `RepositoryAgentTraceDb::new_at` at a clean path applies `001`+`002`+`003` and all five tables exist with the specified columns, constraints, and indexes; a row violating a `CHECK` constraint (for example `ai_exclusive` attribution with a `NULL` `attribution_scope_id`) is rejected; a `TEXT` value of length 8 assigned to a `revision` column is rejected by the `typeof(revision) = 'blob'` check even though its length matches.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db::repository::`; a new targeted test asserting the `003` tables, indexes, and constraints (including the TEXT-vs-BLOB revision case) behave as specified.
-  - Context synchronization: pending
+  - Completed: 2026-08-27
+  - Files changed: `cli/migrations/agent-trace-repository/003_mutation_trace_protocol.sql` (new); `cli/src/services/agent_trace_db/repository.rs`
+  - Result: Added migration `003_mutation_trace_protocol.sql` defining `mutation_trace_worktrees`, `mutation_trace_scopes` (+ `idx_mutation_trace_scopes_worktree`, `idx_mutation_trace_scopes_worktree_status`), `mutation_trace_processed_events` (+ `idx_mutation_trace_processed_events_worktree`), `mutation_trace_events`, and `mutation_trace_event_active_scopes`, all discovered automatically by `build.rs`'s directory scan. Revision columns use `BLOB NOT NULL CHECK (typeof(revision) = 'blob' AND length(revision) = 8)`; enum-shaped columns use `TEXT` with `CHECK (... IN (...))` allow-lists following the existing `role`/`payload_type` convention; `mutation_trace_events` additionally enforces attribution/boundary payload-consistency `CHECK`s (`ai_exclusive` requires a non-null `attribution_scope_id`; hook boundaries require non-null `boundary_scope_id`/`boundary_event_id`, `flush` requires both null). Updated `open_at_initializes_the_full_schema_from_one_migration` to assert the new migration ID and the five new tables/indexes, and added two new targeted tests (`mutation_trace_worktrees_revision_must_be_a_blob_not_matching_length_text`, `mutation_trace_events_ai_exclusive_attribution_requires_a_scope_id`) proving the TEXT-vs-BLOB revision rejection and the `ai_exclusive`-requires-scope rejection, each paired with a positive control insert.
+  - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db::repository::` — passed, 18/18 (including the two new tests and the updated baseline-schema test); `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` — passed (no diff).
+  - Done checks: fresh DB applies `001`+`002`+`003` with all five tables/indexes present (verified by the updated baseline test); `ai_exclusive` attribution with a `NULL` `attribution_scope_id` is rejected (verified); an 8-byte TEXT value assigned to `revision` is rejected by `typeof(revision) = 'blob'` (verified); `git diff --exit-code` on `001`/`002` shows zero changes (verified).
+  - Context impact: local — additive schema-only migration; no Rust code consumes these new tables yet (T02+ wire codecs, loads, and commits against them). No durable context synchronization is required for this task; the plan's `Context sync` entries are authored by T11 once the full store lands.
+  - Context synchronization: synced
 
 - [ ] T02: `Add revision and enum domain<->SQL codecs` (status:todo)
   - Task ID: T02
