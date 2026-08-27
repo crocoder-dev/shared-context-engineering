@@ -259,6 +259,192 @@ impl WorktreeProjection {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DurableTransition {
+    pub worktree: WorktreeId,
+    pub expected_revision: u64,
+    pub next_worktree_state: WorktreeState,
+    pub scope_status_changes: BTreeMap<ScopeId, ScopeStatus>,
+    pub new_processed_event: Option<EventKey>,
+    pub new_mutation_event: Option<MutationEvent>,
+}
+
+impl DurableTransition {
+    pub fn between(
+        before: &ProtocolState,
+        after: &ProtocolState,
+        worktree: &WorktreeId,
+    ) -> Result<Option<Self>> {
+        let (before_worktree_state, after_worktree_state) =
+            diff_target_worktree(before, after, worktree)?;
+        let scope_status_changes = diff_scopes(before, after, worktree)?;
+        let new_processed_event = diff_new_processed_event(before, after, worktree)?;
+        let new_mutation_event = diff_new_mutation_event(before, after, worktree)?;
+
+        let no_change = before_worktree_state == after_worktree_state
+            && scope_status_changes.is_empty()
+            && new_processed_event.is_none()
+            && new_mutation_event.is_none();
+
+        if no_change {
+            return Ok(None);
+        }
+
+        let expected_revision = before_worktree_state.revision;
+        let next_revision = expected_revision.checked_add(1);
+        if Some(after_worktree_state.revision) != next_revision {
+            bail!(
+                "worktree {worktree:?} revision must advance by exactly one from {expected_revision}, got {}",
+                after_worktree_state.revision
+            );
+        }
+
+        if let Some(event) = &new_mutation_event {
+            if event.revision != after_worktree_state.revision {
+                bail!(
+                    "new mutation event revision {} does not match worktree {worktree:?}'s resulting revision {}",
+                    event.revision,
+                    after_worktree_state.revision
+                );
+            }
+        }
+
+        Ok(Some(Self {
+            worktree: worktree.clone(),
+            expected_revision,
+            next_worktree_state: after_worktree_state.clone(),
+            scope_status_changes,
+            new_processed_event,
+            new_mutation_event,
+        }))
+    }
+}
+
+fn diff_target_worktree<'s>(
+    before: &'s ProtocolState,
+    after: &'s ProtocolState,
+    worktree: &WorktreeId,
+) -> Result<(&'s WorktreeState, &'s WorktreeState)> {
+    let Some(before_worktree_state) = before.worktrees.get(worktree) else {
+        bail!("worktree {worktree:?} missing from before state");
+    };
+    let Some(after_worktree_state) = after.worktrees.get(worktree) else {
+        bail!("worktree {worktree:?} missing from after state");
+    };
+
+    if before.worktrees.len() != after.worktrees.len() {
+        bail!("worktree set changed between before and after");
+    }
+    for (id, before_state) in &before.worktrees {
+        if id == worktree {
+            continue;
+        }
+        match after.worktrees.get(id) {
+            Some(after_state) if after_state == before_state => {}
+            _ => bail!("unrelated worktree {id:?} changed"),
+        }
+    }
+
+    Ok((before_worktree_state, after_worktree_state))
+}
+
+fn diff_scopes(
+    before: &ProtocolState,
+    after: &ProtocolState,
+    worktree: &WorktreeId,
+) -> Result<BTreeMap<ScopeId, ScopeStatus>> {
+    let before_scope_ids: BTreeSet<&ScopeId> = before.scopes.keys().collect();
+    let after_scope_ids: BTreeSet<&ScopeId> = after.scopes.keys().collect();
+    if before_scope_ids != after_scope_ids {
+        bail!("scope set changed between before and after");
+    }
+
+    let mut scope_status_changes = BTreeMap::new();
+    for (scope_id, before_scope) in &before.scopes {
+        let after_scope = after
+            .scopes
+            .get(scope_id)
+            .expect("scope key sets already verified equal");
+
+        if before_scope.worktree_id != after_scope.worktree_id {
+            bail!("scope {scope_id:?} worktree_id changed");
+        }
+        if before_scope.actor_kind != after_scope.actor_kind {
+            bail!("scope {scope_id:?} actor_kind changed");
+        }
+        if before_scope.status != after_scope.status {
+            if before_scope.worktree_id != *worktree {
+                bail!(
+                    "scope {scope_id:?} status changed but belongs to worktree {:?}, not {worktree:?}",
+                    before_scope.worktree_id
+                );
+            }
+            scope_status_changes.insert(scope_id.clone(), after_scope.status);
+        }
+    }
+
+    Ok(scope_status_changes)
+}
+
+fn diff_new_processed_event(
+    before: &ProtocolState,
+    after: &ProtocolState,
+    worktree: &WorktreeId,
+) -> Result<Option<EventKey>> {
+    if !before.processed_events.is_subset(&after.processed_events) {
+        bail!("a processed_events entry disappeared");
+    }
+    let new_processed_events: Vec<&EventKey> = after
+        .processed_events
+        .difference(&before.processed_events)
+        .collect();
+    if new_processed_events.len() > 1 {
+        bail!("more than one new processed_events entry");
+    }
+
+    let Some(key) = new_processed_events.first() else {
+        return Ok(None);
+    };
+    let scope = after.scopes.get(&key.scope_id).ok_or_else(|| {
+        anyhow::anyhow!("new processed event {key:?} has no scope in after state")
+    })?;
+    if scope.worktree_id != *worktree {
+        bail!(
+            "new processed event {key:?} belongs to worktree {:?}, not {worktree:?}",
+            scope.worktree_id
+        );
+    }
+    Ok(Some((*key).clone()))
+}
+
+fn diff_new_mutation_event(
+    before: &ProtocolState,
+    after: &ProtocolState,
+    worktree: &WorktreeId,
+) -> Result<Option<MutationEvent>> {
+    if !before.mutation_events.is_subset(&after.mutation_events) {
+        bail!("a mutation_events entry disappeared");
+    }
+    let new_mutation_events: Vec<&MutationEvent> = after
+        .mutation_events
+        .difference(&before.mutation_events)
+        .collect();
+    if new_mutation_events.len() > 1 {
+        bail!("more than one new mutation_events entry");
+    }
+
+    let Some(event) = new_mutation_events.first() else {
+        return Ok(None);
+    };
+    if event.worktree_id != *worktree {
+        bail!(
+            "new mutation event belongs to worktree {:?}, not {worktree:?}",
+            event.worktree_id
+        );
+    }
+    Ok(Some((*event).clone()))
+}
+
 /// Bounded read access to the durable mutation-cursor protocol state for one
 /// repository, via [`RepositoryAgentTraceDb`]. Write/CAS-commit access is
 /// added by later tasks (T04/T06/T07).
@@ -692,7 +878,10 @@ fn reconstruct_boundary(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::mutation_trace::types::{EventId, ScopeId};
+    use crate::services::mutation_trace::protocol::{
+        abandon, commit, database_failure, prepare, recover, taint,
+    };
+    use crate::services::mutation_trace::types::{AttemptId, EventId, ScopeId};
 
     #[test]
     fn revision_round_trips_at_boundary_values() {
@@ -1528,5 +1717,469 @@ mod tests {
         assert!(error.to_string().contains("wt-missing"));
 
         remove_test_db(&db_path);
+    }
+
+    fn healthy_worktree_state(revision: u64) -> WorktreeState {
+        WorktreeState {
+            cursor_tree: TreeId("tree0".to_string()),
+            revision,
+            tainted: false,
+            failure_kind: FailureKind::Healthy,
+            needs_rebaseline: false,
+        }
+    }
+
+    fn state_with_scope(
+        worktree_id: &WorktreeId,
+        scope_id: &ScopeId,
+        actor_kind: ActorKind,
+        status: ScopeStatus,
+        revision: u64,
+    ) -> ProtocolState {
+        let mut state = ProtocolState::default();
+        state
+            .worktrees
+            .insert(worktree_id.clone(), healthy_worktree_state(revision));
+        state.scopes.insert(
+            scope_id.clone(),
+            ScopeState {
+                status,
+                actor_kind,
+                worktree_id: worktree_id.clone(),
+            },
+        );
+        state
+    }
+
+    fn sample_mutation_event(worktree_id: &WorktreeId) -> MutationEvent {
+        MutationEvent {
+            worktree_id: worktree_id.clone(),
+            revision: 1,
+            before_tree: TreeId("tree0".to_string()),
+            after_tree: TreeId("tree1".to_string()),
+            active_scopes: BTreeSet::new(),
+            tainted: false,
+            failure_kind: FailureKind::Healthy,
+            attribution: Attribution::IneligibleUnscoped,
+            boundary: Boundary::Flush {
+                worktree: worktree_id.clone(),
+            },
+        }
+    }
+
+    #[test]
+    fn between_returns_none_for_a_database_failure_only_transition() {
+        let wt = WorktreeId("wt0".to_string());
+        let mut before = ProtocolState::default();
+        before
+            .worktrees
+            .insert(wt.clone(), healthy_worktree_state(0));
+
+        let after = database_failure(&before, &wt);
+
+        assert_eq!(
+            DurableTransition::between(&before, &after, &wt).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn between_returns_none_for_a_no_change_flush() {
+        let wt = WorktreeId("wt0".to_string());
+        let mut before = ProtocolState::default();
+        before
+            .worktrees
+            .insert(wt.clone(), healthy_worktree_state(0));
+
+        let attempt = AttemptId("attempt0".to_string());
+        let prepared = prepare(
+            &before,
+            attempt.clone(),
+            Boundary::Flush {
+                worktree: wt.clone(),
+            },
+            TreeId("tree0".to_string()),
+        );
+        let after = commit(&prepared, &attempt).state;
+
+        assert_eq!(
+            DurableTransition::between(&before, &after, &wt).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn between_returns_some_with_correct_shape_for_a_start_transition() {
+        let wt = WorktreeId("wt0".to_string());
+        let scope_id = ScopeId("scope0".to_string());
+        let before = state_with_scope(&wt, &scope_id, ActorKind::Codex, ScopeStatus::NeverSeen, 0);
+
+        let attempt = AttemptId("attempt0".to_string());
+        let event_id = EventId("event0".to_string());
+        let prepared = prepare(
+            &before,
+            attempt.clone(),
+            Boundary::Start {
+                scope: scope_id.clone(),
+                event: event_id.clone(),
+            },
+            TreeId("tree1".to_string()),
+        );
+        let after = commit(&prepared, &attempt).state;
+
+        let transition = DurableTransition::between(&before, &after, &wt)
+            .unwrap()
+            .expect("a start transition should produce a durable transition");
+
+        assert_eq!(transition.worktree, wt);
+        assert_eq!(transition.expected_revision, 0);
+        assert_eq!(transition.next_worktree_state.revision, 1);
+        assert_eq!(
+            transition.next_worktree_state.cursor_tree,
+            TreeId("tree1".to_string())
+        );
+        assert_eq!(
+            transition.scope_status_changes.get(&scope_id),
+            Some(&ScopeStatus::Active)
+        );
+        assert_eq!(
+            transition.new_processed_event,
+            Some(EventKey {
+                scope_id: scope_id.clone(),
+                event_id,
+            })
+        );
+        assert_eq!(after.mutation_events.len(), 1);
+        assert_eq!(
+            transition.new_mutation_event.as_ref(),
+            after.mutation_events.iter().next()
+        );
+    }
+
+    #[test]
+    fn between_returns_some_with_correct_shape_for_an_advance_transition() {
+        let wt = WorktreeId("wt0".to_string());
+        let scope_id = ScopeId("scope0".to_string());
+        let before = state_with_scope(&wt, &scope_id, ActorKind::Codex, ScopeStatus::Active, 0);
+
+        let attempt = AttemptId("attempt0".to_string());
+        let event_id = EventId("event0".to_string());
+        let prepared = prepare(
+            &before,
+            attempt.clone(),
+            Boundary::Advance {
+                scope: scope_id.clone(),
+                event: event_id.clone(),
+            },
+            TreeId("tree1".to_string()),
+        );
+        let after = commit(&prepared, &attempt).state;
+
+        let transition = DurableTransition::between(&before, &after, &wt)
+            .unwrap()
+            .expect("an advance transition should produce a durable transition");
+
+        assert!(transition.scope_status_changes.is_empty());
+        assert_eq!(
+            transition.new_processed_event,
+            Some(EventKey { scope_id, event_id })
+        );
+        assert_eq!(after.mutation_events.len(), 1);
+        assert_eq!(transition.next_worktree_state.revision, 1);
+    }
+
+    #[test]
+    fn between_returns_some_with_correct_shape_for_a_close_transition() {
+        let wt = WorktreeId("wt0".to_string());
+        let scope_id = ScopeId("scope0".to_string());
+        let before = state_with_scope(&wt, &scope_id, ActorKind::Codex, ScopeStatus::Active, 0);
+
+        let attempt = AttemptId("attempt0".to_string());
+        let event_id = EventId("event0".to_string());
+        let prepared = prepare(
+            &before,
+            attempt.clone(),
+            Boundary::Close {
+                scope: scope_id.clone(),
+                event: event_id.clone(),
+            },
+            TreeId("tree0".to_string()),
+        );
+        let after = commit(&prepared, &attempt).state;
+
+        let transition = DurableTransition::between(&before, &after, &wt)
+            .unwrap()
+            .expect("a close transition should produce a durable transition");
+
+        assert_eq!(
+            transition.scope_status_changes.get(&scope_id),
+            Some(&ScopeStatus::Closed)
+        );
+        assert_eq!(
+            transition.new_processed_event,
+            Some(EventKey { scope_id, event_id })
+        );
+        assert_eq!(transition.next_worktree_state.revision, 1);
+    }
+
+    #[test]
+    fn between_returns_some_with_correct_shape_for_a_taint_transition() {
+        let wt = WorktreeId("wt0".to_string());
+        let mut before = ProtocolState::default();
+        before
+            .worktrees
+            .insert(wt.clone(), healthy_worktree_state(0));
+
+        let after = taint(&before, &wt);
+
+        let transition = DurableTransition::between(&before, &after, &wt)
+            .unwrap()
+            .expect("a taint transition should produce a durable transition");
+
+        assert!(transition.scope_status_changes.is_empty());
+        assert!(transition.new_processed_event.is_none());
+        assert!(transition.new_mutation_event.is_none());
+        assert!(transition.next_worktree_state.tainted);
+        assert_eq!(
+            transition.next_worktree_state.failure_kind,
+            FailureKind::SnapshotFailure
+        );
+        assert_eq!(transition.next_worktree_state.revision, 1);
+    }
+
+    #[test]
+    fn between_returns_some_with_correct_shape_for_an_abandon_transition() {
+        let wt = WorktreeId("wt0".to_string());
+        let scope_id = ScopeId("scope0".to_string());
+        let before = state_with_scope(&wt, &scope_id, ActorKind::Codex, ScopeStatus::Active, 0);
+
+        let after = abandon(&before, &scope_id);
+
+        let transition = DurableTransition::between(&before, &after, &wt)
+            .unwrap()
+            .expect("an abandon transition should produce a durable transition");
+
+        assert_eq!(
+            transition.scope_status_changes.get(&scope_id),
+            Some(&ScopeStatus::Abandoned)
+        );
+        assert!(transition.next_worktree_state.needs_rebaseline);
+        assert_eq!(transition.next_worktree_state.revision, 1);
+        assert!(transition.new_processed_event.is_none());
+        assert!(transition.new_mutation_event.is_none());
+    }
+
+    #[test]
+    fn between_returns_some_with_correct_shape_for_a_recover_transition() {
+        let wt = WorktreeId("wt0".to_string());
+        let scope_id = ScopeId("scope0".to_string());
+        let mut before = ProtocolState::default();
+        before.worktrees.insert(
+            wt.clone(),
+            WorktreeState {
+                cursor_tree: TreeId("tree0".to_string()),
+                revision: 0,
+                tainted: true,
+                failure_kind: FailureKind::SnapshotFailure,
+                needs_rebaseline: false,
+            },
+        );
+        before.scopes.insert(
+            scope_id.clone(),
+            ScopeState {
+                status: ScopeStatus::Active,
+                actor_kind: ActorKind::Codex,
+                worktree_id: wt.clone(),
+            },
+        );
+
+        let after = recover(&before, &wt, TreeId("tree1".to_string()));
+
+        let transition = DurableTransition::between(&before, &after, &wt)
+            .unwrap()
+            .expect("a recover transition should produce a durable transition");
+
+        assert_eq!(
+            transition.scope_status_changes.get(&scope_id),
+            Some(&ScopeStatus::Abandoned)
+        );
+        assert!(!transition.next_worktree_state.tainted);
+        assert_eq!(
+            transition.next_worktree_state.failure_kind,
+            FailureKind::Healthy
+        );
+        assert_eq!(
+            transition.next_worktree_state.cursor_tree,
+            TreeId("tree1".to_string())
+        );
+        assert_eq!(transition.next_worktree_state.revision, 1);
+    }
+
+    #[test]
+    fn between_errors_when_a_scopes_actor_kind_changes() {
+        let wt = WorktreeId("wt0".to_string());
+        let scope_id = ScopeId("scope0".to_string());
+        let before = state_with_scope(&wt, &scope_id, ActorKind::Codex, ScopeStatus::Active, 0);
+        let mut after = before.clone();
+        after.scopes.get_mut(&scope_id).unwrap().actor_kind = ActorKind::ClaudeCode;
+
+        let error = DurableTransition::between(&before, &after, &wt)
+            .expect_err("an actor_kind change must be rejected");
+        assert!(error.to_string().contains("actor_kind"));
+    }
+
+    #[test]
+    fn between_errors_when_a_scopes_worktree_id_changes() {
+        let wt = WorktreeId("wt0".to_string());
+        let other_wt = WorktreeId("wt1".to_string());
+        let scope_id = ScopeId("scope0".to_string());
+        let before = state_with_scope(&wt, &scope_id, ActorKind::Codex, ScopeStatus::Active, 0);
+        let mut after = before.clone();
+        after.scopes.get_mut(&scope_id).unwrap().worktree_id = other_wt;
+
+        let error = DurableTransition::between(&before, &after, &wt)
+            .expect_err("a scope worktree_id change must be rejected");
+        assert!(error.to_string().contains("worktree_id"));
+    }
+
+    #[test]
+    fn between_errors_when_a_processed_event_disappears() {
+        let wt = WorktreeId("wt0".to_string());
+        let mut before = ProtocolState::default();
+        before
+            .worktrees
+            .insert(wt.clone(), healthy_worktree_state(0));
+        before.processed_events.insert(EventKey {
+            scope_id: ScopeId("scope0".to_string()),
+            event_id: EventId("event0".to_string()),
+        });
+        let mut after = before.clone();
+        after.processed_events.clear();
+
+        let error = DurableTransition::between(&before, &after, &wt)
+            .expect_err("a disappearing processed event must be rejected");
+        assert!(error.to_string().contains("processed_events"));
+    }
+
+    #[test]
+    fn between_errors_when_a_mutation_event_disappears() {
+        let wt = WorktreeId("wt0".to_string());
+        let mut before = ProtocolState::default();
+        before
+            .worktrees
+            .insert(wt.clone(), healthy_worktree_state(0));
+        before.mutation_events.insert(sample_mutation_event(&wt));
+        let mut after = before.clone();
+        after.mutation_events.clear();
+
+        let error = DurableTransition::between(&before, &after, &wt)
+            .expect_err("a disappearing mutation event must be rejected");
+        assert!(error.to_string().contains("mutation_events"));
+    }
+
+    #[test]
+    fn between_errors_when_a_new_mutation_events_revision_does_not_match_the_next_worktree_revision(
+    ) {
+        let wt = WorktreeId("wt0".to_string());
+        let mut before = ProtocolState::default();
+        before
+            .worktrees
+            .insert(wt.clone(), healthy_worktree_state(0));
+        let mut after = before.clone();
+        after.worktrees.get_mut(&wt).unwrap().revision = 1;
+        let mut mismatched_event = sample_mutation_event(&wt);
+        mismatched_event.revision = 2;
+        after.mutation_events.insert(mismatched_event);
+
+        let error = DurableTransition::between(&before, &after, &wt).expect_err(
+            "a mutation event revision mismatched with the next worktree revision must be rejected",
+        );
+        assert!(error.to_string().contains("revision"));
+    }
+
+    #[test]
+    fn between_errors_when_an_unrelated_worktree_changes() {
+        let wt = WorktreeId("wt0".to_string());
+        let other_wt = WorktreeId("wt1".to_string());
+        let mut before = ProtocolState::default();
+        before
+            .worktrees
+            .insert(wt.clone(), healthy_worktree_state(0));
+        before
+            .worktrees
+            .insert(other_wt.clone(), healthy_worktree_state(0));
+
+        let mut after = before.clone();
+        after.worktrees.get_mut(&other_wt).unwrap().revision = 1;
+
+        let error = DurableTransition::between(&before, &after, &wt)
+            .expect_err("an unrelated worktree change must be rejected");
+        assert!(error.to_string().contains("wt1"));
+    }
+
+    #[test]
+    fn between_errors_when_the_revision_jumps_by_more_than_one() {
+        let wt = WorktreeId("wt0".to_string());
+        let mut before = ProtocolState::default();
+        before
+            .worktrees
+            .insert(wt.clone(), healthy_worktree_state(0));
+        let mut after = before.clone();
+        after.worktrees.get_mut(&wt).unwrap().revision = 2;
+
+        let error = DurableTransition::between(&before, &after, &wt)
+            .expect_err("a revision jump of more than one must be rejected");
+        assert!(error.to_string().contains("revision"));
+    }
+
+    #[test]
+    fn between_errors_when_the_revision_decreases() {
+        let wt = WorktreeId("wt0".to_string());
+        let mut before = ProtocolState::default();
+        before
+            .worktrees
+            .insert(wt.clone(), healthy_worktree_state(5));
+        let mut after = before.clone();
+        after.worktrees.get_mut(&wt).unwrap().revision = 4;
+
+        let error = DurableTransition::between(&before, &after, &wt)
+            .expect_err("a revision decrease must be rejected");
+        assert!(error.to_string().contains("revision"));
+    }
+
+    #[test]
+    fn between_errors_when_a_scope_unexpectedly_appears() {
+        let wt = WorktreeId("wt0".to_string());
+        let scope_id = ScopeId("scope0".to_string());
+        let mut before = ProtocolState::default();
+        before
+            .worktrees
+            .insert(wt.clone(), healthy_worktree_state(0));
+        let mut after = before.clone();
+        after.scopes.insert(
+            scope_id,
+            ScopeState {
+                status: ScopeStatus::NeverSeen,
+                actor_kind: ActorKind::Codex,
+                worktree_id: wt.clone(),
+            },
+        );
+
+        let error = DurableTransition::between(&before, &after, &wt)
+            .expect_err("an unexpectedly appearing scope must be rejected");
+        assert!(error.to_string().contains("scope set"));
+    }
+
+    #[test]
+    fn between_errors_when_a_scope_unexpectedly_disappears() {
+        let wt = WorktreeId("wt0".to_string());
+        let scope_id = ScopeId("scope0".to_string());
+        let before = state_with_scope(&wt, &scope_id, ActorKind::Codex, ScopeStatus::Active, 0);
+        let mut after = before.clone();
+        after.scopes.remove(&scope_id);
+
+        let error = DurableTransition::between(&before, &after, &wt)
+            .expect_err("an unexpectedly disappearing scope must be rejected");
+        assert!(error.to_string().contains("scope set"));
     }
 }
