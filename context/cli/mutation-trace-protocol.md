@@ -1,9 +1,9 @@
 # Mutation-cursor protocol module (`mutation_trace`)
 
 Pure Rust refinement of the verified `spec/mutation_cursor.qnt` protocol, living
-at `cli/src/services/mutation_trace/`. It is not yet wired into any hook,
-command, or database call site; that integration is out of scope for the
-`mutation-cursor-protocol-kernel` plan and is left for a later plan.
+at `cli/src/services/mutation_trace/`. `protocol.rs`'s transitions are not yet
+wired into any hook/command; `store.rs` now provides a real database call site
+(see "Target end-state architecture" below).
 
 ## Current state
 
@@ -211,8 +211,9 @@ loads a `ProtocolState`; `protocol.rs` only transitions already-known ones.
 
 ## Target end-state architecture
 
-The plan's file split anticipates three later seams this module does not yet
-implement, recorded here so a later plan does not rediscover the layout:
+The plan's file split anticipated three seams beyond `protocol.rs`. `store.rs`
+now exists as a real database call site (`mutation-cursor-store-persistence`);
+`coordinator.rs`/`git_snapshot.rs` remain future work:
 
 ```mermaid
 flowchart LR
@@ -226,21 +227,20 @@ flowchart LR
     coordinator --> store
 ```
 
-Each seam's responsibility, once built:
+Each seam's responsibility:
 
-- **`coordinator.rs`** — receives hook/session identity, resolves the scope's
-  actor/worktree identity, asks `store.rs` to load or materialize the scope,
+- **`coordinator.rs`** (future work) — receives hook/session identity,
+  resolves scope actor/worktree identity, asks `store.rs` to load the scope,
   obtains a `ProtocolState`, and calls the pure protocol.
-- **`store.rs`** — loads durable scope records; atomically creates a new
-  scope record as `NeverSeen` when appropriate; never remaps `actor_kind`/
-  `worktree_id` for an existing `ScopeId` (see "Runtime scope
-  materialization" above).
+- **`store.rs`** (implemented) — loads and persists worktree/scope/event state
+  via a CAS-guarded commit; atomically creates a new scope as `NeverSeen`;
+  never remaps `actor_kind`/`worktree_id` for an existing `ScopeId` (see
+  "Runtime scope materialization" above).
 - **`protocol.rs`** — assumes referenced scopes are already represented in
   `ProtocolState.scopes`; validates and transitions lifecycle state only.
 
-`protocol.rs` stays free of any Git object, DB row, or CAS transaction concept
-even with its full action set implemented; `coordinator.rs`/`git_snapshot.rs`/
-`store.rs` are not created by this plan.
+`protocol.rs` stays free of any Git object, DB row, or CAS transaction concept;
+`coordinator.rs`/`git_snapshot.rs` are not created by this or the store plan.
 
 ## Authoritative source
 
