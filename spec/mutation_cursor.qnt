@@ -1773,4 +1773,20 @@ module mutation_cursor {
       .expect(worktrees.get(WT1).cursorTree == Tree2)
       .expect(scopes.get(Scope3).status == Abandoned)
       .expect(Safety)
+
+  // Non-default-values smoke scenario for the Rust MBT driver (T04): proves
+  // that a worktree/tree/attempt/boundary combination other than the
+  // WT0/Tree0-Tree1/Attempt0/Flush(WT0) defaults used throughout the runs
+  // above is transported end to end. `#[quint_test]` replays this exact
+  // scenario through `protocol::prepare`/`protocol::commit` and compares the
+  // resulting Rust state against the state asserted below.
+  run testMbtDriverTransportsNonDefaultArguments =
+    init
+      .then(mutate(WT1, Tree3))
+      .then(prepare(Attempt5, Flush(WT1)))
+      .then(commitAttempt(Attempt5))
+      .expect(worktrees.get(WT1).cursorTree == Tree3)
+      .expect(worktrees.get(WT1).revision == 1)
+      .expect(attempts.get(Attempt5).status == Committed)
+      .expect(Safety)
 }
