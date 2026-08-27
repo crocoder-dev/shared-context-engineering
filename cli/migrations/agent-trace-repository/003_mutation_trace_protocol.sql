@@ -38,16 +38,19 @@ ON mutation_trace_scopes (worktree_id);
 CREATE INDEX IF NOT EXISTS idx_mutation_trace_scopes_worktree_status
 ON mutation_trace_scopes (worktree_id, status);
 
+-- `worktree_id` is deliberately not duplicated here: a processed event's
+-- identity is exactly `(scope_id, event_id)` (the domain `EventKey`), and
+-- `scope_id`'s worktree is already a permanent fact owned by
+-- `mutation_trace_scopes` (`ScopeId -> WorktreeId`, never reassigned). A
+-- second `worktree_id` column would create two sources of truth for the same
+-- fact and could disagree with `mutation_trace_scopes` for the same
+-- `scope_id`; the schema does not represent that inconsistency.
 CREATE TABLE IF NOT EXISTS mutation_trace_processed_events (
     scope_id TEXT NOT NULL,
     event_id TEXT NOT NULL,
-    worktree_id TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (scope_id, event_id)
 );
-
-CREATE INDEX IF NOT EXISTS idx_mutation_trace_processed_events_worktree
-ON mutation_trace_processed_events (worktree_id);
 
 CREATE TABLE IF NOT EXISTS mutation_trace_events (
     worktree_id TEXT NOT NULL,
