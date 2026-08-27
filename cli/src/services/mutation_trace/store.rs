@@ -206,6 +206,19 @@ const SELECT_MUTATION_EVENT_SQL: &str = "SELECT before_tree, after_tree, tainted
      FROM mutation_trace_events WHERE worktree_id = ?1 AND revision = ?2";
 const SELECT_MUTATION_EVENT_ACTIVE_SCOPES_SQL: &str =
     "SELECT scope_id FROM mutation_trace_event_active_scopes WHERE worktree_id = ?1 AND revision = ?2";
+/// Idle-insert: only takes effect when `worktree_id` has no row yet, so an
+/// existing worktree's cursor/revision/failure state is never overwritten.
+const INSERT_WORKTREE_IF_ABSENT_SQL: &str = "INSERT INTO mutation_trace_worktrees
+        (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline)
+     VALUES (?1, ?2, ?3, 0, 'healthy', 0)
+     ON CONFLICT (worktree_id) DO NOTHING";
+/// Idle-insert: only takes effect when `scope_id` has no row yet, so an
+/// existing scope's worktree/actor/status is never overwritten. The caller
+/// re-reads the row afterward to detect a worktree/actor mismatch.
+const INSERT_SCOPE_IF_ABSENT_SQL: &str =
+    "INSERT INTO mutation_trace_scopes (scope_id, worktree_id, actor_kind, status)
+     VALUES (?1, ?2, ?3, 'never_seen')
+     ON CONFLICT (scope_id) DO NOTHING";
 
 /// Bounded runtime projection of one worktree's durable protocol state,
 /// loaded by [`MutationTraceStore::load_worktree`]. Scoped to that worktree's
@@ -256,6 +269,80 @@ pub struct MutationTraceStore<'a> {
 impl<'a> MutationTraceStore<'a> {
     pub fn new(db: &'a RepositoryAgentTraceDb) -> Self {
         Self { db }
+    }
+
+    /// Idempotently initializes `worktree`'s durable cursor row: `revision=0`,
+    /// healthy, not tainted, not needing rebaseline, with `cursor_tree` set to
+    /// `initial_tree`. A no-op when the worktree row already exists — an
+    /// existing cursor, revision, or failure state is never overwritten.
+    pub fn initialize_worktree(&self, worktree: &WorktreeId, initial_tree: &TreeId) -> Result<()> {
+        self.db.execute(
+            INSERT_WORKTREE_IF_ABSENT_SQL,
+            (
+                worktree.0.as_str(),
+                initial_tree.0.as_str(),
+                encode_revision(0).as_slice(),
+            ),
+        )?;
+
+        Ok(())
+    }
+
+    /// Idempotently registers `scope` as belonging to `worktree` and
+    /// `actor_kind`. Inserts a new `NeverSeen` row when `scope` has none yet.
+    /// When a row already exists, returns its current state unchanged as long
+    /// as its `worktree_id` and `actor_kind` agree with the arguments — this
+    /// never resurrects a terminal scope or changes its status — and returns
+    /// `Err` when either disagrees, since a scope's worktree and actor are
+    /// permanent facts fixed at first registration.
+    ///
+    /// `worktree` must already have a durable `mutation_trace_worktrees` row
+    /// (via [`MutationTraceStore::initialize_worktree`]), checked before any
+    /// scope row is inserted or read back — this never auto-creates the
+    /// worktree. This applies identically to a fresh `scope` and to an
+    /// existing one: an existing scope whose stored `worktree_id` has no
+    /// worktree row is never returned as valid merely because it matches the
+    /// arguments.
+    pub fn register_scope(
+        &self,
+        scope: &ScopeId,
+        worktree: &WorktreeId,
+        actor_kind: ActorKind,
+    ) -> Result<ScopeState> {
+        if self.load_worktree_state(worktree)?.is_none() {
+            bail!(
+                "cannot register scope {scope:?}: worktree {worktree:?} has no mutation_trace_worktrees row"
+            );
+        }
+
+        self.db.execute(
+            INSERT_SCOPE_IF_ABSENT_SQL,
+            (
+                scope.0.as_str(),
+                worktree.0.as_str(),
+                encode_actor_kind(actor_kind),
+            ),
+        )?;
+
+        let scope_state = self.load_scope(scope)?.ok_or_else(|| {
+            anyhow::anyhow!("scope {scope:?} has no row immediately after register_scope insert")
+        })?;
+
+        if scope_state.worktree_id != *worktree {
+            bail!(
+                "scope {scope:?} is already registered to worktree {:?}, not {worktree:?}",
+                scope_state.worktree_id
+            );
+        }
+
+        if scope_state.actor_kind != actor_kind {
+            bail!(
+                "scope {scope:?} is already registered to actor {:?}, not {actor_kind:?}",
+                scope_state.actor_kind
+            );
+        }
+
+        Ok(scope_state)
     }
 
     /// Loads a bounded projection of `worktree`'s durable protocol state, or
@@ -1228,6 +1315,217 @@ mod tests {
         assert!(protocol_state.attempts.is_empty());
         assert!(protocol_state.mutation_events.is_empty());
         assert!(protocol_state.external_taint.is_empty());
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn initialize_worktree_inserts_a_fresh_healthy_cursor() {
+        let db_path = unique_test_db_path("init-worktree-fresh");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        store
+            .initialize_worktree(
+                &WorktreeId("wt-1".to_string()),
+                &TreeId("tree-0".to_string()),
+            )
+            .expect("initialize_worktree should succeed");
+
+        let projection = store
+            .load_worktree(&WorktreeId("wt-1".to_string()), None, None)
+            .expect("load_worktree should succeed")
+            .expect("worktree should exist");
+
+        assert_eq!(
+            projection.worktree_state,
+            WorktreeState {
+                cursor_tree: TreeId("tree-0".to_string()),
+                revision: 0,
+                tainted: false,
+                failure_kind: FailureKind::Healthy,
+                needs_rebaseline: false,
+            }
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn initialize_worktree_never_overwrites_an_existing_cursor() {
+        let db_path = unique_test_db_path("init-worktree-idempotent");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree(&db, "wt-1", 5);
+
+        store
+            .initialize_worktree(
+                &WorktreeId("wt-1".to_string()),
+                &TreeId("tree-new".to_string()),
+            )
+            .expect("initialize_worktree should succeed as a no-op");
+
+        let projection = store
+            .load_worktree(&WorktreeId("wt-1".to_string()), None, None)
+            .expect("load_worktree should succeed")
+            .expect("worktree should exist");
+
+        assert_eq!(
+            projection.worktree_state.cursor_tree,
+            TreeId("tree-0".to_string())
+        );
+        assert_eq!(projection.worktree_state.revision, 5);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn register_scope_inserts_never_seen_when_missing() {
+        let db_path = unique_test_db_path("register-scope-fresh");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree(&db, "wt-1", 0);
+
+        let scope_state = store
+            .register_scope(
+                &ScopeId("scope-1".to_string()),
+                &WorktreeId("wt-1".to_string()),
+                ActorKind::ClaudeCode,
+            )
+            .expect("register_scope should succeed");
+
+        assert_eq!(
+            scope_state,
+            ScopeState {
+                status: ScopeStatus::NeverSeen,
+                actor_kind: ActorKind::ClaudeCode,
+                worktree_id: WorktreeId("wt-1".to_string()),
+            }
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn register_scope_returns_existing_state_when_worktree_and_actor_match() {
+        let db_path = unique_test_db_path("register-scope-existing-match");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree(&db, "wt-1", 0);
+        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Active);
+
+        let scope_state = store
+            .register_scope(
+                &ScopeId("scope-1".to_string()),
+                &WorktreeId("wt-1".to_string()),
+                ActorKind::ClaudeCode,
+            )
+            .expect("register_scope should succeed for a matching existing scope");
+
+        assert_eq!(
+            scope_state,
+            ScopeState {
+                status: ScopeStatus::Active,
+                actor_kind: ActorKind::ClaudeCode,
+                worktree_id: WorktreeId("wt-1".to_string()),
+            }
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn register_scope_errors_on_worktree_mismatch() {
+        let db_path = unique_test_db_path("register-scope-worktree-mismatch");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree(&db, "wt-1", 0);
+        insert_worktree(&db, "wt-2", 0);
+        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Active);
+
+        let error = store
+            .register_scope(
+                &ScopeId("scope-1".to_string()),
+                &WorktreeId("wt-2".to_string()),
+                ActorKind::ClaudeCode,
+            )
+            .expect_err("a worktree mismatch on an existing scope should error");
+        assert!(error.to_string().contains("scope-1"));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn register_scope_errors_on_actor_mismatch() {
+        let db_path = unique_test_db_path("register-scope-actor-mismatch");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree(&db, "wt-1", 0);
+        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Active);
+
+        let error = store
+            .register_scope(
+                &ScopeId("scope-1".to_string()),
+                &WorktreeId("wt-1".to_string()),
+                ActorKind::Codex,
+            )
+            .expect_err("an actor mismatch on an existing scope should error");
+        assert!(error.to_string().contains("scope-1"));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn register_scope_errors_when_worktree_does_not_exist_and_leaves_no_scope_row() {
+        let db_path = unique_test_db_path("register-scope-missing-worktree-fresh");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        let error = store
+            .register_scope(
+                &ScopeId("scope-1".to_string()),
+                &WorktreeId("wt-missing".to_string()),
+                ActorKind::ClaudeCode,
+            )
+            .expect_err("registering a scope against a missing worktree should error");
+        assert!(error.to_string().contains("scope-1"));
+        assert!(error.to_string().contains("wt-missing"));
+
+        let scope_state = store
+            .load_scope(&ScopeId("scope-1".to_string()))
+            .expect("load_scope should succeed");
+        assert!(
+            scope_state.is_none(),
+            "a failed register_scope must not leave an orphan scope row"
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn register_scope_errors_when_existing_scopes_worktree_row_is_missing() {
+        let db_path = unique_test_db_path("register-scope-missing-worktree-existing");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_scope(&db, "scope-1", "wt-missing", ScopeStatus::Active);
+
+        let error = store
+            .register_scope(
+                &ScopeId("scope-1".to_string()),
+                &WorktreeId("wt-missing".to_string()),
+                ActorKind::ClaudeCode,
+            )
+            .expect_err(
+                "an existing scope whose worktree row is missing must not be accepted as valid",
+            );
+        assert!(error.to_string().contains("scope-1"));
+        assert!(error.to_string().contains("wt-missing"));
 
         remove_test_db(&db_path);
     }
