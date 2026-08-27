@@ -159,4 +159,7 @@ pub mod protocol;
 pub mod types;
 
 #[cfg(test)]
+mod mbt;
+
+#[cfg(test)]
 mod tests;
