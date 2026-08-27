@@ -40,7 +40,7 @@ jobs:
             exit 0
           fi
 
-          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -Eq '(\.qnt$|^cli/src/services/mutation_trace/mbt/|^cli/src/services/mutation_trace/protocol\.rs$|^cli/src/services/mutation_trace/types\.rs$|^cli/Cargo\.toml$|^cli/Cargo\.lock$|^\.github/workflows/quint\.yml$|^\.github/workflows/quint-deep-verify\.yml$|^flake\.nix$|^flake\.lock$)'; then
+          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -Eq '(\.qnt$|^cli/src/services/mutation_trace/|^cli/src/services/mod\.rs$|^cli/Cargo\.toml$|^cli/Cargo\.lock$|^\.github/workflows/quint\.yml$|^\.github/workflows/quint-deep-verify\.yml$|^flake\.nix$|^flake\.lock$)'; then
             echo "quint=true" >> "$GITHUB_OUTPUT"
           else
             echo "quint=false" >> "$GITHUB_OUTPUT"
