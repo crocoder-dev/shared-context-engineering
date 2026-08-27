@@ -440,7 +440,6 @@ mod tests {
             "idx_parts_session_message_order",
             "idx_mutation_trace_scopes_worktree",
             "idx_mutation_trace_scopes_worktree_status",
-            "idx_mutation_trace_processed_events_worktree",
         ] {
             assert!(
                 sqlite_object_exists(&db, "index", index),
@@ -697,6 +696,56 @@ mod tests {
             (),
         )
         .expect("ai_exclusive attribution with a scope ID should be accepted");
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn mutation_trace_processed_events_identity_is_scope_and_event_only() {
+        let db_path = unique_test_db_path("mutation-trace-processed-events-identity");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+
+        let sql = table_sql(&db, "mutation_trace_processed_events");
+        assert!(
+            !sql.contains("worktree_id"),
+            "mutation_trace_processed_events must not have a worktree_id column: {sql}"
+        );
+
+        db.execute(
+            "INSERT INTO mutation_trace_processed_events (scope_id, event_id)
+             VALUES ('scope-1', 'event-1')",
+            (),
+        )
+        .expect("first (scope_id, event_id) insert should succeed");
+
+        let duplicate_error = db
+            .execute(
+                "INSERT INTO mutation_trace_processed_events (scope_id, event_id)
+                 VALUES ('scope-1', 'event-1')",
+                (),
+            )
+            .expect_err("a duplicate (scope_id, event_id) pair must be rejected");
+        assert!(
+            duplicate_error.to_string().contains("UNIQUE")
+                || duplicate_error.to_string().contains("PRIMARY KEY"),
+            "unexpected error: {duplicate_error}"
+        );
+
+        db.execute(
+            "INSERT INTO mutation_trace_processed_events (scope_id, event_id)
+             VALUES ('scope-2', 'event-1')",
+            (),
+        )
+        .expect("the same event_id under a different scope_id should be allowed");
+
+        db.execute(
+            "INSERT INTO mutation_trace_processed_events (scope_id, event_id)
+             VALUES ('scope-1', 'event-2')",
+            (),
+        )
+        .expect("the same scope_id with a different event_id should be allowed");
+
+        assert_eq!(row_count(&db, "mutation_trace_processed_events"), 3);
 
         remove_test_db(&db_path);
     }
