@@ -12,9 +12,8 @@ replays Quint-generated and Quint `run`-scenario traces through the real
 `prepare`/`commit`/`taint`/`database_failure`/`abandon`/`recover` functions and
 compares projected Rust state against Quint state after every step.
 
-This is a **third revision** of the plan (PR #239, latest reviewed head
-`ea23caf5`, plan-only, confirmed current via `git fetch`), correcting one
-remaining MBT-transport issue found in review, on top of two earlier rounds of
+This is a **third revision** of the plan (PR #239), correcting one remaining
+MBT-transport issue found in review, on top of two earlier rounds of
 correction:
 
 - **Round 1** replaced a driver design that inferred action arguments from
@@ -337,12 +336,26 @@ Persist this field in every plan; this is durable plan state, not chat state:
   operation-identity-preserving fix wherever one exists; exact line numbers
   are re-checked at implementation time since T02/T03 edit this same file
   before T02's own guard refactor lands.
-- PR #238 (branch `mutation-cursor`) is confirmed open, not merged, based on
-  `main`. PR #239 (branch `quint-connect`, latest reviewed head `ea23caf5`,
-  confirmed current via `git fetch`) stacks on PR #238's head (`2a097408`)
-  and at the time of this revision contains only this plan file — no
-  implementation has started, so this revision changes the plan only, per
-  the request's own "plan correction only" instruction.
+- PR #238 (`mutation-cursor`) remains the semantic base for this stacked PR.
+
+- PR #239 (`quint-connect`) is now in active implementation. The durable task
+  state in this plan is the source of truth for implementation progress:
+
+  - T01 complete: `quint-connect` dev-dependency and packaging synchronization.
+  - T02 complete: operation-preserving `MbtAction` instrumentation in Quint.
+  - T03 complete: `randomPrepare` remains a single top-level `step` branch;
+    no additional `PrepareKind` instrumentation was required.
+  - T04 complete: Quint Connect Rust driver, comparable model-state projection,
+    finite ID mapping, and the non-default
+    `WT1` / `Tree3` / `Attempt5` / `Flush(WT1)` transport smoke replay.
+  - T05 is the next pending task.
+
+  Do not encode PR #239's current head SHA or statements such as
+  "implementation has not started" as durable assumptions here. The branch head
+  is mutable and must be fetched from GitHub when executing or reviewing a task.
+
+  PR #239 continues to target PR #238's `mutation-cursor` branch; verify the
+  current base/head relationship from GitHub whenever stack state matters.
 
 ## Task stack
 
@@ -607,7 +620,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     resynchronize.
   - Context synchronization: synced
 
-- [ ] T04: `Build the MBT driver, ID mapping, and comparable model state` (status:todo)
+- [x] T04: `Build the MBT driver, ID mapping, and comparable model state` (status:done)
   - Task ID: T04
   - Scope: In —
     `cli/src/services/mutation_trace/mbt/{mod.rs,model.rs,driver.rs}`;
@@ -650,7 +663,103 @@ Persist this field in every plan; this is durable plan state, not chat state:
     of T06's dedicated check); `./scripts/run-cli-cargo.sh clippy
     --manifest-path cli/Cargo.toml --all-targets -- -D warnings`; `cargo fmt
     --manifest-path cli/Cargo.toml -- --check`.
-  - Context synchronization: pending
+  - Completed: 2026-08-27
+  - Files changed: `spec/mutation_cursor.qnt`,
+    `cli/src/services/mutation_trace/mod.rs`,
+    `cli/src/services/mutation_trace/mbt/mod.rs` (new),
+    `cli/src/services/mutation_trace/mbt/model.rs` (new),
+    `cli/src/services/mutation_trace/mbt/driver.rs` (new),
+    `cli/src/services/mutation_trace/mbt/tests.rs` (new)
+  - Result: Added `#[cfg(test)] mod mbt;` to `mutation_trace/mod.rs`. Built
+    the `mbt` submodule: `model.rs` defines ITF-wire mirror types (`Wire*`)
+    for every Quint identity/enum/record type reachable from the comparable
+    state — confirmed against the vendored `quint-connect` 0.1.2 and `itf`
+    0.4.0 crate sources (available locally via the Nix store, since both are
+    dev-dependencies) that sum types deserialize as `{tag, value}` via
+    `#[serde(tag = "tag", content = "value")]` (README "Enums" section),
+    that unit-only sum types need no `content` attribute, and that
+    `quint-connect`'s nondet-pick extraction (`extract_nondet_from_sum_type`)
+    accepts a `Value::Record` directly — resolving T01's flagged uncertainty
+    about record-payload `MbtAction` variants: they work exactly as AC11
+    designed, no fallback needed. Each `Wire*` type converts via `From` into
+    this crate's existing domain types (`types.rs`, untouched). `ModelState`
+    is `#[serde(from = "WireModelState")]`-deserializable and holds exactly
+    AC5's field list (`worktrees`, `scopes`, `worktree_trees`,
+    `external_taint`, `processed_events`, `attempts`, `mutation_events`);
+    `mbtAction` has no field anywhere in the wire types, so it is silently
+    dropped by serde's default unknown-field handling when the full
+    top-level state record deserializes — the mechanism that keeps it out of
+    the compared state. `driver.rs` defines `MutationCursorDriver { protocol:
+    ProtocolState, worktree_trees: BTreeMap<WorktreeId, TreeId> }`, an
+    `init()` matching Quint's `init` exactly (both worktrees Tree0/rev0/
+    healthy, all four scopes `NeverSeen` via `scopeActor`'s fixed partition,
+    all six attempts `Available`/`Flush(WT0)`/rev0/Tree0/Tree0), and
+    `Driver::step` dispatching via `switch!` on every `MbtAction` variant
+    (`Config { nondet: &["mbtAction"], state: &[] }`, confirmed correct
+    against `quint-connect`'s `extract_from_sum_type` path since `mbtAction`
+    is a plain top-level var, not Quint's builtin `mbt::actionTaken`). Every
+    arm unconditionally calls its `protocol::*` function with the
+    transported, converted arguments (`MbtMutate` touches only
+    `worktree_trees`; `MbtStutter` calls a dedicated no-op `mbt_stutter`
+    method rather than being inlined, so it isn't a bare `()` statement);
+    `boundary_worktree` (already `pub` in `types.rs`) resolves a
+    `prepare`/`recover` boundary's worktree from the driver's own `scopes`
+    map, which always agrees with Quint's static `scopeWorktree` partition
+    since both are seeded identically at `init` and a scope's `worktree_id`
+    never changes afterward. Added the one non-default-values smoke scenario
+    the task specifies as a new named `run` in `spec/mutation_cursor.qnt`
+    (`testMbtDriverTransportsNonDefaultArguments`, appended after the last
+    existing `run`) — required because `#[quint_test]` replays a
+    spec-defined `run` by name, and no existing named scenario used this
+    exact `mutate(WT1, Tree3)` → `prepare(Attempt5, Flush(WT1))` →
+    `commitAttempt(Attempt5)` chain; this one small, task-specified addition
+    was necessary to satisfy AC3/the task's own Done-when text, not a scope
+    expansion. `mbt/tests.rs` wires it via `#[quint_test(spec =
+    "../spec/mutation_cursor.qnt", test =
+    "testMbtDriverTransportsNonDefaultArguments")]` (relative to `cli/`,
+    `cargo test`'s working directory). Deviations from the gate's Approach:
+    none material — `mbt_commit`/`mbt_taint`/`mbt_database_failure`/
+    `mbt_abandon`/`mbt_recover` take `&AttemptId`/`&WorktreeId`/`&ScopeId`
+    references rather than owned values (clippy `needless_pass_by_value`,
+    since they only borrow); `BTreeSet::new()` used in place of
+    `Default::default()` (clippy `default_trait_access`); both are
+    ordinary, reversible local implementation choices.
+  - Verify outcomes: `./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml mutation_trace::mbt` (Nix `quint` 0.32.0 on `PATH`) —
+    passed: `mutation_cursor_transports_non_default_arguments` generated and
+    replayed 100 traces of the named scenario, `[OK]`, `1 passed; 0 failed`;
+    running the full `mutation_trace` suite together
+    (`./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    mutation_trace`) shows `76 passed; 0 failed` — the pre-existing ~75
+    handwritten tests plus this one new MBT test, confirming no regression.
+    `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml
+    --all-targets -- -D warnings` — passed after fixing doc-markdown,
+    default-trait-access, needless-pass-by-value, unused-self, and a
+    macro-generated `no_effect` lint (the original bare `MbtStutter => ()`
+    case expanded to a `();` statement inside `switch!`; replaced with an
+    explicit `mbt_stutter` method call). `cargo fmt --manifest-path
+    cli/Cargo.toml -- --check` — passed (ran `cargo fmt` once to fix import
+    ordering/line-wrap, then the check was clean). Additionally (not in this
+    task's own Verify list, but touched `spec/mutation_cursor.qnt`): `nix
+    run .#quint -- typecheck spec/mutation_cursor.qnt` passed; `nix run
+    .#quint -- test spec/mutation_cursor.qnt --match
+    '^testMbtDriverTransportsNonDefaultArguments$'` passed (`1 passing`);
+    `nix run .#quint -- test spec/mutation_cursor.qnt` (full suite, no
+    `--match`) exited 0 with no failure output. `grep -RnE
+    "std::(fs|process|env)|tokio|reqwest|turso" cli/src/services/mutation_trace`
+    — no matches (AC9); `mod mbt;` confirmed behind `#[cfg(test)]` in
+    `mutation_trace/mod.rs`.
+  - Context impact: none. Only test-only files changed
+    (`cli/src/services/mutation_trace/mbt/*`, gated behind `#[cfg(test)]`)
+    plus one new named `run` scenario in `spec/mutation_cursor.qnt` (no
+    state/action/invariant change). No production dependency, public
+    interface, CLI surface, or architecture changed; `protocol.rs`/
+    `types.rs` are unmodified and untouched by this task, so
+    `context/cli/mutation-trace-protocol.md` still accurately describes
+    them. The corrected-pipeline architecture write-up
+    (`context/cli/mutation-trace-quint-connect.md`) remains explicitly
+    deferred to T06 by this plan's own scope, as T02/T03 already noted.
+  - Context synchronization: synced
 
 - [ ] T05: `Wire deterministic scenario replays, guarded-no-op regressions, and the generated Quint Connect simulation` (status:todo)
   - Task ID: T05
