@@ -420,6 +420,11 @@ mod tests {
             "messages",
             "parts",
             "claude_model_state",
+            "mutation_trace_worktrees",
+            "mutation_trace_scopes",
+            "mutation_trace_processed_events",
+            "mutation_trace_events",
+            "mutation_trace_event_active_scopes",
         ] {
             assert!(
                 sqlite_object_exists(&db, "table", table),
@@ -433,6 +438,9 @@ mod tests {
             "idx_messages_session_message",
             "idx_messages_session_order",
             "idx_parts_session_message_order",
+            "idx_mutation_trace_scopes_worktree",
+            "idx_mutation_trace_scopes_worktree_status",
+            "idx_mutation_trace_processed_events_worktree",
         ] {
             assert!(
                 sqlite_object_exists(&db, "index", index),
@@ -459,9 +467,11 @@ mod tests {
                 String::from("001_repository_schema"),
                 String::from("002_repository_source_instance_id"),
                 String::from("003_claude_model_state"),
+                String::from("003_mutation_trace_protocol"),
             ],
             "repository DBs should be initialized from the baseline schema plus \
-             its additive source-instance-id and Claude model-state migrations"
+             its additive source-instance-id, Claude model-state, and \
+             mutation-trace-protocol migrations"
         );
 
         db.ensure_schema_ready_for_hooks()
@@ -623,6 +633,70 @@ mod tests {
         assert_eq!(state.model_id, "claude/model-7");
         assert_eq!(state.observation_kind, ObservationKind::PostModelSwitch);
         assert_eq!(state.observed_at_ms, 500);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn mutation_trace_worktrees_revision_must_be_a_blob_not_matching_length_text() {
+        let db_path = unique_test_db_path("mutation-trace-revision-blob");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+
+        let text_revision_error = db
+            .execute(
+                "INSERT INTO mutation_trace_worktrees
+                    (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline)
+                 VALUES ('wt-1', 'tree-0', '12345678', 0, 'healthy', 0)",
+                (),
+            )
+            .expect_err(
+                "an 8-byte TEXT value must still be rejected by the typeof(revision) = 'blob' check",
+            );
+        assert!(
+            text_revision_error.to_string().contains("CHECK"),
+            "unexpected error: {text_revision_error}"
+        );
+
+        db.execute(
+            "INSERT INTO mutation_trace_worktrees
+                (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline)
+             VALUES ('wt-1', 'tree-0', X'0000000000000000', 0, 'healthy', 0)",
+            (),
+        )
+        .expect("an 8-byte BLOB revision should be accepted");
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn mutation_trace_events_ai_exclusive_attribution_requires_a_scope_id() {
+        let db_path = unique_test_db_path("mutation-trace-attribution-check");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+
+        let missing_scope_error = db
+            .execute(
+                "INSERT INTO mutation_trace_events
+                    (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
+                     attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id)
+                 VALUES ('wt-1', X'0000000000000001', 'tree-0', 'tree-1', 0, 'healthy',
+                         'ai_exclusive', NULL, 'flush', NULL, NULL)",
+                (),
+            )
+            .expect_err("ai_exclusive attribution with a NULL attribution_scope_id must be rejected");
+        assert!(
+            missing_scope_error.to_string().contains("CHECK"),
+            "unexpected error: {missing_scope_error}"
+        );
+
+        db.execute(
+            "INSERT INTO mutation_trace_events
+                (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
+                 attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id)
+             VALUES ('wt-1', X'0000000000000001', 'tree-0', 'tree-1', 0, 'healthy',
+                     'ai_exclusive', 'scope-1', 'start', 'scope-1', 'event-1')",
+            (),
+        )
+        .expect("ai_exclusive attribution with a scope ID should be accepted");
 
         remove_test_db(&db_path);
     }
