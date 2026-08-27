@@ -1,19 +1,29 @@
-//! Domain<->SQL codecs for the mutation-cursor persistence layer.
+//! Domain<->SQL codecs and bounded read access for the mutation-cursor
+//! persistence layer.
 //!
-//! These codecs are the only translation between `super::types` domain
-//! values and the `TEXT`/`BLOB` representations `cli/migrations/agent-trace-
+//! The codecs are the only translation between `super::types` domain values
+//! and the `TEXT`/`BLOB` representations `cli/migrations/agent-trace-
 //! repository/003_mutation_trace_protocol.sql` constrains those columns to.
 //! Every codec here is an explicit function over a fixed set of variants — no
 //! codec derives from `Debug` or a serde representation, so a variant rename
 //! cannot silently change the durable encoding.
 //!
-//! This module carries no query, projection, or commit logic yet (see
-//! `mutation-cursor-store-persistence` plan tasks T03+); it only establishes
-//! the byte- and string-level encodings later tasks build on.
+//! `MutationTraceStore` adds the hot-path bounded worktree read
+//! (`load_worktree`) and the cold-path historical read (`load_mutation_event`)
+//! against a `&RepositoryAgentTraceDb`. Initialization and CAS-commit logic
+//! are later tasks (`mutation-cursor-store-persistence` T04/T06/T07); this
+//! module carries no such logic yet.
 
-use anyhow::{bail, Result};
+use std::collections::{BTreeMap, BTreeSet};
 
-use super::types::{ActorKind, Attribution, Boundary, FailureKind, ScopeStatus};
+use anyhow::{bail, Context, Result};
+
+use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
+
+use super::types::{
+    ActorKind, Attribution, Boundary, EventId, EventKey, FailureKind, MutationEvent, ProtocolState,
+    ScopeId, ScopeState, ScopeStatus, TreeId, WorktreeId, WorktreeState,
+};
 
 /// Encodes a worktree/event revision as the 8-byte big-endian `BLOB` stored
 /// by every `revision` column in migration `003`.
@@ -181,6 +191,417 @@ pub fn decode_boundary_kind(value: &str) -> Result<BoundaryKind> {
     }
 }
 
+const SELECT_WORKTREE_SQL: &str =
+    "SELECT cursor_tree, revision, tainted, failure_kind, needs_rebaseline
+     FROM mutation_trace_worktrees WHERE worktree_id = ?1";
+const SELECT_SCOPES_BY_WORKTREE_AND_STATUS_SQL: &str =
+    "SELECT scope_id, worktree_id, actor_kind, status
+     FROM mutation_trace_scopes WHERE worktree_id = ?1 AND status = ?2";
+const SELECT_SCOPE_BY_ID_SQL: &str = "SELECT scope_id, worktree_id, actor_kind, status
+     FROM mutation_trace_scopes WHERE scope_id = ?1";
+const SELECT_PROCESSED_EVENT_SQL: &str =
+    "SELECT 1 FROM mutation_trace_processed_events WHERE scope_id = ?1 AND event_id = ?2";
+const SELECT_MUTATION_EVENT_SQL: &str = "SELECT before_tree, after_tree, tainted, failure_kind,
+            attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id
+     FROM mutation_trace_events WHERE worktree_id = ?1 AND revision = ?2";
+const SELECT_MUTATION_EVENT_ACTIVE_SCOPES_SQL: &str =
+    "SELECT scope_id FROM mutation_trace_event_active_scopes WHERE worktree_id = ?1 AND revision = ?2";
+
+/// Bounded runtime projection of one worktree's durable protocol state,
+/// loaded by [`MutationTraceStore::load_worktree`]. Scoped to that worktree's
+/// currently `Active` scopes plus, when present, the scope `load_worktree`
+/// was explicitly asked about (regardless of its status) — never every
+/// historical scope, and never a `mutation_trace_events` row.
+///
+/// `attempts`, `mutation_events`, and `external_taint` are always empty:
+/// `AttemptState` is transient and never persisted, historical
+/// `MutationEvent`s are a cold-path concern
+/// ([`MutationTraceStore::load_mutation_event`]), and `external_taint` is
+/// never DB-authoritative (see the plan's non-goals).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorktreeProjection {
+    pub worktree_id: WorktreeId,
+    pub worktree_state: WorktreeState,
+    pub scopes: BTreeMap<ScopeId, ScopeState>,
+    pub processed_events: BTreeSet<EventKey>,
+}
+
+impl WorktreeProjection {
+    /// Widens this bounded projection into a full [`ProtocolState`] so pure
+    /// `protocol.rs` functions can operate on it unchanged. `worktrees`
+    /// carries only the one loaded worktree; `attempts`, `mutation_events`,
+    /// and `external_taint` are always empty.
+    pub fn into_protocol_state(self) -> ProtocolState {
+        let mut worktrees = BTreeMap::new();
+        worktrees.insert(self.worktree_id, self.worktree_state);
+
+        ProtocolState {
+            worktrees,
+            scopes: self.scopes,
+            external_taint: BTreeSet::new(),
+            processed_events: self.processed_events,
+            attempts: BTreeMap::new(),
+            mutation_events: BTreeSet::new(),
+        }
+    }
+}
+
+/// Bounded read access to the durable mutation-cursor protocol state for one
+/// repository, via [`RepositoryAgentTraceDb`]. Write/CAS-commit access is
+/// added by later tasks (T04/T06/T07).
+pub struct MutationTraceStore<'a> {
+    db: &'a RepositoryAgentTraceDb,
+}
+
+impl<'a> MutationTraceStore<'a> {
+    pub fn new(db: &'a RepositoryAgentTraceDb) -> Self {
+        Self { db }
+    }
+
+    /// Loads a bounded projection of `worktree`'s durable protocol state, or
+    /// `None` when the worktree does not exist.
+    ///
+    /// `scope` and `event_key.scope_id` are two ways of naming the same
+    /// operation-local scope identity: when both are supplied they must
+    /// agree, or this returns `Err` before loading or querying anything.
+    /// Otherwise the supplied `scope`, or `event_key.scope_id` when only
+    /// `event_key` is supplied, becomes the effective referenced scope: a
+    /// durable `mutation_trace_scopes` row for it must exist, or this returns
+    /// `Err` — a missing effective scope is never silently omitted from the
+    /// projection. When it exists it is loaded and included in the
+    /// projection regardless of its status, and this returns `Err` if it
+    /// belongs to a worktree other than the one requested. Both checks run
+    /// before the `processed_events` replay lookup, so an orphan
+    /// `mutation_trace_processed_events` row can never enter the projection
+    /// without its owning scope. The projection's `scopes` otherwise contains
+    /// only this worktree's currently `Active` scopes. `processed_events`
+    /// contains `event_key` only when a matching `(scope_id, event_id)` row
+    /// already exists; the lookup never references a `worktree_id` column,
+    /// since `mutation_trace_processed_events` has none. This method never
+    /// queries `mutation_trace_events`.
+    pub fn load_worktree(
+        &self,
+        worktree: &WorktreeId,
+        scope: Option<&ScopeId>,
+        event_key: Option<&EventKey>,
+    ) -> Result<Option<WorktreeProjection>> {
+        let effective_scope = effective_referenced_scope(scope, event_key)?;
+
+        let Some(worktree_state) = self.load_worktree_state(worktree)? else {
+            return Ok(None);
+        };
+
+        let mut scopes = self.load_active_scopes(worktree)?;
+
+        if let Some(effective_scope_id) = effective_scope {
+            if !scopes.contains_key(effective_scope_id) {
+                let scope_state = self.load_scope(effective_scope_id)?.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "effective referenced scope {effective_scope_id:?} has no mutation_trace_scopes row"
+                    )
+                })?;
+                if scope_state.worktree_id != *worktree {
+                    bail!(
+                        "scope {:?} belongs to worktree {:?}, not the requested worktree {:?}",
+                        effective_scope_id,
+                        scope_state.worktree_id,
+                        worktree
+                    );
+                }
+                scopes.insert(effective_scope_id.clone(), scope_state);
+            }
+        }
+
+        let processed_events = match event_key {
+            Some(event_key) if self.processed_event_exists(event_key)? => {
+                let mut processed_events = BTreeSet::new();
+                processed_events.insert(event_key.clone());
+                processed_events
+            }
+            _ => BTreeSet::new(),
+        };
+
+        Ok(Some(WorktreeProjection {
+            worktree_id: worktree.clone(),
+            worktree_state,
+            scopes,
+            processed_events,
+        }))
+    }
+
+    /// Reconstructs one historical [`MutationEvent`] for `(worktree,
+    /// revision)`, decoding its full `Attribution` and `Boundary`, or `None`
+    /// when no such row exists. Never called from `load_worktree` or from
+    /// any hook-boundary path.
+    pub fn load_mutation_event(
+        &self,
+        worktree: &WorktreeId,
+        revision: u64,
+    ) -> Result<Option<MutationEvent>> {
+        let revision_blob = encode_revision(revision);
+
+        let rows = self.db.query_map(
+            SELECT_MUTATION_EVENT_SQL,
+            (worktree.0.as_str(), revision_blob.as_slice()),
+            mutation_event_row_from_turso,
+        )?;
+
+        let Some(row) = rows.into_iter().next() else {
+            return Ok(None);
+        };
+
+        let active_scopes = self.load_mutation_event_active_scopes(worktree, &revision_blob)?;
+
+        Ok(Some(MutationEvent {
+            worktree_id: worktree.clone(),
+            revision,
+            before_tree: TreeId(row.before_tree),
+            after_tree: TreeId(row.after_tree),
+            active_scopes,
+            tainted: row.tainted,
+            failure_kind: row.failure_kind,
+            attribution: reconstruct_attribution(row.attribution_kind, row.attribution_scope_id)?,
+            boundary: reconstruct_boundary(
+                row.boundary_kind,
+                worktree,
+                row.boundary_scope_id,
+                row.boundary_event_id,
+            )?,
+        }))
+    }
+
+    fn load_worktree_state(&self, worktree: &WorktreeId) -> Result<Option<WorktreeState>> {
+        let rows = self.db.query_map(
+            SELECT_WORKTREE_SQL,
+            (worktree.0.as_str(),),
+            worktree_state_row_from_turso,
+        )?;
+
+        Ok(rows.into_iter().next())
+    }
+
+    fn load_active_scopes(&self, worktree: &WorktreeId) -> Result<BTreeMap<ScopeId, ScopeState>> {
+        let rows = self.db.query_map(
+            SELECT_SCOPES_BY_WORKTREE_AND_STATUS_SQL,
+            (
+                worktree.0.as_str(),
+                encode_scope_status(ScopeStatus::Active),
+            ),
+            scope_row_from_turso,
+        )?;
+
+        Ok(rows.into_iter().collect())
+    }
+
+    fn load_scope(&self, scope_id: &ScopeId) -> Result<Option<ScopeState>> {
+        let rows = self.db.query_map(
+            SELECT_SCOPE_BY_ID_SQL,
+            (scope_id.0.as_str(),),
+            scope_row_from_turso,
+        )?;
+
+        Ok(rows.into_iter().next().map(|(_, scope_state)| scope_state))
+    }
+
+    fn processed_event_exists(&self, event_key: &EventKey) -> Result<bool> {
+        let rows = self.db.query_map(
+            SELECT_PROCESSED_EVENT_SQL,
+            (event_key.scope_id.0.as_str(), event_key.event_id.0.as_str()),
+            |row| row.get::<i64>(0).map_err(Into::into),
+        )?;
+
+        Ok(!rows.is_empty())
+    }
+
+    fn load_mutation_event_active_scopes(
+        &self,
+        worktree: &WorktreeId,
+        revision_blob: &[u8],
+    ) -> Result<BTreeSet<ScopeId>> {
+        let rows = self.db.query_map(
+            SELECT_MUTATION_EVENT_ACTIVE_SCOPES_SQL,
+            (worktree.0.as_str(), revision_blob),
+            |row| row.get::<String>(0).map(ScopeId).map_err(Into::into),
+        )?;
+
+        Ok(rows.into_iter().collect())
+    }
+}
+
+/// Derives the single effective referenced scope from `scope` and
+/// `event_key`, per the four-case definition in the
+/// `mutation-cursor-store-persistence` plan's T03: `None` when neither is
+/// supplied; the supplied one when only one is; the agreeing identity when
+/// both are supplied and equal; `Err` when both are supplied and disagree.
+fn effective_referenced_scope<'k>(
+    scope: Option<&'k ScopeId>,
+    event_key: Option<&'k EventKey>,
+) -> Result<Option<&'k ScopeId>> {
+    match (scope, event_key) {
+        (None, None) => Ok(None),
+        (Some(scope_id), None) => Ok(Some(scope_id)),
+        (None, Some(event_key)) => Ok(Some(&event_key.scope_id)),
+        (Some(scope_id), Some(event_key)) if *scope_id == event_key.scope_id => Ok(Some(scope_id)),
+        (Some(scope_id), Some(event_key)) => bail!(
+            "scope {scope_id:?} and event_key.scope_id {:?} disagree",
+            event_key.scope_id
+        ),
+    }
+}
+
+fn worktree_state_row_from_turso(row: &turso::Row) -> Result<WorktreeState> {
+    let cursor_tree: String = row
+        .get(0)
+        .context("failed to read mutation_trace_worktrees.cursor_tree")?;
+    let revision_blob: Vec<u8> = row
+        .get(1)
+        .context("failed to read mutation_trace_worktrees.revision")?;
+    let tainted: bool = row
+        .get(2)
+        .context("failed to read mutation_trace_worktrees.tainted")?;
+    let failure_kind: String = row
+        .get(3)
+        .context("failed to read mutation_trace_worktrees.failure_kind")?;
+    let needs_rebaseline: bool = row
+        .get(4)
+        .context("failed to read mutation_trace_worktrees.needs_rebaseline")?;
+
+    Ok(WorktreeState {
+        cursor_tree: TreeId(cursor_tree),
+        revision: decode_revision(&revision_blob)?,
+        tainted,
+        failure_kind: decode_failure_kind(&failure_kind)?,
+        needs_rebaseline,
+    })
+}
+
+fn scope_row_from_turso(row: &turso::Row) -> Result<(ScopeId, ScopeState)> {
+    let scope_id: String = row
+        .get(0)
+        .context("failed to read mutation_trace_scopes.scope_id")?;
+    let worktree_id: String = row
+        .get(1)
+        .context("failed to read mutation_trace_scopes.worktree_id")?;
+    let actor_kind: String = row
+        .get(2)
+        .context("failed to read mutation_trace_scopes.actor_kind")?;
+    let status: String = row
+        .get(3)
+        .context("failed to read mutation_trace_scopes.status")?;
+
+    Ok((
+        ScopeId(scope_id),
+        ScopeState {
+            status: decode_scope_status(&status)?,
+            actor_kind: decode_actor_kind(&actor_kind)?,
+            worktree_id: WorktreeId(worktree_id),
+        },
+    ))
+}
+
+/// Raw decoded `mutation_trace_events` row fields, prior to reconstructing
+/// the full `Attribution`/`Boundary`/`active_scopes` a [`MutationEvent`]
+/// carries.
+struct MutationEventRow {
+    before_tree: String,
+    after_tree: String,
+    tainted: bool,
+    failure_kind: FailureKind,
+    attribution_kind: AttributionKind,
+    attribution_scope_id: Option<String>,
+    boundary_kind: BoundaryKind,
+    boundary_scope_id: Option<String>,
+    boundary_event_id: Option<String>,
+}
+
+fn mutation_event_row_from_turso(row: &turso::Row) -> Result<MutationEventRow> {
+    let before_tree: String = row
+        .get(0)
+        .context("failed to read mutation_trace_events.before_tree")?;
+    let after_tree: String = row
+        .get(1)
+        .context("failed to read mutation_trace_events.after_tree")?;
+    let tainted: bool = row
+        .get(2)
+        .context("failed to read mutation_trace_events.tainted")?;
+    let failure_kind: String = row
+        .get(3)
+        .context("failed to read mutation_trace_events.failure_kind")?;
+    let attribution_kind: String = row
+        .get(4)
+        .context("failed to read mutation_trace_events.attribution_kind")?;
+    let attribution_scope_id: Option<String> = row
+        .get(5)
+        .context("failed to read mutation_trace_events.attribution_scope_id")?;
+    let boundary_kind: String = row
+        .get(6)
+        .context("failed to read mutation_trace_events.boundary_kind")?;
+    let boundary_scope_id: Option<String> = row
+        .get(7)
+        .context("failed to read mutation_trace_events.boundary_scope_id")?;
+    let boundary_event_id: Option<String> = row
+        .get(8)
+        .context("failed to read mutation_trace_events.boundary_event_id")?;
+
+    Ok(MutationEventRow {
+        before_tree,
+        after_tree,
+        tainted,
+        failure_kind: decode_failure_kind(&failure_kind)?,
+        attribution_kind: decode_attribution_kind(&attribution_kind)?,
+        attribution_scope_id,
+        boundary_kind: decode_boundary_kind(&boundary_kind)?,
+        boundary_scope_id,
+        boundary_event_id,
+    })
+}
+
+fn reconstruct_attribution(kind: AttributionKind, scope_id: Option<String>) -> Result<Attribution> {
+    match (kind, scope_id) {
+        (AttributionKind::IneligibleUnscoped, None) => Ok(Attribution::IneligibleUnscoped),
+        (AttributionKind::AiContended, None) => Ok(Attribution::AiContended),
+        (AttributionKind::AiExclusive, Some(scope_id)) => {
+            Ok(Attribution::AiExclusive(ScopeId(scope_id)))
+        }
+        (kind, scope_id) => {
+            bail!("inconsistent attribution row: kind={kind:?} scope_id={scope_id:?}")
+        }
+    }
+}
+
+fn reconstruct_boundary(
+    kind: BoundaryKind,
+    worktree: &WorktreeId,
+    scope_id: Option<String>,
+    event_id: Option<String>,
+) -> Result<Boundary> {
+    match kind {
+        BoundaryKind::Flush => {
+            if scope_id.is_some() || event_id.is_some() {
+                bail!("flush boundary row must not carry boundary_scope_id/boundary_event_id");
+            }
+            Ok(Boundary::Flush {
+                worktree: worktree.clone(),
+            })
+        }
+        BoundaryKind::Start | BoundaryKind::Advance | BoundaryKind::Close => {
+            let scope = scope_id
+                .map(ScopeId)
+                .ok_or_else(|| anyhow::anyhow!("hook boundary row missing boundary_scope_id"))?;
+            let event = event_id
+                .map(EventId)
+                .ok_or_else(|| anyhow::anyhow!("hook boundary row missing boundary_event_id"))?;
+
+            Ok(match kind {
+                BoundaryKind::Start => Boundary::Start { scope, event },
+                BoundaryKind::Advance => Boundary::Advance { scope, event },
+                BoundaryKind::Close => Boundary::Close { scope, event },
+                BoundaryKind::Flush => unreachable!("Flush handled above"),
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,5 +719,516 @@ mod tests {
     #[test]
     fn decode_boundary_kind_rejects_unknown_value() {
         assert!(decode_boundary_kind("unknown").is_err());
+    }
+
+    fn unique_test_db_path(label: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after Unix epoch")
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!(
+                "sce-mutation-trace-store-{label}-{}-{nonce}",
+                std::process::id()
+            ))
+            .join("agent-trace.db")
+    }
+
+    fn remove_test_db(db_path: &std::path::Path) {
+        if let Some(parent) = db_path.parent() {
+            std::fs::remove_dir_all(parent).expect("test DB directory should be removed");
+        }
+    }
+
+    fn insert_worktree(db: &RepositoryAgentTraceDb, worktree_id: &str, revision: u64) {
+        db.execute(
+            "INSERT INTO mutation_trace_worktrees
+                (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline)
+             VALUES (?1, 'tree-0', ?2, 0, 'healthy', 0)",
+            (worktree_id, encode_revision(revision).as_slice()),
+        )
+        .expect("worktree insert should succeed");
+    }
+
+    fn insert_scope(
+        db: &RepositoryAgentTraceDb,
+        scope_id: &str,
+        worktree_id: &str,
+        status: ScopeStatus,
+    ) {
+        db.execute(
+            "INSERT INTO mutation_trace_scopes (scope_id, worktree_id, actor_kind, status)
+             VALUES (?1, ?2, 'claude_code', ?3)",
+            (scope_id, worktree_id, encode_scope_status(status)),
+        )
+        .expect("scope insert should succeed");
+    }
+
+    fn insert_processed_event(db: &RepositoryAgentTraceDb, scope_id: &str, event_id: &str) {
+        db.execute(
+            "INSERT INTO mutation_trace_processed_events (scope_id, event_id) VALUES (?1, ?2)",
+            (scope_id, event_id),
+        )
+        .expect("processed-event insert should succeed");
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert_mutation_event(
+        db: &RepositoryAgentTraceDb,
+        worktree_id: &str,
+        revision: u64,
+        before_tree: &str,
+        after_tree: &str,
+        attribution_kind: &str,
+        attribution_scope_id: Option<&str>,
+        boundary_kind: &str,
+        boundary_scope_id: Option<&str>,
+        boundary_event_id: Option<&str>,
+        active_scopes: &[&str],
+    ) {
+        let revision_blob = encode_revision(revision);
+
+        db.execute(
+            "INSERT INTO mutation_trace_events
+                (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
+                 attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id)
+             VALUES (?1, ?2, ?3, ?4, 0, 'healthy', ?5, ?6, ?7, ?8, ?9)",
+            (
+                worktree_id,
+                revision_blob.as_slice(),
+                before_tree,
+                after_tree,
+                attribution_kind,
+                attribution_scope_id,
+                boundary_kind,
+                boundary_scope_id,
+                boundary_event_id,
+            ),
+        )
+        .expect("mutation event insert should succeed");
+
+        for scope_id in active_scopes {
+            db.execute(
+                "INSERT INTO mutation_trace_event_active_scopes (worktree_id, revision, scope_id)
+                 VALUES (?1, ?2, ?3)",
+                (worktree_id, revision_blob.as_slice(), *scope_id),
+            )
+            .expect("active-scope insert should succeed");
+        }
+    }
+
+    #[test]
+    fn load_worktree_returns_none_for_a_missing_worktree() {
+        let db_path = unique_test_db_path("missing-worktree");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        let projection = store
+            .load_worktree(&WorktreeId("wt-missing".to_string()), None, None)
+            .expect("load_worktree should succeed");
+        assert!(projection.is_none());
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn load_worktree_with_no_scope_or_event_key_loads_only_active_scopes() {
+        let db_path = unique_test_db_path("case-1-active-only");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree(&db, "wt-1", 5);
+        insert_scope(&db, "scope-active", "wt-1", ScopeStatus::Active);
+        insert_scope(&db, "scope-closed", "wt-1", ScopeStatus::Closed);
+
+        let projection = store
+            .load_worktree(&WorktreeId("wt-1".to_string()), None, None)
+            .expect("load_worktree should succeed")
+            .expect("worktree should exist");
+
+        assert_eq!(projection.worktree_id, WorktreeId("wt-1".to_string()));
+        assert_eq!(projection.worktree_state.revision, 5);
+        assert_eq!(
+            projection.scopes.keys().collect::<Vec<_>>(),
+            vec![&ScopeId("scope-active".to_string())]
+        );
+        assert!(projection.processed_events.is_empty());
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn load_worktree_with_explicit_scope_includes_it_regardless_of_status() {
+        let db_path = unique_test_db_path("case-2-explicit-scope");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree(&db, "wt-1", 0);
+        insert_scope(&db, "scope-closed", "wt-1", ScopeStatus::Closed);
+
+        let projection = store
+            .load_worktree(
+                &WorktreeId("wt-1".to_string()),
+                Some(&ScopeId("scope-closed".to_string())),
+                None,
+            )
+            .expect("load_worktree should succeed")
+            .expect("worktree should exist");
+
+        assert_eq!(
+            projection.scopes.get(&ScopeId("scope-closed".to_string())),
+            Some(&ScopeState {
+                status: ScopeStatus::Closed,
+                actor_kind: ActorKind::ClaudeCode,
+                worktree_id: WorktreeId("wt-1".to_string()),
+            })
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn load_worktree_with_explicit_scope_on_another_worktree_errors() {
+        let db_path = unique_test_db_path("case-2-wrong-worktree");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree(&db, "wt-1", 0);
+        insert_worktree(&db, "wt-2", 0);
+        insert_scope(&db, "scope-1", "wt-2", ScopeStatus::Active);
+
+        let error = store
+            .load_worktree(
+                &WorktreeId("wt-1".to_string()),
+                Some(&ScopeId("scope-1".to_string())),
+                None,
+            )
+            .expect_err("scope belonging to another worktree should error");
+        assert!(error.to_string().contains("scope-1"));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn load_worktree_with_explicit_missing_scope_errors() {
+        let db_path = unique_test_db_path("case-2-missing-scope");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree(&db, "wt-1", 0);
+
+        let error = store
+            .load_worktree(
+                &WorktreeId("wt-1".to_string()),
+                Some(&ScopeId("scope-missing".to_string())),
+                None,
+            )
+            .expect_err("missing effective scope should error");
+        assert!(error.to_string().contains("scope-missing"));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn load_worktree_with_only_event_key_loads_its_scope_and_replay_row() {
+        let db_path = unique_test_db_path("case-3-event-key-only");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree(&db, "wt-1", 0);
+        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::NeverSeen);
+        insert_processed_event(&db, "scope-1", "event-1");
+
+        let event_key = EventKey {
+            scope_id: ScopeId("scope-1".to_string()),
+            event_id: EventId("event-1".to_string()),
+        };
+
+        let projection = store
+            .load_worktree(&WorktreeId("wt-1".to_string()), None, Some(&event_key))
+            .expect("load_worktree should succeed")
+            .expect("worktree should exist");
+
+        assert_eq!(
+            projection
+                .scopes
+                .get(&ScopeId("scope-1".to_string()))
+                .map(|s| s.status),
+            Some(ScopeStatus::NeverSeen)
+        );
+        assert_eq!(
+            projection.processed_events,
+            [event_key].into_iter().collect()
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn load_worktree_with_event_key_scope_on_another_worktree_errors() {
+        let db_path = unique_test_db_path("case-3-wrong-worktree");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree(&db, "wt-1", 0);
+        insert_worktree(&db, "wt-2", 0);
+        insert_scope(&db, "scope-1", "wt-2", ScopeStatus::Active);
+
+        let event_key = EventKey {
+            scope_id: ScopeId("scope-1".to_string()),
+            event_id: EventId("event-1".to_string()),
+        };
+
+        let error = store
+            .load_worktree(&WorktreeId("wt-1".to_string()), None, Some(&event_key))
+            .expect_err("event_key scope on another worktree should error");
+        assert!(error.to_string().contains("scope-1"));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn load_worktree_with_event_key_missing_scope_errors() {
+        let db_path = unique_test_db_path("case-3-missing-scope");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree(&db, "wt-1", 0);
+
+        let event_key = EventKey {
+            scope_id: ScopeId("scope-missing".to_string()),
+            event_id: EventId("event-1".to_string()),
+        };
+
+        let error = store
+            .load_worktree(&WorktreeId("wt-1".to_string()), None, Some(&event_key))
+            .expect_err("missing event_key.scope_id should error");
+        assert!(error.to_string().contains("scope-missing"));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn load_worktree_with_event_key_missing_scope_and_orphan_replay_row_errors() {
+        let db_path = unique_test_db_path("case-3-orphan-replay-row");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree(&db, "wt-1", 0);
+        insert_processed_event(&db, "scope-missing", "event-1");
+
+        let event_key = EventKey {
+            scope_id: ScopeId("scope-missing".to_string()),
+            event_id: EventId("event-1".to_string()),
+        };
+
+        let error = store
+            .load_worktree(&WorktreeId("wt-1".to_string()), None, Some(&event_key))
+            .expect_err(
+                "an orphan processed-event row must not let a missing scope produce a projection",
+            );
+        assert!(error.to_string().contains("scope-missing"));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn load_worktree_with_agreeing_scope_and_event_key_loads_it_once() {
+        let db_path = unique_test_db_path("case-4-agreeing");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree(&db, "wt-1", 0);
+        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Active);
+
+        let event_key = EventKey {
+            scope_id: ScopeId("scope-1".to_string()),
+            event_id: EventId("event-1".to_string()),
+        };
+
+        let projection = store
+            .load_worktree(
+                &WorktreeId("wt-1".to_string()),
+                Some(&ScopeId("scope-1".to_string())),
+                Some(&event_key),
+            )
+            .expect("load_worktree should succeed")
+            .expect("worktree should exist");
+
+        assert_eq!(projection.scopes.len(), 1);
+        assert!(projection
+            .scopes
+            .contains_key(&ScopeId("scope-1".to_string())));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn load_worktree_with_disagreeing_scope_and_event_key_errors_without_loading() {
+        let db_path = unique_test_db_path("case-5-disagreeing");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree(&db, "wt-1", 0);
+        insert_scope(&db, "scope-a", "wt-1", ScopeStatus::Active);
+        insert_scope(&db, "scope-b", "wt-1", ScopeStatus::Active);
+
+        let event_key = EventKey {
+            scope_id: ScopeId("scope-b".to_string()),
+            event_id: EventId("event-1".to_string()),
+        };
+
+        let error = store
+            .load_worktree(
+                &WorktreeId("wt-1".to_string()),
+                Some(&ScopeId("scope-a".to_string())),
+                Some(&event_key),
+            )
+            .expect_err("disagreeing scope/event_key.scope_id should error");
+        assert!(error.to_string().contains("scope-a"));
+        assert!(error.to_string().contains("scope-b"));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn load_mutation_event_returns_none_when_missing() {
+        let db_path = unique_test_db_path("cold-path-missing");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        let event = store
+            .load_mutation_event(&WorktreeId("wt-1".to_string()), 1)
+            .expect("load_mutation_event should succeed");
+        assert!(event.is_none());
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn load_mutation_event_reconstructs_ai_exclusive_start_event() {
+        let db_path = unique_test_db_path("cold-path-ai-exclusive-start");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_mutation_event(
+            &db,
+            "wt-1",
+            1,
+            "tree-0",
+            "tree-1",
+            "ai_exclusive",
+            Some("scope-1"),
+            "start",
+            Some("scope-1"),
+            Some("event-1"),
+            &["scope-1"],
+        );
+
+        let event = store
+            .load_mutation_event(&WorktreeId("wt-1".to_string()), 1)
+            .expect("load_mutation_event should succeed")
+            .expect("mutation event row should exist");
+
+        assert_eq!(
+            event,
+            MutationEvent {
+                worktree_id: WorktreeId("wt-1".to_string()),
+                revision: 1,
+                before_tree: TreeId("tree-0".to_string()),
+                after_tree: TreeId("tree-1".to_string()),
+                active_scopes: [ScopeId("scope-1".to_string())].into_iter().collect(),
+                tainted: false,
+                failure_kind: FailureKind::Healthy,
+                attribution: Attribution::AiExclusive(ScopeId("scope-1".to_string())),
+                boundary: Boundary::Start {
+                    scope: ScopeId("scope-1".to_string()),
+                    event: EventId("event-1".to_string()),
+                },
+            }
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn load_mutation_event_reconstructs_a_flush_event_with_multiple_active_scopes() {
+        let db_path = unique_test_db_path("cold-path-flush");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_mutation_event(
+            &db,
+            "wt-1",
+            3,
+            "tree-2",
+            "tree-3",
+            "ai_contended",
+            None,
+            "flush",
+            None,
+            None,
+            &["scope-1", "scope-2"],
+        );
+
+        let event = store
+            .load_mutation_event(&WorktreeId("wt-1".to_string()), 3)
+            .expect("load_mutation_event should succeed")
+            .expect("mutation event row should exist");
+
+        assert_eq!(
+            event,
+            MutationEvent {
+                worktree_id: WorktreeId("wt-1".to_string()),
+                revision: 3,
+                before_tree: TreeId("tree-2".to_string()),
+                after_tree: TreeId("tree-3".to_string()),
+                active_scopes: [
+                    ScopeId("scope-1".to_string()),
+                    ScopeId("scope-2".to_string())
+                ]
+                .into_iter()
+                .collect(),
+                tainted: false,
+                failure_kind: FailureKind::Healthy,
+                attribution: Attribution::AiContended,
+                boundary: Boundary::Flush {
+                    worktree: WorktreeId("wt-1".to_string()),
+                },
+            }
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn into_protocol_state_carries_only_the_loaded_worktree_and_leaves_transient_fields_empty() {
+        let db_path = unique_test_db_path("into-protocol-state");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree(&db, "wt-1", 7);
+        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Active);
+
+        let projection = store
+            .load_worktree(&WorktreeId("wt-1".to_string()), None, None)
+            .expect("load_worktree should succeed")
+            .expect("worktree should exist");
+
+        let protocol_state = projection.into_protocol_state();
+
+        assert_eq!(protocol_state.worktrees.len(), 1);
+        assert_eq!(
+            protocol_state
+                .worktrees
+                .get(&WorktreeId("wt-1".to_string()))
+                .map(|w| w.revision),
+            Some(7)
+        );
+        assert!(protocol_state.attempts.is_empty());
+        assert!(protocol_state.mutation_events.is_empty());
+        assert!(protocol_state.external_taint.is_empty());
+
+        remove_test_db(&db_path);
     }
 }
