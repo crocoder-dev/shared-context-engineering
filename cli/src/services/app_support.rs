@@ -160,7 +160,7 @@ fn write_stdout_payload<W: Write>(writer: &mut W, payload: &str) -> Result<(), C
     })
 }
 
-fn write_error_diagnostic<W: Write>(writer: &mut W, error: &CliError) {
+pub(crate) fn write_error_diagnostic<W: Write>(writer: &mut W, error: &CliError) {
     write_error_diagnostic_with_color_policy(
         writer,
         error,

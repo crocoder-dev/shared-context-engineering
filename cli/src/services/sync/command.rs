@@ -122,7 +122,7 @@ mod tests {
     use super::classify_sync_error;
     use crate::services::agent_trace_sync::control_plane::ControlPlaneError;
     use crate::services::agent_trace_sync::StreamSyncError;
-    use crate::services::error::{AutomaticSyncFailureKind, CliError};
+    use crate::services::error::CliError;
     use crate::services::sync::sync::TraceSyncError;
     use crate::services::sync::SyncInvocation;
 

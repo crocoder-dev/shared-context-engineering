@@ -24,11 +24,17 @@ start the current `sce` executable with exactly:
 sync --format json
 ```
 
-The child runs with the repository root as its working directory and null
-stdin, stdout, and stderr. `Command::spawn()` is used without waiting for a
-status; the hook returns its normal successful result immediately. A failure to
-resolve the current executable or spawn the child is ignored, so launcher
-failures cannot turn a successful post-commit operation into a failure.
+The child runs with the repository root as its working directory, null stdin and
+stdout, and inherited stderr. An internal `SCE_INTERNAL_AUTO_SYNC=1` process
+marker lets the child classify this invocation as automatic without adding a
+user-facing option or configuration layer. `Command::spawn()` is used without
+waiting for a status; the hook returns its normal successful result immediately.
+If the child sync fails, its single typed `SCE-ERR-RUNTIME` diagnostic is visible
+through inherited stderr. If the current executable cannot be resolved or the
+child cannot be spawned, the launcher emits the same typed automatic-sync
+diagnostic with the startup reason on stderr. Both startup and child failures
+remain fail-open, so they cannot turn a successful post-commit operation into a
+failure.
 
 Automatic synchronization is not invoked by `pre-commit`, `diff-trace`, or
 `conversation-trace`. It is one post-commit launch, not a high-frequency hook,

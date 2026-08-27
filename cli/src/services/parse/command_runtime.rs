@@ -253,7 +253,7 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
             Ok(RuntimeCommand::Sync(services::sync::command::SyncCommand {
                 request: services::sync::SyncRequest {
                     format,
-                    invocation: services::sync::SyncInvocation::Manual,
+                    invocation: services::sync::SyncInvocation::from_environment(),
                 },
             }))
         }

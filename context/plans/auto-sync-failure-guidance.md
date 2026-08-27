@@ -104,13 +104,26 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: root — changed the typed CLI error contract, sync command invocation classification, and app-level diagnostic rendering; durable context synchronization is required before another task starts.
   - Context synchronization: synced
 
-- [ ] T02: `Surface detached automatic-sync failures without blocking post-commit` (status:todo)
+- [x] T02: `Surface detached automatic-sync failures without blocking post-commit` (status:complete)
   - Task ID: T02
   - Scope: In — `cli/src/services/sync/auto_sync.rs`, post-commit launcher seam in `cli/src/services/hooks/mod.rs`, internal child invocation marker/stdio configuration, structured launcher-failure reporting using the same typed automatic-sync error payload, and focused launcher/hook tests. Out — sync protocol behavior, waiting for child completion, retry queues, and high-frequency hook triggers.
   - Dependencies: T01
   - Done when: the detached child keeps the exact `sync --format json` command and repository-root/no-wait behavior, identifies automatic mode, exposes only typed failure diagnostics through stderr, and launcher executable/spawn errors retain actionable reasons through structured auto-sync reporting while remaining fail-open to the successful hook result.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auto_sync`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::`.
-  - Context synchronization: pending
+  - Completed: 2026-08-27
+  - Files changed:
+    - `cli/src/services/app_support.rs`
+    - `cli/src/services/error.rs`
+    - `cli/src/services/parse/command_runtime.rs`
+    - `cli/src/services/sync/auto_sync.rs`
+    - `cli/src/services/sync/command.rs`
+    - `cli/src/services/sync/mod.rs`
+  - Result: Preserved detached `sync --format json` execution while passing an internal automatic-invocation marker, inheriting child stderr for typed failure diagnostics, and rendering structured fail-open launcher errors with actionable reasons.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auto_sync` — passed (14 tests).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::` — passed (163 tests).
+  - Context impact: root — changed the automatic sync process boundary, stderr visibility, invocation classification, and fail-open launcher diagnostic contract; durable context synchronization is required before another task starts.
+  - Context synchronization: synced
 
 - [ ] T03: `Document typed automatic-sync failure recovery contract` (status:todo)
   - Task ID: T03

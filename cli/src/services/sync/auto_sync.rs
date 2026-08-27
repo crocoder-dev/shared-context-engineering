@@ -4,11 +4,16 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use crate::services::app_support;
+use crate::services::error::{AutomaticSyncFailureKind, CliError, UserError};
+use crate::services::sync::{AUTOMATIC_SYNC_INVOCATION_ENV, AUTOMATIC_SYNC_INVOCATION_VALUE};
+
 const SYNC_ARGS: &[&str] = &["sync", "--format", "json"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StdioMode {
     Null,
+    Inherit,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -19,6 +24,7 @@ struct AutoSyncCommand {
     stdin: StdioMode,
     stdout: StdioMode,
     stderr: StdioMode,
+    environment: Vec<(String, String)>,
 }
 
 impl AutoSyncCommand {
@@ -29,31 +35,74 @@ impl AutoSyncCommand {
             current_dir: repository_root.to_path_buf(),
             stdin: StdioMode::Null,
             stdout: StdioMode::Null,
-            stderr: StdioMode::Null,
+            stderr: StdioMode::Inherit,
+            environment: vec![(
+                AUTOMATIC_SYNC_INVOCATION_ENV.to_string(),
+                AUTOMATIC_SYNC_INVOCATION_VALUE.to_string(),
+            )],
         }
     }
 }
 
+#[derive(Debug)]
+enum AutoSyncLaunchError {
+    CurrentExecutable(io::Error),
+    Spawn(io::Error),
+}
+
+impl std::fmt::Display for AutoSyncLaunchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CurrentExecutable(error) => {
+                write!(formatter, "failed to resolve current executable: {error}")
+            }
+            Self::Spawn(error) => write!(formatter, "failed to spawn detached sync: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for AutoSyncLaunchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::CurrentExecutable(error) | Self::Spawn(error) => Some(error),
+        }
+    }
+}
+
+fn launcher_failure_diagnostic(error: AutoSyncLaunchError) -> CliError {
+    let reason = error.to_string();
+    CliError::user_with_source(
+        UserError::AutomaticSyncFailed {
+            failure_kind: AutomaticSyncFailureKind::Runtime,
+            reason,
+        },
+        error,
+    )
+}
+
 /// Launches the current executable to synchronize the repository in the
-/// background. Launcher failures are intentionally ignored by the caller.
+/// background. Launcher failures are reported on stderr but remain fail-open
+/// to the post-commit caller.
 pub fn launch(repository_root: &Path) {
-    let _ = launch_with(repository_root, std::env::current_exe, spawn_command);
+    if let Err(error) = launch_with(repository_root, std::env::current_exe, spawn_command) {
+        let diagnostic = launcher_failure_diagnostic(error);
+        let mut stderr = io::stderr();
+        app_support::write_error_diagnostic(&mut stderr, &diagnostic);
+    }
 }
 
 fn launch_with<FCurrentExe, FSpawn>(
     repository_root: &Path,
     current_exe: FCurrentExe,
     spawn: FSpawn,
-) -> bool
+) -> Result<(), AutoSyncLaunchError>
 where
     FCurrentExe: FnOnce() -> io::Result<PathBuf>,
     FSpawn: FnOnce(AutoSyncCommand) -> io::Result<()>,
 {
-    let Ok(executable) = current_exe() else {
-        return false;
-    };
+    let executable = current_exe().map_err(AutoSyncLaunchError::CurrentExecutable)?;
 
-    spawn(AutoSyncCommand::new(executable, repository_root)).is_ok()
+    spawn(AutoSyncCommand::new(executable, repository_root)).map_err(AutoSyncLaunchError::Spawn)
 }
 
 fn spawn_command(spec: AutoSyncCommand) -> io::Result<()> {
@@ -61,9 +110,10 @@ fn spawn_command(spec: AutoSyncCommand) -> io::Result<()> {
     command
         .args(spec.args)
         .current_dir(spec.current_dir)
+        .envs(spec.environment)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::inherit());
 
     // Dropping Child does not wait for it; the spawned sync continues
     // independently of the post-commit caller.
@@ -78,7 +128,10 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
 
-    use super::{launch_with, AutoSyncCommand, StdioMode, SYNC_ARGS};
+    use super::{
+        launch_with, launcher_failure_diagnostic, AutoSyncCommand, StdioMode,
+        AUTOMATIC_SYNC_INVOCATION_ENV, AUTOMATIC_SYNC_INVOCATION_VALUE, SYNC_ARGS,
+    };
 
     #[test]
     fn launch_builds_the_expected_detached_command() {
@@ -94,7 +147,7 @@ mod tests {
             },
         );
 
-        assert!(launched);
+        assert!(launched.is_ok());
         assert_eq!(
             captured.borrow().clone(),
             Some(AutoSyncCommand {
@@ -103,7 +156,11 @@ mod tests {
                 current_dir: PathBuf::from("/repo/root"),
                 stdin: StdioMode::Null,
                 stdout: StdioMode::Null,
-                stderr: StdioMode::Null,
+                stderr: StdioMode::Inherit,
+                environment: vec![(
+                    AUTOMATIC_SYNC_INVOCATION_ENV.to_string(),
+                    AUTOMATIC_SYNC_INVOCATION_VALUE.to_string(),
+                )],
             })
         );
     }
@@ -122,7 +179,7 @@ mod tests {
             },
         );
 
-        assert!(!launched);
+        assert!(launched.is_err());
         assert!(!*spawn_called.borrow());
     }
 
@@ -134,6 +191,6 @@ mod tests {
             |_| Err(io::Error::other("spawn unavailable")),
         );
 
-        assert!(!launched);
+        assert!(launched.is_err());
     }
 }
