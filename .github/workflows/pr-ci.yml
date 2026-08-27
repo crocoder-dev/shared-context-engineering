@@ -42,11 +42,11 @@ jobs:
 
       - name: Run flake checks
         run: |
-          time nix flake check --print-build-logs
+          time nix flake check --fallback --print-build-logs
 
       - name: Build and smoke-test native CLI
         run: |
-          time nix build .#sce --out-link result --print-build-logs
+          time nix build .#sce --fallback --out-link result --print-build-logs
           ./result/bin/sce --help
           ./result/bin/sce version
 
@@ -78,4 +78,4 @@ jobs:
 
       - name: Build release package and audit portability
         run: |
-          time nix build .#ci-checks --out-link result-ci-checks --print-build-logs
+          time nix build .#ci-checks --fallback --out-link result-ci-checks --print-build-logs
