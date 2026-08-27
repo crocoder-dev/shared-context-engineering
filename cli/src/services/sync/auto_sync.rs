@@ -129,8 +129,8 @@ mod tests {
     use std::rc::Rc;
 
     use super::{
-        launch_with, launcher_failure_diagnostic, AutoSyncCommand, StdioMode,
-        AUTOMATIC_SYNC_INVOCATION_ENV, AUTOMATIC_SYNC_INVOCATION_VALUE, SYNC_ARGS,
+        launch_with, AutoSyncCommand, StdioMode, AUTOMATIC_SYNC_INVOCATION_ENV,
+        AUTOMATIC_SYNC_INVOCATION_VALUE, SYNC_ARGS,
     };
 
     #[test]

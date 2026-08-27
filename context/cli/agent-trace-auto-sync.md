@@ -41,6 +41,20 @@ Automatic synchronization is not invoked by `pre-commit`, `diff-trace`, or
 watcher, polling loop, scheduler, daemon, retry queue, persistent service, or
 second synchronization database.
 
+### Failure diagnostics
+
+The automatic child classifies terminal sync failures into the closed
+`AutomaticSyncFailureKind` set: `Authentication`, `ControlPlane`, `Stream`, or
+`Runtime`. The app renders exactly one `Error [SCE-ERR-RUNTIME]` diagnostic
+whose message begins `Automatic synchronization failed:`. Authentication uses
+the reviewed `sce auth login`, then manual `sce sync` recovery instruction and
+keeps the technical reason for observability; non-authentication failures
+include their preserved display reason and actionable recovery guidance before
+the manual `sce sync` retry. Automatic user-error rendering does not append the
+generic runtime `Try:` sentence or render the technical source as a second
+diagnostic. Launcher executable-resolution and spawn failures use the same
+`Runtime` payload and preserve their startup reason.
+
 ## Doctor readiness
 
 `sce doctor` reports the capability without invoking it. The post-commit hook's

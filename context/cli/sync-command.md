@@ -117,10 +117,12 @@ control-plane, stream, and local runtime failures as the payload-bearing
 `UserError::AutomaticSyncFailed` catalog entry, preserving the typed failure
 kind and display reason while retaining the technical source through
 `CliError::user_with_source`. `app_support` renders one runtime diagnostic for
-the automatic case: authentication tells the user to run `sce auth login` and
-then manually retry with `sce sync`; other failures include the reason and
-actionable recovery guidance including manual `sce sync`, without adding the
-default runtime `Try:` sentence. See [CLI error-code
+the automatic case beginning `Automatic synchronization failed:`:
+authentication tells the user to run `sce auth login` and then manually retry
+with `sce sync` (the technical authentication reason remains observability-only);
+other failures include the preserved reason and actionable recovery guidance
+including manual `sce sync`, without adding the default runtime `Try:` sentence.
+See [CLI error-code
 taxonomy](../sce/cli-error-code-taxonomy.md) for the full `CliError`/`UserError`
 architecture.
 

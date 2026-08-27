@@ -23,17 +23,17 @@ How this plan is proven complete. Each criterion is observable and names the
 check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation.
 
-- [ ] AC1: A sync failure raised by an automatic invocation maps to a payload-bearing typed `UserError`/`CliError` path and renders one runtime diagnostic that clearly says automatic synchronization failed and includes the underlying typed failure reason.
+- [x] AC1: A sync failure raised by an automatic invocation maps to a payload-bearing typed `UserError`/`CliError` path and renders one runtime diagnostic that clearly says automatic synchronization failed and includes the underlying typed failure reason.
   - Validate: Focused sync/error tests assert the rendered diagnostic for control-plane, stream, and local runtime failures, including the reason and `SCE-ERR-RUNTIME` classification.
-- [ ] AC2: An automatic authentication failure uses a distinct typed automatic-sync failure kind, tells the user that authentication is required, instructs them to run `sce auth login`, and then explicitly tells them to manually retry with `sce sync`.
+- [x] AC2: An automatic authentication failure uses a distinct typed automatic-sync failure kind, tells the user that authentication is required, instructs them to run `sce auth login`, and then explicitly tells them to manually retry with `sce sync`.
   - Validate: Focused authentication classification and app-rendering tests assert the complete login-plus-manual-sync guidance and ensure the technical source remains available only for observability.
-- [ ] AC3: Non-authentication automatic failures use the same typed payload-bearing error model, provide actionable recovery guidance, and explain that the user can manually retry with `sce sync`, without relying on substring matching or duplicating the default runtime `Try:` guidance.
+- [x] AC3: Non-authentication automatic failures use the same typed payload-bearing error model, provide actionable recovery guidance, and explain that the user can manually retry with `sce sync`, without relying on substring matching or duplicating the default runtime `Try:` guidance.
   - Validate: Focused tests cover representative storage, transport/server, protocol, and stream failures and assert deterministic reason/recovery text with no duplicate remediation.
-- [ ] AC4: Automatic child failures are visible through the existing stderr diagnostic channel while successful post-commit execution remains detached, non-blocking, JSON-stdout-silent, and fail-open to the commit; launcher startup failures retain their reason in structured auto-sync diagnostics without failing the hook.
+- [x] AC4: Automatic child failures are visible through the existing stderr diagnostic channel while successful post-commit execution remains detached, non-blocking, JSON-stdout-silent, and fail-open to the commit; launcher startup failures retain their reason in structured auto-sync diagnostics without failing the hook.
   - Validate: Launcher and post-commit seam tests assert the internal automatic-invocation marker, inherited failure stderr, unchanged `sync --format json` arguments, no wait, and fail-open behavior for executable/spawn failures.
-- [ ] AC5: Manual `sce sync` failures retain the existing manual-sync semantics and do not claim that automatic synchronization failed.
+- [x] AC5: Manual `sce sync` failures retain the existing manual-sync semantics and do not claim that automatic synchronization failed.
   - Validate: Command-level tests execute/classify manual and automatic invocation modes separately and assert mode-specific rendering.
-- [ ] AC6: Durable context documents the typed automatic-sync failure model, stderr visibility, authentication recovery, manual retry command, and preserved no-daemon/fail-open boundaries.
+- [x] AC6: Durable context documents the typed automatic-sync failure model, stderr visibility, authentication recovery, manual retry command, and preserved no-daemon/fail-open boundaries.
   - Validate: Review the listed context contracts against the final code, then run the generated-context and repository checks under `Full validation`.
 
 ### Full validation
@@ -125,13 +125,31 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: root — changed the automatic sync process boundary, stderr visibility, invocation classification, and fail-open launcher diagnostic contract; durable context synchronization is required before another task starts.
   - Context synchronization: synced
 
-- [ ] T03: `Document typed automatic-sync failure recovery contract` (status:todo)
+- [x] T03: `Document typed automatic-sync failure recovery contract` (status:complete)
   - Task ID: T03
   - Scope: Update the auto-sync, sync, CLI error, stdout/stderr, hook-routing, and required root context contracts listed under Context sync to describe the final typed error and recovery behavior. Out — generated configuration artifacts, historical plans/decisions, and code/test changes.
   - Dependencies: T02
   - Done when: durable context states the payload-bearing typed error model, automatic-failure prefix, reason preservation, authentication login flow, manual `sce sync` retry, stderr visibility, mode distinction, and unchanged detached/fail-open/no-daemon boundaries without stale null-output claims.
   - Verify: Manual code/context review against `cli/src/services/error.rs`, `cli/src/services/app_support.rs`, `cli/src/services/sync/command.rs`, `cli/src/services/sync/auto_sync.rs`, and `cli/src/services/hooks/mod.rs`.
-  - Context synchronization: pending
+   - Completed: 2026-08-27
+   - Files changed:
+     - `context/architecture.md`
+     - `context/cli/agent-trace-auto-sync.md`
+     - `context/cli/agent-trace-sync-command.md`
+     - `context/cli/sync-command.md`
+     - `context/context-map.md`
+     - `context/glossary.md`
+     - `context/overview.md`
+     - `context/patterns.md`
+     - `context/sce/agent-trace-hooks-command-routing.md`
+     - `context/sce/cli-error-code-taxonomy.md`
+     - `context/sce/cli-stdout-stderr-contract.md`
+   - Result: Updated durable root and domain context to describe the closed typed automatic-sync failure catalog, the stable automatic-failure diagnostic prefix, authentication login-plus-manual-sync recovery, preserved non-authentication reasons, stderr visibility, manual-mode distinction, and unchanged detached/fail-open/no-daemon boundaries.
+   - Verify:
+     - `Manual code/context review against cli/src/services/error.rs, cli/src/services/app_support.rs, cli/src/services/sync/command.rs, cli/src/services/sync/auto_sync.rs, and cli/src/services/hooks/mod.rs` — passed.
+     - `git diff --check` — passed.
+   - Context impact: root — clarified the durable CLI error, stream, synchronization, hook-routing, and recovery contracts to match the implemented automatic-sync behavior.
+   - Context synchronization: synced
 
 ## Open questions
 
@@ -141,3 +159,38 @@ persistent retry mechanism, and the setup preflight change establishes the
 payload-bearing `UserError` pattern to reuse; the remaining wording and
 internal marker choices are local implementation details covered by the existing
 CLI error/rendering patterns.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-08-27
+
+### Commands run
+
+- `nix flake check` -> exit 0 (all flake checks passed)
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral Pkl generation passed: 141 files)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml error::` -> terminated by the 120-second tool timeout while concurrent Cargo invocations waited on locks (no exit code reported; rerun completed successfully)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml error::` -> exit 0 (6 focused error tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml sync::command` -> exit 0 (6 focused sync classification tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml app_support` -> exit 0 (5 focused app rendering tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml parse::command_runtime` -> exit 0 (5 focused command-runtime tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auto_sync` -> exit 0 (13 focused auto-sync and hook tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::` -> exit 0 (163 focused hook tests passed)
+- `git diff --check` -> exit 0 (no whitespace errors)
+
+### Success-criteria verification
+
+- [x] AC1: A sync failure raised by an automatic invocation maps to a payload-bearing typed `UserError`/`CliError` path and renders one runtime diagnostic that clearly says automatic synchronization failed and includes the underlying typed failure reason. -> Error, app-rendering, and sync classification tests passed; typed runtime code and reason-preserving paths were inspected.
+- [x] AC2: An automatic authentication failure uses a distinct typed automatic-sync failure kind, tells the user that authentication is required, instructs them to run `sce auth login`, and then explicitly tells them to manually retry with `sce sync`. -> Sync classification and app-rendering tests passed; authentication guidance and observability-only source handling were inspected.
+- [x] AC3: Non-authentication automatic failures use the same typed payload-bearing error model, provide actionable recovery guidance, and explain that the user can manually retry with `sce sync`, without relying on substring matching or duplicating the default runtime `Try:` guidance. -> Sync, error, and app-rendering tests passed; representative typed control-plane, stream, runtime, storage, transport, server, and protocol paths were inspected.
+- [x] AC4: Automatic child failures are visible through the existing stderr diagnostic channel while successful post-commit execution remains detached, non-blocking, JSON-stdout-silent, and fail-open to the commit; launcher startup failures retain their reason in structured auto-sync diagnostics without failing the hook. -> Auto-sync and hook seam tests passed; launcher arguments, marker, inherited stderr, null stdout, no-wait, and fail-open behavior were inspected.
+- [x] AC5: Manual `sce sync` failures retain the existing manual-sync semantics and do not claim that automatic synchronization failed. -> Manual and automatic classification branches were inspected and focused sync tests passed.
+- [x] AC6: Durable context documents the typed automatic-sync failure model, stderr visibility, authentication recovery, manual retry command, and preserved no-daemon/fail-open boundaries. -> Listed context contracts were reviewed against the final code; generated-context and repository checks passed.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- None identified.
