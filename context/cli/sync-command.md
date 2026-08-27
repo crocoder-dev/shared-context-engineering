@@ -10,7 +10,9 @@ The Clap surface is defined in `cli/src/cli_schema.rs` and dispatched through
 the static `RuntimeCommand::Sync` variant. The sync-owned command boundary lives
 under `cli/src/services/sync/`; shared storage, export, authentication, and
 control-plane protocol infrastructure remains in their existing services. The
-same boundary owns a best-effort one-shot launcher used by the post-commit
+command request carries an internal `SyncInvocation` context so manual and
+automatic executions can retain distinct error semantics without adding a public
+CLI option. The same boundary owns a best-effort one-shot launcher used by the post-commit
 hook when `agent_trace.auto_sync` is enabled: it resolves the current `sce`
 executable, starts `sync --format json` in the repository root with null standard
 streams, and does not wait for the child; executable and spawn failures are
@@ -104,17 +106,18 @@ client. The command change does not alter those semantics.
 `cli/src/services/sync/command.rs`'s `classify_sync_error` maps the command's
 terminal `TraceSyncError` into the typed `CliError` boundary by calling
 `TraceSyncError::is_authentication_failure()` — a typed traversal down to
-`ControlPlaneError`, never string/substring matching. An authentication
-failure from the initial `/state` call, a stream batch request, or a stream
-reconciliation `/state` refresh (`ControlPlaneError::MissingCredentials` or
-`AuthenticationFailed`) classifies as `CliError::User { error:
-UserError::NotAuthenticated, .. }`, preserving the technical error as its
-source; every other `ControlPlaneError` (`Forbidden`, `BadRequest`,
-`Transport`, `ServerError`, `InvalidResponse`, `Storage`, `Protocol`)
-classifies as `CliError::Internal`. `sync/command.rs` builds no friendly
-sentence and applies no terminal styling itself — `app_support` renders the
-single `You are not logged in...` diagnostic for the user case, and the full
-`anyhow`/control-plane chain for the internal case. See [CLI error-code
+`ControlPlaneError`, never string/substring matching. Manual invocations retain
+their existing behavior: authentication failures classify as
+`UserError::NotAuthenticated`, while other failures remain `CliError::Internal`
+with their technical source. Automatic invocations classify authentication,
+control-plane, stream, and local runtime failures as the payload-bearing
+`UserError::AutomaticSyncFailed` catalog entry, preserving the typed failure
+kind and display reason while retaining the technical source through
+`CliError::user_with_source`. `app_support` renders one runtime diagnostic for
+the automatic case: authentication tells the user to run `sce auth login` and
+then manually retry with `sce sync`; other failures include the reason and
+actionable recovery guidance including manual `sce sync`, without adding the
+default runtime `Try:` sentence. See [CLI error-code
 taxonomy](../sce/cli-error-code-taxonomy.md) for the full `CliError`/`UserError`
 architecture.
 

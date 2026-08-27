@@ -48,6 +48,15 @@ impl FailureClass {
     }
 }
 
+/// The typed origin of an automatic synchronization failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AutomaticSyncFailureKind {
+    Authentication,
+    ControlPlane,
+    Stream,
+    Runtime,
+}
+
 /// Catalog of expected, deliberately-explained failures presented to the user
 /// as a friendly diagnostic instead of a technical error chain.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -59,14 +68,19 @@ pub enum UserError {
     NotGitRemote {
         remote_name: String,
     },
+    AutomaticSyncFailed {
+        failure_kind: AutomaticSyncFailureKind,
+        reason: String,
+    },
 }
 
 impl UserError {
     pub fn class(&self) -> FailureClass {
         match self {
-            Self::NotAuthenticated | Self::NotGitRepository | Self::NotGitRemote { .. } => {
-                FailureClass::Runtime
-            }
+            Self::NotAuthenticated
+            | Self::NotGitRepository
+            | Self::NotGitRemote { .. }
+            | Self::AutomaticSyncFailed { .. } => FailureClass::Runtime,
         }
     }
 
@@ -76,6 +90,12 @@ impl UserError {
             Self::NotAuthenticated => "auth.not_authenticated",
             Self::NotGitRepository => "setup.not_git_repository",
             Self::NotGitRemote { .. } => "setup.not_git_remote",
+            Self::AutomaticSyncFailed { failure_kind, .. } => match failure_kind {
+                AutomaticSyncFailureKind::Authentication => "sync.automatic.authentication_failed",
+                AutomaticSyncFailureKind::ControlPlane => "sync.automatic.control_plane_failed",
+                AutomaticSyncFailureKind::Stream => "sync.automatic.stream_failed",
+                AutomaticSyncFailureKind::Runtime => "sync.automatic.runtime_failed",
+            },
         }
     }
 
@@ -92,6 +112,44 @@ impl UserError {
             Self::NotGitRemote { remote_name } => format!(
                 "The Git repository has no configured URL for remote '{remote_name}'. Please run `git remote add <remote> <url>`, then retry."
             ),
+            Self::AutomaticSyncFailed {
+                failure_kind: AutomaticSyncFailureKind::Authentication,
+                ..
+            } => "Automatic synchronization failed: authentication is required. Run `sce auth login`, then manually retry with `sce sync`.".to_string(),
+            Self::AutomaticSyncFailed {
+                failure_kind: AutomaticSyncFailureKind::ControlPlane,
+                reason,
+            } => format!(
+                "Automatic synchronization failed: {reason}. Check control-plane connectivity and availability, then manually retry with `sce sync`."
+            ),
+            Self::AutomaticSyncFailed {
+                failure_kind: AutomaticSyncFailureKind::Stream,
+                reason,
+            } => format!(
+                "Automatic synchronization failed: {reason}. Check Agent Trace data and connectivity, then manually retry with `sce sync`."
+            ),
+            Self::AutomaticSyncFailed {
+                failure_kind: AutomaticSyncFailureKind::Runtime,
+                reason,
+            } => format!(
+                "Automatic synchronization failed: {reason}. Check the local repository and Agent Trace configuration, then manually retry with `sce sync`."
+            ),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn automatic_sync_failure_kind(&self) -> Option<AutomaticSyncFailureKind> {
+        match self {
+            Self::AutomaticSyncFailed { failure_kind, .. } => Some(*failure_kind),
+            Self::NotAuthenticated | Self::NotGitRepository | Self::NotGitRemote { .. } => None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::AutomaticSyncFailed { reason, .. } => Some(reason),
+            Self::NotAuthenticated | Self::NotGitRepository | Self::NotGitRemote { .. } => None,
         }
     }
 }

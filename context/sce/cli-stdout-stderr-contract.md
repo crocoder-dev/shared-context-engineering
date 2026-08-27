@@ -9,7 +9,7 @@ This document defines the implemented stream contract for CLI command payload an
 - Command success payloads are emitted to `stdout` only through app-level stream handling.
 - User-facing diagnostics and failures are emitted to `stderr` only.
 - Failure diagnostics are emitted as `Error [<code>]: ...` on `stderr`, where `<code>` is the stable class-based `SCE-ERR-*` identifier from `CliError` in `cli/src/services/error.rs`; diagnostics are passed through shared redaction (`services::security::redact_sensitive_text`) before emission.
-- The diagnostic body differs by `CliError` variant: `CliError::Internal` renders the real `anyhow` source chain (`format!("{source:#}")`) plus class-default `Try:` remediation; `CliError::User` renders its catalog `UserError` message verbatim, with no low-level technical text and no `Try:` suffix. Both bodies are styled through the same stderr TTY/`NO_COLOR` policy before redaction and emission.
+- The diagnostic body differs by `CliError` variant: `CliError::Internal` renders the real `anyhow` source chain (`format!("{source:#}")`) plus class-default `Try:` remediation; `CliError::User` renders its catalog `UserError` template, with non-authentication automatic-sync payload reasons included only in that reviewed message and no technical source chain or `Try:` suffix. Both bodies are styled through the same stderr TTY/`NO_COLOR` policy before redaction and emission.
 - Command handlers now return payload strings to the app dispatcher; the app owns stream selection and final emission.
 
 ## Implementation surface

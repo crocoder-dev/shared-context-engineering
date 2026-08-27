@@ -191,6 +191,7 @@ pub fn default_runtime_command(name: &str) -> Option<RuntimeCommand> {
         services::sync::NAME => Some(RuntimeCommand::Sync(services::sync::command::SyncCommand {
             request: services::sync::SyncRequest {
                 format: services::output_format::OutputFormat::Text,
+                invocation: services::sync::SyncInvocation::Manual,
             },
         })),
         _ => None,

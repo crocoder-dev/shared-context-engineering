@@ -13,6 +13,13 @@ pub const NAME: &str = "sync";
 use crate::services::output_format::OutputFormat;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncInvocation {
+    Manual,
+    Automatic,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SyncRequest {
     pub format: OutputFormat,
+    pub invocation: SyncInvocation,
 }

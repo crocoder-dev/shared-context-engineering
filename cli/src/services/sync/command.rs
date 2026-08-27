@@ -1,7 +1,7 @@
 use std::io::Write;
 
 use crate::app::ContextWithRepoRoot;
-use crate::services::error::{CliError, UserError};
+use crate::services::error::{AutomaticSyncFailureKind, CliError, UserError};
 use crate::services::sync::progress::{
     IndicatifProgressReporter, NoopProgressReporter, ProgressReporter,
 };
@@ -32,7 +32,30 @@ where
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn classify_sync_error(err: TraceSyncError) -> CliError {
+fn classify_sync_error(
+    err: TraceSyncError,
+    invocation: crate::services::sync::SyncInvocation,
+) -> CliError {
+    if invocation == crate::services::sync::SyncInvocation::Automatic {
+        let failure_kind = if err.is_authentication_failure() {
+            AutomaticSyncFailureKind::Authentication
+        } else {
+            match &err {
+                TraceSyncError::ControlPlane(_) => AutomaticSyncFailureKind::ControlPlane,
+                TraceSyncError::Stream { .. } => AutomaticSyncFailureKind::Stream,
+                TraceSyncError::Runtime(_) => AutomaticSyncFailureKind::Runtime,
+            }
+        };
+        let reason = err.to_string();
+        return CliError::user_with_source(
+            UserError::AutomaticSyncFailed {
+                failure_kind,
+                reason,
+            },
+            err,
+        );
+    }
+
     if err.is_authentication_failure() {
         CliError::user_with_source(UserError::NotAuthenticated, err)
     } else {
@@ -87,7 +110,7 @@ impl SyncCommand {
                 run_current_sync_with_progress_and_clock(&repo_root, &mut progress, clock)
             }
         }
-        .map_err(classify_sync_error)?;
+        .map_err(|error| classify_sync_error(error, self.request.invocation))?;
 
         render_sync::render(&report, self.request.format)
             .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))
@@ -99,11 +122,12 @@ mod tests {
     use super::classify_sync_error;
     use crate::services::agent_trace_sync::control_plane::ControlPlaneError;
     use crate::services::agent_trace_sync::StreamSyncError;
-    use crate::services::error::CliError;
+    use crate::services::error::{AutomaticSyncFailureKind, CliError};
     use crate::services::sync::sync::TraceSyncError;
+    use crate::services::sync::SyncInvocation;
 
     fn assert_user_not_authenticated(err: TraceSyncError) {
-        match classify_sync_error(err) {
+        match classify_sync_error(err, SyncInvocation::Manual) {
             CliError::User { error, source } => {
                 assert_eq!(error.key(), "auth.not_authenticated");
                 assert!(source.is_some());
@@ -113,7 +137,7 @@ mod tests {
     }
 
     fn assert_internal(err: TraceSyncError) {
-        match classify_sync_error(err) {
+        match classify_sync_error(err, SyncInvocation::Manual) {
             CliError::Internal { .. } => {}
             other @ CliError::User { .. } => panic!("expected CliError::Internal, got {other:?}"),
         }
