@@ -15,7 +15,8 @@ use super::driver::MutationCursorDriver;
 /// them.
 #[quint_test(
     spec = "../spec/mutation_cursor.qnt",
-    test = "testMbtDriverTransportsNonDefaultArguments"
+    test = "testMbtDriverTransportsNonDefaultArguments",
+    max_samples = 1
 )]
 fn mutation_cursor_transports_non_default_arguments() -> impl Driver {
     MutationCursorDriver::default()
@@ -25,7 +26,8 @@ fn mutation_cursor_transports_non_default_arguments() -> impl Driver {
 /// semantics for a `Start` observation.
 #[quint_test(
     spec = "../spec/mutation_cursor.qnt",
-    test = "testStartObservesBeforeActivation"
+    test = "testStartObservesBeforeActivation",
+    max_samples = 1
 )]
 fn mutation_cursor_start_observes_before_activation() -> impl Driver {
     MutationCursorDriver::default()
@@ -34,7 +36,8 @@ fn mutation_cursor_start_observes_before_activation() -> impl Driver {
 /// Replays `testCloseObservesBeforeDeactivation`.
 #[quint_test(
     spec = "../spec/mutation_cursor.qnt",
-    test = "testCloseObservesBeforeDeactivation"
+    test = "testCloseObservesBeforeDeactivation",
+    max_samples = 1
 )]
 fn mutation_cursor_close_observes_before_deactivation() -> impl Driver {
     MutationCursorDriver::default()
@@ -43,7 +46,8 @@ fn mutation_cursor_close_observes_before_deactivation() -> impl Driver {
 /// Replays `testContendedIntervalsRemainAiContended`.
 #[quint_test(
     spec = "../spec/mutation_cursor.qnt",
-    test = "testContendedIntervalsRemainAiContended"
+    test = "testContendedIntervalsRemainAiContended",
+    max_samples = 1
 )]
 fn mutation_cursor_contended_intervals_remain_ai_contended() -> impl Driver {
     MutationCursorDriver::default()
@@ -52,7 +56,8 @@ fn mutation_cursor_contended_intervals_remain_ai_contended() -> impl Driver {
 /// Replays `testNoChangeHookReplayCannotStealFutureChange`.
 #[quint_test(
     spec = "../spec/mutation_cursor.qnt",
-    test = "testNoChangeHookReplayCannotStealFutureChange"
+    test = "testNoChangeHookReplayCannotStealFutureChange",
+    max_samples = 1
 )]
 fn mutation_cursor_no_change_hook_replay_cannot_steal_future_change() -> impl Driver {
     MutationCursorDriver::default()
@@ -61,7 +66,8 @@ fn mutation_cursor_no_change_hook_replay_cannot_steal_future_change() -> impl Dr
 /// Replays `testConcurrentObservationsHaveOneWinner`.
 #[quint_test(
     spec = "../spec/mutation_cursor.qnt",
-    test = "testConcurrentObservationsHaveOneWinner"
+    test = "testConcurrentObservationsHaveOneWinner",
+    max_samples = 1
 )]
 fn mutation_cursor_concurrent_observations_have_one_winner() -> impl Driver {
     MutationCursorDriver::default()
@@ -70,7 +76,8 @@ fn mutation_cursor_concurrent_observations_have_one_winner() -> impl Driver {
 /// Replays `testTaintInvalidatesPreparedObservation`.
 #[quint_test(
     spec = "../spec/mutation_cursor.qnt",
-    test = "testTaintInvalidatesPreparedObservation"
+    test = "testTaintInvalidatesPreparedObservation",
+    max_samples = 1
 )]
 fn mutation_cursor_taint_invalidates_prepared_observation() -> impl Driver {
     MutationCursorDriver::default()
@@ -79,7 +86,8 @@ fn mutation_cursor_taint_invalidates_prepared_observation() -> impl Driver {
 /// Replays `testRecoveryEstablishesBaseline`.
 #[quint_test(
     spec = "../spec/mutation_cursor.qnt",
-    test = "testRecoveryEstablishesBaseline"
+    test = "testRecoveryEstablishesBaseline",
+    max_samples = 1
 )]
 fn mutation_cursor_recovery_establishes_baseline() -> impl Driver {
     MutationCursorDriver::default()
@@ -88,7 +96,8 @@ fn mutation_cursor_recovery_establishes_baseline() -> impl Driver {
 /// Replays `testClosedScopeCannotReactivate`.
 #[quint_test(
     spec = "../spec/mutation_cursor.qnt",
-    test = "testClosedScopeCannotReactivate"
+    test = "testClosedScopeCannotReactivate",
+    max_samples = 1
 )]
 fn mutation_cursor_closed_scope_cannot_reactivate() -> impl Driver {
     MutationCursorDriver::default()
@@ -104,7 +113,8 @@ fn mutation_cursor_closed_scope_cannot_reactivate() -> impl Driver {
 /// not to change — and independently reaches the same no-op outcome.
 #[quint_test(
     spec = "../spec/mutation_cursor.qnt",
-    test = "testMbtGuardedPrepareInvokesRealPrepare"
+    test = "testMbtGuardedPrepareInvokesRealPrepare",
+    max_samples = 1
 )]
 fn mutation_cursor_guarded_prepare_invokes_real_prepare() -> impl Driver {
     MutationCursorDriver::default()
@@ -118,7 +128,8 @@ fn mutation_cursor_guarded_prepare_invokes_real_prepare() -> impl Driver {
 /// the same no-op outcome.
 #[quint_test(
     spec = "../spec/mutation_cursor.qnt",
-    test = "testMbtGuardedRecoverInvokesRealRecover"
+    test = "testMbtGuardedRecoverInvokesRealRecover",
+    max_samples = 1
 )]
 fn mutation_cursor_guarded_recover_invokes_real_recover() -> impl Driver {
     MutationCursorDriver::default()
@@ -134,5 +145,23 @@ fn mutation_cursor_guarded_recover_invokes_real_recover() -> impl Driver {
     max_steps = 30
 )]
 fn mutation_cursor_generated_traces_refine_rust_protocol() -> impl Driver {
+    MutationCursorDriver::default()
+}
+
+/// Coverage backstop: `test = "test.*"` is passed through unescaped into
+/// `quint test`'s `--match` as `^test.*$`, so this replays every top-level
+/// `test...`-named `run` in `spec/mutation_cursor.qnt` — not just the
+/// individually named scenarios above — through the real `protocol.rs`. Each
+/// matched `run` is deterministic, so `max_samples = 1`. This exists so a new
+/// named Quint scenario is automatically exercised here without also
+/// requiring a new hand-written Rust wrapper; the individually named tests
+/// above stay for readable `cargo test` failure output on the scenarios
+/// worth naming.
+#[quint_test(
+    spec = "../spec/mutation_cursor.qnt",
+    test = "test.*",
+    max_samples = 1
+)]
+fn mutation_cursor_all_named_scenarios_refine_rust_protocol() -> impl Driver {
     MutationCursorDriver::default()
 }
