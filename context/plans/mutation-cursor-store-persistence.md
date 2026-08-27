@@ -133,13 +133,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: local — additive schema-only migration; no Rust code consumes these new tables yet (T02+ wire codecs, loads, and commits against them). No durable context synchronization is required for this task; the plan's `Context sync` entries are authored by T11 once the full store lands.
   - Context synchronization: synced
 
-- [ ] T02: `Add revision and enum domain<->SQL codecs` (status:todo)
+- [x] T02: `Add revision and enum domain<->SQL codecs` (status:done)
   - Task ID: T02
   - Scope: In — create `cli/src/services/mutation_trace/store.rs` with `encode_revision`/`decode_revision` (`u64` <-> 8-byte big-endian `BLOB`) and explicit codecs for `ActorKind`, `FailureKind`, `ScopeStatus`, `Attribution`'s discriminant, and `Boundary`'s discriminant. Out — any query, projection, or commit logic (T03+).
   - Dependencies: T01
   - Done when: `encode_revision`/`decode_revision` round-trip exactly for `0`, `1`, `i64::MAX`, `i64::MAX + 1`, and `u64::MAX`; every enum variant round-trips through its codec; no codec relies on `Debug` formatting or implicit serde representation.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace::store::`
-  - Context synchronization: pending
+  - Completed: 2026-08-27
+  - Files changed: `cli/src/services/mutation_trace/store.rs` (new); `cli/src/services/mutation_trace/mod.rs`
+  - Result: Added `cli/src/services/mutation_trace/store.rs` with `encode_revision`/`decode_revision` (`u64` <-> `[u8; 8]` big-endian) and explicit `encode_*`/`decode_*` function-pair codecs for `ActorKind`, `FailureKind`, `ScopeStatus`, a new `AttributionKind` discriminant type (`ineligible_unscoped`/`ai_exclusive`/`ai_contended`, derived from `Attribution` via a new `attribution_kind` accessor), and a new `BoundaryKind` discriminant type (`start`/`advance`/`close`/`flush`, derived from `Boundary` via a new `boundary_kind` accessor) — every string constant matches migration `003`'s `CHECK (... IN (...))` allow-lists exactly. Decode functions return `anyhow::Result` and reject unrecognized strings via `anyhow::bail!`, matching the crate's existing `agent_trace_db`/`repository.rs` error convention. No codec derives from or matches on `Debug` output. Added `pub mod store;` to `mod.rs` so the module compiles and the `mutation_trace::store::` test path resolves. `Attribution`'s and `Boundary`'s full payload fields (`attribution_scope_id`, `boundary_scope_id`/`boundary_event_id`) are left to the row-reconstruction logic in T03/T07, matching the task's "discriminant"-only scope.
+  - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace::store::` — passed, 12/12; `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` — passed after one auto-formatting pass (no manual diff needed beyond `cargo fmt`); `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` — passed, zero warnings.
+  - Done checks: `encode_revision`/`decode_revision` round-trip exactly for `0`, `1`, `i64::MAX`, `i64::MAX + 1`, `u64::MAX` (verified by `revision_round_trips_at_boundary_values`); every `ActorKind`/`FailureKind`/`ScopeStatus`/`AttributionKind`/`BoundaryKind` variant round-trips through its own codec (verified by five dedicated `*_round_trips_every_variant` tests); no codec relies on `Debug` formatting or implicit serde representation (verified by inspection — every codec is a hand-written `match` over string literals, no `#[derive(Display)]`/serde attribute anywhere in the file).
+  - Context impact: local — new codec functions and types confined to a new, not-yet-wired-in file; no caller exists yet (T03+ will be the first consumer), so no root context file describes runtime behavior this changes yet. `context/cli/mutation-trace-protocol.md`'s "not yet wired into any hook, command, or database call site" framing remains accurate until a real DB call site lands (T07), matching the plan's assumption that this update is deferred to task context synchronization once that framing goes stale.
+  - Context synchronization: synced
 
 - [ ] T03: `Add bounded WorktreeProjection load and cold-path MutationEvent read` (status:todo)
   - Task ID: T03
