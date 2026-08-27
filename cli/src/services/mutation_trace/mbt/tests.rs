@@ -157,11 +157,7 @@ fn mutation_cursor_generated_traces_refine_rust_protocol() -> impl Driver {
 /// requiring a new hand-written Rust wrapper; the individually named tests
 /// above stay for readable `cargo test` failure output on the scenarios
 /// worth naming.
-#[quint_test(
-    spec = "../spec/mutation_cursor.qnt",
-    test = "test.*",
-    max_samples = 1
-)]
+#[quint_test(spec = "../spec/mutation_cursor.qnt", test = "test.*", max_samples = 1)]
 fn mutation_cursor_all_named_scenarios_refine_rust_protocol() -> impl Driver {
     MutationCursorDriver::default()
 }
