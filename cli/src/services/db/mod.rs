@@ -321,6 +321,117 @@ async fn execute_insert_pair_if_absent_body(
     Ok(true)
 }
 
+#[allow(dead_code)]
+pub struct TransactionStatement<'a> {
+    sql: &'a str,
+    params: turso::params::Params,
+    expected_rows_affected: Option<u64>,
+}
+
+impl<'a> TransactionStatement<'a> {
+    #[allow(dead_code)]
+    pub fn new(sql: &'a str, params: impl turso::params::IntoParams) -> Result<Self> {
+        let params = turso::params::IntoParams::into_params(params)
+            .map_err(|e| anyhow::anyhow!("parameter conversion failed: {sql}: {e}"))?;
+
+        Ok(Self {
+            sql,
+            params,
+            expected_rows_affected: None,
+        })
+    }
+
+    #[allow(dead_code)]
+    pub fn expect_rows_affected(mut self, expected: u64) -> Self {
+        self.expected_rows_affected = Some(expected);
+        self
+    }
+}
+
+#[allow(dead_code)]
+fn is_retryable_turso_error(error: &turso::Error) -> bool {
+    matches!(error, turso::Error::Busy(_) | turso::Error::BusySnapshot(_))
+}
+
+#[allow(dead_code)]
+enum CasBatchFailure {
+    Retryable(anyhow::Error),
+    Deterministic(anyhow::Error),
+}
+
+#[allow(dead_code)]
+fn classify_turso_error(db_name: &str, action: &str, error: &turso::Error) -> CasBatchFailure {
+    let wrapped = anyhow::anyhow!("{db_name} {action}: {error}");
+
+    if is_retryable_turso_error(error) {
+        CasBatchFailure::Retryable(wrapped)
+    } else {
+        CasBatchFailure::Deterministic(wrapped)
+    }
+}
+
+#[allow(dead_code)]
+enum CasBatchAttemptOutcome {
+    Settled(bool),
+    Deterministic(anyhow::Error),
+}
+
+#[allow(dead_code)]
+fn cas_batch_failure_into_attempt_result(
+    failure: CasBatchFailure,
+) -> Result<CasBatchAttemptOutcome> {
+    match failure {
+        CasBatchFailure::Retryable(err) => Err(err),
+        CasBatchFailure::Deterministic(err) => Ok(CasBatchAttemptOutcome::Deterministic(err)),
+    }
+}
+
+#[allow(dead_code)]
+async fn execute_cas_batch_body(
+    tx: &turso::transaction::Transaction<'_>,
+    db_name: &str,
+    guard: &TransactionStatement<'_>,
+    statements: &[TransactionStatement<'_>],
+) -> std::result::Result<bool, CasBatchFailure> {
+    let guard_rows_affected = tx
+        .execute(guard.sql, guard.params.clone())
+        .await
+        .map_err(|e| {
+            classify_turso_error(db_name, &format!("execute failed: {}", guard.sql), &e)
+        })?;
+
+    match guard_rows_affected {
+        0 => return Ok(false),
+        1 => {}
+        n => {
+            return Err(CasBatchFailure::Deterministic(anyhow::anyhow!(
+                "{db_name} CAS guard affected {n} rows; expected 0 or 1: {}",
+                guard.sql
+            )));
+        }
+    }
+
+    for statement in statements {
+        let rows_affected = tx
+            .execute(statement.sql, statement.params.clone())
+            .await
+            .map_err(|e| {
+                classify_turso_error(db_name, &format!("execute failed: {}", statement.sql), &e)
+            })?;
+
+        if let Some(expected) = statement.expected_rows_affected {
+            if rows_affected != expected {
+                return Err(CasBatchFailure::Deterministic(anyhow::anyhow!(
+                    "{db_name} statement affected {rows_affected} rows; expected {expected}: {}",
+                    statement.sql
+                )));
+            }
+        }
+    }
+
+    Ok(true)
+}
+
 struct TursoConnectionCore<M: DbSpec> {
     conn: turso::Connection,
     runtime: tokio::runtime::Runtime,
@@ -738,6 +849,62 @@ impl<M: DbSpec> TursoDb<M> {
         Ok(results)
     }
 
+    #[allow(dead_code)]
+    pub fn execute_transactional_cas_batch(
+        &self,
+        operation_name: &str,
+        retry_hint: &str,
+        guard: &TransactionStatement<'_>,
+        statements: &[TransactionStatement<'_>],
+    ) -> Result<bool> {
+        let db_name = M::db_name();
+
+        let outcome = run_with_retry_sync(
+            resolve_query_retry_policy::<M>(),
+            operation_name,
+            retry_hint,
+            |_| {
+                block_on_isolated(&self.core.runtime, async {
+                    let tx = match turso::transaction::Transaction::new_unchecked(
+                        &self.core.conn,
+                        turso::transaction::TransactionBehavior::Immediate,
+                    )
+                    .await
+                    {
+                        Ok(tx) => tx,
+                        Err(e) => {
+                            return cas_batch_failure_into_attempt_result(classify_turso_error(
+                                db_name,
+                                "failed to begin transaction",
+                                &e,
+                            ));
+                        }
+                    };
+
+                    match execute_cas_batch_body(&tx, db_name, guard, statements).await {
+                        Ok(applied) => match tx.commit().await {
+                            Ok(()) => Ok(CasBatchAttemptOutcome::Settled(applied)),
+                            Err(e) => cas_batch_failure_into_attempt_result(classify_turso_error(
+                                db_name,
+                                "failed to commit transaction",
+                                &e,
+                            )),
+                        },
+                        Err(failure) => {
+                            let _ = tx.rollback().await;
+                            cas_batch_failure_into_attempt_result(failure)
+                        }
+                    }
+                })
+            },
+        )?;
+
+        match outcome {
+            CasBatchAttemptOutcome::Settled(applied) => Ok(applied),
+            CasBatchAttemptOutcome::Deterministic(err) => Err(err),
+        }
+    }
+
     /// Run all embedded migrations in order.
     ///
     /// Applied migration IDs are recorded in `__sce_migrations` so later
@@ -1057,7 +1224,8 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::thread;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use super::*;
 
@@ -1110,6 +1278,407 @@ mod tests {
         if let Some(parent) = db_path.parent() {
             let _ = fs::remove_dir_all(parent);
         }
+    }
+
+    fn open_cas_test_db() -> (TursoDb<TestDbSpec>, PathBuf) {
+        let db_path = unique_test_db_path();
+        let db = TursoDb::<TestDbSpec>::new_at(&db_path).expect("test DB should open");
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS cas_target (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL)",
+            (),
+        )
+        .expect("cas_target table creation should succeed");
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS cas_effect (name TEXT PRIMARY KEY)",
+            (),
+        )
+        .expect("cas_effect table creation should succeed");
+        db.execute("INSERT INTO cas_target (id, revision) VALUES (1, 0)", ())
+            .expect("cas_target seed row should insert");
+
+        (db, db_path)
+    }
+
+    fn cas_target_revision(db: &TursoDb<TestDbSpec>, id: i64) -> i64 {
+        db.query_map(
+            "SELECT revision FROM cas_target WHERE id = ?1",
+            (id,),
+            |row| row.get::<i64>(0).map_err(Into::into),
+        )
+        .expect("cas_target revision read should succeed")
+        .into_iter()
+        .next()
+        .expect("cas_target seed row should exist")
+    }
+
+    fn cas_effect_names(db: &TursoDb<TestDbSpec>) -> Vec<String> {
+        db.query_map("SELECT name FROM cas_effect ORDER BY name", (), |row| {
+            row.get::<String>(0).map_err(Into::into)
+        })
+        .expect("cas_effect read should succeed")
+    }
+
+    #[test]
+    fn execute_transactional_cas_batch_returns_false_and_runs_nothing_when_guard_matches_no_rows() {
+        let (db, db_path) = open_cas_test_db();
+        let guard = TransactionStatement::new(
+            "UPDATE cas_target SET revision = 1 WHERE id = 1 AND revision = 999",
+            (),
+        )
+        .expect("guard statement should build");
+        let statements =
+            [
+                TransactionStatement::new("INSERT INTO cas_effect (name) VALUES ('applied')", ())
+                    .expect("effect statement should build"),
+            ];
+
+        let applied = db
+            .execute_transactional_cas_batch("cas test", "retry the operation", &guard, &statements)
+            .expect("no-op CAS batch should succeed");
+
+        assert!(!applied);
+        assert_eq!(cas_target_revision(&db, 1), 0);
+        assert!(cas_effect_names(&db).is_empty());
+
+        cleanup_test_db(db, &db_path);
+    }
+
+    #[test]
+    fn execute_transactional_cas_batch_returns_true_and_runs_every_statement_when_guard_matches_one_row(
+    ) {
+        let (db, db_path) = open_cas_test_db();
+        let guard = TransactionStatement::new(
+            "UPDATE cas_target SET revision = 1 WHERE id = 1 AND revision = 0",
+            (),
+        )
+        .expect("guard statement should build");
+        let statements =
+            [
+                TransactionStatement::new("INSERT INTO cas_effect (name) VALUES ('applied')", ())
+                    .expect("effect statement should build"),
+            ];
+
+        let applied = db
+            .execute_transactional_cas_batch("cas test", "retry the operation", &guard, &statements)
+            .expect("applied CAS batch should succeed");
+
+        assert!(applied);
+        assert_eq!(cas_target_revision(&db, 1), 1);
+        assert_eq!(cas_effect_names(&db), vec![String::from("applied")]);
+
+        cleanup_test_db(db, &db_path);
+    }
+
+    #[test]
+    fn execute_transactional_cas_batch_rolls_back_and_fails_after_one_attempt_on_deterministic_failure(
+    ) {
+        let (db, db_path) = open_cas_test_db();
+        db.execute("INSERT INTO cas_effect (name) VALUES ('applied')", ())
+            .expect("pre-existing conflicting row should insert");
+        let guard = TransactionStatement::new(
+            "UPDATE cas_target SET revision = 1 WHERE id = 1 AND revision = 0",
+            (),
+        )
+        .expect("guard statement should build");
+        let statements =
+            [
+                TransactionStatement::new("INSERT INTO cas_effect (name) VALUES ('applied')", ())
+                    .expect("effect statement should build"),
+            ];
+
+        let started_at = Instant::now();
+        let error = db
+            .execute_transactional_cas_batch("cas test", "retry the operation", &guard, &statements)
+            .expect_err("duplicate insert should fail deterministically");
+        let elapsed = started_at.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "deterministic failure appears to have been retried instead of failing after one attempt: {elapsed:?}"
+        );
+        assert!(error.to_string().contains("execute failed"));
+        assert_eq!(cas_target_revision(&db, 1), 0);
+        assert_eq!(cas_effect_names(&db), vec![String::from("applied")]);
+
+        cleanup_test_db(db, &db_path);
+    }
+
+    #[test]
+    fn execute_transactional_cas_batch_rejects_a_guard_matching_more_than_one_row_without_retrying()
+    {
+        let (db, db_path) = open_cas_test_db();
+        db.execute("INSERT INTO cas_target (id, revision) VALUES (2, 0)", ())
+            .expect("second cas_target row should insert");
+        let guard =
+            TransactionStatement::new("UPDATE cas_target SET revision = 1 WHERE revision = 0", ())
+                .expect("guard statement should build");
+        let statements =
+            [
+                TransactionStatement::new("INSERT INTO cas_effect (name) VALUES ('applied')", ())
+                    .expect("effect statement should build"),
+            ];
+
+        let started_at = Instant::now();
+        let error = db
+            .execute_transactional_cas_batch("cas test", "retry the operation", &guard, &statements)
+            .expect_err("a guard matching more than one row should fail deterministically");
+        let elapsed = started_at.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "guard over-match appears to have been retried instead of failing after one attempt: {elapsed:?}"
+        );
+        assert!(error.to_string().contains("expected 0 or 1"));
+        assert_eq!(cas_target_revision(&db, 1), 0);
+        assert_eq!(cas_target_revision(&db, 2), 0);
+        assert!(cas_effect_names(&db).is_empty());
+
+        cleanup_test_db(db, &db_path);
+    }
+
+    #[test]
+    fn execute_transactional_cas_batch_applies_a_statement_whose_expected_rows_affected_matches() {
+        let (db, db_path) = open_cas_test_db();
+        let guard = TransactionStatement::new(
+            "UPDATE cas_target SET revision = 1 WHERE id = 1 AND revision = 0",
+            (),
+        )
+        .expect("guard statement should build");
+        let statements =
+            [
+                TransactionStatement::new("INSERT INTO cas_effect (name) VALUES ('applied')", ())
+                    .expect("effect statement should build")
+                    .expect_rows_affected(1),
+            ];
+
+        let applied = db
+            .execute_transactional_cas_batch("cas test", "retry the operation", &guard, &statements)
+            .expect("a statement matching its row expectation should succeed");
+
+        assert!(applied);
+        assert_eq!(cas_target_revision(&db, 1), 1);
+        assert_eq!(cas_effect_names(&db), vec![String::from("applied")]);
+
+        cleanup_test_db(db, &db_path);
+    }
+
+    #[test]
+    fn execute_transactional_cas_batch_rejects_a_statement_affecting_fewer_rows_than_expected() {
+        let (db, db_path) = open_cas_test_db();
+        let guard = TransactionStatement::new(
+            "UPDATE cas_target SET revision = 1 WHERE id = 1 AND revision = 0",
+            (),
+        )
+        .expect("guard statement should build");
+        let statements = [TransactionStatement::new(
+            "UPDATE cas_effect SET name = 'applied' WHERE name = 'missing'",
+            (),
+        )
+        .expect("effect statement should build")
+        .expect_rows_affected(1)];
+
+        let error = db
+            .execute_transactional_cas_batch("cas test", "retry the operation", &guard, &statements)
+            .expect_err("a statement affecting zero rows should fail its row expectation");
+
+        assert!(error.to_string().contains("affected 0 rows"));
+        assert!(error.to_string().contains("expected 1"));
+        assert_eq!(cas_target_revision(&db, 1), 0);
+
+        cleanup_test_db(db, &db_path);
+    }
+
+    #[test]
+    fn execute_transactional_cas_batch_rejects_a_statement_affecting_more_rows_than_expected() {
+        let (db, db_path) = open_cas_test_db();
+        db.execute("INSERT INTO cas_effect (name) VALUES ('a')", ())
+            .expect("first pre-existing effect row should insert");
+        db.execute("INSERT INTO cas_effect (name) VALUES ('b')", ())
+            .expect("second pre-existing effect row should insert");
+        let guard = TransactionStatement::new(
+            "UPDATE cas_target SET revision = 1 WHERE id = 1 AND revision = 0",
+            (),
+        )
+        .expect("guard statement should build");
+        let statements =
+            [
+                TransactionStatement::new("DELETE FROM cas_effect WHERE name IN ('a', 'b')", ())
+                    .expect("effect statement should build")
+                    .expect_rows_affected(1),
+            ];
+
+        let error = db
+            .execute_transactional_cas_batch("cas test", "retry the operation", &guard, &statements)
+            .expect_err(
+                "a statement affecting more rows than expected should fail its row expectation",
+            );
+
+        assert!(error.to_string().contains("affected 2 rows"));
+        assert!(error.to_string().contains("expected 1"));
+        assert_eq!(cas_target_revision(&db, 1), 0);
+        assert_eq!(
+            cas_effect_names(&db),
+            vec![String::from("a"), String::from("b")]
+        );
+
+        cleanup_test_db(db, &db_path);
+    }
+
+    #[test]
+    fn execute_transactional_cas_batch_allows_a_statement_with_no_row_expectation_to_affect_zero_rows(
+    ) {
+        let (db, db_path) = open_cas_test_db();
+        let guard = TransactionStatement::new(
+            "UPDATE cas_target SET revision = 1 WHERE id = 1 AND revision = 0",
+            (),
+        )
+        .expect("guard statement should build");
+        let statements = [TransactionStatement::new(
+            "UPDATE cas_effect SET name = 'applied' WHERE name = 'missing'",
+            (),
+        )
+        .expect("effect statement should build")];
+
+        let applied = db
+            .execute_transactional_cas_batch("cas test", "retry the operation", &guard, &statements)
+            .expect("a statement with no row expectation should not enforce a row count");
+
+        assert!(applied);
+        assert_eq!(cas_target_revision(&db, 1), 1);
+
+        cleanup_test_db(db, &db_path);
+    }
+
+    #[test]
+    fn is_retryable_turso_error_classifies_busy_and_busy_snapshot_as_retryable() {
+        assert!(is_retryable_turso_error(&turso::Error::Busy(String::from(
+            "database is locked"
+        ))));
+        assert!(is_retryable_turso_error(&turso::Error::BusySnapshot(
+            String::from("snapshot is busy")
+        )));
+    }
+
+    #[test]
+    fn is_retryable_turso_error_classifies_every_other_variant_as_deterministic() {
+        assert!(!is_retryable_turso_error(&turso::Error::Constraint(
+            String::from("UNIQUE constraint failed")
+        )));
+        assert!(!is_retryable_turso_error(&turso::Error::Misuse(
+            String::from("misuse")
+        )));
+        assert!(!is_retryable_turso_error(&turso::Error::Corrupt(
+            String::from("corrupt")
+        )));
+        assert!(!is_retryable_turso_error(&turso::Error::NotAdb(
+            String::from("not a database")
+        )));
+        assert!(!is_retryable_turso_error(&turso::Error::DatabaseFull(
+            String::from("database full")
+        )));
+        assert!(!is_retryable_turso_error(&turso::Error::Readonly(
+            String::from("readonly")
+        )));
+        assert!(!is_retryable_turso_error(&turso::Error::Error(
+            String::from("generic error")
+        )));
+        assert!(!is_retryable_turso_error(&turso::Error::IoError(
+            std::io::ErrorKind::Other,
+            "io"
+        )));
+    }
+
+    #[test]
+    fn classify_turso_error_wraps_busy_as_retryable_with_the_supplied_action_context() {
+        let failure = classify_turso_error(
+            "test",
+            "failed to begin transaction",
+            &turso::Error::Busy(String::from("database is locked")),
+        );
+
+        match failure {
+            CasBatchFailure::Retryable(err) => {
+                let message = err.to_string();
+                assert!(message.contains("failed to begin transaction"));
+                assert!(message.contains("database is locked"));
+            }
+            CasBatchFailure::Deterministic(err) => {
+                panic!("Busy should classify as retryable, got deterministic: {err}")
+            }
+        }
+    }
+
+    #[test]
+    fn classify_turso_error_wraps_constraint_violations_as_deterministic_with_the_supplied_action_context(
+    ) {
+        let failure = classify_turso_error(
+            "test",
+            "failed to commit transaction",
+            &turso::Error::Constraint(String::from("UNIQUE constraint failed")),
+        );
+
+        match failure {
+            CasBatchFailure::Deterministic(err) => {
+                let message = err.to_string();
+                assert!(message.contains("failed to commit transaction"));
+                assert!(message.contains("UNIQUE constraint failed"));
+            }
+            CasBatchFailure::Retryable(err) => {
+                panic!("Constraint should classify as deterministic, got retryable: {err}")
+            }
+        }
+    }
+
+    #[test]
+    fn execute_transactional_cas_batch_retries_a_begin_immediate_busy_error_and_then_succeeds() {
+        const LOCK_HOLD_MS: u64 = 60;
+
+        let (db, db_path) = open_cas_test_db();
+        let lock_holder =
+            TursoDb::<TestDbSpec>::new_at(&db_path).expect("second handle should open");
+        lock_holder
+            .execute("BEGIN IMMEDIATE", ())
+            .expect("lock holder should acquire the write lock before any guard or statement runs");
+
+        let hold_handle = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(LOCK_HOLD_MS));
+            lock_holder
+                .execute("COMMIT", ())
+                .expect("lock holder should release the write lock");
+        });
+
+        let guard = TransactionStatement::new(
+            "UPDATE cas_target SET revision = 1 WHERE id = 1 AND revision = 0",
+            (),
+        )
+        .expect("guard statement should build");
+        let statements =
+            [
+                TransactionStatement::new("INSERT INTO cas_effect (name) VALUES ('applied')", ())
+                    .expect("effect statement should build"),
+            ];
+
+        let started_at = Instant::now();
+        let applied = db
+            .execute_transactional_cas_batch("cas test", "retry the operation", &guard, &statements)
+            .expect(
+                "CAS batch should retry BEGIN IMMEDIATE through the transient lock and succeed",
+            );
+        let elapsed = started_at.elapsed();
+
+        hold_handle
+            .join()
+            .expect("lock holder thread should finish");
+
+        assert!(
+            elapsed >= Duration::from_millis(LOCK_HOLD_MS / 2),
+            "success arrived before the lock holder could plausibly have released the write lock, meaning BEGIN IMMEDIATE contention was not actually retried: {elapsed:?}"
+        );
+        assert!(applied);
+        assert_eq!(cas_target_revision(&db, 1), 1);
+        assert_eq!(cas_effect_names(&db), vec![String::from("applied")]);
+
+        cleanup_test_db(db, &db_path);
     }
 
     #[test]
