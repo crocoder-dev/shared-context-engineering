@@ -7,16 +7,21 @@
 //! comparable state, then convert into this crate's own domain types
 //! (`super::super::types`) via `From` impls, so [`ModelState`] and the values
 //! [`super::driver::MutationCursorDriver`] extracts stay expressed in the
-//! same production types the rest of `mutation_trace` uses. `spec/
-//! mutation_cursor.qnt`'s verification-only `mbtAction` variable is never
-//! given a field here, so it is silently ignored by `serde`'s default
-//! unknown-field handling when the whole top-level state record is
-//! deserialized — that omission is what keeps `mbtAction` out of the
-//! compared state.
+//! same production types the rest of `mutation_trace` uses.
+//!
+//! [`WireModelState`] and every semantic `Wire*` record use
+//! `#[serde(deny_unknown_fields)]`, so a new Quint state variable or record
+//! field fails deserialization instead of being silently dropped. `spec/
+//! mutation_cursor.qnt`'s verification-only variables (`scopeStartCount`,
+//! `everTerminal`, every `*History` set, `evidenceAttempts`, `mbtAction`) are
+//! given explicit [`IgnoredAny`] fields on [`WireModelState`], so they are a
+//! deliberate exclusion from the compared state rather than an accidental
+//! one — adding a new Quint variable forces a choice between modeling it as
+//! semantic state or classifying it here as verification-only.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Deserialize;
+use serde::{de::IgnoredAny, Deserialize};
 
 use super::super::types::{
     ActorKind, AttemptId, AttemptState, AttemptStatus, Attribution, Boundary, EventId, EventKey,
@@ -240,6 +245,7 @@ impl From<WireAttemptStatus> for AttemptStatus {
 // ---------------------------------------------------------------------
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct WireScopeEvent {
     pub scope: WireScopeId,
     pub event: WireEventId,
@@ -295,7 +301,7 @@ impl From<WireAttribution> for Attribution {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct WireWorktreeState {
     pub cursor_tree: WireTreeId,
     pub revision: u64,
@@ -317,7 +323,7 @@ impl From<WireWorktreeState> for WorktreeState {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct WireScopeState {
     pub status: WireScopeStatus,
     pub actor_kind: WireActorKind,
@@ -335,7 +341,7 @@ impl From<WireScopeState> for ScopeState {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct WireAttemptState {
     pub status: WireAttemptStatus,
     pub boundary: WireBoundary,
@@ -357,7 +363,7 @@ impl From<WireAttemptState> for AttemptState {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct WireEventKey {
     pub scope_id: WireScopeId,
     pub event_id: WireEventId,
@@ -373,7 +379,7 @@ impl From<WireEventKey> for EventKey {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct WireMutationEvent {
     pub worktree_id: WireWorktreeId,
     pub revision: u64,
@@ -409,9 +415,10 @@ impl From<WireMutationEvent> for MutationEvent {
 /// The comparable subset of `spec/mutation_cursor.qnt`'s state: every
 /// variable named by AC5 (`worktrees`, `scopes`, `worktreeTrees`,
 /// `externalTaint`, `processedEvents`, `attempts`, `mutationEvents`),
-/// expressed in this crate's own domain types. `mbtAction` has no field here
-/// and is dropped by `serde`'s default unknown-field handling when
-/// [`WireModelState`] deserializes the full top-level state record.
+/// expressed in this crate's own domain types. Every other Quint variable is
+/// verification-only and is dropped via an explicit [`IgnoredAny`] field on
+/// [`WireModelState`], not by serde's default unknown-field handling — see
+/// that type.
 #[derive(Debug, Eq, PartialEq, Deserialize)]
 #[serde(from = "WireModelState")]
 pub struct ModelState {
@@ -424,9 +431,16 @@ pub struct ModelState {
     pub mutation_events: BTreeSet<MutationEvent>,
 }
 
+/// Mirrors every `var` in `spec/mutation_cursor.qnt`'s state, so adding a
+/// new Quint variable without updating this struct fails deserialization
+/// (`deny_unknown_fields`) instead of silently vanishing. Verification-only
+/// variables are still accepted, but only via an explicit [`IgnoredAny`]
+/// field — modeling a new Quint variable here as `IgnoredAny` is a
+/// deliberate "not semantic state" decision, not an oversight.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WireModelState {
+    // Semantic state: compared against Rust via `ModelState`.
     worktrees: BTreeMap<WireWorktreeId, WireWorktreeState>,
     scopes: BTreeMap<WireScopeId, WireScopeState>,
     worktree_trees: BTreeMap<WireWorktreeId, WireTreeId>,
@@ -434,6 +448,20 @@ struct WireModelState {
     processed_events: BTreeSet<WireEventKey>,
     attempts: BTreeMap<WireAttemptId, WireAttemptState>,
     mutation_events: BTreeSet<WireMutationEvent>,
+
+    // Verification-only: present in Quint's state for the model checker,
+    // not part of the Rust refinement comparison.
+    scope_start_count: IgnoredAny,
+    ever_terminal: IgnoredAny,
+    cursor_history: IgnoredAny,
+    protocol_history: IgnoredAny,
+    scope_history: IgnoredAny,
+    abandon_history: IgnoredAny,
+    start_history: IgnoredAny,
+    recovery_history: IgnoredAny,
+    taint_history: IgnoredAny,
+    evidence_attempts: IgnoredAny,
+    mbt_action: IgnoredAny,
 }
 
 impl From<WireModelState> for ModelState {
