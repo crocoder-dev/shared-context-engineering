@@ -1789,4 +1789,35 @@ module mutation_cursor {
       .expect(worktrees.get(WT1).revision == 1)
       .expect(attempts.get(Attempt5).status == Committed)
       .expect(Safety)
+
+  // Guarded-no-op regression: re-preparing Attempt0 after
+  // it is already Prepared hits `prepare`'s guarded branch
+  // (`attempts.get(attempt).status != Available`), which must still record
+  // `MbtPrepare({attempt: Attempt0, boundary: Advance(...)})` — the second
+  // call's own operation and arguments — rather than falling through to
+  // `MbtStutter`. `#[quint_test]` replays this through the real
+  // `protocol::prepare`, proving the Rust driver calls it a second time
+  // (never skipping the call because Quint's semantic state is unchanged)
+  // and independently reaches the same no-op outcome.
+  run testMbtGuardedPrepareInvokesRealPrepare =
+    init
+      .then(prepare(Attempt0, Start({ scope: Scope0, event: Event0 })))
+      .then(prepare(Attempt0, Advance({ scope: Scope0, event: Event1 })))
+      .expect(attempts.get(Attempt0).status == Prepared)
+      .expect(attempts.get(Attempt0).boundary == Start({ scope: Scope0, event: Event0 }))
+      .expect(Safety)
+
+  // Guarded-no-op regression: `recover(WT0)` on a worktree
+  // that is neither tainted, externally tainted, nor needing rebaseline hits
+  // `recover`'s guarded branch, which must still record
+  // `MbtRecover({worktree: WT0})` rather than `MbtStutter`. `#[quint_test]`
+  // replays this through the real `protocol::recover`, proving the Rust
+  // driver calls it (never skipping the call) and independently reaches the
+  // same no-op outcome.
+  run testMbtGuardedRecoverInvokesRealRecover =
+    init
+      .then(recover(WT0))
+      .expect(worktrees.get(WT0).cursorTree == Tree0)
+      .expect(worktrees.get(WT0).revision == 0)
+      .expect(Safety)
 }
