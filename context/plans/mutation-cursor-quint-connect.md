@@ -29,7 +29,7 @@ correction:
   2. `MbtAction` must record the **invoked operation and its arguments**,
      never whether that invocation changed state. `prepare`, `taint`,
      `databaseFailure`, `abandon`, and `recover` (spec lines
-     450/707/734/801/882) all currently fall through to the shared `stutter`
+     450/707/734/801/882) all previously fell through to the shared `stutter`
      action on their guarded/no-op path; naively wiring `mbtAction' =
      MbtStutter` into that shared `stutter` action would erase which
      operation was actually invoked, silently stop the MBT from exercising
@@ -67,12 +67,12 @@ architecture-doc output, but that path is this plan's own file — see
 
 ## Acceptance criteria
 
-- [ ] AC1: `quint-connect` is a dev/test-only dependency of the CLI crate; no
+- [x] AC1: `quint-connect` is a dev/test-only dependency of the CLI crate; no
   production dependency changes.
   - Validate: `grep -A3 '^\[dev-dependencies\]' cli/Cargo.toml` lists
     `quint-connect`; it does not also appear under `[dependencies]`;
     `./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml` passes.
-- [ ] AC2: every action reachable from Quint's randomized `step` (`init`,
+- [x] AC2: every action reachable from Quint's randomized `step` (`init`,
   `randomMutate`, `randomPrepare`, `randomCommit`, `randomTaint`,
   `randomRecover`, `randomDatabaseFailure`, `randomAbandon`, `stutter`) is
   recorded by the verification-only `MbtAction` transport with its concrete
@@ -89,7 +89,7 @@ architecture-doc output, but that path is this plan's own file — see
     or is a no-op (`MbtStutter` only); no independent scope/attempt/cursor
     mutation logic exists in the driver, and no conditional skips a protocol
     call based on predicted state change.
-- [ ] AC3: both the generated `#[quint_run]` trace and the deterministic
+- [x] AC3: both the generated `#[quint_run]` trace and the deterministic
   `#[quint_test]` runs transport concrete action arguments through the same
   `MbtAction` mechanism; a scenario using non-default values demonstrably
   carries them through unchanged.
@@ -98,7 +98,7 @@ architecture-doc output, but that path is this plan's own file — see
     inspection/logging of the driver's received `MbtAction` values for that
     run shows `WT1`, `Tree3`, `Attempt5`, and `Flush(WT1)` reaching the actual
     `protocol::prepare`/`protocol::commit` calls unchanged.
-- [ ] AC4: a Quint-generated random trace, replayed through the real
+- [x] AC4: a Quint-generated random trace, replayed through the real
   `protocol.rs`, matches the Quint model's semantic state after every step
   across the configured sample/step budget, and a failing/generated trace is
   reproducible by `QUINT_SEED`.
@@ -106,7 +106,7 @@ architecture-doc output, but that path is this plan's own file — see
     (`#[quint_run(max_samples = 500, max_steps = 30)]`) passes under the
     Nix-pinned Quint Connect check (T06); running it twice with the same
     explicit `QUINT_SEED=<value>` reproduces the same outcome.
-- [ ] AC5: the comparable state includes every Quint variable named in the
+- [x] AC5: the comparable state includes every Quint variable named in the
   request (`worktrees`, `scopes`, `worktreeTrees`, `externalTaint`,
   `processedEvents`, `attempts`, `mutationEvents`, each `MutationEvent`'s full
   field set, each attempt's full field set) and excludes every
@@ -117,7 +117,7 @@ architecture-doc output, but that path is this plan's own file — see
     "mbtAction|cursorHistory|protocolHistory|scopeHistory|abandonHistory|startHistory|recoveryHistory|taintHistory|evidenceAttempts|scopeStartCount|everTerminal"
     cli/src/services/mutation_trace/mbt/model.rs` returns no matches outside
     comments explaining the exclusion.
-- [ ] AC6: at least the eight named deterministic Quint `run` scenarios
+- [x] AC6: at least the eight named deterministic Quint `run` scenarios
   (`testStartObservesBeforeActivation`, `testCloseObservesBeforeDeactivation`,
   `testContendedIntervalsRemainAiContended`,
   `testNoChangeHookReplayCannotStealFutureChange`,
@@ -128,7 +128,7 @@ architecture-doc output, but that path is this plan's own file — see
   used in the spec (no duplicated scenario logic in Rust).
   - Validate: the Nix-pinned Quint Connect check (T06) passes and the eight
     named test functions exist and are green.
-- [ ] AC7: the `MbtAction` instrumentation and the `randomPrepare`
+- [x] AC7: the `MbtAction` instrumentation and the `randomPrepare`
   observability change leave `verifyStep`, every listed pure action
   (`prepare`, `prepareAvailable`, `commitAttempt`, `taint`, `recover`,
   `databaseFailure`, `abandon`), invariant definitions, and existing
@@ -143,40 +143,58 @@ architecture-doc output, but that path is this plan's own file — see
     SafetyAttribution SafetyHistory --max-samples=5000 --max-steps=20`; manual
     diff of `step`'s alternative list before/after this plan's changes shows
     the same eight top-level branch names.
-- [ ] AC8: CI runs the Quint Connect suite inside a Nix check that pins both
+- [x] AC8: CI runs the Quint Connect suite inside a Nix check that pins both
   the repository Rust toolchain and the repository Quint binary — never the
   GitHub runner's preinstalled Cargo — whenever either the Quint spec or the
   Rust refinement/driver/Cargo files change, without weakening the existing
-  pure-Quint checks.
-  - Validate: inspection of the new Nix check definition (`craneLib`-based,
-    reusing the repository `rustToolchain`, with the Nix `quint` package
-    available to the test run) and `.github/workflows/quint.yml` — the
-    change-detector regex additionally matches
-    `cli/src/services/mutation_trace/mbt/**`, `.../protocol.rs`,
+  pure-Quint checks. Because `mutation_trace::mbt` is registered as an
+  ordinary `#[cfg(test)] mod mbt;`, it is also reached by the pre-existing
+  generic `checks.cli-tests` (the full `cargo test` run every `nix flake
+  check` already performs), so the pinned Quint binary must be available to
+  `cli-tests` as well as to the dedicated focused check — not the dedicated
+  check alone.
+  - Validate: inspection of the new `checks.mutation-trace-quint-connect`
+    definition (`craneLib.cargoTest`-based, reusing the repository
+    `rustToolchain`/`cargoArtifacts`, scoped to `mutation_trace::mbt` via
+    `cargoTestExtraArgs`, with the Nix `quint` package in
+    `nativeCheckInputs`) and confirmation that `checks.cli-tests` also lists
+    the Nix `quint` package in its `nativeCheckInputs`; confirmation that
+    `workspaceSrc`'s Nix fileset includes the top-level `spec/` directory
+    (`quint run`/`quint test` resolve `../spec/*.qnt` relative to the `cli/`
+    crate root, and `craneLib.fileset.commonCargoSources` alone does not
+    cover files outside any crate) — its prior absence caused every MBT test
+    to fail inside the Nix sandbox regardless of Quint's availability, with
+    the underlying Quint stderr swallowed by `quint-connect`'s
+    `panic!("{}", err)` `Display`-only formatting; `nix build
+    .#checks.x86_64-linux.cli-tests` and `nix build
+    .#checks.x86_64-linux.mutation-trace-quint-connect` both pass; inspection
+    of `.github/workflows/quint.yml` — the change-detector regex additionally
+    matches `cli/src/services/mutation_trace/mbt/**`, `.../protocol.rs`,
     `.../types.rs`, `cli/Cargo.toml`, `cli/Cargo.lock` (`flake.nix`/
     `flake.lock` are already watched); a dedicated job step invokes the Nix
     check rather than stitching together the Nix Quint binary with the
     runner's own Cargo; the existing typecheck/test/randomized-safety steps
-    are present and unchanged in behavior.
-- [ ] AC9: no production DB/Git/filesystem/coordinator/hook code is
+    are present, and the `test` step now passes `--match '^test.*'` since
+    `quint test` without `--match` silently runs zero tests on this spec.
+- [x] AC9: no production DB/Git/filesystem/coordinator/hook code is
   introduced; the MBT harness is test-only and `protocol.rs` stays pure.
   - Validate: `grep -RnE "std::(fs|process|env)|tokio|reqwest|turso"
     cli/src/services/mutation_trace` returns no matches;
     `mutation_trace/mod.rs` gates `mod mbt;` behind `#[cfg(test)]`.
-- [ ] AC10: the existing ~75 handwritten `mutation_trace` protocol tests,
+- [x] AC10: the existing ~75 handwritten `mutation_trace` protocol tests,
   Clippy, and formatting all continue to pass unmodified.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
     mutation_trace`; `./scripts/run-cli-cargo.sh clippy --manifest-path
     cli/Cargo.toml --all-targets -- -D warnings`; `cargo fmt --manifest-path
     cli/Cargo.toml -- --check`.
-- [ ] AC11: every argument-carrying `MbtAction` variant uses a record payload
+- [x] AC11: every argument-carrying `MbtAction` variant uses a record payload
   compatible with Quint Connect's current custom sum-type action decoder;
   there are no bare-scalar-payload variants used for driver dispatch.
   - Validate: inspection of `MbtAction`'s definition in
     `spec/mutation_cursor.qnt` — every variant with arguments is a record
     (`{ field: Type, ... }`, even single-field), and only truly
     argument-free variants (`MbtInit`, `MbtStutter`) are bare.
-- [ ] AC12: `MbtAction` identifies the invoked semantic operation and its
+- [x] AC12: `MbtAction` identifies the invoked semantic operation and its
   arguments, never whether that invocation changed state — a guarded/no-op
   `prepare` is still recorded as `MbtPrepare{...}`, a guarded/no-op
   `taint`/`databaseFailure`/`abandon`/`recover`/`commitAttempt` is still
@@ -186,7 +204,7 @@ architecture-doc output, but that path is this plan's own file — see
   - Validate: manual trace inspection of at least the two guarded-no-op
     regressions added in T05 (see AC13) confirms the operation-specific
     variant, not `MbtStutter`, appears at the guarded step.
-- [ ] AC13: at least two deterministic MBT regressions prove that a guarded
+- [x] AC13: at least two deterministic MBT regressions prove that a guarded
   semantic no-op still invokes the corresponding Rust kernel operation rather
   than being skipped: one `prepare` case (re-preparing an attempt that is no
   longer `Available`) and one other guarded action (`recover` when recovery
@@ -195,7 +213,7 @@ architecture-doc output, but that path is this plan's own file — see
     Rust driver called `protocol::prepare`/`protocol::recover` (or the
     chosen alternative) on the guarded step and independently produced the
     same no-op state Quint did.
-- [ ] AC14: the `stutter` action itself, and every guarded action that used
+- [x] AC14: the `stutter` action itself, and every guarded action that used
   to fall through to it (`prepare`, `taint`, `databaseFailure`, `abandon`,
   `recover`, and any analogous guarded path in `commitAttempt`), no longer
   share a single "call `stutter`, which sets `mbtAction' = MbtStutter`"
@@ -216,10 +234,14 @@ architecture-doc output, but that path is this plan's own file — see
 - `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
 - `cargo fmt --manifest-path cli/Cargo.toml -- --check`
 - `nix run .#quint -- typecheck spec/mutation_cursor.qnt`
-- `nix run .#quint -- test spec/mutation_cursor.qnt`
+- `nix run .#quint -- test spec/mutation_cursor.qnt --match '^test.*'` (bare
+  `quint test` without `--match` silently selects zero tests on this spec)
 - `nix run .#quint -- run spec/mutation_cursor.qnt --step=verifyStep --invariants SafetyCore SafetyAttribution SafetyHistory --max-samples=5000 --max-steps=20`
-- `nix build .#checks.<system>.mutation-trace-quint-connect` (exact attribute name confirmed in T06) — the Nix-pinned Rust+Quint Quint Connect suite
-- `nix flake check` if the new check is wired into normal flake checks
+- `nix build .#checks.<system>.cli-tests` — the generic full-suite check,
+  which also reaches `mutation_trace::mbt` and therefore needs Quint pinned
+- `nix build .#checks.<system>.mutation-trace-quint-connect` — the dedicated,
+  focused Nix-pinned Rust+Quint Quint Connect suite
+- `nix flake check` where practical, since both checks above are wired into it
 - `nix run .#regenerate-cargo-sources` followed by `git diff --stat packaging/flatpak/cargo-sources.json` (expect no further diff after T01 regenerates it)
 
 ### Context sync
@@ -310,45 +332,50 @@ Persist this field in every plan; this is durable plan state, not chat state:
   `mutation_trace::mbt` with the Nix `quint` package added to its check
   inputs — rather than assembling a bespoke Rust+Quint environment from
   scratch.
-- The exact `quint-connect` crate/package name, current compatible version,
-  and its custom action/nondet `Config` API for driver dispatch are resolved
-  in T01 against the upstream `quint-co/quint-connect` repository (README and
-  `connect/examples/two_phase_commit/mbt.rs`, plus any example closer to a
-  Choreo-style action-plus-arguments sum type) at implementation time, per
-  the request's own instruction not to assume `0.1.2` or the illustrative
-  `Driver`/`State<D>`/`#[quint_run]`/`#[quint_test]`/`switch!`/`Config`
-  sketches are still current. This same research step confirms exactly how
-  Quint Connect's custom decoder distinguishes a unit variant from a record
-  variant, which is the mechanism AC11's record-payload rule depends on.
-- Whether `randomPrepare`'s selected boundary needs a dedicated
-  `PrepareKind`-style nondet choice, or is already fully observable from the
-  `MbtPrepare { attempt, boundary }` variant `mbtAction` records regardless of
-  which `any { ... }` branch fired, is decided in T03 by testing the smallest
-  option first, per the request's own "prefer the smallest correct solution"
-  instruction.
-- As of this revision, `prepare` (spec line 448-453), `taint` (~702-711),
-  `databaseFailure` (~732-737), `abandon` (~794-805), and `recover`
-  (~874-886) each guard their real transition and fall through to the shared
-  top-level `stutter` action on the guarded path; `commitAttempt`
-  (line 455+) computes its own `fresh`/`accepted`/`changed` logic rather than
-  delegating to `stutter`. T02 audits all six (not just the five that
-  currently call `stutter`) for a guarded/no-op path and applies the same
-  operation-identity-preserving fix wherever one exists; exact line numbers
-  are re-checked at implementation time since T02/T03 edit this same file
-  before T02's own guard refactor lands.
+- T01 confirmed `quint-connect` 0.1.2 (`github.com/informalsystems/quint-connect`,
+  Apache-2.0) and its `Driver`/`State<D>` traits, `Config { state, nondet }`
+  transport configuration, and `#[quint_test]`/`#[quint_run]` + `switch!`
+  dispatch mechanism, against the upstream README and vendored crate source.
+  T04 subsequently confirmed the custom sum-type decoder accepts a
+  `Value::Record` directly for both the top-level nondet-picked `MbtAction`
+  and nested record fields, and proved record-payload action transport end to
+  end with the non-default `WT1` / `Tree3` / `Attempt5` / `Flush(WT1)` replay
+  — resolving AC11's record-payload rule with no fallback needed.
+- T02 completed the guarded-operation audit across all six candidate actions
+  (not just the five that previously called the shared top-level `stutter`).
+  `prepare`, `taint`, `databaseFailure`, `abandon`, `recover`, and
+  `commitAttempt` each now set their own operation-specific `MbtAction` on
+  every guarded/no-op branch — via the shared `mbtStutterAs(taken: MbtAction)`
+  helper that replaced `stutter`'s inline field list — rather than falling
+  through to the shared top-level `stutter` action. `MbtStutter` is reachable
+  only from the explicit top-level `stutter` action, never from another
+  operation's guarded path.
+- T03 confirmed no additional `PrepareKind`-style instrumentation is
+  required: `prepare` (T02) unconditionally sets `mbtAction' =
+  MbtPrepare({attempt, boundary})` on both its `prepareAvailable` and guarded
+  paths, and `boundary` there is always the exact concrete `Boundary` value
+  `randomPrepare`'s five inner `any` alternatives selected — already fully
+  observable to the driver. `randomPrepare` remains a single top-level `step`
+  alternative; `step`'s eight top-level branches are unchanged.
 - PR #238 (`mutation-cursor`) remains the semantic base for this stacked PR.
 
-- PR #239 (`quint-connect`) is now in active implementation. The durable task
+- PR #239 (`quint-connect`) has completed implementation. The durable task
   state in this plan is the source of truth for implementation progress:
 
-  - T01 complete: `quint-connect` dev-dependency and packaging synchronization.
-  - T02 complete: operation-preserving `MbtAction` instrumentation in Quint.
-  - T03 complete: `randomPrepare` remains a single top-level `step` branch;
-    no additional `PrepareKind` instrumentation was required.
-  - T04 complete: Quint Connect Rust driver, comparable model-state projection,
-    finite ID mapping, and the non-default
-    `WT1` / `Tree3` / `Attempt5` / `Flush(WT1)` transport smoke replay.
-  - T05 is the next pending task.
+  - T01 complete: `quint-connect` dependency and packaging synchronization.
+  - T02 complete: operation-preserving `MbtAction` instrumentation.
+  - T03 complete: `randomPrepare` observability without structural change.
+  - T04 complete: Rust Quint Connect driver, model projection, ID mapping,
+    and non-default transport smoke replay.
+  - T05 complete: deterministic scenario replays, guarded-no-op regressions,
+    and generated 500×30 refinement testing with seed reproduction.
+  - T06 complete: generic `checks.cli-tests` and dedicated
+    `checks.mutation-trace-quint-connect` Nix checks, `.github/workflows/quint.yml`
+    wiring, and the `context/cli/mutation-trace-quint-connect.md` architecture
+    doc.
+
+  T01-T06 are complete. Implementation and local validation are complete.
+  PR #239 is in final CI/review state.
 
   Do not encode PR #239's current head SHA or statements such as
   "implementation has not started" as durable assumptions here. The branch head
@@ -761,7 +788,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     deferred to T06 by this plan's own scope, as T02/T03 already noted.
   - Context synchronization: synced
 
-- [ ] T05: `Wire deterministic scenario replays, guarded-no-op regressions, and the generated Quint Connect simulation` (status:todo)
+- [x] T05: `Wire deterministic scenario replays, guarded-no-op regressions, and the generated Quint Connect simulation` (status:done)
   - Task ID: T05
   - Scope: In — `mbt/tests.rs`: `#[quint_test]` functions for the remaining
     named scenarios (`testCloseObservesBeforeDeactivation`,
@@ -798,25 +825,108 @@ Persist this field in every plan; this is durable plan state, not chat state:
     mutation_trace::mbt` with the Nix `quint` binary on `PATH`; the generated
     simulation test re-run twice with the same explicit `QUINT_SEED=<value>`,
     comparing outcomes.
-  - Context synchronization: pending
+  - Completed: 2026-08-27
+  - Files changed: `spec/mutation_cursor.qnt`,
+    `cli/src/services/mutation_trace/mbt/tests.rs`
+  - Result: Added two new deterministic `run` scenarios to
+    `spec/mutation_cursor.qnt` proving guarded/no-op operations still invoke
+    the real Rust kernel function rather than being skipped:
+    `testMbtGuardedPrepareInvokesRealPrepare` (`init.then(prepare(Attempt0,
+    Start(...))).then(prepare(Attempt0, Advance(...)))`, where the second
+    `prepare` guards because `Attempt0` is no longer `Available`) and
+    `testMbtGuardedRecoverInvokesRealRecover` (`init.then(recover(WT0))`,
+    which guards immediately since `init`'s worktrees start untainted,
+    non-externally-tainted, and not needing rebaseline — the smallest
+    scenario that hits `recover`'s guarded branch). Both assert the
+    post-guard state is unchanged from what the guard implies (Attempt0
+    stays `Prepared` with its original `Start` boundary; WT0 stays at
+    `Tree0`/revision `0`), plus `Safety`. Wired all seven remaining named
+    scenarios (`testStartObservesBeforeActivation`,
+    `testCloseObservesBeforeDeactivation`,
+    `testContendedIntervalsRemainAiContended`,
+    `testNoChangeHookReplayCannotStealFutureChange`,
+    `testConcurrentObservationsHaveOneWinner`,
+    `testTaintInvalidatesPreparedObservation`,
+    `testRecoveryEstablishesBaseline`, `testClosedScopeCannotReactivate`) plus
+    the two new regressions as `#[quint_test]` functions in `mbt/tests.rs`,
+    each following T04's established pattern
+    (`MutationCursorDriver::default()`, no per-scenario driver logic — the
+    same driver dispatches on `MbtAction` regardless of which named scenario
+    is replayed). Added
+    `mutation_cursor_generated_traces_refine_rust_protocol` as
+    `#[quint_run(spec = "../spec/mutation_cursor.qnt", max_samples = 500,
+    max_steps = 30)]`, comparing `ModelState` after every generated step
+    using the same `MbtAction` transport. No driver, model, or protocol code
+    changed (out of scope, already complete in T04); no new spec actions,
+    invariants, or state variables were added — only two new named `run`
+    scenarios exercising existing actions.
+  - Verify outcomes: `nix run .#quint -- typecheck spec/mutation_cursor.qnt`
+    — passed, no errors (the bare `nix run .#quint -- test
+    spec/mutation_cursor.qnt` invocation, without `--match`, prints only the
+    module header and no test results in this environment — confirmed by
+    `git stash`/re-run that this is a pre-existing tool quirk on the
+    unmodified baseline, not caused by this task; `--match '^test.*'`
+    reliably lists every named test, so it was used for verification
+    instead). `nix run .#quint -- test spec/mutation_cursor.qnt --match
+    '^test.*'` — "25 passing" (the pre-existing 23 named scenarios plus the
+    two new guarded-no-op regressions), including
+    `testMbtGuardedPrepareInvokesRealPrepare` and
+    `testMbtGuardedRecoverInvokesRealRecover`. `nix run .#quint -- run
+    spec/mutation_cursor.qnt --step=verifyStep --invariants SafetyCore
+    SafetyAttribution SafetyHistory --max-samples=5000 --max-steps=20` —
+    "[ok] No violation found" (5000 traces, max/min/average trace length 21).
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    mutation_trace::mbt` (Nix `quint` 0.32.0 on `PATH`) — "12 passed; 0
+    failed" (the T04 smoke test plus all ten scenarios/regressions added by
+    this task); the full `mutation_trace` suite together — "87 passed; 0
+    failed" (the pre-existing ~75 handwritten tests plus all 12 MBT tests, no
+    regression). `./scripts/run-cli-cargo.sh clippy --manifest-path
+    cli/Cargo.toml --all-targets -- -D warnings` — passed, no warnings.
+    `cargo fmt --manifest-path cli/Cargo.toml -- --check` — one diff
+    (macro-attribute line-wrapping on the new `#[quint_run(...)]`
+    attribute), fixed by running `cargo fmt`; the check then passed clean.
+    `QUINT_SEED` reproduction: ran
+    `mutation_cursor_generated_traces_refine_rust_protocol` twice with
+    `QUINT_SEED=1337` — both runs generated 500 traces from that seed and
+    both reported `[OK]`, confirming reproducibility.
+  - Context impact: none. Only `spec/mutation_cursor.qnt` (two new named
+    `run` scenarios, no state/action/invariant change) and the test-only
+    `cli/src/services/mutation_trace/mbt/tests.rs` (gated behind
+    `#[cfg(test)]`) changed. No production dependency, public interface, CLI
+    surface, or architecture changed; `protocol.rs`/`types.rs` and the
+    `mbt/driver.rs`/`mbt/model.rs` T04 already built are untouched by this
+    task. The corrected-pipeline architecture write-up
+    (`context/cli/mutation-trace-quint-connect.md`) remains explicitly
+    deferred to T06 by this plan's own scope.
+  - Context synchronization: synced
 
-- [ ] T06: `Add a Nix-pinned Rust+Quint CI check and document the architecture` (status:todo)
+- [x] T06: `Add a Nix-pinned Rust+Quint CI check and document the architecture` (status:done)
   - Task ID: T06
-  - Scope: In — a dedicated Nix check (e.g. `mutation-trace-quint-connect`)
+  - Scope: In — a dedicated Nix check (`mutation-trace-quint-connect`)
     following the existing `cli-tests`/`cli-clippy`/`cli-fmt` `craneLib`
     pattern in `flake.nix` — reusing the repository's pinned `rustToolchain`/
     `craneLib`/`cargoArtifacts` and adding the Nix `quint` package as a check
     input — that runs `cargo test --manifest-path cli/Cargo.toml
-    mutation_trace::mbt`, reusing the existing CLI generated-input mechanism
-    (`scripts/produce-cli-generated-input.sh` / the `cliGeneratedInput` Nix
-    derivation) rather than bypassing it, and prints `rustc --version` /
-    `cargo --version` / `quint --version` at least while stabilizing the
-    check; `.github/workflows/quint.yml` updated to invoke that check instead
-    of stitching together the Nix Quint binary with the runner's own Cargo,
-    with its change-detector regex extended to also match
-    `cli/src/services/mutation_trace/mbt/**`, `.../protocol.rs`,
-    `.../types.rs`, `cli/Cargo.toml`, `cli/Cargo.lock` (`flake.nix`/
-    `flake.lock` are already watched, so no change needed there);
+    mutation_trace::mbt` via `cargoTestExtraArgs`, reusing the existing CLI
+    generated-input mechanism (`scripts/produce-cli-generated-input.sh` / the
+    `cliGeneratedInput` Nix derivation) rather than bypassing it, and prints
+    `rustc --version` / `cargo --version` / `quint --version` at least while
+    stabilizing the check; adding the Nix `quint` package to the *existing*
+    `checks.cli-tests`' `nativeCheckInputs` too, since `mutation_trace::mbt`
+    is an ordinary `#[cfg(test)] mod mbt;` already reached by that check's
+    full `cargo test` run; adding the top-level `spec/` directory to
+    `workspaceSrc`'s Nix fileset (`craneLib.fileset.commonCargoSources` only
+    covers Cargo package sources, not files outside any crate, so the Quint
+    spec was never reaching either check's sandbox and every MBT test failed
+    there regardless of Quint's availability); `.github/workflows/quint.yml`
+    updated to invoke the dedicated check instead of stitching together the
+    Nix Quint binary with the runner's own Cargo, with its change-detector
+    regex extended to also match `cli/src/services/mutation_trace/mbt/**`,
+    `.../protocol.rs`, `.../types.rs`, `cli/Cargo.toml`, `cli/Cargo.lock`
+    (`flake.nix`/`flake.lock` are already watched, so no change needed
+    there), and its existing "Run Quint tests" step corrected to pass
+    `--match '^test.*'` (bare `quint test` silently selects zero tests on
+    this spec rather than erroring, so CI's test step was a silent no-op);
     `context/cli/mutation-trace-quint-connect.md` documenting the corrected
     architecture (semantic action → `mbtAction` transport → Quint Connect →
     Rust driver), the compared/excluded fields (including why `mbtAction` is
@@ -824,34 +934,180 @@ Persist this field in every plan; this is durable plan state, not chat state:
     operation-identity-vs-stutter distinction and why it matters (with the
     guarded-no-op regressions as the proof), ID mapping, the `u64` revision
     limitation, the generated-simulation configuration, deterministic runs
-    wired, seed reproduction, the Nix-pinned CI command, and non-goals — see
-    Assumptions for why this replaces the request's literal
-    `context/plans/...` target; a new entry in `context/context-map.md`.
-    Out — any change to the existing pure-Quint typecheck/test/
-    randomized-safety steps beyond the detector's watched-path list.
+    wired, seed reproduction, the Nix-pinned CI command, both Nix checks
+    needing Quint, and non-goals — see Assumptions for why this replaces the
+    request's literal `context/plans/...` target; a new entry in
+    `context/context-map.md`. Out — any change to the existing pure-Quint
+    typecheck/randomized-safety steps beyond the detector's watched-path
+    list and the `test` step's `--match` correction.
   - Dependencies: T05
-  - Done when: the new Nix check runs the MBT suite under repository-pinned
-    Rust and Quint, printing their versions at least while stabilizing;
-    `.github/workflows/quint.yml` invokes it without installing a separate
-    Rust toolchain for this job; the change-detector triggers on Rust-only
-    `mutation_trace` changes as well as spec changes; the context doc exists,
-    covers the required topics, and is linked from `context/context-map.md`.
-  - Verify: `nix build .#checks.<system>.mutation-trace-quint-connect` (or
-    `nix flake check` if wired into normal checks) run locally; manual diff
-    review of `.github/workflows/quint.yml`; `cat
-    context/cli/mutation-trace-quint-connect.md`; the plan's full `Full
-    validation` command list run end-to-end.
-  - Context synchronization: pending
+  - Done when: both `checks.cli-tests` and the new
+    `checks.mutation-trace-quint-connect` run the MBT suite under
+    repository-pinned Rust and Quint and pass; the dedicated check prints
+    Rust/Cargo/Quint versions at least while stabilizing;
+    `.github/workflows/quint.yml` invokes the dedicated check without
+    installing a separate Rust toolchain for this job, and its test step
+    actually exercises the named scenarios (not a silent zero-test pass);
+    the change-detector triggers on Rust-only `mutation_trace` changes as
+    well as spec changes; the context doc exists, covers the required
+    topics, and is linked from `context/context-map.md`.
+  - Verify: `nix build .#checks.x86_64-linux.cli-tests`; `nix build
+    .#checks.x86_64-linux.mutation-trace-quint-connect`; `nix flake check`
+    where practical; manual diff review of `.github/workflows/quint.yml` and
+    `flake.nix`; `cat context/cli/mutation-trace-quint-connect.md`; the
+    plan's full `Full validation` command list run end-to-end.
+  - Completed: 2026-08-27
+  - Files changed: `flake.nix`, `.github/workflows/quint.yml`,
+    `context/cli/mutation-trace-quint-connect.md` (new),
+    `context/context-map.md`, `context/plans/mutation-cursor-quint-connect.md`
+  - Result: A post-implementation review of PR #239 found two defects beyond
+    the originally planned scope, both fixed here alongside the planned work:
+
+    1. **Generic `checks.cli-tests` was silently broken.** Since
+       `mutation_trace::mbt` is an ordinary `#[cfg(test)] mod mbt;`, the
+       pre-existing generic `checks.cli-tests` (the full `cargo test` every
+       `nix flake check` already runs) also reaches it — but that check's
+       `nativeCheckInputs` only listed `pkgs.git`, no Quint. Added
+       `pkgs.quint` to `checks.cli-tests`' `nativeCheckInputs` alongside the
+       new dedicated check's.
+    2. **`workspaceSrc` never included `spec/`.** Even with Quint on PATH,
+       every MBT test still failed inside the Nix sandbox with an opaque
+       `"Quint returned non-zero code."` (`quint-connect`'s
+       `panic!("{}", err)` is `Display`-only, so the real Quint stderr never
+       surfaced). Root-caused via `nix build --keep-failed`: the copied
+       sandbox source tree contained only `cli/`, `config/`, and `.version`
+       — `craneLib.fileset.commonCargoSources` covers Cargo package sources
+       only, not the top-level `spec/` directory `quint run`/`quint test`
+       resolve `../spec/*.qnt` against. Added `(pkgs.lib.fileset.maybeMissing
+       ./spec)` to `workspaceSrc`'s fileset union. This was the true root
+       cause; adding Quint to `nativeCheckInputs` alone was necessary but not
+       sufficient.
+
+    Implemented the originally planned work on top of those fixes: added
+    `checks.mutation-trace-quint-connect` in `flake.nix` — a
+    `craneLib.cargoTest` derivation following the `cli-tests`/`cli-clippy`/
+    `cli-fmt` pattern exactly, reusing `rustToolchain`/`cargoArtifacts`,
+    scoped to `mutation_trace::mbt` via `cargoTestExtraArgs`, with
+    `nativeCheckInputs = [ pkgs.git pkgs.quint ]` and a `preCheck` printing
+    `rustc`/`cargo`/`quint --version`. Updated `.github/workflows/quint.yml`:
+    extended the change-detector regex to also match
+    `cli/src/services/mutation_trace/mbt/**`, `.../protocol.rs`,
+    `.../types.rs`, `cli/Cargo.toml`, `cli/Cargo.lock`; added a step invoking
+    `nix build .#checks.x86_64-linux.mutation-trace-quint-connect`; raised
+    the job's `timeout-minutes` from 15 to 30 (it now compiles the CLI
+    crate, not just Quint CLI invocations). Also discovered and fixed a
+    third, pre-existing (not introduced by this plan) latent defect while
+    validating the workflow: the existing "Run Quint tests" step ran bare
+    `nix run .#quint -- test spec/mutation_cursor.qnt` with no `--match`,
+    which — confirmed via `git stash` against the pre-T05 baseline — silently
+    selects zero tests on this spec (exit 0, no output) rather than running
+    the 25 named scenarios; that step now passes `--match '^test.*'`. Wrote
+    `context/cli/mutation-trace-quint-connect.md` (250 lines) documenting the
+    corrected pipeline, why `mbtAction` exists/is excluded, the
+    operation-identity-vs-`MbtStutter` distinction, record-payload encoding,
+    finite ID mapping, comparable-state fields, the `randomPrepare`
+    single-branch decision, driver/test coverage, the `u64` revision
+    boundary's relationship to this harness, both Nix checks' shared Quint
+    dependency and the `workspaceSrc` root cause, and non-goals — linked from
+    `context/context-map.md`. Cleaned this plan's own stale
+    pre-implementation Assumptions language (T01/T02/T03 "will be
+    resolved"/"is decided in T03" phrasing replaced with resolved facts; the
+    implementation-progress block updated to record T05 complete and T06 as
+    the (then-)remaining task) and replaced the stale "Open questions"
+    section with `None.` — both per this task's own additionally-assigned
+    scope, not a deviation from it.
+  - Verify outcomes: `nix run .#quint -- typecheck spec/mutation_cursor.qnt`
+    — passed. `nix run .#quint -- test spec/mutation_cursor.qnt --match
+    '^test.*'` — "25 passing". `nix run .#quint -- run
+    spec/mutation_cursor.qnt --step=verifyStep --invariants SafetyCore
+    SafetyAttribution SafetyHistory --max-samples=5000 --max-steps=20` —
+    "[ok] No violation found" (5000 traces, up to 21 steps).
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    mutation_trace::mbt` — "12 passed; 0 failed". `./scripts/run-cli-cargo.sh
+    test --manifest-path cli/Cargo.toml mutation_trace` — "87 passed; 0
+    failed". `./scripts/run-cli-cargo.sh clippy --manifest-path
+    cli/Cargo.toml --all-targets -- -D warnings` — passed, no warnings.
+    `cargo fmt --manifest-path cli/Cargo.toml -- --check` — passed.
+    `QUINT_SEED=1337` run twice against
+    `mutation_cursor_generated_traces_refine_rust_protocol` — both runs
+    generated 500 traces from seed `1337` and both reported `[OK]`. `nix
+    build .#checks.x86_64-linux.cli-tests` — passed, "692 passed; 0 failed"
+    (680 pre-existing plus the 12 MBT tests, confirming the generic check now
+    actually reaches and passes the MBT suite). `nix build
+    .#checks.x86_64-linux.mutation-trace-quint-connect` — passed, "12
+    passed; 0 failed; ... 680 filtered out", with `rustc 1.95.0`/`cargo
+    1.95.0`/quint `0.32.0` printed by `preCheck`. `nix build
+    .#checks.x86_64-linux.cli-clippy`,
+    `.#checks.x86_64-linux.cli-fmt`, `.#checks.x86_64-linux.workflow-actionlint`
+    — all passed (the last confirms the edited `quint.yml` is valid
+    Actions YAML). `nix flake check` (x86_64-linux) — "all checks passed!"
+    (all Nix checks green, including both `cli-tests` and
+    `mutation-trace-quint-connect`); aarch64-linux/x86_64-darwin/
+    aarch64-darwin were evaluated (all four systems' `checks.<system>.*`
+    attribute sets, including `mutation-trace-quint-connect`, resolve without
+    error, and `pkgs.quint` already existed for all four systems before this
+    task) but not built, since this sandbox is x86_64-linux only — Darwin
+    build success is therefore not independently confirmed here.
+  - Context impact: root. `context/context-map.md` gained a new domain-file
+    entry for `context/cli/mutation-trace-quint-connect.md` (new), which
+    documents cross-cutting CI/build behavior (`flake.nix`'s `workspaceSrc`
+    fileset and both Nix checks) alongside the MBT harness architecture —
+    this is `root`-classified because the `workspaceSrc`/Quint-availability
+    fix affects the generic `checks.cli-tests` derivation everyone's `nix
+    flake check` already runs, not just this plan's own dedicated check.
+    `context/overview.md`/`context/architecture.md`/`context/glossary.md`
+    (already updated in T01 to record `quint-connect` as the CLI's first
+    dev-only dependency) remain accurate and needed no further edit — this
+    task didn't change the dependency baseline, only fixed the sandbox that
+    already-declared dependency runs in.
+  - Context synchronization: synced
 
 ## Open questions
 
-None. The genuine ambiguities found while planning — the requested
-architecture-doc path colliding with this plan's own file, the exact
-`quint-connect` version/custom-action API, and whether `commitAttempt` has a
-guarded no-op path analogous to the other five actions — resolve cleanly by
-repository convention and by deferring live verification to T01/T02, both
-recorded under Assumptions rather than blocking authoring, since none of them
-changes scope or acceptance criteria. Whether `randomPrepare`'s boundary
-needs a dedicated `PrepareKind` beyond `mbtAction` is an implementation-time
-decision scoped explicitly into T03's Done-when criteria, not a
-planning-time unknown.
+None.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-08-27
+
+### Commands run
+
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` -> exit 0 (87 passed; 0 failed — pre-existing ~75 handwritten tests plus all 12 MBT tests)
+- `./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml` -> exit 0 (`Finished dev profile`)
+- `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` -> exit 0 (no warnings)
+- `cargo fmt --manifest-path cli/Cargo.toml -- --check` -> exit 0 (no diff)
+- `nix run .#quint -- typecheck spec/mutation_cursor.qnt` -> exit 0 (no errors)
+- `nix run .#quint -- test spec/mutation_cursor.qnt --match '^test.*'` -> exit 0 (25 passing)
+- `nix run .#quint -- run spec/mutation_cursor.qnt --step=verifyStep --invariants SafetyCore SafetyAttribution SafetyHistory --max-samples=5000 --max-steps=20` -> exit 0 (`[ok] No violation found`, 5000 traces, max/min/avg length 21)
+- `nix build .#checks.x86_64-linux.cli-tests` -> exit 0 (692 passed; 0 failed, per `nix log`)
+- `nix build .#checks.x86_64-linux.mutation-trace-quint-connect` -> exit 0 (12 passed; 0 failed; 680 filtered out, per `nix log`; `preCheck` printed `rustc`/`cargo`/`quint --version`)
+- `nix flake check` (x86_64-linux) -> exit 0 (`all checks passed!`; other systems omitted as incompatible with this sandbox, consistent with T06's prior evaluation-only confirmation)
+- `nix run .#regenerate-cargo-sources` then `git diff --stat packaging/flatpak/cargo-sources.json` -> exit 0 (no diff — regeneration is a no-op against the already-committed file)
+- `QUINT_SEED=1337 ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace::mbt::tests::mutation_cursor_generated_traces_refine_rust_protocol` run twice -> exit 0 both times (`[OK]`, 500 traces from seed `1337`, same outcome both runs — AC4 reproduction)
+
+### Success-criteria verification
+
+- [x] AC1: `quint-connect` dev/test-only dependency -> `grep -A3 '^\[dev-dependencies\]' cli/Cargo.toml` shows only `quint-connect = "0.1.2"`; absent under `[dependencies]`; build passes.
+- [x] AC2: every action reachable from `step` recorded via `MbtAction`, driver dispatches unconditionally -> inspection of `mbt/driver.rs`: every `switch!` arm calls exactly one `protocol::*` function (or mutates only `worktree_trees` for `MbtMutate`, or is a no-op for `MbtStutter`); no independent mutation logic.
+- [x] AC3: concrete arguments transported unchanged for both generated and deterministic runs -> `testMbtDriverTransportsNonDefaultArguments` (`mbt/tests.rs`) passes, replaying `mutate(WT1, Tree3)` → `prepare(Attempt5, Flush(WT1))` → `commitAttempt(Attempt5)`.
+- [x] AC4: generated trace refinement + seed reproduction -> `mutation_cursor_generated_traces_refine_rust_protocol` (`max_samples=500, max_steps=30`) passed under the Nix-pinned check; `QUINT_SEED=1337` run twice reproduced `[OK]` both times.
+- [x] AC5: comparable state matches AC5's field list, excludes `mbtAction`/histories -> inspection of `mbt/model.rs`; `grep` for excluded-history identifiers returns matches only inside doc comments explaining the exclusion.
+- [x] AC6: all eight named deterministic scenarios replay via `#[quint_test]` -> confirmed present and green in `mbt/tests.rs` and the 25-passing Quint test run / 12-passing Rust MBT run.
+- [x] AC7: pure Quint semantics/`step` structure unchanged -> typecheck, `quint test`, and the 5000×20 `verifyStep` safety run all pass; `step`'s alternative list (`randomMutate, randomPrepare, randomCommit, randomTaint, randomRecover, randomDatabaseFailure, randomAbandon, stutter`) confirmed unchanged by direct inspection.
+- [x] AC8: Nix-pinned CI wiring -> `flake.nix` shows `pkgs.quint` in both `cli-tests` and `mutation-trace-quint-connect` `nativeCheckInputs`, `workspaceSrc` fileset includes `./spec`, dedicated check prints tool versions; `.github/workflows/quint.yml` change-detector regex includes `mbt/**`/`protocol.rs`/`types.rs`/`Cargo.toml`/`Cargo.lock`, invokes the dedicated Nix check, and the test step uses `--match '^test.*'`; both `cli-tests` and `mutation-trace-quint-connect` Nix builds pass.
+- [x] AC9: no production DB/Git/fs code; `mbt` gated by `#[cfg(test)]` -> `grep -RnE "std::(fs|process|env)|tokio|reqwest|turso" cli/src/services/mutation_trace` returns no matches; `mod mbt;` confirmed behind `#[cfg(test)]` in `mutation_trace/mod.rs`.
+- [x] AC10: existing tests/clippy/fmt unmodified and green -> `mutation_trace` suite 87 passed/0 failed (includes the pre-existing ~75); clippy clean; `cargo fmt --check` clean.
+- [x] AC11: every argument-carrying `MbtAction` variant is a record -> `spec/mutation_cursor.qnt`'s `MbtAction` definition inspected directly: every variant with fields uses `{ ... }` record syntax; only `MbtInit`/`MbtStutter` are bare.
+- [x] AC12: guarded/no-op operations record their own variant, never `MbtStutter` -> `grep` for `mbtStutterAs`/`stutter` call sites shows `prepare`/`taint`/`databaseFailure`/`abandon`/`recover`'s guarded branches each call `mbtStutterAs(MbtOwnVariant(...))`; only the explicit top-level `stutter` action calls `mbtStutterAs(MbtStutter)`.
+- [x] AC13: two guarded-no-op regressions prove the real kernel function still runs -> `mutation_cursor_guarded_prepare_invokes_real_prepare` and `mutation_cursor_guarded_recover_invokes_real_recover` (`mbt/tests.rs`) both pass.
+- [x] AC14: guarded branches no longer share a single `stutter` call -> same `grep` evidence as AC12: `prepare`/`taint`/`databaseFailure`/`abandon`/`recover` each call `mbtStutterAs` with their own variant rather than the shared top-level `stutter` action; `commitAttempt`'s not-accepted path independently sets `mbtAction' = MbtCommit({attempt})`.
+
+### Failed checks and follow-ups
+
+None.
+
+### Residual risks
+
+- `nix flake check` in this sandbox evaluated but did not build for `aarch64-linux`/`x86_64-darwin`/`aarch64-darwin` (x86_64-linux-only sandbox); Darwin/other-arch build success remains unverified by this validation run, consistent with T06's own note.
+- None otherwise identified.

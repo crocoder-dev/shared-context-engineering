@@ -193,6 +193,13 @@
             (pkgs.lib.fileset.maybeMissing ./cli/migrations)
             cliBuildInputFileset
             (pkgs.lib.fileset.maybeMissing ./cli/assets/hooks)
+            # The `mutation_trace::mbt` Quint Connect tests shell out to
+            # `quint run`/`quint test` against `../spec/*.qnt` (relative to
+            # the `cli/` crate root). `commonCargoSources` only covers Cargo
+            # package sources, so the top-level `spec/` tree must be listed
+            # explicitly or it never reaches the sandbox and every MBT test
+            # fails with an opaque "Quint returned non-zero code."
+            (pkgs.lib.fileset.maybeMissing ./spec)
           ];
         };
 
@@ -1544,13 +1551,18 @@
 
         checks =
           {
+            # `mutation_trace::mbt` (the Quint Connect model-based-testing
+            # harness) is an ordinary `#[cfg(test)]` module reached by the
+            # full `cargo test` this check runs, so the pinned Quint binary
+            # must be on PATH here too, not only in the dedicated
+            # `mutation-trace-quint-connect` check below.
             cli-tests = craneLib.cargoTest (
               commonCargoArgs
               // {
                 pname = "sce-cli-tests";
                 inherit cargoArtifacts;
                 doCheck = true;
-                nativeCheckInputs = [ pkgs.git ];
+                nativeCheckInputs = [ pkgs.git pkgs.quint ];
               }
             );
 
@@ -1567,6 +1579,27 @@
               cargoDepsArgs
               // {
                 pname = "sce-cli-fmt";
+              }
+            );
+
+            # Focused Quint Connect model-based-testing check: runs only
+            # `mutation_trace::mbt` under the repository's pinned Rust
+            # toolchain and pinned Quint binary, reusing the same
+            # `cargoArtifacts`/`commonCargoArgs` pipeline as `cli-tests`
+            # rather than a bespoke Rust+Quint environment.
+            mutation-trace-quint-connect = craneLib.cargoTest (
+              commonCargoArgs
+              // {
+                pname = "sce-mutation-trace-quint-connect";
+                inherit cargoArtifacts;
+                doCheck = true;
+                cargoTestExtraArgs = "mutation_trace::mbt";
+                nativeCheckInputs = [ pkgs.git pkgs.quint ];
+                preCheck = ''
+                  rustc --version
+                  cargo --version
+                  quint --version
+                '';
               }
             );
 
