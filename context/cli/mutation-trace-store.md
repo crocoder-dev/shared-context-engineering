@@ -108,11 +108,12 @@ them.
 ## Initialization
 
 `initialize_worktree`/`register_scope` are idempotent idle-inserts (`INSERT
-... ON CONFLICT DO NOTHING`) outside the CAS commit path: `initialize_worktree`
-never overwrites an existing cursor, and `register_scope` requires the
-referenced worktree to already have a durable row, returning `Err` rather than
-auto-creating it or accepting a scope whose stored `worktree_id`/`actor_kind`
-merely happen to match the request.
+... ON CONFLICT DO NOTHING`) outside the CAS commit path:
+`initialize_worktree` never overwrites an existing cursor, and
+`register_scope` requires the referenced worktree to already have a durable
+row and never auto-creates it. An existing scope is returned unchanged only
+when its stored `worktree_id` and `actor_kind` match the request; a mismatch
+returns `Err`.
 
 ## Non-goals
 
