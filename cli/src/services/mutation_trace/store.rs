@@ -455,9 +455,6 @@ fn diff_new_mutation_event(
     Ok(Some((*event).clone()))
 }
 
-/// Bounded read access to the durable mutation-cursor protocol state for one
-/// repository, via [`RepositoryAgentTraceDb`]. Write/CAS-commit access is
-/// added by later tasks (T04/T06/T07).
 pub struct MutationTraceStore<'a> {
     db: &'a RepositoryAgentTraceDb,
 }
@@ -1002,6 +999,7 @@ fn reconstruct_boundary(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::thread;
 
     use super::*;
@@ -1124,14 +1122,13 @@ mod tests {
         assert!(decode_boundary_kind("unknown").is_err());
     }
 
+    static NEXT_TEST_DB_ID: AtomicU64 = AtomicU64::new(0);
+
     fn unique_test_db_path(label: &str) -> std::path::PathBuf {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time should be after Unix epoch")
-            .as_nanos();
+        let id = NEXT_TEST_DB_ID.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir()
             .join(format!(
-                "sce-mutation-trace-store-{label}-{}-{nonce}",
+                "sce-mutation-trace-store-{label}-{}-{id}",
                 std::process::id()
             ))
             .join("agent-trace.db")
