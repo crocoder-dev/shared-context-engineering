@@ -187,10 +187,9 @@
 
 ## Unit testing in Nix sandbox
 
-- Unit tests must not depend on filesystem directories, temporary directories, or databases that could fail in Nix sandbox environments.
-- Tests that require filesystem I/O, git repository operations, or database connections belong in integration tests, not unit tests.
-- When a unit test needs filesystem, git, or database behavior that is not safe for `nix flake check`, delete it from the unit-test suite and reintroduce that coverage later as an integration test instead of keeping ignored tests in-tree.
-- Pure unit tests should test in-memory logic, parsing, validation, and data transformations without external dependencies.
-- Temporary-directory helpers and similar filesystem fixtures should only be used in integration tests, not unit tests.
+- Pure unit tests should test in-memory logic, parsing, validation, and data transformations without external dependencies; prefer mocking/faking external dependencies over creating real filesystem or database state when a fake is available and sufficient.
 - In-memory database tests (e.g., `LocalDatabaseTarget::InMemory`) are acceptable for unit tests since they don't touch the filesystem.
-- When adding new tests, prefer mocking/faking external dependencies over creating real filesystem or database state.
+- A filesystem-touching `#[cfg(test)] mod tests` inline in the module under test is an established, Nix-sandbox-safe pattern in this codebase when every path is a unique, process-local path under `std::env::temp_dir()` (which resolves through `TMPDIR`, itself a writable per-build directory inside the Nix sandbox) — see `cli/src/services/mutation_trace/store.rs`'s `RepositoryAgentTraceDb`-backed tests and `cli/src/services/checkout/mod.rs`'s checkout-identity-lock tests. This is not integration-test-only territory in this repository.
+- Use integration tests instead of this inline pattern where the behavior genuinely cannot be made deterministic and isolated inside the Nix sandbox this way.
+- Do not depend on a shared or ambient path (`$HOME`, a fixed `/tmp` file name, the repository's own working tree) from a unit test; each test must construct its own unique, self-cleaning path.
+- When a unit test needs behavior that cannot be made Nix-sandbox-safe this way (for example, network access, or state shared across the whole test binary), delete it from the unit-test suite and reintroduce that coverage later as an integration test instead of keeping ignored tests in-tree.
