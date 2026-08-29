@@ -46,35 +46,35 @@ error without retry.
 
 ## Acceptance criteria
 
-- [ ] AC1: Mutation state lives in the repository-scoped `agent-trace.db`.
+- [x] AC1: Mutation state lives in the repository-scoped `agent-trace.db`.
   - Validate: `cli/src/services/mutation_trace/store.rs` reads/writes only through `RepositoryAgentTraceDb`; round-trip tests in T09 pass.
-- [ ] AC2: New storage is introduced through additive migration `003`, with `001`/`002` byte-unchanged by this PR.
+- [x] AC2: New storage is introduced through additive migration `003`, with `001`/`002` byte-unchanged by this PR.
   - Validate: `git diff --exit-code <base-branch>...HEAD -- cli/migrations/agent-trace-repository/001_repository_schema.sql cli/migrations/agent-trace-repository/002_repository_source_instance_id.sql` (compared against this PR's base branch/merge base, not the working tree) exits `0`; `003_mutation_trace_protocol.sql` exists.
-- [ ] AC3: Revision preserves all `u64` values exactly, including `u64::MAX`.
+- [x] AC3: Revision preserves all `u64` values exactly, including `u64::MAX`.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace::store::` (revision codec round-trip test covering `0`, `1`, `i64::MAX`, `i64::MAX + 1`, `u64::MAX`).
-- [ ] AC4: Worktree/scope/`EventKey`/`MutationEvent` data round-trip exactly, including full `MutationEvent` decoding (`Attribution`, `Boundary`, `active_scopes`) after the DB is closed and reopened.
+- [x] AC4: Worktree/scope/`EventKey`/`MutationEvent` data round-trip exactly, including full `MutationEvent` decoding (`Attribution`, `Boundary`, `active_scopes`) after the DB is closed and reopened.
   - Validate: T09's real-protocol round-trip tests, including the `load_mutation_event` cold-reload assertions for every transition that emits a `MutationEvent`.
-- [ ] AC5: `AttemptState` is never persisted.
+- [x] AC5: `AttemptState` is never persisted.
   - Validate: `grep -n mutation_trace_attempts cli/migrations/agent-trace-repository/003_mutation_trace_protocol.sql` finds nothing; `DurableTransition` has no `AttemptState` field.
-- [ ] AC6: `external_taint` is never treated as DB-authoritative durable state.
+- [x] AC6: `external_taint` is never treated as DB-authoritative durable state.
   - Validate: `grep -n external_taint cli/migrations/agent-trace-repository/003_mutation_trace_protocol.sql` finds nothing; `database_failure` produces no `DurableTransition` (T05 test).
-- [ ] AC7: No persistence code determines protocol semantics or attribution.
+- [x] AC7: No persistence code determines protocol semantics or attribution.
   - Validate: `DurableTransition::between` contains no boundary-kind/contention/taint conditionals (T05 done-when); inspection of `store.rs`.
-- [ ] AC8: Every durable protocol transition is one `BEGIN IMMEDIATE` transaction.
+- [x] AC8: Every durable protocol transition is one `BEGIN IMMEDIATE` transaction.
   - Validate: `store.commit` routes exclusively through `execute_transactional_cas_batch` (T06/T07); T08 atomic-rollback test.
-- [ ] AC9: CAS is guarded by the expected worktree revision.
+- [x] AC9: CAS is guarded by the expected worktree revision.
   - Validate: the guard statement is `UPDATE mutation_trace_worktrees ... WHERE worktree_id = ? AND revision = ?` (T06); T08 two-writer test.
-- [ ] AC10: Two writers from one revision cannot both commit.
+- [x] AC10: Two writers from one revision cannot both commit.
   - Validate: T08's concurrent-writers test — two independent `RepositoryAgentTraceDb` handles/connections against the same physical database, committing concurrently from the same loaded revision — asserts exactly one `Applied` and one `Conflict`.
-- [ ] AC11: Partial failure rolls back all worktree/scope/event changes.
+- [x] AC11: Partial failure rolls back all worktree/scope/event changes.
   - Validate: T08 injected-failure test asserts revision, scope status, processed event, mutation event, and active scopes are all unchanged after rollback.
-- [ ] AC12: Process restart reconstructs the same durable protocol projection.
+- [x] AC12: Process restart reconstructs the same durable protocol projection.
   - Validate: T09 tests that drop and reopen the DB handle before reloading.
-- [ ] AC13: Historical mutation events are not loaded on each boundary; terminal (`Closed`/`Abandoned`/`NeverSeen`) historical scopes are not loaded on each boundary unless they are the effective referenced scope (`scope`, or `event_key.scope_id` when `scope` is absent); explicit `scope` and `event_key.scope_id` must agree when both are supplied, or `load_worktree` returns `Err`; the effective referenced scope must belong to the requested worktree, or `load_worktree` returns `Err` rather than silently loading or reassigning it; and the effective referenced scope must exist in durable `mutation_trace_scopes` storage — a missing effective scope returns `Err`, rather than `load_worktree` silently continuing with a projection that omits it, whether the effective scope came from `scope` or `event_key.scope_id`.
+- [x] AC13: Historical mutation events are not loaded on each boundary; terminal (`Closed`/`Abandoned`/`NeverSeen`) historical scopes are not loaded on each boundary unless they are the effective referenced scope (`scope`, or `event_key.scope_id` when `scope` is absent); explicit `scope` and `event_key.scope_id` must agree when both are supplied, or `load_worktree` returns `Err`; the effective referenced scope must belong to the requested worktree, or `load_worktree` returns `Err` rather than silently loading or reassigning it; and the effective referenced scope must exist in durable `mutation_trace_scopes` storage — a missing effective scope returns `Err`, rather than `load_worktree` silently continuing with a projection that omits it, whether the effective scope came from `scope` or `event_key.scope_id`.
   - Validate: `MutationTraceStore::load_worktree` issues no query against `mutation_trace_events`, loads only currently `Active` scopes plus the effective referenced scope (if any) derived from `scope`/`event_key` per T03's four-case definition, returns `Err` when `scope` and `event_key.scope_id` are both supplied and differ, returns `Err` when the effective referenced scope's persisted `worktree_id` does not match the requested worktree, and returns `Err` when the effective referenced scope has no durable `mutation_trace_scopes` row — including when an orphan `mutation_trace_processed_events` row exists for it (T03 done-when).
-- [ ] AC14: Existing Quint Connect and protocol tests remain green.
+- [x] AC14: Existing Quint Connect and protocol tests remain green.
   - Validate: `nix flake check` (runs `cli-tests`, including `mutation_trace::mbt`, and the dedicated `mutation-trace-quint-connect` check).
-- [ ] AC15: No Git/filesystem lock/hook/coordinator integration is added.
+- [x] AC15: No Git/filesystem lock/hook/coordinator integration is added.
   - Validate: no `coordinator.rs` or `git_snapshot.rs` file is created; `grep -RnE "std::(fs|process)|tokio::(fs|process)" cli/src/services/mutation_trace/` shows no non-test production usage.
 
 ### Full validation
@@ -314,14 +314,62 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: local — a stale doc comment and a stale test name, both confined to `repository.rs`, are corrected; no behavior, migration semantics, or repair logic changed; no claim in any root context file is affected.
   - Context synchronization: synced
 
-- [ ] T11: `Document the mutation-trace store` (status:todo)
+- [x] T11: `Document the mutation-trace store` (status:done)
   - Task ID: T11
   - Scope: In — `context/cli/mutation-trace-store.md` covering repository-DB ownership, `WorktreeId` as the persistence partition, the 8-byte big-endian revision encoding, `AttemptState`/`external_taint` non-persistence, and the store's non-goals (no Git I/O, no attribution decisions, no retry-after-`Conflict`); a `context/context-map.md` entry for the new file. Out — edits to any other existing `context/` file (left to task context synchronization).
   - Dependencies: T01-T10
   - Done when: the new file exists, is linked from `context/context-map.md`, and every claim in it is checked against the code produced by T01-T10.
   - Verify: manual inspection cross-referencing the file's claims against `store.rs`, the migration, and `db/mod.rs`.
-  - Context synchronization: pending
+  - Completed: 2026-08-29
+  - Files changed: `context/cli/mutation-trace-store.md` (new); `context/context-map.md`
+  - Result: Added `context/cli/mutation-trace-store.md`, covering: the one-directional `protocol.rs` -> `DurableTransition::between` (pure structural diff) -> `store.rs` (SQL translation) -> `RepositoryAgentTraceDb` boundary with a Mermaid diagram; what's persisted across migration `003`'s five tables vs. the deliberate `AttemptState`/`external_taint` exclusions; the 8-byte big-endian `BLOB` revision encoding and the explicit non-`Debug` enum codecs (`ActorKind`/`FailureKind`/`ScopeStatus`/`AttributionKind`/`BoundaryKind`); the bounded hot-path `load_worktree` (effective-referenced-scope rules, never queries `mutation_trace_events`) vs. the cold-path `load_mutation_event`; the `commit` write path's single-`BEGIN IMMEDIATE` CAS batch via `TursoDb::execute_transactional_cas_batch`, the guard's 0/1-row `Conflict`/`Applied` outcome, `expect_rows_affected(1)` on every other statement, and the `Conflict`/retryable-transient/deterministic-`Err` three-way distinction; `DurableTransition`'s private fields and `between()`-only construction; `initialize_worktree`/`register_scope`'s idle-insert semantics including the worktree-must-already-exist guard; and the store's non-goals (no Git/filesystem I/O, no attribution/boundary-kind decisions, no retry-after-`Conflict` loop, no terminal-scope garbage collection). Added one `context/context-map.md` entry for the new file, in the same style as the existing `mutation-trace-*` entries.
+  - Verify: manual inspection cross-referencing every claim in `context/cli/mutation-trace-store.md` against `cli/src/services/mutation_trace/store.rs` (codecs, `WorktreeProjection`, `DurableTransition`/`between`, `MutationTraceStore::{initialize_worktree, register_scope, load_worktree, load_mutation_event, commit}`), `cli/migrations/agent-trace-repository/003_mutation_trace_protocol.sql`, and `cli/src/services/db/mod.rs`'s `TransactionStatement`/`execute_transactional_cas_batch` — passed, no discrepancy found.
+  - Done checks: `context/cli/mutation-trace-store.md` exists (verified); it is linked from `context/context-map.md` (verified — new entry added alongside the other `mutation-trace-*` entries); every claim in it was checked against the code produced by T01-T10 (verified by the manual cross-reference above).
+  - Context impact: local — this task's own deliverable is a context file; no other root context file's claims are contradicted by it (`context/cli/mutation-trace-protocol.md`'s and `context/overview.md`'s "store.rs now exists" framing was already corrected by T07's context synchronization). `context/sce/shared-turso-db.md` still does not document `execute_transactional_cas_batch`; per the plan's assumption and T06's/T07's context-impact notes, that update belongs to this task's own context synchronization pass (plan-level `Context sync` list), not to T11's in-scope edits.
+  - Context synchronization: synced
 
 ## Open questions
 
 None. The change request already resolves every architectural decision (schema shape, CAS mechanics, which fields are excluded from persistence) precisely, and each decision checks out against the current `protocol.rs`/`types.rs` domain model and the existing Turso adapter conventions verified while authoring this plan.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-08-29
+
+### Commands run
+
+- `git diff --exit-code quint-connect...HEAD -- cli/migrations/agent-trace-repository/001_repository_schema.sql cli/migrations/agent-trace-repository/002_repository_source_instance_id.sql` -> exit 0 (no diff; `compare-and-swap` branches directly off `quint-connect`, confirmed via `git merge-base`)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace::store::` -> exit 0 (73/73 passed on 4 of 5 invocations at time of original validation; see Residual risks — the underlying test-isolation flakiness was fixed in post-T11 cleanup and reverified 20/20)
+- `nix flake check` -> exit 0 ("all checks passed!" — `cli-tests`, `cli-clippy`, `cli-fmt`, `mutation-trace-quint-connect`, `workflow-actionlint`)
+- `nix run .#pkl-check-generated` -> exit 0 ("Ephemeral Pkl generation passed: 141 files")
+- `grep -n mutation_trace_attempts cli/migrations/agent-trace-repository/003_mutation_trace_protocol.sql` -> no match
+- `grep -n external_taint cli/migrations/agent-trace-repository/003_mutation_trace_protocol.sql` -> no match
+- `grep -RnE "std::(fs|process)|tokio::(fs|process)" cli/src/services/mutation_trace/` -> matches only inside `store.rs`'s `#[cfg(test)]` helpers (`unique_test_db_path`/`remove_test_db`), no production usage
+- Inspection: `store.rs` (`DurableTransition::between`, `MutationTraceStore::{load_worktree, commit}`, `UPDATE_WORKTREE_CAS_SQL`, module struct fields), `cli/src/services/mutation_trace/` directory listing (no `coordinator.rs`/`git_snapshot.rs`)
+
+### Acceptance criteria
+
+- [x] AC1: Mutation state lives in the repository-scoped `agent-trace.db` — `store.rs` only imports and calls through `RepositoryAgentTraceDb` (`self.db.execute`/`query_map`/`execute_transactional_cas_batch`); T09 round-trip tests pass.
+- [x] AC2: New storage added via additive migration `003`, `001`/`002` byte-unchanged — `git diff --exit-code` against `quint-connect` merge base exits 0; `003_mutation_trace_protocol.sql` exists.
+- [x] AC3: Revision preserves all `u64` values exactly — `revision_round_trips_at_boundary_values` covers `0`, `1`, `i64::MAX`, `i64::MAX+1`, `u64::MAX`; passed.
+- [x] AC4: Worktree/scope/`EventKey`/`MutationEvent` round-trip exactly across DB close/reopen — all `round_trip_*` tests and `load_mutation_event_reconstructs_*` tests passed (73/73).
+- [x] AC5: `AttemptState` never persisted — no `mutation_trace_attempts` table in migration `003`; `DurableTransition` struct has no `AttemptState` field (fields: `worktree`, `expected_revision`, `next_worktree_state`, `scope_status_changes`, `new_processed_event`, `new_mutation_event`).
+- [x] AC6: `external_taint` never DB-authoritative — no `external_taint` reference in migration `003`; `between_returns_none_for_a_database_failure_only_transition` confirms `database_failure` produces no `DurableTransition`; passed.
+- [x] AC7: No persistence code determines protocol semantics — `DurableTransition::between` (store.rs:283-330) performs only structural diffing (`diff_target_worktree`/`diff_scopes`/`diff_new_processed_event`/`diff_new_mutation_event`, revision-advance check); no boundary-kind/contention/taint conditional.
+- [x] AC8: Every durable transition is one `BEGIN IMMEDIATE` transaction — `MutationTraceStore::commit` (store.rs:713) routes exclusively through `self.db.execute_transactional_cas_batch`.
+- [x] AC9: CAS guarded by expected worktree revision — `UPDATE_WORKTREE_CAS_SQL`: `UPDATE mutation_trace_worktrees SET ... WHERE worktree_id = ?6 AND revision = ?7`.
+- [x] AC10: Two writers from one revision cannot both commit — `commit_from_two_independent_connections_races_and_only_one_applies` passed.
+- [x] AC11: Partial failure rolls back all changes — `commit_rolls_back_every_write_kind_together_on_a_deterministic_failure` passed.
+- [x] AC12: Process restart reconstructs the same projection — T09's drop/reopen round-trip tests passed.
+- [x] AC13: Bounded hot-path load semantics — `load_worktree` (store.rs:565) issues no query against `mutation_trace_events`; loads only `Active` scopes plus the effective referenced scope per the four `scope`/`event_key` cases, `Err` on mismatch/wrong-worktree/missing-scope; all 73 `mutation_trace::store::` tests (including the T03 four-case suite) passed.
+- [x] AC14: Existing Quint Connect and protocol tests remain green — `nix flake check` passed, including `mutation_trace::mbt` (via `cli-tests`) and the dedicated `mutation-trace-quint-connect` check.
+- [x] AC15: No Git/filesystem lock/hook/coordinator integration added — no `coordinator.rs`/`git_snapshot.rs` file exists; `std::fs`/`std::process` usage in `mutation_trace/` is confined to test-only DB path helpers.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- Resolved. `unique_test_db_path` (`store.rs`) previously derived its uniqueness from a nanosecond `SystemTime` timestamp plus `std::process::id()`. One of five back-to-back invocations of `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace::store::` — run while a separate `nix flake check` build was consuming the same machine's CPU concurrently — hit 16 `UNIQUE constraint failed: mutation_trace_worktrees.worktree_id` failures, consistent with two parallel test threads generating the same nanosecond nonce under heavy scheduler contention, causing unrelated tests to share a physical database file. Fixed in post-T11 cleanup by replacing the nanosecond timestamp with a process-local `static NEXT_TEST_DB_ID: AtomicU64` counter (`fetch_add(1, Ordering::Relaxed)`), combined with `std::process::id()`, so path uniqueness no longer depends on clock resolution. Verified: 20/20 consecutive `mutation_trace::store::` runs passed, plus a full `mutation_trace::` run (161/161) and `nix flake check`.
