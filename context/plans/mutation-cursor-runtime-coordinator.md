@@ -6,11 +6,11 @@ Adds the runtime (imperative-shell) layer that connects the verified,
 already-implemented mutation-cursor protocol kernel (`protocol.rs`) and its
 persistence layer (`store.rs`) to a real Git worktree: a concurrency-safe
 checkout-identity primitive, an OS-backed per-worktree advisory lock for the
-coordinator's own critical section (`worktree_lock.rs`), an isolated Git
+coordinator's own critical section (`runtime/worktree_lock.rs`), an isolated Git
 snapshot service that captures the current worktree state as a durable
 `TreeId` into the repository's normal object database and protects it from
 GC/prune with an SCE-owned ref, never touching the caller's real index
-(`git_snapshot.rs`), and a runtime coordinator (`coordinator.rs`) that
+(`runtime/git_snapshot.rs`), and a runtime coordinator (`runtime/coordinator.rs`) that
 derives `WorktreeId` from checkout identity, materializes worktree/scope
 rows, runs recovery when the durable state requires it, drives
 `prepare`/`commit`, and retries on CAS conflict — including CAS conflict
@@ -69,27 +69,46 @@ distinct-content tree in the same repository, deliberately unreachable from
 any ref, and proves that one, not a same-content decoy, is what `git gc
 --prune=now`/`git prune --expire=now` actually reclaims.
 
+A fourth revision (pre-implementation structural correction, before T02 or
+any later task began) moves every planned imperative-runtime file under a
+new `cli/src/services/mutation_trace/runtime/` module instead of adding them
+flat alongside `protocol.rs`/`store.rs`/`types.rs`. `worktree_lock.rs`,
+`git_snapshot.rs`, and `coordinator.rs` become
+`runtime/worktree_lock.rs`, `runtime/git_snapshot.rs`, and
+`runtime/coordinator.rs`; the planned `runtime_tests.rs` becomes
+`runtime/tests.rs`, declared as `runtime`'s own `#[cfg(test)] mod tests`.
+This is a pure module-boundary correction with no change to protocol,
+persistence, or task-ordering semantics: it separates the pure, verified
+protocol kernel and its durable persistence (`protocol.rs`, `store.rs`,
+`types.rs`, `mbt/`) from the imperative shell that drives Git subprocesses,
+filesystem locks, and checkout identity around them, so the dependency
+direction — `runtime` depends on `protocol`/`store`/`types` and on
+`services::checkout`, never the reverse — is structurally visible rather
+than merely a documented convention. `checkout/` remains its own top-level
+service, unmoved, since other Agent Trace storage paths already depend on it
+independently of the mutation-cursor runtime.
+
 ## Acceptance criteria
 
 - [ ] AC1: A worktree observed for the first time establishes the currently
   observed tree as its cursor baseline on its first boundary and emits no
   mutation evidence for filesystem changes that predate that observation.
-  - Validate: `coordinator::tests::first_observation_establishes_baseline_without_evidence` via `nix build .#checks.<system>.cli-tests`
+  - Validate: `runtime::coordinator::tests::first_observation_establishes_baseline_without_evidence` via `nix build .#checks.<system>.cli-tests`
 - [ ] AC2: An edit made between a `Start` and a subsequent `Advance` on the
   same scope commits as exactly one `AiExclusive` mutation event whose
   `before_tree`/`after_tree` match the Start baseline and the post-edit
   snapshot.
-  - Validate: `coordinator::tests::exclusive_edit_between_start_and_advance_commits_one_event`
+  - Validate: `runtime::coordinator::tests::exclusive_edit_between_start_and_advance_commits_one_event`
 - [ ] AC3: Re-processing the identical `(scope, event)` boundary a second time
   produces no duplicated mutation evidence.
-  - Validate: `coordinator::tests::replaying_the_same_scope_event_key_does_not_duplicate_evidence`
+  - Validate: `runtime::coordinator::tests::replaying_the_same_scope_event_key_does_not_duplicate_evidence`
 - [ ] AC4: A mutation made just before `Close` is still attributed using the
   scope set as it existed immediately before `Close`'s own scope transition.
-  - Validate: `coordinator::tests::close_boundary_attributes_using_pre_close_scope_set`
+  - Validate: `runtime::coordinator::tests::close_boundary_attributes_using_pre_close_scope_set`
 - [ ] AC5: Two concurrently active scopes on one worktree yield `AiContended`
   attribution for a subsequent `Advance`, independent of whether the two
   scopes share an `ActorKind`.
-  - Validate: `coordinator::tests::contended_scopes_yield_ai_contended_same_and_different_actor`
+  - Validate: `runtime::coordinator::tests::contended_scopes_yield_ai_contended_same_and_different_actor`
 - [ ] AC6: Capturing a Git snapshot never mutates the caller's real index,
   staged changes, or working tree, correctly reflects staged, unstaged,
   untracked, and deleted state, excludes ignored files, and — on an unborn
@@ -97,7 +116,7 @@ any ref, and proves that one, not a same-content decoy, is what `git gc
   Git index (`git read-tree --empty`), never from a bare, freshly created
   file the coordinator merely assumes Git will treat as empty, and produces
   a correct tree even when the unborn repository has no files at all.
-  - Validate: `git_snapshot::tests::*` (index preservation, ignored files, deletion, unborn HEAD with a file, unborn HEAD with no files)
+  - Validate: `runtime::git_snapshot::tests::*` (index preservation, ignored files, deletion, unborn HEAD with a file, unborn HEAD with no files)
 - [ ] AC7: A snapshot's `TreeId` remains resolvable through `diff_trees`
   after the process that captured it has exited, its temporary index file no
   longer exists, **and after a `git gc --prune=now` / `git prune
@@ -105,24 +124,24 @@ any ref, and proves that one, not a same-content decoy, is what `git gc
   reachable from an SCE-owned ref in the repository's normal refs namespace,
   not merely present in an isolated object store Git's own reachability
   analysis knows nothing about.
-  - Validate: `git_snapshot::tests::snapshot_survives_a_fresh_process_and_temp_index_deletion`, `git_snapshot::tests::pinned_snapshot_survives_git_gc_prune_now`, `git_snapshot::tests::pinned_snapshot_survives_git_prune_expire_now`
+  - Validate: `runtime::git_snapshot::tests::snapshot_survives_a_fresh_process_and_temp_index_deletion`, `runtime::git_snapshot::tests::pinned_snapshot_survives_git_gc_prune_now`, `runtime::git_snapshot::tests::pinned_snapshot_survives_git_prune_expire_now`
 - [ ] AC8: When two invocations race to commit from the same durable
   revision, exactly one succeeds, the other reloads durable state and
   recomputes its transition using its own originally captured snapshot, and
   no second Git snapshot is taken for that invocation.
-  - Validate: `coordinator::tests::cas_conflict_reloads_and_recomputes_without_a_second_snapshot`
+  - Validate: `runtime::coordinator::tests::cas_conflict_reloads_and_recomputes_without_a_second_snapshot`
 - [ ] AC9: Two coordinator invocations targeting the same worktree cannot
   execute their critical sections concurrently; invocations on two different
   worktrees, including two linked worktrees of the same repository, are not
   serialized against each other and resolve to the same repository-scoped DB
   with distinct `WorktreeId`s.
-  - Validate: `worktree_lock::tests::*` (contention, distinct-path independence); `runtime_tests::linked_worktrees_have_independent_locks_and_worktree_ids`
+  - Validate: `runtime::worktree_lock::tests::*` (contention, distinct-path independence); `runtime::tests::linked_worktrees_have_independent_locks_and_worktree_ids`
 - [ ] AC10: A worktree whose durable state is `SnapshotFailure`-tainted or
   `needs_rebaseline` is recovered exactly once, using the same snapshot
   captured for the triggering boundary, before that boundary is processed;
   `needs_rebaseline` recovery preserves live scopes, taint recovery abandons
   them.
-  - Validate: `coordinator::tests::recovers_from_needs_rebaseline_preserving_live_scopes`, `coordinator::tests::recovers_from_snapshot_failure_taint_abandoning_live_scopes`
+  - Validate: `runtime::coordinator::tests::recovers_from_needs_rebaseline_preserving_live_scopes`, `runtime::coordinator::tests::recovers_from_snapshot_failure_taint_abandoning_live_scopes`
 - [ ] AC11: A Git snapshot failure against an already-materialized worktree
   durably persists a `SnapshotFailure` taint via `protocol::taint`, retried
   under the same bounded semantic CAS-retry policy the main coordinator loop
@@ -135,13 +154,13 @@ any ref, and proves that one, not a same-content decoy, is what `git gc
   never state read earlier in the same invocation — so a worktree another
   caller materializes concurrently, while this invocation's own Git snapshot
   is still being captured, is still found and correctly tainted.
-  - Validate: `coordinator::tests::snapshot_failure_taints_an_existing_worktree`, `coordinator::tests::snapshot_failure_taint_survives_a_losing_cas_and_commits_on_retry`, `coordinator::tests::snapshot_failure_taint_reports_not_persisted_after_retries_are_exhausted`, `coordinator::tests::snapshot_failure_before_any_baseline_makes_no_durable_write`, `coordinator::tests::snapshot_failure_taints_a_worktree_materialized_concurrently_during_capture`
+  - Validate: `runtime::coordinator::tests::snapshot_failure_taints_an_existing_worktree`, `runtime::coordinator::tests::snapshot_failure_taint_survives_a_losing_cas_and_commits_on_retry`, `runtime::coordinator::tests::snapshot_failure_taint_reports_not_persisted_after_retries_are_exhausted`, `runtime::coordinator::tests::snapshot_failure_before_any_baseline_makes_no_durable_write`, `runtime::coordinator::tests::snapshot_failure_taints_a_worktree_materialized_concurrently_during_capture`
 - [ ] AC12: All concurrent first-time callers of
   `checkout::get_or_create_checkout_id` for one physical checkout — whether
   through the coordinator, `agent_trace_storage`, or any other caller —
   converge on exactly one checkout ID, and the on-disk `checkout-id` file
   ends up containing that same value.
-  - Validate: `checkout::tests::concurrent_first_time_callers_converge_on_one_checkout_id`, `runtime_tests::agent_trace_storage_and_coordinator_observe_the_same_checkout_id`
+  - Validate: `checkout::tests::concurrent_first_time_callers_converge_on_one_checkout_id`, `runtime::tests::agent_trace_storage_and_coordinator_observe_the_same_checkout_id`
 - [ ] AC13: For cooperating SCE processes, the canonical `checkout-id` path
   is at every observable point either absent or contains exactly one
   complete, valid checkout ID — never a partially written or truncated
@@ -160,9 +179,11 @@ any ref, and proves that one, not a same-content decoy, is what `git gc
 
 - `context/cli/mutation-trace-protocol.md` — "Target end-state architecture"
   currently states `coordinator.rs`/`git_snapshot.rs` "remain future work";
-  update to reflect their existence and responsibilities.
+  update to reflect their existence and responsibilities at their actual
+  location, `cli/src/services/mutation_trace/runtime/`.
 - `context/cli/mutation-trace-store.md` — "Non-goals" currently states "no
-  `coordinator.rs` or `git_snapshot.rs` exists yet"; update once they exist.
+  `coordinator.rs` or `git_snapshot.rs` exists yet"; update once they exist
+  under `mutation_trace/runtime/`.
 - `context/cli/checkout-identity.md` — currently documents
   `get_or_create_checkout_id` as a plain "reuses an existing ID or writes a
   new one"; update to document the identity-creation lock and the
@@ -171,8 +192,9 @@ any ref, and proves that one, not a same-content decoy, is what `git gc
   mention the new runtime coordinator layer while preserving the accurate
   "not yet wired into any hook or command" framing.
 - `context/context-map.md` — the `mutation-trace-protocol.md` line
-  annotation names the `coordinator.rs`/`git_snapshot.rs` seams as
-  not-yet-created; update once T06 lands.
+  annotation names the `coordinator.rs`/`git_snapshot.rs` seams (now
+  `mutation_trace/runtime/coordinator.rs`/`mutation_trace/runtime/git_snapshot.rs`)
+  as not-yet-created; update once T06 lands.
 - A new domain file (e.g. `context/cli/mutation-trace-runtime-coordinator.md`)
   documenting the lock, snapshot, ref-durability, and coordinator design
   decisions below is likely warranted; leave the exact filename to task
@@ -193,11 +215,13 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 - **In scope:** `cli/src/services/checkout/mod.rs` (behavior change:
   `get_or_create_checkout_id` becomes concurrency-safe),
-  `cli/src/services/mutation_trace/worktree_lock.rs` (new),
-  `cli/src/services/mutation_trace/git_snapshot.rs` (new),
-  `cli/src/services/mutation_trace/coordinator.rs` (new),
-  `cli/src/services/mutation_trace/runtime_tests.rs` (new),
-  `cli/src/services/mutation_trace/mod.rs` (module registration only).
+  `cli/src/services/mutation_trace/runtime/mod.rs` (new),
+  `cli/src/services/mutation_trace/runtime/worktree_lock.rs` (new),
+  `cli/src/services/mutation_trace/runtime/git_snapshot.rs` (new),
+  `cli/src/services/mutation_trace/runtime/coordinator.rs` (new),
+  `cli/src/services/mutation_trace/runtime/tests.rs` (new),
+  `cli/src/services/mutation_trace/mod.rs` (module registration only, to
+  declare `pub(crate) mod runtime;`).
 - **Out of scope:** Claude/Codex/OpenCode/Pi hook translation, Bash
   `PreToolUse`/`PostToolUse` wiring, final Agent Trace `diff_traces`
   insertion, commit attribution, auto-sync/remote sync, control-plane
@@ -233,7 +257,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Make checkout-identity creation concurrency-safe and crash-safe` (status:todo)
+- [x] T01: `Make checkout-identity creation concurrency-safe and crash-safe` (status:done)
   - Task ID: T01
   - Scope: In — `cli/src/services/checkout/mod.rs`:
     `get_or_create_checkout_id` gains an internal, dedicated
@@ -261,13 +285,76 @@ Persist this field in every plan; this is durable plan state, not chat state:
     interrupted attempt never blocks a later call from creating the
     canonical file.
   - Verify: `cargo test -p shared-context-engineering checkout::` (via `./scripts/run-cli-cargo.sh test`)
-  - Context synchronization: pending
+  - Completed: 2026-08-29
+  - Files changed: `cli/src/services/checkout/mod.rs`
+  - Result: `get_or_create_checkout_id` now acquires a dedicated
+    `<git-dir>/sce/checkout-id.lock` (blocking `std::fs::File::lock()`, no
+    timeout) only on the slow path, re-checking `read_checkout_id` under the
+    lock before generating a new ID; the previously-created case still
+    returns via the unchanged, lock-free `read_checkout_id` fast path. The
+    write itself now goes through a unique
+    `checkout-id.tmp-<checkout-id>` file created with
+    `OpenOptions::create_new(true)`, `write_all`, `File::sync_data()`, then
+    an atomic `std::fs::rename` into the canonical `checkout-id` path, with a
+    best-effort `#[cfg(unix)]` sync of the parent `sce/` directory handle
+    afterward. No public signature, checkout-ID file format, or caller
+    (including `agent_trace_storage`) changed. Added a `#[cfg(test)] mod
+    tests` covering concurrent first-time convergence, the fast path never
+    touching the lock, a completed rename leaving a complete ID, a simulated
+    crash before rename leaving the canonical path absent, and an orphaned
+    temp file not blocking a later call.
+
+    PR #244 review follow-up: the crash-safety test originally reimplemented
+    the create-temp/write/sync/(no rename) sequence inline instead of
+    exercising production code, so a regression to an unsafe direct write
+    could still have passed it. The temp-file/write/sync/rename/directory-sync
+    sequence is now factored out of `get_or_create_checkout_id` into a
+    private `persist_checkout_id(checkout_dir, checkout_id)` helper, whose
+    name and signature describe only the production responsibility (persist
+    one checkout ID crash-safely) with no test vocabulary in it. It delegates
+    to a lower-level private `persist_checkout_id_inner(checkout_dir,
+    checkout_id, before_rename)`, where `before_rename` runs after the temp
+    file is written and synced but before the rename;
+    `persist_checkout_id` itself calls the inner helper with a no-op
+    `before_rename`, so `get_or_create_checkout_id` never mentions the test
+    seam at all, while both crash-safety tests call `persist_checkout_id_inner`
+    directly to reach it. `completed_rename_leaves_the_canonical_path_with_a_complete_id`
+    calls the public-shaped `persist_checkout_id` (no injected interruption)
+    and asserts the canonical file exists, contains exactly the generated ID,
+    and parses as a valid UUID. `interruption_before_rename_leaves_the_canonical_path_absent`
+    calls `persist_checkout_id_inner` directly and injects a `before_rename`
+    that asserts the temp file already contains the complete ID and the
+    canonical path is still absent, then returns an error to abort before the
+    rename runs; the test then asserts the canonical path stays absent and
+    `read_checkout_id` returns `None`. Crash-safety is now tested through the
+    actual, shared production persistence implementation with an injected
+    pre-rename failure, not through filesystem steps duplicated in the test.
+  - Verify (actual): `./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml checkout::` → 5/5 passed. Additionally ran
+    `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml
+    --all-targets -- -D warnings` → clean (pedantic/warnings denied
+    workspace-wide, per Constraints), and `./scripts/run-cli-cargo.sh fmt
+    --manifest-path cli/Cargo.toml -- --check` → clean. Additionally ran
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    agent_trace_storage::` → 14/14 passed (no regression in the other,
+    unmodified caller).
+  - Context impact:
+    - Updated `context/cli/checkout-identity.md` to document the
+      identity-creation lock, the crash-safe temp-file/rename write, the
+      convergence guarantee across every caller, and the file's now-present
+      inline unit test coverage (previously documented as absent).
+    - Updated `context/patterns.md`'s "Unit testing in Nix sandbox" section
+      to document the filesystem-touching inline-unit-test pattern this
+      task's tests use (unique `std::env::temp_dir()` paths, Nix-sandbox-safe
+      via `TMPDIR`) as an established, code-verified pattern rather than the
+      stale "integration tests only" rule it stated before.
+  - Context synchronization: synced
 
 - [ ] T02: `Add the per-worktree OS advisory runtime lock` (status:todo)
   - Task ID: T02
-  - Scope: In — `worktree_lock.rs`: `WorktreeLock::acquire(git_dir, timeout)`,
+  - Scope: In — `runtime/worktree_lock.rs`: `WorktreeLock::acquire(git_dir, timeout)`,
     RAII release, bounded polling acquisition. Out — wiring into
-    `coordinator.rs` (T05); resolving `git_dir` itself (caller-supplied);
+    `runtime/coordinator.rs` (T05); resolving `git_dir` itself (caller-supplied);
     the distinct checkout-identity-creation lock (T01, already landed by the
     time this task depends on nothing from it).
   - Dependencies: none
@@ -276,12 +363,12 @@ Persist this field in every plan; this is durable plan state, not chat state:
     path until the first releases (via `Drop`) or the bounded timeout elapses,
     returns a distinct, matchable error on timeout, and never treats the
     lock file's mere existence as ownership.
-  - Verify: `cargo test -p shared-context-engineering worktree_lock::` (via `./scripts/run-cli-cargo.sh test`)
+  - Verify: `cargo test -p shared-context-engineering runtime::worktree_lock::` (via `./scripts/run-cli-cargo.sh test`)
   - Context synchronization: pending
 
 - [ ] T03: `Add the isolated Git snapshot service with ref-pinned durability` (status:todo)
   - Task ID: T03
-  - Scope: In — `git_snapshot.rs`: `GitSnapshotService` (resolves
+  - Scope: In — `runtime/git_snapshot.rs`: `GitSnapshotService` (resolves
     `--git-dir` once; a unique, never-pre-created private temp index path
     under `<git-dir>/sce/tmp/`, reserved by the RAII guard but left for Git
     itself to create via `read-tree`; writes tree/blob objects into the
@@ -291,7 +378,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     HEAD` and `git read-tree --empty`, never a bare/absent index file),
     `pin_tree` (creates `refs/sce/mutation-cursor/<worktree-id>/<tree-sha>`),
     `diff_trees`. Out — wiring `capture_tree`/`pin_tree` into
-    `coordinator.rs` (T04); locking (T02/T05 own that); any ref
+    `runtime/coordinator.rs` (T04); locking (T02/T05 own that); any ref
     deletion/reconciliation logic (deferred, see Design decisions and
     Follow-up PR — this PR's pins are create-only).
   - Dependencies: none
@@ -306,12 +393,12 @@ Persist this field in every plan; this is durable plan state, not chat state:
     genuinely unreachable control tree captured and left unpinned in the
     same repository is reclaimed by that same aggressive pass; `pin_tree` is
     idempotent for the same `(worktree_id, tree)` pair.
-  - Verify: `cargo test -p shared-context-engineering git_snapshot::` (via `./scripts/run-cli-cargo.sh test`)
+  - Verify: `cargo test -p shared-context-engineering runtime::git_snapshot::` (via `./scripts/run-cli-cargo.sh test`)
   - Context synchronization: pending
 
 - [ ] T04: `Add the coordinator's core protocol-integration pipeline` (status:todo)
   - Task ID: T04
-  - Scope: In — `coordinator.rs`: `RuntimeBoundary` (with its
+  - Scope: In — `runtime/coordinator.rs`: `RuntimeBoundary` (with its
     `(ScopeId, EventId)` replay-identity contract documented on the type),
     `CoordinateOutcome`, `CoordinateError`, `SnapshotCapture` trait
     (dependency-injection seam covering `capture` and `pin`), worktree/scope
@@ -338,7 +425,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     injected snapshot-capture failure and controlled store sequencing proves
     a worktree row materialized *during* a failing capture attempt (not
     before it) is still found and tainted by that same failing invocation.
-  - Verify: `cargo test -p shared-context-engineering coordinator::` (via `./scripts/run-cli-cargo.sh test`)
+  - Verify: `cargo test -p shared-context-engineering runtime::coordinator::` (via `./scripts/run-cli-cargo.sh test`)
   - Context synchronization: pending
 
 - [ ] T05: `Wire the worktree lock and checkout identity into coordinate()` (status:todo)
@@ -354,12 +441,12 @@ Persist this field in every plan; this is durable plan state, not chat state:
     critical sections concurrently (one observably blocks until the other's
     `WorktreeLock` drops); `coordinate()`'s public signature matches
     `Result<CoordinateOutcome, CoordinateError>`.
-  - Verify: `cargo test -p shared-context-engineering coordinator::tests::two_threads_on_the_same_worktree_serialize` (via `./scripts/run-cli-cargo.sh test`)
+  - Verify: `cargo test -p shared-context-engineering runtime::coordinator::tests::two_threads_on_the_same_worktree_serialize` (via `./scripts/run-cli-cargo.sh test`)
   - Context synchronization: pending
 
 - [ ] T06: `Add cross-module runtime integration tests` (status:todo)
   - Task ID: T06
-  - Scope: In — `runtime_tests.rs`: end-to-end `coordinate()` calls against
+  - Scope: In — `runtime/tests.rs`: end-to-end `coordinate()` calls against
     two real linked Git worktrees sharing one repository-scoped DB, proving
     distinct `WorktreeId`s/locks and non-serialization across worktrees; an
     end-to-end snapshot-failure-then-recovery cycle across two real
@@ -372,7 +459,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     assertion, and an end-to-end failure/recovery cycle pass using only the
     public `coordinate()` API, real `git worktree add`, and a real temp-file
     `RepositoryAgentTraceDb`.
-  - Verify: `cargo test -p shared-context-engineering runtime_tests::` (via `./scripts/run-cli-cargo.sh test`)
+  - Verify: `cargo test -p shared-context-engineering runtime::tests::` (via `./scripts/run-cli-cargo.sh test`)
   - Context synchronization: pending
 
 ## Design decisions
@@ -653,7 +740,7 @@ confirmed by this comparison: it is simultaneously the simplest
 implementation, the only one that is GC-safe by construction rather than by
 a separately-maintained copying invariant, and the only one that needs no
 extra object-directory environment variables for either writing or reading.
-This also means `git_snapshot.rs` does **not** need to resolve
+This also means `runtime/git_snapshot.rs` does **not** need to resolve
 `--git-common-dir` at all (a further simplification and deviation from the
 original plan, which planned to add `resolve_git_common_dir` to
 `checkout.rs`): verified experimentally from inside a real linked worktree,
@@ -961,7 +1048,7 @@ satisfying Requirement 4's "runtime callers should not be allowed to invent
 a `WorktreeId`."
 
 A separate `RuntimeBoundary` type is warranted and lives in
-`coordinator.rs`: `types::Boundary` intentionally carries no `ActorKind`
+`runtime/coordinator.rs`: `types::Boundary` intentionally carries no `ActorKind`
 (that is a scope-*registration* concern, not a pure protocol transition
 concern) and its `Flush` variant carries an explicit `worktree: WorktreeId`
 the coordinator must not let a caller supply. `RuntimeBoundary` matches the
@@ -1325,7 +1412,7 @@ Result<()>`) is the one seam this plan introduces for determinism:
 a fake, call-counting implementation to prove "exactly one `capture`, at
 most one `pin`, per invocation, even across CAS retries" (AC8) without
 needing real concurrent Git processes. The lock is *not* faked —
-`worktree_lock::tests`/`checkout::tests` and T05's contention test exercise
+`runtime::worktree_lock::tests`/`checkout::tests` and T05's contention test exercise
 real `std::fs::File` locks against real temp directories, because proving
 actual OS-level exclusion is the point. The DB is not faked either, matching
 `store.rs`'s own established precedent
@@ -1361,27 +1448,39 @@ sufficient for everything this coordinator needs.
 
 New:
 
-- `cli/src/services/mutation_trace/worktree_lock.rs` — per-worktree runtime
-  OS advisory lock (T02).
-- `cli/src/services/mutation_trace/git_snapshot.rs` — isolated Git snapshot
-  capture, ref pinning, and `diff_trees` (T03).
-- `cli/src/services/mutation_trace/coordinator.rs` — `RuntimeBoundary`,
+- `cli/src/services/mutation_trace/runtime/mod.rs` — declares the runtime
+  submodules and exposes only what the rest of the crate needs (the
+  `coordinate()` entrypoint and its outcome/error types); Git snapshot and
+  lock internals stay unexposed outside `runtime`.
+- `cli/src/services/mutation_trace/runtime/worktree_lock.rs` — per-worktree
+  runtime OS advisory lock (T02).
+- `cli/src/services/mutation_trace/runtime/git_snapshot.rs` — isolated Git
+  snapshot capture, ref pinning, and `diff_trees` (T03).
+- `cli/src/services/mutation_trace/runtime/coordinator.rs` — `RuntimeBoundary`,
   `CoordinateOutcome`, `CoordinateError`, `SnapshotCapture`, the internal
   protocol-integration pipeline, and the public lock-wrapped `coordinate()`
-  entrypoint (T04, T05).
-- `cli/src/services/mutation_trace/runtime_tests.rs` — cross-module
+  entrypoint (T04, T05). This is the composition point: the only module that
+  combines `protocol`/`store`/`types` with `runtime::git_snapshot`,
+  `runtime::worktree_lock`, and `services::checkout`.
+- `cli/src/services/mutation_trace/runtime/tests.rs` — cross-module
   linked-worktree, cross-caller checkout-identity, and end-to-end
-  failure/recovery integration tests (T06).
+  failure/recovery integration tests (T06), declared as `runtime`'s own
+  `#[cfg(test)] mod tests`.
 
 Modified:
 
 - `cli/src/services/checkout/mod.rs` — `get_or_create_checkout_id` gains an
   internal identity-creation lock plus a crash-safe temp-file-and-rename
-  write sequence (T01); no signature change.
-- `cli/src/services/mutation_trace/mod.rs` — register the four new modules
-  (`pub mod git_snapshot; pub mod worktree_lock; pub mod coordinator;
-  #[cfg(test)] mod runtime_tests;`), consistent with the module's existing
+  write sequence (T01); no signature change. `checkout/` remains its own
+  top-level service, not moved under `mutation_trace`.
+- `cli/src/services/mutation_trace/mod.rs` — add `pub(crate) mod runtime;`
+  alongside the existing `pub mod protocol; pub mod store; pub mod types;`
+  and private `mod mbt;`, consistent with the module's existing
   `#[allow(dead_code)]` precedent for code not yet wired to a command/hook.
+  `runtime/mod.rs` itself declares `mod git_snapshot; mod worktree_lock; mod
+  coordinator; #[cfg(test)] mod tests;`, keeping the Git-snapshot and lock
+  modules private to `runtime` — only `coordinator`'s public entrypoints are
+  reachable from outside it.
 
 Docs (context sync, not authored in this plan's tasks):
 
@@ -1396,7 +1495,7 @@ Cargo/dependency changes: none.
 - **Pure unit tests** (no filesystem/DB/lock): none new — `protocol.rs`'s
   existing pure-function tests already cover `prepare`/`commit`/`recover`/
   `taint`/`abandon`; this plan only adds imperative-shell code around them.
-- **Git integration tests** (`git_snapshot.rs`, real temp Git repos): index
+- **Git integration tests** (`runtime/git_snapshot.rs`, real temp Git repos): index
   preservation under staged+unstaged+untracked simultaneously, ignored-file
   exclusion, tracked-file deletion; unborn `HEAD` — both with a file present
   (asserting the resulting tree contains it) and with the working tree
@@ -1420,7 +1519,7 @@ Cargo/dependency changes: none.
   durability holds against Git's own reachability analysis (proven against a
   genuinely unreachable control object, not against "the temp index is
   gone" or an object the test itself cannot actually make unreachable).
-- **Store/DB integration tests** (`coordinator.rs`, real temp-file
+- **Store/DB integration tests** (`runtime/coordinator.rs`, real temp-file
   `RepositoryAgentTraceDb`): AC1–AC5, AC10, AC11 — first observation,
   exclusive mutation, no-op observation, replay, close attribution,
   contention, both recovery modes, snapshot-failure with immediate success,
@@ -1429,8 +1528,8 @@ Cargo/dependency changes: none.
   and the bootstrap snapshot-failure case. Prove: the coordinator drives the
   existing store/protocol APIs to produce exactly the durable outcomes the
   Quint model specifies, including under contention on the taint path.
-- **Concurrency tests** (`checkout::mod.rs` T01, `worktree_lock.rs` T02,
-  `coordinator.rs` T05): concurrent first-time `get_or_create_checkout_id`
+- **Concurrency tests** (`checkout::mod.rs` T01, `runtime/worktree_lock.rs` T02,
+  `runtime/coordinator.rs` T05): concurrent first-time `get_or_create_checkout_id`
   callers on one `git_dir` converge on one ID; a second `try_lock()` on the
   same worktree-lock path observably blocks/fails while the first holds it
   and succeeds immediately after `Drop`; two real threads calling
@@ -1451,20 +1550,20 @@ Cargo/dependency changes: none.
   of, a subsequent `get_or_create_checkout_id` call, which still converges
   on one complete, valid ID. Prove: AC13 — the canonical path is never
   observable as partially written, and orphaned temp files are inert.
-- **Linked-worktree tests** (`runtime_tests.rs`, real `git worktree add`):
+- **Linked-worktree tests** (`runtime/tests.rs`, real `git worktree add`):
   two linked worktrees resolve distinct `checkout_id`/`WorktreeId` and
   distinct runtime-lock paths, concurrent `coordinate()` calls on the two
   worktrees do not block each other, both share one repository-scoped DB,
   and a tree pinned from one worktree resolves correctly when queried via
   the other worktree's `GIT_DIR`. Prove: AC9 end to end through the public
   API.
-- **Cross-caller checkout-identity test** (`runtime_tests.rs`): a direct
+- **Cross-caller checkout-identity test** (`runtime/tests.rs`): a direct
   `agent_trace_storage` resolution and a `coordinate()` call against the
   same `repository_root`, run concurrently on first-ever resolution, observe
   the identical checkout ID. Prove: AC12's convergence guarantee holds
   across module boundaries, not only within `checkout::mod.rs`'s own test
   suite.
-- **Failure/recovery tests** (`coordinator.rs`, `runtime_tests.rs`): CAS
+- **Failure/recovery tests** (`runtime/coordinator.rs`, `runtime/tests.rs`): CAS
   conflict via two prepared-but-not-yet-committed states from the same
   revision (proving reload+recompute+no-second-snapshot, and no re-pin);
   snapshot failure with and without a prior worktree row; snapshot-failure
@@ -1477,7 +1576,7 @@ Cargo/dependency changes: none.
   rather than basing its decision on any earlier state; a full two-invocation
   failure-then-recovery cycle via the public API. Prove: AC8, AC10, AC11 in
   both unit and end-to-end form.
-- **Lock staleness**: `worktree_lock::tests` documents (via a test that
+- **Lock staleness**: `runtime::worktree_lock::tests` documents (via a test that
   opens, writes bytes to, and closes the lock file *without* ever calling
   `.lock()`, then proves a subsequent real `WorktreeLock::acquire` on the
   same path succeeds immediately) that a leftover lock file with no active
