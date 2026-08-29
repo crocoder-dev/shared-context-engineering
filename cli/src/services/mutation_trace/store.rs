@@ -3024,4 +3024,584 @@ mod tests {
 
         remove_test_db(&db_path);
     }
+
+    fn insert_worktree_with_state(
+        db: &RepositoryAgentTraceDb,
+        worktree_id: &str,
+        revision: u64,
+        tainted: bool,
+        failure_kind: FailureKind,
+        needs_rebaseline: bool,
+    ) {
+        db.execute(
+            "INSERT INTO mutation_trace_worktrees
+                (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline)
+             VALUES (?1, 'tree0', ?2, ?3, ?4, ?5)",
+            (
+                worktree_id,
+                encode_revision(revision).as_slice(),
+                tainted,
+                encode_failure_kind(failure_kind),
+                needs_rebaseline,
+            ),
+        )
+        .expect("worktree insert should succeed");
+    }
+
+    fn reopen_store(db_path: &std::path::Path) -> RepositoryAgentTraceDb {
+        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(db_path)
+            .expect("reopened handle should open")
+    }
+
+    fn load_before_state(
+        db_path: &std::path::Path,
+        worktree: &WorktreeId,
+        scope: Option<&ScopeId>,
+        event_key: Option<&EventKey>,
+    ) -> ProtocolState {
+        let db = reopen_store(db_path);
+        MutationTraceStore::new(&db)
+            .load_worktree(worktree, scope, event_key)
+            .expect("load_worktree should succeed")
+            .expect("worktree projection should exist")
+            .into_protocol_state()
+    }
+
+    fn commit_transition(db_path: &std::path::Path, transition: &DurableTransition) -> CasResult {
+        let db = reopen_store(db_path);
+        MutationTraceStore::new(&db)
+            .commit(transition)
+            .expect("commit should succeed")
+    }
+
+    fn expected_projection(
+        after: &ProtocolState,
+        worktree: &WorktreeId,
+        scope: Option<&ScopeId>,
+        event_key: Option<&EventKey>,
+    ) -> WorktreeProjection {
+        let worktree_state = after
+            .worktrees
+            .get(worktree)
+            .expect("after should contain the worktree")
+            .clone();
+
+        let mut scopes: BTreeMap<ScopeId, ScopeState> = after
+            .scopes
+            .iter()
+            .filter(|(_, scope_state)| {
+                scope_state.worktree_id == *worktree && scope_state.status == ScopeStatus::Active
+            })
+            .map(|(scope_id, scope_state)| (scope_id.clone(), scope_state.clone()))
+            .collect();
+
+        let effective_scope = scope.or(event_key.map(|key| &key.scope_id));
+        if let Some(effective_scope) = effective_scope {
+            if let Some(scope_state) = after.scopes.get(effective_scope) {
+                scopes.insert(effective_scope.clone(), scope_state.clone());
+            }
+        }
+
+        let mut processed_events = BTreeSet::new();
+        if let Some(key) = event_key {
+            if after.processed_events.contains(key) {
+                processed_events.insert(key.clone());
+            }
+        }
+
+        WorktreeProjection {
+            worktree_id: worktree.clone(),
+            worktree_state,
+            scopes,
+            processed_events,
+        }
+    }
+
+    fn assert_round_trip(
+        db_path: &std::path::Path,
+        worktree: &WorktreeId,
+        scope: Option<&ScopeId>,
+        event_key: Option<&EventKey>,
+        after: &ProtocolState,
+    ) -> WorktreeProjection {
+        let db = reopen_store(db_path);
+        let store = MutationTraceStore::new(&db);
+
+        let reloaded = store
+            .load_worktree(worktree, scope, event_key)
+            .expect("load_worktree should succeed")
+            .expect("worktree projection should exist");
+
+        assert_eq!(
+            reloaded,
+            expected_projection(after, worktree, scope, event_key)
+        );
+
+        for expected_event in &after.mutation_events {
+            let reloaded_event = store
+                .load_mutation_event(worktree, expected_event.revision)
+                .expect("load_mutation_event should succeed")
+                .expect("mutation event row should exist");
+            assert_eq!(&reloaded_event, expected_event);
+        }
+
+        reloaded
+    }
+
+    #[test]
+    fn round_trip_start_persists_and_reloads_exactly_after_reopening_the_database() {
+        let db_path = unique_test_db_path("roundtrip-start");
+        let wt = WorktreeId("wt0".to_string());
+        let scope_id = ScopeId("scope0".to_string());
+        {
+            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0);
+            insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::NeverSeen);
+        }
+
+        let before = load_before_state(&db_path, &wt, Some(&scope_id), None);
+        let attempt = AttemptId("attempt0".to_string());
+        let event_id = EventId("event0".to_string());
+        let prepared = prepare(
+            &before,
+            attempt.clone(),
+            Boundary::Start {
+                scope: scope_id.clone(),
+                event: event_id.clone(),
+            },
+            TreeId("tree1".to_string()),
+        );
+        let outcome = commit(&prepared, &attempt);
+        assert!(
+            outcome.evaluation.accepted,
+            "a fresh Start should be accepted"
+        );
+        let after = outcome.state;
+
+        let transition = DurableTransition::between(&before, &after, &wt)
+            .expect("between should succeed")
+            .expect("a start transition should produce a durable transition");
+        assert_eq!(commit_transition(&db_path, &transition), CasResult::Applied);
+
+        let event_key = EventKey {
+            scope_id: scope_id.clone(),
+            event_id,
+        };
+        assert_round_trip(&db_path, &wt, Some(&scope_id), Some(&event_key), &after);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn round_trip_advance_persists_and_reloads_exactly_after_reopening_the_database() {
+        let db_path = unique_test_db_path("roundtrip-advance");
+        let wt = WorktreeId("wt0".to_string());
+        let scope_id = ScopeId("scope0".to_string());
+        {
+            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0);
+            insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active);
+        }
+
+        let before = load_before_state(&db_path, &wt, Some(&scope_id), None);
+        let attempt = AttemptId("attempt0".to_string());
+        let event_id = EventId("event0".to_string());
+        let prepared = prepare(
+            &before,
+            attempt.clone(),
+            Boundary::Advance {
+                scope: scope_id.clone(),
+                event: event_id.clone(),
+            },
+            TreeId("tree1".to_string()),
+        );
+        let outcome = commit(&prepared, &attempt);
+        assert!(
+            outcome.evaluation.accepted,
+            "a fresh Advance should be accepted"
+        );
+        let after = outcome.state;
+
+        let transition = DurableTransition::between(&before, &after, &wt)
+            .expect("between should succeed")
+            .expect("an advance transition should produce a durable transition");
+        assert_eq!(commit_transition(&db_path, &transition), CasResult::Applied);
+
+        let event_key = EventKey {
+            scope_id: scope_id.clone(),
+            event_id,
+        };
+        assert_round_trip(&db_path, &wt, Some(&scope_id), Some(&event_key), &after);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn round_trip_close_persists_and_reloads_exactly_after_reopening_the_database() {
+        let db_path = unique_test_db_path("roundtrip-close");
+        let wt = WorktreeId("wt0".to_string());
+        let scope_id = ScopeId("scope0".to_string());
+        {
+            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0);
+            insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active);
+        }
+
+        let before = load_before_state(&db_path, &wt, Some(&scope_id), None);
+        let attempt = AttemptId("attempt0".to_string());
+        let event_id = EventId("event0".to_string());
+        let prepared = prepare(
+            &before,
+            attempt.clone(),
+            Boundary::Close {
+                scope: scope_id.clone(),
+                event: event_id.clone(),
+            },
+            TreeId("tree1".to_string()),
+        );
+        let outcome = commit(&prepared, &attempt);
+        assert!(
+            outcome.evaluation.accepted,
+            "a fresh Close should be accepted"
+        );
+        let after = outcome.state;
+        assert_eq!(
+            after.scopes.get(&scope_id).map(|s| s.status),
+            Some(ScopeStatus::Closed)
+        );
+
+        let transition = DurableTransition::between(&before, &after, &wt)
+            .expect("between should succeed")
+            .expect("a close transition should produce a durable transition");
+        assert_eq!(commit_transition(&db_path, &transition), CasResult::Applied);
+
+        let event_key = EventKey {
+            scope_id: scope_id.clone(),
+            event_id,
+        };
+        assert_round_trip(&db_path, &wt, Some(&scope_id), Some(&event_key), &after);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn round_trip_flush_with_change_persists_and_reloads_exactly_after_reopening_the_database() {
+        let db_path = unique_test_db_path("roundtrip-flush-change");
+        let wt = WorktreeId("wt0".to_string());
+        {
+            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0);
+        }
+
+        let before = load_before_state(&db_path, &wt, None, None);
+        let attempt = AttemptId("attempt0".to_string());
+        let prepared = prepare(
+            &before,
+            attempt.clone(),
+            Boundary::Flush {
+                worktree: wt.clone(),
+            },
+            TreeId("tree1".to_string()),
+        );
+        let outcome = commit(&prepared, &attempt);
+        assert!(
+            outcome.evaluation.changed,
+            "an observed tree change should be recorded"
+        );
+        let after = outcome.state;
+
+        let transition = DurableTransition::between(&before, &after, &wt)
+            .expect("between should succeed")
+            .expect("a changed flush transition should produce a durable transition");
+        assert_eq!(commit_transition(&db_path, &transition), CasResult::Applied);
+
+        assert_round_trip(&db_path, &wt, None, None, &after);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn round_trip_flush_without_change_persists_nothing_new() {
+        let db_path = unique_test_db_path("roundtrip-flush-no-change");
+        let wt = WorktreeId("wt0".to_string());
+        {
+            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0);
+        }
+
+        let before = load_before_state(&db_path, &wt, None, None);
+        let attempt = AttemptId("attempt0".to_string());
+        let prepared = prepare(
+            &before,
+            attempt.clone(),
+            Boundary::Flush {
+                worktree: wt.clone(),
+            },
+            before.worktrees[&wt].cursor_tree.clone(),
+        );
+        let outcome = commit(&prepared, &attempt);
+        assert!(
+            !outcome.evaluation.observed_change,
+            "flushing the same tree should observe no change"
+        );
+        let after = outcome.state;
+
+        assert_eq!(
+            DurableTransition::between(&before, &after, &wt).expect("between should succeed"),
+            None,
+            "a no-change flush must produce no durable transition to persist"
+        );
+
+        assert_round_trip(&db_path, &wt, None, None, &after);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn round_trip_taint_persists_and_reloads_exactly_after_reopening_the_database() {
+        let db_path = unique_test_db_path("roundtrip-taint");
+        let wt = WorktreeId("wt0".to_string());
+        {
+            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0);
+        }
+
+        let before = load_before_state(&db_path, &wt, None, None);
+        let after = taint(&before, &wt);
+
+        let transition = DurableTransition::between(&before, &after, &wt)
+            .expect("between should succeed")
+            .expect("taint should produce a durable transition");
+        assert_eq!(commit_transition(&db_path, &transition), CasResult::Applied);
+
+        assert_round_trip(&db_path, &wt, None, None, &after);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn round_trip_abandon_persists_and_reloads_exactly_after_reopening_the_database() {
+        let db_path = unique_test_db_path("roundtrip-abandon");
+        let wt = WorktreeId("wt0".to_string());
+        let scope_id = ScopeId("scope0".to_string());
+        {
+            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0);
+            insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active);
+        }
+
+        let before = load_before_state(&db_path, &wt, Some(&scope_id), None);
+        let after = abandon(&before, &scope_id);
+
+        let transition = DurableTransition::between(&before, &after, &wt)
+            .expect("between should succeed")
+            .expect("abandon should produce a durable transition");
+        assert_eq!(commit_transition(&db_path, &transition), CasResult::Applied);
+
+        assert_round_trip(&db_path, &wt, Some(&scope_id), None, &after);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn round_trip_strong_recovery_abandons_every_live_scope_after_reopening_the_database() {
+        let db_path = unique_test_db_path("roundtrip-recover-strong");
+        let wt = WorktreeId("wt0".to_string());
+        let scope_a = ScopeId("scope-a".to_string());
+        let scope_b = ScopeId("scope-b".to_string());
+        {
+            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            insert_worktree_with_state(&db, &wt.0, 0, true, FailureKind::SnapshotFailure, false);
+            insert_scope(&db, &scope_a.0, &wt.0, ScopeStatus::Active);
+            insert_scope(&db, &scope_b.0, &wt.0, ScopeStatus::Active);
+        }
+
+        let before = load_before_state(&db_path, &wt, None, None);
+        let after = recover(&before, &wt, TreeId("tree1".to_string()));
+
+        let transition = DurableTransition::between(&before, &after, &wt)
+            .expect("between should succeed")
+            .expect("strong recovery should produce a durable transition");
+        assert_eq!(commit_transition(&db_path, &transition), CasResult::Applied);
+
+        assert_round_trip(&db_path, &wt, None, None, &after);
+
+        let db = reopen_store(&db_path);
+        let store = MutationTraceStore::new(&db);
+        for scope_id in [&scope_a, &scope_b] {
+            let scope_state = store
+                .load_scope(scope_id)
+                .expect("scope read should succeed")
+                .expect("scope row should exist");
+            assert_eq!(scope_state.status, ScopeStatus::Abandoned);
+        }
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn round_trip_contended_mutation_persists_and_reloads_exactly_after_reopening_the_database() {
+        let db_path = unique_test_db_path("roundtrip-contended");
+        let wt = WorktreeId("wt0".to_string());
+        let scope_a = ScopeId("scope-a".to_string());
+        let scope_b = ScopeId("scope-b".to_string());
+        {
+            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0);
+            insert_scope(&db, &scope_a.0, &wt.0, ScopeStatus::Active);
+            insert_scope(&db, &scope_b.0, &wt.0, ScopeStatus::Active);
+        }
+
+        let before = load_before_state(&db_path, &wt, None, None);
+        let attempt = AttemptId("attempt0".to_string());
+        let prepared = prepare(
+            &before,
+            attempt.clone(),
+            Boundary::Flush {
+                worktree: wt.clone(),
+            },
+            TreeId("tree1".to_string()),
+        );
+        let outcome = commit(&prepared, &attempt);
+        assert!(
+            outcome.evaluation.changed,
+            "an observed tree change should be recorded"
+        );
+        let after = outcome.state;
+        let mutation_event = after
+            .mutation_events
+            .iter()
+            .next()
+            .expect("a mutation event should have been produced");
+        assert_eq!(mutation_event.attribution, Attribution::AiContended);
+        assert_eq!(
+            mutation_event.active_scopes,
+            BTreeSet::from([scope_a.clone(), scope_b.clone()])
+        );
+
+        let transition = DurableTransition::between(&before, &after, &wt)
+            .expect("between should succeed")
+            .expect("a contended flush transition should produce a durable transition");
+        assert_eq!(commit_transition(&db_path, &transition), CasResult::Applied);
+
+        let reloaded = assert_round_trip(&db_path, &wt, None, None, &after);
+        assert_eq!(
+            reloaded.scopes.keys().cloned().collect::<BTreeSet<_>>(),
+            BTreeSet::from([scope_a.clone(), scope_b.clone()]),
+            "the reloaded live bounded projection must contain exactly the two contended scopes"
+        );
+        for scope_id in [&scope_a, &scope_b] {
+            assert_eq!(
+                reloaded.scopes.get(scope_id).map(|s| s.status),
+                Some(ScopeStatus::Active)
+            );
+        }
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn round_trip_database_failure_changes_only_non_persistent_external_taint() {
+        let db_path = unique_test_db_path("roundtrip-database-failure");
+        let wt = WorktreeId("wt0".to_string());
+        {
+            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0);
+        }
+
+        let before = load_before_state(&db_path, &wt, None, None);
+        let after = database_failure(&before, &wt);
+
+        assert!(!before.external_taint.contains(&wt));
+        assert!(after.external_taint.contains(&wt));
+        assert_eq!(before.worktrees, after.worktrees);
+        assert_eq!(before.scopes, after.scopes);
+        assert_eq!(before.processed_events, after.processed_events);
+        assert_eq!(
+            after.worktrees[&wt].revision,
+            before.worktrees[&wt].revision
+        );
+
+        assert_eq!(
+            DurableTransition::between(&before, &after, &wt).expect("between should succeed"),
+            None,
+            "database_failure only changes external_taint, which is never durable, so no \
+             DurableTransition should exist to commit"
+        );
+
+        let reloaded = assert_round_trip(&db_path, &wt, None, None, &after);
+        assert!(reloaded.into_protocol_state().external_taint.is_empty());
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn round_trip_a_replayed_event_key_is_rejected_and_does_not_advance_the_worktree_again() {
+        let db_path = unique_test_db_path("roundtrip-replay");
+        let wt = WorktreeId("wt0".to_string());
+        let scope_id = ScopeId("scope0".to_string());
+        let event_key = EventKey {
+            scope_id: scope_id.clone(),
+            event_id: EventId("event0".to_string()),
+        };
+        {
+            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0);
+            insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active);
+        }
+
+        let before = load_before_state(&db_path, &wt, Some(&scope_id), None);
+        let attempt = AttemptId("attempt0".to_string());
+        let prepared = prepare(
+            &before,
+            attempt.clone(),
+            Boundary::Advance {
+                scope: scope_id.clone(),
+                event: event_key.event_id.clone(),
+            },
+            TreeId("tree1".to_string()),
+        );
+        let outcome = commit(&prepared, &attempt);
+        assert!(
+            outcome.evaluation.accepted,
+            "the first delivery should be accepted"
+        );
+        let after = outcome.state;
+
+        let transition = DurableTransition::between(&before, &after, &wt)
+            .expect("between should succeed")
+            .expect("the first delivery should produce a durable transition");
+        assert_eq!(commit_transition(&db_path, &transition), CasResult::Applied);
+
+        let before_replay = load_before_state(&db_path, &wt, Some(&scope_id), Some(&event_key));
+        assert!(before_replay.processed_events.contains(&event_key));
+
+        let replay_attempt = AttemptId("attempt1".to_string());
+        let replay_prepared = prepare(
+            &before_replay,
+            replay_attempt.clone(),
+            Boundary::Advance {
+                scope: scope_id.clone(),
+                event: event_key.event_id.clone(),
+            },
+            TreeId("tree2".to_string()),
+        );
+        let replay_outcome = commit(&replay_prepared, &replay_attempt);
+        assert!(
+            !replay_outcome.evaluation.accepted,
+            "a replayed EventKey must be rejected"
+        );
+        let after_replay = replay_outcome.state;
+
+        assert_eq!(
+            DurableTransition::between(&before_replay, &after_replay, &wt)
+                .expect("between should succeed"),
+            None,
+            "a rejected replay must produce no durable transition to persist"
+        );
+
+        assert_round_trip(&db_path, &wt, Some(&scope_id), Some(&event_key), &after);
+
+        remove_test_db(&db_path);
+    }
 }
