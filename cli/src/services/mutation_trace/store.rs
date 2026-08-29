@@ -1002,6 +1002,8 @@ fn reconstruct_boundary(
 
 #[cfg(test)]
 mod tests {
+    use std::thread;
+
     use super::*;
     use crate::services::mutation_trace::protocol::{
         abandon, commit, database_failure, prepare, recover, taint,
@@ -1171,6 +1173,20 @@ mod tests {
             (scope_id, event_id),
         )
         .expect("processed-event insert should succeed");
+    }
+
+    fn insert_active_scope(
+        db: &RepositoryAgentTraceDb,
+        worktree_id: &str,
+        revision: u64,
+        scope_id: &str,
+    ) {
+        db.execute(
+            "INSERT INTO mutation_trace_event_active_scopes (worktree_id, revision, scope_id)
+             VALUES (?1, ?2, ?3)",
+            (worktree_id, encode_revision(revision).as_slice(), scope_id),
+        )
+        .expect("active-scope insert should succeed");
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2469,6 +2485,541 @@ mod tests {
         assert_eq!(
             worktree_state.revision, 0,
             "the guard's own revision advance must roll back together with the failed insert"
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    struct RaceEvidence {
+        scope: ScopeId,
+        event_key: EventKey,
+        mutation_event: MutationEvent,
+    }
+
+    fn race_evidence(worktree: &WorktreeId, scope: ScopeId, label: &str) -> RaceEvidence {
+        let event_key = EventKey {
+            scope_id: scope.clone(),
+            event_id: EventId(format!("event-{label}")),
+        };
+        let mutation_event = MutationEvent {
+            worktree_id: worktree.clone(),
+            revision: 1,
+            before_tree: TreeId("tree0".to_string()),
+            after_tree: TreeId(format!("tree-after-{label}")),
+            active_scopes: BTreeSet::from([scope.clone()]),
+            tainted: false,
+            failure_kind: FailureKind::Healthy,
+            attribution: Attribution::AiExclusive(scope.clone()),
+            boundary: Boundary::Close {
+                scope: scope.clone(),
+                event: event_key.event_id.clone(),
+            },
+        };
+        RaceEvidence {
+            scope,
+            event_key,
+            mutation_event,
+        }
+    }
+
+    fn closing_transition(
+        before: &ProtocolState,
+        worktree: &WorktreeId,
+        evidence: &RaceEvidence,
+    ) -> DurableTransition {
+        let mut after = before.clone();
+        after.worktrees.get_mut(worktree).unwrap().revision = evidence.mutation_event.revision;
+        after.scopes.get_mut(&evidence.scope).unwrap().status = ScopeStatus::Closed;
+        after.processed_events.insert(evidence.event_key.clone());
+        after
+            .mutation_events
+            .insert(evidence.mutation_event.clone());
+        DurableTransition::between(before, &after, worktree)
+            .expect("between should succeed")
+            .expect("a transition should exist for this change")
+    }
+
+    fn assert_race_winner_state(
+        store: &MutationTraceStore,
+        worktree: &WorktreeId,
+        persisted_event: &MutationEvent,
+        writer_a: &RaceEvidence,
+        writer_b: &RaceEvidence,
+    ) {
+        let (winner, loser) = if persisted_event == &writer_a.mutation_event {
+            (writer_a, writer_b)
+        } else if persisted_event == &writer_b.mutation_event {
+            (writer_b, writer_a)
+        } else {
+            panic!(
+                "persisted mutation event matches neither writer's expected event: \
+                 {persisted_event:?}"
+            );
+        };
+
+        let winning_scope_state = store
+            .load_scope(&winner.scope)
+            .expect("winning scope read should succeed")
+            .expect("winning scope row should exist");
+        assert_eq!(
+            winning_scope_state.status,
+            ScopeStatus::Closed,
+            "the winning transition's scope-status change must be durable"
+        );
+
+        let losing_scope_state = store
+            .load_scope(&loser.scope)
+            .expect("losing scope read should succeed")
+            .expect("losing scope row should exist");
+        assert_eq!(
+            losing_scope_state.status,
+            ScopeStatus::Active,
+            "the losing transition's scope-status change must not have applied"
+        );
+
+        assert!(
+            store
+                .processed_event_exists(&winner.event_key)
+                .expect("winning processed-event read should succeed"),
+            "the winning transition's processed EventKey must exist"
+        );
+        assert!(
+            !store
+                .processed_event_exists(&loser.event_key)
+                .expect("losing processed-event read should succeed"),
+            "the losing transition's processed EventKey must not exist"
+        );
+
+        assert_eq!(
+            persisted_event, &winner.mutation_event,
+            "the persisted mutation event must equal the winning transition's expected event \
+             field-for-field, with no evidence from the losing transition mixed in"
+        );
+
+        let persisted_active_scopes = store
+            .load_mutation_event_active_scopes(
+                worktree,
+                encode_revision(winner.mutation_event.revision).as_slice(),
+            )
+            .expect("active-scope read should succeed");
+        assert_eq!(
+            &persisted_active_scopes, &winner.mutation_event.active_scopes,
+            "persisted active scopes must equal exactly the winning transition's active_scopes, \
+             with no loser-only active-scope rows present"
+        );
+    }
+
+    #[test]
+    fn commit_from_two_independent_connections_races_and_only_one_applies() {
+        let db_path = unique_test_db_path("commit-two-writer-race");
+        let wt = WorktreeId("wt0".to_string());
+        let scope_a = ScopeId("scope-a".to_string());
+        let scope_b = ScopeId("scope-b".to_string());
+
+        {
+            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0);
+            insert_scope(&db, &scope_a.0, &wt.0, ScopeStatus::Active);
+            insert_scope(&db, &scope_b.0, &wt.0, ScopeStatus::Active);
+        }
+
+        let mut before = ProtocolState::default();
+        before
+            .worktrees
+            .insert(wt.clone(), healthy_worktree_state(0));
+        before.scopes.insert(
+            scope_a.clone(),
+            ScopeState {
+                status: ScopeStatus::Active,
+                actor_kind: ActorKind::ClaudeCode,
+                worktree_id: wt.clone(),
+            },
+        );
+        before.scopes.insert(
+            scope_b.clone(),
+            ScopeState {
+                status: ScopeStatus::Active,
+                actor_kind: ActorKind::ClaudeCode,
+                worktree_id: wt.clone(),
+            },
+        );
+
+        let writer_a = race_evidence(&wt, scope_a, "a");
+        let writer_b = race_evidence(&wt, scope_b, "b");
+        let transition_a = closing_transition(&before, &wt, &writer_a);
+        let transition_b = closing_transition(&before, &wt, &writer_b);
+
+        let db_a = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+            .expect("writer A handle should open");
+        let db_b = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+            .expect("writer B handle should open");
+
+        let handle_a = thread::spawn(move || MutationTraceStore::new(&db_a).commit(&transition_a));
+        let handle_b = thread::spawn(move || MutationTraceStore::new(&db_b).commit(&transition_b));
+
+        let result_a = handle_a
+            .join()
+            .expect("writer A thread should not panic")
+            .expect("writer A commit should not error");
+        let result_b = handle_b
+            .join()
+            .expect("writer B thread should not panic")
+            .expect("writer B commit should not error");
+        let results = [result_a, result_b];
+
+        assert_eq!(
+            results.iter().filter(|r| **r == CasResult::Applied).count(),
+            1,
+            "exactly one writer should apply from the same starting revision: {results:?}"
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|r| **r == CasResult::Conflict)
+                .count(),
+            1,
+            "exactly one writer should conflict from the same starting revision: {results:?}"
+        );
+
+        let db_reopened = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+            .expect("reopened handle should open");
+        let store = MutationTraceStore::new(&db_reopened);
+
+        let worktree_state = store
+            .load_worktree_state(&wt)
+            .expect("worktree read should succeed")
+            .expect("worktree row should exist");
+        assert_eq!(
+            worktree_state.revision, 1,
+            "revision should have advanced exactly once, not once per writer"
+        );
+
+        let persisted_event = store
+            .load_mutation_event(&wt, 1)
+            .expect("mutation-event read should succeed")
+            .expect("exactly one writer's mutation event should be visible at the new revision");
+
+        assert_race_winner_state(&store, &wt, &persisted_event, &writer_a, &writer_b);
+
+        remove_test_db(&db_path);
+    }
+
+    fn assert_atomic_rollback_state(
+        store: &MutationTraceStore,
+        worktree: &WorktreeId,
+        scope_id: &ScopeId,
+        rolled_back_active_scope: &ScopeId,
+        surviving_active_scope: &ScopeId,
+    ) {
+        let worktree_state = store
+            .load_worktree_state(worktree)
+            .expect("worktree read should succeed")
+            .expect("worktree row should exist");
+        assert_eq!(worktree_state.revision, 0, "revision must roll back");
+        assert_eq!(
+            worktree_state.cursor_tree,
+            TreeId("tree-0".to_string()),
+            "cursor_tree must roll back"
+        );
+        assert_eq!(
+            worktree_state.failure_kind,
+            FailureKind::Healthy,
+            "failure_kind must roll back"
+        );
+        assert!(
+            !worktree_state.needs_rebaseline,
+            "needs_rebaseline must roll back"
+        );
+
+        let scope_state = store
+            .load_scope(scope_id)
+            .expect("scope read should succeed")
+            .expect("scope row should exist");
+        assert_eq!(
+            scope_state.status,
+            ScopeStatus::Active,
+            "scope status must roll back even though its UPDATE ran before the failure"
+        );
+
+        assert!(
+            !store
+                .processed_event_exists(&EventKey {
+                    scope_id: scope_id.clone(),
+                    event_id: EventId("event-1".to_string()),
+                })
+                .expect("processed-event read should succeed"),
+            "the processed event must not exist even though its INSERT ran before the failure"
+        );
+
+        assert!(
+            store
+                .load_mutation_event(worktree, 1)
+                .expect("mutation-event read should succeed")
+                .is_none(),
+            "the mutation event must not exist even though its INSERT ran before the failure"
+        );
+
+        let active_scopes = store
+            .load_mutation_event_active_scopes(worktree, encode_revision(1).as_slice())
+            .expect("active-scope read should succeed");
+        assert!(
+            !active_scopes.contains(rolled_back_active_scope),
+            "the active-scope INSERT that was ordered before the colliding one ran but must \
+             have rolled back with everything else in the transaction"
+        );
+        assert_eq!(
+            active_scopes,
+            BTreeSet::from([surviving_active_scope.clone()]),
+            "only the pre-seeded row, which predates this transaction and was never part of \
+             it, should remain"
+        );
+    }
+
+    #[test]
+    fn commit_rolls_back_every_write_kind_together_on_a_deterministic_failure() {
+        let db_path = unique_test_db_path("commit-atomic-rollback");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+        let wt = WorktreeId("wt0".to_string());
+        let scope_id = ScopeId("scope0".to_string());
+        let scope_a = ScopeId("scope-a".to_string());
+        let scope_z = ScopeId("scope-z".to_string());
+        insert_worktree(&db, &wt.0, 0);
+        insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active);
+        insert_active_scope(&db, &wt.0, 1, &scope_z.0);
+
+        let before = state_with_scope(
+            &wt,
+            &scope_id,
+            ActorKind::ClaudeCode,
+            ScopeStatus::Active,
+            0,
+        );
+        let mut after = before.clone();
+        after.worktrees.get_mut(&wt).unwrap().revision = 1;
+        after.scopes.get_mut(&scope_id).unwrap().status = ScopeStatus::Closed;
+        after.processed_events.insert(EventKey {
+            scope_id: scope_id.clone(),
+            event_id: EventId("event-1".to_string()),
+        });
+        after.mutation_events.insert(MutationEvent {
+            worktree_id: wt.clone(),
+            revision: 1,
+            before_tree: TreeId("tree0".to_string()),
+            after_tree: TreeId("tree1".to_string()),
+            active_scopes: BTreeSet::from([scope_a.clone(), scope_z.clone()]),
+            tainted: false,
+            failure_kind: FailureKind::Healthy,
+            attribution: Attribution::AiExclusive(scope_id.clone()),
+            boundary: Boundary::Close {
+                scope: scope_id.clone(),
+                event: EventId("event-1".to_string()),
+            },
+        });
+
+        let transition = DurableTransition::between(&before, &after, &wt)
+            .expect("between should succeed")
+            .expect("a transition should exist for this change");
+
+        let error = store.commit(&transition).expect_err(
+            "the pre-seeded (wt0, revision=1, scope-z) active-scope row should collide with \
+             the second active-scope insert, after every earlier write kind already succeeded",
+        );
+        assert!(error.to_string().contains("execute failed"));
+
+        assert_atomic_rollback_state(&store, &wt, &scope_id, &scope_a, &scope_z);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn commit_round_trips_u64_max_through_the_real_database() {
+        let db_path = unique_test_db_path("commit-u64-max");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+        let wt = WorktreeId("wt0".to_string());
+        insert_worktree(&db, &wt.0, u64::MAX - 1);
+
+        let mut before = ProtocolState::default();
+        before
+            .worktrees
+            .insert(wt.clone(), healthy_worktree_state(u64::MAX - 1));
+        let mut after = before.clone();
+        after.worktrees.get_mut(&wt).unwrap().revision = u64::MAX;
+
+        let transition = DurableTransition::between(&before, &after, &wt)
+            .expect("between should succeed")
+            .expect("a transition should exist for this change");
+
+        let result = store.commit(&transition).expect("commit should succeed");
+        assert_eq!(result, CasResult::Applied);
+
+        let worktree_state = store
+            .load_worktree_state(&wt)
+            .expect("worktree read should succeed")
+            .expect("worktree row should exist");
+        assert_eq!(worktree_state.revision, u64::MAX);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn commit_rejects_a_replayed_event_key_via_the_processed_event_uniqueness_constraint() {
+        let db_path = unique_test_db_path("commit-replay-uniqueness");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+        let wt = WorktreeId("wt0".to_string());
+        let scope_id = ScopeId("scope0".to_string());
+        insert_worktree(&db, &wt.0, 0);
+        insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active);
+        insert_processed_event(&db, "scope0", "event-1");
+
+        let before = state_with_scope(
+            &wt,
+            &scope_id,
+            ActorKind::ClaudeCode,
+            ScopeStatus::Active,
+            0,
+        );
+        let mut after = before.clone();
+        after.worktrees.get_mut(&wt).unwrap().revision = 1;
+        after.processed_events.insert(EventKey {
+            scope_id: scope_id.clone(),
+            event_id: EventId("event-1".to_string()),
+        });
+
+        let transition = DurableTransition::between(&before, &after, &wt)
+            .expect("between should succeed")
+            .expect("a transition should exist for this change");
+
+        let error = store
+            .commit(&transition)
+            .expect_err("a replayed (scope_id, event_id) must be rejected, not silently applied");
+        assert!(error.to_string().contains("execute failed"));
+
+        let worktree_state = store
+            .load_worktree_state(&wt)
+            .expect("worktree read should succeed")
+            .expect("worktree row should exist");
+        assert_eq!(
+            worktree_state.revision, 0,
+            "the whole transaction must roll back on a replay rejection"
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn commit_of_strong_recovery_abandons_every_live_scope_on_the_worktree() {
+        let db_path = unique_test_db_path("commit-strong-recovery");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+        let wt = WorktreeId("wt0".to_string());
+        let scope_a = ScopeId("scope-a".to_string());
+        let scope_b = ScopeId("scope-b".to_string());
+        insert_worktree(&db, &wt.0, 0);
+        insert_scope(&db, &scope_a.0, &wt.0, ScopeStatus::Active);
+        insert_scope(&db, &scope_b.0, &wt.0, ScopeStatus::Active);
+
+        let mut before = ProtocolState::default();
+        before.worktrees.insert(
+            wt.clone(),
+            WorktreeState {
+                cursor_tree: TreeId("tree0".to_string()),
+                revision: 0,
+                tainted: true,
+                failure_kind: FailureKind::SnapshotFailure,
+                needs_rebaseline: false,
+            },
+        );
+        before.scopes.insert(
+            scope_a.clone(),
+            ScopeState {
+                status: ScopeStatus::Active,
+                actor_kind: ActorKind::ClaudeCode,
+                worktree_id: wt.clone(),
+            },
+        );
+        before.scopes.insert(
+            scope_b.clone(),
+            ScopeState {
+                status: ScopeStatus::Active,
+                actor_kind: ActorKind::ClaudeCode,
+                worktree_id: wt.clone(),
+            },
+        );
+
+        let after = recover(&before, &wt, TreeId("tree1".to_string()));
+        let transition = DurableTransition::between(&before, &after, &wt)
+            .expect("between should succeed")
+            .expect("strong recovery should produce a durable transition");
+
+        let result = store.commit(&transition).expect("commit should succeed");
+        assert_eq!(result, CasResult::Applied);
+
+        for scope_id in [&scope_a, &scope_b] {
+            let scope_state = store
+                .load_scope(scope_id)
+                .expect("scope read should succeed")
+                .expect("scope row should exist");
+            assert_eq!(scope_state.status, ScopeStatus::Abandoned);
+        }
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn commit_of_needs_only_recovery_leaves_live_scopes_active() {
+        let db_path = unique_test_db_path("commit-needs-only-recovery");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+        let wt = WorktreeId("wt0".to_string());
+        let scope_id = ScopeId("scope0".to_string());
+        insert_worktree(&db, &wt.0, 0);
+        insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active);
+
+        let mut before = ProtocolState::default();
+        before.worktrees.insert(
+            wt.clone(),
+            WorktreeState {
+                cursor_tree: TreeId("tree0".to_string()),
+                revision: 0,
+                tainted: false,
+                failure_kind: FailureKind::Healthy,
+                needs_rebaseline: true,
+            },
+        );
+        before.scopes.insert(
+            scope_id.clone(),
+            ScopeState {
+                status: ScopeStatus::Active,
+                actor_kind: ActorKind::ClaudeCode,
+                worktree_id: wt.clone(),
+            },
+        );
+
+        let after = recover(&before, &wt, TreeId("tree1".to_string()));
+        let transition = DurableTransition::between(&before, &after, &wt)
+            .expect("between should succeed")
+            .expect("needs-only recovery should produce a durable transition");
+
+        let result = store.commit(&transition).expect("commit should succeed");
+        assert_eq!(result, CasResult::Applied);
+
+        let worktree_state = store
+            .load_worktree_state(&wt)
+            .expect("worktree read should succeed")
+            .expect("worktree row should exist");
+        assert!(!worktree_state.needs_rebaseline);
+
+        let scope_state = store
+            .load_scope(&scope_id)
+            .expect("scope read should succeed")
+            .expect("scope row should exist");
+        assert_eq!(
+            scope_state.status,
+            ScopeStatus::Active,
+            "a live scope must survive needs-only recovery untouched"
         );
 
         remove_test_db(&db_path);
