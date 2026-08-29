@@ -7,12 +7,6 @@
 //! Every codec here is an explicit function over a fixed set of variants — no
 //! codec derives from `Debug` or a serde representation, so a variant rename
 //! cannot silently change the durable encoding.
-//!
-//! `MutationTraceStore` adds the hot-path bounded worktree read
-//! (`load_worktree`) and the cold-path historical read (`load_mutation_event`)
-//! against a `&RepositoryAgentTraceDb`. Initialization and CAS-commit logic
-//! are later tasks (`mutation-cursor-store-persistence` T04/T06/T07); this
-//! module carries no such logic yet.
 
 use std::collections::{BTreeMap, BTreeSet};
 
