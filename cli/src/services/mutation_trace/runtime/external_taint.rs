@@ -6,7 +6,7 @@
 //! read by a later invocation as the external signal that the previous
 //! invocation never proved a trustworthy durable completion.
 //!
-//! Durability mirrors [`crate::services::checkout`]'s `persist_checkout_id_inner`:
+//! Durability follows the repository's established durable-file pattern:
 //! [`ExternalTaintMarker::persist`] creates and `fsync`s the marker file, and
 //! both `persist` and [`ExternalTaintMarker::clear`] do a best-effort
 //! `#[cfg(unix)]` parent-directory `sync_all` whose error is not propagated. This
@@ -33,7 +33,7 @@ const MARKER_FILE: &str = "mutation-cursor-tainted";
 /// Worktree-local external-taint marker.
 ///
 /// Construct with [`ExternalTaintMarker::new`] from the worktree-specific Git
-/// directory (as resolved by [`crate::services::checkout::resolve_git_dir`]).
+/// directory resolved by the runtime's Git snapshot service.
 /// Two linked worktrees resolve to two different Git directories and therefore
 /// two independent markers.
 #[derive(Debug, Clone)]

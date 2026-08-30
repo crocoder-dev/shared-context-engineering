@@ -75,16 +75,20 @@ fn linked_worktrees_have_independent_locks_and_worktree_ids() {
         "a linked worktree must resolve its own worktree-specific git dir, giving it a distinct lock and identity path"
     );
 
-    let main_outcome = coordinate(&main_root, &db_main, &RuntimeBoundary::Flush)
-        .expect("first observation on the main worktree should succeed");
+    let main_outcome = coordinate(&main_root, &RuntimeBoundary::Flush, || {
+        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+    })
+    .expect("first observation on the main worktree should succeed");
 
     let held = WorktreeLock::acquire(&main_git_dir, Duration::from_secs(5))
         .expect("the main worktree's runtime lock should be acquirable");
 
-    let db_linked = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path).expect(
-        "a second handle to the same caller-supplied repository-scoped DB path should open",
-    );
-    let linked_outcome = coordinate(&linked_root, &db_linked, &RuntimeBoundary::Flush).expect(
+    let linked_outcome = coordinate(&linked_root, &RuntimeBoundary::Flush, || {
+        // A second handle to the same caller-supplied repository-scoped DB path,
+        // opened through the provider while the main worktree's lock is held.
+        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+    })
+    .expect(
         "coordinate() on the linked worktree must acquire its own distinct runtime lock while the main worktree's lock is still held",
     );
 
@@ -122,14 +126,17 @@ fn linked_worktrees_have_independent_locks_and_worktree_ids() {
 }
 
 #[test]
+
 fn a_snapshot_failure_then_recovery_cycle_runs_through_the_public_api() {
     let repo_root = unique_path("failure-recovery-repo");
     init_repo(&repo_root);
     let db_path = repo_root.join("agent-trace.db");
     let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
 
-    let baseline = coordinate(&repo_root, &db, &RuntimeBoundary::Flush)
-        .expect("the baseline observation should materialize the worktree");
+    let baseline = coordinate(&repo_root, &RuntimeBoundary::Flush, || {
+        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+    })
+    .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
 
     let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
@@ -142,12 +149,12 @@ fn a_snapshot_failure_then_recovery_cycle_runs_through_the_public_api() {
     let scope = ScopeId("scope-recovery".to_string());
     let failure = coordinate(
         &repo_root,
-        &db,
         &RuntimeBoundary::Start {
             scope: scope.clone(),
             event: EventId("evt-during-failure".to_string()),
             actor_kind: ActorKind::ClaudeCode,
         },
+        || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path),
     )
     .expect_err("a Git snapshot failure against a materialized worktree should be reported");
     match failure {
@@ -175,8 +182,10 @@ fn a_snapshot_failure_then_recovery_cycle_runs_through_the_public_api() {
     std::fs::remove_file(&tmp_index_dir)
         .expect("removing the planted file should let the snapshot service recreate its temp dir");
 
-    let recovered = coordinate(&repo_root, &db, &RuntimeBoundary::Flush)
-        .expect("the coordinator should recover from the taint and process the boundary");
+    let recovered = coordinate(&repo_root, &RuntimeBoundary::Flush, || {
+        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+    })
+    .expect("the coordinator should recover from the taint and process the boundary");
     assert_eq!(
         recovered.worktree_id, worktree_id,
         "recovery must operate on the same worktree identity"
