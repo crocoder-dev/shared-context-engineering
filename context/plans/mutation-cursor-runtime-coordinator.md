@@ -90,26 +90,26 @@ independently of the mutation-cursor runtime.
 
 ## Acceptance criteria
 
-- [ ] AC1: A worktree observed for the first time establishes the currently
+- [x] AC1: A worktree observed for the first time establishes the currently
   observed tree as its cursor baseline on its first boundary and emits no
   mutation evidence for filesystem changes that predate that observation.
   - Validate: `runtime::coordinator::tests::first_observation_establishes_baseline_without_evidence` via `nix build .#checks.<system>.cli-tests`
-- [ ] AC2: An edit made between a `Start` and a subsequent `Advance` on the
+- [x] AC2: An edit made between a `Start` and a subsequent `Advance` on the
   same scope commits as exactly one `AiExclusive` mutation event whose
   `before_tree`/`after_tree` match the Start baseline and the post-edit
   snapshot.
   - Validate: `runtime::coordinator::tests::exclusive_edit_between_start_and_advance_commits_one_event`
-- [ ] AC3: Re-processing the identical `(scope, event)` boundary a second time
+- [x] AC3: Re-processing the identical `(scope, event)` boundary a second time
   produces no duplicated mutation evidence.
   - Validate: `runtime::coordinator::tests::replaying_the_same_scope_event_key_does_not_duplicate_evidence`
-- [ ] AC4: A mutation made just before `Close` is still attributed using the
+- [x] AC4: A mutation made just before `Close` is still attributed using the
   scope set as it existed immediately before `Close`'s own scope transition.
   - Validate: `runtime::coordinator::tests::close_boundary_attributes_using_pre_close_scope_set`
-- [ ] AC5: Two concurrently active scopes on one worktree yield `AiContended`
+- [x] AC5: Two concurrently active scopes on one worktree yield `AiContended`
   attribution for a subsequent `Advance`, independent of whether the two
   scopes share an `ActorKind`.
   - Validate: `runtime::coordinator::tests::contended_scopes_yield_ai_contended_same_and_different_actor`
-- [ ] AC6: Capturing a Git snapshot never mutates the caller's real index,
+- [x] AC6: Capturing a Git snapshot never mutates the caller's real index,
   staged changes, or working tree, correctly reflects staged, unstaged,
   untracked, and deleted state, excludes ignored files, and — on an unborn
   `HEAD` — starts from an explicitly initialized, genuinely valid empty
@@ -117,7 +117,7 @@ independently of the mutation-cursor runtime.
   file the coordinator merely assumes Git will treat as empty, and produces
   a correct tree even when the unborn repository has no files at all.
   - Validate: `runtime::git_snapshot::tests::*` (index preservation, ignored files, deletion, unborn HEAD with a file, unborn HEAD with no files)
-- [ ] AC7: A snapshot's `TreeId` remains resolvable through `diff_trees`
+- [x] AC7: A snapshot's `TreeId` remains resolvable through `diff_trees`
   after the process that captured it has exited, its temporary index file no
   longer exists, **and after a `git gc --prune=now` / `git prune
   --expire=now` pass has run against the repository** — because it is
@@ -125,12 +125,12 @@ independently of the mutation-cursor runtime.
   not merely present in an isolated object store Git's own reachability
   analysis knows nothing about.
   - Validate: `runtime::git_snapshot::tests::snapshot_survives_a_fresh_process_and_temp_index_deletion`, `runtime::git_snapshot::tests::pinned_snapshot_survives_git_gc_prune_now`, `runtime::git_snapshot::tests::pinned_snapshot_survives_git_prune_expire_now`
-- [ ] AC8: When two invocations race to commit from the same durable
+- [x] AC8: When two invocations race to commit from the same durable
   revision, exactly one succeeds, the other reloads durable state and
   recomputes its transition using its own originally captured snapshot, and
   no second Git snapshot is taken for that invocation.
   - Validate: `runtime::coordinator::tests::cas_conflict_reloads_and_recomputes_without_a_second_snapshot`
-- [ ] AC9: Two coordinator invocations targeting the same worktree cannot
+- [x] AC9: Two coordinator invocations targeting the same worktree cannot
   execute their critical sections concurrently. Invocations on two different
   worktrees, including linked worktrees of the same repository, are not
   serialized against each other, derive distinct `WorktreeId`s, and persist
@@ -139,13 +139,13 @@ independently of the mutation-cursor runtime.
   from its `repository_root` argument; the `RepositoryAgentTraceDb` is
   supplied by the caller, not resolved by the coordinator.
   - Validate: `runtime::worktree_lock::tests::*` (contention, distinct-path independence); `runtime::tests::linked_worktrees_have_independent_locks_and_worktree_ids`
-- [ ] AC10: A worktree whose durable state is `SnapshotFailure`-tainted or
+- [x] AC10: A worktree whose durable state is `SnapshotFailure`-tainted or
   `needs_rebaseline` is recovered exactly once, using the same snapshot
   captured for the triggering boundary, before that boundary is processed;
   `needs_rebaseline` recovery preserves live scopes, taint recovery abandons
   them.
   - Validate: `runtime::coordinator::tests::recovers_from_needs_rebaseline_preserving_live_scopes`, `runtime::coordinator::tests::recovers_from_snapshot_failure_taint_abandoning_live_scopes`
-- [ ] AC11: A Git snapshot failure against an already-materialized worktree
+- [x] AC11: A Git snapshot failure against an already-materialized worktree
   durably persists a `SnapshotFailure` taint via `protocol::taint`, retried
   under the same bounded semantic CAS-retry policy the main coordinator loop
   uses when another committer's transition wins the race; `persisted_taint`
@@ -158,13 +158,13 @@ independently of the mutation-cursor runtime.
   caller materializes concurrently, while this invocation's own Git snapshot
   is still being captured, is still found and correctly tainted.
   - Validate: `runtime::coordinator::tests::snapshot_failure_taints_an_existing_worktree`, `runtime::coordinator::tests::snapshot_failure_taint_survives_a_losing_cas_and_commits_on_retry`, `runtime::coordinator::tests::snapshot_failure_taint_reports_not_persisted_after_retries_are_exhausted`, `runtime::coordinator::tests::snapshot_failure_before_any_baseline_makes_no_durable_write`, `runtime::coordinator::tests::snapshot_failure_taints_a_worktree_materialized_concurrently_during_capture`
-- [ ] AC12: All concurrent first-time callers of
+- [x] AC12: All concurrent first-time callers of
   `checkout::get_or_create_checkout_id` for one physical checkout — whether
   through the coordinator, `agent_trace_storage`, or any other caller —
   converge on exactly one checkout ID, and the on-disk `checkout-id` file
   ends up containing that same value.
   - Validate: `checkout::tests::concurrent_first_time_callers_converge_on_one_checkout_id`, `runtime::tests::agent_trace_storage_and_coordinator_observe_the_same_checkout_id`
-- [ ] AC13: For cooperating SCE processes, the canonical `checkout-id` path
+- [x] AC13: For cooperating SCE processes, the canonical `checkout-id` path
   is at every observable point either absent or contains exactly one
   complete, valid checkout ID — never a partially written or truncated
   value — including immediately after a process is interrupted between
@@ -2643,3 +2643,87 @@ is `Some`, i.e. the triggering boundary produced real evidence — feeds its
 row, alongside the mutation event's `attribution`/`boundary`/scope
 information. It also owns deciding how (or whether) multiple harnesses share
 one coordinator invocation path.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-08-30
+
+### Commands run
+
+- `nix flake check` -> exit 0 (all checks passed: `cli-tests` 824 tests,
+  `cli-clippy` pedantic/warnings-denied, `cli-fmt`,
+  `mutation-trace-quint-connect`, `pkl-generated`, `workflow-actionlint`,
+  and the flatpak/cargo-source parity checks)
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral Pkl generation passed:
+  141 files, inventory sha256 bf5db9c962cc9ce2776b4fc218dcbd8787fa7567744a5e2faff1fc9f9212a003 — no generated-config drift)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml runtime::` ->
+  exit 0 (40/40 passed, covering every `runtime::coordinator`,
+  `runtime::git_snapshot`, `runtime::worktree_lock`, and `runtime::tests` case)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml checkout::` ->
+  exit 0 (5/5 passed)
+
+### Success-criteria verification
+
+- [x] AC1: A first-observed worktree establishes the observed tree as its
+  cursor baseline and emits no evidence for pre-observation changes ->
+  `runtime::coordinator::tests::first_observation_establishes_baseline_without_evidence` passed
+- [x] AC2: An edit between `Start` and `Advance` commits exactly one
+  `AiExclusive` event with matching before/after trees ->
+  `runtime::coordinator::tests::exclusive_edit_between_start_and_advance_commits_one_event` passed
+- [x] AC3: Re-processing the identical `(scope, event)` boundary duplicates no
+  evidence ->
+  `runtime::coordinator::tests::replaying_the_same_scope_event_key_does_not_duplicate_evidence` passed
+- [x] AC4: A mutation just before `Close` is attributed using the pre-`Close`
+  scope set ->
+  `runtime::coordinator::tests::close_boundary_attributes_using_pre_close_scope_set` passed
+- [x] AC5: Two concurrent scopes yield `AiContended` regardless of shared
+  `ActorKind` ->
+  `runtime::coordinator::tests::contended_scopes_yield_ai_contended_same_and_different_actor` passed (exercises same- and different-actor pairs)
+- [x] AC6: Snapshot capture never mutates the real index/staged/working state,
+  reflects staged/unstaged/untracked/deleted state, excludes ignored files, and
+  initializes an explicit valid empty index on unborn `HEAD` ->
+  `runtime::git_snapshot::tests::{capture_preserves_real_index_and_working_tree_state, capture_excludes_ignored_files, capture_reflects_deletion_of_a_committed_file, capture_on_unborn_head_with_a_file_produces_a_valid_tree, capture_on_unborn_head_with_no_files_produces_an_empty_tree}` passed
+- [x] AC7: A pinned `TreeId` stays resolvable after process exit, temp-index
+  deletion, and `git gc --prune=now` / `git prune --expire=now` ->
+  `runtime::git_snapshot::tests::{snapshot_survives_a_fresh_process_and_temp_index_deletion, pinned_snapshot_survives_git_gc_prune_now, pinned_snapshot_survives_git_prune_expire_now}` passed
+- [x] AC8: Racing invocations — exactly one commits, the other reloads and
+  recomputes with its own snapshot, no second snapshot taken ->
+  `runtime::coordinator::tests::cas_conflict_reloads_and_recomputes_without_a_second_snapshot` passed
+- [x] AC9: Same-worktree invocations serialize; different (incl. linked)
+  worktrees do not, derive distinct `WorktreeId`s, persist independently into
+  the caller-supplied DB ->
+  `runtime::worktree_lock::tests::{a_second_acquirer_blocks_until_the_first_releases, acquire_times_out_with_a_distinct_matchable_error_when_still_held, distinct_worktree_paths_do_not_contend}` and `runtime::tests::linked_worktrees_have_independent_locks_and_worktree_ids` passed
+- [x] AC10: A tainted / `needs_rebaseline` worktree is recovered exactly once
+  with the triggering boundary's snapshot; rebaseline preserves live scopes,
+  taint abandons them ->
+  `runtime::coordinator::tests::{recovers_from_needs_rebaseline_preserving_live_scopes, recovers_from_snapshot_failure_taint_abandoning_live_scopes}` passed
+- [x] AC11: A snapshot failure against an existing worktree durably persists a
+  taint under bounded CAS retry (`persisted_taint` true only when `Applied`);
+  no prior row makes no durable write; the taint decision reads fresh state
+  after the failure ->
+  `runtime::coordinator::tests::{snapshot_failure_taints_an_existing_worktree, snapshot_failure_taint_survives_a_losing_cas_and_commits_on_retry, snapshot_failure_taint_reports_not_persisted_after_retries_are_exhausted, snapshot_failure_before_any_baseline_makes_no_durable_write, snapshot_failure_taints_a_worktree_materialized_concurrently_during_capture}` passed
+- [x] AC12: All concurrent first-time `get_or_create_checkout_id` callers
+  converge on one checkout ID matching the on-disk file ->
+  `checkout::tests::concurrent_first_time_callers_converge_on_one_checkout_id` and `runtime::tests::agent_trace_storage_and_coordinator_observe_the_same_checkout_id` passed
+- [x] AC13: The canonical `checkout-id` path is always absent or holds one
+  complete valid ID, incl. after interruption before rename; an orphaned temp
+  file never blocks convergence ->
+  `checkout::tests::{interruption_before_rename_leaves_the_canonical_path_absent, completed_rename_leaves_the_canonical_path_with_a_complete_id, an_orphaned_temp_file_does_not_block_convergence_on_the_canonical_id}` passed
+
+### Failed checks and follow-ups
+
+- None. No leftover debug flags, temporary files, intermediate artifacts, or
+  local scaffolding found in the production runtime/checkout sources; working
+  tree is clean.
+
+### Residual risks
+
+- Ref-pin storage growth is unbounded until the deferred
+  `refs/sce/mutation-cursor/**` reconciliation pass ships, and the DB-unavailable
+  case leaves no filesystem external-taint marker. Both are documented,
+  intentionally deferred, and sequenced (`mutation-cursor-external-taint`,
+  `mutation-cursor-ref-reconciliation`) as required runtime-completion work
+  before any harness adapter becomes a production consumer of `coordinate()`.
+- The coordinator is standalone and not wired into any hook, CLI command, or
+  `diff_traces` — no production caller exercises it yet.
