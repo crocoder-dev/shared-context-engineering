@@ -423,8 +423,70 @@ local choices, not new requirements.
     `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`.
   - Context synchronization: synced
 
-- [ ] T03: `Map inherited marker into protocol recovery` (status:todo)
+- [x] T03: `Map inherited marker into protocol recovery` (status:done)
   - Task ID: T03
+  - Completed: 2026-08-30
+  - Files changed:
+    - `cli/src/services/mutation_trace/runtime/coordinator.rs` — renamed
+      `coordinate_boundary`'s `_inherited_external_taint` param to
+      `inherited_external_taint` and split the body into a 5-arg
+      `coordinate_boundary` wrapper plus a private
+      `coordinate_boundary_inner(.., after_load: FnMut(u32), after_recovery: FnMut(u32))`
+      test seam (mirroring the existing `coordinate_inner` /
+      `run_taint_retry_loop_inner` seam precedent; production passes no-ops).
+      Seeded `let mut external_taint_pending = inherited_external_taint;` before
+      the CAS loop; after each `load_worktree` the loop overlays
+      `state = protocol::database_failure(&state, worktree_id)` while
+      `external_taint_pending`, so the existing `needs_recovery` /
+      `protocol::recover` path runs against the one already-captured
+      `observed_tree`. On recovery-CAS `Applied` the flag is cleared (and
+      `after_recovery` fires); on `Conflict` the existing `continue` keeps it set
+      so the next reload re-injects the overlay. Added four inline tests
+      (`inherited_external_taint_recovers_once_before_the_boundary`,
+      `inherited_external_taint_with_no_worktree_row_baselines_without_evidence`,
+      `a_losing_recovery_cas_reinjects_external_taint_until_it_applies`,
+      `a_landed_recovery_clears_the_flag_so_a_boundary_cas_retry_does_not_re_recover`).
+  - Result: An inherited external-taint marker (T02's `inherited_external_taint`)
+    now drives protocol recovery. `external_taint_pending` is invocation-local
+    and seeded from the inherited flag; while set, `protocol::database_failure`
+    is overlaid onto every freshly loaded projection before the recovery check,
+    so `protocol::recover` performs exactly one conservative recovery (cursor :=
+    observed tree, revision += 1, external taint cleared, live scopes →
+    `Abandoned`, no `MutationEvent` for the fenced interval) against the single
+    captured snapshot, then the triggering boundary is processed against the
+    recovered state. The overlay is never persisted (`DurableTransition` ignores
+    `external_taint`; `into_protocol_state()` always returns it empty). A losing
+    recovery CAS re-injects the overlay on the next reload and recomputes until
+    `Applied` or retry exhaustion; once recovery lands, the flag is clear so a
+    later boundary-CAS retry in the same invocation does not re-trigger recovery.
+    A first-ever inherited marker with no durable worktree row is baselined
+    against the observed tree by the existing `initialize_worktree`, then
+    conservatively recovered once. The filesystem marker is never touched here —
+    `coordinate_inner`'s success path still owns clearing it. No `protocol.rs`,
+    `store.rs`, SQL, or migration change.
+  - Verify:
+    - `test ...services::mutation_trace::runtime::coordinator` — PASS (25 passed,
+      0 failed).
+    - `test ...services::mutation_trace::runtime::` — PASS (48 passed, 0 failed).
+    - `clippy --all-targets -- -D warnings` — PASS (clean).
+    - `fmt -- --check` — PASS (clean, after `cargo fmt`).
+  - Context impact: docs-update-needed. Adds the invocation-local
+    `external_taint_pending` overlay onto `database_failure` and its
+    inherited-vs-armed recovery semantics to the coordinator pipeline; no
+    protocol semantics, DB state, error variants, or public signatures changed
+    beyond T02's already-recorded reshape. Affected durable context:
+    `context/cli/mutation-trace-runtime-coordinator.md` (inherited-taint overlay
+    onto `database_failure`, one-recovery-per-inherited-marker, flag lifecycle
+    across recovery-CAS conflict/apply), `context/cli/mutation-trace-protocol.md`
+    (the stale marker becomes protocol external taint only when inherited by a
+    later invocation), `spec/mutation_cursor.md` (same inherited-only promotion).
+    Matches the plan's Context sync section.
+  - Deviations: added the private `coordinate_boundary_inner` `after_load` /
+    `after_recovery` test seams — consistent with the existing
+    `coordinate_inner(on_lock_contention)` and
+    `run_taint_retry_loop_inner(after_load)` precedent — because deterministically
+    forcing a recovery-CAS conflict, and a boundary-CAS conflict after a landed
+    recovery, is otherwise only reachable through non-deterministic thread races.
   - Scope: In — `runtime/coordinator.rs`: invocation-local
     `external_taint_pending`, seeded from `inherited_external_taint` and threaded
     into the lower-level pipeline; when set, overlay `protocol::database_failure`
@@ -451,7 +513,7 @@ local choices, not new requirements.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::coordinator`;
     `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`;
     `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`.
-  - Context synchronization: pending
+  - Context synchronization: synced
 
 - [ ] T04: `Add restart/failure integration tests through coordinate()` (status:todo)
   - Task ID: T04
