@@ -1238,18 +1238,15 @@ mod tests {
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-malformed-batch")
             .expect("metadata should initialize");
-        seed_one_row_per_stream(&db);
+        seed_messages(&db, 1);
 
         let server = TestHttpServer::start();
         server.queue_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
         // Syntactically successful but undecodable as `AgentTraceIngestionBatchResponse`.
         server.queue_response(CannedResponse::json(200, &json!({"unexpected": "shape"})));
-        // The four initial stream requests overlap. Messages receives the
-        // malformed response, while the other streams receive their normal
-        // responses. Reconciliation then refetches state and resends messages.
-        server.queue_response(CannedResponse::json(200, &batch_response(1)));
-        server.queue_response(CannedResponse::json(200, &batch_response(1)));
-        server.queue_response(CannedResponse::json(200, &batch_response(1)));
+        // Only messages has pending data in this test. The malformed successful
+        // batch response must cause an explicit state reconciliation before the
+        // same batch is retried.
         server.queue_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
         server.queue_response(CannedResponse::json(200, &batch_response(1)));
         let client = test_client(&server);
@@ -1262,20 +1259,26 @@ mod tests {
         )
         .expect("an undecodable 2xx /batch body should still reconcile via /state and succeed");
 
+        assert_eq!(server.call_count(), 4);
+        let requests = server.captured_requests();
         assert_eq!(
-            server.call_count(),
-            7,
-            "an undecodable 2xx /batch body must reconcile via /state before resending, not fail immediately"
+            requests
+                .iter()
+                .map(|request| (request.method.as_str(), request.path.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("POST", "/agent-trace/ingestion/state"),
+                ("POST", "/agent-trace/ingestion/batch"),
+                ("POST", "/agent-trace/ingestion/state"),
+                ("POST", "/agent-trace/ingestion/batch"),
+            ],
+            "an undecodable 2xx /batch body must reconcile via /state before retrying the same batch"
         );
-        for stream in [
-            report.streams.messages,
-            report.streams.parts,
-            report.streams.diff_traces,
-            report.streams.agent_traces,
-        ] {
-            assert_eq!(stream.uploaded, 1);
-            assert_eq!(stream.final_cursor, 1);
-        }
+        assert_eq!(report.streams.messages.uploaded, 1);
+        assert_eq!(report.streams.messages.final_cursor, 1);
+        assert_eq!(report.streams.parts.uploaded, 0);
+        assert_eq!(report.streams.diff_traces.uploaded, 0);
+        assert_eq!(report.streams.agent_traces.uploaded, 0);
 
         remove_test_db(&db_path);
     }
