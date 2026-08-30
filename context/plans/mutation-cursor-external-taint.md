@@ -322,8 +322,70 @@ local choices, not new requirements.
     `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`.
   - Context synchronization: synced
 
-- [ ] T02: `Arm the write-ahead fence around the full runtime boundary, DB acquisition included` (status:todo)
+- [x] T02: `Arm the write-ahead fence around the full runtime boundary, DB acquisition included` (status:done)
   - Task ID: T02
+  - Completed: 2026-08-30
+  - Files changed:
+    - `cli/src/services/mutation_trace/runtime/coordinator.rs` — reshaped the
+      public `coordinate()` to take a caller-supplied
+      `open_db: impl FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>` provider
+      instead of `&RepositoryAgentTraceDb`; `coordinate_inner` now resolves
+      `git_dir` → acquires `WorktreeLock` → constructs `ExternalTaintMarker` →
+      reads `inherited_external_taint = marker.exists()?` → `marker.persist()?` →
+      runs the new `coordinate_protected` (checkout identity → `open_db()` →
+      `GitSnapshotService` → `coordinate_boundary`) → `marker.clear()?` only on
+      `Ok`; added `ExternalTaintOperation { Inspect, Persist, Clear }` and the
+      `CoordinateError::ExternalTaintMarker { operation, source }` and
+      `CoordinateError::AgentTraceDbUnavailable(_)` variants plus their `Display`
+      arms; `coordinate_boundary` gained an unused `_inherited_external_taint:
+      bool` param (consumed in T03); updated the `two_threads_…_serialize`
+      `coordinate_inner` call site and added six inline tests
+      (`public_coordinate_clears_marker_on_success`,
+      `public_coordinate_leaves_marker_after_a_snapshot_failure`,
+      `public_coordinate_leaves_marker_after_a_non_snapshot_failure`,
+      `public_coordinate_fails_closed_when_the_marker_cannot_be_armed`
+      (`ExternalTaintOperation::Persist` path),
+      `public_coordinate_fails_closed_when_marker_inspection_fails`
+      (`ExternalTaintOperation::Inspect` path — holds the runtime lock, swaps
+      `<git-dir>/sce` from a directory to a regular file at the worker's
+      lock-contention point so `marker.exists()` hits a deterministic `ENOTDIR`
+      with no permission changes, asserts the DB provider is never called),
+      `public_coordinate_leaves_marker_when_the_db_provider_fails`).
+    - `cli/src/services/mutation_trace/runtime/tests.rs` — updated all five
+      `coordinate()` call sites to pass a provider closure
+      (`|| RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&path)`).
+  - Result: The external-taint fence now spans the whole protected runtime
+    section. `coordinate()` arms the worktree-local marker after `WorktreeLock`
+    acquisition and before checkout-identity, DB-provider, snapshot, and
+    protocol work; a successful `CoordinateOutcome` clears it; every failure
+    after arming (snapshot failure, DB provider `Err`, revision exhaustion, CAS
+    exhaustion, scope conflict, DB read/write, unexpected) returns with the
+    marker present; both the `ExternalTaintOperation::Inspect` and
+    `ExternalTaintOperation::Persist` marker-I/O failure paths fail closed with
+    the `CoordinateError::ExternalTaintMarker` error before any checkout,
+    DB-provider, snapshot, or protocol work — each proven by a dedicated
+    deterministic regression test (AC13). `MutationTraceStore` and
+    `protocol.rs` are untouched; `coordinate_boundary` still receives an
+    already-open `&RepositoryAgentTraceDb`. Inherited-taint recovery mapping is
+    still T03 (`_inherited_external_taint` is threaded but unused).
+  - Verify:
+    - `test ...services::mutation_trace::runtime::coordinator` — PASS (21 passed,
+      0 failed; `public_coordinate_fails_closed_when_marker_inspection_fails`
+      also re-run 5× for determinism).
+    - `test ...services::mutation_trace::runtime::` — PASS (44 passed, 0 failed).
+    - `clippy --all-targets -- -D warnings` — PASS (clean).
+    - `fmt -- --check` — PASS (clean).
+  - Context impact: docs-update-needed. Reshapes the public `coordinate()`
+    entrypoint (caller-supplied DB provider, `WorktreeLock`/marker ownership,
+    arm-before-DB-acquisition ordering, marker clear on success only) and adds
+    two `CoordinateError` variants with fail-closed semantics. Affected durable
+    context: `context/cli/mutation-trace-runtime-coordinator.md` (reshaped
+    entrypoint, marker arming, DB provider, new error variants, safety
+    invariant), `context/cli/mutation-trace-protocol.md` (write-ahead marker as
+    concrete refinement armed before DB acquisition), `context/context-map.md`
+    (coordinator annotation refresh), `spec/mutation_cursor.md` (write-ahead
+    timing of the concrete `externalTaint` refinement). Matches the plan's
+    Context sync section. No protocol semantics, DB state, or migration changed.
   - Scope: In — `runtime/coordinator.rs`: reshape the public `coordinate()` so
     it no longer receives an already-open `&RepositoryAgentTraceDb` but a
     caller-supplied DB provider (`impl FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>`
@@ -359,7 +421,7 @@ local choices, not new requirements.
     `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::`;
     `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`;
     `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`.
-  - Context synchronization: pending
+  - Context synchronization: synced
 
 - [ ] T03: `Map inherited marker into protocol recovery` (status:todo)
   - Task ID: T03
