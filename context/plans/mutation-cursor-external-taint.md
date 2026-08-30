@@ -515,8 +515,62 @@ local choices, not new requirements.
     `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`.
   - Context synchronization: synced
 
-- [ ] T04: `Add restart/failure integration tests through coordinate()` (status:todo)
+- [x] T04: `Add restart/failure integration tests through coordinate()` (status:done)
   - Task ID: T04
+  - Completed: 2026-08-30
+  - Files changed:
+    - `cli/src/services/mutation_trace/runtime/tests.rs` — three added imports
+      (`FailureKind`, `ScopeStatus`; `ExternalTaintOperation`;
+      `super::external_taint::ExternalTaintMarker`) and seven new cross-module
+      `#[test]`s driving only the public `coordinate()` API against real
+      `git init` / `git worktree add` repos and real temp-file
+      `RepositoryAgentTraceDb`s (DB placed in a sibling temp dir, outside the
+      worktree, so it never perturbs the captured tree):
+      `a_successful_coordinate_through_the_public_api_leaves_no_external_taint_marker`,
+      `a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_rebaselines_without_evidence`
+      (AC14 + the end-to-end A→B→gap→C no-trusted-evidence story, with a
+      `load_mutation_event` revision sweep asserting no event ends at the
+      post-gap tree),
+      `a_stale_marker_rebaselines_to_the_current_tree_abandons_scopes_then_processes_the_boundary`
+      (AC5), `a_first_ever_failed_invocation_that_never_materialized_a_worktree_row_creates_no_evidence`
+      (AC9), `linked_worktrees_keep_independent_external_taint_markers_over_a_shared_db`
+      (AC12), `a_snapshot_failure_arms_the_marker_and_the_next_invocation_recovers_once`,
+      `a_marker_clear_failure_after_a_durable_boundary_keeps_the_marker_for_a_later_recovery`.
+      Two of the seven carry `#[allow(clippy::too_many_lines)]` (end-to-end
+      multi-step scenarios; crate has precedent for the allow).
+  - Result: The external-taint fence is now proven end to end through the public
+    `coordinate()` entrypoint only, no production-code change. Success clears the
+    marker; a DB-provider `Err` after arming (AC14) and a Git snapshot failure
+    both leave the marker present (the snapshot path also leaves a durable
+    `SnapshotFailure` taint), and the next working invocation performs a single
+    conservative recovery, rebaselines the cursor to the current tree, abandons
+    scopes that were live across the fenced interval, emits no `MutationEvent`
+    across the gap, then processes its triggering boundary. A first-ever failed
+    invocation that never materialized a worktree row cannot create evidence for
+    the unknown interval. A stale marker in linked worktree A does not recover
+    linked worktree B over one shared DB; each worktree clears only its own
+    marker. A marker-clear failure after a durable boundary (injected by swapping
+    the marker file for a directory inside the caller-supplied `open_db` closure)
+    returns `CoordinateError::ExternalTaintMarker { operation: Clear }` with the
+    boundary already durable and the marker left for a later conservative
+    re-recovery. Tests use a sibling-dir DB so consecutive no-edit flushes are
+    genuinely stable.
+  - Verify:
+    - `test ...services::mutation_trace::runtime::tests` — PASS (10 passed, 0 failed).
+    - `test ...services::mutation_trace::runtime::` — PASS (55 passed, 0 failed).
+    - `test ...` (full CLI suite) — PASS (844 passed, 0 failed).
+    - `clippy --all-targets -- -D warnings` — PASS (clean).
+    - `fmt -- --check` — PASS (clean).
+  - Context impact: none. Test-only change; no production code, public
+    interface, protocol semantics, DB state, on-disk layout, or documented
+    behavior changed. The added tests only exercise the `coordinate()` /
+    `ExternalTaintMarker` behavior already documented by T01–T03's context
+    synchronization. The mandatory five-root-file verification pass still applies.
+  - Deviations: the DB is placed in a sibling temp directory rather than inside
+    the repo worktree (as some pre-existing tests in this file do) so the SQLite
+    file never appears in a captured tree and revision-stability / no-evidence
+    assertions hold; two long end-to-end tests carry
+    `#[allow(clippy::too_many_lines)]`.
   - Scope: In — `runtime/tests.rs` cross-module tests driving only the public
     `coordinate()` API against real `git init` / `git worktree add` repositories
     and real temp-file `RepositoryAgentTraceDb`s (unique-temp-path precedent),
@@ -542,7 +596,7 @@ local choices, not new requirements.
     full CLI test suite pass.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::tests`;
     `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml`.
-  - Context synchronization: pending
+  - Context synchronization: synced
 
 ## Open questions
 
