@@ -350,7 +350,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
       stale "integration tests only" rule it stated before.
   - Context synchronization: synced
 
-- [ ] T02: `Add the per-worktree OS advisory runtime lock` (status:todo)
+- [x] T02: `Add the per-worktree OS advisory runtime lock` (status:done)
   - Task ID: T02
   - Scope: In — `runtime/worktree_lock.rs`: `WorktreeLock::acquire(git_dir, timeout)`,
     RAII release, bounded polling acquisition. Out — wiring into
@@ -364,7 +364,140 @@ Persist this field in every plan; this is durable plan state, not chat state:
     returns a distinct, matchable error on timeout, and never treats the
     lock file's mere existence as ownership.
   - Verify: `cargo test -p shared-context-engineering runtime::worktree_lock::` (via `./scripts/run-cli-cargo.sh test`)
-  - Context synchronization: pending
+  - Completed: 2026-08-30
+  - Files changed: `cli/src/services/mutation_trace/runtime/mod.rs` (new),
+    `cli/src/services/mutation_trace/runtime/worktree_lock.rs` (new),
+    `cli/src/services/mutation_trace/mod.rs` (added `pub(crate) mod runtime;`)
+  - Result: Added `runtime/mod.rs`, declaring `mod worktree_lock;` (private —
+    only `coordinator`'s future public entrypoints will be reachable from
+    outside `runtime`, per the plan's module-privacy design), and registered
+    `pub(crate) mod runtime;` in `mutation_trace/mod.rs`. This scaffolding was
+    not explicitly named in T02's own Scope line but was necessary for
+    `worktree_lock.rs` to compile and for its tests to run — recorded as a
+    reviewed assumption, not a deviation from scope.
+
+    `WorktreeLock::acquire(git_dir: &Path, timeout: Duration) ->
+    Result<WorktreeLock, WorktreeLockError>` opens/creates
+    `<git_dir>/sce/mutation-cursor.lock` via `OpenOptions` (matching T01's
+    file-creation convention), then polls `File::try_lock()` every 100ms
+    (`LOCK_POLL_INTERVAL`) against the caller-supplied bounded `timeout`
+    rather than calling the blocking `lock()` directly — never treating the
+    lock file's mere existence as ownership, only a successful OS-level
+    `try_lock()`. On timeout it returns a distinct `WorktreeLockError::TimedOut
+    { path, timeout }` variant (matchable independently of the `Io` variant
+    wrapping other failures), matching the plan's design decision that this
+    lock is bounded, unlike the checkout-identity lock. `WorktreeLock`
+    implements `Drop`, releasing the OS lock (`self.file.unlock()`,
+    best-effort) when the guard is dropped — RAII release, matching the
+    Done-when requirement. `WorktreeLockError` implements `Display` and
+    `std::error::Error`, and derives `Debug`, consistent with an ordinary
+    matchable Rust error type (this task's own error type — not the
+    coordinator's later `CoordinateError::LockAcquisition(anyhow::Error)`,
+    which T05 will construct by wrapping whatever this function returns).
+    Added a `#[cfg(test)] mod tests` covering: a second acquirer blocking
+    until the first releases (via a channel-signaled background thread);
+    two distinct worktree paths not contending; `acquire` timing out with a
+    distinct, matchable `TimedOut` error (asserting the exact `timeout` field)
+    when the lock is still held; and a leftover lock file written directly to
+    disk, with no `.lock()`/`.try_lock()` ever called against it, not
+    blocking a fresh acquirer — proving the "mere existence is not ownership"
+    requirement.
+
+    PR #244 review follow-up: two issues were corrected without changing
+    locking design or T02 semantics. First, the module doc comment's claim
+    that "`File::lock()`/`try_lock()` have no built-in timeout and block
+    indefinitely" was inaccurate for `try_lock()`, which is non-blocking and
+    returns `TryLockError::WouldBlock` immediately on contention; the comment
+    now states that `File::lock()` can block indefinitely while
+    `File::try_lock()` is non-blocking but provides no waiting deadline by
+    itself, so `WorktreeLock::acquire` polls it at a short interval until
+    acquisition succeeds or the caller-supplied deadline expires. The plan's
+    own "Blocking vs. timeout" design-decision text and
+    `context/cli/mutation-trace-runtime-coordinator.md` were both checked
+    against the same claim and found already accurate (they describe
+    `File::lock()`'s blocking behavior specifically, never claiming
+    `try_lock()` blocks), so neither needed a correction.
+
+    Second, `a_second_acquirer_blocks_until_the_first_releases` previously
+    inferred "the worker was blocked" from a 300ms `recv_timeout` on a single
+    completion channel — a scheduling false positive, since a merely delayed
+    (not blocked) worker thread would produce the same observation without
+    proving it ever reached `WorktreeLock::acquire`. The test now uses two
+    channels: the worker signals a dedicated `started` channel immediately
+    before calling `acquire`, and the main thread waits (with a generous
+    5-second bound) for that signal before asserting non-completion — so the
+    300ms `recv_timeout` now only bounds the specific assertion "the worker,
+    having definitely reached the acquisition attempt, must not complete
+    while the first guard is held," rather than standing in for proof the
+    worker started. After dropping the first guard, the test now waits for
+    the worker's result signal (bounded, not a bare `join()`) before joining
+    the thread and asserting success, so the thread is never left detached.
+    This strengthened test now fails if `WorktreeLock::acquire` were
+    accidentally changed to let a second caller acquire while the first
+    guard remained alive.
+
+    Third, at the user's explicit request, every comment in
+    `worktree_lock.rs` and `runtime/mod.rs` was removed — including the
+    module doc comment whose corrected wording is quoted above and every
+    `///`/`//` comment on items, fields, and test steps — since both files
+    were authored entirely during this task and its review follow-up. This
+    superseded the module-doc-comment correction above at the text level
+    without reopening its substance: the inaccurate `try_lock()` claim no
+    longer exists in either corrected or original form, because no doc
+    comment remains. Production behavior, the public API, and all four
+    tests are unchanged; `WorktreeLock`, `WorktreeLockError`, and their
+    documented semantics above remain the authoritative description of this
+    module's behavior now that the code carries no comments of its own.
+
+    Fourth, the "Second" fix above still had a scheduler false positive:
+    signaling "started" immediately before calling `WorktreeLock::acquire`
+    proved only that the worker reached the call site, not that it actually
+    executed `try_lock()` and observed contention — a descheduled-before-call
+    worker would have produced the same passing result. `acquire`'s body
+    moved into a new private `acquire_inner(git_dir, timeout, on_contention:
+    impl FnOnce())` that `acquire` calls with a no-op closure
+    (`acquire_inner(git_dir, timeout, || {})`), keeping the public API and
+    every other behavior (deadline calculation, poll interval, error
+    variants, RAII release, stale-lock-file handling, per-worktree
+    independence) unchanged. The `on_contention` callback fires at most once,
+    only from inside the already-existing `Err(TryLockError::WouldBlock)`
+    arm, strictly after that branch is reached and before the existing
+    deadline check/sleep — it observes contention, it does not create or
+    influence it. The contention test now calls `acquire_inner` directly with
+    a closure that signals a dedicated channel, and waits on that channel
+    (bounded only as a deadlock guard) before asserting non-completion and
+    dropping the first guard. The contention test observes the actual
+    `TryLockError::WouldBlock` branch before the first guard is released,
+    then proves the second acquirer succeeds after `Drop` — a real
+    happens-before proof of OS-level contention, not an inference from
+    timing. This test now fails if the `WouldBlock` branch were no longer
+    reached while the first lock is held. Re-ran the contention test 8
+    consecutive times with no flakiness.
+  - Verify (actual): `./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml runtime::worktree_lock::` → 4/4 passed (re-run after the
+    "Fourth" `acquire_inner` fix above; the contention test was additionally
+    run 8 consecutive times in isolation with no flakiness). Additionally ran
+    `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml
+    --all-targets -- -D warnings` → clean (pedantic/warnings denied
+    workspace-wide, per Constraints), and `./scripts/run-cli-cargo.sh fmt
+    --manifest-path cli/Cargo.toml -- --check` → clean (after running
+    `cargo fmt` once to apply formatting corrections, on the original T02
+    implementation; every subsequent PR #244 review follow-up change,
+    including the `acquire_inner` seam, was already fmt-clean).
+  - Context impact: `domain` — introduced a new architectural element
+    (`WorktreeLock`, the mutation-cursor runtime lock) not owned by any
+    existing context file. Added `context/cli/mutation-trace-runtime-coordinator.md`
+    describing it, linked it from `context/context-map.md`, and cross-linked
+    it from `context/cli/checkout-identity.md`'s "See also" line. The five
+    root context files (`overview.md`, `architecture.md`, `glossary.md`,
+    `patterns.md`, `context-map.md`) were verified against this change;
+    `context-map.md` was edited to add the new domain file's index entry,
+    the other four remained accurate and were not edited. No qualifying
+    system-wide architecture decision was introduced by this task — the
+    lock's design (two distinct locks, bounded polling, std-only locking)
+    was already established in the plan's own Design decisions section
+    during plan authoring, not originated by this task's execution.
+  - Context synchronization: synced
 
 - [ ] T03: `Add the isolated Git snapshot service with ref-pinned durability` (status:todo)
   - Task ID: T03
