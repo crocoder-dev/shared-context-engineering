@@ -117,8 +117,11 @@ returns `Err`.
 
 ## Non-goals
 
-- No Git or filesystem I/O — no `coordinator.rs` or `git_snapshot.rs` exists
-  yet; those remain future work building on this store.
+- No Git or filesystem I/O — `store.rs` itself calls neither Git nor the
+  filesystem. `runtime/git_snapshot.rs` now exists as a sibling module (see
+  [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md))
+  but is not wired to this store yet; `coordinator.rs`, the future caller of
+  both, remains future work.
 - No attribution or boundary-kind decisions — `DurableTransition::between`
   and `store.rs` are both structurally blind to protocol meaning.
 - No retry-after-`Conflict` loop — `CasResult::Conflict` is returned to the
