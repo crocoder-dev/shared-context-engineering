@@ -523,7 +523,7 @@ mod tests {
 
     use super::*;
     use crate::services::mutation_trace::store::encode_revision;
-    use crate::services::mutation_trace::types::{Attribution, FailureKind, ScopeStatus};
+    use crate::services::mutation_trace::types::{Attribution, EventKey, FailureKind, ScopeStatus};
 
     static NEXT_TEST_DB_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -2070,11 +2070,17 @@ mod tests {
         );
         std::fs::write(repo_root.join("work.txt"), b"b").expect("the A -> B edit should write");
 
+        let advance_event = EventId("evt-advance".to_string());
+        let event_key = EventKey {
+            scope_id: scope.clone(),
+            event_id: advance_event.clone(),
+        };
+
         let error = coordinate_inner(
             &repo_root,
             &RuntimeBoundary::Advance {
                 scope: scope.clone(),
-                event: EventId("evt-advance".to_string()),
+                event: advance_event.clone(),
                 actor_kind: ActorKind::ClaudeCode,
             },
             ok_db,
@@ -2096,7 +2102,7 @@ mod tests {
         let store_db = ok_db().expect("reopening the DB for assertions should succeed");
         let store = MutationTraceStore::new(&store_db);
         let after_fail = store
-            .load_worktree(&worktree_id, Some(&scope), None)
+            .load_worktree(&worktree_id, Some(&scope), Some(&event_key))
             .expect("loading the worktree row should succeed")
             .expect("the worktree row should exist");
         assert!(
@@ -2122,7 +2128,7 @@ mod tests {
             "the live scope was abandoned by the durable recovery"
         );
         assert!(
-            after_fail.processed_events.is_empty(),
+            !after_fail.processed_events.contains(&event_key),
             "the triggering Advance must never have been processed"
         );
         assert!(

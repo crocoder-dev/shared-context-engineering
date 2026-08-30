@@ -189,17 +189,26 @@ which criterion they map to.
 
 ### Deviations from stated scope
 
-- **Unrelated sync test stabilization (test-only).** During full-suite
-  validation an unrelated pre-existing flaky sync test was exposed:
-  `services::sync::sync::tests::terminal_batch_status_fails_without_state_reconciliation`.
-  The test incorrectly started four concurrent unsynchronized streams while
-  asserting that `messages` must fail first. The fixture was made deterministic
-  by advancing the other three stream cursors (`state_response(0, 1, 1, 1)` so
-  only `messages` needs a `/batch`, and `assert_eq!(batch_count, 1)`). No sync
-  production behavior changed; this is not part of external-taint architecture
-  and the PR is not broadened into further sync cleanup. Recorded here rather
-  than silently violating the "mutation-cursor runtime + docs only" scope
-  statement.
+- **Unrelated sync-test stabilization (test-only).** During full-suite
+  validation, two pre-existing sync tests were found to depend on concurrent
+  stream request ordering:
+
+  - `services::sync::sync::tests::terminal_batch_status_fails_without_state_reconciliation`
+    previously seeded all four streams while asserting that `messages` must be
+    the stream whose terminal error is observed first. The fixture now advances
+    the other three cursors (`state_response(0, 1, 1, 1)`), so only `messages`
+    sends one `/batch` request (`assert_eq!(batch_count, 1)`).
+
+  - `services::sync::sync::tests::malformed_2xx_batch_response_still_reconciles_via_state`
+    previously seeded all four streams and depended on concurrent requests
+    consuming canned responses in a particular order. It now seeds only one
+    `messages` row and deterministically asserts the intended request sequence:
+    `/state → /batch → /state → /batch`.
+
+  No sync production behavior changed. These are test-only determinism fixes
+  discovered during PR validation and are not part of the external-taint
+  architecture. Recorded here rather than silently violating the
+  "mutation-cursor runtime + docs only" scope statement.
 - **PR-review follow-up (T05, post-stack).** After the T01–T04 stack, PR #245
   review added: a distinct `CoordinateError::MarkerClearAfterCommit { source,
   committed: Box<CoordinateOutcome> }` so a post-commit `marker.clear()` failure
@@ -655,3 +664,44 @@ calling a lower-level coordinator. Whether a later change also splits
 halves is left to implementation — the plan only requires the narrowest seam
 that puts DB acquisition inside the fence, and the caller-supplied provider
 closure achieves that without touching `agent_trace_storage` at all.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-08-30 (revalidated after the AC8 `processed_events` assertion tightening)
+
+### Commands run
+
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::` -> exit 0 (56 passed, 0 failed; every AC-mapped `external_taint`, `coordinator`, and cross-module `runtime::tests` case passed)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` -> exit 0 (845 passed, 0 failed; full CLI suite, including `mbt` Quint-refinement tests and the stabilized `sync` batch tests)
+- `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` -> exit 0 (clean, no warnings)
+- `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` -> exit 0 (clean)
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral Pkl generation passed: 141 files, inventory sha256 bf5db9c962cc9ce2776b4fc218dcbd8787fa7567744a5e2faff1fc9f9212a003)
+- `nix flake check` -> exit 0 (all 4 flake checks passed, including `checks.cli-tests` and `checks.mutation-trace-quint-connect`)
+
+### Success-criteria verification
+
+- [x] AC1: Marker is stored under the caller-supplied worktree git-dir, survives handle reconstruction, and two `git_dir` inputs derive independent paths/state -> `external_taint::tests::marker_is_worktree_scoped` + `marker_persists_until_explicitly_cleared` passed
+- [x] AC2: `persist`/`persist`/`clear`/`clear` all succeed; `clear` on an absent marker is success -> `external_taint::tests::persist_and_clear_are_idempotent` passed
+- [x] AC3: Public `coordinate()` arms its marker internally and clears it only after a successful `CoordinateOutcome` -> `coordinator::tests::public_coordinate_clears_marker_on_success` + `runtime::tests::a_successful_coordinate_through_the_public_api_leaves_no_external_taint_marker` passed
+- [x] AC4: After arming, any coordinator error leaves the marker present (snapshot-failure and deterministic non-snapshot paths) -> `coordinator::tests::public_coordinate_leaves_marker_after_a_snapshot_failure`, `..._after_a_non_snapshot_failure`, `..._when_the_db_provider_fails` passed
+- [x] AC5: Inherited marker rebaselines to current tree, emits no A→C evidence, abandons scopes, then processes the boundary -> `runtime::tests::a_stale_marker_rebaselines_to_the_current_tree_abandons_scopes_then_processes_the_boundary` + `coordinator::tests::inherited_external_taint_recovers_once_before_the_boundary` passed
+- [x] AC6: Recovery and triggering-boundary processing share one `observed_tree`; no second Git snapshot -> `coordinator::tests::inherited_external_taint_recovers_once_before_the_boundary` (call-counting capture asserts exactly one `capture`/`pin`) passed
+- [x] AC7: Losing recovery CAS re-injects external taint on reload and recomputes until `Applied`/exhaustion; marker persists through the loop -> `coordinator::tests::a_losing_recovery_cas_reinjects_external_taint_until_it_applies`, `a_landed_recovery_clears_the_flag_so_a_boundary_cas_retry_does_not_re_recover`, `runtime::tests::a_snapshot_failure_arms_the_marker_and_the_next_invocation_recovers_once` passed
+- [x] AC8: Failure after recovery commit but before boundary completion leaves recovery durable, boundary incomplete, marker present; post-commit `marker.clear()` failure returns `MarkerClearAfterCommit` carrying the committed outcome -> `coordinator::tests::a_failure_after_recovery_before_boundary_commit_leaves_marker_and_forces_later_recovery` + `runtime::tests::a_marker_clear_failure_after_a_durable_boundary_keeps_the_marker_for_a_later_recovery` passed
+- [x] AC9: Marker surviving an invocation that never materialized a worktree row → next successful invocation baselines with no evidence for the unknown interval -> `coordinator::tests::inherited_external_taint_with_no_worktree_row_baselines_without_evidence` + `runtime::tests::a_first_ever_failed_invocation_that_never_materialized_a_worktree_row_creates_no_evidence` passed
+- [x] AC10: Worktree with live scopes and inherited taint persists them as `Abandoned` during recovery, never eligible for exclusive attribution afterward -> `coordinator::tests::inherited_external_taint_recovers_once_before_the_boundary` (asserts `ScopeStatus::Abandoned`) + `recovers_from_snapshot_failure_taint_abandoning_live_scopes` passed
+- [x] AC11: End to end, no `MutationEvent` treats an interval spanning a failed invocation as one trustworthy AI-attributable interval -> `runtime::tests::a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_rebaselines_without_evidence` (per-revision `load_mutation_event` sweep, no event ends at the post-gap tree) passed
+- [x] AC12: A marker in linked worktree A does not trigger recovery in linked worktree B over a shared repository Agent Trace DB -> `runtime::tests::linked_worktrees_keep_independent_external_taint_markers_over_a_shared_db` passed
+- [x] AC13: When marker inspection or persistence cannot be established, `coordinate()` returns a distinct external-taint marker error before any checkout-identity, DB, snapshot, or protocol processing -> `coordinator::tests::public_coordinate_fails_closed_when_the_marker_cannot_be_armed` + `..._when_marker_inspection_fails` passed
+- [x] AC14: DB acquisition is inside the fence — a DB-provider `Err` after lock+arming makes `coordinate()` return an error with the marker present though no `RepositoryAgentTraceDb` existed; the follow-up invocation with a working provider snapshots, recovers, and produces no evidence across the lost interval -> `runtime::tests::a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_rebaselines_without_evidence` + `coordinator::tests::public_coordinate_leaves_marker_when_the_db_provider_fails` passed
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- Marker durability is best-effort at the parent-directory `sync_all` level (`#[cfg(unix)]`, error swallowed); the plan explicitly does not claim durability across host power loss or filesystem-level crash.
+- The `spec/mutation_cursor.qnt` model and Quint refinement matrix are unchanged by this plan; the abstract↔concrete correspondence for the write-ahead marker is asserted by the Rust integration tests and prose refinement notes, not by a machine-checked refinement.
+- The recorded sync-test stabilization (`cli/src/services/sync/sync.rs`, test-only) touched `terminal_batch_status_fails_without_state_reconciliation` and `malformed_2xx_batch_response_still_reconciles_via_state`; no sync production behavior changed and the full suite is green.
