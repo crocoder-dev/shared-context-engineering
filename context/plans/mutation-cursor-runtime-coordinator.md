@@ -681,7 +681,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     corrections above capture.
   - Context synchronization: synced
 
-- [ ] T04: `Add the coordinator's core protocol-integration pipeline` (status:todo)
+- [x] T04: `Add the coordinator's core protocol-integration pipeline` (status:done)
   - Task ID: T04
   - Scope: In — `runtime/coordinator.rs`: `RuntimeBoundary` (with its
     `(ScopeId, EventId)` replay-identity contract documented on the type),
@@ -711,7 +711,210 @@ Persist this field in every plan; this is durable plan state, not chat state:
     a worktree row materialized *during* a failing capture attempt (not
     before it) is still found and tainted by that same failing invocation.
   - Verify: `cargo test -p shared-context-engineering runtime::coordinator::` (via `./scripts/run-cli-cargo.sh test`)
-  - Context synchronization: pending
+  - Completed: 2026-08-30
+  - Files changed: `cli/src/services/mutation_trace/runtime/coordinator.rs` (new),
+    `cli/src/services/mutation_trace/runtime/mod.rs` (added `mod coordinator;`)
+  - Result: Added `runtime/coordinator.rs` with `RuntimeBoundary` (`Start`/
+    `Advance`/`Close` carrying `{ scope, event, actor_kind }`, `Flush` carrying
+    nothing — its `WorktreeId` is always the invocation's already-resolved
+    worktree, never caller-supplied — with the `(ScopeId, EventId)`
+    replay-identity contract from `spec/mutation_cursor.md`'s "Event identity"
+    section documented on the type's doc comment), `CoordinateOutcome`
+    (`worktree_id`/`observed_tree`/`revision`/`evaluation`/`mutation_event`,
+    exactly the plan's sketch), `CoordinateError` (`SnapshotFailure`/
+    `ScopeIdentityConflict`/`CasConflictExhausted`/`LockAcquisition`/`Other`,
+    with `Display`/`std::error::Error` impls; `LockAcquisition` is reserved for
+    T05 and never constructed here — `#[allow(dead_code)]` on
+    `pub mod mutation_trace;` in `services/mod.rs` already covers it), and the
+    `SnapshotCapture` trait (`capture(&self) -> Result<TreeId>`,
+    `pin(&self, worktree_id: &WorktreeId, tree: &TreeId) -> Result<()>` —
+    taking no `repository_root` parameter, since `GitSnapshotService`
+    (T03) already binds it at construction; a reviewed deviation from the
+    plan's earlier trait sketch, not from `GitSnapshotService`'s actual
+    signature), implemented for `GitSnapshotService` by direct delegation to
+    `capture_tree`/`pin_tree`.
+
+    The private `coordinate_boundary<C: SnapshotCapture>(db, capture,
+    worktree_id, boundary: &RuntimeBoundary)` is the internal,
+    generic-over-`SnapshotCapture` entrypoint the plan calls for: it captures
+    and pins the one Git snapshot for the invocation; on failure, delegates to
+    `handle_snapshot_failure`/`run_taint_retry_loop_inner` and returns
+    `SnapshotFailure` without ever reaching the pipeline below; on success,
+    calls `initialize_worktree` (idempotent) and, for hook boundaries only,
+    `register_scope` (mapping `ScopeIdentityConflict` errors), then runs the
+    bounded (`MAX_CAS_RETRY_ATTEMPTS = 5`, no backoff) `load_worktree` →
+    recover-if-needed (its own `DurableTransition`/CAS commit, retried via
+    `continue` on `Conflict`) → `prepare`/`commit` the triggering boundary (a
+    second `DurableTransition`/CAS commit) loop, reusing the one captured
+    `observed_tree` and the same `AttemptId` generation
+    (`Uuid::new_v4()`) every iteration; a `None` `DurableTransition` (a
+    stale/rejected/replayed attempt) is a successful no-op return, not an
+    error. `run_taint_retry_loop_inner` implements the plan's exact
+    snapshot-failure pseudocode: a fresh `load_worktree(worktree, None, None)`
+    on every iteration including the first, always evaluated after the
+    triggering failure; `None` → `persisted_taint: false` (bootstrap, no
+    durable write); an already-tainted no-op `taint()` transition → reads back
+    the current `tainted` flag rather than assuming success; otherwise commits
+    the taint transition and retries on `Conflict`; exhaustion after 5
+    attempts → `persisted_taint: false`. `run_taint_retry_loop` (production,
+    used by `handle_snapshot_failure`) is a thin wrapper over
+    `run_taint_retry_loop_inner` with a no-op `after_load` hook; the hook
+    itself (`after_load: impl FnMut(u32)`, fired after each iteration's load
+    and before its own commit) is a deterministic-testing seam mirroring
+    `worktree_lock.rs`'s own `acquire_inner`/`on_contention` pattern (T02),
+    used only by this task's own tests to inject a competing commit at a
+    precise point without needing real thread synchronization.
+
+    Added a `#[cfg(test)] mod tests` with 13 tests (11 exactly matching the
+    plan's own AC1–AC5/AC8/AC10/AC11 "Validate" function names, plus the
+    `assert_contended_attribution` helper counted under AC5's single test
+    function, plus internal coverage): a `FakeSnapshotCapture` (scripted
+    `Succeed`/`Fail` outcome queue, falling back to a fixed default tree, with
+    `capture_call_count`/`pin_call_count`) proves AC1 (Flush at first
+    observation stays at revision 0, no evidence, exactly one capture/pin),
+    AC2 (Start-then-Advance commits one `AiExclusive` event with the correct
+    before/after trees), AC3 (replaying the identical `(scope, event)`
+    boundary is a no-op — the same revision, no duplicated event — proven via
+    two sequential `coordinate_boundary` calls with the same boundary), AC4
+    (Close still attributes to the scope it is about to close, then confirms
+    the scope reaches `Closed`), and AC5 (`AiContended` for two live scopes,
+    exercised for both same-`ActorKind` and different-`ActorKind` pairs via
+    one test calling a shared `assert_contended_attribution` helper twice).
+    AC8 (`cas_conflict_reloads_and_recomputes_without_a_second_snapshot`) uses
+    3 real OS threads racing distinct `Flush` boundaries against one shared
+    on-disk DB (separate `RepositoryAgentTraceDb` handles per thread, via
+    `open_for_hooks_without_migrations_at`, matching `store.rs`'s own
+    two-writer-race test convention) — deterministically bounded, since at
+    most `WRITERS − 1 = 2` retries are ever needed against the
+    `MAX_CAS_RETRY_ATTEMPTS = 5` bound — and asserts every writer captured
+    exactly once, pinned exactly once, and landed at a distinct revision.
+    AC10 has two tests: `recovers_from_needs_rebaseline_preserving_live_scopes`
+    (directly commits a `protocol::abandon` transition to force
+    `needs_rebaseline`, then proves a subsequent `Advance` recovers first —
+    clearing the flag, rebaselining the cursor to the recovering invocation's
+    own observed tree, emitting no evidence for the discarded interval — while
+    the untouched live scope stays `Active`) and
+    `recovers_from_snapshot_failure_taint_abandoning_live_scopes` (same
+    pattern via a direct `protocol::taint` commit, proving the live scope
+    instead becomes `Abandoned`). AC11 has five tests: taints an existing
+    worktree; survives one losing CAS via the `after_load` hook injecting one
+    competing (revision-only, non-taint) commit on the first iteration, then
+    succeeds on retry; exhausts all 5 attempts via the hook injecting a
+    competing commit on every iteration (`persisted_taint: false`, worktree
+    stays untainted); a bootstrap failure with no prior worktree row makes no
+    durable write; and a `HookedFailingCapture` (single-shot failing capture
+    running an injected closure — here, a direct `initialize_worktree` call —
+    immediately before returning its failure) proves the fresh, post-failure
+    `load_worktree` still finds and taints a worktree materialized
+    concurrently during this invocation's own (failing) capture.
+
+    PR #244 review follow-up: corrected a real correctness hole in the
+    recovery step, and a stale sketch of the `SnapshotCapture` signature this
+    record itself had already superseded but the plan's own "Dependency
+    injection for deterministic tests" design-decision text still carried.
+
+    `protocol::recover` is a guarded no-op — among other guards — when the
+    worktree's revision is already `u64::MAX` and cannot be advanced (see
+    `protocol.rs`'s own `next_revision` headroom guard). Before this
+    follow-up, `coordinate_boundary`'s recovery step treated that no-op
+    identically to "recovery was not needed": `DurableTransition::between`
+    returning `None` simply fell through to evaluating the triggering
+    boundary against the un-recovered, still-tainted-or-needing-rebaseline
+    state — silently processing a boundary the coordinator's own contract
+    ("if durable state requires recovery, recovery must complete successfully
+    before the triggering boundary is processed") forbids. A worktree stuck
+    at `revision: u64::MAX` while tainted or needing rebaseline could
+    therefore have a hook boundary attributed and committed against stale,
+    un-recovered state.
+
+    The fix adds `CoordinateError::RevisionExhausted { worktree_id: WorktreeId,
+    revision: u64 }` (with a `Display` arm) and changes the recovery step's
+    `if let Some(transition) = ... { ... }` (silently falling through on
+    `None`) to a `let Some(transition) = ... else { return
+    Err(RevisionExhausted { .. }) };` — the triggering boundary is now
+    reached only when recovery's own `DurableTransition` genuinely exists.
+    The coordinator does not itself re-check `revision == u64::MAX`: given
+    `needs_recovery` is already true, `protocol::recover`'s own no-op guards
+    for "already healthy" and "no durable state" cannot be the cause of a
+    `None` transition, so a `None` here is only reachable via `recover`'s
+    revision-headroom guard — `protocol::recover` remains the sole authority
+    on whether recovery is possible, per the brief's explicit instruction not
+    to duplicate that check. The `revision` field is populated by reading the
+    already-loaded (pre-recovery) state, not by a separate query.
+
+    Added `mandatory_recovery_that_cannot_advance_revision_rejects_the_triggering_boundary`,
+    driven by a shared `assert_recovery_at_revision_exhaustion_is_rejected`
+    helper covering both reachable `needs_recovery` reasons: a worktree row
+    inserted directly (via raw SQL, bypassing `initialize_worktree`, which
+    always starts at revision 0) at `revision: u64::MAX` with `tainted: true`
+    and, separately, at `revision: u64::MAX` with `needs_rebaseline: true`.
+    Each asserts `coordinate_boundary` (given a `Start` boundary and a
+    succeeding `SnapshotCapture`) returns `RevisionExhausted { revision:
+    u64::MAX, .. }`, then reloads the worktree/scope and asserts nothing
+    about the pre-existing durable state moved: `revision` is still exactly
+    `u64::MAX` (no wrap), `tainted`/`needs_rebaseline` and `cursor_tree` are
+    byte-identical to what was inserted, the scope is still `NeverSeen` (the
+    triggering `Start` never transitioned it), and `processed_events` is
+    empty (the triggering event was never recorded) — proving the triggering
+    boundary was never evaluated, not merely that it produced no visible
+    event. The two existing recovery tests
+    (`recovers_from_needs_rebaseline_preserving_live_scopes`,
+    `recovers_from_snapshot_failure_taint_abandoning_live_scopes`) are
+    unchanged and still pass, confirming ordinary (non-exhausted) recovery
+    still completes and the triggering boundary still runs against the
+    recovered state.
+
+    Separately, this record's own "Dependency injection for deterministic
+    tests" reference and this task's `SnapshotCapture` bullet already
+    correctly stated `fn capture(&self) -> Result<TreeId>` (no
+    `repository_root` parameter, since `GitSnapshotService::new` binds it at
+    construction), but the plan's "Dependency injection for deterministic
+    tests" Design decisions section still described `fn capture(&self,
+    repository_root: &Path) -> Result<TreeId>` — a stale sketch this
+    record's own implementation had already superseded without ever
+    correcting that other section. That section now matches the implemented
+    signature and states why `capture` takes no `repository_root` parameter.
+
+    At the user's explicit request, every comment (`//!`/`///`/`//`,
+    including on the newly added `RevisionExhausted` variant and every
+    pre-existing item) was removed from `coordinator.rs`, matching T02's
+    established precedent (`worktree_lock.rs`, `runtime/mod.rs`) for files
+    "authored entirely during this task and its review follow-up." No
+    production behavior, public API shape (beyond the new
+    `RevisionExhausted` variant itself), or test coverage was changed by the
+    comment removal.
+  - Verify (actual): `./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml runtime::coordinator::` → 13/13 passed (pre-follow-up);
+    14/14 passed (post-follow-up, including the new
+    `mandatory_recovery_that_cannot_advance_revision_rejects_the_triggering_boundary`
+    test). Additionally ran `./scripts/run-cli-cargo.sh clippy
+    --manifest-path cli/Cargo.toml --all-targets -- -D warnings` → clean both
+    times (pedantic/warnings denied workspace-wide, per Constraints; the
+    original implementation fixed `match_same_arms`, `needless_pass_by_value`,
+    two `needless_continue`, `elidable_lifetime_names`, and
+    `items_after_statements` findings; the follow-up introduced none), and
+    `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`
+    → clean both times (after running `cargo fmt` once per pass). Additionally
+    ran `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` (full
+    suite) → 819/819 passed (pre-follow-up), 820/820 passed (post-follow-up),
+    no regression.
+  - Context impact: `domain` — introduces new architectural elements
+    (`RuntimeBoundary`, `CoordinateOutcome`, `CoordinateError`,
+    `SnapshotCapture`, and the internal `coordinate_boundary` pipeline) under
+    the mutation-cursor-runtime-coordinator domain T02/T03 already established
+    a domain file for (`context/cli/mutation-trace-runtime-coordinator.md`).
+    Affected areas for context synchronization to verify/update:
+    `context/cli/mutation-trace-runtime-coordinator.md` (document the new
+    types and the pipeline's load → recover-if-needed → prepare/commit and
+    taint-retry design); `context/cli/mutation-trace-protocol.md`'s "Target
+    end-state architecture" section, which currently states `coordinator.rs`
+    "remain[s] future work" — now stale, since the file and its internal
+    pipeline exist (the public, lock-wrapped `coordinate()` entrypoint remains
+    T05); `context/context-map.md`'s `coordinator.rs` annotation. Reason: this
+    is the first task to create `runtime/coordinator.rs` and its core
+    pipeline types, directly falsifying the "future work" framing multiple
+    existing context files use for it.
+  - Context synchronization: synced
 
 - [ ] T05: `Wire the worktree lock and checkout identity into coordinate()` (status:todo)
   - Task ID: T05
@@ -1690,10 +1893,12 @@ from the *triggering boundary's* own `protocol::commit` result
 
 ### Dependency injection for deterministic tests
 
-`SnapshotCapture` (`fn capture(&self, repository_root: &Path) ->
-Result<TreeId>`, `fn pin(&self, worktree_id: &WorktreeId, tree: &TreeId) ->
-Result<()>`) is the one seam this plan introduces for determinism:
-`GitSnapshotService` implements it for production use, and T04's tests use
+`SnapshotCapture` (`fn capture(&self) -> Result<TreeId>`, `fn pin(&self,
+worktree_id: &WorktreeId, tree: &TreeId) -> Result<()>`) is the one seam this
+plan introduces for determinism. `capture` takes no `repository_root`
+parameter: `GitSnapshotService::new(repository_root)` binds that context once
+at construction, so `capture()` does not receive it repeatedly on every call.
+`GitSnapshotService` implements the trait for production use, and T04's tests use
 a fake, call-counting implementation to prove "exactly one `capture`, at
 most one `pin`, per invocation, even across CAS retries" (AC8) without
 needing real concurrent Git processes. The lock is *not* faked —
