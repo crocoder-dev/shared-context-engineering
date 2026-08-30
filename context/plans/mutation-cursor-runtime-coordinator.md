@@ -131,10 +131,13 @@ independently of the mutation-cursor runtime.
   no second Git snapshot is taken for that invocation.
   - Validate: `runtime::coordinator::tests::cas_conflict_reloads_and_recomputes_without_a_second_snapshot`
 - [ ] AC9: Two coordinator invocations targeting the same worktree cannot
-  execute their critical sections concurrently; invocations on two different
-  worktrees, including two linked worktrees of the same repository, are not
-  serialized against each other and resolve to the same repository-scoped DB
-  with distinct `WorktreeId`s.
+  execute their critical sections concurrently. Invocations on two different
+  worktrees, including linked worktrees of the same repository, are not
+  serialized against each other, derive distinct `WorktreeId`s, and persist
+  independently into the same caller-supplied repository-scoped Agent Trace
+  DB. `coordinate()` resolves `git_dir`, checkout identity, and `WorktreeId`
+  from its `repository_root` argument; the `RepositoryAgentTraceDb` is
+  supplied by the caller, not resolved by the coordinator.
   - Validate: `runtime::worktree_lock::tests::*` (contention, distinct-path independence); `runtime::tests::linked_worktrees_have_independent_locks_and_worktree_ids`
 - [ ] AC10: A worktree whose durable state is `SnapshotFailure`-tainted or
   `needs_rebaseline` is recovered exactly once, using the same snapshot
@@ -1070,13 +1073,14 @@ Persist this field in every plan; this is durable plan state, not chat state:
     accurate as edited during the original T05 sync.
   - Context synchronization: synced
 
-- [ ] T06: `Add cross-module runtime integration tests` (status:todo)
+- [x] T06: `Add cross-module runtime integration tests` (status:done)
   - Task ID: T06
   - Scope: In — `runtime/tests.rs`: end-to-end `coordinate()` calls against
-    two real linked Git worktrees sharing one repository-scoped DB, proving
-    distinct `WorktreeId`s/locks and non-serialization across worktrees; an
-    end-to-end snapshot-failure-then-recovery cycle across two real
-    sequential `coordinate()` calls; a cross-caller assertion that
+    two real linked Git worktrees given handles to the same caller-supplied
+    repository-scoped DB, proving distinct `WorktreeId`s/locks and
+    non-serialization across worktrees; an end-to-end
+    snapshot-failure-then-recovery cycle across two real sequential
+    `coordinate()` calls; a cross-caller assertion that
     `agent_trace_storage`'s own checkout-identity resolution and the
     coordinator's observe the same checkout ID for one worktree. Out — any
     new production code; this task is test-only.
@@ -1086,7 +1090,157 @@ Persist this field in every plan; this is durable plan state, not chat state:
     public `coordinate()` API, real `git worktree add`, and a real temp-file
     `RepositoryAgentTraceDb`.
   - Verify: `cargo test -p shared-context-engineering runtime::tests::` (via `./scripts/run-cli-cargo.sh test`)
-  - Context synchronization: pending
+  - Completed: 2026-08-30
+  - Files changed: `cli/src/services/mutation_trace/runtime/tests.rs` (new),
+    `cli/src/services/mutation_trace/runtime/mod.rs` (added `#[cfg(test)] mod tests;`)
+  - Result: Added `runtime/tests.rs` as `runtime`'s own `#[cfg(test)] mod
+    tests` (declared in `runtime/mod.rs`), holding three cross-module,
+    end-to-end integration tests that drive only the public
+    `coordinator::coordinate()` API against real Git repositories and real
+    temp-file `RepositoryAgentTraceDb`s. No production code was added or
+    changed; the file carries no comments, matching the established
+    precedent for `runtime/` files authored entirely within their own task
+    (T02–T05).
+
+    `linked_worktrees_have_independent_locks_and_worktree_ids` (AC9): inits a
+    main repo (with an empty commit so `git worktree add` is allowed), adds a
+    real linked worktree via `git worktree add`, opens one caller-supplied
+    repository-scoped DB path and hands a separate `RepositoryAgentTraceDb`
+    handle to each `coordinate()` call (`new_at` for the main,
+    `open_for_hooks_without_migrations_at` for the linked, matching the AC8
+    two-writer convention — `coordinate()` never resolves the DB itself).
+    Asserts `resolve_git_dir` returns distinct worktree-specific git dirs
+    (hence distinct lock/identity paths); runs `coordinate(Flush)` on the
+    main worktree; then holds the main worktree's real `WorktreeLock`
+    (`WorktreeLock::acquire`) across a synchronous `coordinate(Flush)` call
+    for the linked worktree. That call returning `Ok` before the main lock
+    guard is dropped is the deterministic proof of independent lock paths: a
+    regression to one shared lock could not acquire that lock while `held`
+    is still alive and would instead return a lock-acquisition timeout. No
+    wall-clock assertion is used. Asserts the two
+    `CoordinateOutcome.worktree_id`s differ, that both distinct worktree rows
+    coexist in the same caller-supplied DB (`MutationTraceStore::load_worktree`),
+    and that a tree pinned by the main worktree's coordinator resolves
+    through the linked worktree's `GIT_DIR`
+    (`GitSnapshotService::new(&linked_root).diff_trees(...)`), proving the
+    shared object database / refs namespace.
+
+    `agent_trace_storage_and_coordinator_observe_the_same_checkout_id`
+    (AC12): inits a repo with an `origin` remote (enough for
+    `agent_trace_storage` identity resolution; no network), then races — via
+    a two-party `Barrier` — a background-thread
+    `resolve_agent_trace_storage_at_state_root` call against a main-thread
+    `coordinate(Flush)` call, both on first-ever checkout-identity creation
+    for the same physical checkout. Asserts the storage resolution's
+    `checkout_id`, the coordinator outcome's `worktree_id.0`, and the on-disk
+    `checkout-id` file (`checkout::read_checkout_id`) are all the identical
+    value — proving T01's convergence guarantee holds across the module
+    boundary, not only inside `checkout::`'s own suite. (The two callers use
+    different databases; the only shared state under contention is the
+    `<git-dir>/sce/checkout-id` file.)
+
+    `a_snapshot_failure_then_recovery_cycle_runs_through_the_public_api`
+    (end-to-end AC10/AC11): runs a baseline `coordinate(Flush)` to
+    materialize the worktree, then injects a real `GitSnapshotService`
+    failure by planting a regular file where `capture_tree` expects its
+    `<git-dir>/sce/tmp/` temp-index directory (so `capture_tree`'s
+    `create_dir_all` fails deterministically while repo detection, lock
+    acquisition, and checkout-identity resolution are all untouched). Asserts
+    the next `coordinate(Start{..})` returns
+    `CoordinateError::SnapshotFailure { persisted_taint: true, .. }` and that
+    the durable worktree row is `tainted`. Removes the planted file and runs
+    one more `coordinate(Flush)`, asserting it succeeds on the same worktree
+    identity and that the `tainted` flag was cleared — i.e. the coordinator
+    recovered from the taint before processing the triggering boundary.
+
+    Reviewed assumption (recorded, not a scope deviation): the plan's Scope
+    line sketched the snapshot-failure injection loosely ("across two real
+    sequential `coordinate()` calls"); the implementation uses a baseline
+    call, a failing call, and a recovery call (three sequential public-API
+    invocations), and injects the failure by blocking the snapshot service's
+    temp-index directory rather than by corrupting `.git/HEAD` (HEAD removal
+    breaks Git repo detection for `resolve_git_dir`, which runs before the
+    snapshot step, so the failure would surface as `CoordinateError::Other`
+    rather than a `SnapshotFailure` taint path — verified empirically during
+    implementation).
+
+    PR #244 review follow-up: two test/wording corrections, no production
+    change. First, `linked_worktrees_have_independent_locks_and_worktree_ids`
+    dropped its `Instant::now()` / `elapsed() < 5s` assertion (and the unused
+    `Instant` import): the lock-independence proof is the deterministic
+    ordering — the main worktree's `WorktreeLock` stays held across the whole
+    synchronous linked `coordinate()` call, and that call returning `Ok`
+    before `held` is dropped is only possible if the linked worktree
+    acquires a different lock path; a shared lock would return a
+    lock-acquisition timeout instead. The wall-clock check added only CI
+    timing sensitivity and proved nothing the ordering did not. Second, AC9
+    and the surrounding wording (this record, the Scope line, and
+    `context/cli/mutation-trace-runtime-coordinator.md`) were corrected to
+    stop implying `coordinate()` resolves the repository-scoped Agent Trace
+    DB. It does not: `coordinate(repository_root, db, boundary)` derives
+    `git_dir`, checkout identity, and `WorktreeId` from `repository_root`,
+    but the `RepositoryAgentTraceDb` is supplied by the caller. The
+    linked-worktree test hands a separate handle to the one caller-opened DB
+    path to each call and proves the two distinct worktree rows coexist in
+    that supplied DB — not that each invocation independently resolves it.
+  - Verify (actual): `./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml runtime::tests::` → 3/3 new tests passed (the filter also
+    re-runs 5 unrelated `parse::command_runtime::tests` that share the
+    `runtime::tests` substring; all passed). Additionally ran
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    services::mutation_trace::runtime::` → 35/35 passed (no regression in the
+    T02/T03/T04/T05 `worktree_lock`, `git_snapshot`, and `coordinator`
+    tests); `services::checkout::` → 5/5; `services::agent_trace_storage::`
+    → 14/14 (the two cross-called modules, unchanged, still green).
+    `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml
+    --all-targets -- -D warnings` → clean (pedantic/warnings denied
+    workspace-wide, per Constraints); `./scripts/run-cli-cargo.sh fmt
+    --manifest-path cli/Cargo.toml -- --check` → clean (after one `cargo fmt`
+    pass on the new file).
+
+    PR #244 review follow-up re-verification: after removing the
+    elapsed-time assertion and correcting the DB-ownership wording,
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    services::mutation_trace::runtime::tests::` → 3/3 passed;
+    `services::mutation_trace::runtime::` → 35/35 passed; the full
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` suite →
+    824/824 passed / 0 failed; `clippy --all-targets -- -D warnings` → clean;
+    `fmt -- --check` → clean (after one `cargo fmt` pass re-wrapping the
+    edited `open_for_hooks_without_migrations_at` line).
+  - Context impact: `domain` — this task adds only tests; it introduces no
+    new architectural element, public interface, behavior contract, or
+    terminology. The mutation-cursor-runtime-coordinator domain file
+    (`context/cli/mutation-trace-runtime-coordinator.md`) already carries a
+    "Testing boundary" section; task context synchronization should extend
+    its `runtime/tests.rs` bullet to name the three landed cross-module
+    integration tests (linked-worktree independence, cross-caller
+    checkout-identity convergence, public-API failure/recovery cycle) and
+    flip any "T06 not yet landed" / "runtime/tests.rs planned" framing to
+    present-tense. Per the plan's own Context sync notes, T06 is the trigger
+    for finalizing the `context/context-map.md`
+    `coordinator.rs`/`git_snapshot.rs` seam annotations (drop the
+    "not-yet-created" wording now that the full `runtime/` module including
+    its integration suite exists) and for a last pass over
+    `context/cli/mutation-trace-protocol.md`,
+    `context/cli/mutation-trace-store.md`, and `context/overview.md` to
+    confirm no stale "future work" framing about the runtime layer remains.
+    The five root context files must still be verified per the mandatory
+    pass. No qualifying system-wide architecture decision was introduced by
+    this task.
+
+    PR #244 review follow-up: the synced context edits were corrected to
+    stop implying `coordinate()` resolves the repository-scoped Agent Trace
+    DB. `context/cli/mutation-trace-runtime-coordinator.md`'s `coordinate()`
+    bullet now states it takes an already-resolved `RepositoryAgentTraceDb`
+    from its caller and never resolves/opens one (identity chain:
+    `repository_root → git_dir → WorktreeLock → checkout ID → WorktreeId`,
+    with the DB not on that chain), and its "Testing boundary" paragraph
+    describes the linked-worktree proof as the held-lock ordering (no
+    wall-clock timing) with both worktree rows coexisting in the one
+    caller-supplied DB. AC9's own wording in this plan was corrected to
+    match. No other context file needed a change; the five root files remain
+    accurate as verified in the original sync.
+  - Context synchronization: synced
 
 ## Design decisions
 
@@ -2179,12 +2333,15 @@ Cargo/dependency changes: none.
   on one complete, valid ID. Prove: AC13 — the canonical path is never
   observable as partially written, and orphaned temp files are inert.
 - **Linked-worktree tests** (`runtime/tests.rs`, real `git worktree add`):
-  two linked worktrees resolve distinct `checkout_id`/`WorktreeId` and
-  distinct runtime-lock paths, concurrent `coordinate()` calls on the two
-  worktrees do not block each other, both share one repository-scoped DB,
-  and a tree pinned from one worktree resolves correctly when queried via
-  the other worktree's `GIT_DIR`. Prove: AC9 end to end through the public
-  API.
+  two linked worktrees derive distinct `checkout_id`/`WorktreeId` and
+  distinct runtime-lock paths — proven by holding one worktree's
+  `WorktreeLock` across a synchronous `coordinate()` call for the other and
+  observing that call succeed before the held guard is dropped, not by any
+  wall-clock timing — their distinct worktree rows coexist in the one
+  caller-supplied repository-scoped DB handed to both calls (`coordinate()`
+  does not resolve the DB), and a tree pinned from one worktree resolves
+  correctly when queried via the other worktree's `GIT_DIR`. Prove: AC9 end
+  to end through the public API.
 - **Cross-caller checkout-identity test** (`runtime/tests.rs`): a direct
   `agent_trace_storage` resolution and a `coordinate()` call against the
   same `repository_root`, run concurrently on first-ever resolution, observe
