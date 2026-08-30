@@ -43,7 +43,7 @@ impl WorktreeLock {
     }
 }
 
-fn acquire_inner<F>(
+pub(super) fn acquire_inner<F>(
     git_dir: &Path,
     timeout: Duration,
     on_contention: F,
