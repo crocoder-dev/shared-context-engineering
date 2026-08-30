@@ -17,8 +17,6 @@
 //! is never deleted via `Drop`: only an explicit `clear()` after a successful
 //! `CoordinateOutcome` removes it.
 
-#![allow(dead_code)]
-
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
