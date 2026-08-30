@@ -102,10 +102,15 @@ API end to end. Only harness/command wiring remains.
   only on a successful outcome. Identity flows
   `repository_root → git_dir → WorktreeLock → checkout ID → WorktreeId`; the
   DB is not on that chain. (`coordinate()` is a one-line delegation to a
-  private `coordinate_inner(.., open_db, on_lock_contention: impl FnOnce())`
-  test seam; production passes a no-op contention closure.) A `WorktreeLock`
-  acquisition failure surfaces as `CoordinateError::LockAcquisition`; marker-I/O
-  and DB-provider failures have their own fail-closed variants — see
+  private `coordinate_inner(.., open_db, on_lock_contention: impl FnOnce(),
+  after_recovery: impl FnMut(u32) -> Result<()>)` test seam; production passes a
+  no-op contention closure and `|_| Ok(())`.) A `WorktreeLock`
+  acquisition failure surfaces as `CoordinateError::LockAcquisition`; pre-commit
+  marker-I/O and DB-provider failures have their own fail-closed variants, and a
+  post-commit `marker.clear()` failure surfaces as
+  `CoordinateError::MarkerClearAfterCommit { source, committed }` — the boundary
+  did commit, so the durable `CoordinateOutcome` (with any `MutationEvent`) rides
+  along in `committed` rather than being lost, and the marker stays armed. See
   [`mutation-trace-external-taint.md`](mutation-trace-external-taint.md) for the
   fence ordering, the safety invariant, and the `CoordinateError` variants it
   adds. The pipeline does, per invocation: capture and pin
@@ -212,7 +217,15 @@ real repositories: the critical-section serialization (a worker's
 acquires and returns `Ok` once it drops); and the external-taint fence — a
 successful call clears the marker, while a snapshot failure, a non-snapshot
 failure, a DB-provider `Err`, and an un-armable marker each leave it present
-(the last failing closed before the DB provider runs).
+(the last failing closed before the DB provider runs). A further test drives the
+private `after_recovery` seam to inject a failure at the exact
+recovery-committed / boundary-not-yet-prepared transition and proves the
+recovery is durable, the boundary unprocessed with no `MutationEvent`, the
+on-disk marker still present, and a later `coordinate()` re-recovering
+conservatively off it; `runtime/tests.rs` separately proves an attributable
+`Advance` that commits durably then fails its trailing `marker.clear()` surfaces
+`MarkerClearAfterCommit` carrying the matching committed outcome (including its
+`MutationEvent`).
 
 `runtime/tests.rs` is `runtime`'s own `#[cfg(test)] mod tests`, holding
 cross-module integration tests that drive only the public `coordinate()` API

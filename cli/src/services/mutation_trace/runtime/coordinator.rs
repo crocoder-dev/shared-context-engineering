@@ -49,12 +49,16 @@ pub struct CoordinateOutcome {
     pub mutation_event: Option<MutationEvent>,
 }
 
-/// Which [`ExternalTaintMarker`] operation failed while coordinating a boundary.
+/// Which pre-commit [`ExternalTaintMarker`] operation failed while coordinating a
+/// boundary. Both happen **before** any protected work, so no
+/// [`CoordinateOutcome`] exists yet. A marker-clear failure happens *after* a
+/// durable commit and is reported through
+/// [`CoordinateError::MarkerClearAfterCommit`] instead, which carries the
+/// committed outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternalTaintOperation {
     Inspect,
     Persist,
-    Clear,
 }
 
 #[derive(Debug)]
@@ -72,13 +76,24 @@ pub enum CoordinateError {
         revision: u64,
     },
     LockAcquisition(anyhow::Error),
-    /// Inspecting, persisting, or clearing the worktree-local external-taint
-    /// marker failed. An inspect/persist failure is returned before any
-    /// checkout-identity, DB, snapshot, or protocol work; a clear failure is
-    /// returned after a successful boundary with the marker left in place.
+    /// Inspecting or persisting the worktree-local external-taint marker failed.
+    /// Both operations run **before** any checkout-identity, DB, snapshot, or
+    /// protocol work, so no mutation boundary has committed and there is no
+    /// [`CoordinateOutcome`] to surface — the boundary is aborted fail-closed
+    /// with the fence left in whatever state it was in.
     ExternalTaintMarker {
         operation: ExternalTaintOperation,
         source: anyhow::Error,
+    },
+    /// The mutation boundary committed successfully to the Agent Trace DB and
+    /// produced a [`CoordinateOutcome`], but clearing the write-ahead
+    /// external-taint marker afterwards failed. The boundary did **not** fail:
+    /// `committed` carries the durable outcome (including any [`MutationEvent`])
+    /// so the caller never loses it. The marker remains logically armed, so the
+    /// next invocation conservatively recovers.
+    MarkerClearAfterCommit {
+        source: anyhow::Error,
+        committed: Box<CoordinateOutcome>,
     },
     /// The caller-supplied Agent Trace DB provider returned `Err` after the
     /// external-taint marker was already armed. The marker is intentionally
@@ -111,7 +126,13 @@ impl std::fmt::Display for CoordinateError {
             ),
             CoordinateError::ExternalTaintMarker { operation, source } => write!(
                 f,
-                "External-taint marker {operation:?} operation failed: {source}"
+                "External-taint marker {operation:?} operation failed before any \
+                 mutation boundary committed: {source}"
+            ),
+            CoordinateError::MarkerClearAfterCommit { source, .. } => write!(
+                f,
+                "Mutation boundary committed, but clearing the external-taint \
+                 marker failed: {source}"
             ),
             CoordinateError::AgentTraceDbUnavailable(source) => {
                 write!(f, "Repository Agent Trace DB is unavailable: {source}")
@@ -158,18 +179,20 @@ pub fn coordinate<P>(
 where
     P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
 {
-    coordinate_inner(repository_root, boundary, open_db, || {})
+    coordinate_inner(repository_root, boundary, open_db, || {}, |_attempt| Ok(()))
 }
 
-fn coordinate_inner<P, F>(
+fn coordinate_inner<P, F, R>(
     repository_root: &Path,
     boundary: &RuntimeBoundary,
     open_db: P,
     on_lock_contention: F,
+    after_recovery: R,
 ) -> Result<CoordinateOutcome, CoordinateError>
 where
     P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
     F: FnOnce(),
+    R: FnMut(u32) -> Result<()>,
 {
     let git_dir = resolve_git_dir(repository_root).map_err(CoordinateError::Other)?;
 
@@ -197,27 +220,29 @@ where
         boundary,
         open_db,
         inherited_external_taint,
+        after_recovery,
     )?;
 
-    marker
-        .clear()
-        .map_err(|source| CoordinateError::ExternalTaintMarker {
-            operation: ExternalTaintOperation::Clear,
+    match marker.clear() {
+        Ok(()) => Ok(outcome),
+        Err(source) => Err(CoordinateError::MarkerClearAfterCommit {
             source,
-        })?;
-
-    Ok(outcome)
+            committed: Box::new(outcome),
+        }),
+    }
 }
 
-fn coordinate_protected<P>(
+fn coordinate_protected<P, R>(
     repository_root: &Path,
     git_dir: &Path,
     boundary: &RuntimeBoundary,
     open_db: P,
     inherited_external_taint: bool,
+    after_recovery: R,
 ) -> Result<CoordinateOutcome, CoordinateError>
 where
     P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+    R: FnMut(u32) -> Result<()>,
 {
     let checkout_id = get_or_create_checkout_id(git_dir).map_err(CoordinateError::Other)?;
     let worktree_id = WorktreeId(checkout_id);
@@ -226,12 +251,14 @@ where
 
     let snapshot = GitSnapshotService::new(repository_root).map_err(CoordinateError::Other)?;
 
-    coordinate_boundary(
+    coordinate_boundary_inner(
         &db,
         &snapshot,
         &worktree_id,
         boundary,
         inherited_external_taint,
+        |_attempt| {},
+        after_recovery,
     )
 }
 
@@ -239,6 +266,7 @@ fn lock_acquisition(error: WorktreeLockError) -> CoordinateError {
     CoordinateError::LockAcquisition(anyhow::Error::new(error))
 }
 
+#[cfg(test)]
 fn coordinate_boundary<C: SnapshotCapture>(
     db: &RepositoryAgentTraceDb,
     capture: &C,
@@ -253,7 +281,7 @@ fn coordinate_boundary<C: SnapshotCapture>(
         boundary,
         inherited_external_taint,
         |_attempt| {},
-        |_attempt| {},
+        |_attempt| Ok(()),
     )
 }
 
@@ -269,7 +297,7 @@ fn coordinate_boundary_inner<C, AfterLoad, AfterRecovery>(
 where
     C: SnapshotCapture,
     AfterLoad: FnMut(u32),
-    AfterRecovery: FnMut(u32),
+    AfterRecovery: FnMut(u32) -> Result<()>,
 {
     let store = MutationTraceStore::new(db);
 
@@ -335,7 +363,7 @@ where
                 CasResult::Applied => {
                     state = recovered;
                     external_taint_pending = false;
-                    after_recovery(attempt_index);
+                    after_recovery(attempt_index).map_err(CoordinateError::Other)?;
                 }
                 CasResult::Conflict => continue,
             }
@@ -1482,6 +1510,7 @@ mod tests {
                         .send(())
                         .expect("contention signal channel should still be open");
                 },
+                |_attempt| Ok(()),
             );
             result_tx
                 .send(())
@@ -1690,6 +1719,7 @@ mod tests {
                             .send(())
                             .expect("contention signal channel should still be open");
                     },
+                    |_attempt| Ok(()),
                 )
             })
         };
@@ -1900,7 +1930,7 @@ mod tests {
                     );
                 }
             },
-            |_attempt| {},
+            |_attempt| Ok(()),
         )
         .expect("recovery must recompute past the losing CAS and still succeed");
 
@@ -1988,6 +2018,7 @@ mod tests {
                         true,
                     );
                 }
+                Ok(())
             },
         )
         .expect("the boundary CAS retry after a landed recovery must still succeed");
@@ -2003,5 +2034,140 @@ mod tests {
         );
 
         remove_test_db(&db_path);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn a_failure_after_recovery_before_boundary_commit_leaves_marker_and_forces_later_recovery() {
+        let repo_root = unique_test_repo("t-ac8-recovery-then-fail");
+        init_repo(&repo_root);
+        let db_path = unique_test_db_path("t-ac8-recovery-then-fail");
+        RepositoryAgentTraceDb::new_at(&db_path).expect("seed db should open with schema");
+        let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
+        let marker = ExternalTaintMarker::new(&git_dir);
+        let ok_db = || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path);
+
+        std::fs::write(repo_root.join("work.txt"), b"a").expect("the baseline edit should write");
+        let baseline = coordinate(&repo_root, &RuntimeBoundary::Flush, ok_db)
+            .expect("the baseline observation should establish cursor A");
+        let worktree_id = baseline.worktree_id.clone();
+        let tree_a = baseline.observed_tree.clone();
+
+        let scope = ScopeId("scope-live".to_string());
+        coordinate(
+            &repo_root,
+            &RuntimeBoundary::Start {
+                scope: scope.clone(),
+                event: EventId("evt-start".to_string()),
+                actor_kind: ActorKind::ClaudeCode,
+            },
+            ok_db,
+        )
+        .expect("starting the live scope should succeed");
+
+        marker.persist().expect(
+            "simulating a prior crashed invocation that armed but never cleared the marker",
+        );
+        std::fs::write(repo_root.join("work.txt"), b"b").expect("the A -> B edit should write");
+
+        let error = coordinate_inner(
+            &repo_root,
+            &RuntimeBoundary::Advance {
+                scope: scope.clone(),
+                event: EventId("evt-advance".to_string()),
+                actor_kind: ActorKind::ClaudeCode,
+            },
+            ok_db,
+            || {},
+            |_attempt| {
+                anyhow::bail!("injected failure after recovery, before the boundary commits")
+            },
+        )
+        .expect_err("the injected post-recovery failure must fail the invocation");
+        assert!(
+            matches!(error, CoordinateError::Other(_)),
+            "expected CoordinateError::Other from the injected failure, got {error:?}"
+        );
+        assert!(
+            marker.exists().expect("marker existence should resolve"),
+            "a failure after recovery but before the boundary commits must leave the marker armed"
+        );
+
+        let store_db = ok_db().expect("reopening the DB for assertions should succeed");
+        let store = MutationTraceStore::new(&store_db);
+        let after_fail = store
+            .load_worktree(&worktree_id, Some(&scope), None)
+            .expect("loading the worktree row should succeed")
+            .expect("the worktree row should exist");
+        assert!(
+            !after_fail.worktree_state.tainted,
+            "the recovery CAS committed durably before the injected failure"
+        );
+        assert_eq!(
+            after_fail.worktree_state.failure_kind,
+            FailureKind::Healthy,
+            "recovery cleared the failure state before the injected failure"
+        );
+        assert!(
+            after_fail.worktree_state.revision >= 2,
+            "the durable recovery advanced the revision past the start boundary"
+        );
+        assert_ne!(
+            after_fail.worktree_state.cursor_tree, tree_a,
+            "recovery rebaselined the cursor away from A to the invocation's own observed tree"
+        );
+        assert_eq!(
+            after_fail.scopes.get(&scope).map(|s| s.status),
+            Some(ScopeStatus::Abandoned),
+            "the live scope was abandoned by the durable recovery"
+        );
+        assert!(
+            after_fail.processed_events.is_empty(),
+            "the triggering Advance must never have been processed"
+        );
+        assert!(
+            store
+                .load_mutation_event(&worktree_id, after_fail.worktree_state.revision)
+                .expect("loading a mutation event should succeed")
+                .is_none(),
+            "no MutationEvent may be emitted for the boundary that never committed"
+        );
+        drop(store_db);
+
+        std::fs::write(repo_root.join("work.txt"), b"c").expect("the B -> C edit should write");
+        let recovered = coordinate(&repo_root, &RuntimeBoundary::Flush, ok_db)
+            .expect("the later invocation inherits the still-armed marker and recovers again");
+        assert!(
+            recovered.mutation_event.is_none(),
+            "no evidence may cross the interval the still-armed marker fenced off"
+        );
+        assert_ne!(
+            recovered.observed_tree, tree_a,
+            "the later recovery rebaselines to the newer tree C"
+        );
+        assert!(
+            !marker.exists().expect("marker existence should resolve"),
+            "the later successful recovery finally clears the marker"
+        );
+
+        let store_db = ok_db().expect("reopening the DB for assertions should succeed");
+        let store = MutationTraceStore::new(&store_db);
+        let after_recover = store
+            .load_worktree(&worktree_id, Some(&scope), None)
+            .expect("loading the worktree row should succeed")
+            .expect("the worktree row should exist");
+        assert_eq!(
+            after_recover.worktree_state.cursor_tree, recovered.observed_tree,
+            "the later recovery rebaselines the cursor to its own observed tree"
+        );
+        assert_eq!(
+            after_recover.scopes.get(&scope).map(|s| s.status),
+            Some(ScopeStatus::Abandoned),
+            "the later invocation must not resurrect the abandoned scope"
+        );
+        drop(store_db);
+
+        remove_test_db(&db_path);
+        remove_test_repo(&repo_root);
     }
 }

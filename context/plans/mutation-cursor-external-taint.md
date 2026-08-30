@@ -65,65 +65,76 @@ How this plan is proven complete. Each criterion is observable and names the
 check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation.
 
-- [ ] AC1: A marker is stored beneath the caller-supplied worktree-specific Git
+- [x] AC1: A marker is stored beneath the caller-supplied worktree-specific Git
   directory (`<git-dir>/sce/mutation-cursor-tainted`), survives reconstruction
   of the marker handle, and two distinct `git_dir` inputs derive independent
   marker paths and marker state. (Actual linked-worktree independence over a
-  real `git worktree add` pair is AC12/T04.)
+  real `git worktree add` pair is AC12.)
   - Validate: `runtime::external_taint::tests::marker_is_worktree_scoped` and
     `runtime::external_taint::tests::marker_persists_until_explicitly_cleared`
-- [ ] AC2: `persist` then `persist` then `clear` then `clear` all succeed;
+- [x] AC2: `persist` then `persist` then `clear` then `clear` all succeed;
   `clear` on an absent marker is success.
   - Validate: `runtime::external_taint::tests::persist_and_clear_are_idempotent`
-- [ ] AC3: A public `coordinate()` call arms its marker internally and clears it
+- [x] AC3: A public `coordinate()` call arms its marker internally and clears it
   only after a successful `CoordinateOutcome`.
-  - Validate: `runtime::tests::successful_coordinate_clears_external_taint_marker`
-- [ ] AC4: After marker arming, any coordinator error leaves the marker present —
-  proven for the snapshot-failure path and at least one deterministic
-  non-snapshot failure path.
-  - Validate: `runtime::tests::snapshot_failure_leaves_external_taint_marker`
-    plus one deterministic non-snapshot failure test
-- [ ] AC5: Given durable cursor A, an active scope S, an inherited marker, and a
+  - Validate: `runtime::coordinator::tests::public_coordinate_clears_marker_on_success`
+    and `runtime::tests::a_successful_coordinate_through_the_public_api_leaves_no_external_taint_marker`
+- [x] AC4: After marker arming, any coordinator error leaves the marker present —
+  proven for the snapshot-failure path and deterministic non-snapshot failure
+  paths.
+  - Validate: `runtime::coordinator::tests::public_coordinate_leaves_marker_after_a_snapshot_failure`,
+    `runtime::coordinator::tests::public_coordinate_leaves_marker_after_a_non_snapshot_failure`,
+    and `runtime::coordinator::tests::public_coordinate_leaves_marker_when_the_db_provider_fails`
+- [x] AC5: Given durable cursor A, an active scope S, an inherited marker, and a
   current worktree C, the next invocation rebaselines to C, emits no A→C
   mutation evidence, abandons S, then processes its triggering boundary.
-  - Validate: `runtime::tests::inherited_external_taint_recovers_before_boundary`
-- [ ] AC6: External-taint recovery and triggering-boundary processing use the
+  - Validate: `runtime::tests::a_stale_marker_rebaselines_to_the_current_tree_abandons_scopes_then_processes_the_boundary`
+    and `runtime::coordinator::tests::inherited_external_taint_recovers_once_before_the_boundary`
+- [x] AC6: External-taint recovery and triggering-boundary processing use the
   same `observed_tree`; no second Git snapshot occurs.
-  - Validate: coordinator unit test with a call-counting `SnapshotCapture`
-    asserting exactly one `capture`
-- [ ] AC7: A losing recovery CAS re-injects external taint on reload and
+  - Validate: `runtime::coordinator::tests::inherited_external_taint_recovers_once_before_the_boundary`
+    (call-counting `FakeSnapshotCapture` asserting exactly one `capture` and one `pin`)
+- [x] AC7: A losing recovery CAS re-injects external taint on reload and
   recomputes recovery until `Applied` or retry exhaustion; the marker remains
   present throughout the retry loop.
-  - Validate: coordinator unit test racing a recovery CAS conflict and asserting
-    re-injection
-- [ ] AC8: A failure injected after recovery has committed but before the
+  - Validate: `runtime::coordinator::tests::a_losing_recovery_cas_reinjects_external_taint_until_it_applies`
+    and `runtime::coordinator::tests::a_landed_recovery_clears_the_flag_so_a_boundary_cas_retry_does_not_re_recover`;
+    on-disk-marker survival across the retry loop is
+    `runtime::tests::a_snapshot_failure_arms_the_marker_and_the_next_invocation_recovers_once`
+- [x] AC8: A failure injected after recovery has committed but before the
   triggering boundary completes leaves recovery durable, the boundary
   incomplete, and the marker still present; a later invocation recovers
-  conservatively again.
-  - Validate: `runtime::tests` marker-clear/boundary-incomplete scenario
-- [ ] AC9: A marker that survives an invocation which never materialized a
+  conservatively again. A post-commit `marker.clear()` failure likewise keeps
+  the marker armed and returns the committed `CoordinateOutcome` inside
+  `CoordinateError::MarkerClearAfterCommit` rather than a boundary failure.
+  - Validate: `runtime::coordinator::tests::a_failure_after_recovery_before_boundary_commit_leaves_marker_and_forces_later_recovery`
+    and `runtime::tests::a_marker_clear_failure_after_a_durable_boundary_keeps_the_marker_for_a_later_recovery`
+- [x] AC9: A marker that survives an invocation which never materialized a
   worktree row causes the next successful invocation to establish a baseline
   with no evidence for the unknown interval.
-  - Validate: coordinator unit test plus `runtime::tests` first-ever-failure
-    scenario
-- [ ] AC10: A worktree with live scopes and inherited external taint persists
+  - Validate: `runtime::coordinator::tests::inherited_external_taint_with_no_worktree_row_baselines_without_evidence`
+    and `runtime::tests::a_first_ever_failed_invocation_that_never_materialized_a_worktree_row_creates_no_evidence`
+- [x] AC10: A worktree with live scopes and inherited external taint persists
   those scopes as `Abandoned` during recovery and never treats them as eligible
   exclusive attribution after the unknown interval.
-  - Validate: coordinator unit test asserting `Abandoned` scope status after
-    inherited-taint recovery
-- [ ] AC11: End to end, no `MutationEvent` treats an interval spanning an
+  - Validate: `runtime::coordinator::tests::inherited_external_taint_recovers_once_before_the_boundary`
+    (asserts `ScopeStatus::Abandoned` after recovery) and
+    `runtime::coordinator::tests::recovers_from_snapshot_failure_taint_abandoning_live_scopes`
+- [x] AC11: End to end, no `MutationEvent` treats an interval spanning an
   incomplete/failed invocation (baseline A, scope start, edit→B, failed
   invocation, edit→C, next successful invocation) as one trustworthy
   AI-attributable A/B→C interval.
-  - Validate: `runtime::tests` end-to-end no-evidence-across-gap scenario
-- [ ] AC12: An external-taint marker in linked worktree A does not trigger
+  - Validate: `runtime::tests::a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_rebaselines_without_evidence`
+    (per-revision `load_mutation_event` sweep asserting no event ends at the post-gap tree)
+- [x] AC12: An external-taint marker in linked worktree A does not trigger
   recovery in linked worktree B, even with a shared repository Agent Trace DB.
-  - Validate: `runtime::tests` linked-worktree independence scenario
-- [ ] AC13: When marker inspection or marker persistence cannot be established,
+  - Validate: `runtime::tests::linked_worktrees_keep_independent_external_taint_markers_over_a_shared_db`
+- [x] AC13: When marker inspection or marker persistence cannot be established,
   `coordinate()` returns a distinct external-taint marker error before any
   checkout-identity, DB, snapshot, or protocol processing.
-  - Validate: coordinator unit test injecting marker inspect/persist I/O failure
-- [ ] AC14: DB acquisition is inside the external-taint fence. Once
+  - Validate: `runtime::coordinator::tests::public_coordinate_fails_closed_when_the_marker_cannot_be_armed`
+    and `runtime::coordinator::tests::public_coordinate_fails_closed_when_marker_inspection_fails`
+- [x] AC14: DB acquisition is inside the external-taint fence. Once
   mutation-cursor boundary processing has acquired the `WorktreeLock` and armed
   the marker, a failure to resolve or open the repository Agent Trace DB (the
   caller-supplied provider returns `Err`) makes `coordinate()` return an error
@@ -132,10 +143,9 @@ performs final validation.
   follow-up invocation, given a working DB provider, snapshots the current tree,
   runs external-taint recovery, and produces no evidence across the lost
   interval.
-  - Validate: `runtime::tests` DB-provider-returns-`Err` scenario (marker armed
-    → provider `Err` → error returned → marker still present) plus its
-    follow-up-invocation recovery assertion; and a coordinator unit test with a
-    fake failing DB provider
+  - Validate: `runtime::tests::a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_rebaselines_without_evidence`
+    (marker armed → provider `Err` → error returned → marker still present → follow-up recovery)
+    and `runtime::coordinator::tests::public_coordinate_leaves_marker_when_the_db_provider_fails`
 
 ### Full validation
 
@@ -160,9 +170,11 @@ which criterion they map to.
   caller-supplied DB provider, the snapshot/pipeline, and marker clear; the
   arm-before-DB-acquisition ordering and the safety invariant; the
   inherited-vs-armed distinction and the invocation-local `external_taint_pending`
-  overlay onto `database_failure`; the new marker-I/O and
+  overlay onto `database_failure`; the new pre-commit marker-I/O and
   DB-provider-failure `CoordinateError` variants and their fail-closed
-  semantics; and the added `<git-dir>/sce/` on-disk-layout entry.
+  semantics, plus the post-commit `MarkerClearAfterCommit` variant that carries
+  the committed `CoordinateOutcome`; and the added `<git-dir>/sce/`
+  on-disk-layout entry.
 - `context/cli/mutation-trace-protocol.md` — note that the concrete runtime
   refinement of `ProtocolState.external_taint` is the stale worktree-local
   marker, armed write-ahead before DB acquisition and promoted to protocol
@@ -174,6 +186,32 @@ which criterion they map to.
   DB acquisition) and becoming protocol external taint only when inherited.
 - Verify-only pass over `context/overview.md`, `context/architecture.md`,
   `context/glossary.md`, `context/patterns.md`.
+
+### Deviations from stated scope
+
+- **Unrelated sync test stabilization (test-only).** During full-suite
+  validation an unrelated pre-existing flaky sync test was exposed:
+  `services::sync::sync::tests::terminal_batch_status_fails_without_state_reconciliation`.
+  The test incorrectly started four concurrent unsynchronized streams while
+  asserting that `messages` must fail first. The fixture was made deterministic
+  by advancing the other three stream cursors (`state_response(0, 1, 1, 1)` so
+  only `messages` needs a `/batch`, and `assert_eq!(batch_count, 1)`). No sync
+  production behavior changed; this is not part of external-taint architecture
+  and the PR is not broadened into further sync cleanup. Recorded here rather
+  than silently violating the "mutation-cursor runtime + docs only" scope
+  statement.
+- **PR-review follow-up (T05, post-stack).** After the T01–T04 stack, PR #245
+  review added: a distinct `CoordinateError::MarkerClearAfterCommit { source,
+  committed: Box<CoordinateOutcome> }` so a post-commit `marker.clear()` failure
+  no longer collapses into the same shape as a pre-commit inspect/persist
+  failure and can no longer hide a committed `MutationEvent` (`ExternalTaintOperation`
+  loses its `Clear` arm); a private `coordinate_inner(.., after_recovery)` /
+  `coordinate_boundary_inner(.., after_recovery: FnMut(u32) -> Result<()>)` seam
+  and the AC8 regression
+  `a_failure_after_recovery_before_boundary_commit_leaves_marker_and_forces_later_recovery`;
+  removal of the now-obsolete module-wide `#![allow(dead_code)]` in
+  `external_taint.rs`; and the acceptance-criteria / `Validate:` bookkeeping fix
+  above.
 
 ## Task context synchronization lifecycle
 
@@ -247,10 +285,17 @@ local choices, not new requirements.
   plus `inherited_external_taint`. A future harness adapter builds the provider
   closure around `agent_trace_storage::resolve_agent_trace_storage_for_hook_runtime`
   and hands `coordinate()` the resulting `.db`.
-- Marker I/O failures surface as a dedicated `CoordinateError` variant, e.g.
+- Pre-commit marker I/O failures surface as a dedicated `CoordinateError`
+  variant, e.g.
   `ExternalTaintMarker { operation: ExternalTaintOperation, source: anyhow::Error }`
-  with `ExternalTaintOperation { Inspect, Persist, Clear }`. A DB-provider
-  failure after the marker is armed surfaces as a separate variant, e.g.
+  with `ExternalTaintOperation { Inspect, Persist }`. A post-commit
+  `marker.clear()` failure surfaces as a *distinct* variant that carries the
+  already-committed outcome, e.g.
+  `MarkerClearAfterCommit { source: anyhow::Error, committed: Box<CoordinateOutcome> }`
+  (see the PR #245 review deviation below) — it is never collapsed into the
+  inspect/persist shape, because those happen before any protected work and a
+  clear failure happens after a durable commit. A DB-provider failure after the
+  marker is armed surfaces as a separate variant, e.g.
   `CoordinateError::AgentTraceDbUnavailable(anyhow::Error)`, and intentionally
   leaves the marker in place.
 - The new primitive lives at `runtime/external_taint.rs` as
