@@ -244,4 +244,6 @@ work tracked by the `mutation-cursor-runtime-coordinator` plan's follow-ups.
 
 See also: [`mutation-trace-protocol.md`](mutation-trace-protocol.md),
 [`mutation-trace-store.md`](mutation-trace-store.md),
-[`checkout-identity.md`](checkout-identity.md).
+[`mutation-trace-external-taint.md`](mutation-trace-external-taint.md)
+(the `<git-dir>/sce/mutation-cursor-tainted` marker primitive, to be wired into
+`coordinate()`), [`checkout-identity.md`](checkout-identity.md).
