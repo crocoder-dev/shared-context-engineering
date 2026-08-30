@@ -12,6 +12,7 @@ use crate::services::mutation_trace::types::{
     self, ActorKind, AttemptId, Boundary, EventId, MutationEvent, ScopeId, TreeId, WorktreeId,
 };
 
+use super::external_taint::ExternalTaintMarker;
 use super::git_snapshot::GitSnapshotService;
 use super::worktree_lock::{acquire_inner, WorktreeLockError};
 
@@ -48,6 +49,14 @@ pub struct CoordinateOutcome {
     pub mutation_event: Option<MutationEvent>,
 }
 
+/// Which [`ExternalTaintMarker`] operation failed while coordinating a boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalTaintOperation {
+    Inspect,
+    Persist,
+    Clear,
+}
+
 #[derive(Debug)]
 pub enum CoordinateError {
     SnapshotFailure {
@@ -63,6 +72,19 @@ pub enum CoordinateError {
         revision: u64,
     },
     LockAcquisition(anyhow::Error),
+    /// Inspecting, persisting, or clearing the worktree-local external-taint
+    /// marker failed. An inspect/persist failure is returned before any
+    /// checkout-identity, DB, snapshot, or protocol work; a clear failure is
+    /// returned after a successful boundary with the marker left in place.
+    ExternalTaintMarker {
+        operation: ExternalTaintOperation,
+        source: anyhow::Error,
+    },
+    /// The caller-supplied Agent Trace DB provider returned `Err` after the
+    /// external-taint marker was already armed. The marker is intentionally
+    /// left in place so a later invocation treats the lost interval
+    /// conservatively.
+    AgentTraceDbUnavailable(anyhow::Error),
     Other(anyhow::Error),
 }
 
@@ -87,6 +109,13 @@ impl std::fmt::Display for CoordinateError {
                 "Worktree {worktree_id:?} requires recovery but its revision \
                  ({revision}) cannot be advanced"
             ),
+            CoordinateError::ExternalTaintMarker { operation, source } => write!(
+                f,
+                "External-taint marker {operation:?} operation failed: {source}"
+            ),
+            CoordinateError::AgentTraceDbUnavailable(source) => {
+                write!(f, "Repository Agent Trace DB is unavailable: {source}")
+            }
             CoordinateError::ScopeIdentityConflict(source)
             | CoordinateError::LockAcquisition(source)
             | CoordinateError::Other(source) => write!(f, "{source}"),
@@ -111,21 +140,35 @@ impl SnapshotCapture for GitSnapshotService {
     }
 }
 
-pub fn coordinate(
+/// Coordinates one mutation-cursor runtime boundary end to end.
+///
+/// The entrypoint owns the whole protected operation: it resolves `git_dir`,
+/// acquires the [`WorktreeLock`](super::worktree_lock::WorktreeLock), arms the
+/// worktree-local [`ExternalTaintMarker`] write-ahead — **before** acquiring the
+/// Agent Trace DB — and only then invokes the caller-supplied `open_db`
+/// provider, captures a snapshot, runs the snapshot / recovery / protocol / CAS
+/// pipeline, and clears the marker on complete success. Any failure after the
+/// marker is armed — including `open_db` returning `Err` — leaves the marker in
+/// place for the next invocation.
+pub fn coordinate<P>(
     repository_root: &Path,
-    db: &RepositoryAgentTraceDb,
     boundary: &RuntimeBoundary,
-) -> Result<CoordinateOutcome, CoordinateError> {
-    coordinate_inner(repository_root, db, boundary, || {})
+    open_db: P,
+) -> Result<CoordinateOutcome, CoordinateError>
+where
+    P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+{
+    coordinate_inner(repository_root, boundary, open_db, || {})
 }
 
-fn coordinate_inner<F>(
+fn coordinate_inner<P, F>(
     repository_root: &Path,
-    db: &RepositoryAgentTraceDb,
     boundary: &RuntimeBoundary,
+    open_db: P,
     on_lock_contention: F,
 ) -> Result<CoordinateOutcome, CoordinateError>
 where
+    P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
     F: FnOnce(),
 {
     let git_dir = resolve_git_dir(repository_root).map_err(CoordinateError::Other)?;
@@ -133,12 +176,63 @@ where
     let _lock = acquire_inner(&git_dir, WORKTREE_LOCK_TIMEOUT, on_lock_contention)
         .map_err(lock_acquisition)?;
 
-    let checkout_id = get_or_create_checkout_id(&git_dir).map_err(CoordinateError::Other)?;
+    let marker = ExternalTaintMarker::new(&git_dir);
+    let inherited_external_taint =
+        marker
+            .exists()
+            .map_err(|source| CoordinateError::ExternalTaintMarker {
+                operation: ExternalTaintOperation::Inspect,
+                source,
+            })?;
+    marker
+        .persist()
+        .map_err(|source| CoordinateError::ExternalTaintMarker {
+            operation: ExternalTaintOperation::Persist,
+            source,
+        })?;
+
+    let outcome = coordinate_protected(
+        repository_root,
+        &git_dir,
+        boundary,
+        open_db,
+        inherited_external_taint,
+    )?;
+
+    marker
+        .clear()
+        .map_err(|source| CoordinateError::ExternalTaintMarker {
+            operation: ExternalTaintOperation::Clear,
+            source,
+        })?;
+
+    Ok(outcome)
+}
+
+fn coordinate_protected<P>(
+    repository_root: &Path,
+    git_dir: &Path,
+    boundary: &RuntimeBoundary,
+    open_db: P,
+    inherited_external_taint: bool,
+) -> Result<CoordinateOutcome, CoordinateError>
+where
+    P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+{
+    let checkout_id = get_or_create_checkout_id(git_dir).map_err(CoordinateError::Other)?;
     let worktree_id = WorktreeId(checkout_id);
+
+    let db = open_db().map_err(CoordinateError::AgentTraceDbUnavailable)?;
 
     let snapshot = GitSnapshotService::new(repository_root).map_err(CoordinateError::Other)?;
 
-    coordinate_boundary(db, &snapshot, &worktree_id, boundary)
+    coordinate_boundary(
+        &db,
+        &snapshot,
+        &worktree_id,
+        boundary,
+        inherited_external_taint,
+    )
 }
 
 fn lock_acquisition(error: WorktreeLockError) -> CoordinateError {
@@ -150,6 +244,7 @@ fn coordinate_boundary<C: SnapshotCapture>(
     capture: &C,
     worktree_id: &WorktreeId,
     boundary: &RuntimeBoundary,
+    _inherited_external_taint: bool,
 ) -> Result<CoordinateOutcome, CoordinateError> {
     let store = MutationTraceStore::new(db);
 
@@ -583,7 +678,7 @@ mod tests {
         let worktree = WorktreeId("wt-1".to_string());
         let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
 
-        let outcome = coordinate_boundary(&db, &capture, &worktree, &RuntimeBoundary::Flush)
+        let outcome = coordinate_boundary(&db, &capture, &worktree, &RuntimeBoundary::Flush, false)
             .expect("first observation should succeed");
 
         assert_eq!(outcome.observed_tree, TreeId("tree-a".to_string()));
@@ -617,6 +712,7 @@ mod tests {
                 event: EventId("evt-start".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
             },
+            false,
         )
         .expect("start should succeed");
 
@@ -630,6 +726,7 @@ mod tests {
                 event: EventId("evt-advance".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
             },
+            false,
         )
         .expect("advance should succeed");
 
@@ -659,6 +756,7 @@ mod tests {
                 event: EventId("evt-start".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
             },
+            false,
         )
         .expect("start should succeed");
 
@@ -669,12 +767,12 @@ mod tests {
         };
 
         capture.push_success(TreeId("tree-b".to_string()));
-        let first = coordinate_boundary(&db, &capture, &worktree, &advance)
+        let first = coordinate_boundary(&db, &capture, &worktree, &advance, false)
             .expect("first advance should commit");
         assert!(first.mutation_event.is_some());
 
         capture.push_success(TreeId("tree-b".to_string()));
-        let replay = coordinate_boundary(&db, &capture, &worktree, &advance).expect(
+        let replay = coordinate_boundary(&db, &capture, &worktree, &advance, false).expect(
             "replaying the identical (scope, event) boundary must be a no-op, not an error",
         );
         assert!(
@@ -705,6 +803,7 @@ mod tests {
                 event: EventId("evt-start".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
             },
+            false,
         )
         .expect("start should succeed");
 
@@ -718,6 +817,7 @@ mod tests {
                 event: EventId("evt-close".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
             },
+            false,
         )
         .expect("close should succeed");
 
@@ -757,6 +857,7 @@ mod tests {
                 event: EventId("evt-start-a".to_string()),
                 actor_kind: actor_a,
             },
+            false,
         )
         .expect("starting scope a should succeed");
         coordinate_boundary(
@@ -768,6 +869,7 @@ mod tests {
                 event: EventId("evt-start-b".to_string()),
                 actor_kind: actor_b,
             },
+            false,
         )
         .expect("starting scope b should succeed");
 
@@ -781,6 +883,7 @@ mod tests {
                 event: EventId("evt-advance-a".to_string()),
                 actor_kind: actor_a,
             },
+            false,
         )
         .expect("advance should succeed");
 
@@ -816,8 +919,14 @@ mod tests {
         {
             let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test db should open");
             let bootstrap_capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
-            coordinate_boundary(&db, &bootstrap_capture, &worktree, &RuntimeBoundary::Flush)
-                .expect("baseline flush should succeed");
+            coordinate_boundary(
+                &db,
+                &bootstrap_capture,
+                &worktree,
+                &RuntimeBoundary::Flush,
+                false,
+            )
+            .expect("baseline flush should succeed");
         }
 
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(WRITERS));
@@ -832,9 +941,10 @@ mod tests {
                 let capture = FakeSnapshotCapture::new(TreeId(format!("tree-writer-{i}")));
                 barrier.wait();
                 let outcome =
-                    coordinate_boundary(&db, &capture, &worktree, &RuntimeBoundary::Flush).expect(
-                        "each racing writer should eventually succeed after reload+recompute",
-                    );
+                    coordinate_boundary(&db, &capture, &worktree, &RuntimeBoundary::Flush, false)
+                        .expect(
+                            "each racing writer should eventually succeed after reload+recompute",
+                        );
                 (
                     outcome.revision,
                     capture.capture_call_count(),
@@ -885,6 +995,7 @@ mod tests {
                 event: EventId("evt-start-live".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
             },
+            false,
         )
         .expect("starting the live scope should succeed");
         coordinate_boundary(
@@ -896,6 +1007,7 @@ mod tests {
                 event: EventId("evt-start-abandoned".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
             },
+            false,
         )
         .expect("starting the to-be-abandoned scope should succeed");
 
@@ -932,6 +1044,7 @@ mod tests {
                 event: EventId("evt-advance-live".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
             },
+            false,
         )
         .expect("advance should trigger needs_rebaseline recovery first, then succeed");
         assert!(
@@ -977,6 +1090,7 @@ mod tests {
                 event: EventId("evt-start".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
             },
+            false,
         )
         .expect("start should succeed");
 
@@ -1013,6 +1127,7 @@ mod tests {
                 event: EventId("evt-advance".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
             },
+            false,
         )
         .expect("advance should trigger taint recovery first, then succeed");
 
@@ -1064,6 +1179,7 @@ mod tests {
                 event: event.clone(),
                 actor_kind: ActorKind::ClaudeCode,
             },
+            false,
         )
         .expect_err("recovery that cannot advance revision must reject the triggering boundary");
 
@@ -1125,13 +1241,13 @@ mod tests {
         let (db, db_path) = test_db("ac11-taints-existing");
         let worktree = WorktreeId("wt-1".to_string());
         let bootstrap = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
-        coordinate_boundary(&db, &bootstrap, &worktree, &RuntimeBoundary::Flush)
+        coordinate_boundary(&db, &bootstrap, &worktree, &RuntimeBoundary::Flush, false)
             .expect("baseline flush should materialize the worktree");
 
         let failing = FakeSnapshotCapture::new(TreeId("tree-b".to_string()));
         failing.push_failure("simulated git snapshot failure");
 
-        let error = coordinate_boundary(&db, &failing, &worktree, &RuntimeBoundary::Flush)
+        let error = coordinate_boundary(&db, &failing, &worktree, &RuntimeBoundary::Flush, false)
             .expect_err("a capture failure against an existing worktree should be reported");
         match error {
             CoordinateError::SnapshotFailure {
@@ -1159,7 +1275,7 @@ mod tests {
         let (db, db_path) = test_db("ac11-taint-retry-succeeds");
         let worktree = WorktreeId("wt-1".to_string());
         let bootstrap = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
-        coordinate_boundary(&db, &bootstrap, &worktree, &RuntimeBoundary::Flush)
+        coordinate_boundary(&db, &bootstrap, &worktree, &RuntimeBoundary::Flush, false)
             .expect("baseline flush should materialize the worktree");
 
         let store = MutationTraceStore::new(&db);
@@ -1202,7 +1318,7 @@ mod tests {
         let (db, db_path) = test_db("ac11-taint-exhaustion");
         let worktree = WorktreeId("wt-1".to_string());
         let bootstrap = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
-        coordinate_boundary(&db, &bootstrap, &worktree, &RuntimeBoundary::Flush)
+        coordinate_boundary(&db, &bootstrap, &worktree, &RuntimeBoundary::Flush, false)
             .expect("baseline flush should materialize the worktree");
 
         let store = MutationTraceStore::new(&db);
@@ -1244,7 +1360,7 @@ mod tests {
         let failing = FakeSnapshotCapture::new(TreeId("unused".to_string()));
         failing.push_failure("simulated git snapshot failure before any baseline exists");
 
-        let error = coordinate_boundary(&db, &failing, &worktree, &RuntimeBoundary::Flush)
+        let error = coordinate_boundary(&db, &failing, &worktree, &RuntimeBoundary::Flush, false)
             .expect_err("a capture failure with no prior worktree row should still be reported");
         match error {
             CoordinateError::SnapshotFailure {
@@ -1283,7 +1399,7 @@ mod tests {
             },
         );
 
-        let error = coordinate_boundary(&db, &capture, &worktree, &RuntimeBoundary::Flush)
+        let error = coordinate_boundary(&db, &capture, &worktree, &RuntimeBoundary::Flush, false)
             .expect_err(
                 "a capture failure racing a concurrent materialization should still be reported",
             );
@@ -1320,13 +1436,16 @@ mod tests {
         let repo_root_clone = repo_root.clone();
         let db_path_clone = db_path.clone();
         let worker = thread::spawn(move || {
-            let db = RepositoryAgentTraceDb::new_at(&db_path_clone).expect("worker db should open");
-            let outcome =
-                coordinate_inner(&repo_root_clone, &db, &RuntimeBoundary::Flush, move || {
+            let outcome = coordinate_inner(
+                &repo_root_clone,
+                &RuntimeBoundary::Flush,
+                || RepositoryAgentTraceDb::new_at(&db_path_clone),
+                move || {
                     contention_tx
                         .send(())
                         .expect("contention signal channel should still be open");
-                });
+                },
+            );
             result_tx
                 .send(())
                 .expect("result signal channel should still be open");
@@ -1358,6 +1477,240 @@ mod tests {
         assert_eq!(
             outcome.revision, 0,
             "the worker's first-observation flush should not advance the revision"
+        );
+
+        remove_test_repo(&repo_root);
+    }
+
+    #[test]
+    fn public_coordinate_clears_marker_on_success() {
+        let repo_root = unique_test_repo("t02-success-clears-marker");
+        init_repo(&repo_root);
+        let db_path = repo_root.join("agent-trace.db");
+        RepositoryAgentTraceDb::new_at(&db_path).expect("seed db should open with schema");
+        let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
+        let marker = ExternalTaintMarker::new(&git_dir);
+
+        let outcome = coordinate(&repo_root, &RuntimeBoundary::Flush, || {
+            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+        })
+        .expect("a first observation should succeed");
+        assert_eq!(
+            outcome.revision, 0,
+            "a first-observation flush should not advance the revision"
+        );
+        assert!(
+            !marker.exists().expect("marker existence should resolve"),
+            "a successful coordinate() must clear the marker it armed"
+        );
+
+        remove_test_repo(&repo_root);
+    }
+
+    #[test]
+    fn public_coordinate_leaves_marker_after_a_snapshot_failure() {
+        let repo_root = unique_test_repo("t02-snapshot-failure-marker");
+        init_repo(&repo_root);
+        let db_path = repo_root.join("agent-trace.db");
+        RepositoryAgentTraceDb::new_at(&db_path).expect("seed db should open with schema");
+        let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
+        let marker = ExternalTaintMarker::new(&git_dir);
+
+        coordinate(&repo_root, &RuntimeBoundary::Flush, || {
+            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+        })
+        .expect("the baseline observation should succeed");
+        assert!(
+            !marker.exists().expect("marker existence should resolve"),
+            "the successful baseline must have cleared its marker"
+        );
+
+        let tmp_index_dir = git_dir.join("sce").join("tmp");
+        let _ = std::fs::remove_dir_all(&tmp_index_dir);
+        std::fs::write(&tmp_index_dir, b"not a directory").expect(
+            "planting a file where the snapshot service expects its temp-index directory should succeed",
+        );
+
+        let error = coordinate(&repo_root, &RuntimeBoundary::Flush, || {
+            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+        })
+        .expect_err("a Git snapshot failure after marker arming should be reported");
+        assert!(
+            matches!(error, CoordinateError::SnapshotFailure { .. }),
+            "expected SnapshotFailure, got {error:?}"
+        );
+        assert!(
+            marker.exists().expect("marker existence should resolve"),
+            "a snapshot failure after arming must leave the external-taint marker in place"
+        );
+
+        remove_test_repo(&repo_root);
+    }
+
+    #[test]
+    fn public_coordinate_leaves_marker_after_a_non_snapshot_failure() {
+        let repo_root = unique_test_repo("t02-non-snapshot-failure-marker");
+        init_repo(&repo_root);
+        let db_path = repo_root.join("agent-trace.db");
+        let seed_db = RepositoryAgentTraceDb::new_at(&db_path).expect("seed db should open");
+        let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
+        let checkout_id = get_or_create_checkout_id(&git_dir).expect("checkout id should resolve");
+        insert_worktree_at_revision(
+            &seed_db,
+            &checkout_id,
+            "tree-a",
+            u64::MAX,
+            true,
+            "snapshot_failure",
+            false,
+        );
+        drop(seed_db);
+
+        let marker = ExternalTaintMarker::new(&git_dir);
+        let error = coordinate(&repo_root, &RuntimeBoundary::Flush, || {
+            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+        })
+        .expect_err("mandatory recovery that cannot advance the revision must reject the boundary");
+        assert!(
+            matches!(error, CoordinateError::RevisionExhausted { .. }),
+            "expected RevisionExhausted, got {error:?}"
+        );
+        assert!(
+            marker.exists().expect("marker existence should resolve"),
+            "a non-snapshot failure after arming must leave the external-taint marker in place"
+        );
+
+        remove_test_repo(&repo_root);
+    }
+
+    #[test]
+    fn public_coordinate_fails_closed_when_the_marker_cannot_be_armed() {
+        let repo_root = unique_test_repo("t02-marker-arm-failure");
+        init_repo(&repo_root);
+        let db_path = repo_root.join("agent-trace.db");
+        RepositoryAgentTraceDb::new_at(&db_path).expect("seed db should open with schema");
+        let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
+
+        // Plant a directory exactly where the marker file must be created, so
+        // `ExternalTaintMarker::persist` fails deterministically regardless of uid.
+        std::fs::create_dir_all(git_dir.join("sce").join("mutation-cursor-tainted"))
+            .expect("planting a directory at the marker path should succeed");
+
+        let provider_called = std::sync::atomic::AtomicBool::new(false);
+        let error = coordinate(&repo_root, &RuntimeBoundary::Flush, || {
+            provider_called.store(true, Ordering::SeqCst);
+            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+        })
+        .expect_err("an unarmed marker must fail coordinate() closed");
+        assert!(
+            matches!(
+                error,
+                CoordinateError::ExternalTaintMarker {
+                    operation: ExternalTaintOperation::Persist,
+                    ..
+                }
+            ),
+            "expected an ExternalTaintMarker persist failure, got {error:?}"
+        );
+        assert!(
+            !provider_called.load(Ordering::SeqCst),
+            "a marker-arming failure must return before DB-provider, snapshot, or protocol work"
+        );
+
+        remove_test_repo(&repo_root);
+    }
+
+    #[test]
+    fn public_coordinate_fails_closed_when_marker_inspection_fails() {
+        let repo_root = unique_test_repo("t02-marker-inspect-failure");
+        init_repo(&repo_root);
+        let db_path = repo_root.join("agent-trace.db");
+        RepositoryAgentTraceDb::new_at(&db_path).expect("seed db should open with schema");
+        let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
+        let sce_dir = git_dir.join("sce");
+        std::fs::create_dir_all(&sce_dir).expect("the sce directory should be creatable");
+
+        let held = acquire_inner(&git_dir, Duration::from_secs(5), || {})
+            .expect("the test should hold the runtime lock before the worker runs");
+
+        let provider_called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (contention_tx, contention_rx) = mpsc::channel();
+
+        let worker = {
+            let repo_root = repo_root.clone();
+            let db_path = db_path.clone();
+            let provider_called = std::sync::Arc::clone(&provider_called);
+            thread::spawn(move || {
+                coordinate_inner(
+                    &repo_root,
+                    &RuntimeBoundary::Flush,
+                    || {
+                        provider_called.store(true, Ordering::SeqCst);
+                        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+                    },
+                    move || {
+                        contention_tx
+                            .send(())
+                            .expect("contention signal channel should still be open");
+                    },
+                )
+            })
+        };
+
+        contention_rx.recv_timeout(Duration::from_secs(5)).expect(
+            "the worker's coordinate_inner should reach the WorktreeLock contention branch",
+        );
+
+        std::fs::remove_dir_all(&sce_dir).expect("the sce directory should be removable");
+        std::fs::write(&sce_dir, b"not a directory")
+            .expect("planting a file where the sce directory was should succeed");
+
+        drop(held);
+
+        let error = worker
+            .join()
+            .expect("worker thread should not panic")
+            .expect_err("marker inspection failure must fail coordinate() closed");
+        assert!(
+            matches!(
+                error,
+                CoordinateError::ExternalTaintMarker {
+                    operation: ExternalTaintOperation::Inspect,
+                    ..
+                }
+            ),
+            "expected an ExternalTaintMarker inspect failure, got {error:?}"
+        );
+        assert!(
+            !provider_called.load(Ordering::SeqCst),
+            "marker inspection failing closed must precede DB-provider, checkout, snapshot, and protocol work"
+        );
+
+        remove_test_repo(&repo_root);
+    }
+
+    #[test]
+    fn public_coordinate_leaves_marker_when_the_db_provider_fails() {
+        let repo_root = unique_test_repo("t02-db-provider-failure-marker");
+        init_repo(&repo_root);
+        let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
+        let marker = ExternalTaintMarker::new(&git_dir);
+
+        let error = coordinate(
+            &repo_root,
+            &RuntimeBoundary::Flush,
+            || -> anyhow::Result<RepositoryAgentTraceDb> {
+                Err(anyhow::anyhow!("simulated Agent Trace DB open failure"))
+            },
+        )
+        .expect_err("a DB provider that returns Err must fail coordinate()");
+        assert!(
+            matches!(error, CoordinateError::AgentTraceDbUnavailable(_)),
+            "expected AgentTraceDbUnavailable, got {error:?}"
+        );
+        assert!(
+            marker.exists().expect("marker existence should resolve"),
+            "a DB-provider failure after arming must leave the external-taint marker present"
         );
 
         remove_test_repo(&repo_root);

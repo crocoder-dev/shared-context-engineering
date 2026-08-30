@@ -203,7 +203,13 @@ guard — `abandon` resolves it through the referenced scope's own materialized
 `worktree_id` rather than taking a `WorktreeId` directly — which keeps
 `external_taint ⊆ ProtocolState.worktrees` an invariant of every state this
 module can produce, since `database_failure` is the sole path that inserts
-into `external_taint`.
+into `external_taint`. The concrete runtime refinement of `external_taint` is
+the worktree-local `<git-dir>/sce/mutation-cursor-tainted` marker (see
+[`mutation-trace-external-taint.md`](mutation-trace-external-taint.md)), armed
+write-ahead before Agent Trace DB acquisition and overlaid onto
+`database_failure` recovery only when a later invocation inherits it;
+`WorktreeProjection::into_protocol_state()` itself always returns an empty
+`external_taint`.
 
 Future responsibility split (mirrors "Runtime scope materialization" above):
 the coordinator/store layer resolves/materializes worktree identity/state and
@@ -213,14 +219,12 @@ loads a `ProtocolState`; `protocol.rs` only transitions already-known ones.
 
 The plan's file split anticipated three seams beyond `protocol.rs`. `store.rs`,
 `runtime/git_snapshot.rs`, and `coordinator.rs` (with its public `coordinate()`
-entrypoint) now all exist as real call sites (see
-[`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md)),
-with the runtime layer covered by cross-module integration tests; only
-harness/command wiring remains:
+entrypoint) now all exist as real call sites, covered by cross-module
+integration tests; only harness/command wiring remains:
 
 ```mermaid
 flowchart LR
-    coordinator["coordinator.rs (implemented)\n(imperative shell:\nlock, DB load, Git snapshot,\nCAS/retry, persist)"]
+    coordinator["coordinator.rs (implemented)\n(imperative shell: lock,\nexternal-taint fence, DB provider,\nGit snapshot, CAS/retry, persist)"]
     protocol["protocol.rs\n(pure transitions —\nprepare/commit/attribution/\ntaint/abandon/recover\nall implemented)"]
     git_snapshot["runtime/git_snapshot.rs (implemented)\n(isolated Git snapshot,\ntemporary index, tree capture/diff,\nSCE-owned ref pinning)"]
     store["store.rs\n(cursor/revision, scopes,\nprocessed events, mutation\nevidence, CAS transaction)"]
@@ -230,18 +234,13 @@ flowchart LR
     coordinator --> store
 ```
 
-- **`coordinator.rs`** (implemented) — its public `coordinate()` acquires the
-  per-worktree lock, derives `WorktreeId` from checkout identity, drives one
-  Git snapshot, and calls the pure protocol under a bounded CAS-retry loop.
-- **`runtime/git_snapshot.rs`** (implemented) — captures an isolated worktree
-  snapshot and pins it durably; called by `coordinator.rs`.
-- **`store.rs`** (implemented) — loads and persists worktree/scope/event state
-  via a CAS-guarded commit; never remaps an existing `ScopeId`'s
-  `actor_kind`/`worktree_id` (see "Runtime scope materialization" above).
-- **`protocol.rs`** — assumes referenced scopes already exist in
-  `ProtocolState.scopes`; validates and transitions lifecycle state only.
-
-`protocol.rs` stays free of any Git object, DB row, or CAS transaction concept.
+`coordinator.rs` (see
+[`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md))
+owns the lock, the external-taint fence, the caller-supplied DB provider, one
+Git snapshot, and a bounded CAS-retry loop; `store.rs` never remaps an existing
+`ScopeId`'s `actor_kind`/`worktree_id`; `protocol.rs` assumes referenced scopes
+already exist and stays free of any Git object, DB row, or CAS transaction
+concept.
 
 ## Authoritative source
 
