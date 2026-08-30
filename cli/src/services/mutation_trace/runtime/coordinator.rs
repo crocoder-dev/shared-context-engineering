@@ -244,8 +244,33 @@ fn coordinate_boundary<C: SnapshotCapture>(
     capture: &C,
     worktree_id: &WorktreeId,
     boundary: &RuntimeBoundary,
-    _inherited_external_taint: bool,
+    inherited_external_taint: bool,
 ) -> Result<CoordinateOutcome, CoordinateError> {
+    coordinate_boundary_inner(
+        db,
+        capture,
+        worktree_id,
+        boundary,
+        inherited_external_taint,
+        |_attempt| {},
+        |_attempt| {},
+    )
+}
+
+fn coordinate_boundary_inner<C, AfterLoad, AfterRecovery>(
+    db: &RepositoryAgentTraceDb,
+    capture: &C,
+    worktree_id: &WorktreeId,
+    boundary: &RuntimeBoundary,
+    inherited_external_taint: bool,
+    mut after_load: AfterLoad,
+    mut after_recovery: AfterRecovery,
+) -> Result<CoordinateOutcome, CoordinateError>
+where
+    C: SnapshotCapture,
+    AfterLoad: FnMut(u32),
+    AfterRecovery: FnMut(u32),
+{
     let store = MutationTraceStore::new(db);
 
     let observed_tree = match capture.capture().and_then(|tree| {
@@ -270,7 +295,9 @@ fn coordinate_boundary<C: SnapshotCapture>(
     let scope_ref = types::boundary_scope(&type_boundary);
     let event_key_ref = types::boundary_event_key(&type_boundary);
 
-    for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+    let mut external_taint_pending = inherited_external_taint;
+
+    for attempt_index in 0..MAX_CAS_RETRY_ATTEMPTS {
         let Some(projection) = store
             .load_worktree(worktree_id, scope_ref.as_ref(), event_key_ref.as_ref())
             .map_err(CoordinateError::Other)?
@@ -280,7 +307,13 @@ fn coordinate_boundary<C: SnapshotCapture>(
             )));
         };
 
+        after_load(attempt_index);
+
         let mut state = projection.into_protocol_state();
+
+        if external_taint_pending {
+            state = protocol::database_failure(&state, worktree_id);
+        }
 
         if needs_recovery(&state, worktree_id) {
             let recovered = protocol::recover(&state, worktree_id, observed_tree.clone());
@@ -299,7 +332,11 @@ fn coordinate_boundary<C: SnapshotCapture>(
             };
 
             match store.commit(&transition).map_err(CoordinateError::Other)? {
-                CasResult::Applied => state = recovered,
+                CasResult::Applied => {
+                    state = recovered;
+                    external_taint_pending = false;
+                    after_recovery(attempt_index);
+                }
                 CasResult::Conflict => continue,
             }
         }
@@ -1714,5 +1751,257 @@ mod tests {
         );
 
         remove_test_repo(&repo_root);
+    }
+
+    #[test]
+    fn inherited_external_taint_recovers_once_before_the_boundary() {
+        let (db, db_path) = test_db("t03-inherited-recovers-once");
+        let worktree = WorktreeId("wt-1".to_string());
+        let scope = ScopeId("scope-live".to_string());
+        let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
+
+        coordinate_boundary(
+            &db,
+            &capture,
+            &worktree,
+            &RuntimeBoundary::Start {
+                scope: scope.clone(),
+                event: EventId("evt-start".to_string()),
+                actor_kind: ActorKind::ClaudeCode,
+            },
+            false,
+        )
+        .expect("start should establish the baseline and the live scope");
+
+        let advance_capture = FakeSnapshotCapture::new(TreeId("tree-b".to_string()));
+        let outcome = coordinate_boundary(
+            &db,
+            &advance_capture,
+            &worktree,
+            &RuntimeBoundary::Advance {
+                scope: scope.clone(),
+                event: EventId("evt-advance".to_string()),
+                actor_kind: ActorKind::ClaudeCode,
+            },
+            true,
+        )
+        .expect("an inherited external-taint marker must recover, then process the boundary");
+
+        assert!(
+            outcome.mutation_event.is_none(),
+            "no mutation evidence may span the interval the inherited marker fenced off"
+        );
+        assert_eq!(
+            outcome.revision, 3,
+            "one recovery transition (rev 1 -> 2), then the triggering boundary (rev 2 -> 3)"
+        );
+        assert_eq!(
+            advance_capture.capture_call_count(),
+            1,
+            "recovery and the triggering boundary must share the single already-captured snapshot"
+        );
+        assert_eq!(advance_capture.pin_call_count(), 1);
+
+        let store = MutationTraceStore::new(&db);
+        let projection = store
+            .load_worktree(&worktree, Some(&scope), None)
+            .expect("load should succeed")
+            .expect("worktree should exist");
+        assert!(!projection.worktree_state.tainted);
+        assert!(!projection.worktree_state.needs_rebaseline);
+        assert_eq!(projection.worktree_state.failure_kind, FailureKind::Healthy);
+        assert_eq!(
+            projection.worktree_state.cursor_tree,
+            TreeId("tree-b".to_string()),
+            "recovery rebaselines the cursor to this invocation's observed tree"
+        );
+        assert_eq!(
+            projection.scopes.get(&scope).map(|s| s.status),
+            Some(ScopeStatus::Abandoned),
+            "inherited-taint recovery abandons the live scopes the fenced interval made untrustworthy"
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn inherited_external_taint_with_no_worktree_row_baselines_without_evidence() {
+        let (db, db_path) = test_db("t03-inherited-no-row");
+        let worktree = WorktreeId("wt-1".to_string());
+        let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
+
+        let outcome = coordinate_boundary(&db, &capture, &worktree, &RuntimeBoundary::Flush, true)
+            .expect("a first-ever invocation carrying an inherited marker must still succeed");
+
+        assert!(
+            outcome.mutation_event.is_none(),
+            "a worktree with no prior durable row cannot produce evidence for the unknown interval"
+        );
+        assert_eq!(
+            outcome.revision, 1,
+            "the freshly initialized worktree is baselined against the observed tree, then conservatively recovered once"
+        );
+
+        let store = MutationTraceStore::new(&db);
+        let projection = store
+            .load_worktree(&worktree, None, None)
+            .expect("load should succeed")
+            .expect("the worktree row should now exist");
+        assert!(!projection.worktree_state.tainted);
+        assert_eq!(projection.worktree_state.failure_kind, FailureKind::Healthy);
+        assert_eq!(
+            projection.worktree_state.cursor_tree,
+            TreeId("tree-a".to_string())
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn a_losing_recovery_cas_reinjects_external_taint_until_it_applies() {
+        let (db, db_path) = test_db("t03-recovery-cas-reinjection");
+        let worktree = WorktreeId("wt-1".to_string());
+        let scope = ScopeId("scope-live".to_string());
+        let bootstrap = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
+
+        coordinate_boundary(
+            &db,
+            &bootstrap,
+            &worktree,
+            &RuntimeBoundary::Start {
+                scope: scope.clone(),
+                event: EventId("evt-start".to_string()),
+                actor_kind: ActorKind::ClaudeCode,
+            },
+            false,
+        )
+        .expect("bootstrap start should establish the baseline and live scope");
+
+        let store = MutationTraceStore::new(&db);
+        let competing_scope = ScopeId("competing-scope".to_string());
+        let interfered = Cell::new(false);
+        let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
+
+        let outcome = coordinate_boundary_inner(
+            &db,
+            &capture,
+            &worktree,
+            &RuntimeBoundary::Flush,
+            true,
+            |attempt| {
+                if attempt == 0 && !interfered.get() {
+                    interfered.set(true);
+                    commit_competing_advance(
+                        &store,
+                        &worktree,
+                        &competing_scope,
+                        "competing-event-1",
+                        true,
+                    );
+                }
+            },
+            |_attempt| {},
+        )
+        .expect("recovery must recompute past the losing CAS and still succeed");
+
+        assert_eq!(
+            capture.capture_call_count(),
+            1,
+            "a recovery CAS conflict must not trigger a second Git snapshot"
+        );
+        assert_eq!(
+            outcome.revision, 3,
+            "bootstrap start (1) + competing advance (2) + exactly one landed recovery (3)"
+        );
+
+        let projection = store
+            .load_worktree(&worktree, Some(&scope), None)
+            .expect("load should succeed")
+            .expect("worktree should exist");
+        assert!(!projection.worktree_state.tainted);
+        assert_eq!(
+            projection.scopes.get(&scope).map(|s| s.status),
+            Some(ScopeStatus::Abandoned),
+            "the re-injected recovery still abandons the fenced-off live scope"
+        );
+
+        let competing_projection = store
+            .load_worktree(&worktree, Some(&competing_scope), None)
+            .expect("load should succeed")
+            .expect("worktree should exist");
+        assert_eq!(
+            competing_projection
+                .scopes
+                .get(&competing_scope)
+                .map(|s| s.status),
+            Some(ScopeStatus::Abandoned)
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn a_landed_recovery_clears_the_flag_so_a_boundary_cas_retry_does_not_re_recover() {
+        let (db, db_path) = test_db("t03-flag-clears-after-recovery");
+        let worktree = WorktreeId("wt-1".to_string());
+        let scope = ScopeId("scope-live".to_string());
+        let bootstrap = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
+
+        coordinate_boundary(
+            &db,
+            &bootstrap,
+            &worktree,
+            &RuntimeBoundary::Start {
+                scope: scope.clone(),
+                event: EventId("evt-start".to_string()),
+                actor_kind: ActorKind::ClaudeCode,
+            },
+            false,
+        )
+        .expect("bootstrap start should establish the baseline and live scope");
+
+        let store = MutationTraceStore::new(&db);
+        let competing_scope = ScopeId("competing-scope".to_string());
+        let interfered = Cell::new(false);
+        let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
+        capture.push_success(TreeId("tree-b".to_string()));
+
+        let outcome = coordinate_boundary_inner(
+            &db,
+            &capture,
+            &worktree,
+            &RuntimeBoundary::Advance {
+                scope: scope.clone(),
+                event: EventId("evt-advance".to_string()),
+                actor_kind: ActorKind::ClaudeCode,
+            },
+            true,
+            |_attempt| {},
+            |attempt| {
+                if attempt == 0 && !interfered.get() {
+                    interfered.set(true);
+                    commit_competing_advance(
+                        &store,
+                        &worktree,
+                        &competing_scope,
+                        "competing-event-1",
+                        true,
+                    );
+                }
+            },
+        )
+        .expect("the boundary CAS retry after a landed recovery must still succeed");
+
+        assert_eq!(
+            capture.capture_call_count(),
+            1,
+            "neither the recovery nor the boundary retry may take a second snapshot"
+        );
+        assert_eq!(
+            outcome.revision, 4,
+            "start (1) + one landed recovery (2) + competing advance (3) + the retried boundary (4); a re-triggered recovery on the retry would land at 5"
+        );
+
+        remove_test_db(&db_path);
     }
 }
