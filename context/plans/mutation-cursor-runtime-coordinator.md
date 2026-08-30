@@ -499,7 +499,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     during plan authoring, not originated by this task's execution.
   - Context synchronization: synced
 
-- [ ] T03: `Add the isolated Git snapshot service with ref-pinned durability` (status:todo)
+- [x] T03: `Add the isolated Git snapshot service with ref-pinned durability` (status:done)
   - Task ID: T03
   - Scope: In — `runtime/git_snapshot.rs`: `GitSnapshotService` (resolves
     `--git-dir` once; a unique, never-pre-created private temp index path
@@ -527,7 +527,159 @@ Persist this field in every plan; this is durable plan state, not chat state:
     same repository is reclaimed by that same aggressive pass; `pin_tree` is
     idempotent for the same `(worktree_id, tree)` pair.
   - Verify: `cargo test -p shared-context-engineering runtime::git_snapshot::` (via `./scripts/run-cli-cargo.sh test`)
-  - Context synchronization: pending
+  - Completed: 2026-08-30
+  - Files changed: `cli/src/services/mutation_trace/runtime/git_snapshot.rs` (new),
+    `cli/src/services/mutation_trace/runtime/mod.rs` (added `mod git_snapshot;`)
+  - Result: Added `runtime/git_snapshot.rs` with a `pub struct GitSnapshotService`
+    (private module, matching `worktree_lock`'s module-privacy convention —
+    reachable from sibling modules under `runtime`, not outside it).
+    `GitSnapshotService::new(repository_root)` resolves `--git-dir` once via
+    `git rev-parse --git-dir` (the same resolution logic as
+    `checkout::resolve_git_dir`, duplicated locally rather than imported,
+    since `checkout`'s function is scoped to that module's own concerns and
+    this plan's Constraints exclude broad Git-abstraction refactors) and
+    stores both the resolved `git_dir` and `repository_root`.
+
+    `capture_tree`: reserves a unique `<git-dir>/sce/tmp/index-<uuid>` path
+    via a private `TempIndexGuard` (constructs the path only, creates the
+    `tmp/` directory, never touches the index file itself, best-effort
+    removes it on `Drop`); probes `HEAD` via
+    `git rev-parse --verify --quiet HEAD`; runs `git read-tree HEAD` when
+    `HEAD` exists or `git read-tree --empty` on an unborn `HEAD`, both with
+    only `GIT_DIR`/`GIT_INDEX_FILE` set and `cwd = repository_root`; then
+    `git add -A -- .`; then `git write-tree`, returning the raw trimmed SHA
+    wrapped in `TreeId`, never assuming a fixed length. `pin_tree`
+    (`git update-ref refs/sce/mutation-cursor/<worktree_id>/<tree-sha>
+    <tree-sha>`, only `GIT_DIR` set) and `diff_trees` (`git diff --binary
+    --full-index --no-ext-diff --no-textconv <before> <after>`, only
+    `GIT_DIR` set, returning the raw `String`) match the plan's validated
+    command sequences exactly. No `GIT_OBJECT_DIRECTORY`/
+    `GIT_ALTERNATE_OBJECT_DIRECTORIES` environment variable is set anywhere.
+
+    Added a `#[cfg(test)] mod tests` (real, per-test temporary Git
+    repositories via `git init`, following T01/T02's unique-temp-dir
+    convention) covering: staged/unstaged/untracked/deleted state captured
+    correctly while the real index, `git status --porcelain`, `git diff`,
+    and `git diff --cached` stay byte-identical before and after capture;
+    `.gitignore` exclusion; a committed-file deletion reflected as absent;
+    unborn `HEAD` with an untracked file present and with no files at all
+    (asserting an empty `ls-tree`); a captured tree remaining resolvable via
+    `git cat-file` after the temp index file is gone; a `pin_tree`-protected
+    tree surviving both `git gc --prune=now` and `git prune --expire=now`
+    while a distinct-content, genuinely unreachable tree captured and left
+    unpinned in the same repository is reclaimed by the same pass (run as
+    two separate tests, one per pruning command, both using distinct-content
+    trees per the plan's corrected experimental design — never a
+    same-content decoy); `pin_tree` idempotency for the same
+    `(worktree_id, tree)` pair; `diff_trees` producing `git diff --git`
+    formatted, parseable output; and a best-effort SHA-256 repository case
+    (`git init --object-format=sha256`) that skips gracefully when the local
+    Git build lacks the flag, asserting `TreeId` needs no length assumption.
+
+    PR #244 review follow-up: two correctness issues were fixed without
+    changing the snapshot design. First, HEAD-absence and HEAD-probe-failure
+    semantics were conflated: `capture_tree` previously ran `git rev-parse
+    --verify --quiet HEAD` through the shared `run_git` helper and used
+    `.is_ok()` to pick between `read-tree HEAD`/`read-tree --empty`, so *any*
+    Git failure — a corrupted repository, a missing `.git/HEAD`, an
+    unexpected fatal error — was silently treated as "unborn HEAD" and
+    produced a false empty-baseline snapshot instead of surfacing an error.
+    A dedicated `head_exists(&self) -> Result<bool>` now runs that probe
+    directly and inspects `output.status.code()`: exit status `0` (HEAD
+    resolves) → `Ok(true)`; exit status `1` (`--verify --quiet`'s documented
+    "does not resolve" signal — verified experimentally against this
+    repository's Git as the exit status for a genuinely unborn HEAD) →
+    `Ok(false)`; every other status (verified experimentally: a corrupted or
+    missing `.git/HEAD` produces exit status `128`, "fatal: not a git
+    repository") → `Err`, propagated by `capture_tree` via `?` before ever
+    reaching `read-tree --empty`. HEAD absence is a normal Git state; HEAD
+    probe failure is a snapshot failure — the two are no longer conflated.
+
+    Second, `resolve_git_dir` used `git rev-parse --git-dir` and manually
+    joined a relative result onto `repository_root` when not already
+    absolute — but that join only produces a genuinely absolute path when
+    `repository_root` itself is absolute. Given a relative
+    `repository_root`, the stored `git_dir` stayed relative, and since every
+    later Git subprocess runs with `cwd = repository_root` (also relative)
+    and `GIT_DIR = self.git_dir`, the relative `GIT_DIR` was resolved by the
+    child process against its own (already `repository_root`-joined) `cwd`,
+    double-joining the path and pointing at the wrong directory.
+    `resolve_git_dir` now runs `git rev-parse --absolute-git-dir` instead —
+    verified experimentally to return a canonicalized absolute path for both
+    a normal clone and a linked worktree — eliminating the manual
+    absolute/relative branch entirely, with a `debug_assert!` documenting the
+    invariant. `GitSnapshotService` now always stores an absolute `git_dir`,
+    regardless of whether the caller's `repository_root` was relative or
+    absolute; `repository_root` itself is unchanged (still used only as
+    `Command::current_dir`, which is resolution-agnostic).
+
+    Added two regression tests:
+    `an_unexpected_head_probe_failure_propagates_instead_of_using_read_tree_empty`
+    (deletes `.git/HEAD` after constructing the service — a real Git failure
+    distinct from unborn HEAD — and asserts `capture_tree()` returns `Err`
+    rather than a false empty-baseline capture) and
+    `resolves_an_absolute_git_dir_from_a_relative_repository_root` (computes
+    a genuinely relative `repository_root` from the real, unmutated process
+    `cwd` via a small test-local `relative_path_from` helper — no
+    `std::env::set_current_dir`, so the test is parallel-safe — and proves
+    `GitSnapshotService::new`, `capture_tree`, `pin_tree`, and `diff_trees`
+    all succeed with `git_dir` resolved absolute). The existing unborn-HEAD
+    tests (`capture_on_unborn_head_with_a_file_produces_a_valid_tree`,
+    `capture_on_unborn_head_with_no_files_produces_an_empty_tree`) continue
+    to prove the genuinely-unborn path still produces a valid `read-tree
+    --empty` snapshot; the new failure test proves the two paths no longer
+    share a code path they should not share.
+  - Verify (actual): `./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml runtime::git_snapshot::` → 11/11 passed (pre-follow-up);
+    13/13 passed (post-follow-up, including the two new regression tests).
+    Additionally ran `./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml runtime::` → 20/20 passed (pre-follow-up), 22/22 passed
+    (post-follow-up; no regression in `worktree_lock`'s existing tests).
+    Additionally ran `./scripts/run-cli-cargo.sh clippy --manifest-path
+    cli/Cargo.toml --all-targets -- -D warnings` → clean both times
+    (pedantic/warnings denied workspace-wide, per Constraints; fixed two
+    pedantic findings — `uninlined_format_args` and `map_unwrap_or` — during
+    the original implementation; the follow-up introduced none), and
+    `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`
+    → clean both times.
+  - Context impact: `domain` — introduces a new architectural element
+    (`GitSnapshotService`, the isolated Git snapshot/ref-pinning service)
+    under the mutation-cursor-runtime-coordinator domain T02 already
+    established a domain file for. Updated
+    `context/cli/mutation-trace-runtime-coordinator.md` to document
+    `GitSnapshotService` (`capture_tree`/`pin_tree`/`diff_trees`), the
+    updated on-disk layout (`sce/tmp/index-<uuid>`, the
+    `refs/sce/mutation-cursor/**` namespace), its test coverage, and the
+    revised Status section. Corrected two now-stale statements this task's
+    landing directly falsified: `context/cli/mutation-trace-protocol.md`'s
+    "Target end-state architecture" said `coordinator.rs`/`git_snapshot.rs`
+    "remain future work" — updated its prose, Mermaid diagram, and
+    per-seam bullets to mark `runtime/git_snapshot.rs` implemented while
+    `coordinator.rs` remains future work; `context/cli/mutation-trace-store.md`'s
+    "Non-goals" said "no `coordinator.rs` or `git_snapshot.rs` exists yet" —
+    corrected to note `runtime/git_snapshot.rs` now exists as a sibling
+    module, not yet wired to the store. Updated `context/context-map.md`'s
+    entries for both files accordingly. No repository-wide behavior,
+    architecture, or terminology changed, so `overview.md`, `architecture.md`,
+    `glossary.md`, and `patterns.md` were verified against the change and
+    left unedited. No qualifying system-wide architecture decision was
+    introduced by this task — the ref-pinning/normal-object-database design
+    was already established in the plan's own Design decisions section
+    during plan authoring, not originated by this task's execution.
+
+    PR #244 review follow-up: corrected `context/cli/mutation-trace-runtime-coordinator.md`'s
+    `git_snapshot.rs` bullet, which the follow-up fix directly falsified —
+    it said `GitSnapshotService::new` "resolves `--git-dir` once" (now
+    `--absolute-git-dir`, with the absolute-path invariant and the reason it
+    matters explained inline) and described the HEAD branch without
+    distinguishing probe failure from genuine absence (now documents the
+    `head_exists` exit-status distinction). Also extended the Testing
+    boundary section's `git_snapshot.rs` test-coverage summary to name the
+    two new regression tests. No other context file was affected by this
+    follow-up: it is an internal correctness fix with no public-interface,
+    behavior-contract, or architecture change beyond what the two
+    corrections above capture.
+  - Context synchronization: synced
 
 - [ ] T04: `Add the coordinator's core protocol-integration pipeline` (status:todo)
   - Task ID: T04
