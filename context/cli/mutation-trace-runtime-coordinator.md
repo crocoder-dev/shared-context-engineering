@@ -19,7 +19,8 @@ documented convention.
 
 ## Current code surface
 
-Only the per-worktree runtime lock exists so far.
+The per-worktree runtime lock and the isolated Git snapshot service exist so
+far; the coordinator that will drive both is future work.
 
 - `cli/src/services/mutation_trace/runtime/worktree_lock.rs` —
   `WorktreeLock::acquire(git_dir: &Path, timeout: Duration) ->
@@ -33,11 +34,47 @@ Only the per-worktree runtime lock exists so far.
   file's mere on-disk existence is never treated as ownership — only a
   successful OS-level `try_lock()` counts, so a leftover lock file with no
   active OS lock held against it never blocks a fresh acquirer.
+- `cli/src/services/mutation_trace/runtime/git_snapshot.rs` —
+  `GitSnapshotService::new(repository_root: &Path) -> Result<GitSnapshotService>`
+  resolves `git_dir` once via `git rev-parse --absolute-git-dir`, so
+  `git_dir` is always an absolute path — even when the caller's
+  `repository_root` is relative, which matters because every Git subprocess
+  this service spawns runs with `cwd = repository_root` and
+  `GIT_DIR = git_dir`; a relative `git_dir` would otherwise be resolved by
+  the child process against its own already-`repository_root`-joined `cwd`,
+  double-joining the path. `capture_tree(&self) -> Result<TreeId>` snapshots
+  the current worktree (staged, unstaged, untracked, and deleted state,
+  respecting `.gitignore`) into the repository's normal, shared Git object
+  database, never touching the real index or working tree: it reserves a
+  unique `<git-dir>/sce/tmp/index-<uuid>` path via an RAII guard (never
+  pre-creating the file), probes `HEAD` via a dedicated `head_exists`
+  helper that inspects the Git exit status directly — status `0` means
+  `HEAD` resolves, status `1` is `--verify --quiet`'s documented "does not
+  resolve" signal (a genuinely unborn `HEAD`), and every other status
+  propagates as an error rather than being treated as empty, since HEAD
+  absence is a normal Git state but a HEAD-probe failure is a snapshot
+  failure — then runs `git read-tree HEAD` or, on a genuinely unborn `HEAD`,
+  the explicit `git read-tree --empty` (never a bare/absent index file),
+  then `git add -A -- .`, then `git write-tree`, all with only
+  `GIT_DIR`/`GIT_INDEX_FILE` set — no `GIT_OBJECT_DIRECTORY`/
+  `GIT_ALTERNATE_OBJECT_DIRECTORIES` override anywhere. `TreeId` is an opaque
+  string; nothing assumes a fixed length, so a SHA-256 repository needs no
+  special handling. `pin_tree(&self, worktree_id, tree) -> Result<()>` makes
+  a tree durable by creating
+  `refs/sce/mutation-cursor/<worktree_id>/<tree-sha>` via `git update-ref` —
+  create-only and idempotent for the same `(worktree_id, tree)` pair — which
+  is what makes a pinned tree survive `git gc --prune=now`/`git prune
+  --expire=now`, unlike an unpinned, unreachable tree in the same repository.
+  `diff_trees(&self, before, after) -> Result<String>` runs `git diff
+  --binary --full-index --no-ext-diff --no-textconv` between two tree SHAs,
+  returning the raw diff text `patch.rs::parse_patch` already knows how to
+  parse. Nothing calls this service yet; `coordinator.rs` is its only planned
+  caller.
 
-This lock guards the coordinator's own critical section (snapshot capture,
-worktree/scope materialization, recovery, and the CAS retry loop) once the
-coordinator exists. It is held on every future `coordinate()` call, unlike
-the checkout-identity-creation lock.
+The runtime lock guards the coordinator's own critical section (snapshot
+capture, worktree/scope materialization, recovery, and the CAS retry loop)
+once the coordinator exists. It is held on every future `coordinate()` call,
+unlike the checkout-identity-creation lock.
 
 ## Two distinct locks, two distinct invariants
 
@@ -57,7 +94,13 @@ On-disk layout so far:
 <worktree-git-dir>/sce/
 ├── checkout-id                 (services::checkout)
 ├── checkout-id.lock            (services::checkout)
-└── mutation-cursor.lock        (runtime::worktree_lock, this module)
+├── mutation-cursor.lock        (runtime::worktree_lock)
+└── tmp/
+    └── index-<uuid>            (runtime::git_snapshot, ephemeral per capture)
+
+<repository's normal, shared object database>       (runtime::git_snapshot writes here directly)
+<repository's normal, shared refs namespace>
+└── refs/sce/mutation-cursor/<worktree-id>/<tree-sha>   (runtime::git_snapshot, one ref per pinned tree, create-only)
 ```
 
 ## Testing boundary
@@ -71,10 +114,22 @@ held against it never blocking a fresh acquirer — each test uses a unique
 inline-unit-test precedent already used in `cli/src/services/checkout/mod.rs`
 and `cli/src/services/mutation_trace/store.rs` (see `context/patterns.md`).
 
+`GitSnapshotService`'s inline `#[cfg(test)] mod tests` in `git_snapshot.rs`
+uses the same precedent, extended to real per-test `git init` repositories:
+index/working-tree preservation across staged/unstaged/untracked/deleted
+state, `.gitignore` exclusion, unborn-`HEAD` capture with and without files,
+an unexpected `HEAD`-probe failure (a corrupted/missing `.git/HEAD`)
+propagating as an error rather than a false empty-baseline capture, a
+relative `repository_root` still resolving `git_dir` absolute, survival
+after the temp index file is gone, `git gc --prune=now`/`git prune
+--expire=now` survival for a pinned tree versus reclamation of a distinct
+unpinned tree in the same repository, `pin_tree` idempotency, and
+`diff_trees` output shape.
+
 ## Status
 
-Only the per-worktree runtime lock (above) is implemented. The Git snapshot
-service, the coordinator's protocol-integration pipeline, the public
+The per-worktree runtime lock and the isolated Git snapshot service (above)
+are implemented. The coordinator's protocol-integration pipeline, the public
 lock-wrapped `coordinate()` entrypoint, and cross-module integration tests
 remain future work tracked by the `mutation-cursor-runtime-coordinator`
 plan's task stack. This file will grow to cover them as each lands.
