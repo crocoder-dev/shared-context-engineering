@@ -118,9 +118,9 @@ returns `Err`.
 ## Non-goals
 
 - No Git or filesystem I/O — `store.rs` itself calls neither Git nor the
-  filesystem. `runtime/git_snapshot.rs` and `runtime/coordinator.rs`'s
-  internal pipeline now exist and wire this store together with the Git
-  snapshot service (see
+  filesystem. `runtime/git_snapshot.rs` and `runtime/coordinator.rs` (through
+  its public `coordinate()` entrypoint) now wire this store together with the
+  Git snapshot service (see
   [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md));
   `store.rs` itself remains unmodified and still performs no Git or
   filesystem I/O of its own.

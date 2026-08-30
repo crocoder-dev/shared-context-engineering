@@ -212,14 +212,14 @@ loads a `ProtocolState`; `protocol.rs` only transitions already-known ones.
 ## Target end-state architecture
 
 The plan's file split anticipated three seams beyond `protocol.rs`. `store.rs`,
-`runtime/git_snapshot.rs`, and `coordinator.rs`'s internal pipeline now exist
-as real call sites (see
+`runtime/git_snapshot.rs`, and `coordinator.rs` (with its public `coordinate()`
+entrypoint) now all exist as real call sites (see
 [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md));
-only `coordinator.rs`'s public `coordinate()` remains future work:
+only cross-module integration tests and harness/command wiring remain:
 
 ```mermaid
 flowchart LR
-    coordinator["coordinator.rs (internal pipeline implemented;\npublic coordinate() future work)\n(imperative shell:\nDB load, Git snapshot,\nCAS/retry, persist)"]
+    coordinator["coordinator.rs (implemented)\n(imperative shell:\nlock, DB load, Git snapshot,\nCAS/retry, persist)"]
     protocol["protocol.rs\n(pure transitions —\nprepare/commit/attribution/\ntaint/abandon/recover\nall implemented)"]
     git_snapshot["runtime/git_snapshot.rs (implemented)\n(isolated Git snapshot,\ntemporary index, tree capture/diff,\nSCE-owned ref pinning)"]
     store["store.rs\n(cursor/revision, scopes,\nprocessed events, mutation\nevidence, CAS transaction)"]
@@ -229,9 +229,9 @@ flowchart LR
     coordinator --> store
 ```
 
-- **`coordinator.rs`** (internal pipeline implemented) — resolves scope
-  actor/worktree identity, loads a `ProtocolState` via `store.rs`, and calls
-  the pure protocol; its public `coordinate()` entrypoint remains future work.
+- **`coordinator.rs`** (implemented) — its public `coordinate()` acquires the
+  per-worktree lock, derives `WorktreeId` from checkout identity, drives one
+  Git snapshot, and calls the pure protocol under a bounded CAS-retry loop.
 - **`runtime/git_snapshot.rs`** (implemented) — captures an isolated worktree
   snapshot and pins it durably; called by `coordinator.rs`.
 - **`store.rs`** (implemented) — loads and persists worktree/scope/event state
