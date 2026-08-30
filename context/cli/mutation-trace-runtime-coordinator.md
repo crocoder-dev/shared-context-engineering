@@ -113,13 +113,13 @@ API end to end. Only harness/command wiring remains.
   (below) and return without touching the rest of the pipeline; on success,
   idempotently materialize the worktree row and, for hook boundaries, the
   scope row; then loop (bounded, `MAX_CAS_RETRY_ATTEMPTS = 5`, no backoff):
-  load durable state fresh, recover first if the worktree is tainted or needs
-  rebaseline (its own CAS commit, reusing the one captured tree as the
-  rebaseline target), then `prepare`/`commit` the triggering boundary against
-  that state (a second CAS commit) — reloading and recomputing from scratch
-  on `Conflict`, without ever re-capturing or re-pinning. A settled no-op
-  result (a stale, rejected, or replayed attempt) is a successful return, not
-  an error.
+  load durable state fresh, recover first if the worktree is tainted, needs
+  rebaseline, or inherited an external-taint marker (overlaid as
+  `database_failure`; its CAS commit reuses the one captured tree), then
+  `prepare`/`commit` the triggering boundary against that state (a second CAS
+  commit) — reloading and recomputing from scratch on `Conflict`, without ever
+  re-capturing or re-pinning. A settled no-op result (a stale, rejected, or
+  replayed attempt) is a successful return, not an error.
 
   A capture or pin failure is handled by its own bounded taint-retry loop: a
   fresh `load_worktree` on every iteration, always evaluated after the
@@ -237,11 +237,11 @@ The lock, snapshot service, protocol-integration pipeline, and the public
 `coordinate()` entrypoint (resolve `git_dir` → `WorktreeLock` → arm the
 external-taint marker → checkout identity → caller-supplied DB provider →
 pipeline → clear the marker on success) are all implemented, with
-`runtime/tests.rs` covering the public API end to end. Mapping an inherited
-marker into protocol recovery, a `pub(crate)` re-export of `coordinate()`
-beyond `runtime`, and harness/command wiring remain future work tracked by the
-`mutation-cursor-external-taint` and `mutation-cursor-runtime-coordinator`
-plans.
+`runtime/tests.rs` covering the public API end to end; an inherited external-taint
+marker is now overlaid onto `database_failure` recovery on the next invocation. A
+`pub(crate)` re-export of `coordinate()` beyond `runtime` and harness/command
+wiring remain future work tracked by the `mutation-cursor-external-taint` and
+`mutation-cursor-runtime-coordinator` plans.
 
 See also: [`mutation-trace-protocol.md`](mutation-trace-protocol.md),
 [`mutation-trace-store.md`](mutation-trace-store.md),
