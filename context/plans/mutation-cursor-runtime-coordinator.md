@@ -916,7 +916,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     existing context files use for it.
   - Context synchronization: synced
 
-- [ ] T05: `Wire the worktree lock and checkout identity into coordinate()` (status:todo)
+- [x] T05: `Wire the worktree lock and checkout identity into coordinate()` (status:done)
   - Task ID: T05
   - Scope: In — the public `coordinate(repository_root, db, boundary)`
     entrypoint: resolve `git_dir`, acquire `WorktreeLock`, resolve checkout
@@ -930,7 +930,145 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `WorktreeLock` drops); `coordinate()`'s public signature matches
     `Result<CoordinateOutcome, CoordinateError>`.
   - Verify: `cargo test -p shared-context-engineering runtime::coordinator::tests::two_threads_on_the_same_worktree_serialize` (via `./scripts/run-cli-cargo.sh test`)
-  - Context synchronization: pending
+  - Completed: 2026-08-30
+  - Files changed: `cli/src/services/mutation_trace/runtime/coordinator.rs`,
+    `cli/src/services/mutation_trace/runtime/worktree_lock.rs`
+  - Result: Added the public `coordinate(repository_root: &Path, db:
+    &RepositoryAgentTraceDb, boundary: &RuntimeBoundary) ->
+    Result<CoordinateOutcome, CoordinateError>` entrypoint to
+    `runtime/coordinator.rs`. It resolves `git_dir` via
+    `checkout::resolve_git_dir(repository_root)` (error → `CoordinateError::Other`),
+    acquires the `WorktreeLock` (`WORKTREE_LOCK_TIMEOUT`, 10s) into an
+    RAII guard held for the whole critical section, resolves checkout identity
+    via T01's now concurrency-/crash-safe `checkout::get_or_create_checkout_id(&git_dir)`
+    (error → `CoordinateError::Other`), wraps the result as
+    `WorktreeId(checkout_id)` — no caller-supplied `WorktreeId` or `Boundary`
+    is ever accepted — constructs `GitSnapshotService::new(repository_root)`
+    (which keeps its own internal `--absolute-git-dir` resolution, unchanged),
+    and delegates to T04's unchanged internal `coordinate_boundary(db,
+    &snapshot, &worktree_id, boundary)` for the rest of the critical section.
+    `coordinate()` is a one-line delegation to a private
+    `coordinate_inner(.., on_lock_contention: impl FnOnce())` (see the test
+    paragraph below); production passes a no-op closure, so the code path is
+    identical. Both `WorktreeLockError` variants (`TimedOut`, `Io`) are mapped
+    to `CoordinateError::LockAcquisition(anyhow::Error)` via a small private
+    `lock_acquisition` helper. `WORKTREE_LOCK_TIMEOUT` is a new module-level
+    `const Duration = Duration::from_secs(10)`, matching the plan's "Blocking
+    vs. timeout" design decision (bounded 10s deadline, polled at a 100ms
+    interval). `worktree_lock.rs`'s existing private `acquire_inner` seam is
+    widened to `pub(super)` (no behavior change); `WorktreeLock::acquire`'s
+    public signature and semantics are untouched. The T04 pipeline,
+    `RuntimeBoundary`, `CoordinateOutcome`, and `CoordinateError` are
+    otherwise unchanged.
+
+    Deviations from the pre-implementation gate summary, both reversible and
+    matching surrounding style: (1) `coordinate` is a plain `pub fn` (not
+    `pub(crate)`), mirroring `git_snapshot.rs`'s `pub fn capture_tree` and
+    `worktree_lock.rs`'s `pub fn acquire` in the same private `runtime`
+    module tree; (2) `runtime/mod.rs` was left unchanged — a private `mod
+    coordinator;` is already reachable from `runtime`'s own future
+    `#[cfg(test)] mod tests` (T06) as `super::coordinator::coordinate`, so no
+    visibility change to `mod.rs` was needed. The dead-code warning for the
+    not-yet-called entrypoint is already covered by the existing
+    `#[allow(dead_code)]` on `pub mod mutation_trace;` in `services/mod.rs`
+    (same coverage T04 relied on for the unused `LockAcquisition` variant).
+
+    `runtime::coordinator::tests::two_threads_on_the_same_worktree_serialize`
+    (the plan's exact Verify function name) proves the critical-section
+    serialization through a real happens-before ordering rather than a
+    scheduling window. `coordinate()` delegates to a private
+    `coordinate_inner(repository_root, db, boundary, on_lock_contention:
+    impl FnOnce())`, which acquires the lock via
+    `worktree_lock::acquire_inner` (T02's existing seam, its visibility
+    widened from private to `pub(super)` so `coordinator` can reach it —
+    `acquire_inner`'s `on_contention` callback still fires exactly once, only
+    from inside the real `Err(TryLockError::WouldBlock)` arm of the same
+    `try_lock()` poll loop). `coordinate()` itself is
+    `coordinate_inner(.., .., .., || {})`, so production takes the identical
+    code path and its public signature, `WORKTREE_LOCK_TIMEOUT`, and every
+    lock/CAS/snapshot behavior are unchanged; no fake locking implementation
+    exists. The test creates a real `git init` temp repository and a real
+    temp-file `RepositoryAgentTraceDb`, holds a real first `WorktreeLock`
+    (acquired via `acquire_inner(.., || {})`), spawns a worker calling
+    `coordinate_inner(.., Flush, move || contention_tx.send(()))`, and blocks
+    on `contention_rx` (5s deadlock guard only). Receiving the contention
+    signal is the primary proof: the worker's `coordinate()` reached the real
+    `try_lock()` loop and observed `WouldBlock` while the first guard was
+    provably still alive (the main thread cannot drop it until after the
+    `recv`). A secondary `result_rx.recv_timeout(300ms).is_err()` asserts the
+    same invocation has not completed while the guard is held; then the first
+    guard is dropped and the same worker invocation is required to acquire the
+    lock and return `Ok` with `revision == 0` (first-observation flush) — no
+    restart, no manual retry. This mirrors `worktree_lock.rs`'s own corrected
+    T02 contention test (`try_lock()` → `WouldBlock` → contention observer)
+    and makes the same causal claim; it fails if `coordinate()` were changed
+    to enter its critical section without contending on the worktree lock. The
+    earlier revision of this test signalled a pre-call `started` channel and
+    asserted only non-completion for 500ms — a scheduler false positive (a
+    worker descheduled between the signal and the `coordinate()` call would
+    pass without ever reaching `try_lock()`); that framing, and any claim it
+    was equivalent to the `worktree_lock.rs` contention test, is superseded.
+  - Verify (actual): `./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml runtime::coordinator::tests::two_threads_on_the_same_worktree_serialize`
+    → 1/1 passed, re-run 5 consecutive times in isolation with no flakiness
+    after the PR #244 review follow-up (the strengthened `WouldBlock`-observed
+    proof). Additionally ran `./scripts/run-cli-cargo.sh test
+    --manifest-path cli/Cargo.toml runtime::` → 37/37 passed (no regression
+    in `worktree_lock`, `git_snapshot`, or the T04 coordinator tests);
+    `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml
+    --all-targets -- -D warnings` → clean (pedantic/warnings denied
+    workspace-wide, per Constraints; `cargo fmt` run once to apply the
+    follow-up's formatting); `./scripts/run-cli-cargo.sh fmt
+    --manifest-path cli/Cargo.toml -- --check` → clean. Full CLI suite
+    (`./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml`) → 821
+    passed / 0 failed on the baseline-plus-one count (pre-change baseline was
+    820/820). This project's full parallel test run is intermittently flaky in
+    modules unrelated to this task: across T05's original and follow-up
+    verification, three distinct full-suite runs each surfaced a different
+    single failure in `sync`, `agent_trace_db::repository`, or
+    `agent_trace_export`, every one of which passed immediately when re-run in
+    isolation and cleared on the next full run. The targeted
+    `two_threads_on_the_same_worktree_serialize` and `runtime::` runs were
+    never flaky.
+  - Context impact: `domain` — completes the mutation-cursor-runtime
+    coordinator by adding its public `coordinate()` entrypoint under the
+    domain file T02/T03/T04 established
+    (`context/cli/mutation-trace-runtime-coordinator.md`). Affected areas for
+    context synchronization to verify/update:
+    `context/cli/mutation-trace-runtime-coordinator.md` (document the public
+    `coordinate()` entrypoint, its lock-wrapped critical-section ordering —
+    resolve `git_dir` → acquire `WorktreeLock` (bounded 10s) → resolve
+    checkout identity → derive `WorktreeId` → delegate to the T04 pipeline —
+    and the `WorktreeLockError` → `CoordinateError::LockAcquisition` mapping);
+    `context/cli/mutation-trace-protocol.md`'s "Target end-state
+    architecture", which still frames `coordinator.rs`'s public entrypoint as
+    future work — now stale, the file's public API exists (only harness/CLI
+    wiring and `diff_traces` insertion remain out of scope);
+    `context/cli/mutation-trace-store.md`'s "Non-goals" line about
+    `coordinator.rs`; `context/context-map.md`'s `coordinator.rs` annotation
+    (the plan's own Context sync note says "update once T06 lands" — T05 is
+    the task that creates the public seam, so re-check the wording now);
+    `context/overview.md`'s `mutation_trace` description (the runtime
+    coordinator now has a usable public entrypoint, still not wired into any
+    hook or command). The five root context files must still be verified per
+    the mandatory pass. Reason: this is the first task to expose a public,
+    lock-wrapped `coordinate()` API, directly falsifying the "public
+    entrypoint remains future work" framing multiple context files carry.
+
+    PR #244 review follow-up: strengthened
+    `two_threads_on_the_same_worktree_serialize` from a scheduler-window
+    non-completion check into a real `TryLockError::WouldBlock` happens-before
+    proof (see Result). `context/cli/mutation-trace-runtime-coordinator.md`
+    was re-synced accordingly — its coordinator-bullet and Testing-boundary
+    paragraphs now describe the `coordinate_inner(.., on_lock_contention)`
+    seam and the `worktree_lock::acquire_inner` `pub(super)` widening, and no
+    longer imply the superseded pre-call-`started` framing was equivalent to
+    `worktree_lock.rs`'s own contention test. No other context file was
+    affected: `coordinate_inner` is a private test seam with no
+    public-interface, behavior-contract, or architecture change. The five
+    root context files were re-verified against the follow-up and remain
+    accurate as edited during the original T05 sync.
+  - Context synchronization: synced
 
 - [ ] T06: `Add cross-module runtime integration tests` (status:todo)
   - Task ID: T06
