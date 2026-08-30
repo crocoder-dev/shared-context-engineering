@@ -24,8 +24,9 @@ documented convention.
 The per-worktree runtime lock, the isolated Git snapshot service, the
 coordinator's internal protocol-integration pipeline, and the public,
 lock-wrapped `coordinate()` entrypoint that drives the lock and checkout
-identity around that pipeline all exist. Only cross-module integration tests
-and any harness/command wiring remain.
+identity around that pipeline all exist, with cross-module integration tests
+in `runtime/tests.rs` exercising the public API end to end. Only
+harness/command wiring remains.
 
 - `cli/src/services/mutation_trace/runtime/worktree_lock.rs` —
   `WorktreeLock::acquire(git_dir: &Path, timeout: Duration) ->
@@ -88,13 +89,17 @@ and any harness/command wiring remain.
   already-resolved one, never caller-supplied) and documents the
   `(ScopeId, EventId)` replay-identity contract a future harness adapter must
   uphold. The public `coordinate(repository_root, db, boundary) ->
-  Result<CoordinateOutcome, CoordinateError>` entrypoint owns the critical
-  section: resolve `git_dir` via `checkout::resolve_git_dir`, acquire the
-  `WorktreeLock` (bounded 10s, held for the whole call), resolve checkout
-  identity via `checkout::get_or_create_checkout_id` and wrap it as
+  Result<CoordinateOutcome, CoordinateError>` entrypoint takes an
+  already-resolved `RepositoryAgentTraceDb` from its caller — it never
+  resolves or opens the repository-scoped Agent Trace DB itself — and owns
+  the critical section: resolve `git_dir` via `checkout::resolve_git_dir`,
+  acquire the `WorktreeLock` (bounded 10s, held for the whole call), resolve
+  checkout identity via `checkout::get_or_create_checkout_id` and wrap it as
   `WorktreeId` — no caller-supplied `WorktreeId` or `Boundary` is ever
   accepted — then construct `GitSnapshotService` and delegate to the internal,
-  generic-over-`SnapshotCapture` pipeline. (`coordinate()` is a one-line
+  generic-over-`SnapshotCapture` pipeline. Identity flows
+  `repository_root → git_dir → WorktreeLock → checkout ID → WorktreeId`;
+  the `RepositoryAgentTraceDb` is not on that chain. (`coordinate()` is a one-line
   delegation to a private `coordinate_inner(.., on_lock_contention:
   impl FnOnce())` test seam; production passes a no-op closure.) A
   `WorktreeLock` acquisition failure (timeout or I/O) surfaces as
@@ -205,16 +210,37 @@ the guard is dropped — the same invocation acquires the lock and returns
 `Ok`. Production `coordinate()` passes a no-op closure, so its code path,
 signature, and lock semantics are unchanged.
 
+`runtime/tests.rs` is `runtime`'s own `#[cfg(test)] mod tests`, holding
+cross-module integration tests that drive only the public `coordinate()` API
+against real Git repositories (`git init`, `git worktree add`) and real
+temp-file `RepositoryAgentTraceDb`s, following the same unique-temp-path
+precedent: two linked worktrees of one repository (different `git_dir` →
+different lock paths → different `WorktreeId`s) are proven independently
+locked by holding one worktree's `WorktreeLock` across a synchronous
+`coordinate()` call for the other and observing that call return `Ok` before
+the held guard is dropped — a shared lock could not be acquired while the
+guard is alive, and no wall-clock timing is used. The test opens one
+repository-scoped DB path itself and hands a separate handle to each
+`coordinate()` call (`coordinate()` does not resolve the DB), then asserts
+both distinct worktree rows coexist in that one supplied DB, and that a tree
+pinned by one worktree's coordinator resolves through the other's `GIT_DIR`.
+A first-ever `agent_trace_storage` resolution and a `coordinate()` call on
+the same checkout converge on one checkout identity (matching the on-disk
+`checkout-id` file); and a full failure/recovery cycle — baseline call, a
+snapshot-failing call that durably taints the worktree, then a recovery call
+that clears the taint before processing its boundary — runs entirely through
+the public entrypoint.
+
 ## Status
 
 The per-worktree runtime lock, the isolated Git snapshot service, the
 coordinator's internal protocol-integration pipeline (above), and the public,
 lock-wrapped `coordinate()` entrypoint (resolving `git_dir`, acquiring
 `WorktreeLock`, resolving checkout identity, deriving `WorktreeId`, delegating
-to the pipeline) are all implemented. Cross-module integration tests, a
-`pub(crate)` re-export of `coordinate()` beyond `runtime`, and any
-harness/command wiring remain future work tracked by the
-`mutation-cursor-runtime-coordinator` plan's task stack and its follow-ups.
+to the pipeline) are all implemented, and `runtime/tests.rs` covers the
+public `coordinate()` API end to end (above). A `pub(crate)` re-export of
+`coordinate()` beyond `runtime` and any harness/command wiring remain future
+work tracked by the `mutation-cursor-runtime-coordinator` plan's follow-ups.
 
 See also: [`mutation-trace-protocol.md`](mutation-trace-protocol.md),
 [`mutation-trace-store.md`](mutation-trace-store.md),

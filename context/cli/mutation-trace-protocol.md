@@ -214,8 +214,9 @@ loads a `ProtocolState`; `protocol.rs` only transitions already-known ones.
 The plan's file split anticipated three seams beyond `protocol.rs`. `store.rs`,
 `runtime/git_snapshot.rs`, and `coordinator.rs` (with its public `coordinate()`
 entrypoint) now all exist as real call sites (see
-[`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md));
-only cross-module integration tests and harness/command wiring remain:
+[`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md)),
+with the runtime layer covered by cross-module integration tests; only
+harness/command wiring remains:
 
 ```mermaid
 flowchart LR
