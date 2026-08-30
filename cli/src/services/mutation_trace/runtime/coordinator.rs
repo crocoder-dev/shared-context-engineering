@@ -1,7 +1,11 @@
+use std::path::Path;
+use std::time::Duration;
+
 use anyhow::Result;
 use uuid::Uuid;
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
+use crate::services::checkout::{get_or_create_checkout_id, resolve_git_dir};
 use crate::services::mutation_trace::protocol;
 use crate::services::mutation_trace::store::{CasResult, DurableTransition, MutationTraceStore};
 use crate::services::mutation_trace::types::{
@@ -9,8 +13,11 @@ use crate::services::mutation_trace::types::{
 };
 
 use super::git_snapshot::GitSnapshotService;
+use super::worktree_lock::{acquire_inner, WorktreeLockError};
 
 const MAX_CAS_RETRY_ATTEMPTS: u32 = 5;
+
+const WORKTREE_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug)]
 pub enum RuntimeBoundary {
@@ -102,6 +109,40 @@ impl SnapshotCapture for GitSnapshotService {
     fn pin(&self, worktree_id: &WorktreeId, tree: &TreeId) -> Result<()> {
         self.pin_tree(worktree_id, tree)
     }
+}
+
+pub fn coordinate(
+    repository_root: &Path,
+    db: &RepositoryAgentTraceDb,
+    boundary: &RuntimeBoundary,
+) -> Result<CoordinateOutcome, CoordinateError> {
+    coordinate_inner(repository_root, db, boundary, || {})
+}
+
+fn coordinate_inner<F>(
+    repository_root: &Path,
+    db: &RepositoryAgentTraceDb,
+    boundary: &RuntimeBoundary,
+    on_lock_contention: F,
+) -> Result<CoordinateOutcome, CoordinateError>
+where
+    F: FnOnce(),
+{
+    let git_dir = resolve_git_dir(repository_root).map_err(CoordinateError::Other)?;
+
+    let _lock = acquire_inner(&git_dir, WORKTREE_LOCK_TIMEOUT, on_lock_contention)
+        .map_err(lock_acquisition)?;
+
+    let checkout_id = get_or_create_checkout_id(&git_dir).map_err(CoordinateError::Other)?;
+    let worktree_id = WorktreeId(checkout_id);
+
+    let snapshot = GitSnapshotService::new(repository_root).map_err(CoordinateError::Other)?;
+
+    coordinate_boundary(db, &snapshot, &worktree_id, boundary)
+}
+
+fn lock_acquisition(error: WorktreeLockError) -> CoordinateError {
+    CoordinateError::LockAcquisition(anyhow::Error::new(error))
 }
 
 fn coordinate_boundary<C: SnapshotCapture>(
@@ -315,7 +356,10 @@ where
 mod tests {
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
+    use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc;
+    use std::thread;
 
     use super::*;
     use crate::services::mutation_trace::store::encode_revision;
@@ -343,6 +387,38 @@ mod tests {
         if let Some(parent) = db_path.parent() {
             let _ = std::fs::remove_dir_all(parent);
         }
+    }
+
+    fn unique_test_repo(label: &str) -> std::path::PathBuf {
+        let id = NEXT_TEST_DB_ID.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "sce-mutation-trace-coordinator-repo-{label}-{}-{id}",
+            std::process::id()
+        ))
+    }
+
+    fn init_repo(repo_root: &std::path::Path) {
+        std::fs::create_dir_all(repo_root).expect("repo root should be created");
+        run_git(repo_root, &["init", "--quiet"]);
+        run_git(repo_root, &["config", "user.email", "test@example.com"]);
+        run_git(repo_root, &["config", "user.name", "Test"]);
+    }
+
+    fn run_git(repo_root: &std::path::Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo_root)
+            .output()
+            .expect("git command should spawn");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn remove_test_repo(repo_root: &std::path::Path) {
+        let _ = std::fs::remove_dir_all(repo_root);
     }
 
     enum FakeOutcome {
@@ -1227,5 +1303,63 @@ mod tests {
         assert!(projection.worktree_state.tainted);
 
         remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn two_threads_on_the_same_worktree_serialize() {
+        let repo_root = unique_test_repo("t05-serialize");
+        init_repo(&repo_root);
+        let db_path = repo_root.join("agent-trace.db");
+
+        let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
+        let held = acquire_inner(&git_dir, Duration::from_secs(5), || {})
+            .expect("the test should hold a real WorktreeLock before the worker runs");
+
+        let (contention_tx, contention_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let repo_root_clone = repo_root.clone();
+        let db_path_clone = db_path.clone();
+        let worker = thread::spawn(move || {
+            let db = RepositoryAgentTraceDb::new_at(&db_path_clone).expect("worker db should open");
+            let outcome =
+                coordinate_inner(&repo_root_clone, &db, &RuntimeBoundary::Flush, move || {
+                    contention_tx
+                        .send(())
+                        .expect("contention signal channel should still be open");
+                });
+            result_tx
+                .send(())
+                .expect("result signal channel should still be open");
+            outcome
+        });
+
+        contention_rx.recv_timeout(Duration::from_secs(5)).expect(
+            "coordinate() should reach the WorktreeLock try_lock loop and observe \
+             TryLockError::WouldBlock while the first guard is still held",
+        );
+
+        assert!(
+            result_rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "the worker's coordinate() call must not complete while the first worktree lock guard is still held"
+        );
+
+        drop(held);
+
+        result_rx.recv_timeout(Duration::from_secs(5)).expect(
+            "the same coordinate() invocation should complete once the first guard is released",
+        );
+
+        let outcome = worker
+            .join()
+            .expect("worker thread should not panic")
+            .expect(
+                "coordinate() should succeed once it can acquire the worktree lock after release",
+            );
+        assert_eq!(
+            outcome.revision, 0,
+            "the worker's first-observation flush should not advance the revision"
+        );
+
+        remove_test_repo(&repo_root);
     }
 }
