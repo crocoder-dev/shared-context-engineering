@@ -1139,13 +1139,11 @@ mod tests {
         seed_one_row_per_stream(&db);
 
         let server = TestHttpServer::start();
-        server.queue_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
-        for _ in 0..4 {
-            server.queue_response(CannedResponse::json(
-                404,
-                &json!({"message": "unknown ingestion route"}),
-            ));
-        }
+        server.queue_response(CannedResponse::json(200, &state_response(0, 1, 1, 1)));
+        server.queue_response(CannedResponse::json(
+            404,
+            &json!({"message": "unknown ingestion route"}),
+        ));
         let client = test_client(&server);
 
         let error = run_sync_against(
@@ -1179,9 +1177,9 @@ mod tests {
             .iter()
             .filter(|request| request.path == "/agent-trace/ingestion/batch")
             .count();
-        assert!(
-            (1..=4).contains(&batch_count),
-            "terminal /batch statuses must not resend batches; observed {batch_count}"
+        assert_eq!(
+            batch_count, 1,
+            "only `messages` should send a /batch request, and a terminal status must not resend it; observed {batch_count}"
         );
 
         remove_test_db(&db_path);
