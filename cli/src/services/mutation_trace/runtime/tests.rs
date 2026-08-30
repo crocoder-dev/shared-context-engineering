@@ -15,7 +15,7 @@ use crate::services::mutation_trace::types::{
     ActorKind, EventId, FailureKind, ScopeId, ScopeStatus,
 };
 
-use super::coordinator::{coordinate, CoordinateError, ExternalTaintOperation, RuntimeBoundary};
+use super::coordinator::{coordinate, CoordinateError, RuntimeBoundary};
 use super::external_taint::ExternalTaintMarker;
 use super::git_snapshot::GitSnapshotService;
 use super::worktree_lock::WorktreeLock;
@@ -852,6 +852,7 @@ fn a_snapshot_failure_arms_the_marker_and_the_next_invocation_recovers_once() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn a_marker_clear_failure_after_a_durable_boundary_keeps_the_marker_for_a_later_recovery() {
     let repo_root = unique_path("public-marker-clear-failure");
     init_repo(&repo_root);
@@ -861,73 +862,89 @@ fn a_marker_clear_failure_after_a_durable_boundary_keeps_the_marker_for_a_later_
     let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
     let marker = ExternalTaintMarker::new(&git_dir);
     let marker_path = git_dir.join("sce").join("mutation-cursor-tainted");
+    let ok_db = || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path);
 
-    let baseline = coordinate(&repo_root, &RuntimeBoundary::Flush, || {
-        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
-    })
-    .expect("the baseline observation should materialize the worktree");
+    let baseline = coordinate(&repo_root, &RuntimeBoundary::Flush, ok_db)
+        .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
 
-    // Ensure the next boundary is a real, durable transition.
+    let scope = ScopeId("scope-attributable".to_string());
+    coordinate(
+        &repo_root,
+        &RuntimeBoundary::Start {
+            scope: scope.clone(),
+            event: EventId("evt-start".to_string()),
+            actor_kind: ActorKind::ClaudeCode,
+        },
+        ok_db,
+    )
+    .expect("starting the scope should succeed");
     std::fs::write(repo_root.join("work.txt"), b"v1")
-        .expect("an edit before the boundary should write");
+        .expect("an exclusive edit before the boundary should write");
 
-    // The caller-supplied DB provider closure runs after the marker is armed and
-    // before the trailing clear(): swap the marker file for a directory so the
-    // clear()'s remove_file fails, with the boundary already durably committed.
     let clear_marker_path = marker_path.clone();
     let clear_db_path = db_path.clone();
-    let error = coordinate(&repo_root, &RuntimeBoundary::Flush, move || {
-        std::fs::remove_file(&clear_marker_path)
-            .expect("the armed marker file should be present mid-invocation");
-        std::fs::create_dir_all(clear_marker_path.join("nested"))
-            .expect("planting a non-empty directory at the marker path should succeed");
-        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&clear_db_path)
-    })
+    let error = coordinate(
+        &repo_root,
+        &RuntimeBoundary::Advance {
+            scope: scope.clone(),
+            event: EventId("evt-advance".to_string()),
+            actor_kind: ActorKind::ClaudeCode,
+        },
+        move || {
+            std::fs::remove_file(&clear_marker_path)
+                .expect("the armed marker file should be present mid-invocation");
+            std::fs::create_dir_all(clear_marker_path.join("nested"))
+                .expect("planting a non-empty directory at the marker path should succeed");
+            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&clear_db_path)
+        },
+    )
     .expect_err("clearing a marker that is now a non-empty directory must fail");
-    assert!(
-        matches!(
-            error,
-            CoordinateError::ExternalTaintMarker {
-                operation: ExternalTaintOperation::Clear,
-                ..
-            }
-        ),
-        "expected a Clear-operation marker failure, got {error:?}"
-    );
+
+    let committed = match error {
+        CoordinateError::MarkerClearAfterCommit { committed, .. } => committed,
+        other => panic!("expected MarkerClearAfterCommit, got {other:?}"),
+    };
     assert!(
         marker.exists().expect("marker existence should resolve"),
-        "the marker is left in place after a clear failure"
+        "the marker stays logically armed after a post-commit clear failure"
     );
 
-    // The triggering boundary itself committed durably despite the clear failure.
-    let durable_cursor = {
+    let (durable_revision, durable_cursor) = {
         let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
             .expect("reopening the DB for assertions should succeed");
         let store = MutationTraceStore::new(&db);
         let projection = store
-            .load_worktree(&worktree_id, None, None)
+            .load_worktree(&worktree_id, Some(&scope), None)
             .expect("loading the worktree row should succeed")
             .expect("the worktree row should exist");
-        assert!(
-            projection.worktree_state.revision >= 1,
-            "the triggering boundary must have committed durably before the clear failed"
-        );
-        projection.worktree_state.cursor_tree.clone()
+        let event = store
+            .load_mutation_event(&worktree_id, projection.worktree_state.revision)
+            .expect("loading the committed mutation event should succeed")
+            .expect("the attributable Advance must have committed one durable event");
+        assert_eq!(event.after_tree, projection.worktree_state.cursor_tree);
+        (
+            projection.worktree_state.revision,
+            projection.worktree_state.cursor_tree.clone(),
+        )
     };
 
-    // Normalize the marker scaffolding back to a plain file (it stays logically
-    // armed) and confirm a later invocation still recovers conservatively.
+    assert_eq!(committed.worktree_id, worktree_id);
+    assert_eq!(committed.revision, durable_revision);
+    assert_eq!(committed.observed_tree, durable_cursor);
+    assert!(
+        committed.mutation_event.is_some(),
+        "the committed outcome carried by the error must still expose the MutationEvent"
+    );
+
     std::fs::remove_dir_all(&marker_path).expect("removing the planted directory should succeed");
     marker
         .persist()
         .expect("re-arming a plain marker file should succeed");
     std::fs::write(repo_root.join("work.txt"), b"v2").expect("a later edit should write");
 
-    let recovered = coordinate(&repo_root, &RuntimeBoundary::Flush, || {
-        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
-    })
-    .expect("the later invocation recovers from the still-armed marker");
+    let recovered = coordinate(&repo_root, &RuntimeBoundary::Flush, ok_db)
+        .expect("the later invocation recovers from the still-armed marker");
     assert!(
         recovered.mutation_event.is_none(),
         "the deferred conservative recovery emits no evidence for the interval it could not prove"
