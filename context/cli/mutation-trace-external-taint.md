@@ -99,22 +99,39 @@ it.
   returned `Err` after the marker was armed. The marker is intentionally left in
   place; the lower-level `coordinate_boundary` pipeline is never entered.
 
-### Inherited taint, not yet consumed
+### Inherited taint recovery
 
-`coordinate()` computes `inherited_external_taint` from `marker.exists()` and
-threads it to `coordinate_boundary` as `_inherited_external_taint`, unused so
-far. Mapping an inherited marker into `protocol::database_failure` recovery
-against the single captured snapshot — and re-injecting it across a losing
-recovery CAS — is the next task in the same plan. `WorktreeProjection::
-into_protocol_state()` still returns an empty `external_taint`; the filesystem
-overlay is applied only by runtime code.
+`coordinate()` reads `inherited_external_taint` from `marker.exists()` before
+arming the marker and threads it into `coordinate_boundary`, which seeds an
+invocation-local `external_taint_pending` flag. While that flag is set, each
+freshly loaded projection is overlaid with `protocol::database_failure` before
+the recovery check, so `protocol::recover` performs exactly one conservative
+recovery against the single already-captured snapshot — cursor rebaselined to
+the observed tree, revision advanced once, live scopes abandoned, no
+`MutationEvent` for the fenced interval — and the triggering boundary is then
+processed against the recovered state. A worktree with no durable row yet is
+baselined against the observed tree first, then recovered the same way.
+
+The overlay is never persisted: `DurableTransition` ignores `external_taint` and
+`WorktreeProjection::into_protocol_state()` always returns it empty, so passing
+the overlaid state as the CAS baseline is safe. A losing recovery CAS keeps
+`external_taint_pending` set, so the next reload re-injects the overlay and
+recomputes until recovery lands or the retry budget is spent; once it lands the
+flag clears, so a later boundary-CAS retry in the same invocation does not
+re-trigger recovery. The filesystem marker is never touched here —
+`coordinate()`'s success path still owns clearing it.
 
 Inline `coordinator.rs` tests drive the public `coordinate()` against real
 repositories: a successful call clears the marker; a snapshot failure, a
 non-snapshot failure (revision-exhausted recovery), and a DB provider returning
 `Err` each leave the marker present; and both marker-I/O failure operations —
 `Inspect` (a deterministic `ENOTDIR`, no permission changes) and `Persist` —
-fail the call closed before the DB provider is ever invoked.
+fail the call closed before the DB provider is ever invoked. Pipeline tests
+cover the inherited-taint overlay directly: one conservative recovery sharing
+the single snapshot before the boundary, a first-ever inherited marker with no
+worktree row baselining without evidence, a losing recovery CAS re-injecting the
+overlay until it applies, and the flag clearing so a post-recovery boundary-CAS
+retry does not recover again.
 
 ## On-disk layout addition
 
