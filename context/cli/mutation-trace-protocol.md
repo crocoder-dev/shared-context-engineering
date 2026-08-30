@@ -209,7 +209,12 @@ the worktree-local `<git-dir>/sce/mutation-cursor-tainted` marker (see
 write-ahead before Agent Trace DB acquisition and overlaid onto
 `database_failure` recovery only when a later invocation inherits it;
 `WorktreeProjection::into_protocol_state()` itself always returns an empty
-`external_taint`.
+`external_taint`. A pre-protected marker inspect/persist failure means no
+mutation boundary committed; a marker-*clear* failure means the boundary already
+committed durably — the coordinator surfaces that as
+`CoordinateError::MarkerClearAfterCommit`, carrying the committed
+`CoordinateOutcome` so no evidence is lost, and leaves the marker armed so the
+next invocation still promotes it to protocol `external_taint`.
 
 Future responsibility split (mirrors "Runtime scope materialization" above):
 the coordinator/store layer resolves/materializes worktree identity/state and
