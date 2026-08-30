@@ -65,10 +65,11 @@ How this plan is proven complete. Each criterion is observable and names the
 check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation.
 
-- [ ] AC1: A marker is stored beneath the worktree-specific Git directory
-  (`<git-dir>/sce/mutation-cursor-tainted`), survives reconstruction of the
-  runtime service, and two linked worktrees resolve to two different marker
-  paths.
+- [ ] AC1: A marker is stored beneath the caller-supplied worktree-specific Git
+  directory (`<git-dir>/sce/mutation-cursor-tainted`), survives reconstruction
+  of the marker handle, and two distinct `git_dir` inputs derive independent
+  marker paths and marker state. (Actual linked-worktree independence over a
+  real `git worktree add` pair is AC12/T04.)
   - Validate: `runtime::external_taint::tests::marker_is_worktree_scoped` and
     `runtime::external_taint::tests::marker_persists_until_explicitly_cleared`
 - [ ] AC2: `persist` then `persist` then `clear` then `clear` all succeed;
@@ -267,8 +268,39 @@ local choices, not new requirements.
 
 ## Task stack
 
-- [ ] T01: `Add the external-taint marker primitive` (status:todo)
+- [x] T01: `Add the external-taint marker primitive` (status:done)
   - Task ID: T01
+  - Completed: 2026-08-30
+  - Files changed:
+    - `cli/src/services/mutation_trace/runtime/external_taint.rs` (new) —
+      `ExternalTaintMarker` with `new`/`exists`/`persist`/`clear`, local
+      `SCE_RUNTIME_DIR` / `MARKER_FILE` consts, checkout-identity-style
+      durability, cfg-gated best-effort parent-dir sync, inline `#[cfg(test)]
+      mod tests`.
+    - `cli/src/services/mutation_trace/runtime/mod.rs` — `mod external_taint;`.
+  - Result: New primitive backed by an empty file at
+    `<git-dir>/sce/mutation-cursor-tainted`; existence is the entire state.
+    `persist()` does `create_dir_all` + non-truncating `create` open
+    (`write(true).create(true).truncate(false)` — marker contents carry no
+    meaning) + `sync_data()` + best-effort `#[cfg(unix)]` parent-dir `sync_all`
+    (error swallowed); `clear()` does `remove_file` (`NotFound` → `Ok`) + the
+    same best-effort dir sync; `exists()` via `symlink_metadata`. No `Drop`
+    deletion. Module carries `#![allow(dead_code)]` (per `services/capabilities.rs`
+    precedent) since nothing wires it in until T02. No `coordinator.rs`,
+    protocol, store, or error-type change.
+  - Verify (re-run after the PR #245 review fixes — `truncate` removal, AC1 wording):
+    - `test ...runtime::external_taint` — PASS (3 passed: `marker_is_worktree_scoped`,
+      `marker_persists_until_explicitly_cleared`, `persist_and_clear_are_idempotent`).
+    - `test ...runtime::` — PASS (38 passed, 0 failed).
+    - `clippy --all-targets -- -D warnings` — PASS (clean).
+    - `fmt -- --check` — PASS (clean).
+  - Context impact: docs-update-needed. Introduces a new runtime module
+    (`ExternalTaintMarker`) and a new durable on-disk artifact
+    (`<git-dir>/sce/mutation-cursor-tainted`). Affected durable context:
+    `context/cli/mutation-trace-runtime-coordinator.md` (primitive + on-disk
+    layout entry), `spec/mutation_cursor.md` (concrete refinement of the
+    abstract `externalTaint` marker). Matches the plan's Context sync section;
+    no behavior reaches the coordinator or protocol yet.
   - Scope: In — new `cli/src/services/mutation_trace/runtime/external_taint.rs`
     defining `ExternalTaintMarker` with `new(git_dir)`, `exists()`, `persist()`,
     `clear()`; empty marker file at `<git-dir>/sce/mutation-cursor-tainted`;
@@ -288,7 +320,7 @@ local choices, not new requirements.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::external_taint`;
     `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`;
     `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`.
-  - Context synchronization: pending
+  - Context synchronization: synced
 
 - [ ] T02: `Arm the write-ahead fence around the full runtime boundary, DB acquisition included` (status:todo)
   - Task ID: T02
