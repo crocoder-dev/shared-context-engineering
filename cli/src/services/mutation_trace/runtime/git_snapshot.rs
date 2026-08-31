@@ -1,5 +1,6 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, Context, Result};
 use uuid::Uuid;
@@ -67,6 +68,95 @@ impl GitSnapshotService {
         )
     }
 
+    /// Inventory every SCE snapshot pin owned by `worktree_id`.
+    ///
+    /// Runs `git for-each-ref` constrained to the single path prefix
+    /// `refs/sce/mutation-cursor/<worktree_id>/`, so a ref owned by any other
+    /// worktree or in an unrelated namespace is never returned. Each line is
+    /// validated against the shape `pin_tree` produces: the target must be a
+    /// tree object and the final path component must equal the target SHA. A
+    /// `git for-each-ref` execution or exit failure is
+    /// [`PinInventoryError::Git`]; anything malformed inside the namespace is
+    /// [`PinInventoryError::MalformedRef`], matchable separately.
+    pub fn list_pins(
+        &self,
+        worktree_id: &WorktreeId,
+    ) -> std::result::Result<Vec<PinnedRef>, PinInventoryError> {
+        let prefix = pin_ref_prefix(worktree_id);
+        let raw = self
+            .run_git(
+                &[
+                    "for-each-ref",
+                    "--format=%(refname) %(objectname) %(objecttype)",
+                    &prefix,
+                ],
+                None,
+            )
+            .map_err(PinInventoryError::Git)?;
+
+        raw.lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(|line| parse_pin_line(line, &prefix))
+            .collect()
+    }
+
+    /// Delete exactly `pins` in one atomic `git update-ref --stdin`
+    /// transaction, each `delete` conditioned on the tree SHA recorded in the
+    /// [`PinnedRef`]. `git update-ref --stdin` commits every command together
+    /// at end of input; if any command fails (including a failed old-value
+    /// check) the whole transaction aborts and no ref is changed. An empty
+    /// slice is a successful no-op.
+    pub fn delete_pins(&self, pins: &[PinnedRef]) -> Result<()> {
+        if pins.is_empty() {
+            return Ok(());
+        }
+
+        let mut stdin_payload = String::new();
+        for pin in pins {
+            stdin_payload.push_str("delete ");
+            stdin_payload.push_str(&pin.ref_name);
+            stdin_payload.push(' ');
+            stdin_payload.push_str(&pin.tree.0);
+            stdin_payload.push('\n');
+        }
+
+        let mut child = Command::new("git")
+            .args(["update-ref", "--stdin"])
+            .current_dir(&self.repository_root)
+            .env("GIT_DIR", &self.git_dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| {
+                format!(
+                    "Failed to run git update-ref --stdin in '{}'",
+                    self.repository_root.display()
+                )
+            })?;
+
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("Failed to open stdin for git update-ref --stdin"))?
+            .write_all(stdin_payload.as_bytes())
+            .with_context(|| "Failed to write the delete transaction to git update-ref --stdin")?;
+
+        let output = child
+            .wait_with_output()
+            .with_context(|| "Failed to wait for git update-ref --stdin")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if stderr.is_empty() { stdout } else { stderr };
+            return Err(anyhow!("git update-ref --stdin failed: {detail}"));
+        }
+
+        Ok(())
+    }
+
     fn head_exists(&self) -> Result<bool> {
         let output = Command::new("git")
             .args(["rev-parse", "--verify", "--quiet", "HEAD"])
@@ -125,8 +215,97 @@ impl GitSnapshotService {
     }
 }
 
+/// One SCE-owned snapshot pin: a ref under
+/// `refs/sce/mutation-cursor/<worktree-id>/` and the tree object it protects.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PinnedRef {
+    pub ref_name: String,
+    pub tree: TreeId,
+}
+
+/// Why a worktree's pin inventory could not be produced.
+#[derive(Debug)]
+pub enum PinInventoryError {
+    /// `git for-each-ref` itself failed to execute or exited non-zero.
+    Git(anyhow::Error),
+    /// A ref under the SCE namespace is not shaped like a `pin_tree` output: a
+    /// non-tree target, a name/target SHA mismatch, an unparseable
+    /// `for-each-ref` line, or an unexpected extra path segment. `reason`
+    /// carries the specific discriminant for tests and `Display`.
+    MalformedRef { ref_name: String, reason: String },
+}
+
+impl std::fmt::Display for PinInventoryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PinInventoryError::Git(source) => write!(f, "{source}"),
+            PinInventoryError::MalformedRef { ref_name, reason } => write!(
+                f,
+                "Malformed ref '{ref_name}' in the mutation-cursor snapshot namespace: {reason}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PinInventoryError {}
+
+fn parse_pin_line(line: &str, prefix: &str) -> std::result::Result<PinnedRef, PinInventoryError> {
+    let fields: Vec<&str> = line.split(' ').collect();
+    let [ref_name, object_name, object_type] = fields.as_slice() else {
+        return Err(PinInventoryError::MalformedRef {
+            ref_name: fields
+                .first()
+                .map_or_else(|| line.to_string(), |field| (*field).to_string()),
+            reason: format!(
+                "git for-each-ref line did not have exactly three space-separated fields: '{line}'"
+            ),
+        });
+    };
+
+    if *object_type != "tree" {
+        return Err(PinInventoryError::MalformedRef {
+            ref_name: (*ref_name).to_string(),
+            reason: format!("ref target is a {object_type} object, not a tree"),
+        });
+    }
+
+    let Some(suffix) = ref_name.strip_prefix(prefix) else {
+        return Err(PinInventoryError::MalformedRef {
+            ref_name: (*ref_name).to_string(),
+            reason: format!("ref name is not under the expected prefix '{prefix}'"),
+        });
+    };
+
+    if suffix.is_empty() || suffix.contains('/') {
+        return Err(PinInventoryError::MalformedRef {
+            ref_name: (*ref_name).to_string(),
+            reason: format!(
+                "ref name has an unexpected path segment after the worktree prefix: '{suffix}'"
+            ),
+        });
+    }
+
+    if suffix != *object_name {
+        return Err(PinInventoryError::MalformedRef {
+            ref_name: (*ref_name).to_string(),
+            reason: format!(
+                "ref name suffix '{suffix}' disagrees with its target tree SHA '{object_name}'"
+            ),
+        });
+    }
+
+    Ok(PinnedRef {
+        ref_name: (*ref_name).to_string(),
+        tree: TreeId((*object_name).to_string()),
+    })
+}
+
+fn pin_ref_prefix(worktree_id: &WorktreeId) -> String {
+    format!("{REF_NAMESPACE}/{}/", worktree_id.0)
+}
+
 fn pin_ref_name(worktree_id: &WorktreeId, tree: &TreeId) -> String {
-    format!("{REF_NAMESPACE}/{}/{}", worktree_id.0, tree.0)
+    format!("{}{}", pin_ref_prefix(worktree_id), tree.0)
 }
 
 fn resolve_git_dir(repository_root: &Path) -> Result<PathBuf> {
@@ -612,6 +791,292 @@ mod tests {
 
         let ls_tree = run(&repo_root, &["ls-tree", "-r", "--name-only", &tree.0]);
         assert!(ls_tree.contains("file.txt"));
+
+        remove_test_repo(&repo_root);
+    }
+
+    fn other_worktree_id() -> WorktreeId {
+        WorktreeId("other-worktree".to_string())
+    }
+
+    fn capture_with_file(
+        service: &GitSnapshotService,
+        repo_root: &Path,
+        name: &str,
+        body: &[u8],
+    ) -> TreeId {
+        std::fs::write(repo_root.join(name), body).expect("file should be writable");
+        service.capture_tree().expect("capture should succeed")
+    }
+
+    fn ref_target(repo_root: &Path, ref_name: &str) -> String {
+        run(repo_root, &["rev-parse", "--verify", ref_name])
+            .trim()
+            .to_string()
+    }
+
+    fn ref_exists(repo_root: &Path, ref_name: &str) -> bool {
+        Command::new("git")
+            .args(["rev-parse", "--verify", "--quiet", ref_name])
+            .current_dir(repo_root)
+            .output()
+            .expect("git rev-parse should spawn")
+            .status
+            .success()
+    }
+
+    #[test]
+    fn list_pins_returns_only_the_target_worktree_prefix() {
+        let repo_root = unique_test_repo("list-pins-scoped");
+        init_repo(&repo_root);
+        let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
+
+        let tree_a = capture_with_file(&service, &repo_root, "a.txt", b"a\n");
+        let tree_b = capture_with_file(&service, &repo_root, "b.txt", b"b\n");
+
+        service
+            .pin_tree(&worktree_id(), &tree_a)
+            .expect("pin should succeed");
+        service
+            .pin_tree(&worktree_id(), &tree_b)
+            .expect("pin should succeed");
+        service
+            .pin_tree(&other_worktree_id(), &tree_a)
+            .expect("pin should succeed");
+
+        let pins = service
+            .list_pins(&worktree_id())
+            .expect("inventory should succeed");
+        assert_eq!(pins.len(), 2, "only the target worktree's pins are listed");
+
+        let mut trees: Vec<String> = pins.iter().map(|pin| pin.tree.0.clone()).collect();
+        trees.sort();
+        let mut expected = vec![tree_a.0.clone(), tree_b.0.clone()];
+        expected.sort();
+        assert_eq!(trees, expected);
+
+        let prefix = format!("{REF_NAMESPACE}/{}/", worktree_id().0);
+        for pin in &pins {
+            assert!(pin.ref_name.starts_with(&prefix));
+            assert_eq!(pin.ref_name, format!("{prefix}{}", pin.tree.0));
+        }
+
+        assert!(ref_exists(
+            &repo_root,
+            &format!("{REF_NAMESPACE}/{}/{}", other_worktree_id().0, tree_a.0)
+        ));
+
+        remove_test_repo(&repo_root);
+    }
+
+    #[test]
+    fn list_pins_is_empty_when_the_worktree_has_no_pins() {
+        let repo_root = unique_test_repo("list-pins-empty");
+        init_repo(&repo_root);
+        let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
+
+        let pins = service
+            .list_pins(&worktree_id())
+            .expect("inventory should succeed");
+        assert!(pins.is_empty());
+
+        remove_test_repo(&repo_root);
+    }
+
+    #[test]
+    fn list_pins_rejects_a_ref_whose_target_is_not_a_tree() {
+        let repo_root = unique_test_repo("list-pins-non-tree");
+        init_repo(&repo_root);
+        std::fs::write(repo_root.join("file.txt"), b"content\n").expect("file should be writable");
+        commit_all(&repo_root, "initial commit");
+        let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
+
+        let head = run(&repo_root, &["rev-parse", "HEAD"]).trim().to_string();
+        let ref_name = format!("{REF_NAMESPACE}/{}/{}", worktree_id().0, head);
+        run(&repo_root, &["update-ref", &ref_name, &head]);
+
+        match service.list_pins(&worktree_id()) {
+            Err(PinInventoryError::MalformedRef {
+                ref_name: rn,
+                reason,
+            }) => {
+                assert_eq!(rn, ref_name);
+                assert!(
+                    reason.contains("commit"),
+                    "reason names the wrong object type: {reason}"
+                );
+            }
+            other => panic!("expected MalformedRef for a non-tree target, got {other:?}"),
+        }
+
+        remove_test_repo(&repo_root);
+    }
+
+    #[test]
+    fn list_pins_rejects_a_ref_whose_name_disagrees_with_its_target() {
+        let repo_root = unique_test_repo("list-pins-name-mismatch");
+        init_repo(&repo_root);
+        let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
+
+        let tree_a = capture_with_file(&service, &repo_root, "a.txt", b"a\n");
+        let tree_b = capture_with_file(&service, &repo_root, "b.txt", b"b\n");
+
+        let ref_name = format!("{REF_NAMESPACE}/{}/{}", worktree_id().0, tree_a.0);
+        run(&repo_root, &["update-ref", &ref_name, &tree_b.0]);
+
+        match service.list_pins(&worktree_id()) {
+            Err(PinInventoryError::MalformedRef {
+                ref_name: rn,
+                reason,
+            }) => {
+                assert_eq!(rn, ref_name);
+                assert!(reason.contains("disagrees"), "unexpected reason: {reason}");
+            }
+            other => panic!("expected MalformedRef for a name/target mismatch, got {other:?}"),
+        }
+
+        remove_test_repo(&repo_root);
+    }
+
+    #[test]
+    fn list_pins_rejects_a_ref_with_an_unexpected_extra_path_segment() {
+        let repo_root = unique_test_repo("list-pins-extra-segment");
+        init_repo(&repo_root);
+        let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
+
+        let tree_a = capture_with_file(&service, &repo_root, "a.txt", b"a\n");
+        let ref_name = format!("{REF_NAMESPACE}/{}/nested/{}", worktree_id().0, tree_a.0);
+        run(&repo_root, &["update-ref", &ref_name, &tree_a.0]);
+
+        match service.list_pins(&worktree_id()) {
+            Err(PinInventoryError::MalformedRef { reason, .. }) => {
+                assert!(
+                    reason.contains("path segment"),
+                    "unexpected reason: {reason}"
+                );
+            }
+            other => panic!("expected MalformedRef for an extra path segment, got {other:?}"),
+        }
+
+        remove_test_repo(&repo_root);
+    }
+
+    #[test]
+    fn list_pins_reports_a_for_each_ref_execution_failure_as_the_git_variant() {
+        let repo_root = unique_test_repo("list-pins-git-failure");
+        init_repo(&repo_root);
+        let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
+
+        std::fs::remove_dir_all(&service.git_dir).expect("git-dir should be removable");
+
+        match service.list_pins(&worktree_id()) {
+            Err(PinInventoryError::Git(_)) => {}
+            other => panic!(
+                "expected the Git variant for a for-each-ref execution failure, got {other:?}"
+            ),
+        }
+
+        remove_test_repo(&repo_root);
+    }
+
+    #[test]
+    fn delete_pins_removes_exactly_the_supplied_refs() {
+        let repo_root = unique_test_repo("delete-pins-exact");
+        init_repo(&repo_root);
+        let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
+
+        let tree_a = capture_with_file(&service, &repo_root, "a.txt", b"a\n");
+        let tree_b = capture_with_file(&service, &repo_root, "b.txt", b"b\n");
+        service
+            .pin_tree(&worktree_id(), &tree_a)
+            .expect("pin should succeed");
+        service
+            .pin_tree(&worktree_id(), &tree_b)
+            .expect("pin should succeed");
+
+        let inventory = service
+            .list_pins(&worktree_id())
+            .expect("inventory should succeed");
+        let stale: Vec<PinnedRef> = inventory
+            .into_iter()
+            .filter(|pin| pin.tree == tree_a)
+            .collect();
+        service.delete_pins(&stale).expect("delete should succeed");
+
+        let remaining = service
+            .list_pins(&worktree_id())
+            .expect("inventory should succeed");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].tree, tree_b);
+        assert!(!ref_exists(
+            &repo_root,
+            &format!("{REF_NAMESPACE}/{}/{}", worktree_id().0, tree_a.0)
+        ));
+
+        remove_test_repo(&repo_root);
+    }
+
+    #[test]
+    fn delete_pins_is_a_successful_noop_for_an_empty_slice() {
+        let repo_root = unique_test_repo("delete-pins-empty");
+        init_repo(&repo_root);
+        let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
+
+        let tree_a = capture_with_file(&service, &repo_root, "a.txt", b"a\n");
+        service
+            .pin_tree(&worktree_id(), &tree_a)
+            .expect("pin should succeed");
+
+        service
+            .delete_pins(&[])
+            .expect("empty delete should be a successful no-op");
+
+        assert!(ref_exists(
+            &repo_root,
+            &format!("{REF_NAMESPACE}/{}/{}", worktree_id().0, tree_a.0)
+        ));
+
+        remove_test_repo(&repo_root);
+    }
+
+    #[test]
+    fn delete_pins_aborts_the_whole_transaction_when_one_ref_no_longer_matches_its_expected_value()
+    {
+        let repo_root = unique_test_repo("delete-pins-atomic-abort");
+        init_repo(&repo_root);
+        let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
+
+        let tree_a = capture_with_file(&service, &repo_root, "a.txt", b"a\n");
+        let tree_b = capture_with_file(&service, &repo_root, "b.txt", b"b\n");
+        let tree_c = capture_with_file(&service, &repo_root, "c.txt", b"c\n");
+        service
+            .pin_tree(&worktree_id(), &tree_a)
+            .expect("pin should succeed");
+        service
+            .pin_tree(&worktree_id(), &tree_b)
+            .expect("pin should succeed");
+
+        let inventory = service
+            .list_pins(&worktree_id())
+            .expect("inventory should succeed");
+        assert_eq!(inventory.len(), 2);
+
+        let ref_a = format!("{REF_NAMESPACE}/{}/{}", worktree_id().0, tree_a.0);
+        run(&repo_root, &["update-ref", &ref_a, &tree_c.0]);
+
+        let error = service
+            .delete_pins(&inventory)
+            .expect_err("a stale expected value must abort the whole transaction");
+        assert!(
+            error.to_string().contains("update-ref"),
+            "unexpected error: {error}"
+        );
+
+        assert_eq!(ref_target(&repo_root, &ref_a), tree_c.0);
+        assert!(ref_exists(
+            &repo_root,
+            &format!("{REF_NAMESPACE}/{}/{}", worktree_id().0, tree_b.0)
+        ));
 
         remove_test_repo(&repo_root);
     }
