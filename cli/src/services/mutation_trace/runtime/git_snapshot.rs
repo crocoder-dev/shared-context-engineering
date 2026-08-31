@@ -11,6 +11,14 @@ const SCE_RUNTIME_DIR: &str = "sce";
 const TMP_INDEX_DIR: &str = "tmp";
 const REF_NAMESPACE: &str = "refs/sce/mutation-cursor";
 
+/// `git for-each-ref` format for pin inventory: four `%00`-separated fields —
+/// refname, target object name, target object type, and the symbolic-ref
+/// target (empty for a direct ref). NUL-separated so no field can be split or
+/// trimmed ambiguously; the trailing symref field is always present (possibly
+/// empty), so every well-formed line has exactly four fields.
+const FOR_EACH_REF_PIN_FORMAT: &str =
+    "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)";
+
 pub struct GitSnapshotService {
     git_dir: PathBuf,
     repository_root: PathBuf,
@@ -73,8 +81,11 @@ impl GitSnapshotService {
     /// Runs `git for-each-ref` constrained to the single path prefix
     /// `refs/sce/mutation-cursor/<worktree_id>/`, so a ref owned by any other
     /// worktree or in an unrelated namespace is never returned. Each line is
-    /// validated against the shape `pin_tree` produces: the target must be a
-    /// tree object and the final path component must equal the target SHA. A
+    /// validated against the shape `pin_tree` produces: a **direct** ref (never
+    /// a symbolic ref) whose target is a tree object and whose final path
+    /// component equals the target SHA. A symbolic ref anywhere in the
+    /// namespace is malformed state — it would let one worktree's pin resolve
+    /// through another worktree's ref — and is rejected rather than followed. A
     /// `git for-each-ref` execution or exit failure is
     /// [`PinInventoryError::Git`]; anything malformed inside the namespace is
     /// [`PinInventoryError::MalformedRef`], matchable separately.
@@ -84,14 +95,7 @@ impl GitSnapshotService {
     ) -> std::result::Result<Vec<PinnedRef>, PinInventoryError> {
         let prefix = pin_ref_prefix(worktree_id);
         let raw = self
-            .run_git(
-                &[
-                    "for-each-ref",
-                    "--format=%(refname) %(objectname) %(objecttype)",
-                    &prefix,
-                ],
-                None,
-            )
+            .run_git(&["for-each-ref", FOR_EACH_REF_PIN_FORMAT, &prefix], None)
             .map_err(PinInventoryError::Git)?;
 
         raw.lines()
@@ -101,16 +105,49 @@ impl GitSnapshotService {
             .collect()
     }
 
-    /// Delete exactly `pins` in one atomic `git update-ref --stdin`
-    /// transaction, each `delete` conditioned on the tree SHA recorded in the
-    /// [`PinnedRef`]. `git update-ref --stdin` commits every command together
-    /// at end of input; if any command fails (including a failed old-value
-    /// check) the whole transaction aborts and no ref is changed. An empty
-    /// slice is a successful no-op.
+    /// Delete exactly `pins` in one atomic, no-dereference
+    /// `git update-ref --no-deref --stdin` transaction, each `delete`
+    /// conditioned on the tree SHA recorded in the [`PinnedRef`].
+    ///
+    /// Two independent safety properties:
+    ///
+    /// - **Atomic** — `git update-ref --stdin` commits every command together
+    ///   at end of input; if any command fails (including a failed old-value
+    ///   check) the whole transaction aborts and no ref is changed.
+    /// - **No dereference** — `--no-deref` makes every `delete` operate on the
+    ///   exact ref name given, never on a ref reached by resolving a symbolic
+    ///   ref. Combined with a fail-closed re-check (below), a
+    ///   direct-ref → symbolic-ref race between inventory and deletion can
+    ///   never cause this call to touch the symref's target (for example a ref
+    ///   owned by another worktree).
+    ///
+    /// Before issuing the transaction, each supplied ref is re-inventoried: it
+    /// must still exist, still be a direct ref to a tree, and still point at
+    /// the inventoried SHA. If any has changed — deleted, retargeted, or turned
+    /// into a symbolic ref — this returns `Err` and deletes nothing, preferring
+    /// failure over acting on unexpected namespace state. An empty slice is a
+    /// successful no-op.
     pub fn delete_pins(&self, pins: &[PinnedRef]) -> Result<()> {
+        self.delete_pins_inner(pins, || {})
+    }
+
+    /// Body of [`delete_pins`] with a deterministic test seam that fires
+    /// **after** the fail-closed preflight re-inventory and **before** the
+    /// `git update-ref --no-deref --stdin` transaction is spawned. Production
+    /// calls it with a no-op hook; the inline atomicity test uses the hook to
+    /// mutate a ref *after* it has passed preflight, so the transaction is
+    /// actually issued and the per-`delete` expected-old-value check — not the
+    /// preflight — is what aborts the batch. This is the only proof that the
+    /// Git transaction itself is atomic; the preflight proves a different
+    /// property (unexpected ref state before the transaction is even attempted).
+    fn delete_pins_inner(&self, pins: &[PinnedRef], after_preflight: impl FnOnce()) -> Result<()> {
         if pins.is_empty() {
             return Ok(());
         }
+
+        self.assert_pins_are_unchanged_direct_refs(pins)?;
+
+        after_preflight();
 
         let mut stdin_payload = String::new();
         for pin in pins {
@@ -122,7 +159,7 @@ impl GitSnapshotService {
         }
 
         let mut child = Command::new("git")
-            .args(["update-ref", "--stdin"])
+            .args(["update-ref", "--no-deref", "--stdin"])
             .current_dir(&self.repository_root)
             .env("GIT_DIR", &self.git_dir)
             .stdin(Stdio::piped())
@@ -131,7 +168,7 @@ impl GitSnapshotService {
             .spawn()
             .with_context(|| {
                 format!(
-                    "Failed to run git update-ref --stdin in '{}'",
+                    "Failed to run git update-ref --no-deref --stdin in '{}'",
                     self.repository_root.display()
                 )
             })?;
@@ -139,19 +176,83 @@ impl GitSnapshotService {
         child
             .stdin
             .take()
-            .ok_or_else(|| anyhow!("Failed to open stdin for git update-ref --stdin"))?
+            .ok_or_else(|| anyhow!("Failed to open stdin for git update-ref --no-deref --stdin"))?
             .write_all(stdin_payload.as_bytes())
-            .with_context(|| "Failed to write the delete transaction to git update-ref --stdin")?;
+            .with_context(|| {
+                "Failed to write the delete transaction to git update-ref --no-deref --stdin"
+            })?;
 
         let output = child
             .wait_with_output()
-            .with_context(|| "Failed to wait for git update-ref --stdin")?;
+            .with_context(|| "Failed to wait for git update-ref --no-deref --stdin")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let detail = if stderr.is_empty() { stdout } else { stderr };
-            return Err(anyhow!("git update-ref --stdin failed: {detail}"));
+            return Err(anyhow!(
+                "git update-ref --no-deref --stdin failed: {detail}"
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Fail closed unless every supplied pin is still exactly the direct ref
+    /// that was inventoried: present, a direct (non-symbolic) ref, targeting a
+    /// tree, and pointing at the recorded SHA. Re-inventoried in a single
+    /// `git for-each-ref` over the exact ref names, so no enumeration order is
+    /// relied on. This closes the common inventory→delete race cleanly; the
+    /// residual sub-transaction race is still contained by `--no-deref` plus
+    /// the per-`delete` old-value condition, which together cannot follow a
+    /// symbolic ref or mutate a ref the caller did not name.
+    fn assert_pins_are_unchanged_direct_refs(&self, pins: &[PinnedRef]) -> Result<()> {
+        let mut args: Vec<&str> = vec!["for-each-ref", FOR_EACH_REF_PIN_FORMAT];
+        args.extend(pins.iter().map(|pin| pin.ref_name.as_str()));
+        let raw = self.run_git(&args, None)?;
+
+        let current: Vec<[&str; 4]> = raw
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                let fields: Vec<&str> = line.split('\0').collect();
+                <[&str; 4]>::try_from(fields.as_slice())
+                    .map_err(|_| anyhow!("git for-each-ref emitted an unparseable line: '{line}'"))
+            })
+            .collect::<Result<_>>()?;
+
+        for pin in pins {
+            let Some(entry) = current.iter().find(|entry| entry[0] == pin.ref_name) else {
+                return Err(anyhow!(
+                    "pin ref '{}' no longer exists; refusing to delete stale inventory",
+                    pin.ref_name
+                ));
+            };
+            let [_, object_name, object_type, symref] = *entry;
+
+            if !symref.is_empty() {
+                return Err(anyhow!(
+                    "pin ref '{}' is now a symbolic ref pointing at '{symref}'; mutation-cursor \
+                     pins must be direct refs, refusing to delete",
+                    pin.ref_name
+                ));
+            }
+            if object_type != "tree" {
+                return Err(anyhow!(
+                    "pin ref '{}' now targets a {object_type} object, not a tree; refusing to \
+                     delete",
+                    pin.ref_name
+                ));
+            }
+            if object_name != pin.tree.0 {
+                return Err(anyhow!(
+                    "pin ref '{}' now points at {object_name}, not the inventoried {}; refusing \
+                     to delete",
+                    pin.ref_name,
+                    pin.tree.0
+                ));
+            }
         }
 
         Ok(())
@@ -229,9 +330,9 @@ pub enum PinInventoryError {
     /// `git for-each-ref` itself failed to execute or exited non-zero.
     Git(anyhow::Error),
     /// A ref under the SCE namespace is not shaped like a `pin_tree` output: a
-    /// non-tree target, a name/target SHA mismatch, an unparseable
-    /// `for-each-ref` line, or an unexpected extra path segment. `reason`
-    /// carries the specific discriminant for tests and `Display`.
+    /// symbolic ref, a non-tree target, a name/target SHA mismatch, an
+    /// unparseable `for-each-ref` line, or an unexpected extra path segment.
+    /// `reason` carries the specific discriminant for tests and `Display`.
     MalformedRef { ref_name: String, reason: String },
 }
 
@@ -250,17 +351,28 @@ impl std::fmt::Display for PinInventoryError {
 impl std::error::Error for PinInventoryError {}
 
 fn parse_pin_line(line: &str, prefix: &str) -> std::result::Result<PinnedRef, PinInventoryError> {
-    let fields: Vec<&str> = line.split(' ').collect();
-    let [ref_name, object_name, object_type] = fields.as_slice() else {
+    let fields: Vec<&str> = line.split('\0').collect();
+    let [ref_name, object_name, object_type, symref] = fields.as_slice() else {
         return Err(PinInventoryError::MalformedRef {
             ref_name: fields
                 .first()
                 .map_or_else(|| line.to_string(), |field| (*field).to_string()),
             reason: format!(
-                "git for-each-ref line did not have exactly three space-separated fields: '{line}'"
+                "git for-each-ref line did not have exactly four NUL-separated fields: '{line}'"
             ),
         });
     };
+
+    if !symref.is_empty() {
+        return Err(PinInventoryError::MalformedRef {
+            ref_name: (*ref_name).to_string(),
+            reason: format!(
+                "ref is a symbolic ref pointing at '{symref}'; mutation-cursor pins must be direct \
+                 refs to a tree object, and a symbolic ref inside the namespace is rejected rather \
+                 than followed"
+            ),
+        });
+    }
 
     if *object_type != "tree" {
         return Err(PinInventoryError::MalformedRef {
@@ -1040,8 +1152,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_pins_aborts_the_whole_transaction_when_one_ref_no_longer_matches_its_expected_value()
-    {
+    fn delete_pins_atomically_aborts_when_a_ref_changes_after_preflight() {
         let repo_root = unique_test_repo("delete-pins-atomic-abort");
         init_repo(&repo_root);
         let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
@@ -1056,27 +1167,131 @@ mod tests {
             .pin_tree(&worktree_id(), &tree_b)
             .expect("pin should succeed");
 
+        let ref_a = format!("{REF_NAMESPACE}/{}/{}", worktree_id().0, tree_a.0);
+        let ref_b = format!("{REF_NAMESPACE}/{}/{}", worktree_id().0, tree_b.0);
+
+        let valid_ref = PinnedRef {
+            ref_name: ref_a.clone(),
+            tree: tree_a.clone(),
+        };
+        let mismatched_ref = PinnedRef {
+            ref_name: ref_b.clone(),
+            tree: tree_b.clone(),
+        };
+
+        let pins = [valid_ref, mismatched_ref];
+
+        let result = service.delete_pins_inner(&pins, || {
+            run(&repo_root, &["update-ref", &ref_b, &tree_c.0]);
+        });
+
+        result.expect_err(
+            "the transaction is issued after preflight; git's per-delete expected-old-value \
+             check on the second ref must abort the whole batch",
+        );
+
+        assert!(
+            ref_exists(&repo_root, &ref_a),
+            "the first (valid) delete must not have been applied — the batch is all-or-nothing"
+        );
+        assert_eq!(ref_target(&repo_root, &ref_a), tree_a.0);
+
+        assert!(
+            ref_exists(&repo_root, &ref_b),
+            "the mismatched ref still exists"
+        );
+        assert_eq!(
+            ref_target(&repo_root, &ref_b),
+            tree_c.0,
+            "the mismatched ref keeps the value it was given after preflight"
+        );
+
+        remove_test_repo(&repo_root);
+    }
+
+    #[test]
+    fn list_pins_rejects_a_symbolic_ref_inside_the_mutation_cursor_namespace() {
+        let repo_root = unique_test_repo("list-pins-symref");
+        init_repo(&repo_root);
+        let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
+
+        let tree_t = capture_with_file(&service, &repo_root, "t.txt", b"t\n");
+
+        let b_ref = format!("{REF_NAMESPACE}/{}/{}", other_worktree_id().0, tree_t.0);
+        let a_ref = format!("{REF_NAMESPACE}/{}/{}", worktree_id().0, tree_t.0);
+        run(&repo_root, &["update-ref", &b_ref, &tree_t.0]);
+        run(&repo_root, &["symbolic-ref", &a_ref, &b_ref]);
+
+        match service.list_pins(&worktree_id()) {
+            Err(PinInventoryError::MalformedRef {
+                ref_name: rn,
+                reason,
+            }) => {
+                assert_eq!(rn, a_ref);
+                assert!(
+                    reason.contains("symbolic ref"),
+                    "unexpected reason: {reason}"
+                );
+            }
+            other => {
+                panic!("expected MalformedRef for a symbolic ref in the namespace, got {other:?}")
+            }
+        }
+
+        assert!(ref_exists(&repo_root, &b_ref));
+        assert_eq!(ref_target(&repo_root, &b_ref), tree_t.0);
+        assert_eq!(
+            run(&repo_root, &["symbolic-ref", &a_ref]).trim(),
+            b_ref,
+            "A/T must still be the untouched symbolic ref"
+        );
+
+        remove_test_repo(&repo_root);
+    }
+
+    #[test]
+    fn delete_pins_refuses_to_act_when_an_inventoried_direct_ref_became_a_symbolic_ref() {
+        let repo_root = unique_test_repo("delete-pins-symref-race");
+        init_repo(&repo_root);
+        let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
+
+        let tree_t = capture_with_file(&service, &repo_root, "t.txt", b"t\n");
+        let a_ref = format!("{REF_NAMESPACE}/{}/{}", worktree_id().0, tree_t.0);
+        let b_ref = format!("{REF_NAMESPACE}/{}/{}", other_worktree_id().0, tree_t.0);
+
+        service
+            .pin_tree(&worktree_id(), &tree_t)
+            .expect("pin should succeed");
         let inventory = service
             .list_pins(&worktree_id())
             .expect("inventory should succeed");
-        assert_eq!(inventory.len(), 2);
+        assert_eq!(
+            inventory,
+            vec![PinnedRef {
+                ref_name: a_ref.clone(),
+                tree: tree_t.clone(),
+            }]
+        );
 
-        let ref_a = format!("{REF_NAMESPACE}/{}/{}", worktree_id().0, tree_a.0);
-        run(&repo_root, &["update-ref", &ref_a, &tree_c.0]);
+        run(&repo_root, &["update-ref", &b_ref, &tree_t.0]);
+        run(&repo_root, &["update-ref", "-d", &a_ref]);
+        run(&repo_root, &["symbolic-ref", &a_ref, &b_ref]);
 
         let error = service
             .delete_pins(&inventory)
-            .expect_err("a stale expected value must abort the whole transaction");
+            .expect_err("delete must fail closed once an inventoried direct ref became a symref");
         assert!(
-            error.to_string().contains("update-ref"),
+            error.to_string().contains("symbolic ref"),
             "unexpected error: {error}"
         );
 
-        assert_eq!(ref_target(&repo_root, &ref_a), tree_c.0);
-        assert!(ref_exists(
-            &repo_root,
-            &format!("{REF_NAMESPACE}/{}/{}", worktree_id().0, tree_b.0)
-        ));
+        assert!(ref_exists(&repo_root, &b_ref));
+        assert_eq!(ref_target(&repo_root, &b_ref), tree_t.0);
+        assert_eq!(
+            run(&repo_root, &["symbolic-ref", &a_ref]).trim(),
+            b_ref,
+            "A/T is not touched — delete_pins prefers failure over acting on a symref"
+        );
 
         remove_test_repo(&repo_root);
     }
