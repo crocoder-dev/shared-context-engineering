@@ -15,13 +15,15 @@ automatic executions can retain distinct error semantics without adding a public
 CLI option. The same boundary owns a best-effort one-shot launcher used by the post-commit
 hook when `agent_trace.auto_sync` is enabled: it resolves the current `sce`
 executable, starts `sync --format json` in the repository root with null stdin and
-stdout plus inherited stderr, and does not wait for the child. It passes the
-internal `SCE_INTERNAL_AUTO_SYNC=1` marker so automatic failures use the typed
-automatic-sync diagnostic path. Child failures are visible through inherited
-stderr, while executable and spawn failures emit the same typed runtime
-diagnostic with their startup reason and remain fail-open. The launcher is not a
-daemon or retry queue; local rows remain available for a later manual or
-automatic invocation through the control-plane cursor authority.
+stdout plus inherited stderr, and waits for terminal child completion, making the
+child lifetime and inherited-stderr closure deterministic at the cost of adding
+child synchronization latency to post-commit execution. It passes the internal
+`SCE_INTERNAL_AUTO_SYNC=1` marker so automatic failures use the
+typed automatic-sync diagnostic path. A non-zero child exit remains fail-open
+after the child renders its own diagnostic; executable, spawn, and wait failures
+emit the same typed runtime diagnostic with their reason and remain fail-open.
+The launcher is not a daemon or retry queue; local rows remain available for a
+later manual or automatic invocation through the control-plane cursor authority.
 Sync orchestration owns its `SyncProgressEvent` lifecycle, batch, and
 stream-completion payloads and publishes them through the consumer-typed,
 library-independent `services::sync::progress::ProgressReporter<E>` contract.

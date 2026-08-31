@@ -27,13 +27,17 @@ sync --format json
 The child runs with the repository root as its working directory, null stdin and
 stdout, and inherited stderr. An internal `SCE_INTERNAL_AUTO_SYNC=1` process
 marker lets the child classify this invocation as automatic without adding a
-user-facing option or configuration layer. `Command::spawn()` is used without
-waiting for a status; the hook returns its normal successful result immediately.
-If the child sync fails, its single typed `SCE-ERR-RUNTIME` diagnostic is visible
-through inherited stderr. If the current executable cannot be resolved or the
-child cannot be spawned, the launcher emits the same typed automatic-sync
-diagnostic with the startup reason on stderr. Both startup and child failures
-remain fail-open, so they cannot turn a successful post-commit operation into a
+user-facing option or configuration layer. The launcher waits for the child to
+reach terminal completion before returning, making the child lifetime and
+inherited-stderr closure deterministic. This intentionally adds the child
+synchronization duration to post-commit latency; no timeout policy is part of
+the boundary. A non-zero child exit remains
+fail-open after the child has rendered its own single typed `SCE-ERR-RUNTIME`
+diagnostic through inherited stderr; the launcher does not duplicate it. If the
+current executable cannot be resolved, the child cannot be spawned, or waiting
+fails, the launcher emits the same typed automatic-sync diagnostic with the
+startup or wait reason on stderr. All launcher and child failures remain
+fail-open, so they cannot turn a successful post-commit operation into a
 failure.
 
 Automatic synchronization is not invoked by `pre-commit`, `diff-trace`, or
@@ -82,10 +86,11 @@ sce sync
 
 Automatic execution uses the same command and therefore the same repository
 Agent Trace database, control-plane protocol, authentication, and
-control-plane cursor authority. A child startup, completion, or network failure
-is fail-open to the commit. Rows that remain local are available to a later
+control-plane cursor authority. A child startup, wait, or network failure is
+fail-open to the commit. Rows that remain local are available to a later
 manual `sce sync` or a later successful automatic invocation; no local cursor
 or background retry machinery is required.
 
 See [the sync command contract](sync-command.md), [the config precedence
-contract](config-precedence-contract.md), and [the hook routing contract](../sce/agent-trace-hooks-command-routing.md).
+contract](config-precedence-contract.md), [the hook routing contract](../sce/agent-trace-hooks-command-routing.md),
+and [the completion decision](../decisions/2026-08-31-synchronous-automatic-sync-completion.md).

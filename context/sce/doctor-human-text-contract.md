@@ -63,9 +63,9 @@ omitted and is `false` only for the explicit config opt-out. `source` reports
 resolution fails; `config_source` identifies the discovered global or local
 config layer when applicable and is otherwise `null`. Doctor only reports
 this fact: it never launches `sce sync` or a background process. The post-commit
-runtime still launches one detached `sync --format json` child only after
-successful Agent Trace persistence when enabled, and launcher failures remain
-fail-open.
+runtime launches one `sync --format json` child only after successful Agent Trace
+persistence when enabled, waits for terminal completion, and keeps child,
+launcher, and wait failures fail-open.
 
 ## Integration hierarchy
 
