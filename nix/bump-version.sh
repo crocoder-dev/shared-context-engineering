@@ -7,6 +7,7 @@ usage() {
   printf 'usage: bump-version.sh --repo-root <path> --version <version>\n\n' >&2
   printf 'Updates the project version in .version, cli/Cargo.toml, cli/Cargo.lock,\n' >&2
   printf 'npm/package.json, and the first release in packaging/flatpak/%s.metainfo.xml.\n' "$APP_ID" >&2
+  printf 'Also creates schema/v<version>/config.json from the Agent Trace schema.\n' >&2
   printf '\n' >&2
   printf 'Options:\n' >&2
   printf '  --repo-root <path>  Repository root directory\n' >&2
@@ -74,6 +75,8 @@ cargo_toml_path="$repo_root/cli/Cargo.toml"
 cargo_lock_path="$repo_root/cli/Cargo.lock"
 npm_package_path="$repo_root/npm/package.json"
 metainfo_path="$repo_root/packaging/flatpak/$APP_ID.metainfo.xml"
+agent_trace_schema_path="$repo_root/config/schema/agent-trace.schema.json"
+schema_output_path="$repo_root/schema/v${version}/config.json"
 
 if [[ -z "$from_version" ]]; then
   from_version="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' < "$version_path")"
@@ -85,6 +88,7 @@ files=(
   "$cargo_lock_path"
   "$npm_package_path"
   "$metainfo_path"
+  "$agent_trace_schema_path"
 )
 
 for f in "${files[@]}"; do
@@ -151,6 +155,19 @@ replace_once \
   "$metainfo_path" \
   "primary Flatpak release version" \
   "0,/<release /{/<release version=\"$from_version_regex\"/s//<release version=\"$version_replacement\"/}"
+
+schema_rel="${schema_output_path#"$repo_root"/}"
+if [[ -f "$schema_output_path" ]] && cmp -s "$agent_trace_schema_path" "$schema_output_path"; then
+  printf '  %s: warning: already matches %s\n' "$schema_rel" "${agent_trace_schema_path#"$repo_root"/}"
+elif [[ "$dry_run" -eq 1 ]]; then
+  printf '  %s: would create from %s\n' "$schema_rel" "${agent_trace_schema_path#"$repo_root"/}"
+  changes=$((changes + 1))
+else
+  mkdir -p "$(dirname "$schema_output_path")"
+  cp "$agent_trace_schema_path" "$schema_output_path"
+  printf '  %s: created from %s\n' "$schema_rel" "${agent_trace_schema_path#"$repo_root"/}"
+  changes=$((changes + 1))
+fi
 
 if [[ "$dry_run" -eq 1 ]]; then
   printf 'Dry run: %d file(s) would change\n' "$changes"

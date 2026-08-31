@@ -1646,7 +1646,7 @@
               type = "app";
               program = "${bumpVersionApp}/bin/bump-version";
               meta = {
-                description = "Bump the checked-in version in .version, Cargo.toml, Cargo.lock, npm package.json, and Flatpak metainfo";
+                description = "Bump the checked-in version and create the versioned Agent Trace schema";
               };
             };
 
