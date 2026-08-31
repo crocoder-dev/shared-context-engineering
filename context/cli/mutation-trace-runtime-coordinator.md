@@ -39,42 +39,16 @@ API end to end. Only harness/command wiring remains.
   file's mere on-disk existence is never treated as ownership — only a
   successful OS-level `try_lock()` counts, so a leftover lock file with no
   active OS lock held against it never blocks a fresh acquirer.
-- `cli/src/services/mutation_trace/runtime/git_snapshot.rs` —
-  `GitSnapshotService::new(repository_root: &Path) -> Result<GitSnapshotService>`
-  resolves `git_dir` once via `git rev-parse --absolute-git-dir`, so
-  `git_dir` is always an absolute path — even when the caller's
-  `repository_root` is relative, which matters because every Git subprocess
-  this service spawns runs with `cwd = repository_root` and
-  `GIT_DIR = git_dir`; a relative `git_dir` would otherwise be resolved by
-  the child process against its own already-`repository_root`-joined `cwd`,
-  double-joining the path. `capture_tree(&self) -> Result<TreeId>` snapshots
-  the current worktree (staged, unstaged, untracked, and deleted state,
-  respecting `.gitignore`) into the repository's normal, shared Git object
-  database, never touching the real index or working tree: it reserves a
-  unique `<git-dir>/sce/tmp/index-<uuid>` path via an RAII guard (never
-  pre-creating the file), probes `HEAD` via a dedicated `head_exists`
-  helper that inspects the Git exit status directly — status `0` means
-  `HEAD` resolves, status `1` is `--verify --quiet`'s documented "does not
-  resolve" signal (a genuinely unborn `HEAD`), and every other status
-  propagates as an error rather than being treated as empty, since HEAD
-  absence is a normal Git state but a HEAD-probe failure is a snapshot
-  failure — then runs `git read-tree HEAD` or, on a genuinely unborn `HEAD`,
-  the explicit `git read-tree --empty` (never a bare/absent index file),
-  then `git add -A -- .`, then `git write-tree`, all with only
-  `GIT_DIR`/`GIT_INDEX_FILE` set — no `GIT_OBJECT_DIRECTORY`/
-  `GIT_ALTERNATE_OBJECT_DIRECTORIES` override anywhere. `TreeId` is an opaque
-  string; nothing assumes a fixed length, so a SHA-256 repository needs no
-  special handling. `pin_tree(&self, worktree_id, tree) -> Result<()>` makes
-  a tree durable by creating
-  `refs/sce/mutation-cursor/<worktree_id>/<tree-sha>` via `git update-ref` —
-  create-only and idempotent for the same `(worktree_id, tree)` pair — which
-  is what makes a pinned tree survive `git gc --prune=now`/`git prune
-  --expire=now`, unlike an unpinned, unreachable tree in the same repository.
-  `diff_trees(&self, before, after) -> Result<String>` runs `git diff
-  --binary --full-index --no-ext-diff --no-textconv` between two tree SHAs,
-  returning the raw diff text `patch.rs::parse_patch` already knows how to
-  parse. `coordinator.rs` is its only caller, via the `SnapshotCapture` trait
-  below.
+- `cli/src/services/mutation_trace/runtime/git_snapshot.rs` — the isolated Git
+  snapshot and ref-pinning service (`GitSnapshotService`:
+  `new`/`capture_tree`/`pin_tree`/`diff_trees`, plus the callerless
+  worktree-scoped `list_pins` pin inventory —
+  `Result<Vec<PinnedRef>, PinInventoryError>` — and conditional-atomic
+  `delete_pins` batch deletion). It writes tree/blob objects into the
+  repository's normal, shared object database and protects durable trees with
+  create-only `refs/sce/mutation-cursor/<worktree-id>/<tree-sha>` refs. Full
+  contract in
+  [`mutation-trace-snapshot-service.md`](mutation-trace-snapshot-service.md).
 - `cli/src/services/mutation_trace/runtime/coordinator.rs` — the composition
   point that drives `protocol.rs`/`store.rs`/`git_snapshot.rs` together. Its
   `SnapshotCapture` trait (`capture(&self) -> Result<TreeId>`, `pin(&self,
@@ -184,16 +158,9 @@ inline-unit-test precedent already used in `cli/src/services/checkout/mod.rs`
 and `cli/src/services/mutation_trace/store.rs` (see `context/patterns.md`).
 
 `GitSnapshotService`'s inline `#[cfg(test)] mod tests` in `git_snapshot.rs`
-uses the same precedent, extended to real per-test `git init` repositories:
-index/working-tree preservation across staged/unstaged/untracked/deleted
-state, `.gitignore` exclusion, unborn-`HEAD` capture with and without files,
-an unexpected `HEAD`-probe failure (a corrupted/missing `.git/HEAD`)
-propagating as an error rather than a false empty-baseline capture, a
-relative `repository_root` still resolving `git_dir` absolute, survival
-after the temp index file is gone, `git gc --prune=now`/`git prune
---expire=now` survival for a pinned tree versus reclamation of a distinct
-unpinned tree in the same repository, `pin_tree` idempotency, and
-`diff_trees` output shape.
+uses the same precedent, extended to real per-test `git init` repositories;
+its coverage is documented in
+[`mutation-trace-snapshot-service.md`](mutation-trace-snapshot-service.md).
 
 `coordinator.rs`'s inline `#[cfg(test)] mod tests` exercises the internal
 pipeline against a real temp-file `RepositoryAgentTraceDb`, using a fake,
@@ -256,7 +223,9 @@ marker is now overlaid onto `database_failure` recovery on the next invocation. 
 wiring remain future work tracked by the `mutation-cursor-external-taint` and
 `mutation-cursor-runtime-coordinator` plans.
 
-See also: [`mutation-trace-protocol.md`](mutation-trace-protocol.md),
+See also: [`mutation-trace-snapshot-service.md`](mutation-trace-snapshot-service.md)
+(the `GitSnapshotService` capture/pin/diff/inventory/delete contract),
+[`mutation-trace-protocol.md`](mutation-trace-protocol.md),
 [`mutation-trace-store.md`](mutation-trace-store.md),
 [`mutation-trace-external-taint.md`](mutation-trace-external-taint.md)
 (the `<git-dir>/sce/mutation-cursor-tainted` write-ahead fence armed by
