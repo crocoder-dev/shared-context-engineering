@@ -78,9 +78,10 @@ exercising the public API end to end. Only harness/command wiring remains.
   returning the raw diff text `patch.rs::parse_patch` already knows how to
   parse. It also exposes worktree-scoped `list_pins` inventory with distinct
   Git and malformed-ref errors, and `delete_pins` conditional-atomic batch
-  deletion through one `git update-ref --stdin` transaction. The latter only
-  deletes refs whose target still matches the inventoried tree, so a ref moved
-  after inventory aborts the whole batch. The full snapshot/ref-reconciliation
+  deletion through one `git update-ref --no-deref --stdin` transaction. Pin
+  refs are required to remain direct refs; symbolic refs are malformed and
+  rejected, and a ref moved after inventory aborts the whole batch before any
+  deletion. The full snapshot/ref-reconciliation
   contract is also documented in
   [`mutation-trace-snapshot-service.md`](mutation-trace-snapshot-service.md).
   `coordinator.rs` is its only caller, via the `SnapshotCapture` trait
