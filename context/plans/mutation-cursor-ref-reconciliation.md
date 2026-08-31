@@ -212,14 +212,17 @@ crate module path `services::mutation_trace::runtime::…` /
   error naming B, deletes zero refs, and leaves both A's and X's pins in
   place.
   - Validate: `services::mutation_trace::runtime::ref_reconciliation::tests::a_missing_required_pin_fails_closed_and_deletes_nothing`
-- [ ] AC7: A ref inside `refs/sce/mutation-cursor/<worktree-id>/` whose target
-  is not a tree object, or whose name suffix disagrees with its target SHA, or
-  whose `for-each-ref` line does not parse, makes `list_pins` return
-  `PinInventoryError::MalformedRef { ref_name, reason }`, which
-  `reconcile_worktree` maps to `ReconcileError::MalformedPin { ref_name,
-  reason }`; reconciliation then deletes nothing.
+- [ ] AC7: A ref inside `refs/sce/mutation-cursor/<worktree-id>/` that is a
+  **symbolic ref**, whose target is not a tree object, or whose name suffix
+  disagrees with its target SHA, or whose `for-each-ref` line does not parse,
+  makes `list_pins` return `PinInventoryError::MalformedRef { ref_name, reason
+  }`, which `reconcile_worktree` maps to `ReconcileError::MalformedPin {
+  ref_name, reason }`; reconciliation then deletes nothing. Mutation-cursor
+  pins are direct refs; a symbolic ref inside the SCE mutation-cursor namespace
+  is malformed and rejected, never followed or normalized.
   - Validate: `services::mutation_trace::runtime::git_snapshot::tests::list_pins_rejects_a_ref_whose_target_is_not_a_tree`,
     `services::mutation_trace::runtime::git_snapshot::tests::list_pins_rejects_a_ref_whose_name_disagrees_with_its_target`,
+    `services::mutation_trace::runtime::git_snapshot::tests::list_pins_rejects_a_symbolic_ref_inside_the_mutation_cursor_namespace`,
     `services::mutation_trace::runtime::ref_reconciliation::tests::a_malformed_namespace_ref_fails_closed_and_deletes_nothing`
 - [ ] AC8: Running reconciliation twice with no intervening state change:
   the first run deletes the stale pins and returns success; the second run
@@ -248,16 +251,41 @@ crate module path `services::mutation_trace::runtime::…` /
   evidence loss.
   - Validate: `services::mutation_trace::runtime::tests::reconcile_one_linked_worktree_leaves_the_other_worktrees_pins_and_shared_objects_intact`,
     `services::mutation_trace::runtime::tests::reconcile_a_retains_its_pin_when_another_worktree_durably_requires_the_same_tree`
-- [ ] AC10: The stale-pin deletion is one atomic `git update-ref --stdin`
-  transaction in which every `delete` is conditioned on the tree SHA recorded
-  at inventory time; if any inventoried ref no longer points at that SHA when
-  the transaction runs, the whole transaction aborts and **no** ref is
-  deleted. This is proven directly against `GitSnapshotService::delete_pins`
-  (inventory `R → X`; mutate `R → Y`; call `delete_pins` with the inventoried
-  `R → X`; assert the transaction fails and no ref was deleted); the public
-  `reconcile_worktree` path is only asserted to route its stale batch through
-  `delete_pins`, not to independently schedule a mid-pass race.
-  - Validate: `services::mutation_trace::runtime::git_snapshot::tests::delete_pins_aborts_the_whole_transaction_when_one_ref_no_longer_matches_its_expected_value`
+- [ ] AC10: The stale-pin deletion is one atomic
+  `git update-ref --no-deref --stdin` transaction (no-dereference, so a
+  `delete` can only ever remove the exact ref name given, never a ref reached
+  through a symbolic ref) in which every `delete` is conditioned on the tree
+  SHA recorded at inventory time; if any inventoried ref no longer points at
+  that SHA when the transaction runs, the whole transaction aborts and **no**
+  ref is deleted.
+
+  Two independent defenses, proven by two different tests:
+
+  1. **Preflight revalidation** — before the transaction, `delete_pins` runs a
+     fail-closed re-inventory that returns `Err` (deleting nothing) if any
+     supplied ref has been deleted, retargeted, or turned into a symbolic ref
+     since inventory. This catches the common inventory→delete change and no
+     `git update-ref` is ever spawned. Proven by an inventoried direct ref
+     turned into a symbolic ref onto another worktree's ref before
+     `delete_pins`, asserting `Err` with both the symref and its target
+     untouched.
+  2. **Expected-old-value atomic Git transaction** — for a change that lands
+     *after* preflight has already passed, the per-`delete` old-value check
+     inside the single `git update-ref --no-deref --stdin` transaction rejects
+     the batch and Git commits nothing. Proven by a deterministic test hook
+     (`delete_pins_inner`'s `after_preflight` seam) that mutates the second of
+     two already-preflight-passed refs, so the transaction is actually issued
+     with `[delete valid_ref A, delete mismatched_ref B]`, the second
+     expected-old-value check fails, and the first (valid) ref is left
+     untouched. A sequential conditional `git update-ref -d` implementation in
+     input order would commit the first delete before hitting the stale second
+     and would fail this test.
+
+  The public `reconcile_worktree` path is only asserted to route its stale
+  batch through `delete_pins`, not to independently schedule a mid-pass race —
+  the `after_preflight` seam is private to `git_snapshot.rs` and test-only.
+  - Validate: `services::mutation_trace::runtime::git_snapshot::tests::delete_pins_atomically_aborts_when_a_ref_changes_after_preflight`,
+    `services::mutation_trace::runtime::git_snapshot::tests::delete_pins_refuses_to_act_when_an_inventoried_direct_ref_became_a_symbolic_ref`
 - [ ] AC11: A reconciliation pass performs no mutation-cursor protocol or
   durability write: after a pass, `mutation_trace_worktrees` /
   `mutation_trace_scopes` / `mutation_trace_events` /
@@ -310,9 +338,16 @@ Repository-wide checks `/validate` runs after the last task.
   exposing a torn root set; update "Non-goals" so it no
   longer implies the store exposes no durable-tree read for reconciliation
   while keeping "no row deletion".
-- `context/cli/mutation-trace-runtime-coordinator.md` — document
-  `GitSnapshotService::list_pins` (returns `Result<Vec<PinnedRef>,
-  PinInventoryError>`) / `delete_pins`; document the new
+- `context/cli/mutation-trace-snapshot-service.md` — `GitSnapshotService::list_pins`
+  (returns `Result<Vec<PinnedRef>, PinInventoryError>`) / `delete_pins` are
+  documented here (the snapshot-service doc split out of the runtime-coordinator
+  doc during T02 context sync), including: **mutation-cursor pins are direct
+  refs; a symbolic ref inside the SCE mutation-cursor namespace is malformed
+  and rejected, never followed**, and **`delete_pins` uses
+  `git update-ref --no-deref --stdin` plus a fail-closed re-inventory pre-check
+  so an inventory→delete direct-ref→symref race cannot mutate a ref outside the
+  inventoried namespace**.
+- `context/cli/mutation-trace-runtime-coordinator.md` — document the new
   `runtime::ref_reconciliation` module (`reconcile_worktree`, the `pub(super)`
   `reconcile_worktree_inner` test seam, `ReconciliationReport`,
   `ReconcileError`, `RECONCILIATION_LOCK_TIMEOUT`, the fail-closed rules, and
@@ -413,13 +448,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
     and neither is moved into `worktree_lock.rs` (there is no semantic reason
     the two timeouts must always stay identical).
   - New Git plumbing is limited to `git for-each-ref` (already in the
-    coordinator plan's validated command set) and `git update-ref --stdin`
-    (T02 validates its transaction semantics experimentally against this
-    repository's Git). No `git gc` / `git prune` / `git reflog`.
+    coordinator plan's validated command set, extended with a
+    `%(symref)` field so a symbolic ref in the namespace is detected and
+    rejected) and `git update-ref --no-deref --stdin` (T02 validates its
+    transaction and no-dereference semantics experimentally against this
+    repository's Git — `--no-deref` so a `delete` can never follow a symbolic
+    ref out of the inventoried namespace). No `git gc` / `git prune` /
+    `git reflog`.
   - `git_snapshot.rs`'s ref namespace constant `REF_NAMESPACE`
-    (`refs/sce/mutation-cursor`) and `pin_ref_name` layout are the single
-    source of truth for the pin path; `list_pins` / `delete_pins` derive their
-    prefix from the same constant.
+    (`refs/sce/mutation-cursor`) and `pin_ref_prefix` layout are the single
+    source of truth for the pin path; `pin_tree` / `list_pins` / `delete_pins`
+    derive their ref names from the same helper. Mutation-cursor pins are
+    **direct** refs only; a symbolic ref anywhere in the namespace is malformed
+    and rejected, never followed.
   - The DB is supplied to `reconcile_worktree` by a caller-provided
     `open_db: impl FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>`
     provider, exactly like `coordinate()` — `reconcile_worktree` never
@@ -482,19 +523,27 @@ requirements.
       /// `git for-each-ref` itself failed to execute or exited non-zero.
       Git(anyhow::Error),
       /// A ref under the SCE namespace is not shaped like a `pin_tree` output:
-      /// a non-tree target, a name/target SHA mismatch, an unparseable
-      /// `for-each-ref` line, or an unexpected extra path segment. `reason`
-      /// carries the specific discriminant for tests and `Display`.
+      /// a symbolic ref, a non-tree target, a name/target SHA mismatch, an
+      /// unparseable `for-each-ref` line, or an unexpected extra path segment.
+      /// `reason` carries the specific discriminant for tests and `Display`.
       MalformedRef { ref_name: String, reason: String },
   }
   ```
 
   This makes malformed SCE-namespace state separately matchable from a generic
-  `git for-each-ref` execution failure. The conditional-deletion primitive is
+  `git for-each-ref` execution failure. `list_pins` uses the NUL-separated
+  `--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)` and rejects
+  any ref with a non-empty `%(symref)` — mutation-cursor pins are direct refs.
+  The conditional-deletion primitive is
   `GitSnapshotService::delete_pins(&self, pins: &[PinnedRef]) ->
-  anyhow::Result<()>` — a transaction failure (including a failed old-value
-  check) is a plain `Err` the reconciler maps to
-  `ReconcileError::DeleteTransaction`.
+  anyhow::Result<()>` — it re-inventories the exact supplied ref names and
+  fails closed unless each is still a direct ref to a tree at the recorded SHA,
+  then runs one `git update-ref --no-deref --stdin` transaction. A pre-check
+  failure or a transaction failure (including a failed old-value check) is a
+  plain `Err` the reconciler maps to `ReconcileError::DeleteTransaction`.
+  `--no-deref` guarantees a `delete` can never follow a symbolic ref, so a
+  direct-ref→symref race between inventory and deletion cannot mutate a ref
+  owned by another worktree.
 - The entrypoint is
   `reconcile_worktree(repository_root: &Path, open_db: impl FnOnce() ->
   anyhow::Result<RepositoryAgentTraceDb>) -> Result<ReconciliationReport,
@@ -748,11 +797,16 @@ requirements.
     feeding one `git update-ref --stdin` transaction of `delete SP <ref_name>
     SP <expected_tree_sha> LF` lines (a no-op returning `Ok(())` for an empty
     slice), so the whole batch aborts and deletes nothing if any ref no longer
-    matches its expected value; inline `#[cfg(test)] mod tests` extending the
-    existing real-`git init` test pattern in this file, including one test that
-    experimentally pins several trees, mutates one ref's value between
-    inventory and delete, and asserts `delete_pins` fails with every ref intact
-    (the canonical AC10 proof), plus tests matching
+    matches its expected value; a private test-only `delete_pins_inner(pins,
+    after_preflight)` seam (production `delete_pins` calls it with a no-op
+    hook) that fires `after_preflight` **after** the fail-closed preflight and
+    **before** the `git update-ref` transaction is spawned; inline
+    `#[cfg(test)] mod tests` extending the existing real-`git init` test
+    pattern in this file, including one test that pins two valid trees, passes
+    both through preflight, then uses the `after_preflight` hook to mutate the
+    second ref so the Git transaction is actually issued and its
+    expected-old-value check aborts the batch with every ref intact (the
+    canonical AC10 atomicity proof), plus tests matching
     `PinInventoryError::MalformedRef` separately from `PinInventoryError::Git`.
     Out — the reconciliation algorithm and `WorktreeLock` acquisition (T03);
     the store query (T01); `capture_tree` / `pin_tree` / `diff_trees` changes;
@@ -760,15 +814,22 @@ requirements.
   - Dependencies: none
   - Done when: `list_pins(W)` returns one `PinnedRef` per ref under exactly
     `refs/sce/mutation-cursor/<W>/` and never a ref under another worktree's
-    prefix or any unrelated namespace; a ref in that namespace whose target is
-    not a tree, or whose name suffix disagrees with its target SHA, makes
-    `list_pins` return `Err(PinInventoryError::MalformedRef { .. })`, matchable
-    separately from `PinInventoryError::Git(..)` (a `git for-each-ref`
-    execution failure); `delete_pins` removes exactly the supplied refs when
-    every expected value still matches, removes nothing and returns `Err` when
-    any expected value has changed, and is a successful no-op for an empty
-    slice; the `git update-ref --stdin` transaction semantics relied on are
-    demonstrated by a test against this repository's Git.
+    prefix or any unrelated namespace; a ref in that namespace that is a
+    **symbolic ref**, whose target is not a tree, or whose name suffix
+    disagrees with its target SHA, makes `list_pins` return
+    `Err(PinInventoryError::MalformedRef { .. })`, matchable separately from
+    `PinInventoryError::Git(..)` (a `git for-each-ref` execution failure) —
+    **mutation-cursor pins are direct refs; a symbolic ref inside the SCE
+    mutation-cursor namespace is malformed and rejected, never followed**;
+    `delete_pins` removes exactly the supplied refs when every expected value
+    still matches, removes nothing and returns `Err` when any expected value
+    has changed **or an inventoried direct ref became a symbolic ref**, and is
+    a successful no-op for an empty slice; destructive ref operations use
+    `git update-ref --no-deref --stdin` (no-dereference semantics) so an
+    inventory→delete direct-ref→symref race cannot mutate a ref reached
+    through a symbolic ref (e.g. one owned by another worktree); the
+    `git update-ref --no-deref --stdin` transaction semantics relied on are
+    demonstrated by tests against this repository's Git.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::git_snapshot::`;
     `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`;
     `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`.
@@ -783,45 +844,97 @@ requirements.
     (`refs/sce/mutation-cursor/<worktree-id>/`) and routed the existing
     `pin_ref_name` through it so the prefix has one source of truth. Added a
     free `parse_pin_line(line, prefix) -> Result<PinnedRef, PinInventoryError>`
-    that enforces exactly-three space-separated `for-each-ref` fields, an
-    `objecttype` of `tree`, no extra path segment after the worktree prefix,
-    and refname-suffix equal to the target SHA — every failure is
-    `PinInventoryError::MalformedRef` with a discriminating `reason`. Added
+    that enforces exactly-four NUL-separated `for-each-ref` fields, an **empty
+    `%(symref)`** (direct ref), an `objecttype` of `tree`, no extra path
+    segment after the worktree prefix, and refname-suffix equal to the target
+    SHA — every failure is `PinInventoryError::MalformedRef` with a
+    discriminating `reason`. Added
     `GitSnapshotService::list_pins(&self, worktree_id: &WorktreeId) ->
     std::result::Result<Vec<PinnedRef>, PinInventoryError>` running
-    `git for-each-ref --format=%(refname) %(objectname) %(objecttype)`
+    `git for-each-ref` with the shared
+    `--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)` constant
     constrained to the single prefix (a `git for-each-ref` execution/exit
     failure maps to `PinInventoryError::Git`), and
     `GitSnapshotService::delete_pins(&self, pins: &[PinnedRef]) ->
-    anyhow::Result<()>` feeding one `git update-ref --stdin` transaction of
+    anyhow::Result<()>` which first re-inventories the exact supplied ref names
+    in one order-independent `git for-each-ref` and fails closed unless each is
+    still a direct ref to a tree at the recorded SHA, then feeds one
+    `git update-ref --no-deref --stdin` transaction of
     `delete SP <ref> SP <expected_tree_sha> LF` lines (empty slice is an
     `Ok(())` no-op), spawned with the same `current_dir` + `GIT_DIR` env as
-    `run_git`. `capture_tree` / `pin_tree` / `diff_trees` are unchanged. Added
-    8 inline tests plus helpers (`other_worktree_id`, `capture_with_file`,
+    `run_git`. Production `delete_pins` is a thin wrapper over a private
+    `delete_pins_inner(pins, after_preflight: impl FnOnce())` that fires the
+    hook **after** `assert_pins_are_unchanged_direct_refs` and **before** the
+    `git update-ref --no-deref --stdin` transaction is spawned; production
+    passes a no-op hook, and only the inline atomicity test passes a real one.
+    `capture_tree` / `pin_tree` / `diff_trees` are unchanged. Added
+    10 inline tests plus helpers (`other_worktree_id`, `capture_with_file`,
     `ref_target`, `ref_exists`): prefix-scoped isolation, empty inventory,
     `list_pins_rejects_a_ref_whose_target_is_not_a_tree`,
     `list_pins_rejects_a_ref_whose_name_disagrees_with_its_target`,
-    extra-path-segment rejection, the `Git` variant on a removed git-dir,
-    `delete_pins` exact removal, empty-slice no-op, and
-    `delete_pins_aborts_the_whole_transaction_when_one_ref_no_longer_matches_its_expected_value`
-    (inventory `R → X` for two refs, move one to `Y`, call `delete_pins` with
-    the inventoried pair, assert the whole transaction fails and both refs
-    survive — the canonical AC10 proof against this repository's Git).
+    `list_pins_rejects_a_symbolic_ref_inside_the_mutation_cursor_namespace`
+    (real `B/T -> T` direct + `A/T --symref--> B/T`; `list_pins(A)` returns
+    `MalformedRef` and `B/T` is unchanged), extra-path-segment rejection, the
+    `Git` variant on a removed git-dir, `delete_pins` exact removal,
+    empty-slice no-op,
+    `delete_pins_atomically_aborts_when_a_ref_changes_after_preflight`
+    (two valid direct refs, both pass preflight; the explicit
+    `[valid_ref, mismatched_ref]` batch is passed to `delete_pins_inner` with
+    an `after_preflight` hook that retargets only the second ref `B -> C`, so
+    `git update-ref --no-deref --stdin` is genuinely issued as
+    `delete valid_ref A` / `delete mismatched_ref B`, the second
+    expected-old-value check fails, Git commits neither delete, and
+    `valid_ref` is asserted still present at `A` — a sequential conditional
+    `git update-ref -d` implementation in input order would have committed the
+    first delete and failed this), and
+    `delete_pins_refuses_to_act_when_an_inventoried_direct_ref_became_a_symbolic_ref`
+    (inventory `A/T -> T` direct, then `A/T --symref--> B/T`; preflight makes
+    `delete_pins` return `Err` before any transaction, and both `A/T` and
+    `B/T` are untouched).
   - Verify (actual):
     `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::git_snapshot::`
-    — 22 passed, 0 failed (8 new). Broader
-    `services::mutation_trace::runtime::` — 65 passed, 0 failed (the
-    `pin_ref_name` refactor regressed nothing).
+    — 24 passed, 0 failed (10 pin tests). Broader
+    `services::mutation_trace::runtime::` — 67 passed, 0 failed. Full CLI suite
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` — 866
+    passed, 0 failed.
     `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
     — no warnings.
     `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`
-    — clean.
-  - Deviations: None. Recorded assumption names and signatures (`PinnedRef`,
+    — clean. Re-verified after the PR #246 round-2 regression fix
+    (`delete_pins_inner` seam + rewritten atomicity test): git_snapshot 24
+    passed, `services::mutation_trace::runtime::` 67 passed, full CLI suite
+    866 passed, clippy `--all-targets -D warnings` clean, fmt clean.
+  - Deviations: Recorded assumption names and signatures (`PinnedRef`,
     `PinInventoryError` with its two variants, `list_pins` / `delete_pins`
     signatures) were used verbatim. `list_pins` also rejects a ref with an
-    extra path segment after the worktree prefix (the plan's "unexpected extra
-    path segment" case), tested. The `Git`-variant test forces a
-    `git for-each-ref` execution failure by removing the resolved git-dir.
+    extra path segment after the worktree prefix. **Follow-up hardening (same
+    task, in response to a safety review of PR #246):** (1) the `for-each-ref`
+    format gained `%(symref)` (and switched to NUL-separated fields for
+    unambiguous parsing) so a **symbolic ref anywhere in the namespace is
+    rejected as `MalformedRef`, never followed** — a symref under worktree
+    `A`'s prefix could otherwise resolve through worktree `B`'s ref and be
+    accepted as a normal pin; (2) `delete_pins` now runs
+    `git update-ref --no-deref --stdin` (verified experimentally: without
+    `--no-deref`, `delete A/T <sha>` on a symref `A/T -> B/T` deletes **both**
+    A/T and B/T; with `--no-deref` it can only ever remove the exact named
+    ref), plus a fail-closed re-inventory pre-check so the common
+    inventory→delete race returns a clean `Err` rather than acting on a symref.
+    The `Git`-variant test forces a `git for-each-ref` execution failure by
+    removing the resolved git-dir. **Follow-up regression fix (same task, PR
+    #246 review round 2):** the original
+    `delete_pins_aborts_the_whole_transaction_when_one_ref_no_longer_matches_its_expected_value`
+    mutated the second ref *before* calling `delete_pins`, so the fail-closed
+    preflight rejected the batch and `git update-ref` never ran — it proved
+    preflight, not Git transaction atomicity, and would have passed a
+    non-atomic sequential-delete implementation. Introduced the private
+    `delete_pins_inner(pins, after_preflight)` seam and rewrote the test as
+    `delete_pins_atomically_aborts_when_a_ref_changes_after_preflight`: both
+    refs pass preflight, the `after_preflight` hook then retargets the second
+    ref, the transaction is genuinely issued, and Git's expected-old-value
+    check aborts it with the first ref intact. The two properties now have
+    clearly separate proofs — preflight revalidation vs. the expected-old-value
+    atomic Git transaction. Production `delete_pins` signature and behavior are
+    unchanged (no-op hook).
   - Context impact: Domain. Adds new public items to `GitSnapshotService`'s
     runtime-internal surface (`PinnedRef`, `PinInventoryError`, `list_pins`,
     `delete_pins`); no schema, migration, protocol, marker, or cross-domain
@@ -975,8 +1088,9 @@ requirements.
     `reconcile_worktree` calls (idempotence); a normal pass whose stale batch
     is confirmed to have gone through `delete_pins` (the `refs/sce/...` entries
     are absent afterward) — the conditional-delete *atomicity* race itself is
-    proven in T02 against `delete_pins` directly, not re-scheduled through the
-    public reconciler (no `after-inventory / before-delete` seam exists);
+    proven in T02 against `delete_pins` directly via its private test-only
+    `delete_pins_inner` `after_preflight` seam, not re-scheduled through the
+    public reconciler (which has no `after-inventory / before-delete` seam);
     linked worktrees A and B over one shared DB where `reconcile_worktree(A)`
     leaves B's pins and shared objects intact and needs no pause in B,
     including the byte-identical-tree-content case; the cross-worktree
@@ -1282,14 +1396,20 @@ to define partial-cleanup semantics; the batch removes that question entirely
 (Q8). T02 validates the exact stdin format
 (`delete SP <ref> SP <expected-sha> LF` per line, no explicit
 `start`/`prepare`/`commit` needed) and the abort-on-mismatch behavior
-experimentally, directly against `GitSnapshotService::delete_pins` (inventory
-`R → X`, mutate `R → Y`, call `delete_pins` with the inventoried `R → X`,
-assert the whole transaction fails and no ref was deleted). That direct test
-is the canonical proof for AC10. The public `reconcile_worktree` integration
-test (T05) does **not** independently schedule an `after-inventory /
-before-delete` race — no such deterministic seam exists on the public path —
-it only asserts that a normal pass routes its stale batch through
-`delete_pins` (stale refs gone afterward).
+experimentally, directly against `GitSnapshotService::delete_pins` via its
+private test-only `delete_pins_inner(pins, after_preflight)` seam: pin two
+valid trees `A` and `B`, pass the explicit batch `[A, B]` through preflight,
+then have `after_preflight` retarget the second ref `B → C` so
+`git update-ref --no-deref --stdin` is genuinely spawned with
+`delete A_ref A` / `delete B_ref B`, its second expected-old-value check
+fails, and neither delete is committed (`A_ref` still at `A`). That direct
+test is the canonical proof for AC10 — a mutation *before* `delete_pins`
+would instead be caught by the preflight and prove nothing about the Git
+transaction. The public `reconcile_worktree` integration test (T05) does
+**not** independently schedule an `after-inventory / before-delete` race — no
+such deterministic seam exists on the public path (the `after_preflight` seam
+is private to `git_snapshot.rs`) — it only asserts that a normal pass routes
+its stale batch through `delete_pins` (stale refs gone afterward).
 
 ### Q10 — Inventory from ref names, ref targets, or both
 
@@ -1442,9 +1562,13 @@ it, which cannot happen. The conditional `git update-ref -d <ref>
 lock-assumption-violated or external-tampering case: a ref whose value moved
 since inventory fails its delete and aborts the whole transaction. That
 conditional-delete atomicity is proven directly against
-`GitSnapshotService::delete_pins` in T02 (AC10) — not by scheduling a
-mid-pass race through the public `reconcile_worktree`, which has no
-deterministic `after-inventory / before-delete` seam.
+`GitSnapshotService::delete_pins` in T02 (AC10), through the private
+test-only `delete_pins_inner` `after_preflight` seam that mutates a
+preflight-passed ref so the `git update-ref --no-deref --stdin` transaction
+is genuinely issued and its expected-old-value check is what aborts the
+batch — not by scheduling a mid-pass race through the public
+`reconcile_worktree`, which has no deterministic
+`after-inventory / before-delete` seam.
 
 **`reconcile_worktree(A)` reads global roots while `coordinate()` coordinates
 a new tree X on worktree B concurrently.** A mutates only refs under
@@ -1559,12 +1683,14 @@ construction and its deterministic proof uses the `pub(super)
 reconcile_worktree_inner` seam (T04, AC5); the pin-inventory error model is
 the two-variant `PinInventoryError` mapped deterministically into
 `ReconcileError` (Q10, Q11, Q12); `ReconcileError` has one variant per
-fallible step and no `Other` catch-all (Q12); conditional-delete atomicity is
-proven directly against `delete_pins` (T02, AC10); the batch-delete safety
-property is atomic-or-nothing (Q8, Q9) pending only T02's experimental
-confirmation of `git update-ref --stdin` semantics, which is a task
-verification step, not a design risk. Invocation timing is intentionally
-deferred to the harness-wiring PR (Q15).
+fallible step and no `Other` catch-all (Q12); the two independent delete
+defenses are proven separately in T02 (AC10) — preflight revalidation by the
+direct-ref→symref test, and the expected-old-value atomic Git transaction by
+the `delete_pins_inner` `after_preflight` seam test that mutates a
+preflight-passed ref and asserts the issued `git update-ref --no-deref
+--stdin` batch commits nothing; the batch-delete safety property is
+atomic-or-nothing (Q8, Q9). Invocation timing is intentionally deferred to
+the harness-wiring PR (Q15).
 
 Open questions: None.
 
