@@ -486,6 +486,37 @@ fn resolve_query_retry_policy<M: DbSpec>() -> RetryPolicy {
     QUERY_RETRY_POLICY
 }
 
+#[cfg(test)]
+thread_local! {
+    static READ_STATEMENTS_ISSUED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Record that one [`TursoDb`] read statement was issued on this thread.
+#[cfg(test)]
+fn note_read_statement_issued() {
+    READ_STATEMENTS_ISSUED.with(|count| count.set(count.get() + 1));
+}
+
+/// Run `body`, returning its result together with the number of [`TursoDb`]
+/// read statements ([`TursoDb::query`], [`TursoDb::query_values`],
+/// [`TursoDb::query_map`]) it issued on the current thread.
+///
+/// Each read method bumps the counter once in its synchronous prelude, before
+/// the retry wrapper, so a transient retry never inflates the count and the
+/// number reflects *logical* read statements, not connection round-trips.
+/// Lets a deterministic single-threaded test assert that an operation which
+/// must observe one coherent database snapshot — for example
+/// `MutationTraceStore::load_all_tree_roots`, a single `UNION` statement —
+/// issues exactly one, and fail if it is ever reimplemented as several
+/// independent `SELECT`s unioned in Rust. Not shared across threads.
+#[cfg(test)]
+pub(crate) fn count_read_statements<T>(body: impl FnOnce() -> T) -> (T, usize) {
+    READ_STATEMENTS_ISSUED.with(|count| count.set(0));
+    let result = body();
+    let issued = READ_STATEMENTS_ISSUED.with(std::cell::Cell::get);
+    (result, issued)
+}
+
 /// Generic Turso database adapter.
 ///
 /// Wraps a Turso connection with a tokio current-thread runtime so callers can
@@ -645,6 +676,9 @@ impl<M: DbSpec> TursoDb<M> {
         })?;
         let operation_name = format!("query {} database", M::db_name());
 
+        #[cfg(test)]
+        note_read_statement_issued();
+
         run_with_retry_sync(
             resolve_query_retry_policy::<M>(),
             &operation_name,
@@ -672,6 +706,9 @@ impl<M: DbSpec> TursoDb<M> {
             anyhow::anyhow!("{} parameter conversion failed: {sql}: {e}", M::db_name())
         })?;
         let operation_name = format!("query and fetch {} database values", M::db_name());
+
+        #[cfg(test)]
+        note_read_statement_issued();
 
         run_with_retry_sync(
             resolve_query_retry_policy::<M>(),
@@ -809,6 +846,9 @@ impl<M: DbSpec> TursoDb<M> {
             anyhow::anyhow!("{} parameter conversion failed: {sql}: {e}", M::db_name())
         })?;
         let operation_name = format!("query and fetch {} database rows", M::db_name());
+
+        #[cfg(test)]
+        note_read_statement_issued();
 
         let rows = run_with_retry_sync(
             resolve_query_retry_policy::<M>(),
