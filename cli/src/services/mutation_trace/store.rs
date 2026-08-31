@@ -1076,7 +1076,6 @@ fn reconstruct_boundary(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::thread;
 
     use super::*;
@@ -1199,21 +1198,28 @@ mod tests {
         assert!(decode_boundary_kind("unknown").is_err());
     }
 
-    static NEXT_TEST_DB_ID: AtomicU64 = AtomicU64::new(0);
-
-    fn unique_test_db_path(label: &str) -> std::path::PathBuf {
-        let id = NEXT_TEST_DB_ID.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir()
-            .join(format!(
-                "sce-mutation-trace-store-{label}-{}-{id}",
-                std::process::id()
-            ))
-            .join("agent-trace.db")
+    struct TestDbPath {
+        _temp_dir: tempfile::TempDir,
+        path: std::path::PathBuf,
     }
 
-    fn remove_test_db(db_path: &std::path::Path) {
-        if let Some(parent) = db_path.parent() {
-            std::fs::remove_dir_all(parent).expect("test DB directory should be removed");
+    impl TestDbPath {
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    fn test_db_path(label: &str) -> TestDbPath {
+        let temp_dir = tempfile::Builder::new()
+            .prefix(&format!("sce-mutation-trace-store-{label}-"))
+            .tempdir()
+            .expect("test temp directory should be created");
+
+        let path = temp_dir.path().join("agent-trace.db");
+
+        TestDbPath {
+            _temp_dir: temp_dir,
+            path,
         }
     }
 
@@ -1310,22 +1316,22 @@ mod tests {
 
     #[test]
     fn load_worktree_returns_none_for_a_missing_worktree() {
-        let db_path = unique_test_db_path("missing-worktree");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("missing-worktree");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         let projection = store
             .load_worktree(&WorktreeId("wt-missing".to_string()), None, None)
             .expect("load_worktree should succeed");
         assert!(projection.is_none());
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn load_worktree_with_no_scope_or_event_key_loads_only_active_scopes() {
-        let db_path = unique_test_db_path("case-1-active-only");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("case-1-active-only");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree(&db, "wt-1", 5);
@@ -1344,14 +1350,13 @@ mod tests {
             vec![&ScopeId("scope-active".to_string())]
         );
         assert!(projection.processed_events.is_empty());
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn load_worktree_with_explicit_scope_includes_it_regardless_of_status() {
-        let db_path = unique_test_db_path("case-2-explicit-scope");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("case-2-explicit-scope");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree(&db, "wt-1", 0);
@@ -1374,14 +1379,13 @@ mod tests {
                 worktree_id: WorktreeId("wt-1".to_string()),
             })
         );
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn load_worktree_with_explicit_scope_on_another_worktree_errors() {
-        let db_path = unique_test_db_path("case-2-wrong-worktree");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("case-2-wrong-worktree");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree(&db, "wt-1", 0);
@@ -1396,14 +1400,13 @@ mod tests {
             )
             .expect_err("scope belonging to another worktree should error");
         assert!(error.to_string().contains("scope-1"));
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn load_worktree_with_explicit_missing_scope_errors() {
-        let db_path = unique_test_db_path("case-2-missing-scope");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("case-2-missing-scope");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree(&db, "wt-1", 0);
@@ -1416,14 +1419,13 @@ mod tests {
             )
             .expect_err("missing effective scope should error");
         assert!(error.to_string().contains("scope-missing"));
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn load_worktree_with_only_event_key_loads_its_scope_and_replay_row() {
-        let db_path = unique_test_db_path("case-3-event-key-only");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("case-3-event-key-only");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree(&db, "wt-1", 0);
@@ -1451,14 +1453,13 @@ mod tests {
             projection.processed_events,
             [event_key].into_iter().collect()
         );
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn load_worktree_with_event_key_scope_on_another_worktree_errors() {
-        let db_path = unique_test_db_path("case-3-wrong-worktree");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("case-3-wrong-worktree");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree(&db, "wt-1", 0);
@@ -1474,14 +1475,13 @@ mod tests {
             .load_worktree(&WorktreeId("wt-1".to_string()), None, Some(&event_key))
             .expect_err("event_key scope on another worktree should error");
         assert!(error.to_string().contains("scope-1"));
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn load_worktree_with_event_key_missing_scope_errors() {
-        let db_path = unique_test_db_path("case-3-missing-scope");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("case-3-missing-scope");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree(&db, "wt-1", 0);
@@ -1495,14 +1495,13 @@ mod tests {
             .load_worktree(&WorktreeId("wt-1".to_string()), None, Some(&event_key))
             .expect_err("missing event_key.scope_id should error");
         assert!(error.to_string().contains("scope-missing"));
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn load_worktree_with_event_key_missing_scope_and_orphan_replay_row_errors() {
-        let db_path = unique_test_db_path("case-3-orphan-replay-row");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("case-3-orphan-replay-row");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree(&db, "wt-1", 0);
@@ -1519,14 +1518,13 @@ mod tests {
                 "an orphan processed-event row must not let a missing scope produce a projection",
             );
         assert!(error.to_string().contains("scope-missing"));
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn load_worktree_with_agreeing_scope_and_event_key_loads_it_once() {
-        let db_path = unique_test_db_path("case-4-agreeing");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("case-4-agreeing");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree(&db, "wt-1", 0);
@@ -1550,14 +1548,13 @@ mod tests {
         assert!(projection
             .scopes
             .contains_key(&ScopeId("scope-1".to_string())));
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn load_worktree_with_disagreeing_scope_and_event_key_errors_without_loading() {
-        let db_path = unique_test_db_path("case-5-disagreeing");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("case-5-disagreeing");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree(&db, "wt-1", 0);
@@ -1578,28 +1575,26 @@ mod tests {
             .expect_err("disagreeing scope/event_key.scope_id should error");
         assert!(error.to_string().contains("scope-a"));
         assert!(error.to_string().contains("scope-b"));
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn load_mutation_event_returns_none_when_missing() {
-        let db_path = unique_test_db_path("cold-path-missing");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("cold-path-missing");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         let event = store
             .load_mutation_event(&WorktreeId("wt-1".to_string()), 1)
             .expect("load_mutation_event should succeed");
         assert!(event.is_none());
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn load_mutation_event_reconstructs_ai_exclusive_start_event() {
-        let db_path = unique_test_db_path("cold-path-ai-exclusive-start");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("cold-path-ai-exclusive-start");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_mutation_event(
@@ -1638,14 +1633,13 @@ mod tests {
                 },
             }
         );
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn load_mutation_event_reconstructs_a_flush_event_with_multiple_active_scopes() {
-        let db_path = unique_test_db_path("cold-path-flush");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("cold-path-flush");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_mutation_event(
@@ -1688,14 +1682,13 @@ mod tests {
                 },
             }
         );
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn into_protocol_state_carries_only_the_loaded_worktree_and_leaves_transient_fields_empty() {
-        let db_path = unique_test_db_path("into-protocol-state");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("into-protocol-state");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree(&db, "wt-1", 7);
@@ -1719,14 +1712,13 @@ mod tests {
         assert!(protocol_state.attempts.is_empty());
         assert!(protocol_state.mutation_events.is_empty());
         assert!(protocol_state.external_taint.is_empty());
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn initialize_worktree_inserts_a_fresh_healthy_cursor() {
-        let db_path = unique_test_db_path("init-worktree-fresh");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("init-worktree-fresh");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         store
@@ -1751,14 +1743,13 @@ mod tests {
                 needs_rebaseline: false,
             }
         );
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn initialize_worktree_never_overwrites_an_existing_cursor() {
-        let db_path = unique_test_db_path("init-worktree-idempotent");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("init-worktree-idempotent");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree(&db, "wt-1", 5);
@@ -1780,14 +1771,13 @@ mod tests {
             TreeId("tree-0".to_string())
         );
         assert_eq!(projection.worktree_state.revision, 5);
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn register_scope_inserts_never_seen_when_missing() {
-        let db_path = unique_test_db_path("register-scope-fresh");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("register-scope-fresh");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree(&db, "wt-1", 0);
@@ -1808,14 +1798,13 @@ mod tests {
                 worktree_id: WorktreeId("wt-1".to_string()),
             }
         );
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn register_scope_returns_existing_state_when_worktree_and_actor_match() {
-        let db_path = unique_test_db_path("register-scope-existing-match");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("register-scope-existing-match");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree(&db, "wt-1", 0);
@@ -1837,14 +1826,13 @@ mod tests {
                 worktree_id: WorktreeId("wt-1".to_string()),
             }
         );
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn register_scope_errors_on_worktree_mismatch() {
-        let db_path = unique_test_db_path("register-scope-worktree-mismatch");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("register-scope-worktree-mismatch");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree(&db, "wt-1", 0);
@@ -1859,14 +1847,13 @@ mod tests {
             )
             .expect_err("a worktree mismatch on an existing scope should error");
         assert!(error.to_string().contains("scope-1"));
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn register_scope_errors_on_actor_mismatch() {
-        let db_path = unique_test_db_path("register-scope-actor-mismatch");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("register-scope-actor-mismatch");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree(&db, "wt-1", 0);
@@ -1880,14 +1867,13 @@ mod tests {
             )
             .expect_err("an actor mismatch on an existing scope should error");
         assert!(error.to_string().contains("scope-1"));
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn register_scope_errors_when_worktree_does_not_exist_and_leaves_no_scope_row() {
-        let db_path = unique_test_db_path("register-scope-missing-worktree-fresh");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("register-scope-missing-worktree-fresh");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         let error = store
@@ -1907,14 +1893,13 @@ mod tests {
             scope_state.is_none(),
             "a failed register_scope must not leave an orphan scope row"
         );
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn register_scope_errors_when_existing_scopes_worktree_row_is_missing() {
-        let db_path = unique_test_db_path("register-scope-missing-worktree-existing");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("register-scope-missing-worktree-existing");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_scope(&db, "scope-1", "wt-missing", ScopeStatus::Active);
@@ -1930,8 +1915,6 @@ mod tests {
             );
         assert!(error.to_string().contains("scope-1"));
         assert!(error.to_string().contains("wt-missing"));
-
-        remove_test_db(&db_path);
     }
 
     fn healthy_worktree_state(revision: u64) -> WorktreeState {
@@ -2400,8 +2383,9 @@ mod tests {
 
     #[test]
     fn commit_applies_a_full_transition_and_makes_every_write_visible() {
-        let db_path = unique_test_db_path("commit-applies-full-transition");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("commit-applies-full-transition");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
         let wt = WorktreeId("wt0".to_string());
         let scope_id = ScopeId("scope0".to_string());
@@ -2484,14 +2468,13 @@ mod tests {
             .expect("mutation-event read should succeed")
             .expect("mutation-event row should exist");
         assert_eq!(reloaded_event, mutation_event);
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn commit_returns_conflict_and_writes_nothing_when_the_worktree_revision_has_moved_on() {
-        let db_path = unique_test_db_path("commit-conflict");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("commit-conflict");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
         let wt = WorktreeId("wt0".to_string());
         insert_worktree(&db, &wt.0, 5);
@@ -2515,14 +2498,13 @@ mod tests {
             .expect("worktree read should succeed")
             .expect("worktree row should exist");
         assert_eq!(worktree_state.revision, 5);
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn commit_propagates_a_deterministic_failure_without_reporting_conflict() {
-        let db_path = unique_test_db_path("commit-deterministic-failure");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("commit-deterministic-failure");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
         let wt = WorktreeId("wt0".to_string());
         let scope_id = ScopeId("scope0".to_string());
@@ -2560,8 +2542,6 @@ mod tests {
             worktree_state.revision, 0,
             "the guard's own revision advance must roll back together with the failed insert"
         );
-
-        remove_test_db(&db_path);
     }
 
     struct RaceEvidence {
@@ -2685,13 +2665,14 @@ mod tests {
 
     #[test]
     fn commit_from_two_independent_connections_races_and_only_one_applies() {
-        let db_path = unique_test_db_path("commit-two-writer-race");
+        let db_fixture = test_db_path("commit-two-writer-race");
+        let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         let scope_a = ScopeId("scope-a".to_string());
         let scope_b = ScopeId("scope-b".to_string());
 
         {
-            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
             insert_worktree(&db, &wt.0, 0);
             insert_scope(&db, &scope_a.0, &wt.0, ScopeStatus::Active);
             insert_scope(&db, &scope_b.0, &wt.0, ScopeStatus::Active);
@@ -2723,9 +2704,9 @@ mod tests {
         let transition_a = closing_transition(&before, &wt, &writer_a);
         let transition_b = closing_transition(&before, &wt, &writer_b);
 
-        let db_a = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+        let db_a = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(db_path)
             .expect("writer A handle should open");
-        let db_b = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+        let db_b = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(db_path)
             .expect("writer B handle should open");
 
         let handle_a = thread::spawn(move || MutationTraceStore::new(&db_a).commit(&transition_a));
@@ -2755,7 +2736,7 @@ mod tests {
             "exactly one writer should conflict from the same starting revision: {results:?}"
         );
 
-        let db_reopened = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+        let db_reopened = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(db_path)
             .expect("reopened handle should open");
         let store = MutationTraceStore::new(&db_reopened);
 
@@ -2774,8 +2755,6 @@ mod tests {
             .expect("exactly one writer's mutation event should be visible at the new revision");
 
         assert_race_winner_state(&store, &wt, &persisted_event, &writer_a, &writer_b);
-
-        remove_test_db(&db_path);
     }
 
     fn assert_atomic_rollback_state(
@@ -2851,8 +2830,9 @@ mod tests {
 
     #[test]
     fn commit_rolls_back_every_write_kind_together_on_a_deterministic_failure() {
-        let db_path = unique_test_db_path("commit-atomic-rollback");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("commit-atomic-rollback");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
         let wt = WorktreeId("wt0".to_string());
         let scope_id = ScopeId("scope0".to_string());
@@ -2902,14 +2882,13 @@ mod tests {
         assert!(error.to_string().contains("execute failed"));
 
         assert_atomic_rollback_state(&store, &wt, &scope_id, &scope_a, &scope_z);
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn commit_round_trips_u64_max_through_the_real_database() {
-        let db_path = unique_test_db_path("commit-u64-max");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("commit-u64-max");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
         let wt = WorktreeId("wt0".to_string());
         insert_worktree(&db, &wt.0, u64::MAX - 1);
@@ -2933,14 +2912,13 @@ mod tests {
             .expect("worktree read should succeed")
             .expect("worktree row should exist");
         assert_eq!(worktree_state.revision, u64::MAX);
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn commit_rejects_a_replayed_event_key_via_the_processed_event_uniqueness_constraint() {
-        let db_path = unique_test_db_path("commit-replay-uniqueness");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("commit-replay-uniqueness");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
         let wt = WorktreeId("wt0".to_string());
         let scope_id = ScopeId("scope0".to_string());
@@ -2979,14 +2957,13 @@ mod tests {
             worktree_state.revision, 0,
             "the whole transaction must roll back on a replay rejection"
         );
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn commit_of_strong_recovery_abandons_every_live_scope_on_the_worktree() {
-        let db_path = unique_test_db_path("commit-strong-recovery");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("commit-strong-recovery");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
         let wt = WorktreeId("wt0".to_string());
         let scope_a = ScopeId("scope-a".to_string());
@@ -3038,14 +3015,13 @@ mod tests {
                 .expect("scope row should exist");
             assert_eq!(scope_state.status, ScopeStatus::Abandoned);
         }
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn commit_of_needs_only_recovery_leaves_live_scopes_active() {
-        let db_path = unique_test_db_path("commit-needs-only-recovery");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("commit-needs-only-recovery");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
         let wt = WorktreeId("wt0".to_string());
         let scope_id = ScopeId("scope0".to_string());
@@ -3095,8 +3071,6 @@ mod tests {
             ScopeStatus::Active,
             "a live scope must survive needs-only recovery untouched"
         );
-
-        remove_test_db(&db_path);
     }
 
     fn insert_worktree_with_state(
@@ -3224,16 +3198,17 @@ mod tests {
 
     #[test]
     fn round_trip_start_persists_and_reloads_exactly_after_reopening_the_database() {
-        let db_path = unique_test_db_path("roundtrip-start");
+        let db_fixture = test_db_path("roundtrip-start");
+        let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         let scope_id = ScopeId("scope0".to_string());
         {
-            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
             insert_worktree(&db, &wt.0, 0);
             insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::NeverSeen);
         }
 
-        let before = load_before_state(&db_path, &wt, Some(&scope_id), None);
+        let before = load_before_state(db_path, &wt, Some(&scope_id), None);
         let attempt = AttemptId("attempt0".to_string());
         let event_id = EventId("event0".to_string());
         let prepared = prepare(
@@ -3255,29 +3230,28 @@ mod tests {
         let transition = DurableTransition::between(&before, &after, &wt)
             .expect("between should succeed")
             .expect("a start transition should produce a durable transition");
-        assert_eq!(commit_transition(&db_path, &transition), CasResult::Applied);
+        assert_eq!(commit_transition(db_path, &transition), CasResult::Applied);
 
         let event_key = EventKey {
             scope_id: scope_id.clone(),
             event_id,
         };
-        assert_round_trip(&db_path, &wt, Some(&scope_id), Some(&event_key), &after);
-
-        remove_test_db(&db_path);
+        assert_round_trip(db_path, &wt, Some(&scope_id), Some(&event_key), &after);
     }
 
     #[test]
     fn round_trip_advance_persists_and_reloads_exactly_after_reopening_the_database() {
-        let db_path = unique_test_db_path("roundtrip-advance");
+        let db_fixture = test_db_path("roundtrip-advance");
+        let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         let scope_id = ScopeId("scope0".to_string());
         {
-            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
             insert_worktree(&db, &wt.0, 0);
             insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active);
         }
 
-        let before = load_before_state(&db_path, &wt, Some(&scope_id), None);
+        let before = load_before_state(db_path, &wt, Some(&scope_id), None);
         let attempt = AttemptId("attempt0".to_string());
         let event_id = EventId("event0".to_string());
         let prepared = prepare(
@@ -3299,29 +3273,28 @@ mod tests {
         let transition = DurableTransition::between(&before, &after, &wt)
             .expect("between should succeed")
             .expect("an advance transition should produce a durable transition");
-        assert_eq!(commit_transition(&db_path, &transition), CasResult::Applied);
+        assert_eq!(commit_transition(db_path, &transition), CasResult::Applied);
 
         let event_key = EventKey {
             scope_id: scope_id.clone(),
             event_id,
         };
-        assert_round_trip(&db_path, &wt, Some(&scope_id), Some(&event_key), &after);
-
-        remove_test_db(&db_path);
+        assert_round_trip(db_path, &wt, Some(&scope_id), Some(&event_key), &after);
     }
 
     #[test]
     fn round_trip_close_persists_and_reloads_exactly_after_reopening_the_database() {
-        let db_path = unique_test_db_path("roundtrip-close");
+        let db_fixture = test_db_path("roundtrip-close");
+        let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         let scope_id = ScopeId("scope0".to_string());
         {
-            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
             insert_worktree(&db, &wt.0, 0);
             insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active);
         }
 
-        let before = load_before_state(&db_path, &wt, Some(&scope_id), None);
+        let before = load_before_state(db_path, &wt, Some(&scope_id), None);
         let attempt = AttemptId("attempt0".to_string());
         let event_id = EventId("event0".to_string());
         let prepared = prepare(
@@ -3347,27 +3320,26 @@ mod tests {
         let transition = DurableTransition::between(&before, &after, &wt)
             .expect("between should succeed")
             .expect("a close transition should produce a durable transition");
-        assert_eq!(commit_transition(&db_path, &transition), CasResult::Applied);
+        assert_eq!(commit_transition(db_path, &transition), CasResult::Applied);
 
         let event_key = EventKey {
             scope_id: scope_id.clone(),
             event_id,
         };
-        assert_round_trip(&db_path, &wt, Some(&scope_id), Some(&event_key), &after);
-
-        remove_test_db(&db_path);
+        assert_round_trip(db_path, &wt, Some(&scope_id), Some(&event_key), &after);
     }
 
     #[test]
     fn round_trip_flush_with_change_persists_and_reloads_exactly_after_reopening_the_database() {
-        let db_path = unique_test_db_path("roundtrip-flush-change");
+        let db_fixture = test_db_path("roundtrip-flush-change");
+        let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         {
-            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
             insert_worktree(&db, &wt.0, 0);
         }
 
-        let before = load_before_state(&db_path, &wt, None, None);
+        let before = load_before_state(db_path, &wt, None, None);
         let attempt = AttemptId("attempt0".to_string());
         let prepared = prepare(
             &before,
@@ -3387,23 +3359,22 @@ mod tests {
         let transition = DurableTransition::between(&before, &after, &wt)
             .expect("between should succeed")
             .expect("a changed flush transition should produce a durable transition");
-        assert_eq!(commit_transition(&db_path, &transition), CasResult::Applied);
+        assert_eq!(commit_transition(db_path, &transition), CasResult::Applied);
 
-        assert_round_trip(&db_path, &wt, None, None, &after);
-
-        remove_test_db(&db_path);
+        assert_round_trip(db_path, &wt, None, None, &after);
     }
 
     #[test]
     fn round_trip_flush_without_change_persists_nothing_new() {
-        let db_path = unique_test_db_path("roundtrip-flush-no-change");
+        let db_fixture = test_db_path("roundtrip-flush-no-change");
+        let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         {
-            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
             insert_worktree(&db, &wt.0, 0);
         }
 
-        let before = load_before_state(&db_path, &wt, None, None);
+        let before = load_before_state(db_path, &wt, None, None);
         let attempt = AttemptId("attempt0".to_string());
         let prepared = prepare(
             &before,
@@ -3426,81 +3397,78 @@ mod tests {
             "a no-change flush must produce no durable transition to persist"
         );
 
-        assert_round_trip(&db_path, &wt, None, None, &after);
-
-        remove_test_db(&db_path);
+        assert_round_trip(db_path, &wt, None, None, &after);
     }
 
     #[test]
     fn round_trip_taint_persists_and_reloads_exactly_after_reopening_the_database() {
-        let db_path = unique_test_db_path("roundtrip-taint");
+        let db_fixture = test_db_path("roundtrip-taint");
+        let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         {
-            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
             insert_worktree(&db, &wt.0, 0);
         }
 
-        let before = load_before_state(&db_path, &wt, None, None);
+        let before = load_before_state(db_path, &wt, None, None);
         let after = taint(&before, &wt);
 
         let transition = DurableTransition::between(&before, &after, &wt)
             .expect("between should succeed")
             .expect("taint should produce a durable transition");
-        assert_eq!(commit_transition(&db_path, &transition), CasResult::Applied);
+        assert_eq!(commit_transition(db_path, &transition), CasResult::Applied);
 
-        assert_round_trip(&db_path, &wt, None, None, &after);
-
-        remove_test_db(&db_path);
+        assert_round_trip(db_path, &wt, None, None, &after);
     }
 
     #[test]
     fn round_trip_abandon_persists_and_reloads_exactly_after_reopening_the_database() {
-        let db_path = unique_test_db_path("roundtrip-abandon");
+        let db_fixture = test_db_path("roundtrip-abandon");
+        let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         let scope_id = ScopeId("scope0".to_string());
         {
-            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
             insert_worktree(&db, &wt.0, 0);
             insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active);
         }
 
-        let before = load_before_state(&db_path, &wt, Some(&scope_id), None);
+        let before = load_before_state(db_path, &wt, Some(&scope_id), None);
         let after = abandon(&before, &scope_id);
 
         let transition = DurableTransition::between(&before, &after, &wt)
             .expect("between should succeed")
             .expect("abandon should produce a durable transition");
-        assert_eq!(commit_transition(&db_path, &transition), CasResult::Applied);
+        assert_eq!(commit_transition(db_path, &transition), CasResult::Applied);
 
-        assert_round_trip(&db_path, &wt, Some(&scope_id), None, &after);
-
-        remove_test_db(&db_path);
+        assert_round_trip(db_path, &wt, Some(&scope_id), None, &after);
     }
 
     #[test]
     fn round_trip_strong_recovery_abandons_every_live_scope_after_reopening_the_database() {
-        let db_path = unique_test_db_path("roundtrip-recover-strong");
+        let db_fixture = test_db_path("roundtrip-recover-strong");
+        let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         let scope_a = ScopeId("scope-a".to_string());
         let scope_b = ScopeId("scope-b".to_string());
         {
-            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
             insert_worktree_with_state(&db, &wt.0, 0, true, FailureKind::SnapshotFailure, false);
             insert_scope(&db, &scope_a.0, &wt.0, ScopeStatus::Active);
             insert_scope(&db, &scope_b.0, &wt.0, ScopeStatus::Active);
         }
 
-        let before = load_before_state(&db_path, &wt, None, None);
+        let before = load_before_state(db_path, &wt, None, None);
         let after = recover(&before, &wt, TreeId("tree1".to_string()));
 
         let transition = DurableTransition::between(&before, &after, &wt)
             .expect("between should succeed")
             .expect("strong recovery should produce a durable transition");
-        assert_eq!(commit_transition(&db_path, &transition), CasResult::Applied);
+        assert_eq!(commit_transition(db_path, &transition), CasResult::Applied);
 
-        assert_round_trip(&db_path, &wt, None, None, &after);
+        assert_round_trip(db_path, &wt, None, None, &after);
 
-        let db = reopen_store(&db_path);
+        let db = reopen_store(db_path);
         let store = MutationTraceStore::new(&db);
         for scope_id in [&scope_a, &scope_b] {
             let scope_state = store
@@ -3509,24 +3477,23 @@ mod tests {
                 .expect("scope row should exist");
             assert_eq!(scope_state.status, ScopeStatus::Abandoned);
         }
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn round_trip_contended_mutation_persists_and_reloads_exactly_after_reopening_the_database() {
-        let db_path = unique_test_db_path("roundtrip-contended");
+        let db_fixture = test_db_path("roundtrip-contended");
+        let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         let scope_a = ScopeId("scope-a".to_string());
         let scope_b = ScopeId("scope-b".to_string());
         {
-            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
             insert_worktree(&db, &wt.0, 0);
             insert_scope(&db, &scope_a.0, &wt.0, ScopeStatus::Active);
             insert_scope(&db, &scope_b.0, &wt.0, ScopeStatus::Active);
         }
 
-        let before = load_before_state(&db_path, &wt, None, None);
+        let before = load_before_state(db_path, &wt, None, None);
         let attempt = AttemptId("attempt0".to_string());
         let prepared = prepare(
             &before,
@@ -3556,9 +3523,9 @@ mod tests {
         let transition = DurableTransition::between(&before, &after, &wt)
             .expect("between should succeed")
             .expect("a contended flush transition should produce a durable transition");
-        assert_eq!(commit_transition(&db_path, &transition), CasResult::Applied);
+        assert_eq!(commit_transition(db_path, &transition), CasResult::Applied);
 
-        let reloaded = assert_round_trip(&db_path, &wt, None, None, &after);
+        let reloaded = assert_round_trip(db_path, &wt, None, None, &after);
         assert_eq!(
             reloaded.scopes.keys().cloned().collect::<BTreeSet<_>>(),
             BTreeSet::from([scope_a.clone(), scope_b.clone()]),
@@ -3570,20 +3537,19 @@ mod tests {
                 Some(ScopeStatus::Active)
             );
         }
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn round_trip_database_failure_changes_only_non_persistent_external_taint() {
-        let db_path = unique_test_db_path("roundtrip-database-failure");
+        let db_fixture = test_db_path("roundtrip-database-failure");
+        let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         {
-            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
             insert_worktree(&db, &wt.0, 0);
         }
 
-        let before = load_before_state(&db_path, &wt, None, None);
+        let before = load_before_state(db_path, &wt, None, None);
         let after = database_failure(&before, &wt);
 
         assert!(!before.external_taint.contains(&wt));
@@ -3603,15 +3569,14 @@ mod tests {
              DurableTransition should exist to commit"
         );
 
-        let reloaded = assert_round_trip(&db_path, &wt, None, None, &after);
+        let reloaded = assert_round_trip(db_path, &wt, None, None, &after);
         assert!(reloaded.into_protocol_state().external_taint.is_empty());
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn round_trip_a_replayed_event_key_is_rejected_and_does_not_advance_the_worktree_again() {
-        let db_path = unique_test_db_path("roundtrip-replay");
+        let db_fixture = test_db_path("roundtrip-replay");
+        let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         let scope_id = ScopeId("scope0".to_string());
         let event_key = EventKey {
@@ -3619,12 +3584,12 @@ mod tests {
             event_id: EventId("event0".to_string()),
         };
         {
-            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
             insert_worktree(&db, &wt.0, 0);
             insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active);
         }
 
-        let before = load_before_state(&db_path, &wt, Some(&scope_id), None);
+        let before = load_before_state(db_path, &wt, Some(&scope_id), None);
         let attempt = AttemptId("attempt0".to_string());
         let prepared = prepare(
             &before,
@@ -3645,9 +3610,9 @@ mod tests {
         let transition = DurableTransition::between(&before, &after, &wt)
             .expect("between should succeed")
             .expect("the first delivery should produce a durable transition");
-        assert_eq!(commit_transition(&db_path, &transition), CasResult::Applied);
+        assert_eq!(commit_transition(db_path, &transition), CasResult::Applied);
 
-        let before_replay = load_before_state(&db_path, &wt, Some(&scope_id), Some(&event_key));
+        let before_replay = load_before_state(db_path, &wt, Some(&scope_id), Some(&event_key));
         assert!(before_replay.processed_events.contains(&event_key));
 
         let replay_attempt = AttemptId("attempt1".to_string());
@@ -3674,9 +3639,7 @@ mod tests {
             "a rejected replay must produce no durable transition to persist"
         );
 
-        assert_round_trip(&db_path, &wt, Some(&scope_id), Some(&event_key), &after);
-
-        remove_test_db(&db_path);
+        assert_round_trip(db_path, &wt, Some(&scope_id), Some(&event_key), &after);
     }
 
     fn insert_worktree_with_cursor(
@@ -3726,8 +3689,9 @@ mod tests {
 
     #[test]
     fn load_tree_roots_returns_cursor_and_every_event_tree_deduplicated() {
-        let db_path = unique_test_db_path("tree-roots-cursor-and-events");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("tree-roots-cursor-and-events");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree_with_cursor(&db, "wt-1", 2, "tree-2");
@@ -3739,14 +3703,13 @@ mod tests {
             .expect("load_tree_roots should succeed");
 
         assert_eq!(roots, tree_set(["tree-0", "tree-1", "tree-2"]));
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn load_tree_roots_excludes_other_worktrees_trees() {
-        let db_path = unique_test_db_path("tree-roots-excludes-other-worktree");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("tree-roots-excludes-other-worktree");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree_with_cursor(&db, "wt-1", 1, "tree-1a");
@@ -3760,14 +3723,13 @@ mod tests {
             .expect("load_tree_roots should succeed");
 
         assert_eq!(roots, tree_set(["tree-0a", "tree-1a"]));
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn load_tree_roots_is_empty_for_an_unmaterialized_worktree() {
-        let db_path = unique_test_db_path("tree-roots-unmaterialized-worktree");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("tree-roots-unmaterialized-worktree");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree_with_cursor(&db, "wt-other", 0, "tree-other");
@@ -3777,14 +3739,13 @@ mod tests {
             .expect("load_tree_roots should return Ok for a worktree with no durable row");
 
         assert!(roots.is_empty());
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn load_tree_roots_remains_worktree_scoped() {
-        let db_path = unique_test_db_path("tree-roots-worktree-scoped");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("tree-roots-worktree-scoped");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree_with_cursor(&db, "wt-1", 1, "tree-1a");
@@ -3805,14 +3766,13 @@ mod tests {
                 .expect("load_tree_roots should succeed"),
             tree_set(["tree-0b", "tree-1b", "tree-2b"]),
         );
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn load_all_tree_roots_returns_every_worktree_cursor_and_event_tree_deduplicated() {
-        let db_path = unique_test_db_path("all-tree-roots-every-worktree");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("all-tree-roots-every-worktree");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree_with_cursor(&db, "wt-1", 1, "tree-1a");
@@ -3829,14 +3789,13 @@ mod tests {
             roots,
             tree_set(["tree-0a", "tree-1a", "tree-0b", "tree-1b", "tree-2b",]),
         );
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn load_all_tree_roots_deduplicates_a_tree_shared_by_multiple_worktrees() {
-        let db_path = unique_test_db_path("all-tree-roots-shared-tree");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("all-tree-roots-shared-tree");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree_with_cursor(&db, "wt-1", 1, "tree-shared");
@@ -3849,14 +3808,13 @@ mod tests {
             .expect("load_all_tree_roots should succeed");
 
         assert_eq!(roots, tree_set(["tree-0a", "tree-shared", "tree-1b"]));
-
-        remove_test_db(&db_path);
     }
 
     #[test]
     fn load_all_tree_roots_is_empty_for_an_empty_repository() {
-        let db_path = unique_test_db_path("all-tree-roots-empty-repository");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("all-tree-roots-empty-repository");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         let roots = store
@@ -3864,8 +3822,6 @@ mod tests {
             .expect("load_all_tree_roots should return Ok for an empty repository");
 
         assert!(roots.is_empty());
-
-        remove_test_db(&db_path);
     }
 
     fn apply_atomic_cursor_advance(db: &RepositoryAgentTraceDb) {
@@ -3923,8 +3879,9 @@ mod tests {
     /// the deterministic regression for that property.
     #[test]
     fn load_all_tree_roots_retains_previous_cursor_after_atomic_cursor_advance() {
-        let db_path = unique_test_db_path("all-tree-roots-retains-previous-cursor");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("all-tree-roots-retains-previous-cursor");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree_with_cursor(&db, "wt-b", 0, "tree-t");
@@ -3950,8 +3907,6 @@ mod tests {
             post.contains(&TreeId("tree-x".to_string())),
             "X becomes a durable root after the advance"
         );
-
-        remove_test_db(&db_path);
     }
 
     /// Deterministic regression for the actual concurrency boundary: one
@@ -3967,8 +3922,9 @@ mod tests {
     /// enter the interleaving and always retains `T`.
     #[test]
     fn load_all_tree_roots_reads_every_durable_root_in_one_sql_statement() {
-        let db_path = unique_test_db_path("all-tree-roots-single-statement");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("all-tree-roots-single-statement");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree_with_cursor(&db, "wt-b", 0, "tree-t");
@@ -4010,8 +3966,6 @@ mod tests {
             "the single-statement snapshot always retains T (via before_tree)"
         );
         assert!(roots.contains(&TreeId("tree-x".to_string())));
-
-        remove_test_db(&db_path);
     }
 
     /// The same single-statement / single-snapshot property, worktree-scoped:
@@ -4021,8 +3975,9 @@ mod tests {
     /// advance in exactly the same way.
     #[test]
     fn load_tree_roots_reads_every_durable_root_in_one_sql_statement() {
-        let db_path = unique_test_db_path("tree-roots-single-statement");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db_fixture = test_db_path("tree-roots-single-statement");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_worktree_with_cursor(&db, "wt-b", 0, "tree-t");
@@ -4064,7 +4019,5 @@ mod tests {
             "the single-statement snapshot always retains T (via before_tree)"
         );
         assert!(roots.contains(&TreeId("tree-x".to_string())));
-
-        remove_test_db(&db_path);
     }
 }
