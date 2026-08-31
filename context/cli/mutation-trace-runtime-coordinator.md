@@ -46,8 +46,10 @@ API end to end. Only harness/command wiring remains.
   `Result<Vec<PinnedRef>, PinInventoryError>` — and conditional-atomic
   `delete_pins` batch deletion). It writes tree/blob objects into the
   repository's normal, shared object database and protects durable trees with
-  create-only `refs/sce/mutation-cursor/<worktree-id>/<tree-sha>` refs. Full
-  contract in
+  create-only, **direct** `refs/sce/mutation-cursor/<worktree-id>/<tree-sha>`
+  refs; a symbolic ref inside that namespace is malformed and rejected, and
+  `delete_pins` uses no-dereference semantics so an inventory→delete ref-type
+  race cannot escape the inventoried namespace. Full contract in
   [`mutation-trace-snapshot-service.md`](mutation-trace-snapshot-service.md).
 - `cli/src/services/mutation_trace/runtime/coordinator.rs` — the composition
   point that drives `protocol.rs`/`store.rs`/`git_snapshot.rs` together. Its
