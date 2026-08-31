@@ -729,7 +729,7 @@ requirements.
     (T03 wires the reconciler).
   - Context synchronization: synced
 
-- [ ] T02: `Add worktree-scoped pin inventory and conditional atomic deletion to GitSnapshotService` (status:todo)
+- [x] T02: `Add worktree-scoped pin inventory and conditional atomic deletion to GitSnapshotService` (status:done)
   - Task ID: T02
   - Scope: In — `cli/src/services/mutation_trace/runtime/git_snapshot.rs`: a
     `PinnedRef { ref_name: String, tree: TreeId }` value type; the
@@ -772,7 +772,66 @@ requirements.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::git_snapshot::`;
     `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`;
     `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`.
-  - Context synchronization: pending
+  - Completed: 2026-08-31
+  - Files changed: `cli/src/services/mutation_trace/runtime/git_snapshot.rs`
+  - Result: Added `PinnedRef { ref_name: String, tree: TreeId }`
+    (`#[derive(Clone, Debug, Eq, PartialEq)]`) and the `PinInventoryError` enum
+    (`Git(anyhow::Error)`, `MalformedRef { ref_name: String, reason: String }`)
+    with a manual `Display` + `std::error::Error` impl, matching the
+    `CoordinateError` convention in `coordinator.rs`. Added a private
+    `pin_ref_prefix(worktree_id) -> String` helper
+    (`refs/sce/mutation-cursor/<worktree-id>/`) and routed the existing
+    `pin_ref_name` through it so the prefix has one source of truth. Added a
+    free `parse_pin_line(line, prefix) -> Result<PinnedRef, PinInventoryError>`
+    that enforces exactly-three space-separated `for-each-ref` fields, an
+    `objecttype` of `tree`, no extra path segment after the worktree prefix,
+    and refname-suffix equal to the target SHA — every failure is
+    `PinInventoryError::MalformedRef` with a discriminating `reason`. Added
+    `GitSnapshotService::list_pins(&self, worktree_id: &WorktreeId) ->
+    std::result::Result<Vec<PinnedRef>, PinInventoryError>` running
+    `git for-each-ref --format=%(refname) %(objectname) %(objecttype)`
+    constrained to the single prefix (a `git for-each-ref` execution/exit
+    failure maps to `PinInventoryError::Git`), and
+    `GitSnapshotService::delete_pins(&self, pins: &[PinnedRef]) ->
+    anyhow::Result<()>` feeding one `git update-ref --stdin` transaction of
+    `delete SP <ref> SP <expected_tree_sha> LF` lines (empty slice is an
+    `Ok(())` no-op), spawned with the same `current_dir` + `GIT_DIR` env as
+    `run_git`. `capture_tree` / `pin_tree` / `diff_trees` are unchanged. Added
+    8 inline tests plus helpers (`other_worktree_id`, `capture_with_file`,
+    `ref_target`, `ref_exists`): prefix-scoped isolation, empty inventory,
+    `list_pins_rejects_a_ref_whose_target_is_not_a_tree`,
+    `list_pins_rejects_a_ref_whose_name_disagrees_with_its_target`,
+    extra-path-segment rejection, the `Git` variant on a removed git-dir,
+    `delete_pins` exact removal, empty-slice no-op, and
+    `delete_pins_aborts_the_whole_transaction_when_one_ref_no_longer_matches_its_expected_value`
+    (inventory `R → X` for two refs, move one to `Y`, call `delete_pins` with
+    the inventoried pair, assert the whole transaction fails and both refs
+    survive — the canonical AC10 proof against this repository's Git).
+  - Verify (actual):
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::git_snapshot::`
+    — 22 passed, 0 failed (8 new). Broader
+    `services::mutation_trace::runtime::` — 65 passed, 0 failed (the
+    `pin_ref_name` refactor regressed nothing).
+    `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
+    — no warnings.
+    `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`
+    — clean.
+  - Deviations: None. Recorded assumption names and signatures (`PinnedRef`,
+    `PinInventoryError` with its two variants, `list_pins` / `delete_pins`
+    signatures) were used verbatim. `list_pins` also rejects a ref with an
+    extra path segment after the worktree prefix (the plan's "unexpected extra
+    path segment" case), tested. The `Git`-variant test forces a
+    `git for-each-ref` execution failure by removing the resolved git-dir.
+  - Context impact: Domain. Adds new public items to `GitSnapshotService`'s
+    runtime-internal surface (`PinnedRef`, `PinInventoryError`, `list_pins`,
+    `delete_pins`); no schema, migration, protocol, marker, or cross-domain
+    change, and `git_snapshot` stays private to `mutation_trace::runtime`. No
+    call site exists yet (T03 wires the reconciler). Durable context to refresh
+    per the plan's Context sync section:
+    `context/cli/mutation-trace-runtime-coordinator.md` (document `list_pins`
+    returning `Result<Vec<PinnedRef>, PinInventoryError>` and `delete_pins`,
+    and extend the testing boundary).
+  - Context synchronization: synced
 
 - [ ] T03: `Implement per-worktree reconciliation under WorktreeLock` (status:todo)
   - Task ID: T03

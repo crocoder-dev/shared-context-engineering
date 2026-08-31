@@ -76,7 +76,14 @@ exercising the public API end to end. Only harness/command wiring remains.
   `diff_trees(&self, before, after) -> Result<String>` runs `git diff
   --binary --full-index --no-ext-diff --no-textconv` between two tree SHAs,
   returning the raw diff text `patch.rs::parse_patch` already knows how to
-  parse. `coordinator.rs` is its only caller, via the `SnapshotCapture` trait
+  parse. It also exposes worktree-scoped `list_pins` inventory with distinct
+  Git and malformed-ref errors, and `delete_pins` conditional-atomic batch
+  deletion through one `git update-ref --stdin` transaction. The latter only
+  deletes refs whose target still matches the inventoried tree, so a ref moved
+  after inventory aborts the whole batch. The full snapshot/ref-reconciliation
+  contract is also documented in
+  [`mutation-trace-snapshot-service.md`](mutation-trace-snapshot-service.md).
+  `coordinator.rs` is its only caller, via the `SnapshotCapture` trait
   below. This file also exposes `resolve_git_dir(repository_root) ->
   Result<PathBuf>` (`pub(super)`, the same `--absolute-git-dir` resolution
   `GitSnapshotService::new` uses internally, now reusable by `coordinator.rs`
@@ -201,13 +208,16 @@ propagating as an error rather than a false empty-baseline capture, a
 relative `repository_root` still resolving `git_dir` absolute, survival
 after the temp index file is gone, `git gc --prune=now`/`git prune
 --expire=now` survival for a pinned tree versus reclamation of a distinct
-unpinned tree in the same repository, `pin_tree` idempotency, and
-`diff_trees` output shape. It also covers `resolve_worktree_id`: a normal
-repository always resolves to `WorktreeId("main")`, stable across repeated
-calls; two linked worktrees of one repository each resolve to a distinct
-`WorktreeId("worktrees/<name>")`, distinct from `"main"` and from each
-other, also stable across repeated calls; and resolving a worktree id never
-creates any file or directory under `<git-dir>/sce/`.
+unpinned tree in the same repository, `pin_tree` idempotency, `diff_trees` output shape, worktree-scoped pin
+inventory (including malformed target/name/path and Git-failure cases), and
+SHA-conditioned batch deletion (including empty batches and whole-transaction
+abort when a ref moved after inventory). It also covers
+`resolve_worktree_id`: a normal repository always resolves to
+`WorktreeId("main")`, stable across repeated calls; two linked worktrees of
+one repository each resolve to a distinct `WorktreeId("worktrees/<name>")`,
+distinct from `"main"` and from each other, also stable across repeated calls;
+and resolving a worktree id never creates any file or directory under
+`<git-dir>/sce/`.
 
 `coordinator.rs`'s inline `#[cfg(test)] mod tests` exercises the internal
 pipeline against a real temp-file `RepositoryAgentTraceDb`, using a fake,
