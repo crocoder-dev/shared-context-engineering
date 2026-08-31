@@ -201,6 +201,24 @@ const SELECT_MUTATION_EVENT_SQL: &str = "SELECT before_tree, after_tree, tainted
      FROM mutation_trace_events WHERE worktree_id = ?1 AND revision = ?2";
 const SELECT_MUTATION_EVENT_ACTIVE_SCOPES_SQL: &str =
     "SELECT scope_id FROM mutation_trace_event_active_scopes WHERE worktree_id = ?1 AND revision = ?2";
+/// One worktree's complete durable tree root set — its cursor tree plus the
+/// `before_tree` / `after_tree` of every historical `mutation_trace_events`
+/// row — as a single `UNION` statement so the whole set is read from one
+/// database snapshot, never assembled from independent `SELECT`s.
+const SELECT_TREE_ROOTS_BY_WORKTREE_SQL: &str =
+    "SELECT cursor_tree AS tree FROM mutation_trace_worktrees WHERE worktree_id = ?1
+     UNION
+     SELECT before_tree AS tree FROM mutation_trace_events    WHERE worktree_id = ?1
+     UNION
+     SELECT after_tree  AS tree FROM mutation_trace_events    WHERE worktree_id = ?1";
+/// The same three `TreeId` columns unioned across **every** worktree in the
+/// repository, in one statement / one snapshot — the reconciler's
+/// repository-wide retention set.
+const SELECT_ALL_TREE_ROOTS_SQL: &str = "SELECT cursor_tree AS tree FROM mutation_trace_worktrees
+     UNION
+     SELECT before_tree AS tree FROM mutation_trace_events
+     UNION
+     SELECT after_tree  AS tree FROM mutation_trace_events";
 /// Idle-insert: only takes effect when `worktree_id` has no row yet, so an
 /// existing worktree's cursor/revision/failure state is never overwritten.
 const INSERT_WORKTREE_IF_ABSENT_SQL: &str = "INSERT INTO mutation_trace_worktrees
@@ -650,6 +668,58 @@ impl<'a> MutationTraceStore<'a> {
         }))
     }
 
+    /// Reads `worktree`'s complete durable tree root set: its
+    /// `mutation_trace_worktrees.cursor_tree`, plus the `before_tree` and
+    /// `after_tree` of every `mutation_trace_events` row for `worktree`,
+    /// deduplicated. Returns an empty set (not an error) when `worktree` has
+    /// no durable row at all.
+    ///
+    /// Read-only, cold path — never called from `load_worktree` or any
+    /// hook-boundary path, exactly like [`MutationTraceStore::load_mutation_event`].
+    /// It reads only the three `TreeId` columns above: never
+    /// `mutation_trace_scopes` / `mutation_trace_processed_events` /
+    /// `mutation_trace_event_active_scopes`, never another worktree's trees,
+    /// and never transient `AttemptState` / `external_taint`.
+    ///
+    /// The whole set is produced by **one** SQL statement (a `UNION` of the
+    /// three columns) through **one** `query_map` call, so a concurrent
+    /// mutation-cursor commit — which atomically moves `cursor_tree` from `T`
+    /// to `X` and inserts `MutationEvent { before_tree = T, after_tree = X }`
+    /// in the same transaction — cannot expose a torn root set that omits `T`:
+    /// the single statement observes either the pre-commit snapshot
+    /// (`cursor_tree` still contains `T`) or the post-commit snapshot
+    /// (`before_tree` contains `T`).
+    pub fn load_tree_roots(&self, worktree: &WorktreeId) -> Result<BTreeSet<TreeId>> {
+        let rows = self.db.query_map(
+            SELECT_TREE_ROOTS_BY_WORKTREE_SQL,
+            (worktree.0.as_str(),),
+            tree_root_row_from_turso,
+        )?;
+
+        Ok(rows.into_iter().collect())
+    }
+
+    /// Reads the repository-wide durable tree root set: the union of
+    /// `mutation_trace_worktrees.cursor_tree`, `mutation_trace_events.before_tree`,
+    /// and `mutation_trace_events.after_tree` across **every** worktree,
+    /// deduplicated. Returns an empty set (not an error) for a repository with
+    /// no mutation-cursor rows.
+    ///
+    /// This is the reconciler's retention set: linked worktrees share one Git
+    /// object database, so a ref owned by worktree `A` may be the last SCE ref
+    /// protecting a tree that only worktree `B` durably requires. Read-only,
+    /// cold path, and — like [`MutationTraceStore::load_tree_roots`] — one SQL
+    /// statement through one `query_map` call, so it cannot tear across a
+    /// concurrent atomic `cursor T -> X` + `event T -> X` commit on another
+    /// worktree.
+    pub fn load_all_tree_roots(&self) -> Result<BTreeSet<TreeId>> {
+        let rows = self
+            .db
+            .query_map(SELECT_ALL_TREE_ROOTS_SQL, (), tree_root_row_from_turso)?;
+
+        Ok(rows.into_iter().collect())
+    }
+
     fn load_worktree_state(&self, worktree: &WorktreeId) -> Result<Option<WorktreeState>> {
         let rows = self.db.query_map(
             SELECT_WORKTREE_SQL,
@@ -842,6 +912,13 @@ fn effective_referenced_scope<'k>(
             event_key.scope_id
         ),
     }
+}
+
+fn tree_root_row_from_turso(row: &turso::Row) -> Result<TreeId> {
+    let tree: String = row
+        .get(0)
+        .context("failed to read a durable tree root column")?;
+    Ok(TreeId(tree))
 }
 
 fn worktree_state_row_from_turso(row: &turso::Row) -> Result<WorktreeState> {
@@ -3598,6 +3675,395 @@ mod tests {
         );
 
         assert_round_trip(&db_path, &wt, Some(&scope_id), Some(&event_key), &after);
+
+        remove_test_db(&db_path);
+    }
+
+    fn insert_worktree_with_cursor(
+        db: &RepositoryAgentTraceDb,
+        worktree_id: &str,
+        revision: u64,
+        cursor_tree: &str,
+    ) {
+        db.execute(
+            "INSERT INTO mutation_trace_worktrees
+                (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline)
+             VALUES (?1, ?2, ?3, 0, 'healthy', 0)",
+            (
+                worktree_id,
+                cursor_tree,
+                encode_revision(revision).as_slice(),
+            ),
+        )
+        .expect("worktree insert should succeed");
+    }
+
+    fn insert_event_trees(
+        db: &RepositoryAgentTraceDb,
+        worktree_id: &str,
+        revision: u64,
+        before_tree: &str,
+        after_tree: &str,
+    ) {
+        db.execute(
+            "INSERT INTO mutation_trace_events
+                (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
+                 attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id)
+             VALUES (?1, ?2, ?3, ?4, 0, 'healthy', 'ineligible_unscoped', NULL, 'flush', NULL, NULL)",
+            (
+                worktree_id,
+                encode_revision(revision).as_slice(),
+                before_tree,
+                after_tree,
+            ),
+        )
+        .expect("mutation event insert should succeed");
+    }
+
+    fn tree_set<const N: usize>(trees: [&str; N]) -> BTreeSet<TreeId> {
+        trees.into_iter().map(|t| TreeId(t.to_string())).collect()
+    }
+
+    #[test]
+    fn load_tree_roots_returns_cursor_and_every_event_tree_deduplicated() {
+        let db_path = unique_test_db_path("tree-roots-cursor-and-events");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree_with_cursor(&db, "wt-1", 2, "tree-2");
+        insert_event_trees(&db, "wt-1", 1, "tree-0", "tree-1");
+        insert_event_trees(&db, "wt-1", 2, "tree-1", "tree-2");
+
+        let roots = store
+            .load_tree_roots(&WorktreeId("wt-1".to_string()))
+            .expect("load_tree_roots should succeed");
+
+        assert_eq!(roots, tree_set(["tree-0", "tree-1", "tree-2"]));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn load_tree_roots_excludes_other_worktrees_trees() {
+        let db_path = unique_test_db_path("tree-roots-excludes-other-worktree");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree_with_cursor(&db, "wt-1", 1, "tree-1a");
+        insert_event_trees(&db, "wt-1", 1, "tree-0a", "tree-1a");
+
+        insert_worktree_with_cursor(&db, "wt-2", 1, "tree-1b");
+        insert_event_trees(&db, "wt-2", 1, "tree-0b", "tree-1b");
+
+        let roots = store
+            .load_tree_roots(&WorktreeId("wt-1".to_string()))
+            .expect("load_tree_roots should succeed");
+
+        assert_eq!(roots, tree_set(["tree-0a", "tree-1a"]));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn load_tree_roots_is_empty_for_an_unmaterialized_worktree() {
+        let db_path = unique_test_db_path("tree-roots-unmaterialized-worktree");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree_with_cursor(&db, "wt-other", 0, "tree-other");
+
+        let roots = store
+            .load_tree_roots(&WorktreeId("wt-missing".to_string()))
+            .expect("load_tree_roots should return Ok for a worktree with no durable row");
+
+        assert!(roots.is_empty());
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn load_tree_roots_remains_worktree_scoped() {
+        let db_path = unique_test_db_path("tree-roots-worktree-scoped");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree_with_cursor(&db, "wt-1", 1, "tree-1a");
+        insert_event_trees(&db, "wt-1", 1, "tree-0a", "tree-1a");
+        insert_worktree_with_cursor(&db, "wt-2", 2, "tree-2b");
+        insert_event_trees(&db, "wt-2", 1, "tree-0b", "tree-1b");
+        insert_event_trees(&db, "wt-2", 2, "tree-1b", "tree-2b");
+
+        assert_eq!(
+            store
+                .load_tree_roots(&WorktreeId("wt-1".to_string()))
+                .expect("load_tree_roots should succeed"),
+            tree_set(["tree-0a", "tree-1a"]),
+        );
+        assert_eq!(
+            store
+                .load_tree_roots(&WorktreeId("wt-2".to_string()))
+                .expect("load_tree_roots should succeed"),
+            tree_set(["tree-0b", "tree-1b", "tree-2b"]),
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn load_all_tree_roots_returns_every_worktree_cursor_and_event_tree_deduplicated() {
+        let db_path = unique_test_db_path("all-tree-roots-every-worktree");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree_with_cursor(&db, "wt-1", 1, "tree-1a");
+        insert_event_trees(&db, "wt-1", 1, "tree-0a", "tree-1a");
+        insert_worktree_with_cursor(&db, "wt-2", 2, "tree-2b");
+        insert_event_trees(&db, "wt-2", 1, "tree-0b", "tree-1b");
+        insert_event_trees(&db, "wt-2", 2, "tree-1b", "tree-2b");
+
+        let roots = store
+            .load_all_tree_roots()
+            .expect("load_all_tree_roots should succeed");
+
+        assert_eq!(
+            roots,
+            tree_set(["tree-0a", "tree-1a", "tree-0b", "tree-1b", "tree-2b",]),
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn load_all_tree_roots_deduplicates_a_tree_shared_by_multiple_worktrees() {
+        let db_path = unique_test_db_path("all-tree-roots-shared-tree");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree_with_cursor(&db, "wt-1", 1, "tree-shared");
+        insert_event_trees(&db, "wt-1", 1, "tree-0a", "tree-shared");
+        insert_worktree_with_cursor(&db, "wt-2", 1, "tree-1b");
+        insert_event_trees(&db, "wt-2", 1, "tree-shared", "tree-1b");
+
+        let roots = store
+            .load_all_tree_roots()
+            .expect("load_all_tree_roots should succeed");
+
+        assert_eq!(roots, tree_set(["tree-0a", "tree-shared", "tree-1b"]));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn load_all_tree_roots_is_empty_for_an_empty_repository() {
+        let db_path = unique_test_db_path("all-tree-roots-empty-repository");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        let roots = store
+            .load_all_tree_roots()
+            .expect("load_all_tree_roots should return Ok for an empty repository");
+
+        assert!(roots.is_empty());
+
+        remove_test_db(&db_path);
+    }
+
+    fn apply_atomic_cursor_advance(db: &RepositoryAgentTraceDb) {
+        let guard = TransactionStatement::new(
+            "UPDATE mutation_trace_worktrees SET cursor_tree = ?1, revision = ?2
+             WHERE worktree_id = ?3 AND revision = ?4",
+            (
+                "tree-x",
+                encode_revision(1).as_slice(),
+                "wt-b",
+                encode_revision(0).as_slice(),
+            ),
+        )
+        .expect("guard statement should build");
+        let statements = [TransactionStatement::new(
+            "INSERT INTO mutation_trace_events
+                (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
+                 attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id)
+             VALUES (?1, ?2, ?3, ?4, 0, 'healthy', 'ineligible_unscoped', NULL, 'flush', NULL, NULL)",
+            (
+                "wt-b",
+                encode_revision(1).as_slice(),
+                "tree-t",
+                "tree-x",
+            ),
+        )
+        .expect("event statement should build")];
+
+        let applied = db
+            .execute_transactional_cas_batch(
+                "atomic cursor advance test",
+                "retry the operation",
+                &guard,
+                &statements,
+            )
+            .expect("the atomic cursor advance should commit");
+        assert!(applied, "the CAS guard should have matched revision 0");
+    }
+
+    fn select_trees(db: &RepositoryAgentTraceDb, sql: &str) -> BTreeSet<TreeId> {
+        db.query_map(sql, (), |row| {
+            let tree: String = row.get(0).context("failed to read a tree column")?;
+            Ok(TreeId(tree))
+        })
+        .expect("tree column select should succeed")
+        .into_iter()
+        .collect()
+    }
+
+    /// State-transition coverage only: before the advance `T` is a root
+    /// through `cursor_tree`; after it, `T` is a root through `before_tree`.
+    /// This does NOT prove single-statement snapshot isolation — a torn
+    /// multi-read implementation would still pass this pre/post check.
+    /// `load_all_tree_roots_reads_every_durable_root_in_one_sql_statement` is
+    /// the deterministic regression for that property.
+    #[test]
+    fn load_all_tree_roots_retains_previous_cursor_after_atomic_cursor_advance() {
+        let db_path = unique_test_db_path("all-tree-roots-retains-previous-cursor");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree_with_cursor(&db, "wt-b", 0, "tree-t");
+
+        let pre = store
+            .load_all_tree_roots()
+            .expect("load_all_tree_roots should succeed");
+        assert!(
+            pre.contains(&TreeId("tree-t".to_string())),
+            "T is a durable root before the transition (via cursor_tree)"
+        );
+
+        apply_atomic_cursor_advance(&db);
+
+        let post = store
+            .load_all_tree_roots()
+            .expect("load_all_tree_roots should succeed");
+        assert!(
+            post.contains(&TreeId("tree-t".to_string())),
+            "T is still a durable root after the advance (via before_tree)"
+        );
+        assert!(
+            post.contains(&TreeId("tree-x".to_string())),
+            "X becomes a durable root after the advance"
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    /// Deterministic regression for the actual concurrency boundary: one
+    /// `load_all_tree_roots()` invocation must read `cursor_tree`,
+    /// `before_tree`, and `after_tree` through a SINGLE SQL statement / one
+    /// database snapshot. If it is reimplemented as two or more independent
+    /// `SELECT`s unioned in Rust, an atomic `cursor T -> X` +
+    /// `MutationEvent { before = T, after = X }` commit interleaved between
+    /// those reads produces a torn set that omits `T`. The test constructs
+    /// that torn set explicitly (an events read, the atomic advance, then a
+    /// worktrees read, unioned in Rust — losing `T`) and then asserts the
+    /// production path issues exactly one read statement, so it can never
+    /// enter the interleaving and always retains `T`.
+    #[test]
+    fn load_all_tree_roots_reads_every_durable_root_in_one_sql_statement() {
+        let db_path = unique_test_db_path("all-tree-roots-single-statement");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree_with_cursor(&db, "wt-b", 0, "tree-t");
+
+        let events_first = select_trees(
+            &db,
+            "SELECT before_tree AS tree FROM mutation_trace_events
+             UNION
+             SELECT after_tree AS tree FROM mutation_trace_events",
+        );
+        assert!(
+            events_first.is_empty(),
+            "no event references T before the advance"
+        );
+
+        apply_atomic_cursor_advance(&db);
+
+        let cursors_second = select_trees(
+            &db,
+            "SELECT cursor_tree AS tree FROM mutation_trace_worktrees",
+        );
+        let torn: BTreeSet<TreeId> = events_first.union(&cursors_second).cloned().collect();
+        assert!(
+            !torn.contains(&TreeId("tree-t".to_string())),
+            "a two-read implementation loses T across the atomic advance"
+        );
+
+        let (roots, statements_issued) = crate::services::db::count_read_statements(|| {
+            store
+                .load_all_tree_roots()
+                .expect("load_all_tree_roots should succeed")
+        });
+        assert_eq!(
+            statements_issued, 1,
+            "load_all_tree_roots must read every durable-root column in one SQL statement"
+        );
+        assert!(
+            roots.contains(&TreeId("tree-t".to_string())),
+            "the single-statement snapshot always retains T (via before_tree)"
+        );
+        assert!(roots.contains(&TreeId("tree-x".to_string())));
+
+        remove_test_db(&db_path);
+    }
+
+    /// The same single-statement / single-snapshot property, worktree-scoped:
+    /// one `load_tree_roots(W)` call reads W's `cursor_tree` / `before_tree` /
+    /// `after_tree` through one statement. A two-read reimplementation
+    /// (events-for-W, then cursor-for-W) would tear across an atomic cursor
+    /// advance in exactly the same way.
+    #[test]
+    fn load_tree_roots_reads_every_durable_root_in_one_sql_statement() {
+        let db_path = unique_test_db_path("tree-roots-single-statement");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree_with_cursor(&db, "wt-b", 0, "tree-t");
+
+        let events_first = select_trees(
+            &db,
+            "SELECT before_tree AS tree FROM mutation_trace_events WHERE worktree_id = 'wt-b'
+             UNION
+             SELECT after_tree AS tree FROM mutation_trace_events WHERE worktree_id = 'wt-b'",
+        );
+        assert!(
+            events_first.is_empty(),
+            "no event references T before the advance"
+        );
+
+        apply_atomic_cursor_advance(&db);
+
+        let cursors_second = select_trees(
+            &db,
+            "SELECT cursor_tree AS tree FROM mutation_trace_worktrees WHERE worktree_id = 'wt-b'",
+        );
+        let torn: BTreeSet<TreeId> = events_first.union(&cursors_second).cloned().collect();
+        assert!(
+            !torn.contains(&TreeId("tree-t".to_string())),
+            "a two-read implementation loses T across the atomic advance"
+        );
+
+        let (roots, statements_issued) = crate::services::db::count_read_statements(|| {
+            store
+                .load_tree_roots(&WorktreeId("wt-b".to_string()))
+                .expect("load_tree_roots should succeed")
+        });
+        assert_eq!(
+            statements_issued, 1,
+            "load_tree_roots must read every durable-root column in one SQL statement"
+        );
+        assert!(
+            roots.contains(&TreeId("tree-t".to_string())),
+            "the single-statement snapshot always retains T (via before_tree)"
+        );
+        assert!(roots.contains(&TreeId("tree-x".to_string())));
 
         remove_test_db(&db_path);
     }
