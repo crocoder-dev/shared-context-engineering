@@ -139,6 +139,33 @@ crate module path `services::mutation_trace::runtime::…` /
   property of the single-statement snapshot. A new DB transaction API is
   **not** required if one `SELECT`/`UNION` statement already provides these
   snapshot semantics.
+
+  Two separable properties, proven by two separate tests, must not be
+  conflated:
+
+  - **State-transition retention** (`…retains_previous_cursor_after_atomic_cursor_advance`):
+    before an atomic `cursor T → X` + `event T → X` advance, `T` is a durable
+    root via `cursor_tree`; after it, `T` is a durable root via `before_tree`.
+    A pre/post read straddling the advance still sees `T` both times. This is
+    necessary but **not sufficient** — a torn multi-read implementation would
+    also pass it, so this test is explicitly *not* evidence of snapshot
+    isolation.
+  - **Single-statement snapshot enforcement**
+    (`…reads_every_durable_root_in_one_sql_statement`, for both
+    `load_all_tree_roots` and `load_tree_roots`): the deterministic regression
+    for the actual concurrency boundary. It (a) constructs the torn set
+    explicitly — an events read, the atomic advance committed between the
+    reads, then a worktrees read, unioned in Rust, which loses `T` — and (b)
+    asserts, via the `TursoDb` read-statement counter
+    (`crate::services::db::count_read_statements`), that one production
+    `load_*_tree_roots` call issues **exactly one** read statement, so it can
+    never enter that interleaving and always retains `T`. Reimplementing
+    either query as two independent `SELECT`s (cursor, then events, or events,
+    then cursor) makes the counter observe `2` and fails the test. **One SQL
+    statement is the concurrency boundary** because it is the unit of DB
+    snapshot isolation: everything the statement reads comes from a single
+    coherent MVCC snapshot, whereas two statements are two snapshots a
+    concurrent commit can fall between.
   - Validate: `services::mutation_trace::store::tests::load_tree_roots_returns_cursor_and_every_event_tree_deduplicated`,
     `services::mutation_trace::store::tests::load_tree_roots_excludes_other_worktrees_trees`,
     `services::mutation_trace::store::tests::load_tree_roots_is_empty_for_an_unmaterialized_worktree`,
@@ -146,7 +173,9 @@ crate module path `services::mutation_trace::runtime::…` /
     `services::mutation_trace::store::tests::load_all_tree_roots_returns_every_worktree_cursor_and_event_tree_deduplicated`,
     `services::mutation_trace::store::tests::load_all_tree_roots_deduplicates_a_tree_shared_by_multiple_worktrees`,
     `services::mutation_trace::store::tests::load_all_tree_roots_is_empty_for_an_empty_repository`,
-    `services::mutation_trace::store::tests::load_all_tree_roots_retains_a_tree_across_an_atomic_cursor_advance` (the single-statement snapshot regression, seeded before and after the atomic `cursor T → X` + `event T → X` transition)
+    `services::mutation_trace::store::tests::load_all_tree_roots_retains_previous_cursor_after_atomic_cursor_advance` (state-transition retention only — not proof of snapshot isolation),
+    `services::mutation_trace::store::tests::load_all_tree_roots_reads_every_durable_root_in_one_sql_statement` and
+    `services::mutation_trace::store::tests::load_tree_roots_reads_every_durable_root_in_one_sql_statement` (the deterministic single-statement snapshot regression: torn two-read set constructed explicitly, then production path asserted to issue exactly one read statement via `count_read_statements`)
 - [ ] AC2: An orphan pin — a pinned tree that is in no durable root anywhere
   in the repository, the observable post-crash / post-no-op state `pin exists
   ∧ durable root does not` — is deleted by reconciliation, whether or not the
@@ -525,7 +554,7 @@ requirements.
 
 ## Task stack
 
-- [ ] T01: `Add worktree-scoped and repository-wide durable TreeId root queries to MutationTraceStore` (status:todo)
+- [x] T01: `Add worktree-scoped and repository-wide durable TreeId root queries to MutationTraceStore` (status:done)
   - Task ID: T01
   - Scope: In — `cli/src/services/mutation_trace/store.rs`:
     `pub fn load_tree_roots(&self, worktree: &WorktreeId) ->
@@ -533,7 +562,11 @@ requirements.
     `pub fn load_all_tree_roots(&self) -> Result<BTreeSet<TreeId>>`, both
     cold-path reads. Each is backed by **exactly one SQL statement** and
     driven through **one** `query_map` call — not one `query_map` per backing
-    table with the results unioned in Rust. The two recorded constants:
+    table with the results unioned in Rust. Also in —
+    `cli/src/services/db/mod.rs`: a `#[cfg(test)]` `pub(crate)`
+    `count_read_statements` seam plus a per-thread read-statement counter the
+    `TursoDb` read methods bump (test-only; no production behavior change). The
+    two recorded constants:
 
     - `SELECT_TREE_ROOTS_BY_WORKTREE_SQL` —
       ```sql
@@ -566,26 +599,40 @@ requirements.
     worktree-scoped exactness, repository-wide exactness, deduplication of a
     tree shared by multiple worktrees, an empty repository, multiple
     worktrees, **and the single-statement snapshot regression** described
-    below (`load_all_tree_roots_retains_a_tree_across_an_atomic_cursor_advance`).
+    below. A small test-only seam is added to
+    `cli/src/services/db/mod.rs`: `count_read_statements(body) -> (T, usize)`
+    (`#[cfg(test)]`, `pub(crate)`), backed by a per-thread counter each
+    `TursoDb` read method (`query` / `query_values` / `query_map`) bumps once
+    in its synchronous prelude, before the retry wrapper. No production
+    behavior change — the increments are `#[cfg(test)]`-only.
     Out — any write path, `commit` change, schema/migration change, the Git
     primitives (T02), the reconciliation algorithm (T03), calling either
     query from anywhere (T03).
-  - Concurrency regression (in this task): a deterministic test proving the
-    single-statement snapshot property. Model the transition
-    `B.cursor_tree = T` → (atomically) `cursor_tree := X` **and**
-    `INSERT mutation_trace_events { before_tree = T, after_tree = X }`. Since
-    the DB abstraction exposes no clean deterministic mid-statement
-    interleaving seam, make the single-SQL-statement structure itself the
-    primary proof: run `SELECT_ALL_TREE_ROOTS_SQL` against the pre-transition
-    state and assert it contains `T` (via `cursor_tree`); apply the atomic
-    `cursor T → X` + `event T → X` transition in one DB transaction; run the
-    statement again and assert it still contains `T` (now via
-    `before_tree`). The test asserts there is **no** committed DB state in
-    which one `SELECT_ALL_TREE_ROOTS_SQL` execution returns a set missing `T`,
-    because the cursor update and the event insert commit together and the
-    query observes them through one statement snapshot. No sleeps, no timing.
-    The property this locks in: no production implementation can regress to
-    multiple independent `SELECT`s (unioned in Rust) without violating AC1.
+  - Concurrency regression (in this task): two deterministic tests, no sleeps,
+    no probabilistic race, no stress loop. (a)
+    `load_all_tree_roots_retains_previous_cursor_after_atomic_cursor_advance` —
+    a **state-transition** test only: pre-advance `T` is a root via
+    `cursor_tree`, post-advance `T` is a root via `before_tree`. It is
+    explicitly *not* proof of snapshot isolation (a torn multi-read
+    implementation would also pass it). (b)
+    `load_all_tree_roots_reads_every_durable_root_in_one_sql_statement` and
+    `load_tree_roots_reads_every_durable_root_in_one_sql_statement` — the
+    **enforcement** regression. Each models the transition
+    `B.cursor_tree = T` → (atomically, one DB transaction) `cursor_tree := X`
+    **and** `INSERT mutation_trace_events { before_tree = T, after_tree = X }`,
+    then: (1) constructs the torn set that a multi-read implementation would
+    produce — read the event trees (empty), commit the atomic advance, read
+    the cursor trees (`{X}`), union in Rust → `{X}`, missing `T`; (2) asserts
+    the production `load_*_tree_roots` call, wrapped in
+    `count_read_statements`, issues **exactly one** read statement and returns
+    a set containing `T`. Reimplementing either query as two independent
+    `SELECT`s makes `count_read_statements` observe `2` and fails the test —
+    verified in-session by temporarily splitting `load_all_tree_roots` into
+    two `query_map` calls (`left: 2, right: 1`). The property this locks in:
+    one `load_*_tree_roots` invocation = one SQL statement = one DB snapshot,
+    which is the concurrency boundary because a single statement reads from one
+    coherent MVCC snapshot while two statements are two snapshots a concurrent
+    commit can fall between.
   - Dependencies: none
   - Done when: `load_tree_roots(W)` returns exactly `{cursor_tree(W)} ∪
     {before_tree, after_tree : mutation_trace_events row for W}`, deduplicated,
@@ -593,9 +640,11 @@ requirements.
     `load_all_tree_roots()` returns the union of those same three columns
     across **every** worktree, deduplicated, and `Ok(empty set)` for an empty
     repository; **each method executes exactly one SQL statement through one
-    `query_map` call** (verifiable by inspection — one `prepare` / one
-    `query_map` per method, one `UNION` constant, no Rust-side union of
-    per-table result vectors); neither query ever returns a tree sourced from
+    `query_map` call** — one `UNION` constant, no Rust-side union of per-table
+    result vectors — enforced at runtime by the
+    `…reads_every_durable_root_in_one_sql_statement` regression via
+    `count_read_statements`, not merely by inspection; neither query ever
+    returns a tree sourced from
     `mutation_trace_scopes` / `mutation_trace_processed_events` /
     `mutation_trace_event_active_scopes`, and `load_tree_roots` never returns
     a tree belonging to another worktree; neither method is reachable from
@@ -605,7 +654,80 @@ requirements.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::store::`;
     `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`;
     `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`.
-  - Context synchronization: pending
+  - Completed: 2026-08-31
+  - Files changed: `cli/src/services/mutation_trace/store.rs`,
+    `cli/src/services/db/mod.rs`
+  - Result: Added two SQL constants — `SELECT_TREE_ROOTS_BY_WORKTREE_SQL`
+    (`?1`-scoped `UNION` of `cursor_tree` / `before_tree` / `after_tree`) and
+    `SELECT_ALL_TREE_ROOTS_SQL` (the same `UNION` with no `WHERE` clause) —
+    beside the existing `SELECT_*` constants, plus a free
+    `tree_root_row_from_turso(&turso::Row) -> Result<TreeId>` row mapper next
+    to the other `*_row_from_turso` functions. Added
+    `pub fn load_tree_roots(&self, worktree: &WorktreeId) -> Result<BTreeSet<TreeId>>`
+    and `pub fn load_all_tree_roots(&self) -> Result<BTreeSet<TreeId>>` on
+    `MutationTraceStore`, immediately after `load_mutation_event` (both
+    cold-path siblings, never reached from `load_worktree` or a hook-boundary
+    path). Each method is one `self.db.query_map(<constant>, .., tree_root_row_from_turso)`
+    call collecting `.into_iter().collect()` into `BTreeSet<TreeId>` — no
+    Rust-side union of per-table result vectors. turso accepts the reused `?1`
+    placeholder across the three `UNION` arms (verified by the passing tests).
+    In `db/mod.rs`, added a `#[cfg(test)]` statement-count seam:
+    `pub(crate) fn count_read_statements(body) -> (T, usize)` backed by a
+    per-thread `READ_STATEMENTS_ISSUED` cell that `TursoDb::{query,
+    query_values, query_map}` each bump once in their synchronous prelude
+    (before `run_with_retry_sync`, so retries never inflate the count).
+    Production builds are unaffected (`#[cfg(test)]`).
+    Added inline `#[cfg(test)] mod tests` cases plus local helpers
+    (`insert_worktree_with_cursor`, `insert_event_trees`, `tree_set`,
+    `apply_atomic_cursor_advance`, `select_trees`): the 8 exactness/dedup/empty
+    cases, the renamed state-transition test
+    `load_all_tree_roots_retains_previous_cursor_after_atomic_cursor_advance`
+    (pre `T` via `cursor_tree`, post `T` via `before_tree` across an atomic
+    `execute_transactional_cas_batch` advance; docstring states it is *not*
+    snapshot-isolation proof), and the two deterministic enforcement
+    regressions
+    `load_all_tree_roots_reads_every_durable_root_in_one_sql_statement` /
+    `load_tree_roots_reads_every_durable_root_in_one_sql_statement`, which
+    build the torn two-read set explicitly and assert the production path
+    issues exactly one read statement via `count_read_statements`.
+  - Verify (actual): `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::store::`
+    — 83 passed, 0 failed (10 new `load_*_tree_roots*` tests among them).
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::db`
+    — 22 passed (statement-count seam adds no regression).
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` — full
+    suite 855 passed, 0 failed.
+    `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
+    — no warnings.
+    `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`
+    — clean.
+    Regression proven: temporarily reimplementing `load_all_tree_roots` as two
+    `query_map` calls made
+    `load_all_tree_roots_reads_every_durable_root_in_one_sql_statement` fail
+    with `left: 2, right: 1`, while the state-transition test still passed —
+    confirming the counter test is the one that catches the torn-read
+    regression. Reverted.
+  - Deviations: The single-statement snapshot regression was strengthened from
+    the plan's original pre/post-only design (which the plan text now records
+    as insufficient) to the `count_read_statements` enforcement test, and the
+    weak test was renamed
+    `load_all_tree_roots_retains_previous_cursor_after_atomic_cursor_advance`
+    with an honest docstring. This required a `#[cfg(test)]`-only
+    read-statement counter in `cli/src/services/db/mod.rs` (added to scope
+    above) — the smallest deterministic seam; no production behavior change,
+    no new API on `load_tree_roots` / `load_all_tree_roots`. Recorded
+    assumption names and the two-method / one-statement-each shape were used
+    verbatim. Test fixtures seed events with
+    `attribution_kind = 'ineligible_unscoped'` / `boundary_kind = 'flush'` (the
+    minimal CHECK-satisfying shape) since only the tree columns matter here.
+  - Context impact: Domain. Adds two new public read-only methods to
+    `MutationTraceStore`'s contract (`load_tree_roots`, `load_all_tree_roots`);
+    no schema, migration, write-path, architectural, or cross-domain change.
+    Durable context to refresh per the plan's Context sync section:
+    `context/cli/mutation-trace-store.md` (document the two bounded queries and
+    the single-statement snapshot property; update "Non-goals"), and the
+    line annotations in `context/context-map.md`. No call site exists yet
+    (T03 wires the reconciler).
+  - Context synchronization: synced
 
 - [ ] T02: `Add worktree-scoped pin inventory and conditional atomic deletion to GitSnapshotService` (status:todo)
   - Task ID: T02
@@ -1434,9 +1556,12 @@ Open questions: None.
    `external_taint` are never persisted. No migration needed.
 5. **Task stack:** T01 `load_tree_roots` + `load_all_tree_roots` read-only
    store queries (one SQL statement each — `SELECT_TREE_ROOTS_BY_WORKTREE_SQL`
-   / `SELECT_ALL_TREE_ROOTS_SQL`, one `query_map` per API — plus the
-   single-statement snapshot regression across an atomic `cursor T → X` +
-   `event T → X` transition) → T02 typed `GitSnapshotService::list_pins`
+   / `SELECT_ALL_TREE_ROOTS_SQL`, one `query_map` per API — plus a
+   state-transition retention test and, separately, the deterministic
+   single-statement enforcement regression that asserts one
+   `load_*_tree_roots` call issues exactly one read statement via the
+   `#[cfg(test)]` `count_read_statements` seam) → T02 typed
+   `GitSnapshotService::list_pins`
    (`Result<Vec<PinnedRef>, PinInventoryError>`) + conditional atomic
    `delete_pins` (canonical AC10 proof) → T03 `runtime/ref_reconciliation.rs`
    per-worktree pass under `WorktreeLock` (`RECONCILIATION_LOCK_TIMEOUT`,
