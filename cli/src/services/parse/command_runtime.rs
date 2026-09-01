@@ -352,7 +352,6 @@ fn convert_config_subcommand(
             format,
             config,
             log_level,
-            timeout_ms,
         } => Ok(RuntimeCommand::Config(
             services::config::command::ConfigCommand {
                 subcommand: services::config::ConfigSubcommand::Show(
@@ -360,7 +359,6 @@ fn convert_config_subcommand(
                         report_format: format,
                         config_path: config,
                         log_level,
-                        timeout_ms,
                     },
                 ),
             },
@@ -369,7 +367,6 @@ fn convert_config_subcommand(
             format,
             config,
             log_level,
-            timeout_ms,
         } => Ok(RuntimeCommand::Config(
             services::config::command::ConfigCommand {
                 subcommand: services::config::ConfigSubcommand::Validate(
@@ -377,7 +374,6 @@ fn convert_config_subcommand(
                         report_format: format,
                         config_path: config,
                         log_level,
-                        timeout_ms,
                     },
                 ),
             },

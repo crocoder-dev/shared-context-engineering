@@ -98,6 +98,7 @@ Supporting repo docs:
 
 Recent decision records:
 
+- `context/decisions/2026-09-01-remove-top-level-config-timeout.md` (removes the unused top-level config timeout key, environment override, and config-command flags without introducing a replacement global timeout; nested retry and unrelated runtime timeout paths remain active)
 - `context/decisions/2026-08-23-codex-canonical-worktree-path-resolution.md` (accepts upstream-compatible Codex apply_patch parent/absolute paths only when canonical resolution remains inside the Git worktree, validates nearest existing prefixes for missing targets, and rejects symlink escapes)
 - `context/decisions/2026-08-23-codex-nondestructive-hook-ownership.md` (uses one shared structural ownership predicate and merge service for setup/doctor: Codex SCE handlers require the generated helper path plus the `sce hooks codex` contract, while unrelated hook configuration survives)
 - `context/decisions/2026-08-23-codex-event-scoped-apply-patch-evidence-identities.md` (uses bounded, deterministic `tool_use_id`-derived synthetic line identities for Codex apply_patch evidence; positions are evidence identities rather than source line numbers, with existing patch combination/intersection semantics unchanged)

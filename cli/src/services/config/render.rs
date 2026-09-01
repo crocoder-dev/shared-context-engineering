@@ -27,11 +27,6 @@ pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportF
                     style::value(PRECEDENCE_DESCRIPTION)
                 ),
                 format_config_paths_text(runtime),
-                format_resolved_value_text(
-                    "timeout_ms",
-                    &runtime.timeout_ms.value.to_string(),
-                    runtime.timeout_ms.source,
-                ),
                 format_optional_auth_resolved_value_text(
                     WORKOS_CLIENT_ID_KEY,
                     &runtime.workos_client_id,
@@ -86,11 +81,6 @@ pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportF
                             runtime.log_file_retention_limit.value,
                             runtime.log_file_retention_limit.source,
                         ),
-                        "timeout_ms": {
-                            "value": runtime.timeout_ms.value,
-                            "source": runtime.timeout_ms.source.as_str(),
-                            "config_source": runtime.timeout_ms.source.config_source().map(ConfigPathSource::as_str),
-                        },
                         "workos_client_id": format_optional_auth_resolved_value_json(WORKOS_CLIENT_ID_KEY, &runtime.workos_client_id),
                         "control_plane_base_url": format_optional_auth_resolved_value_json(CONTROL_PLANE_BASE_URL_KEY, &runtime.control_plane_base_url),
                         "agent_trace": {

@@ -274,9 +274,6 @@ pub enum ConfigSubcommand {
 
         #[arg(long, value_enum)]
         log_level: Option<LogLevel>,
-
-        #[arg(long)]
-        timeout_ms: Option<u64>,
     },
 
     #[command(about = "Validate config files and report pass/fail with errors or warnings")]
@@ -289,9 +286,6 @@ pub enum ConfigSubcommand {
 
         #[arg(long, value_enum)]
         log_level: Option<LogLevel>,
-
-        #[arg(long)]
-        timeout_ms: Option<u64>,
     },
 }
 
