@@ -434,6 +434,9 @@ fn convert_hooks_subcommand_request(
             Ok(services::hooks::HookSubcommand::ConversationTrace)
         }
         cli_schema::HooksSubcommand::Codex => Ok(services::hooks::HookSubcommand::Codex),
+        cli_schema::HooksSubcommand::ClaudeModelState => {
+            Ok(services::hooks::HookSubcommand::ClaudeModelState)
+        }
     }
 }
 
@@ -488,6 +491,20 @@ mod tests {
         assert_eq!(
             command.request.format,
             services::output_format::OutputFormat::Text
+        );
+    }
+
+    #[test]
+    fn claude_model_state_hook_parses_to_silent_hook_request() {
+        let command = parse(&["sce", "hooks", "claude-model-state"]);
+
+        let RuntimeCommand::Hooks(command) = command else {
+            panic!("expected hooks command");
+        };
+
+        assert_eq!(
+            command.subcommand,
+            services::hooks::HookSubcommand::ClaudeModelState
         );
     }
 

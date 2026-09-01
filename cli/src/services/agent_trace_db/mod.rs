@@ -98,6 +98,7 @@ WHERE excluded.observed_at_ms > claude_model_state.observed_at_ms
        )
    )";
 
+#[allow(dead_code)]
 pub const SELECT_CLAUDE_MODEL_STATE_SQL: &str = "SELECT
     session_id,
     agent_id,
@@ -138,6 +139,7 @@ impl ObservationKind {
         }
     }
 
+    #[allow(dead_code)]
     fn from_str(value: &str) -> Result<Self> {
         match value {
             "session_start" => Ok(Self::SessionStart),
@@ -351,6 +353,7 @@ fn upsert_claude_model_state_with<M: DbSpec>(
     )
 }
 
+#[allow(dead_code)]
 fn claude_model_state_by_session_and_agent_with<M: DbSpec>(
     db: &TursoDb<M>,
     session_id: &str,
@@ -365,6 +368,7 @@ fn claude_model_state_by_session_and_agent_with<M: DbSpec>(
     Ok(rows.into_iter().next())
 }
 
+#[allow(dead_code)]
 fn claude_model_state_observation_from_turso(
     row: &turso::Row,
 ) -> Result<ClaudeModelStateObservation> {
