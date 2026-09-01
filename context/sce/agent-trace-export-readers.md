@@ -39,7 +39,7 @@ Four methods, one per capture stream, sharing one shape: `(cursor: i64, limit: u
 SELECT ... FROM <table> WHERE id > ?1 ORDER BY id ASC LIMIT ?2
 ```
 
-against `messages`, `parts`, `diff_traces`, and `agent_traces` respectively (`read_messages_after`, `read_parts_after`, `read_diff_traces_after`, `read_agent_traces_after`). `cursor` is the last server-accepted `id` for that stream; the reader makes no gap or contiguity assumption about IDs. `diff_traces.patch` / `payload_type` and `agent_traces.trace_json` are returned raw and unmodified — no patch parsing, no JSON reparsing.
+against `messages`, `parts`, `diff_traces`, and `agent_traces` respectively (`read_messages_after`, `read_parts_after`, `read_diff_traces_after`, `read_agent_traces_after`). `cursor` is the last server-accepted `id` for that stream; the reader makes no gap or contiguity assumption about IDs. `claude_model_state` is local attribution state outside these four export streams and has no reader method or sync cursor. `diff_traces.patch` / `payload_type` and `agent_traces.trace_json` are returned raw and unmodified — no patch parsing, no JSON reparsing.
 
 Every call validates, before executing any query:
 

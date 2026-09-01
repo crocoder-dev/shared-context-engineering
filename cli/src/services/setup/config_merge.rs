@@ -263,7 +263,14 @@ mod tests {
         json!({
             "$schema": "https://json.schemastore.org/claude-code-settings.json",
             "hooks": {
+                "SessionStart": [sce_hook_entry("sce hooks claude-model-state")],
+                "PostModelSwitch": [sce_hook_entry("sce hooks claude-model-state")],
                 "PreToolUse": [sce_hook_entry("sce policy bash")],
+                "PostToolUse": [
+                    sce_hook_entry("sce hooks diff-trace"),
+                    sce_hook_entry("sce hooks conversation-trace")
+                ],
+                "UserPromptSubmit": [sce_hook_entry("sce hooks conversation-trace")],
                 "Stop": [sce_hook_entry("sce hooks conversation-trace")]
             }
         })
@@ -300,8 +307,46 @@ mod tests {
         let twice = merge_claude_settings(&once, &generated_settings(), "settings.json").unwrap();
 
         assert_eq!(once, twice);
+        assert_eq!(twice["hooks"]["SessionStart"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            twice["hooks"]["PostModelSwitch"].as_array().unwrap().len(),
+            1
+        );
         assert_eq!(twice["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+        assert_eq!(twice["hooks"]["PostToolUse"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            twice["hooks"]["UserPromptSubmit"].as_array().unwrap().len(),
+            1
+        );
         assert_eq!(twice["hooks"]["Stop"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn replaces_stale_claude_model_state_commands_without_touching_user_hooks() {
+        let existing = json!({
+            "hooks": {
+                "SessionStart": [
+                    user_hook_entry(),
+                    sce_hook_entry("sce hooks session-model")
+                ],
+                "PostModelSwitch": [sce_hook_entry("sce hooks old-model-state")]
+            }
+        });
+
+        let merged =
+            merge_claude_settings(&existing, &generated_settings(), "settings.json").unwrap();
+
+        assert_eq!(
+            merged["hooks"]["SessionStart"].as_array().unwrap(),
+            &[
+                user_hook_entry(),
+                sce_hook_entry("sce hooks claude-model-state")
+            ]
+        );
+        assert_eq!(
+            merged["hooks"]["PostModelSwitch"].as_array().unwrap(),
+            &[sce_hook_entry("sce hooks claude-model-state")]
+        );
     }
 
     #[test]
