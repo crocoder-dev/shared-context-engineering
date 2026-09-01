@@ -179,13 +179,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: cross-cutting decision — establishes the bounded Claude-specific local-state exception to the prior attribution constraint; synchronization must reconcile the decision record and inspect the mandatory root context files before another task starts.
   - Context synchronization: synced
 
-- [ ] T02: `Add claude_model_state table and typed guarded helpers` (status:todo)
+- [x] T02: `Add claude_model_state table and typed guarded helpers` (status:done)
   - Task ID: T02
   - Scope: In — `003_claude_model_state.sql` additive migration; `RepositoryAgentTraceDbSpec` migration list picks it up; state structs (`ClaudeModelStateObservation`, `ObservationKind`); guarded upsert using local `observed_at_ms` (best-effort latest-locally-observed guard, PostModelSwitch-over-SessionStart plus a stable same-kind equal-time tie-break, replay idempotence) and exact-`(session_id, agent_id)` query helpers on `RepositoryAgentTraceDb`; migration/concurrency tests including `001 -> 002 -> 003` on fresh and pre-`003` DBs. Out — hook routing, diff-trace lookup, generated settings, export/sync wiring.
   - Dependencies: T01
   - Done when: setup-created and upgraded repository DBs persist and read Claude latest-model state deterministically; `001`/`002` are byte-unchanged; no export/sync module references the table.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_state`; `git diff --stat cli/migrations/agent-trace-repository/`.
-  - Context synchronization: pending
+  - Completed: 2026-09-01
+  - Files changed: `cli/migrations/agent-trace-repository/003_claude_model_state.sql`, `cli/src/services/agent_trace_db/mod.rs`, `cli/src/services/agent_trace_db/repository.rs`
+  - Result: Added the additive Claude model-state table, typed observation model, exact-scope lookup, and guarded deterministic upsert with timestamp, lifecycle-kind, and same-kind lexical ordering rules; added fresh/upgrade, replay, exact-scope, and concurrent-write coverage.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_state` — pass (2 tests); `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml equal_time_same_kind_observations` — pass (1 test); `git diff --exit-code -- cli/migrations/agent-trace-repository/001_repository_schema.sql cli/migrations/agent-trace-repository/002_repository_source_instance_id.sql` — pass; `git diff --stat cli/migrations/agent-trace-repository/` — pass (exit 0; new migration recorded as untracked in the baseline-relative snapshot).
+  - Done checks: All satisfied — fresh and pre-003 repository databases apply the migration; typed guarded state persistence and exact-scope reads are covered, including deterministic equal-time and concurrent writes; migrations `001` and `002` are byte-unchanged; no export/sync code was changed or references the table.
+  - Context impact: localized Agent Trace DB schema and repository-adapter contract — context synchronization must document the new non-exported Claude state table and helpers, then inspect the mandatory root context files.
+  - Context synchronization: synced
 
 - [ ] T03: `Add silent sce hooks claude-model-state intake` (status:todo)
   - Task ID: T03

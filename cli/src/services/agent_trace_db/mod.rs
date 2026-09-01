@@ -66,6 +66,49 @@ VALUES (?1, ?2, ?3, ?4, ?5)";
 const SELECT_MESSAGE_EXISTS_SQL: &str =
     "SELECT 1 FROM messages WHERE session_id = ?1 AND message_id = ?2 LIMIT 1";
 
+pub const UPSERT_CLAUDE_MODEL_STATE_SQL: &str = "INSERT INTO claude_model_state (
+    session_id,
+    agent_id,
+    model_id,
+    observation_kind,
+    source,
+    observed_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+ON CONFLICT (session_id, agent_id) DO UPDATE SET
+    model_id = excluded.model_id,
+    observation_kind = excluded.observation_kind,
+    source = excluded.source,
+    observed_at_ms = excluded.observed_at_ms
+WHERE excluded.observed_at_ms > claude_model_state.observed_at_ms
+   OR (
+       excluded.observed_at_ms = claude_model_state.observed_at_ms
+       AND (
+           (excluded.observation_kind = 'post_model_switch'
+            AND claude_model_state.observation_kind = 'session_start')
+           OR (
+               excluded.observation_kind = claude_model_state.observation_kind
+               AND (
+                   excluded.model_id > claude_model_state.model_id
+                   OR (
+                       excluded.model_id = claude_model_state.model_id
+                       AND excluded.source > claude_model_state.source
+                   )
+               )
+           )
+       )
+   )";
+
+pub const SELECT_CLAUDE_MODEL_STATE_SQL: &str = "SELECT
+    session_id,
+    agent_id,
+    model_id,
+    observation_kind,
+    source,
+    observed_at_ms
+FROM claude_model_state
+WHERE session_id = ?1 AND agent_id = ?2
+LIMIT 1";
+
 const CONVERSATION_TEXT_EVENT_OPERATION_NAME: &str = "insert conversation text event";
 const CONVERSATION_TEXT_EVENT_RETRY_HINT: &str = "retry after the database lock clears; if the issue persists, stop other SCE processes using this database and rerun the command";
 
@@ -79,6 +122,39 @@ pub struct DiffTraceInsert<'a> {
     pub tool_name: &'a str,
     pub tool_version: Option<&'a str>,
     pub payload_type: &'a str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObservationKind {
+    SessionStart,
+    PostModelSwitch,
+}
+
+impl ObservationKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SessionStart => "session_start",
+            Self::PostModelSwitch => "post_model_switch",
+        }
+    }
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "session_start" => Ok(Self::SessionStart),
+            "post_model_switch" => Ok(Self::PostModelSwitch),
+            other => anyhow::bail!("invalid Claude model-state observation kind: {other}"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaudeModelStateObservation {
+    pub session_id: String,
+    pub agent_id: String,
+    pub model_id: String,
+    pub observation_kind: ObservationKind,
+    pub source: String,
+    pub observed_at_ms: i64,
 }
 
 /// Raw diff trace row read from the agent trace database.
@@ -256,6 +332,64 @@ fn insert_agent_trace_with<M: DbSpec>(db: &TursoDb<M>, input: AgentTraceInsert<'
             input.remote_url,
         ),
     )
+}
+
+fn upsert_claude_model_state_with<M: DbSpec>(
+    db: &TursoDb<M>,
+    input: ClaudeModelStateObservation,
+) -> Result<u64> {
+    db.execute(
+        UPSERT_CLAUDE_MODEL_STATE_SQL,
+        (
+            input.session_id,
+            input.agent_id,
+            input.model_id,
+            input.observation_kind.as_str(),
+            input.source,
+            input.observed_at_ms,
+        ),
+    )
+}
+
+fn claude_model_state_by_session_and_agent_with<M: DbSpec>(
+    db: &TursoDb<M>,
+    session_id: &str,
+    agent_id: &str,
+) -> Result<Option<ClaudeModelStateObservation>> {
+    let rows = db.query_map(
+        SELECT_CLAUDE_MODEL_STATE_SQL,
+        (session_id, agent_id),
+        claude_model_state_observation_from_turso,
+    )?;
+
+    Ok(rows.into_iter().next())
+}
+
+fn claude_model_state_observation_from_turso(
+    row: &turso::Row,
+) -> Result<ClaudeModelStateObservation> {
+    Ok(ClaudeModelStateObservation {
+        session_id: row
+            .get(0)
+            .context("failed to read claude_model_state.session_id")?,
+        agent_id: row
+            .get(1)
+            .context("failed to read claude_model_state.agent_id")?,
+        model_id: row
+            .get(2)
+            .context("failed to read claude_model_state.model_id")?,
+        observation_kind: ObservationKind::from_str(
+            row.get::<String>(3)
+                .context("failed to read claude_model_state.observation_kind")?
+                .as_str(),
+        )?,
+        source: row
+            .get(4)
+            .context("failed to read claude_model_state.source")?,
+        observed_at_ms: row
+            .get(5)
+            .context("failed to read claude_model_state.observed_at_ms")?,
+    })
 }
 
 #[allow(dead_code)]
