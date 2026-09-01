@@ -19,9 +19,10 @@ use crate::services::agent_trace_db::{
     PartType, PostCommitPatchIntersectionInsert, RecentDiffTracePatches, PAYLOAD_TYPE_PATCH,
     PAYLOAD_TYPE_STRUCTURED,
 };
+#[cfg(test)]
+use crate::services::agent_trace_storage::resolve_agent_trace_storage_for_hook_runtime_at_state_root;
 use crate::services::agent_trace_storage::{
-    resolve_agent_trace_storage_for_hook_runtime,
-    resolve_agent_trace_storage_for_hook_runtime_at_state_root, AgentTraceStorageContext,
+    resolve_agent_trace_storage_for_hook_runtime, AgentTraceStorageContext,
 };
 use crate::services::config;
 use crate::services::observability::traits::Logger;
@@ -1372,6 +1373,7 @@ fn resolve_diff_trace_model_id(
         .map(|state| state.model_id))
 }
 
+#[cfg(test)]
 fn persist_diff_trace_payload_to_agent_trace_db_with<F, T>(
     payload: &DiffTracePayload,
     model_id: Option<&str>,
