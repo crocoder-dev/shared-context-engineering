@@ -1358,7 +1358,10 @@ fn resolve_diff_trace_model_id(
     db: &RepositoryAgentTraceDb,
     payload: &DiffTracePayload,
 ) -> Result<Option<String>> {
-    if payload.model_id.is_some() || payload.tool_name != CLAUDE_TOOL_NAME {
+    if payload.model_id.is_some()
+        || payload.tool_name != CLAUDE_TOOL_NAME
+        || payload.payload_type != PAYLOAD_TYPE_STRUCTURED
+    {
         return Ok(payload.model_id.clone());
     }
 
@@ -2919,6 +2922,45 @@ mod tests {
 
         drop(db);
         fs::remove_file(transcript_path).expect("transcript fixture should be removed");
+        fs::remove_dir_all(db_path.parent().expect("test DB should have a parent"))
+            .expect("test DB directory should be removed");
+    }
+
+    #[test]
+    fn normalized_claude_tool_name_does_not_use_claude_state_fallback() {
+        let db_path = unique_attribution_db_path("normalized-claude");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        db.upsert_claude_model_state(ClaudeModelStateObservation {
+            session_id: String::from("cc_session-123"),
+            agent_id: String::new(),
+            model_id: String::from("claude/parent-model"),
+            observation_kind: ObservationKind::SessionStart,
+            source: String::from("startup"),
+            observed_at_ms: 1,
+        })
+        .expect("parent state should be seeded");
+
+        let payload = diff_trace_payload_with(
+            CLAUDE_TOOL_NAME,
+            "session-123",
+            PAYLOAD_TYPE_PATCH,
+            None,
+            None,
+        );
+        persist_diff_trace_payload_to_agent_trace_db_with_db(&db, &payload)
+            .expect("normalized Claude payload should persist");
+
+        let model = db
+            .query_map("SELECT model_id FROM diff_traces LIMIT 1", (), |row| {
+                row.get::<Option<String>>(0).map_err(Into::into)
+            })
+            .expect("persisted model should be readable")
+            .into_iter()
+            .next()
+            .expect("diff trace row should exist");
+        assert_eq!(model, None);
+
+        drop(db);
         fs::remove_dir_all(db_path.parent().expect("test DB should have a parent"))
             .expect("test DB directory should be removed");
     }
