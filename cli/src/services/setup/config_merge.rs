@@ -10,6 +10,7 @@ use serde_json::Value;
 /// Substring identifying an SCE-authored Claude hook command
 /// (`config/pkl/renderers/claude-content.pkl`).
 const CLAUDE_SCE_HOOK_MARKER: &str = "run-sce-or-show-install-guidance.sh";
+const LEGACY_CLAUDE_AGENT_TRACE_PLUGIN: &str = ".claude/plugins/sce-agent-trace.ts";
 
 /// Path prefix identifying an SCE-authored `OpenCode` plugin registration
 /// (`config/pkl/base/opencode.pkl`), matched structurally so a plugin path an
@@ -106,20 +107,29 @@ fn merge_claude_settings(existing: &Value, generated: &Value, source_path: &str)
     Ok(Value::Object(existing_obj))
 }
 
-/// True when a Claude hook-matcher entry (`{"matcher": ..., "hooks": [{"type",
-/// "command"}, ...]}`) carries at least one command routed through the SCE
-/// hook script.
 fn hook_entry_is_sce_owned(entry: &Value) -> bool {
     entry
         .get("hooks")
         .and_then(Value::as_array)
-        .is_some_and(|hooks| {
-            hooks.iter().any(|hook| {
-                hook.get("command")
-                    .and_then(Value::as_str)
-                    .is_some_and(|command| command.contains(CLAUDE_SCE_HOOK_MARKER))
-            })
-        })
+        .is_some_and(|hooks| hooks.iter().any(hook_is_sce_owned))
+}
+
+fn hook_is_sce_owned(hook: &Value) -> bool {
+    hook.get("command")
+        .and_then(Value::as_str)
+        .is_some_and(|command| command.contains(CLAUDE_SCE_HOOK_MARKER))
+        || hook_is_legacy_claude_agent_trace(hook)
+}
+
+fn hook_is_legacy_claude_agent_trace(hook: &Value) -> bool {
+    hook.get("type").and_then(Value::as_str) == Some("command")
+        && hook.get("command").and_then(Value::as_str) == Some("bun")
+        && hook
+            .get("args")
+            .and_then(Value::as_array)
+            .and_then(|args| args.first())
+            .and_then(Value::as_str)
+            == Some(LEGACY_CLAUDE_AGENT_TRACE_PLUGIN)
 }
 
 /// Merges `generated` (the freshly rendered SCE `OpenCode` config) into
@@ -250,12 +260,32 @@ mod tests {
         })
     }
 
+    fn legacy_sce_hook_entry(event: &str) -> Value {
+        json!({
+            "hooks": [{
+                "type": "command",
+                "command": "bun",
+                "args": [LEGACY_CLAUDE_AGENT_TRACE_PLUGIN, event]
+            }]
+        })
+    }
+
     fn user_hook_entry() -> Value {
         json!({
             "matcher": "Bash",
             "hooks": [
                 {"type": "command", "command": "echo user-hook"}
             ]
+        })
+    }
+
+    fn user_bun_hook_entry() -> Value {
+        json!({
+            "hooks": [{
+                "type": "command",
+                "command": "bun",
+                "args": [".claude/plugins/my-company-hook.ts"]
+            }]
         })
     }
 
@@ -319,6 +349,93 @@ mod tests {
             1
         );
         assert_eq!(twice["hooks"]["Stop"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn recognizes_only_the_exact_legacy_claude_agent_trace_shape() {
+        assert!(hook_entry_is_sce_owned(&legacy_sce_hook_entry(
+            "SessionStart"
+        )));
+        assert!(!hook_entry_is_sce_owned(&user_bun_hook_entry()));
+        assert!(!hook_entry_is_sce_owned(&json!({
+            "hooks": [{
+                "type": "command",
+                "command": "bun",
+                "args": [".claude/plugins/other-hook.ts", "SessionStart"]
+            }]
+        })));
+        assert!(!hook_entry_is_sce_owned(&json!({
+            "hooks": [{
+                "type": "command",
+                "command": "bash",
+                "args": [LEGACY_CLAUDE_AGENT_TRACE_PLUGIN, "SessionStart"]
+            }]
+        })));
+    }
+
+    #[test]
+    fn preserves_user_bun_and_command_hooks_during_merge() {
+        let existing = json!({
+            "hooks": {
+                "SessionStart": [user_bun_hook_entry(), user_hook_entry()]
+            }
+        });
+
+        let merged =
+            merge_claude_settings(&existing, &generated_settings(), "settings.json").unwrap();
+        let session_start = merged["hooks"]["SessionStart"].as_array().unwrap();
+
+        assert_eq!(session_start[0], user_bun_hook_entry());
+        assert_eq!(session_start[1], user_hook_entry());
+    }
+
+    #[test]
+    fn replaces_historical_claude_agent_trace_hooks_and_is_idempotent() {
+        let existing = json!({
+            "permissions": {"allow": ["Bash(git *)"]},
+            "hooks": {
+                "SessionStart": [user_hook_entry(), legacy_sce_hook_entry("SessionStart")],
+                "UserPromptSubmit": [legacy_sce_hook_entry("UserPromptSubmit")],
+                "PostToolUse": [legacy_sce_hook_entry("PostToolUse")],
+                "Stop": [legacy_sce_hook_entry("Stop")]
+            }
+        });
+
+        let once =
+            merge_claude_settings(&existing, &generated_settings(), "settings.json").unwrap();
+        let twice = merge_claude_settings(&once, &generated_settings(), "settings.json").unwrap();
+
+        assert_eq!(once, twice);
+        assert_eq!(once["permissions"]["allow"][0], "Bash(git *)");
+        for event in ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"] {
+            let entries = once["hooks"][event].as_array().unwrap();
+            assert!(entries
+                .iter()
+                .all(|entry| { !entry.to_string().contains(LEGACY_CLAUDE_AGENT_TRACE_PLUGIN) }));
+            assert!(
+                entries.iter().any(|entry| entry == &user_hook_entry()) || event != "SessionStart"
+            );
+        }
+        assert_eq!(
+            once["hooks"]["SessionStart"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|entry| hook_entry_is_sce_owned(entry))
+                .count(),
+            1
+        );
+        assert_eq!(
+            once["hooks"]["PostModelSwitch"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(once["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+        assert_eq!(once["hooks"]["PostToolUse"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            once["hooks"]["UserPromptSubmit"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(once["hooks"]["Stop"].as_array().unwrap().len(), 1);
     }
 
     #[test]
