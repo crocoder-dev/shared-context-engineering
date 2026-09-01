@@ -1086,7 +1086,7 @@ requirements.
     and extend the testing boundary).
   - Context synchronization: synced
 
-- [ ] T03: `Implement per-worktree reconciliation under WorktreeLock` (status:todo)
+- [x] T03: `Implement per-worktree reconciliation under WorktreeLock` (status:done)
   - Task ID: T03
   - Scope: In — new
     `cli/src/services/mutation_trace/runtime/ref_reconciliation.rs` and
@@ -1177,7 +1177,103 @@ requirements.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::ref_reconciliation::`;
     `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`;
     `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`.
-  - Context synchronization: pending
+  - Completed: 2026-09-01
+  - Files changed: `cli/src/services/mutation_trace/runtime/ref_reconciliation.rs`
+    (new), `cli/src/services/mutation_trace/runtime/mod.rs`
+  - Result: Added `mod ref_reconciliation;` (private, beside `mod coordinator;`)
+    to `runtime/mod.rs`. New `ref_reconciliation.rs` contains:
+    `ReconciliationReport { local_required, retained, deleted }`
+    (`#[derive(Debug, Clone, Copy, PartialEq, Eq)]`); the module-owned
+    `const RECONCILIATION_LOCK_TIMEOUT: Duration = Duration::from_secs(10)`;
+    `ReconcileError` (manual `Display` + `std::error::Error`, matching
+    `CoordinateError`'s style — same-shaped `anyhow::Error` arms folded with
+    `|`) with exactly the ten recorded variants and no `Other`; `pub fn
+    reconcile_worktree(repository_root, open_db)` delegating to `pub(super) fn
+    reconcile_worktree_inner(repository_root, open_db, on_lock_contention)`
+    (mirroring `coordinate` / `coordinate_inner`, production passing a no-op
+    contention closure). The algorithm runs entirely under the lock in the
+    recorded order: `checkout::resolve_git_dir` (`Err ⇒ GitDir`) →
+    `worktree_lock::acquire_inner(&git_dir, RECONCILIATION_LOCK_TIMEOUT,
+    on_lock_contention)` (`Err ⇒ Lock`) → `checkout::read_checkout_id`
+    (`Ok(None) ⇒` early `Ok(ReconciliationReport { 0, 0, 0 })` with the lock
+    still held and no identity created; `Err ⇒ CheckoutIdentity`;
+    `Ok(Some(id)) ⇒ WorktreeId(id)`) → `open_db()` (`Err ⇒
+    AgentTraceDbUnavailable`, never arms the taint marker) →
+    `GitSnapshotService::new` (`Err ⇒ SnapshotService`) → `list_pins(&W)`
+    (`PinInventoryError::Git ⇒ PinInventory`, `PinInventoryError::MalformedRef
+    ⇒ MalformedPin { ref_name, reason }`) → `MutationTraceStore::new(&db)` →
+    `load_tree_roots(&W)` (`Err ⇒ DurableRoots`); `missing_local =
+    required_local.difference(pinned_trees)` non-empty ⇒ `Err(MissingRequiredPins
+    { missing })` deleting nothing → `load_all_tree_roots()` (`Err ⇒
+    DurableRoots`) → `stale = actual.filter(|p| !required_repository.contains(&p.tree))`;
+    non-empty ⇒ `delete_pins(&stale)` (`Err ⇒ DeleteTransaction`) → `Ok`
+    report `{ local_required: required_local.len(), retained: actual.len() −
+    stale.len(), deleted: stale.len() }`. Inline `#[cfg(test)] mod tests`: a
+    RAII `Fixture` (`tempfile::TempDir`, real `git init` repo, checkout id via
+    `get_or_create_checkout_id`, schema DB via `RepositoryAgentTraceDb::new_at`
+    at a path **beside** the worktree, reopened per call through
+    `open_for_hooks_without_migrations_at`), plus `seed_worktree_cursor` /
+    `seed_event` raw-SQL helpers matching the store test helpers' column shape
+    (`attribution_kind = 'ineligible_unscoped'`, `boundary_kind = 'flush'`).
+    Ten tests: `orphan_pin_with_a_worktree_row_is_deleted`,
+    `orphan_pin_with_no_worktree_row_is_deleted`,
+    `current_cursor_pin_is_retained_without_a_referencing_event`,
+    `historical_event_before_and_after_pins_are_retained_after_the_cursor_advances`
+    (`A→B→C→D`, all four pins retained, `deleted: 0`),
+    `a_pin_another_worktree_durably_requires_is_retained` (repository-wide
+    retention **and** the `retained > local_required` count case:
+    `{ 0, 1, 1 }`), `a_missing_required_pin_fails_closed_and_deletes_nothing`
+    (local roots `{A, B}`, pins `{A, X}` → `MissingRequiredPins { missing:
+    [B] }`, both refs intact), `a_malformed_namespace_ref_fails_closed_and_deletes_nothing`
+    (a `git symbolic-ref` inside the namespace → `MalformedPin`, nothing
+    deleted), `reconciliation_is_idempotent`,
+    `reconciliation_deletes_refs_without_reclaiming_objects` (`git cat-file -t`
+    still resolves the orphan tree immediately after its ref is deleted), and
+    `no_checkout_identity_is_a_clean_no_op` (checkout-id file removed →
+    `Ok({ 0, 0, 0 })`, the pin left untouched).
+  - Verify (actual):
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::ref_reconciliation::`
+    — 10 passed, 0 failed.
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::`
+    — 248 passed, 0 failed.
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` — full
+    suite 878 passed, 0 failed.
+    `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
+    — no warnings (`reconcile_worktree` / `reconcile_worktree_inner` are
+    consumed only by the inline tests for now, exactly as `coordinate` is; no
+    dead-code warning, matching that precedent).
+    `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`
+    — clean.
+  - Deviations: Recorded assumption names and signatures were used verbatim.
+    The `resolve_git_dir` used for the lock and checkout-id read is
+    `crate::services::checkout::resolve_git_dir` (relative `.git` resolved
+    against `repository_root`), exactly as `coordinate()` derives identity —
+    `GitSnapshotService::new` still resolves its own git-dir internally. Added
+    one test beyond the plan's enumerated list,
+    `no_checkout_identity_is_a_clean_no_op`, to cover the `read_checkout_id →
+    Ok(None)` branch named in "Done when" (clean `{ 0, 0, 0 }` no-op with the
+    lock already held and no identity created). No production behavior beyond
+    the reviewed task.
+  - Context impact: Domain. Adds a new `runtime::ref_reconciliation` module
+    (`reconcile_worktree`, `reconcile_worktree_inner`, `ReconciliationReport`,
+    `ReconcileError`, `RECONCILIATION_LOCK_TIMEOUT`) to the mutation-trace
+    runtime's internal surface; the module is private to
+    `mutation_trace::runtime` and not re-exported. No schema, migration,
+    protocol, marker, spec, Quint, or cross-domain change; no new production
+    dependency; no `mutation_trace_*` write. Durable context to refresh per the
+    plan's Context sync section:
+    `context/cli/mutation-trace-runtime-coordinator.md` (document the new
+    module, the two-invariant model, `RECONCILIATION_LOCK_TIMEOUT`, the
+    fail-closed rules, the `pub(super)` seam; correct the "create-only" on-disk
+    layout note; record that `WorktreeLock` now also guards reconciliation;
+    extend the testing boundary), `context/cli/mutation-trace-protocol.md`
+    ("Target end-state architecture" — reconciliation is imperative durability
+    maintenance outside the verified protocol), `context/context-map.md` and
+    `context/overview.md` (line annotations / the `mutation_trace/runtime/`
+    sentence), and `spec/mutation_cursor.md` ("Failure and durability
+    boundary" / "Implementation refinement"). No call site outside the module
+    yet (T04/T05 add tests through the seam; harness wiring is a later PR).
+  - Context synchronization: synced
 
 - [ ] T04: `Add the deterministic pin-to-CAS synchronization regression` (status:todo)
   - Task ID: T04

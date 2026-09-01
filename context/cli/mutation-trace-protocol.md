@@ -245,7 +245,11 @@ owns the lock, the external-taint fence, the caller-supplied DB provider, one
 Git snapshot, and a bounded CAS-retry loop; `store.rs` never remaps an existing
 `ScopeId`'s `actor_kind`/`worktree_id`; `protocol.rs` assumes referenced scopes
 already exist and stays free of any Git object, DB row, or CAS transaction
-concept.
+concept. `runtime::ref_reconciliation`
+([`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md))
+is imperative durability maintenance *outside* the verified protocol — it never
+advances the cursor, chooses attribution, changes scope state, or creates a
+`MutationEvent`, only reclaims SCE-owned snapshot refs that are no durable root.
 
 ## Authoritative source
 
