@@ -95,7 +95,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 
 - `agent_trace` must be an object when present and currently allows `repository_id`, `repository_remote`, and `auto_sync`.
 - `agent_trace.repository_id` must be a non-empty string when present.
-- `agent_trace.repository_remote` must be a non-empty string when present; the generated schema documents default `origin`.
+- `agent_trace.repository_remote` must be a non-empty string when present; omitted values resolve to `origin`.
 - `agent_trace.auto_sync` must be a boolean when present; omitted values resolve to `true`.
 
 - `integrations` must be an object when present and currently allows `target` and `optional_workflows`; either key alone yields a parsed `IntegrationsConfig` with the other defaulting to empty.
@@ -107,7 +107,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `sce setup` writes this key: it records the selection resolved for the run and reads the stored value back when `--workflow` is absent, which is the only consumer of the key today. See [setup local bootstrap](../sce/setup-repo-local-config-bootstrap.md).
 
 - `policies` must be an object when present and currently allows `attribution_hooks`, `database_retry`, and `bash`.
-- `policies.attribution_hooks` must be an object when present and currently allows `enabled`; the generated schema documents default `true`, and explicit `enabled: false` remains a valid opt-out alongside the runtime `SCE_ATTRIBUTION_HOOKS_DISABLED` environment opt-out.
+- `policies.attribution_hooks` must be an object when present and currently allows `enabled`; explicit `enabled: false` remains a valid opt-out alongside the runtime `SCE_ATTRIBUTION_HOOKS_DISABLED` environment opt-out.
 - `policies.bash` must be an object when present and currently allows only `presets` and `custom`.
 - `policies.bash.presets` must be an array of unique built-in preset IDs: `forbid-git-all`, `forbid-git-commit`, `use-pnpm-over-npm`, `use-bun-over-npm`, `use-nix-flake-over-cargo`.
 - `use-pnpm-over-npm` and `use-bun-over-npm` are mutually exclusive and fail validation when both are present.

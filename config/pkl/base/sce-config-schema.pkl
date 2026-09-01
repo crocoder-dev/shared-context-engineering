@@ -27,23 +27,28 @@ local mutuallyExclusiveConstraints = bash_policy_presets.mutually_exclusive.toLi
 
 local retryPolicyFieldsSchema = new JsonSchema {
   type = "object"
+  description = "Retry timing and attempt limits for one database operation."
   additionalProperties = false
   required = new { "max_attempts"; "timeout_ms"; "initial_backoff_ms"; "max_backoff_ms" }
   properties {
     ["max_attempts"] = new JsonSchema {
       type = "integer"
+      description = "Maximum number of attempts for the operation."
       minimum = 1
     }
     ["timeout_ms"] = new JsonSchema {
       type = "integer"
+      description = "Timeout in milliseconds for each attempt."
       minimum = 1
     }
     ["initial_backoff_ms"] = new JsonSchema {
       type = "integer"
+      description = "Initial retry backoff in milliseconds."
       minimum = 0
     }
     ["max_backoff_ms"] = new JsonSchema {
       type = "integer"
+      description = "Maximum retry backoff in milliseconds."
       minimum = 0
     }
   }
@@ -51,6 +56,7 @@ local retryPolicyFieldsSchema = new JsonSchema {
 
 local perDbRetrySchema = new JsonSchema {
   type = "object"
+  description = "Retry policy overrides for a database's connection and query operations."
   additionalProperties = false
   properties {
     ["connection_open"] = retryPolicyFieldsSchema
@@ -72,36 +78,45 @@ local sceConfigSchema = new JsonSchema {
     }
     ["log_level"] = new JsonSchema {
       type = "string"
+      description = "Minimum severity of log records."
       enum = new { "error"; "warn"; "info"; "debug" }
+      default = "error"
     }
     ["log_format"] = new JsonSchema {
       type = "string"
+      description = "Format used for log records."
       enum = new { "text"; "json" }
+      default = "text"
     }
     ["log_to_file"] = new JsonSchema {
       type = "boolean"
-      description = "Write log records to the configured log directory. Defaults to true."
+      description = "Write log records to the configured log directory."
       default = true
     }
     ["log_dir"] = new JsonSchema {
       type = "string"
+      description = "Directory for log files when file logging is enabled."
       minLength = 1
+      default = "<state_root>/sce/logs"
     }
     ["log_file_retention_limit"] = new JsonSchema {
       type = "integer"
+      description = "Maximum number of log files retained."
       minimum = 1
       default = 10
     }
     ["timeout_ms"] = new JsonSchema {
       type = "integer"
+      description = "Timeout value in milliseconds for config operations."
       minimum = 0
     }
     ["workos_client_id"] = new JsonSchema {
       type = "string"
+      description = "WorkOS client ID used for authentication."
     }
     ["control_plane_base_url"] = new JsonSchema {
       type = "string"
-      description = "Base URL of the control-plane Agent Trace ingestion API used by `sce trace sync`. Defaults to the canonical SCE control plane."
+      description = "Base URL of the control-plane Agent Trace ingestion API used by `sce trace sync`."
       minLength = 1
     }
     ["agent_trace"] = new JsonSchema {
@@ -116,35 +131,37 @@ local sceConfigSchema = new JsonSchema {
         }
         ["repository_remote"] = new JsonSchema {
           type = "string"
-          description = "Git remote name used to derive repository identity. Defaults to origin when omitted."
+          description = "Git remote name used to derive repository identity."
           minLength = 1
           default = "origin"
         }
         ["auto_sync"] = new JsonSchema {
           type = "boolean"
-          description = "Launch a detached, best-effort `sce sync` after successful post-commit Agent Trace persistence. Defaults to true."
+          description = "Launch a detached, best-effort `sce sync` after successful post-commit Agent Trace persistence."
           default = true
         }
       }
     }
     ["policies"] = new JsonSchema {
       type = "object"
+      description = "Policy configuration for SCE runtime and bash-tool enforcement."
       additionalProperties = false
       properties {
         ["attribution_hooks"] = new JsonSchema {
           type = "object"
-          description = "Attribution hook policy. Commit-msg attribution is enabled by default and can be suppressed with SCE_ATTRIBUTION_HOOKS_DISABLED=1 or by setting enabled to false."
+          description = "Policy for commit-msg attribution hooks."
           additionalProperties = false
           properties {
             ["enabled"] = new JsonSchema {
               type = "boolean"
-              description = "Enable SCE attribution hooks. Defaults to true when omitted; set false as an explicit opt-out. Environment opt-out: SCE_ATTRIBUTION_HOOKS_DISABLED."
+              description = "Enable SCE attribution hooks."
               default = true
             }
           }
         }
         ["database_retry"] = new JsonSchema {
           type = "object"
+          description = "Per-database retry policy overrides for local, Agent Trace, and auth databases."
           additionalProperties = false
           properties {
             ["local_db"] = perDbRetrySchema
@@ -154,10 +171,12 @@ local sceConfigSchema = new JsonSchema {
         }
         ["bash"] = new JsonSchema {
           type = "object"
+          description = "Bash-tool command blocking policy configuration."
           additionalProperties = false
           properties {
             ["presets"] = new JsonSchema {
               type = "array"
+              description = "Built-in bash-tool policy preset IDs to enable."
               uniqueItems = true
               items = new JsonSchema {
                 type = "string"
@@ -167,6 +186,7 @@ local sceConfigSchema = new JsonSchema {
             }
             ["custom"] = new JsonSchema {
               type = "array"
+              description = "Repository-defined bash-tool policies with custom matching and messages."
               items = new JsonSchema {
                 type = "object"
                 additionalProperties = false
@@ -174,6 +194,7 @@ local sceConfigSchema = new JsonSchema {
                 properties {
                   ["id"] = new JsonSchema {
                     type = "string"
+                    description = "Unique identifier for the custom bash policy."
                     minLength = 1
                     not = new JsonSchema {
                       enum = presetIds
@@ -181,11 +202,13 @@ local sceConfigSchema = new JsonSchema {
                   }
                   ["match"] = new JsonSchema {
                     type = "object"
+                    description = "Command matching rule for the custom bash policy."
                     additionalProperties = false
                     required = new { "argv_prefix" }
                     properties {
                       ["argv_prefix"] = new JsonSchema {
                         type = "array"
+                        description = "Leading command arguments that activate the policy."
                         minItems = 1
                         items = new JsonSchema {
                           type = "string"
@@ -208,6 +231,7 @@ local sceConfigSchema = new JsonSchema {
                   }
                   ["message"] = new JsonSchema {
                     type = "string"
+                    description = "User-facing message shown when the policy blocks a command."
                     minLength = 1
                   }
                 }
@@ -219,10 +243,12 @@ local sceConfigSchema = new JsonSchema {
     }
     ["integrations"] = new JsonSchema {
       type = "object"
+      description = "Integration targets and optional workflows selected for SCE setup."
       additionalProperties = false
       properties {
         ["target"] = new JsonSchema {
           type = "array"
+          description = "Integration targets into which SCE assets are installed."
           uniqueItems = true
           items = new JsonSchema {
             type = "string"
