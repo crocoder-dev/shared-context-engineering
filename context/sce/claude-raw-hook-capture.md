@@ -6,10 +6,10 @@ The `sce hooks claude-capture <event-name>` CLI route, `ClaudeCaptureEvent`, `Ho
 
 Rust now exposes these active intakes for Claude/OpenCode editor runtimes:
 
-- `sce hooks diff-trace` — STDIN JSON intake for OpenCode normalized or Claude structured diff-trace payloads with optional/nullable direct attribution. Rust persists direct payload-derived `model_id` and `tool_version` values as-is; Claude model metadata is extracted best-effort from the raw `PostToolUse` event and remains nullable when Claude omits it. No session-level fallback lookup is performed.
+- `sce hooks diff-trace` — STDIN JSON intake for OpenCode normalized or Claude structured diff-trace payloads with optional/nullable direct attribution. Rust persists direct payload-derived `model_id` and `tool_version` values as-is; Claude model metadata is extracted best-effort from the raw `PostToolUse` event and falls back to exact transcript and Claude lifecycle state when available. The state fallback is Claude-specific and does not restore the generic session-level abstraction.
 - `sce hooks conversation-trace` — STDIN JSON intake for normalized mixed-batch message/part payloads and supported raw Claude `UserPromptSubmit`, `Stop`, and `PostToolUse` events. Runtime intake failures log `sce.hooks.conversation_trace.error` and fail open to the hook producer.
 
-`sce hooks session-model` is no longer supported, and generated Claude settings no longer register `SessionStart` for Agent Trace attribution.
+`sce hooks session-model` is no longer supported. Generated Claude settings register `SessionStart` for local model-state attribution only and newly register `PostModelSwitch`; neither event is part of the removed raw-capture route.
 
 ## Historical artifact contract
 
@@ -25,10 +25,10 @@ The generated Claude TypeScript runtime at `config/.claude/plugins/sce-agent-tra
 
 ## Current state
 
-- Claude settings call the generated Bash helper `.claude/hooks/run-sce-or-show-install-guidance.sh` via generated `.claude/settings.json` command hooks before invoking `sce`: matched `PostToolUse Write|Edit|MultiEdit|NotebookEdit` pipes raw hook event JSON to `sce hooks diff-trace`, supported conversation events pipe raw hook event JSON to `sce hooks conversation-trace`, and `PreToolUse Bash` pipes raw hook event JSON to `sce policy bash`. The helper emits `sce CLI not found. Install it from https://sce.crocoder.dev/docs/getting-started#install-cli` and exits successfully when `sce` is missing; when `sce` exists it `exec`s the original command arguments so Rust receives stdin and owns stdout/stderr/exit behavior. Rust handles extraction, validation, and persistence without a TypeScript intermediary. `SessionStart` is no longer registered.
+- Claude settings call the generated Bash helper `.claude/hooks/run-sce-or-show-install-guidance.sh` via generated `.claude/settings.json` command hooks before invoking `sce`: `SessionStart` and `PostModelSwitch` pipe lifecycle JSON to `sce hooks claude-model-state`, matched `PostToolUse Write|Edit|MultiEdit|NotebookEdit` pipes raw hook event JSON to `sce hooks diff-trace`, supported conversation events pipe raw hook event JSON to `sce hooks conversation-trace`, and `PreToolUse Bash` pipes raw hook event JSON to `sce policy bash`. The helper emits `sce CLI not found. Install it from https://sce.crocoder.dev/docs/getting-started#install-cli` and exits successfully when `sce` is missing; when `sce` exists it `exec`s the original command arguments so Rust receives stdin and owns stdout/stderr/exit behavior. Rust handles extraction, validation, and persistence without a TypeScript intermediary. The lifecycle registrations are model-state-only and do not restore raw event capture.
 - The former Claude TypeScript runtime at `config/.claude/plugins/sce-agent-trace.ts` was removed in T07 of the `claude-rust-diff-trace` plan.
 - Rust owns normalized persistence: `diff-trace` inserts into `diff_traces` with `payload_type` classification (`"patch"` for OpenCode, `"structured"` for Claude), while `conversation-trace` inserts normalized messages/parts.
-- Claude `diff-trace` attempts best-effort direct `model_id` extraction from the raw `PostToolUse` payload and stores nullable direct attribution in `diff_traces`; OpenCode sends `model_id` directly and may send nullable `tool_version`. Missing metadata is persisted as `NULL` and is not resolved from any session-level cache.
+- Claude `diff-trace` attempts best-effort direct `model_id` extraction from the raw `PostToolUse` payload, then exact transcript lookup and exact Claude lifecycle-state lookup, storing the resulting nullable attribution in `diff_traces`; OpenCode sends `model_id` directly and may send nullable `tool_version`. Missing metadata is persisted as `NULL`; Claude lifecycle state is local-only and is not a generic session cache.
 - No raw Claude hook payload artifacts are written by TypeScript or Rust.
 
 See also: [agent-trace-hooks-command-routing.md](./agent-trace-hooks-command-routing.md), [../context-map.md](../context-map.md)

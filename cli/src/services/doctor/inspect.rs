@@ -2854,6 +2854,62 @@ mod tests {
     }
 
     #[test]
+    fn claude_settings_reports_missing_lifecycle_hook_individually_then_fix_repairs_it() {
+        for missing_event in ["SessionStart", "PostModelSwitch"] {
+            let root = unique_temp_repository_root(&format!("claude-lifecycle-{missing_event}"));
+            let claude_dir = root.join(".claude");
+            std::fs::create_dir_all(&claude_dir).unwrap();
+
+            let generated_bytes = embedded_claude_settings_bytes();
+            let installed_bytes =
+                crate::services::setup::config_merge::merge_or_create_claude_settings(
+                    None,
+                    generated_bytes,
+                    "settings.json",
+                )
+                .unwrap();
+            let mut drifted: serde_json::Value = serde_json::from_slice(&installed_bytes).unwrap();
+            drifted["hooks"][missing_event] = serde_json::json!([]);
+            let settings_path = claude_dir.join("settings.json");
+            std::fs::write(&settings_path, serde_json::to_vec_pretty(&drifted).unwrap()).unwrap();
+
+            let groups = collect_claude_integration_groups(&root, &[]);
+            let settings_child = groups
+                .iter()
+                .flat_map(|group| &group.children)
+                .find(|child| child.relative_path == "settings.json")
+                .expect("settings.json child present");
+            assert_eq!(
+                settings_child.content_state,
+                IntegrationContentState::Mismatch,
+                "doctor should report missing {missing_event} as drift"
+            );
+
+            let fix_results = super::repair_merge_target_configs(&root, &allowed_policy());
+            assert!(
+                fix_results
+                    .iter()
+                    .any(|result| matches!(result.outcome, super::FixResult::Fixed)),
+                "doctor --fix should repair missing {missing_event}: {fix_results:?}"
+            );
+
+            let repaired: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
+            assert_eq!(
+                repaired["hooks"][missing_event][0]["hooks"][0]["command"],
+                r#"bash "$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-show-install-guidance.sh" sce hooks claude-model-state"#
+            );
+            assert!(collect_claude_integration_groups(&root, &[])
+                .iter()
+                .flat_map(|group| &group.children)
+                .find(|child| child.relative_path == "settings.json")
+                .is_some_and(|child| { child.content_state == IntegrationContentState::Match }));
+
+            std::fs::remove_dir_all(&root).ok();
+        }
+    }
+
+    #[test]
     fn opencode_config_reports_match_despite_extra_user_plugin_then_drift_and_fix() {
         let root = unique_temp_repository_root("opencode-fix");
         let opencode_dir = root.join(".opencode");
