@@ -1608,7 +1608,7 @@ requirements.
     an edit for T04.
   - Context synchronization: synced
 
-- [ ] T05: `Record the retired-worktree namespace limitation and future repository-scoped reconciliation` (status:todo)
+- [x] T05: `Record the retired-worktree namespace limitation and future repository-scoped reconciliation` (status:done)
   - Task ID: T05
   - Scope: In — durable documentation only.
     `context/cli/mutation-trace-ref-reconciliation.md` and
@@ -1642,9 +1642,63 @@ requirements.
     `nix flake check` stay green (doc-only change).
   - Verify: `grep -n "retired\|still-identifiable\|repository-scoped" context/cli/mutation-trace-ref-reconciliation.md context/cli/mutation-trace-runtime-coordinator.md`;
     `nix run .#pkl-check-generated`.
-  - Context synchronization: pending
+  - Completed: 2026-09-01
+  - Files changed: `context/cli/mutation-trace-ref-reconciliation.md`,
+    `context/cli/mutation-trace-runtime-coordinator.md`, `context/overview.md`,
+    `context/context-map.md`
+  - Result: Added a `## Scope: an active, still-identifiable worktree namespace
+    only` section to `mutation-trace-ref-reconciliation.md` (after "Entry point
+    and identity") covering: the owned prefix derived from the current
+    worktree's checkout id; `<git-dir>/sce/checkout-id` disappearing on
+    `git worktree remove` while `refs/sce/mutation-cursor/<checkout-id>/*`
+    survive in the shared namespace; no surviving worktree being able to derive
+    a retired id (a stranded-namespace text diagram); the harness gate
+    (persistent / current-worktree lifecycle is storage-cleanup complete,
+    ephemeral-linked-worktree lifecycle is not until the future op exists); and
+    a `### Future work: repository-scoped retired-worktree reconciliation`
+    subsection recording the operation shape (namespace enumeration → active vs.
+    retired ids → per-retired-namespace tree-vs-`durable_roots(repository)`
+    comparison → delete only non-durable) with inherited invariants (repo-wide
+    durability via `load_all_tree_roots()`, false-retention bias, "no active
+    worktree → delete whole namespace" forbidden). Tightened the doc's opening
+    sentence to "within one still-identifiable worktree's ref namespace" and
+    added a cross-reference; preserved the existing "not a bound on storage
+    growth" / historical-retention statement and tied the two scope limits
+    together explicitly. In `mutation-trace-runtime-coordinator.md`, extended
+    the `ref_reconciliation.rs` module bullet with the active-worktree-only
+    scope, the retired-worktree future-work note, and an explicit "does not
+    bound all orphan-ref growth" statement, and updated the on-disk-layout
+    annotation for `refs/sce/mutation-cursor/<worktree-id>/<tree-sha>`. Added a
+    one-clause precision qualifier to the `ref_reconciliation` mentions in
+    `context/overview.md` and `context/context-map.md`. No code, spec, or Quint
+    change.
+  - Verify (actual):
+    `grep -n "retired\|still-identifiable\|repository-scoped" context/cli/mutation-trace-ref-reconciliation.md context/cli/mutation-trace-runtime-coordinator.md`
+    — matches in both files (scope section, future-work subsection, module
+    bullet, on-disk-layout note).
+    `nix run .#pkl-check-generated` — "Ephemeral Pkl generation passed: 141
+    files", inventory sha256 unchanged.
+    `nix flake check` — "all checks passed!".
+  - Deviations: Also touched `context/overview.md` and `context/context-map.md`
+    (named in the task as "cross-check" targets, not in the two-doc "In" list) —
+    each got a single precision clause so their `ref_reconciliation` annotations
+    no longer read as covering every namespace. The stale "T04/T05 tests"
+    references inside `mutation-trace-ref-reconciliation.md` were left untouched:
+    reframing the T04 regression wording is explicitly T07's scope.
+  - Context impact: Documentation-only. This task *is* durable context work — it
+    directly satisfies the T05 items in this plan's "Context sync" section
+    (`context/cli/mutation-trace-ref-reconciliation.md` retired-worktree
+    limitation; `context/cli/mutation-trace-runtime-coordinator.md`
+    active-worktree-only clarification) plus the cross-checked
+    `overview.md` / `context-map.md` annotations. No production code, signature,
+    schema, migration, protocol, marker, spec, or Quint change; no new
+    dependency. Root-context files: `context/overview.md` and
+    `context/context-map.md` updated as above; `context/architecture.md`,
+    `context/glossary.md`, `context/patterns.md` need no change (no new module,
+    term, or pattern — scope-limitation wording only).
+  - Context synchronization: synced
 
-- [ ] T06: `Make missing checkout identity an observable skipped outcome` (status:todo)
+- [x] T06: `Make missing checkout identity an observable skipped outcome` (status:done)
   - Task ID: T06
   - Scope: In — `cli/src/services/mutation_trace/runtime/ref_reconciliation.rs`:
     add `pub enum ReconciliationOutcome { Reconciled(ReconciliationReport),
@@ -1682,7 +1736,60 @@ requirements.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::`;
     `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`;
     `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`.
-  - Context synchronization: pending
+  - Completed: 2026-09-01
+  - Files changed: `cli/src/services/mutation_trace/runtime/ref_reconciliation.rs`,
+    `cli/src/services/mutation_trace/runtime/tests.rs`
+  - Result: Added `pub enum ReconciliationOutcome { Reconciled(ReconciliationReport),
+    SkippedNoCheckoutIdentity }` (same `Debug, Clone, Copy, PartialEq, Eq`
+    derives as `ReconciliationReport`) to `ref_reconciliation.rs`. Changed
+    `reconcile_worktree` and `reconcile_worktree_inner` return types to
+    `Result<ReconciliationOutcome, ReconcileError>`. The `read_checkout_id →
+    Ok(None)` branch now returns `Ok(ReconciliationOutcome::SkippedNoCheckoutIdentity)`
+    (lock still released on return, no identity created, no `open_db` call, no
+    inventory) instead of constructing a zeroed `ReconciliationReport`; the
+    normal path wraps its report in `Reconciled(..)`. Inline tests adapt via a
+    new private `expect_reconciled(outcome) -> ReconciliationReport` helper.
+    Replaced `no_checkout_identity_is_a_clean_no_op` with
+    `no_checkout_identity_returns_a_distinct_skipped_outcome` (asserts
+    `SkippedNoCheckoutIdentity`, not a zero report) and added
+    `a_missing_checkout_identity_skip_touches_no_db_and_no_ref` (an `open_db`
+    provider that panics if invoked; the pre-seeded ref's `git rev-parse` output
+    byte-identical before and after the skip). In `runtime/tests.rs`, imported
+    `ReconciliationOutcome` and unwrapped `Reconciled(..)` in the T04 test
+    (`reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_durable_under_it`)
+    before reading `report.deleted` / `report.local_required`. No change to
+    `ReconciliationReport`'s fields, the two invariants, `delete_pins`, or the
+    store queries.
+  - Verify (actual):
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::`
+    (via `nix develop -c`) — `ok. 79 passed; 0 failed`, including the two new
+    tests and the reframed skip test.
+    `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
+    — `Finished` with no warnings.
+    `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`
+    — clean (no diff, exit 0).
+  - Deviations: None. The user asked mid-task to keep comment churn minimal, so
+    the reverted `// Clean no-op; no identity is created.` inline comment on the
+    `None` branch is left verbatim from before this task and only a one-line doc
+    comment was added to the new public `ReconciliationOutcome` enum (consistent
+    with `ReconciliationReport` / `ReconcileError`).
+  - Context impact: New public type `ReconciliationOutcome` and a changed return
+    type on `runtime::ref_reconciliation::{reconcile_worktree,
+    reconcile_worktree_inner}` — both module-private to `runtime`, no
+    re-export, no caller outside `runtime`. Durable-context follow-ups already
+    enumerated in this plan's "Context sync" section (T06 items):
+    `context/cli/mutation-trace-ref-reconciliation.md` (replace the
+    `ReconciliationReport { 0, 0, 0 }` no-op wording with the
+    `SkippedNoCheckoutIdentity` contract) and
+    `context/cli/mutation-trace-runtime-coordinator.md` (update the
+    `reconcile_worktree` return-type mention to `ReconciliationOutcome`). No
+    schema, migration, protocol, marker, spec, or Quint change; no new
+    dependency. Root-context files: `context/context-map.md` line annotation
+    for `mutation-trace-ref-reconciliation.md` refreshed to name the
+    `ReconciliationOutcome` return type; `context/overview.md` describes the
+    pass behaviorally and needs no change; `context/architecture.md`,
+    `context/glossary.md`, `context/patterns.md` unaffected.
+  - Context synchronization: synced
 
 - [ ] T07: `Add the exact real-coordinator pin→CAS reconciliation regression` (status:todo)
   - Task ID: T07
