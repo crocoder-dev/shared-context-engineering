@@ -18,7 +18,7 @@ use crate::services::mutation_trace::types::{
 use super::coordinator::{coordinate, CoordinateError, RuntimeBoundary};
 use super::external_taint::ExternalTaintMarker;
 use super::git_snapshot::GitSnapshotService;
-use super::ref_reconciliation::reconcile_worktree_inner;
+use super::ref_reconciliation::{reconcile_worktree_inner, ReconciliationOutcome};
 use super::worktree_lock::{acquire_inner, WorktreeLock};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
@@ -1057,12 +1057,18 @@ fn reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_dur
     result_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("the same reconciliation pass should complete once the lock is released");
-    let report = worker
+    let outcome = worker
         .join()
         .expect("the reconciliation worker thread should not panic")
         .expect(
             "reconciliation should succeed once it can acquire the worktree lock after release",
         );
+    let report = match outcome {
+        ReconciliationOutcome::Reconciled(report) => report,
+        ReconciliationOutcome::SkippedNoCheckoutIdentity => {
+            panic!("expected a Reconciled outcome, got SkippedNoCheckoutIdentity")
+        }
+    };
 
     assert_eq!(
         report.deleted, 0,
