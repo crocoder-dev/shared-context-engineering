@@ -89,11 +89,15 @@ API end to end. Only harness/command wiring remains.
   the internal generic-over-`SnapshotCapture` pipeline, and clear the marker
   only on a successful outcome. Identity flows
   `repository_root → git_dir → WorktreeLock → checkout ID → WorktreeId`; the
-  DB is not on that chain. (`coordinate()` is a one-line delegation to a
-  private `coordinate_inner(.., open_db, on_lock_contention: impl FnOnce(),
-  after_recovery: impl FnMut(u32) -> Result<()>)` test seam; production passes a
-  no-op contention closure and `|_| Ok(())`.) A `WorktreeLock`
-  acquisition failure surfaces as `CoordinateError::LockAcquisition`; pre-commit
+  DB is not on that chain. (`coordinate()` is a one-line delegation to the
+  `pub(super) coordinate_inner(.., on_lock_contention, after_load, after_recovery)`
+  test seam — reachable from `runtime::tests`, invisible outside `runtime`;
+  production passes a no-op for all three. `after_load: impl FnMut(u32)` fires
+  each CAS attempt after `load_worktree` and before the real `store.commit` CAS;
+  the reconciliation pin→CAS lock-race regression uses it to pause a real
+  `coordinate()` between `pin` and CAS. No production behavior change.) A
+  `WorktreeLock` acquisition failure surfaces as
+  `CoordinateError::LockAcquisition`; pre-commit
   marker-I/O and DB-provider failures have their own fail-closed variants, and a
   post-commit `marker.clear()` failure surfaces as
   `CoordinateError::MarkerClearAfterCommit { source, committed }` — the boundary
@@ -168,15 +172,14 @@ On-disk layout so far:
 contention (a second acquirer blocks until the first releases), independence
 across distinct worktree paths, timing out with a distinct matchable error
 while the lock is still held, and a leftover lock file with no active OS lock
-held against it never blocking a fresh acquirer — each test uses a unique
+never blocking a fresh acquirer — each test uses a unique
 `std::env::temp_dir()` path, following the same filesystem-touching
-inline-unit-test precedent already used in `cli/src/services/checkout/mod.rs`
-and `cli/src/services/mutation_trace/store.rs` (see `context/patterns.md`).
+inline-unit-test precedent as `cli/src/services/checkout/mod.rs` and
+`cli/src/services/mutation_trace/store.rs` (see `context/patterns.md`).
 
-`GitSnapshotService`'s inline `#[cfg(test)] mod tests` in `git_snapshot.rs`
-uses the same precedent, extended to real per-test `git init` repositories;
-its coverage is documented in
-[`mutation-trace-snapshot-service.md`](mutation-trace-snapshot-service.md).
+`GitSnapshotService`'s inline `#[cfg(test)] mod tests` in `git_snapshot.rs` uses
+the same precedent, extended to real per-test `git init` repositories; coverage
+in [`mutation-trace-snapshot-service.md`](mutation-trace-snapshot-service.md).
 
 `coordinator.rs`'s inline `#[cfg(test)] mod tests` exercises the internal
 pipeline against a real temp-file `RepositoryAgentTraceDb`, using a fake,
@@ -195,37 +198,34 @@ no write when no worktree row exists yet, and still finds and taints a
 worktree another caller materializes concurrently during this invocation's
 own failing capture. Further tests drive the public `coordinate()` against
 real repositories: the critical-section serialization (a worker's
-`coordinate_inner(.., open_db, on_lock_contention)` observes the real
-`TryLockError::WouldBlock` branch while a first `WorktreeLock` is held, then
-acquires and returns `Ok` once it drops); and the external-taint fence — a
-successful call clears the marker, while a snapshot failure, a non-snapshot
-failure, a DB-provider `Err`, and an un-armable marker each leave it present
-(the last failing closed before the DB provider runs). A further test drives the
-private `after_recovery` seam to inject a failure at the exact
-recovery-committed / boundary-not-yet-prepared transition and proves the
-recovery is durable, the boundary unprocessed with no `MutationEvent`, the
-on-disk marker still present, and a later `coordinate()` re-recovering
-conservatively off it; `runtime/tests.rs` separately proves an attributable
-`Advance` that commits durably then fails its trailing `marker.clear()` surfaces
-`MarkerClearAfterCommit` carrying the matching committed outcome (including its
-`MutationEvent`).
+`coordinate_inner` observes the real `TryLockError::WouldBlock` branch while a
+first `WorktreeLock` is held, then acquires and returns `Ok` once it drops); and
+the external-taint fence — a successful call clears the marker, while a snapshot
+failure, a non-snapshot failure, a DB-provider `Err`, and an un-armable marker
+each leave it present (the last failing closed before the DB provider runs). A
+further test drives the private `after_recovery` seam to inject a failure at the
+recovery-committed / boundary-not-yet-prepared transition, proving the recovery
+durable, the boundary unprocessed with no `MutationEvent`, the marker still
+present, and a later `coordinate()` re-recovering off it; another proves an
+attributable `Advance` that commits then fails its trailing `marker.clear()`
+surfaces `MarkerClearAfterCommit` with the matching committed outcome. The
+`after_load` seam is exercised by the reconciliation pin→CAS lock-race
+regression ([`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md)),
+pausing a real `coordinate()` between `pin` and CAS.
 
-`runtime/tests.rs` is `runtime`'s own `#[cfg(test)] mod tests`, holding
-cross-module integration tests that drive only the public `coordinate()` API
-against real Git repositories (`git init`, `git worktree add`) and real
-temp-file `RepositoryAgentTraceDb`s, following the same unique-temp-path
-precedent: two linked worktrees of one repository (different `git_dir` →
-different lock paths → different `WorktreeId`s) are proven independently
-locked by holding one worktree's `WorktreeLock` across a synchronous
-`coordinate()` call for the other and observing that call return `Ok` before
-the held guard is dropped. Each call is handed a provider closure that opens
-the one shared repository-scoped DB path (`coordinate()` never resolves the
-DB), and both distinct worktree rows then coexist in it. A first-ever
-`agent_trace_storage` resolution and a `coordinate()` call on the same
-checkout converge on one checkout identity; and a full failure/recovery
-cycle — baseline call, a snapshot-failing call that durably taints the
-worktree, then a recovery call that clears the taint before processing its
-boundary — runs entirely through the public entrypoint.
+`runtime/tests.rs` is `runtime`'s own `#[cfg(test)] mod tests` of cross-module
+integration tests against real Git repositories (`git init`, `git worktree
+add`) and real temp-file `RepositoryAgentTraceDb`s — mostly the public
+`coordinate()`, plus the `pub(super)` `coordinate_inner` / `reconcile_worktree_inner`
+seams for the lock-race regressions. Two linked worktrees (different `git_dir` →
+different lock paths → different `WorktreeId`s) are proven independently locked
+by holding one worktree's `WorktreeLock` across a synchronous `coordinate()`
+call for the other and seeing it return `Ok` only after the guard drops; each
+call's provider closure opens the one shared repository-scoped DB path and both
+worktree rows coexist in it. A first-ever `agent_trace_storage` resolution and a
+`coordinate()` call on one checkout converge on one checkout identity; and a
+full baseline → snapshot-failing taint → recovery cycle runs through the public
+entrypoint.
 
 ## Status
 
