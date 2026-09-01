@@ -199,7 +199,7 @@ On-disk layout so far:
 contention (a second acquirer blocks until the first releases), independence
 across distinct worktree paths, timing out with a distinct matchable error
 while the lock is still held, and a leftover lock file with no active OS lock
-held against it never blocking a fresh acquirer — each test uses a unique
+never blocking a fresh acquirer — each test uses a unique
 `std::env::temp_dir()` path, following the same filesystem-touching
 inline-unit-test precedent already used in
 `cli/src/services/mutation_trace/store.rs` (see `context/patterns.md`).
@@ -241,20 +241,20 @@ no write when no worktree row exists yet, and still finds and taints a
 worktree another caller materializes concurrently during this invocation's
 own failing capture. Further tests drive the public `coordinate()` against
 real repositories: the critical-section serialization (a worker's
-`coordinate_inner(.., open_db, on_lock_contention)` observes the real
-`TryLockError::WouldBlock` branch while a first `WorktreeLock` is held, then
-acquires and returns `Ok` once it drops); and the external-taint fence — a
-successful call clears the marker, while a snapshot failure, a non-snapshot
-failure, a DB-provider `Err`, and an un-armable marker each leave it present
-(the last failing closed before the DB provider runs). A further test drives the
-private `after_recovery` seam to inject a failure at the exact
-recovery-committed / boundary-not-yet-prepared transition and proves the
-recovery is durable, the boundary unprocessed with no `MutationEvent`, the
-on-disk marker still present, and a later `coordinate()` re-recovering
-conservatively off it; `runtime/tests.rs` separately proves an attributable
-`Advance` that commits durably then fails its trailing `marker.clear()` surfaces
-`MarkerClearAfterCommit` carrying the matching committed outcome (including its
-`MutationEvent`).
+`coordinate_inner` observes the real `TryLockError::WouldBlock` branch while a
+first `WorktreeLock` is held, then acquires and returns `Ok` once it drops); and
+the external-taint fence — a successful call clears the marker, while a snapshot
+failure, a non-snapshot failure, a DB-provider `Err`, and an un-armable marker
+each leave it present (the last failing closed before the DB provider runs). A
+further test drives the private `after_recovery` seam to inject a failure at the
+recovery-committed / boundary-not-yet-prepared transition, proving the recovery
+durable, the boundary unprocessed with no `MutationEvent`, the marker still
+present, and a later `coordinate()` re-recovering off it; another proves an
+attributable `Advance` that commits then fails its trailing `marker.clear()`
+surfaces `MarkerClearAfterCommit` with the matching committed outcome. The
+`after_load` seam is exercised by the reconciliation pin→CAS lock-race
+regression ([`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md)),
+pausing a real `coordinate()` between `pin` and CAS.
 
 `runtime/tests.rs` is `runtime`'s own `#[cfg(test)] mod tests`, holding
 cross-module integration tests that drive only the public `coordinate()` API
