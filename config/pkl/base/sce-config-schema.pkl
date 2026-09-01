@@ -105,11 +105,6 @@ local sceConfigSchema = new JsonSchema {
       minimum = 1
       default = 10
     }
-    ["timeout_ms"] = new JsonSchema {
-      type = "integer"
-      description = "Timeout value in milliseconds for config operations."
-      minimum = 0
-    }
     ["workos_client_id"] = new JsonSchema {
       type = "string"
       description = "WorkOS client ID used for authentication."

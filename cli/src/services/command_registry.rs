@@ -137,7 +137,6 @@ pub fn default_runtime_command(name: &str) -> Option<RuntimeCommand> {
                         report_format: services::config::ReportFormat::Text,
                         config_path: None,
                         log_level: None,
-                        timeout_ms: None,
                     },
                 ),
             },

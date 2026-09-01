@@ -22,7 +22,6 @@ use super::types::{
     ENV_ATTRIBUTION_HOOKS_DISABLED, ENV_LOG_DIR, ENV_LOG_FORMAT, ENV_LOG_LEVEL,
 };
 
-const DEFAULT_TIMEOUT_MS: u64 = 30000;
 pub(crate) const DEFAULT_AGENT_TRACE_REPOSITORY_REMOTE: &str = "origin";
 pub(crate) const PRECEDENCE_DESCRIPTION: &str = "flags > env > config file > defaults";
 const WORKOS_CLIENT_ID_ENV: &str = "WORKOS_CLIENT_ID";
@@ -73,7 +72,6 @@ pub(super) struct RuntimeConfig {
     pub(super) log_to_file: ResolvedValue<bool>,
     pub(super) log_dir: ResolvedOptionalValue<String>,
     pub(super) log_file_retention_limit: ResolvedValue<usize>,
-    pub(super) timeout_ms: ResolvedValue<u64>,
     pub(super) attribution_hooks_enabled: ResolvedValue<bool>,
     pub(super) workos_client_id: ResolvedOptionalValue<String>,
     pub(super) control_plane_base_url: ResolvedOptionalValue<String>,
@@ -135,7 +133,6 @@ pub(crate) fn resolve_agent_trace_auto_sync_runtime_config(
             report_format: ReportFormat::Text,
             config_path: None,
             log_level: None,
-            timeout_ms: None,
         },
         cwd,
         |key| std::env::var(key).ok(),
@@ -182,7 +179,6 @@ where
             report_format: ReportFormat::Text,
             config_path: None,
             log_level: None,
-            timeout_ms: None,
         },
         cwd,
         env_lookup,
@@ -210,7 +206,6 @@ pub(crate) fn resolve_bash_policy_runtime_config(cwd: &Path) -> Result<Option<Ba
             report_format: ReportFormat::Text,
             config_path: None,
             log_level: None,
-            timeout_ms: None,
         },
         cwd,
         |key| std::env::var(key).ok(),
@@ -242,7 +237,6 @@ where
             report_format: ReportFormat::Text,
             config_path: None,
             log_level: None,
-            timeout_ms: None,
         },
         cwd,
         env_lookup,
@@ -274,7 +268,6 @@ where
             report_format: ReportFormat::Text,
             config_path: None,
             log_level: None,
-            timeout_ms: None,
         },
         cwd,
         env_lookup,
@@ -311,7 +304,6 @@ where
             report_format: ReportFormat::Text,
             config_path: None,
             log_level: None,
-            timeout_ms: None,
         },
         cwd,
         env_lookup,
@@ -368,7 +360,6 @@ where
         log_to_file: None,
         log_dir: None,
         log_file_retention_limit: None,
-        timeout_ms: None,
         attribution_hooks_enabled: None,
         workos_client_id: None,
         control_plane_base_url: None,
@@ -405,9 +396,6 @@ where
         }
         if let Some(log_file_retention_limit) = layer.log_file_retention_limit {
             file_config.log_file_retention_limit = Some(log_file_retention_limit);
-        }
-        if let Some(timeout_ms) = layer.timeout_ms {
-            file_config.timeout_ms = Some(timeout_ms);
         }
         if let Some(attribution_hooks_enabled) = layer.attribution_hooks_enabled {
             file_config.attribution_hooks_enabled = Some(attribution_hooks_enabled);
@@ -517,32 +505,6 @@ where
         },
     };
 
-    let mut resolved_timeout_ms = ResolvedValue {
-        value: DEFAULT_TIMEOUT_MS,
-        source: ValueSource::Default,
-    };
-    if let Some(value) = file_config.timeout_ms {
-        resolved_timeout_ms = ResolvedValue {
-            value: value.value,
-            source: ValueSource::ConfigFile(value.source),
-        };
-    }
-    if let Some(raw) = env_lookup("SCE_TIMEOUT_MS") {
-        let value = raw
-            .parse::<u64>()
-            .map_err(|_| anyhow!("Invalid timeout '{raw}' from SCE_TIMEOUT_MS."))?;
-        resolved_timeout_ms = ResolvedValue {
-            value,
-            source: ValueSource::Env,
-        };
-    }
-    if let Some(value) = request.timeout_ms {
-        resolved_timeout_ms = ResolvedValue {
-            value,
-            source: ValueSource::Flag,
-        };
-    }
-
     let mut resolved_attribution_hooks_enabled = ResolvedValue {
         value: true,
         source: ValueSource::Default,
@@ -623,7 +585,6 @@ where
         log_to_file: resolved_log_to_file,
         log_dir: resolved_log_dir,
         log_file_retention_limit: resolved_log_file_retention_limit,
-        timeout_ms: resolved_timeout_ms,
         attribution_hooks_enabled: resolved_attribution_hooks_enabled,
         workos_client_id: resolved_workos_client_id,
         control_plane_base_url: resolved_control_plane_base_url,
@@ -786,7 +747,6 @@ pub(crate) fn init_database_retry_config_from_environment(cwd: &Path) {
             report_format: ReportFormat::Text,
             config_path: None,
             log_level: None,
-            timeout_ms: None,
         },
         cwd,
     ) {
@@ -815,7 +775,6 @@ mod tests {
             report_format: ReportFormat::Text,
             config_path: None,
             log_level: None,
-            timeout_ms: None,
         }
     }
 

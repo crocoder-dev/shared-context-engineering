@@ -167,7 +167,6 @@ pub struct ConfigRequest {
     pub report_format: ReportFormat,
     pub config_path: Option<PathBuf>,
     pub log_level: Option<LogLevel>,
-    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

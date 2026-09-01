@@ -37,7 +37,6 @@ pub(crate) const TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "log_to_file",
     "log_dir",
     "log_file_retention_limit",
-    "timeout_ms",
     super::resolver::WORKOS_CLIENT_ID_KEY.config_key,
     super::resolver::CONTROL_PLANE_BASE_URL_KEY.config_key,
     "agent_trace",
@@ -46,7 +45,7 @@ pub(crate) const TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
 ];
 
 pub(crate) const TOP_LEVEL_CONFIG_KEYS_DESCRIPTION: &str =
-    "$schema, log_level, log_format, log_to_file, timeout_ms, workos_client_id, control_plane_base_url, agent_trace, policies, integrations, log_dir, log_file_retention_limit";
+    "$schema, log_level, log_format, log_to_file, workos_client_id, control_plane_base_url, agent_trace, policies, integrations, log_dir, log_file_retention_limit";
 
 static CONFIG_SCHEMA_VALIDATOR: OnceLock<Validator> = OnceLock::new();
 
@@ -75,7 +74,6 @@ pub(crate) struct ParsedFileConfigDocument {
     pub(crate) log_to_file: Option<bool>,
     pub(crate) log_dir: Option<String>,
     pub(crate) log_file_retention_limit: Option<usize>,
-    pub(crate) timeout_ms: Option<u64>,
     pub(crate) workos_client_id: Option<String>,
     pub(crate) control_plane_base_url: Option<String>,
     pub(crate) agent_trace: Option<ParsedAgentTraceConfigDocument>,
@@ -163,7 +161,6 @@ pub(crate) struct FileConfig {
     pub(crate) log_to_file: Option<FileConfigValue<bool>>,
     pub(crate) log_dir: Option<FileConfigValue<String>>,
     pub(crate) log_file_retention_limit: Option<FileConfigValue<usize>>,
-    pub(crate) timeout_ms: Option<FileConfigValue<u64>>,
     pub(crate) attribution_hooks_enabled: Option<FileConfigValue<bool>>,
     pub(crate) workos_client_id: Option<FileConfigValue<String>>,
     pub(crate) control_plane_base_url: Option<FileConfigValue<String>>,
@@ -312,9 +309,6 @@ pub(crate) fn parse_file_config(
     let log_file_retention_limit = typed
         .log_file_retention_limit
         .map(|value| FileConfigValue { value, source });
-    let timeout_ms = typed
-        .timeout_ms
-        .map(|value| FileConfigValue { value, source });
     let workos_client_id = typed
         .workos_client_id
         .map(|value| FileConfigValue { value, source });
@@ -333,7 +327,6 @@ pub(crate) fn parse_file_config(
         log_to_file,
         log_dir,
         log_file_retention_limit,
-        timeout_ms,
         attribution_hooks_enabled,
         workos_client_id,
         control_plane_base_url,

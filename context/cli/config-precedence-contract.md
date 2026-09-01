@@ -8,8 +8,8 @@ The current implementation resolves flat logging keys and Agent Trace runtime ke
 
 ## Command surface
 
-- `sce config show [--config <path>] [--log-level <error|warn|info|debug>] [--timeout-ms <value>] [--format <text|json>]`
-- `sce config validate [--config <path>] [--log-level <error|warn|info|debug>] [--timeout-ms <value>] [--format <text|json>]`
+- `sce config show [--config <path>] [--log-level <error|warn|info|debug>] [--format <text|json>]`
+- `sce config validate [--config <path>] [--log-level <error|warn|info|debug>] [--format <text|json>]`
 - bare `sce config` returns the same help payload as `sce config --help`
 - `sce config --help`
 - Help text for `sce config`, `sce config show`, and `sce config validate` frames the command family as the operator entrypoint for config inspection and validation; `show` covers resolved runtime values with provenance, `validate` covers pass/fail plus validation issues and warnings, and bare `sce config` is help-first rather than defaulting to `show`.
@@ -18,10 +18,10 @@ The current implementation resolves flat logging keys and Agent Trace runtime ke
 
 Resolved runtime values follow this deterministic order:
 
-1. flag values (`--log-level`, `--timeout-ms`)
-2. environment values (`SCE_LOG_LEVEL`, `SCE_TIMEOUT_MS`)
-3. config file values (`log_level`, `timeout_ms`)
-4. defaults (`log_level=error`, `timeout_ms=30000`)
+1. flag values (`--log-level`)
+2. environment values (`SCE_LOG_LEVEL`)
+3. config file values (`log_level`)
+4. defaults (`log_level=error`)
 
 Repo-configured bash-tool policy values are config-file only in this task slice: they load from `policies.bash` in the selected config files, merge `global -> local` alongside the rest of the config object, and currently have no flag or environment override layer.
 
@@ -82,14 +82,13 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - Startup/runtime config resolution now degrades gracefully only for default-discovered files: invalid discovered files are skipped and reported via collected `validation_errors`, while explicit `--config` / `SCE_CONFIG_FILE` targets still fail immediately on the same parse or validation errors.
 
 - Config file content must be valid JSON with a top-level object.
-- Allowed keys: `$schema`, `log_level`, `log_format`, `log_to_file`, `log_dir`, `log_file_retention_limit`, `timeout_ms`, `workos_client_id`, `control_plane_base_url`, `agent_trace`, `policies`, `integrations`.
+- Allowed keys: `$schema`, `log_level`, `log_format`, `log_to_file`, `log_dir`, `log_file_retention_limit`, `workos_client_id`, `control_plane_base_url`, `agent_trace`, `policies`, `integrations`.
 - Unknown keys fail validation.
 - `log_to_file` must be a boolean when present and defaults to `true`; it is independent of `log_dir`.
 - `log_level` must be one of `error|warn|info|debug`.
 - `log_format` must be `text` or `json` when present.
 - `log_dir` must be a non-empty string when present.
 - `log_file_retention_limit` must be an integer with minimum `1`; zero, negative, fractional, string, and object values fail schema validation.
-- `timeout_ms` must be an unsigned integer.
 - `workos_client_id` must be a string when present.
 - `control_plane_base_url` must be a non-empty string when present.
 
@@ -162,3 +161,4 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `cli/src/services/config/schema.rs`
 - `cli/src/services/config/policy.rs`
 - `context/cli/agent-trace-auto-sync.md`
+- [Decision: Remove the unused top-level config timeout surface](../decisions/2026-09-01-remove-top-level-config-timeout.md)
