@@ -55,12 +55,18 @@ fn run_claude_model_state_from_payload_at_state_root<F>(
 where
     F: FnOnce() -> Result<i64>,
 {
-    run_claude_model_state_from_payload_with_state_root(
+    run_claude_model_state_from_payload_with(
         repository_root,
         stdin_payload,
         logger,
         observed_at_ms,
-        Some(state_root),
+        |repository_root, context_message| {
+            super::open_agent_trace_db_for_hook_runtime_at_state_root(
+                repository_root,
+                state_root,
+                context_message,
+            )
+        },
     )
 }
 
@@ -73,24 +79,25 @@ fn run_claude_model_state_from_payload<F>(
 where
     F: FnOnce() -> Result<i64>,
 {
-    run_claude_model_state_from_payload_with_state_root(
+    run_claude_model_state_from_payload_with(
         repository_root,
         stdin_payload,
         logger,
         observed_at_ms,
-        None,
+        super::open_agent_trace_db_for_hook_runtime,
     )
 }
 
-fn run_claude_model_state_from_payload_with_state_root<F>(
+fn run_claude_model_state_from_payload_with<F, O>(
     repository_root: &Path,
     stdin_payload: &str,
     logger: Option<&dyn Logger>,
     observed_at_ms: F,
-    state_root: Option<&Path>,
+    open_db: O,
 ) -> String
 where
     F: FnOnce() -> Result<i64>,
+    O: FnOnce(&Path, &'static str) -> Result<RepositoryAgentTraceDb>,
 {
     let session_id = fail_open_session_id(stdin_payload);
     let observed_at_ms = match observed_at_ms() {
@@ -119,17 +126,10 @@ where
         return String::new();
     };
 
-    let db = match match state_root {
-        Some(state_root) => super::open_agent_trace_db_for_hook_runtime_at_state_root(
-            repository_root,
-            state_root,
-            "Failed to open Agent Trace DB for Claude model-state persistence.",
-        ),
-        None => super::open_agent_trace_db_for_hook_runtime(
-            repository_root,
-            "Failed to open Agent Trace DB for Claude model-state persistence.",
-        ),
-    } {
+    let db = match open_db(
+        repository_root,
+        "Failed to open Agent Trace DB for Claude model-state persistence.",
+    ) {
         Ok(db) => db,
         Err(error) => {
             log_fail_open(
@@ -328,7 +328,7 @@ mod tests {
     use crate::services::agent_trace_db::ObservationKind;
     use serde_json::json;
 
-    fn parse(payload: Value, observed_at_ms: i64) -> Option<ClaudeModelStateObservation> {
+    fn parse(payload: &Value, observed_at_ms: i64) -> Option<ClaudeModelStateObservation> {
         parse_claude_model_state_payload(&payload.to_string(), observed_at_ms)
             .expect("model-state payload should parse")
     }
@@ -389,7 +389,7 @@ mod tests {
     #[test]
     fn session_start_normalizes_main_session_and_model() {
         let observation = parse(
-            json!({
+            &json!({
                 "hook_event_name": "SessionStart",
                 "session_id": "session-1",
                 "model": "claude-opus-4-1",
@@ -411,7 +411,7 @@ mod tests {
     fn model_less_session_start_is_a_no_op() {
         assert_eq!(
             parse(
-                json!({
+                &json!({
                     "hook_event_name": "SessionStart",
                     "session_id": "session-1",
                     "source": "resume"
@@ -422,7 +422,7 @@ mod tests {
         );
         assert_eq!(
             parse(
-                json!({
+                &json!({
                     "hook_event_name": "SessionStart",
                     "session_id": "session-1",
                     "model": null,
@@ -434,7 +434,7 @@ mod tests {
         );
         assert_eq!(
             parse(
-                json!({
+                &json!({
                     "hook_event_name": "SessionStart",
                     "session_id": "session-1",
                     "model": "   ",
@@ -449,7 +449,7 @@ mod tests {
     #[test]
     fn post_model_switch_uses_to_model_and_exact_agent_scope() {
         let observation = parse(
-            json!({
+            &json!({
                 "hook_event_name": "PostModelSwitch",
                 "session_id": "cc_session-1",
                 "agent_id": "agent-1",
@@ -483,7 +483,7 @@ mod tests {
             (" future-source ", "future-source"),
         ] {
             let observation = parse(
-                json!({
+                &json!({
                     "hook_event_name": "PostModelSwitch",
                     "session_id": "session-1",
                     "from_model": "model-a",
@@ -566,7 +566,7 @@ mod tests {
                 payload["agent_id"] = agent_id;
             }
             assert_eq!(
-                parse(payload, 42).expect("agent ID should parse").agent_id,
+                parse(&payload, 42).expect("agent ID should parse").agent_id,
                 expected
             );
         }
@@ -627,7 +627,7 @@ mod tests {
     fn unsupported_event_is_a_no_op() {
         assert_eq!(
             parse(
-                json!({
+                &json!({
                     "hook_event_name": "Stop",
                     "session_id": "session-1"
                 }),
@@ -751,7 +751,7 @@ mod tests {
         let db_path = std::env::temp_dir().join(format!("sce-claude-model-state-{suffix}.db"));
         let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
         let observation = parse(
-            json!({
+            &json!({
                 "hook_event_name": "PostModelSwitch",
                 "session_id": "session-1",
                 "from_model": "model-a",
