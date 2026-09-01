@@ -86,6 +86,10 @@ SCE creates one Agent Trace DB per logical Git repository on demand through setu
 
 The former checkout-scoped `AGENT_TRACE_MIGRATIONS` constant and its 15-file `cli/migrations/agent-trace/` chain (`001_create_diff_traces` … `015_add_diff_traces_payload_type`) were removed by the `retire-legacy-agent-trace-db` plan; `build.rs` auto-discovers migration directories, so deleting the directory dropped the constant on regeneration. The repository schema captures the same tables/columns/indexes/triggers that the old incremental chain produced.
 
+### Migration-003 upgrade note
+
+Repositories created before `003_claude_model_state` must rerun `sce setup` to apply the additive migration. Hook runtimes, including `sce hooks claude-model-state`, never run migrations and instead surface the existing `Run 'sce setup'.` guidance until setup completes.
+
 The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Migration SQL is executed with `execute_batch`, so the one-file repository baseline can contain multiple statements while still recording one migration ID.
 
 Repository-scoped storage resolution first resolves `agent_trace.repository_id` / `agent_trace.repository_remote` through config, then splits by caller into two resolution paths in `agent_trace_storage`, both sharing the same identity/checkout-ID setup and returning the same `ResolvedAgentTraceStorage { metadata: RepositoryMetadata, .. } `:

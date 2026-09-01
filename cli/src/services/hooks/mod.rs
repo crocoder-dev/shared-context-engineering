@@ -20,7 +20,10 @@ use crate::services::agent_trace_db::{
     PAYLOAD_TYPE_STRUCTURED,
 };
 #[cfg(test)]
-use crate::services::agent_trace_storage::resolve_agent_trace_storage_for_hook_runtime_at_state_root;
+use crate::services::agent_trace_storage::{
+    resolve_agent_trace_storage_at_state_root,
+    resolve_agent_trace_storage_for_hook_runtime_at_state_root,
+};
 use crate::services::agent_trace_storage::{
     resolve_agent_trace_storage_for_hook_runtime, AgentTraceStorageContext,
 };
@@ -2373,6 +2376,7 @@ mod tests {
         cell::RefCell,
         fs,
         path::{Path, PathBuf},
+        process::Command,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -2792,6 +2796,60 @@ mod tests {
         )
     }
 
+    fn run_attribution_git(repo_root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo_root)
+            .output()
+            .expect("git should start");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_attribution_git_repo(label: &str) -> PathBuf {
+        let repo_root = unique_attribution_db_path(label)
+            .parent()
+            .expect("test repository should have a parent")
+            .to_path_buf();
+        fs::create_dir_all(&repo_root).expect("test repository directory should be created");
+        run_attribution_git(&repo_root, &["init", "-q"]);
+        run_attribution_git(
+            &repo_root,
+            &["remote", "add", "origin", "git@github.com:acme/widgets.git"],
+        );
+        repo_root
+    }
+
+    fn model_less_claude_diff_event(
+        session_id: &str,
+        tool_use_id: &str,
+        agent_id: Option<&str>,
+    ) -> Value {
+        let mut event = claude_model_test_event(Path::new("/virtual/missing.jsonl"), tool_use_id);
+        let object = event
+            .as_object_mut()
+            .expect("Claude test event should be an object");
+        object.insert("session_id".to_string(), json!(session_id));
+        object.remove("transcript_path");
+        object.remove("tool_use_id");
+        if let Some(agent_id) = agent_id {
+            object.insert("agent_id".to_string(), json!(agent_id));
+        }
+        event
+    }
+
+    fn persisted_model_ids(db: &RepositoryAgentTraceDb) -> Vec<Option<String>> {
+        db.query_map(
+            "SELECT model_id FROM diff_traces ORDER BY id ASC",
+            (),
+            |row| row.get::<Option<String>>(0).map_err(Into::into),
+        )
+        .expect("persisted model IDs should be readable")
+    }
+
     #[test]
     fn claude_model_direct_nested_metadata_wins_over_transcript_without_double_prefixing() {
         let transcript_path = Path::new("/unused/direct-precedence.jsonl");
@@ -2857,6 +2915,162 @@ mod tests {
             .expect("internal payload should serialize")
             .get("agent_id")
             .is_none());
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn claude_model_attribution_end_to_end_persists_lifecycle_fallback_precedence_and_scope() {
+        let repo_root = init_attribution_git_repo("end-to-end");
+        let state_root = unique_attribution_db_path("end-to-end-state")
+            .parent()
+            .expect("test state should have a parent")
+            .to_path_buf();
+        let storage = resolve_agent_trace_storage_at_state_root(
+            &AgentTraceStorageContext {
+                repository_root: &repo_root,
+                explicit_repository_id: None,
+                repository_remote: "origin",
+            },
+            &state_root,
+        )
+        .expect("setup path should initialize the test repository DB");
+        drop(storage);
+
+        let session_start = json!({
+            "hook_event_name": "SessionStart",
+            "session_id": "session-123",
+            "model": "model-a",
+            "source": "startup"
+        });
+        assert_eq!(
+            claude_model_state::run_claude_model_state_from_payload_at_state_root(
+                &repo_root,
+                &state_root,
+                &session_start.to_string(),
+                None,
+                || Ok(10),
+            ),
+            ""
+        );
+
+        let db = open_agent_trace_db_for_hook_runtime_at_state_root(
+            &repo_root,
+            &state_root,
+            "test DB should open after SessionStart",
+        )
+        .expect("test DB should open after SessionStart");
+        assert_eq!(
+            db.claude_model_state_by_session_and_agent("cc_session-123", "")
+                .expect("SessionStart state should be readable")
+                .expect("SessionStart should seed state")
+                .model_id,
+            "claude/model-a"
+        );
+        let session_start_event = model_less_claude_diff_event("session-123", "tool-a", None);
+        persist_diff_trace_payload_to_agent_trace_db_with_db(
+            &db,
+            &parsed_claude_diff_trace(&session_start_event),
+        )
+        .expect("SessionStart state should attribute the next diff trace");
+        drop(db);
+
+        let post_model_switch = json!({
+            "hook_event_name": "PostModelSwitch",
+            "session_id": "session-123",
+            "from_model": "model-a",
+            "to_model": "model-b",
+            "source": "picker"
+        });
+        assert_eq!(
+            claude_model_state::run_claude_model_state_from_payload_at_state_root(
+                &repo_root,
+                &state_root,
+                &post_model_switch.to_string(),
+                None,
+                || Ok(20),
+            ),
+            ""
+        );
+
+        let db = open_agent_trace_db_for_hook_runtime_at_state_root(
+            &repo_root,
+            &state_root,
+            "test DB should open after PostModelSwitch",
+        )
+        .expect("test DB should open after PostModelSwitch");
+        assert_eq!(
+            db.claude_model_state_by_session_and_agent("cc_session-123", "")
+                .expect("PostModelSwitch state should be readable")
+                .expect("PostModelSwitch should update state")
+                .model_id,
+            "claude/model-b"
+        );
+        let switched_event = model_less_claude_diff_event("session-123", "tool-b", None);
+        persist_diff_trace_payload_to_agent_trace_db_with_db(
+            &db,
+            &parsed_claude_diff_trace(&switched_event),
+        )
+        .expect("PostModelSwitch state should attribute the next diff trace");
+
+        let mut direct_event = model_less_claude_diff_event("session-123", "tool-direct", None);
+        direct_event
+            .as_object_mut()
+            .expect("Claude test event should be an object")
+            .insert("model".to_string(), json!("model-c"));
+        persist_diff_trace_payload_to_agent_trace_db_with_db(
+            &db,
+            &parsed_claude_diff_trace(&direct_event),
+        )
+        .expect("direct model attribution should persist");
+
+        let transcript_path = state_root.join("transcript.jsonl");
+        fs::write(
+            &transcript_path,
+            concat!(
+                r#"{"type":"assistant","message":{"role":"assistant","model":"model-c","content":[{"type":"tool_use","id":"tool-transcript"}]}}"#,
+                "\n"
+            ),
+        )
+        .expect("transcript fixture should be written");
+        let transcript_event = claude_model_test_event(&transcript_path, "tool-transcript");
+        persist_diff_trace_payload_to_agent_trace_db_with_db(
+            &db,
+            &parsed_claude_diff_trace(&transcript_event),
+        )
+        .expect("transcript model attribution should persist");
+
+        let no_state_event =
+            model_less_claude_diff_event("session-without-state", "tool-none", None);
+        persist_diff_trace_payload_to_agent_trace_db_with_db(
+            &db,
+            &parsed_claude_diff_trace(&no_state_event),
+        )
+        .expect("an attribution-less diff trace should still persist");
+
+        let subagent_event =
+            model_less_claude_diff_event("session-123", "tool-subagent", Some("subagent-1"));
+        persist_diff_trace_payload_to_agent_trace_db_with_db(
+            &db,
+            &parsed_claude_diff_trace(&subagent_event),
+        )
+        .expect("a subagent diff trace should persist");
+
+        assert_eq!(
+            persisted_model_ids(&db),
+            vec![
+                Some(String::from("claude/model-a")),
+                Some(String::from("claude/model-b")),
+                Some(String::from("claude/model-c")),
+                Some(String::from("claude/model-c")),
+                None,
+                None,
+            ]
+        );
+
+        drop(db);
+        fs::remove_file(transcript_path).expect("transcript fixture should be removed");
+        fs::remove_dir_all(repo_root).expect("test repository should be removed");
+        fs::remove_dir_all(state_root).expect("test state should be removed");
     }
 
     #[test]

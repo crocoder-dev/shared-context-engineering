@@ -45,7 +45,7 @@ pub(super) fn run_claude_model_state_subcommand(
 }
 
 #[cfg(test)]
-fn run_claude_model_state_from_payload_at_state_root<F>(
+pub(super) fn run_claude_model_state_from_payload_at_state_root<F>(
     repository_root: &Path,
     state_root: &Path,
     stdin_payload: &str,
