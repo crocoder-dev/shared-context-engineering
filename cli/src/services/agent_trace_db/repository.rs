@@ -25,8 +25,9 @@ use crate::{
 use super::{
     insert_agent_trace_with, insert_conversation_text_event_with, insert_diff_trace_with,
     insert_message_with, insert_messages_with, insert_part_with, insert_parts_with,
-    insert_post_commit_patch_intersection_with, recent_diff_trace_patches_with, AgentTraceInsert,
-    DiffTraceInsert, InsertMessageInsert, InsertPartInsert, PostCommitPatchIntersectionInsert,
+    insert_post_commit_patch_intersection_with, recent_diff_trace_patches_with,
+    upsert_claude_model_state_with, AgentTraceInsert, ClaudeModelStateObservation, DiffTraceInsert,
+    InsertMessageInsert, InsertPartInsert, PostCommitPatchIntersectionInsert,
     RecentDiffTracePatches,
 };
 
@@ -244,6 +245,18 @@ impl RepositoryAgentTraceDb {
         insert_agent_trace_with(self, input)
     }
 
+    pub fn upsert_claude_model_state(&self, input: ClaudeModelStateObservation) -> Result<u64> {
+        upsert_claude_model_state_with(self, input)
+    }
+
+    pub fn claude_model_state_by_session_and_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<ClaudeModelStateObservation>> {
+        super::claude_model_state_by_session_and_agent_with(self, session_id, agent_id)
+    }
+
     /// Query and parse recent diff trace patches within the inclusive time
     /// window for this repository-scoped database. Rows remain repository-level;
     /// no checkout filter or checkout provenance is applied.
@@ -316,7 +329,9 @@ mod tests {
     };
 
     use super::*;
-    use crate::services::agent_trace_db::{MessageRole, PartType, PAYLOAD_TYPE_PATCH};
+    use crate::services::agent_trace_db::{
+        MessageRole, ObservationKind, PartType, PAYLOAD_TYPE_PATCH,
+    };
 
     fn valid_patch(path: &str, content: &str) -> String {
         format!(
@@ -376,6 +391,22 @@ mod tests {
         .unwrap_or_else(|| panic!("table '{name}' should exist"))
     }
 
+    fn claude_observation(
+        model_id: &str,
+        observation_kind: ObservationKind,
+        source: &str,
+        observed_at_ms: i64,
+    ) -> ClaudeModelStateObservation {
+        ClaudeModelStateObservation {
+            session_id: String::from("cc_session-1"),
+            agent_id: String::new(),
+            model_id: String::from(model_id),
+            observation_kind,
+            source: String::from(source),
+            observed_at_ms,
+        }
+    }
+
     #[test]
     fn open_at_initializes_the_full_schema_from_one_migration() {
         let db_path = unique_test_db_path("baseline");
@@ -388,6 +419,7 @@ mod tests {
             "agent_traces",
             "messages",
             "parts",
+            "claude_model_state",
         ] {
             assert!(
                 sqlite_object_exists(&db, "table", table),
@@ -426,13 +458,171 @@ mod tests {
             vec![
                 String::from("001_repository_schema"),
                 String::from("002_repository_source_instance_id"),
+                String::from("003_claude_model_state"),
             ],
             "repository DBs should be initialized from the baseline schema plus \
-             its additive source-instance-id migration"
+             its additive source-instance-id and Claude model-state migrations"
         );
 
         db.ensure_schema_ready_for_hooks()
             .expect("fresh repository DB schema should be ready");
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn pre_claude_model_state_database_is_upgraded_by_the_additive_migration() {
+        let db_path = unique_test_db_path("claude-model-state-upgrade");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        db.execute("DROP TABLE claude_model_state", ())
+            .expect("test should remove the post-003 table");
+        db.execute(
+            "DELETE FROM __sce_migrations WHERE id = '003_claude_model_state'",
+            (),
+        )
+        .expect("test should remove the post-003 migration record");
+        drop(db);
+
+        let upgraded =
+            RepositoryAgentTraceDb::new_at(&db_path).expect("pre-003 database should upgrade");
+        assert!(sqlite_object_exists(
+            &upgraded,
+            "table",
+            "claude_model_state"
+        ));
+        let applied_ids = upgraded
+            .query_map(
+                "SELECT id FROM __sce_migrations ORDER BY id ASC",
+                (),
+                |row| row.get::<String>(0).map_err(Into::into),
+            )
+            .expect("migration metadata query should succeed");
+        assert_eq!(
+            applied_ids,
+            vec![
+                String::from("001_repository_schema"),
+                String::from("002_repository_source_instance_id"),
+                String::from("003_claude_model_state"),
+            ]
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn claude_model_state_has_exact_scope_and_guarded_deterministic_updates() {
+        let db_path = unique_test_db_path("claude-model-state");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+
+        let initial = claude_observation("claude/A", ObservationKind::SessionStart, "startup", 100);
+        assert_eq!(
+            db.upsert_claude_model_state(initial.clone())
+                .expect("initial write"),
+            1
+        );
+        assert_eq!(
+            db.claude_model_state_by_session_and_agent("cc_session-1", "")
+                .expect("state lookup")
+                .expect("state should exist"),
+            initial
+        );
+        assert!(db
+            .claude_model_state_by_session_and_agent("cc_session-1", "subagent")
+            .expect("subagent lookup")
+            .is_none());
+        assert!(db
+            .claude_model_state_by_session_and_agent("cc_other", "")
+            .expect("other session lookup")
+            .is_none());
+
+        assert_eq!(
+            db.upsert_claude_model_state(claude_observation(
+                "claude/older",
+                ObservationKind::PostModelSwitch,
+                "picker",
+                99,
+            ))
+            .expect("older write should be guarded"),
+            0
+        );
+        assert_eq!(
+            db.claude_model_state_by_session_and_agent("cc_session-1", "")
+                .expect("state lookup")
+                .expect("state should remain")
+                .model_id,
+            "claude/A"
+        );
+
+        let switched =
+            claude_observation("claude/B", ObservationKind::PostModelSwitch, "picker", 101);
+        assert_eq!(
+            db.upsert_claude_model_state(switched.clone())
+                .expect("newer write"),
+            1
+        );
+        assert_eq!(
+            db.upsert_claude_model_state(switched.clone())
+                .expect("identical replay should be harmless"),
+            0
+        );
+
+        assert_eq!(
+            db.upsert_claude_model_state(claude_observation(
+                "claude/C",
+                ObservationKind::SessionStart,
+                "resume",
+                101,
+            ))
+            .expect("equal-time lower-priority write should be guarded"),
+            0
+        );
+        assert_eq!(
+            db.claude_model_state_by_session_and_agent("cc_session-1", "")
+                .expect("state lookup")
+                .expect("state should remain")
+                .model_id,
+            "claude/B"
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn equal_time_same_kind_observations_use_a_stable_tie_break_and_concurrent_writes_converge() {
+        let db_path = unique_test_db_path("claude-model-state-concurrent");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        drop(db);
+
+        let db_path = std::sync::Arc::new(db_path);
+        let handles: Vec<_> = (0..8)
+            .map(|index| {
+                let db_path = std::sync::Arc::clone(&db_path);
+                std::thread::spawn(move || {
+                    let db = RepositoryAgentTraceDb::open_without_migrations_at(&*db_path)
+                        .expect("repository DB should reopen for concurrent state write");
+                    db.upsert_claude_model_state(claude_observation(
+                        &format!("claude/model-{index}"),
+                        ObservationKind::PostModelSwitch,
+                        "picker",
+                        500,
+                    ))
+                    .expect("concurrent state write should succeed")
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("state writer should not panic");
+        }
+
+        let db = RepositoryAgentTraceDb::open_without_migrations_at(&*db_path)
+            .expect("repository DB should reopen for verification");
+        let state = db
+            .claude_model_state_by_session_and_agent("cc_session-1", "")
+            .expect("state lookup")
+            .expect("concurrent writes should leave one state row");
+        assert_eq!(state.model_id, "claude/model-7");
+        assert_eq!(state.observation_kind, ObservationKind::PostModelSwitch);
+        assert_eq!(state.observed_at_ms, 500);
 
         remove_test_db(&db_path);
     }
