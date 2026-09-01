@@ -12,8 +12,10 @@ same `#[allow(dead_code)]` precedent as the rest of `mutation_trace`.
 `coordinator::coordinate()` is the public entrypoint, but `runtime/mod.rs`
 still declares `mod coordinator;` privately, so `coordinate()` is reachable
 only from within `runtime` itself (its own tests) for now; a `pub(crate)`
-re-export is deferred until a harness adapter needs it. Nothing under
-`runtime/` is wired into any hook, command, or `diff_traces` insertion yet.
+re-export is deferred until a harness adapter needs it. `mod
+ref_reconciliation;` and its `reconcile_worktree` entrypoint are private the
+same way. Nothing under `runtime/` is wired into any hook, command, or
+`diff_traces` insertion yet.
 
 `runtime` depends on `protocol`/`store`/`types` only, and has no dependency
 on any checkout-identity service — that service was removed from SCE
@@ -170,8 +172,10 @@ The runtime lock guards the coordinator's own critical section (external-taint
 marker arming/clearing, snapshot capture, worktree/scope materialization,
 recovery, and the CAS retry loop): `coordinate()` acquires it before arming the
 marker and resolving `WorktreeId`, and holds it until the call returns, on
-every `coordinate()` call. `<git-dir>/sce/mutation-cursor.lock` remains
-worktree-specific because `git_dir` itself is worktree-specific for linked
+every `coordinate()` call. The separate `ref_reconciliation::reconcile_worktree`
+pass acquires this same lock before inventorying pins, reading durable roots,
+or deleting refs, with its own bounded timeout. `<git-dir>/sce/mutation-cursor.lock`
+remains worktree-specific because `git_dir` itself is worktree-specific for linked
 worktrees (`resolve_git_dir` resolves each worktree's own
 `--absolute-git-dir`), so each worktree has an independent critical section.
 
@@ -186,7 +190,7 @@ On-disk layout so far:
 
 <repository's normal, shared object database>       (runtime::git_snapshot writes here directly)
 <repository's normal, shared refs namespace>
-└── refs/sce/mutation-cursor/<worktree-id>/<tree-sha>   (runtime::git_snapshot, one ref per pinned tree, create-only)
+└── refs/sce/mutation-cursor/<worktree-id>/<tree-sha>   (runtime::git_snapshot, create-only per invocation; orphan/unreferenced pins reclaimed by runtime::ref_reconciliation, every pin for a current or historical durable mutation-cursor root retained)
 ```
 
 ## Testing boundary
