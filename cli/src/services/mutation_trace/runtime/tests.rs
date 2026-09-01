@@ -1,9 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Barrier};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::agent_trace_storage::{
@@ -20,20 +19,6 @@ use super::external_taint::ExternalTaintMarker;
 use super::git_snapshot::GitSnapshotService;
 use super::ref_reconciliation::{reconcile_worktree_inner, ReconciliationOutcome};
 use super::worktree_lock::{acquire_inner, WorktreeLock};
-
-static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-
-fn unique_path(label: &str) -> PathBuf {
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time should be after the Unix epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "sce-mutation-trace-runtime-{label}-{}-{nonce}-{id}",
-        std::process::id()
-    ))
-}
 
 fn run_git(dir: &Path, args: &[&str]) {
     let output = Command::new("git")
@@ -56,8 +41,84 @@ fn init_repo(root: &Path) {
     run_git(root, &["commit", "--allow-empty", "--quiet", "-m", "init"]);
 }
 
-fn cleanup(path: &Path) {
-    let _ = std::fs::remove_dir_all(path);
+struct TestRepo {
+    _temp_dir: tempfile::TempDir,
+    repo_root: PathBuf,
+    db_path: PathBuf,
+}
+
+impl TestRepo {
+    fn new(label: &str) -> Self {
+        let temp_dir = tempfile::Builder::new()
+            .prefix(&format!("sce-mutation-trace-runtime-{label}-"))
+            .tempdir()
+            .expect("test temp directory should be created");
+        let repo_root = temp_dir.path().join("repo");
+        init_repo(&repo_root);
+        let db_path = temp_dir.path().join("agent-trace.db");
+        RepositoryAgentTraceDb::new_at(&db_path)
+            .expect("the repository DB should open with schema");
+        Self {
+            _temp_dir: temp_dir,
+            repo_root,
+            db_path,
+        }
+    }
+
+    fn open_db(&self) -> anyhow::Result<RepositoryAgentTraceDb> {
+        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&self.db_path)
+    }
+
+    fn db(&self) -> RepositoryAgentTraceDb {
+        self.open_db()
+            .expect("reopening the DB for assertions should succeed")
+    }
+}
+
+struct LinkedTestRepo {
+    _temp_dir: tempfile::TempDir,
+    main_root: PathBuf,
+    linked_root: PathBuf,
+    db_path: PathBuf,
+}
+
+impl LinkedTestRepo {
+    fn new(label: &str) -> Self {
+        let temp_dir = tempfile::Builder::new()
+            .prefix(&format!("sce-mutation-trace-runtime-{label}-"))
+            .tempdir()
+            .expect("test temp directory should be created");
+        let main_root = temp_dir.path().join("main");
+        init_repo(&main_root);
+        let linked_root = temp_dir.path().join("linked");
+        run_git(
+            &main_root,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                linked_root.to_str().expect("worktree path should be UTF-8"),
+            ],
+        );
+        let db_path = temp_dir.path().join("agent-trace.db");
+        RepositoryAgentTraceDb::new_at(&db_path)
+            .expect("the shared repository DB should open with schema");
+        Self {
+            _temp_dir: temp_dir,
+            main_root,
+            linked_root,
+            db_path,
+        }
+    }
+
+    fn open_db(&self) -> anyhow::Result<RepositoryAgentTraceDb> {
+        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&self.db_path)
+    }
+
+    fn db(&self) -> RepositoryAgentTraceDb {
+        self.open_db()
+            .expect("reopening the shared DB for assertions should succeed")
+    }
 }
 
 fn seed_event(
@@ -85,41 +146,23 @@ fn seed_event(
 
 #[test]
 fn linked_worktrees_have_independent_locks_and_worktree_ids() {
-    let main_root = unique_path("linked-main");
-    init_repo(&main_root);
-    let linked_root = unique_path("linked-secondary");
-    run_git(
-        &main_root,
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            linked_root.to_str().expect("worktree path should be UTF-8"),
-        ],
-    );
+    let repo = LinkedTestRepo::new("linked-ids");
 
-    let db_path = main_root.join("agent-trace.db");
-    let db_main = RepositoryAgentTraceDb::new_at(&db_path).expect("main repository DB should open");
-
-    let main_git_dir = resolve_git_dir(&main_root).expect("main git dir should resolve");
-    let linked_git_dir = resolve_git_dir(&linked_root).expect("linked git dir should resolve");
+    let main_git_dir = resolve_git_dir(&repo.main_root).expect("main git dir should resolve");
+    let linked_git_dir = resolve_git_dir(&repo.linked_root).expect("linked git dir should resolve");
     assert_ne!(
         main_git_dir, linked_git_dir,
         "a linked worktree must resolve its own worktree-specific git dir, giving it a distinct lock and identity path"
     );
 
-    let main_outcome = coordinate(&main_root, &RuntimeBoundary::Flush, || {
-        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
-    })
-    .expect("first observation on the main worktree should succeed");
+    let main_outcome = coordinate(&repo.main_root, &RuntimeBoundary::Flush, || repo.open_db())
+        .expect("first observation on the main worktree should succeed");
 
     let held = WorktreeLock::acquire(&main_git_dir, Duration::from_secs(5))
         .expect("the main worktree's runtime lock should be acquirable");
 
-    let linked_outcome = coordinate(&linked_root, &RuntimeBoundary::Flush, || {
-        // A second handle to the same caller-supplied repository-scoped DB path,
-        // opened through the provider while the main worktree's lock is held.
-        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+    let linked_outcome = coordinate(&repo.linked_root, &RuntimeBoundary::Flush, || {
+        repo.open_db()
     })
     .expect(
         "coordinate() on the linked worktree must acquire its own distinct runtime lock while the main worktree's lock is still held",
@@ -132,6 +175,7 @@ fn linked_worktrees_have_independent_locks_and_worktree_ids() {
         "each linked worktree must derive a distinct WorktreeId from its own checkout identity"
     );
 
+    let db_main = repo.db();
     let store = MutationTraceStore::new(&db_main);
     assert!(
         store
@@ -148,35 +192,30 @@ fn linked_worktrees_have_independent_locks_and_worktree_ids() {
         "the linked worktree's coordinator should have persisted its distinct row into the same caller-supplied DB"
     );
 
-    let linked_snapshot = GitSnapshotService::new(&linked_root)
+    let linked_snapshot = GitSnapshotService::new(&repo.linked_root)
         .expect("a snapshot service should construct for the linked worktree");
     linked_snapshot
         .diff_trees(&main_outcome.observed_tree, &main_outcome.observed_tree)
         .expect("a tree pinned by the main worktree's coordinator must resolve through the linked worktree's git dir");
-
-    cleanup(&linked_root);
-    cleanup(&main_root);
 }
 
 #[test]
 fn agent_trace_storage_and_coordinator_observe_the_same_checkout_id() {
-    let repo_root = unique_path("cross-caller-repo");
-    init_repo(&repo_root);
+    let repo = TestRepo::new("cross-caller");
     run_git(
-        &repo_root,
+        &repo.repo_root,
         &["remote", "add", "origin", "git@github.com:acme/widgets.git"],
     );
-    let state_root = unique_path("cross-caller-state");
-    std::fs::create_dir_all(&state_root).expect("state root should be created");
-
-    let coordinator_db_path = repo_root.join("coordinator.db");
-    RepositoryAgentTraceDb::new_at(&coordinator_db_path)
-        .expect("the coordinator's repository DB should open with schema");
+    let state_dir = tempfile::Builder::new()
+        .prefix("sce-mutation-trace-runtime-cross-caller-state-")
+        .tempdir()
+        .expect("state root temp directory should be created");
+    let state_root = state_dir.path().to_path_buf();
 
     let barrier = Arc::new(Barrier::new(2));
 
     let storage_thread = {
-        let repo_root = repo_root.clone();
+        let repo_root = repo.repo_root.clone();
         let state_root = state_root.clone();
         let barrier = Arc::clone(&barrier);
         thread::spawn(move || {
@@ -193,10 +232,8 @@ fn agent_trace_storage_and_coordinator_observe_the_same_checkout_id() {
     };
 
     barrier.wait();
-    let outcome = coordinate(&repo_root, &RuntimeBoundary::Flush, || {
-        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&coordinator_db_path)
-    })
-    .expect("the coordinator's first observation should succeed");
+    let outcome = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, || repo.open_db())
+        .expect("the coordinator's first observation should succeed");
 
     let storage_checkout_id = storage_thread
         .join()
@@ -207,32 +244,26 @@ fn agent_trace_storage_and_coordinator_observe_the_same_checkout_id() {
         "the coordinator and agent_trace_storage must converge on one checkout identity for the same physical checkout"
     );
 
-    let on_disk = read_checkout_id(&resolve_git_dir(&repo_root).expect("git dir should resolve"))
-        .expect("reading the checkout-id file should succeed")
-        .expect("a checkout id must have been persisted");
+    let on_disk =
+        read_checkout_id(&resolve_git_dir(&repo.repo_root).expect("git dir should resolve"))
+            .expect("reading the checkout-id file should succeed")
+            .expect("a checkout id must have been persisted");
     assert_eq!(
         on_disk, storage_checkout_id,
         "the on-disk checkout-id file must contain the converged identity"
     );
-
-    cleanup(&repo_root);
-    cleanup(&state_root);
 }
 
 #[test]
 fn a_snapshot_failure_then_recovery_cycle_runs_through_the_public_api() {
-    let repo_root = unique_path("failure-recovery-repo");
-    init_repo(&repo_root);
-    let db_path = repo_root.join("agent-trace.db");
-    let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+    let repo = TestRepo::new("failure-recovery");
+    let ok_db = || repo.open_db();
 
-    let baseline = coordinate(&repo_root, &RuntimeBoundary::Flush, || {
-        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
-    })
-    .expect("the baseline observation should materialize the worktree");
+    let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
 
-    let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
+    let git_dir = resolve_git_dir(&repo.repo_root).expect("git dir should resolve");
     let tmp_index_dir = git_dir.join("sce").join("tmp");
     let _ = std::fs::remove_dir_all(&tmp_index_dir);
     std::fs::write(&tmp_index_dir, b"not a directory").expect(
@@ -241,13 +272,13 @@ fn a_snapshot_failure_then_recovery_cycle_runs_through_the_public_api() {
 
     let scope = ScopeId("scope-recovery".to_string());
     let failure = coordinate(
-        &repo_root,
+        &repo.repo_root,
         &RuntimeBoundary::Start {
             scope: scope.clone(),
             event: EventId("evt-during-failure".to_string()),
             actor_kind: ActorKind::ClaudeCode,
         },
-        || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path),
+        ok_db,
     )
     .expect_err("a Git snapshot failure against a materialized worktree should be reported");
     match failure {
@@ -261,6 +292,7 @@ fn a_snapshot_failure_then_recovery_cycle_runs_through_the_public_api() {
     }
 
     {
+        let db = repo.db();
         let store = MutationTraceStore::new(&db);
         let projection = store
             .load_worktree(&worktree_id, None, None)
@@ -275,15 +307,14 @@ fn a_snapshot_failure_then_recovery_cycle_runs_through_the_public_api() {
     std::fs::remove_file(&tmp_index_dir)
         .expect("removing the planted file should let the snapshot service recreate its temp dir");
 
-    let recovered = coordinate(&repo_root, &RuntimeBoundary::Flush, || {
-        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
-    })
-    .expect("the coordinator should recover from the taint and process the boundary");
+    let recovered = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .expect("the coordinator should recover from the taint and process the boundary");
     assert_eq!(
         recovered.worktree_id, worktree_id,
         "recovery must operate on the same worktree identity"
     );
 
+    let db = repo.db();
     let store = MutationTraceStore::new(&db);
     let projection = store
         .load_worktree(&worktree_id, None, None)
@@ -293,24 +324,16 @@ fn a_snapshot_failure_then_recovery_cycle_runs_through_the_public_api() {
         !projection.worktree_state.tainted,
         "taint recovery must clear the tainted flag before the triggering boundary is processed"
     );
-
-    cleanup(&repo_root);
 }
 
 #[test]
 fn a_successful_coordinate_through_the_public_api_leaves_no_external_taint_marker() {
-    let repo_root = unique_path("public-success-no-marker");
-    init_repo(&repo_root);
-    // The DB lives outside the worktree so it never perturbs the observed tree.
-    let db_path = unique_path("public-success-no-marker-db").join("agent-trace.db");
-    RepositoryAgentTraceDb::new_at(&db_path).expect("the repository DB should open with schema");
-    let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
+    let repo = TestRepo::new("public-success-no-marker");
+    let git_dir = resolve_git_dir(&repo.repo_root).expect("git dir should resolve");
     let marker = ExternalTaintMarker::new(&git_dir);
 
-    let outcome = coordinate(&repo_root, &RuntimeBoundary::Flush, || {
-        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
-    })
-    .expect("a first observation through the public entrypoint should succeed");
+    let outcome = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, || repo.open_db())
+        .expect("a first observation through the public entrypoint should succeed");
     assert_eq!(
         outcome.revision, 0,
         "a first-observation flush should not advance the revision"
@@ -321,35 +344,23 @@ fn a_successful_coordinate_through_the_public_api_leaves_no_external_taint_marke
             .expect("marker existence should resolve after a successful coordinate()"),
         "a successful coordinate() must clear the external-taint marker it armed"
     );
-
-    cleanup(
-        db_path
-            .parent()
-            .expect("the DB path has a parent directory"),
-    );
-    cleanup(&repo_root);
 }
 
 #[test]
 #[allow(clippy::too_many_lines)]
 fn a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_rebaselines_without_evidence(
 ) {
-    let repo_root = unique_path("public-db-open-failure-gap");
-    init_repo(&repo_root);
-    // The DB lives outside the worktree so it never perturbs the observed tree.
-    let db_path = unique_path("public-db-open-failure-gap-db").join("agent-trace.db");
-    RepositoryAgentTraceDb::new_at(&db_path).expect("the repository DB should open with schema");
-    let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
+    let repo = TestRepo::new("public-db-open-failure-gap");
+    let git_dir = resolve_git_dir(&repo.repo_root).expect("git dir should resolve");
     let marker = ExternalTaintMarker::new(&git_dir);
-    let ok_db = || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path);
+    let ok_db = || repo.open_db();
 
-    // A trusted baseline at cursor A, then one exclusive AI edit A -> B.
-    let baseline = coordinate(&repo_root, &RuntimeBoundary::Flush, ok_db)
+    let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
     let scope = ScopeId("scope-across-the-gap".to_string());
     coordinate(
-        &repo_root,
+        &repo.repo_root,
         &RuntimeBoundary::Start {
             scope: scope.clone(),
             event: EventId("evt-start".to_string()),
@@ -358,9 +369,9 @@ fn a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_reba
         ok_db,
     )
     .expect("starting the scope should succeed");
-    std::fs::write(repo_root.join("work.txt"), b"v1").expect("the A -> B edit should write");
+    std::fs::write(repo.repo_root.join("work.txt"), b"v1").expect("the A -> B edit should write");
     let advanced = coordinate(
-        &repo_root,
+        &repo.repo_root,
         &RuntimeBoundary::Advance {
             scope: scope.clone(),
             event: EventId("evt-advance".to_string()),
@@ -375,10 +386,8 @@ fn a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_reba
         "the exclusive A -> B edit must land one trustworthy event before the gap"
     );
 
-    // A boundary invocation whose DB provider fails after the marker is armed,
-    // then the working tree keeps moving during the lost interval: B -> C.
     let db_failure = coordinate(
-        &repo_root,
+        &repo.repo_root,
         &RuntimeBoundary::Flush,
         || -> anyhow::Result<RepositoryAgentTraceDb> {
             Err(anyhow::anyhow!("simulated Agent Trace DB open failure"))
@@ -393,10 +402,9 @@ fn a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_reba
         marker.exists().expect("marker existence should resolve"),
         "the armed marker must survive an invocation whose DB provider returned Err"
     );
-    std::fs::write(repo_root.join("work.txt"), b"v2-during-the-gap").expect("the B -> C edit");
+    std::fs::write(repo.repo_root.join("work.txt"), b"v2-during-the-gap").expect("the B -> C edit");
 
-    // The next successful invocation rebaselines to C with no evidence for the gap.
-    let recovered = coordinate(&repo_root, &RuntimeBoundary::Flush, ok_db)
+    let recovered = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
         .expect("the follow-up invocation with a working provider should recover, then process its boundary");
     let tree_c = recovered.observed_tree.clone();
     assert_ne!(
@@ -411,8 +419,7 @@ fn a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_reba
         !marker.exists().expect("marker existence should resolve"),
         "the recovering invocation must clear the marker on success"
     );
-    let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
-        .expect("reopening the DB for assertions should succeed");
+    let db = repo.db();
     let store = MutationTraceStore::new(&db);
     let projection = store
         .load_worktree(&worktree_id, Some(&scope), None)
@@ -439,34 +446,22 @@ fn a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_reba
             );
         }
     }
-
-    cleanup(
-        db_path
-            .parent()
-            .expect("the DB path has a parent directory"),
-    );
-    cleanup(&repo_root);
 }
 
 #[test]
 fn a_stale_marker_rebaselines_to_the_current_tree_abandons_scopes_then_processes_the_boundary() {
-    let repo_root = unique_path("public-stale-marker-rebaseline");
-    init_repo(&repo_root);
-    // The DB lives outside the worktree so it never perturbs the observed tree.
-    let db_path = unique_path("public-stale-marker-rebaseline-db").join("agent-trace.db");
-    RepositoryAgentTraceDb::new_at(&db_path).expect("the repository DB should open with schema");
-    let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
+    let repo = TestRepo::new("public-stale-marker-rebaseline");
+    let git_dir = resolve_git_dir(&repo.repo_root).expect("git dir should resolve");
     let marker = ExternalTaintMarker::new(&git_dir);
-    let ok_db = || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path);
+    let ok_db = || repo.open_db();
 
-    // Trusted cursor A plus an active scope S.
-    let baseline = coordinate(&repo_root, &RuntimeBoundary::Flush, ok_db)
+    let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
     let tree_a = baseline.observed_tree.clone();
     let scope = ScopeId("scope-stranded".to_string());
     coordinate(
-        &repo_root,
+        &repo.repo_root,
         &RuntimeBoundary::Start {
             scope: scope.clone(),
             event: EventId("evt-start".to_string()),
@@ -476,21 +471,18 @@ fn a_stale_marker_rebaselines_to_the_current_tree_abandons_scopes_then_processes
     )
     .expect("starting scope S should succeed");
 
-    // A crashed invocation: the marker was armed and never cleared.
     marker
         .persist()
         .expect("simulating a crashed invocation that armed but never cleared the marker");
 
-    // The working tree moves on to C while the process was gone.
     std::fs::write(
-        repo_root.join("stranded.txt"),
+        repo.repo_root.join("stranded.txt"),
         b"edited-while-the-process-was-gone",
     )
     .expect("the A -> C edit should write");
 
-    // The next invocation inherits the stale marker.
     let recovered = coordinate(
-        &repo_root,
+        &repo.repo_root,
         &RuntimeBoundary::Advance {
             scope: scope.clone(),
             event: EventId("evt-advance".to_string()),
@@ -513,8 +505,7 @@ fn a_stale_marker_rebaselines_to_the_current_tree_abandons_scopes_then_processes
         "a successful recovery must clear the inherited marker"
     );
 
-    let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
-        .expect("reopening the DB for assertions should succeed");
+    let db = repo.db();
     let store = MutationTraceStore::new(&db);
     let projection = store
         .load_worktree(&worktree_id, Some(&scope), None)
@@ -531,43 +522,29 @@ fn a_stale_marker_rebaselines_to_the_current_tree_abandons_scopes_then_processes
         "the scope that was live across the gap must be abandoned during recovery"
     );
 
-    // The triggering boundary was processed inside the inheriting invocation:
-    // a plain follow-up flush finds nothing left to recover or advance.
-    let stable = coordinate(&repo_root, &RuntimeBoundary::Flush, ok_db)
+    let stable = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
         .expect("a plain flush after recovery should succeed");
     assert_eq!(
         stable.revision, recovered.revision,
         "recovery and the triggering boundary already completed in the inheriting invocation"
     );
     assert!(stable.mutation_event.is_none());
-
-    cleanup(
-        db_path
-            .parent()
-            .expect("the DB path has a parent directory"),
-    );
-    cleanup(&repo_root);
 }
 
 #[test]
 fn a_first_ever_failed_invocation_that_never_materialized_a_worktree_row_creates_no_evidence() {
-    let repo_root = unique_path("public-first-ever-failure");
-    init_repo(&repo_root);
-    // The DB lives outside the worktree so it never perturbs the observed tree.
-    let db_path = unique_path("public-first-ever-failure-db").join("agent-trace.db");
-    RepositoryAgentTraceDb::new_at(&db_path).expect("the repository DB should open with schema");
-    let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
+    let repo = TestRepo::new("public-first-ever-failure");
+    let git_dir = resolve_git_dir(&repo.repo_root).expect("git dir should resolve");
     let marker = ExternalTaintMarker::new(&git_dir);
 
     std::fs::write(
-        repo_root.join("pre-existing.txt"),
+        repo.repo_root.join("pre-existing.txt"),
         b"content before any observation",
     )
     .expect("a pre-existing edit should write");
 
-    // The very first invocation fails opening the DB, after arming the marker.
     let first = coordinate(
-        &repo_root,
+        &repo.repo_root,
         &RuntimeBoundary::Flush,
         || -> anyhow::Result<RepositoryAgentTraceDb> {
             Err(anyhow::anyhow!(
@@ -585,19 +562,14 @@ fn a_first_ever_failed_invocation_that_never_materialized_a_worktree_row_creates
         "the first-ever failed invocation still leaves an armed marker"
     );
 
-    // More edits during the still-unobserved interval.
     std::fs::write(
-        repo_root.join("during-the-gap.txt"),
+        repo.repo_root.join("during-the-gap.txt"),
         b"more unknown-interval content",
     )
     .expect("another unobserved edit should write");
 
-    // The first *successful* invocation establishes a baseline with no evidence
-    // for the unknown interval.
-    let established = coordinate(&repo_root, &RuntimeBoundary::Flush, || {
-        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
-    })
-    .expect("the first successful invocation establishes the baseline");
+    let established = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, || repo.open_db())
+        .expect("the first successful invocation establishes the baseline");
     assert!(
         established.mutation_event.is_none(),
         "a worktree with no prior durable row cannot produce evidence for the unknown interval"
@@ -607,8 +579,7 @@ fn a_first_ever_failed_invocation_that_never_materialized_a_worktree_row_creates
         "the successful baseline must clear the inherited marker"
     );
 
-    let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
-        .expect("reopening the DB for assertions should succeed");
+    let db = repo.db();
     let store = MutationTraceStore::new(&db);
     let projection = store
         .load_worktree(&established.worktree_id, None, None)
@@ -629,75 +600,46 @@ fn a_first_ever_failed_invocation_that_never_materialized_a_worktree_row_creates
             "no MutationEvent may exist for a worktree whose history began with an unobserved interval"
         );
     }
-
-    cleanup(
-        db_path
-            .parent()
-            .expect("the DB path has a parent directory"),
-    );
-    cleanup(&repo_root);
 }
 
 #[test]
 #[allow(clippy::too_many_lines)]
 fn linked_worktrees_keep_independent_external_taint_markers_over_a_shared_db() {
-    let main_root = unique_path("public-taint-linked-main");
-    init_repo(&main_root);
-    let linked_root = unique_path("public-taint-linked-secondary");
-    run_git(
-        &main_root,
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            linked_root.to_str().expect("worktree path should be UTF-8"),
-        ],
-    );
+    let repo = LinkedTestRepo::new("public-taint-linked");
 
-    // One shared repository DB, outside either worktree so it never perturbs a
-    // captured tree.
-    let db_path = unique_path("public-taint-linked-db").join("agent-trace.db");
-    RepositoryAgentTraceDb::new_at(&db_path).expect("the shared repository DB should open");
-
-    let main_git_dir = resolve_git_dir(&main_root).expect("main git dir should resolve");
-    let linked_git_dir = resolve_git_dir(&linked_root).expect("linked git dir should resolve");
+    let main_git_dir = resolve_git_dir(&repo.main_root).expect("main git dir should resolve");
+    let linked_git_dir = resolve_git_dir(&repo.linked_root).expect("linked git dir should resolve");
     let main_marker = ExternalTaintMarker::new(&main_git_dir);
     let linked_marker = ExternalTaintMarker::new(&linked_git_dir);
 
-    // Baseline both worktrees against the one shared DB.
-    let main_baseline = coordinate(&main_root, &RuntimeBoundary::Flush, || {
-        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
-    })
-    .expect("the main worktree baseline should succeed");
-    let linked_baseline = coordinate(&linked_root, &RuntimeBoundary::Flush, || {
-        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+    let main_baseline = coordinate(&repo.main_root, &RuntimeBoundary::Flush, || repo.open_db())
+        .expect("the main worktree baseline should succeed");
+    let linked_baseline = coordinate(&repo.linked_root, &RuntimeBoundary::Flush, || {
+        repo.open_db()
     })
     .expect("the linked worktree baseline should succeed");
     assert_ne!(main_baseline.worktree_id, linked_baseline.worktree_id);
 
-    // Strand a live scope in the linked worktree behind an armed marker.
     let linked_scope = ScopeId("scope-linked".to_string());
     coordinate(
-        &linked_root,
+        &repo.linked_root,
         &RuntimeBoundary::Start {
             scope: linked_scope.clone(),
             event: EventId("evt-linked-start".to_string()),
             actor_kind: ActorKind::ClaudeCode,
         },
-        || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path),
+        || repo.open_db(),
     )
     .expect("starting the linked worktree's scope should succeed");
     linked_marker
         .persist()
         .expect("arming the linked worktree's marker should succeed");
 
-    // A boundary in the MAIN worktree must not observe the linked worktree's marker.
-    std::fs::write(main_root.join("main-work.txt"), b"v1")
+    std::fs::write(repo.main_root.join("main-work.txt"), b"v1")
         .expect("a main-worktree edit should write");
-    coordinate(&main_root, &RuntimeBoundary::Flush, || {
-        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
-    })
-    .expect("the main worktree flush must succeed without inheriting the linked worktree's marker");
+    coordinate(&repo.main_root, &RuntimeBoundary::Flush, || repo.open_db()).expect(
+        "the main worktree flush must succeed without inheriting the linked worktree's marker",
+    );
     assert!(
         !main_marker
             .exists()
@@ -711,8 +653,7 @@ fn linked_worktrees_keep_independent_external_taint_markers_over_a_shared_db() {
         "the main worktree's invocation must not touch the linked worktree's independent marker"
     );
 
-    let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
-        .expect("reopening the shared DB for assertions should succeed");
+    let db = repo.db();
     let store = MutationTraceStore::new(&db);
     let linked_mid = store
         .load_worktree(&linked_baseline.worktree_id, Some(&linked_scope), None)
@@ -724,11 +665,10 @@ fn linked_worktrees_keep_independent_external_taint_markers_over_a_shared_db() {
         "a marker in the linked worktree must not trigger recovery of the linked worktree from the main worktree's invocation"
     );
 
-    // The linked worktree's own next invocation inherits and recovers.
-    std::fs::write(linked_root.join("linked-work.txt"), b"v1")
+    std::fs::write(repo.linked_root.join("linked-work.txt"), b"v1")
         .expect("a linked-worktree edit should write");
-    let linked_recovered = coordinate(&linked_root, &RuntimeBoundary::Flush, || {
-        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+    let linked_recovered = coordinate(&repo.linked_root, &RuntimeBoundary::Flush, || {
+        repo.open_db()
     })
     .expect("the linked worktree's own invocation recovers from its inherited marker");
     assert!(
@@ -751,33 +691,20 @@ fn linked_worktrees_keep_independent_external_taint_markers_over_a_shared_db() {
         Some(ScopeStatus::Abandoned),
         "the linked worktree's inherited-taint recovery abandons its own live scope"
     );
-
-    cleanup(
-        db_path
-            .parent()
-            .expect("the DB path has a parent directory"),
-    );
-    cleanup(&linked_root);
-    cleanup(&main_root);
 }
 
 #[test]
 fn a_snapshot_failure_arms_the_marker_and_the_next_invocation_recovers_once() {
-    let repo_root = unique_path("public-snapshot-failure-marker-recovery");
-    init_repo(&repo_root);
-    // The DB lives outside the worktree so it never perturbs the observed tree.
-    let db_path = unique_path("public-snapshot-failure-marker-recovery-db").join("agent-trace.db");
-    RepositoryAgentTraceDb::new_at(&db_path).expect("the repository DB should open with schema");
-    let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
+    let repo = TestRepo::new("public-snapshot-failure-marker-recovery");
+    let git_dir = resolve_git_dir(&repo.repo_root).expect("git dir should resolve");
     let marker = ExternalTaintMarker::new(&git_dir);
-    let ok_db = || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path);
+    let ok_db = || repo.open_db();
 
-    let baseline = coordinate(&repo_root, &RuntimeBoundary::Flush, ok_db)
+    let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
     assert!(!marker.exists().expect("marker existence should resolve"));
 
-    // Plant a file where the snapshot service needs its temp-index directory.
     let tmp_index_dir = git_dir.join("sce").join("tmp");
     let _ = std::fs::remove_dir_all(&tmp_index_dir);
     std::fs::write(&tmp_index_dir, b"not a directory")
@@ -785,7 +712,7 @@ fn a_snapshot_failure_arms_the_marker_and_the_next_invocation_recovers_once() {
 
     let scope = ScopeId("scope-during-the-failure".to_string());
     let failure = coordinate(
-        &repo_root,
+        &repo.repo_root,
         &RuntimeBoundary::Start {
             scope: scope.clone(),
             event: EventId("evt-during-failure".to_string()),
@@ -810,8 +737,7 @@ fn a_snapshot_failure_arms_the_marker_and_the_next_invocation_recovers_once() {
     );
 
     {
-        let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
-            .expect("reopening the DB for assertions should succeed");
+        let db = repo.db();
         let store = MutationTraceStore::new(&db);
         let projection = store
             .load_worktree(&worktree_id, None, None)
@@ -826,10 +752,10 @@ fn a_snapshot_failure_arms_the_marker_and_the_next_invocation_recovers_once() {
 
     std::fs::remove_file(&tmp_index_dir)
         .expect("removing the planted file should let the snapshot service recreate its temp dir");
-    std::fs::write(repo_root.join("work.txt"), b"v1")
+    std::fs::write(repo.repo_root.join("work.txt"), b"v1")
         .expect("an edit before recovery should write");
 
-    let recovered = coordinate(&repo_root, &RuntimeBoundary::Flush, ok_db)
+    let recovered = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
         .expect("the coordinator should recover from the taint and process the boundary");
     assert!(
         recovered.mutation_event.is_none(),
@@ -840,8 +766,7 @@ fn a_snapshot_failure_arms_the_marker_and_the_next_invocation_recovers_once() {
         "a successful recovery clears the marker"
     );
 
-    let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
-        .expect("reopening the DB for assertions should succeed");
+    let db = repo.db();
     let store = MutationTraceStore::new(&db);
     let projection = store
         .load_worktree(&worktree_id, None, None)
@@ -857,44 +782,31 @@ fn a_snapshot_failure_arms_the_marker_and_the_next_invocation_recovers_once() {
         "recovery rebaselines the cursor to the recovering invocation's own observed tree"
     );
 
-    // A plain follow-up flush proves the recovery already fully completed once:
-    // there is nothing left to recover.
-    let stable = coordinate(&repo_root, &RuntimeBoundary::Flush, ok_db)
+    let stable = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
         .expect("a plain flush after recovery should succeed");
     assert_eq!(
         stable.revision, recovered.revision,
         "the single conservative recovery already completed; a follow-up flush is a no-op"
     );
     assert!(stable.mutation_event.is_none());
-
-    cleanup(
-        db_path
-            .parent()
-            .expect("the DB path has a parent directory"),
-    );
-    cleanup(&repo_root);
 }
 
 #[test]
 #[allow(clippy::too_many_lines)]
 fn a_marker_clear_failure_after_a_durable_boundary_keeps_the_marker_for_a_later_recovery() {
-    let repo_root = unique_path("public-marker-clear-failure");
-    init_repo(&repo_root);
-    // The DB lives outside the worktree so it never perturbs the observed tree.
-    let db_path = unique_path("public-marker-clear-failure-db").join("agent-trace.db");
-    RepositoryAgentTraceDb::new_at(&db_path).expect("the repository DB should open with schema");
-    let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
+    let repo = TestRepo::new("public-marker-clear-failure");
+    let git_dir = resolve_git_dir(&repo.repo_root).expect("git dir should resolve");
     let marker = ExternalTaintMarker::new(&git_dir);
     let marker_path = git_dir.join("sce").join("mutation-cursor-tainted");
-    let ok_db = || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path);
+    let ok_db = || repo.open_db();
 
-    let baseline = coordinate(&repo_root, &RuntimeBoundary::Flush, ok_db)
+    let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
 
     let scope = ScopeId("scope-attributable".to_string());
     coordinate(
-        &repo_root,
+        &repo.repo_root,
         &RuntimeBoundary::Start {
             scope: scope.clone(),
             event: EventId("evt-start".to_string()),
@@ -903,13 +815,13 @@ fn a_marker_clear_failure_after_a_durable_boundary_keeps_the_marker_for_a_later_
         ok_db,
     )
     .expect("starting the scope should succeed");
-    std::fs::write(repo_root.join("work.txt"), b"v1")
+    std::fs::write(repo.repo_root.join("work.txt"), b"v1")
         .expect("an exclusive edit before the boundary should write");
 
     let clear_marker_path = marker_path.clone();
-    let clear_db_path = db_path.clone();
+    let clear_db_path = repo.db_path.clone();
     let error = coordinate(
-        &repo_root,
+        &repo.repo_root,
         &RuntimeBoundary::Advance {
             scope: scope.clone(),
             event: EventId("evt-advance".to_string()),
@@ -935,8 +847,7 @@ fn a_marker_clear_failure_after_a_durable_boundary_keeps_the_marker_for_a_later_
     );
 
     let (durable_revision, durable_cursor) = {
-        let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
-            .expect("reopening the DB for assertions should succeed");
+        let db = repo.db();
         let store = MutationTraceStore::new(&db);
         let projection = store
             .load_worktree(&worktree_id, Some(&scope), None)
@@ -965,9 +876,9 @@ fn a_marker_clear_failure_after_a_durable_boundary_keeps_the_marker_for_a_later_
     marker
         .persist()
         .expect("re-arming a plain marker file should succeed");
-    std::fs::write(repo_root.join("work.txt"), b"v2").expect("a later edit should write");
+    std::fs::write(repo.repo_root.join("work.txt"), b"v2").expect("a later edit should write");
 
-    let recovered = coordinate(&repo_root, &RuntimeBoundary::Flush, ok_db)
+    let recovered = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
         .expect("the later invocation recovers from the still-armed marker");
     assert!(
         recovered.mutation_event.is_none(),
@@ -981,36 +892,26 @@ fn a_marker_clear_failure_after_a_durable_boundary_keeps_the_marker_for_a_later_
         recovered.observed_tree, durable_cursor,
         "the later recovery rebaselines to the newer tree"
     );
-
-    cleanup(
-        db_path
-            .parent()
-            .expect("the DB path has a parent directory"),
-    );
-    cleanup(&repo_root);
 }
 
 #[test]
 fn reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_durable_under_it() {
-    let repo_root = unique_path("reconcile-blocks-on-worktree-lock");
-    init_repo(&repo_root);
-    let db_path = unique_path("reconcile-blocks-on-worktree-lock-db").join("agent-trace.db");
-    RepositoryAgentTraceDb::new_at(&db_path).expect("the repository DB should open with schema");
-    let ok_db = || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path);
+    let repo = TestRepo::new("reconcile-blocks-on-worktree-lock");
+    let ok_db = || repo.open_db();
 
-    let baseline = coordinate(&repo_root, &RuntimeBoundary::Flush, ok_db)
+    let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
     let baseline_tree = baseline.observed_tree.clone();
 
-    let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
+    let git_dir = resolve_git_dir(&repo.repo_root).expect("git dir should resolve");
     let held = acquire_inner(&git_dir, Duration::from_secs(5), || {})
         .expect("the test should hold a real WorktreeLock before the worker runs");
 
     let (contention_tx, contention_rx) = mpsc::channel();
     let (result_tx, result_rx) = mpsc::channel();
-    let repo_root_clone = repo_root.clone();
-    let db_path_clone = db_path.clone();
+    let repo_root_clone = repo.repo_root.clone();
+    let db_path_clone = repo.db_path.clone();
     let worker = thread::spawn(move || {
         let outcome = reconcile_worktree_inner(
             &repo_root_clone,
@@ -1036,9 +937,9 @@ fn reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_dur
         "the reconciliation pass must not complete while the worktree lock is still held"
     );
 
-    let snapshot = GitSnapshotService::new(&repo_root)
+    let snapshot = GitSnapshotService::new(&repo.repo_root)
         .expect("a snapshot service should construct for the worktree");
-    std::fs::write(repo_root.join("under-lock.txt"), b"under the lock")
+    std::fs::write(repo.repo_root.join("under-lock.txt"), b"under the lock")
         .expect("an edit under the lock should write");
     let x = snapshot.capture_tree().expect("capturing X should succeed");
     snapshot
@@ -1079,7 +980,7 @@ fn reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_dur
         "the worktree's durable roots are exactly the baseline cursor tree and X"
     );
     run_git(
-        &repo_root,
+        &repo.repo_root,
         &[
             "show-ref",
             "--verify",
@@ -1087,31 +988,21 @@ fn reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_dur
             &format!("refs/sce/mutation-cursor/{}/{}", worktree_id.0, x.0),
         ],
     );
-
-    cleanup(
-        db_path
-            .parent()
-            .expect("the DB path has a parent directory"),
-    );
-    cleanup(&repo_root);
 }
 
 #[test]
 #[allow(clippy::too_many_lines)]
 fn reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree() {
-    let repo_root = unique_path("reconcile-blocks-until-real-cas");
-    init_repo(&repo_root);
-    let db_path = unique_path("reconcile-blocks-until-real-cas-db").join("agent-trace.db");
-    RepositoryAgentTraceDb::new_at(&db_path).expect("the repository DB should open with schema");
-    let ok_db = || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path);
+    let repo = TestRepo::new("reconcile-blocks-until-real-cas");
+    let ok_db = || repo.open_db();
 
-    let baseline = coordinate(&repo_root, &RuntimeBoundary::Flush, ok_db)
+    let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
     let baseline_tree = baseline.observed_tree.clone();
 
     std::fs::write(
-        repo_root.join("under-real-cas.txt"),
+        repo.repo_root.join("under-real-cas.txt"),
         b"observed before the real CAS",
     )
     .expect("an edit before the coordinated boundary should write");
@@ -1119,8 +1010,8 @@ fn reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree() {
     let (pinned_tx, pinned_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel::<()>();
     let (coordinate_done_tx, coordinate_done_rx) = mpsc::channel();
-    let coord_repo_root = repo_root.clone();
-    let coord_db_path = db_path.clone();
+    let coord_repo_root = repo.repo_root.clone();
+    let coord_db_path = repo.db_path.clone();
     let coordinator = thread::spawn(move || {
         let mut paused = false;
         let outcome = coordinate_inner(
@@ -1154,8 +1045,8 @@ fn reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree() {
 
     let (contention_tx, contention_rx) = mpsc::channel();
     let (reconcile_done_tx, reconcile_done_rx) = mpsc::channel();
-    let rec_repo_root = repo_root.clone();
-    let rec_db_path = db_path.clone();
+    let rec_repo_root = repo.repo_root.clone();
+    let rec_db_path = repo.db_path.clone();
     let reconciler = thread::spawn(move || {
         let outcome = reconcile_worktree_inner(
             &rec_repo_root,
@@ -1230,7 +1121,7 @@ fn reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree() {
     );
 
     run_git(
-        &repo_root,
+        &repo.repo_root,
         &[
             "show-ref",
             "--verify",
@@ -1255,11 +1146,4 @@ fn reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree() {
         .expect("the observed drift must have committed one durable event");
     assert_eq!(event.before_tree, baseline_tree);
     assert_eq!(event.after_tree, x);
-
-    cleanup(
-        db_path
-            .parent()
-            .expect("the DB path has a parent directory"),
-    );
-    cleanup(&repo_root);
 }
