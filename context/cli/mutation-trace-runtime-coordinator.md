@@ -190,7 +190,7 @@ On-disk layout so far:
 
 <repository's normal, shared object database>       (runtime::git_snapshot writes here directly)
 <repository's normal, shared refs namespace>
-└── refs/sce/mutation-cursor/<worktree-id>/<tree-sha>   (runtime::git_snapshot, create-only per invocation; orphan/unreferenced pins reclaimed by runtime::ref_reconciliation, every pin for a current or historical durable mutation-cursor root retained)
+└── refs/sce/mutation-cursor/<worktree-id>/<tree-sha>   (runtime::git_snapshot, create-only per invocation; orphan/unreferenced pins reclaimed by runtime::ref_reconciliation for a still-identifiable worktree's namespace only, every pin for a current or historical durable mutation-cursor root retained; a retired worktree's namespace is stranded — future repository-scoped work)
 ```
 
 ## Testing boundary
