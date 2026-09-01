@@ -215,9 +215,9 @@ surfaces `MarkerClearAfterCommit` with the matching committed outcome. The
 
 `runtime/tests.rs` is `runtime`'s own `#[cfg(test)] mod tests` of cross-module
 integration tests against real Git repositories (`git init`, `git worktree
-add`) and real temp-file `RepositoryAgentTraceDb`s — mostly the public
-`coordinate()`, plus the `pub(super)` `coordinate_inner` / `reconcile_worktree_inner`
-seams for the lock-race regressions. Two linked worktrees (different `git_dir` →
+add`) and real temp-file `RepositoryAgentTraceDb`s — the public `coordinate()`,
+the public `reconcile_worktree` integration suite (detailed in
+[`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md#testing-boundary)), and the `pub(super)` `coordinate_inner` / `reconcile_worktree_inner` lock-race seams. Two linked worktrees (different `git_dir` →
 different lock paths → different `WorktreeId`s) are proven independently locked
 by holding one worktree's `WorktreeLock` across a synchronous `coordinate()`
 call for the other and seeing it return `Ok` only after the guard drops; each
