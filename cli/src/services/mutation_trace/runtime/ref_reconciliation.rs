@@ -32,8 +32,10 @@ const RECONCILIATION_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// `retained == local_required` is **not** an invariant — a pin retained only
 /// because another worktree durably needs its tree counts toward `retained`
-/// but not `local_required`. The only relation that holds on the `Ok` path is
-/// `local_required <= retained`.
+/// but not `local_required`. For `ReconciliationOutcome::Reconciled(report)`
+/// the only relation that holds is `report.local_required <= report.retained`.
+/// `ReconciliationOutcome::SkippedNoCheckoutIdentity` carries no report, so no
+/// report invariant applies to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReconciliationReport {
     pub local_required: usize,
@@ -356,6 +358,17 @@ mod tests {
                 .status()
                 .expect("git show-ref should spawn")
                 .success()
+        }
+
+        fn ref_representation(&self, ref_name: &str) -> String {
+            git(
+                &self.repo_root,
+                &[
+                    "for-each-ref",
+                    "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)",
+                    ref_name,
+                ],
+            )
         }
 
         fn object_type(&self, sha: &str) -> Option<String> {
@@ -718,7 +731,11 @@ mod tests {
         let orphan = fx.capture_after_writing("a.txt", "orphan\n");
         fx.pin_for(&fx.worktree_id, &orphan);
         let owned = fx.owned_ref(&orphan);
-        let before = git(&fx.repo_root, &["rev-parse", &owned]);
+        let before = fx.ref_representation(&owned);
+        assert!(
+            !before.is_empty(),
+            "the pre-seeded pin ref must exist before the skip"
+        );
 
         let outcome = reconcile_worktree(&fx.repo_root, || {
             panic!("open_db must not be invoked on the missing-checkout-identity skip path")
@@ -727,9 +744,10 @@ mod tests {
 
         assert_eq!(outcome, ReconciliationOutcome::SkippedNoCheckoutIdentity);
         assert_eq!(
-            git(&fx.repo_root, &["rev-parse", &owned]),
+            fx.ref_representation(&owned),
             before,
-            "the pre-seeded ref is byte-identical after the skip"
+            "the skip touches no ref: name, target SHA, object type, and direct/symbolic \
+             shape are all structurally unchanged"
         );
     }
 }
