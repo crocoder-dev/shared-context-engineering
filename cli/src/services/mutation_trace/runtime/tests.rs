@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::{mpsc, Arc, Barrier};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -10,7 +10,7 @@ use crate::services::agent_trace_storage::{
     resolve_agent_trace_storage_at_state_root, AgentTraceStorageContext,
 };
 use crate::services::checkout::{read_checkout_id, resolve_git_dir};
-use crate::services::mutation_trace::store::MutationTraceStore;
+use crate::services::mutation_trace::store::{encode_revision, MutationTraceStore};
 use crate::services::mutation_trace::types::{
     ActorKind, EventId, FailureKind, ScopeId, ScopeStatus,
 };
@@ -18,7 +18,8 @@ use crate::services::mutation_trace::types::{
 use super::coordinator::{coordinate, CoordinateError, RuntimeBoundary};
 use super::external_taint::ExternalTaintMarker;
 use super::git_snapshot::GitSnapshotService;
-use super::worktree_lock::WorktreeLock;
+use super::ref_reconciliation::reconcile_worktree_inner;
+use super::worktree_lock::{acquire_inner, WorktreeLock};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -57,6 +58,29 @@ fn init_repo(root: &Path) {
 
 fn cleanup(path: &Path) {
     let _ = std::fs::remove_dir_all(path);
+}
+
+fn seed_event(
+    db: &RepositoryAgentTraceDb,
+    worktree_id: &str,
+    revision: u64,
+    before_tree: &str,
+    after_tree: &str,
+) {
+    db.execute(
+        "INSERT INTO mutation_trace_events
+            (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
+             attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id,
+             boundary_event_id)
+         VALUES (?1, ?2, ?3, ?4, 0, 'healthy', 'ineligible_unscoped', NULL, 'flush', NULL, NULL)",
+        (
+            worktree_id,
+            encode_revision(revision).as_slice(),
+            before_tree,
+            after_tree,
+        ),
+    )
+    .expect("event row insert should succeed");
 }
 
 #[test]
@@ -956,6 +980,106 @@ fn a_marker_clear_failure_after_a_durable_boundary_keeps_the_marker_for_a_later_
     assert_ne!(
         recovered.observed_tree, durable_cursor,
         "the later recovery rebaselines to the newer tree"
+    );
+
+    cleanup(
+        db_path
+            .parent()
+            .expect("the DB path has a parent directory"),
+    );
+    cleanup(&repo_root);
+}
+
+#[test]
+fn reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_durable_under_it() {
+    let repo_root = unique_path("reconcile-blocks-on-worktree-lock");
+    init_repo(&repo_root);
+    let db_path = unique_path("reconcile-blocks-on-worktree-lock-db").join("agent-trace.db");
+    RepositoryAgentTraceDb::new_at(&db_path).expect("the repository DB should open with schema");
+    let ok_db = || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path);
+
+    let baseline = coordinate(&repo_root, &RuntimeBoundary::Flush, ok_db)
+        .expect("the baseline observation should materialize the worktree");
+    let worktree_id = baseline.worktree_id.clone();
+    let baseline_tree = baseline.observed_tree.clone();
+
+    let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
+    let held = acquire_inner(&git_dir, Duration::from_secs(5), || {})
+        .expect("the test should hold a real WorktreeLock before the worker runs");
+
+    let (contention_tx, contention_rx) = mpsc::channel();
+    let (result_tx, result_rx) = mpsc::channel();
+    let repo_root_clone = repo_root.clone();
+    let db_path_clone = db_path.clone();
+    let worker = thread::spawn(move || {
+        let outcome = reconcile_worktree_inner(
+            &repo_root_clone,
+            || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path_clone),
+            move || {
+                contention_tx
+                    .send(())
+                    .expect("contention signal channel should still be open");
+            },
+        );
+        result_tx
+            .send(())
+            .expect("result signal channel should still be open");
+        outcome
+    });
+
+    contention_rx.recv_timeout(Duration::from_secs(5)).expect(
+        "reconcile_worktree_inner should reach the WorktreeLock try_lock loop and \
+         observe contention while this test still holds the lock",
+    );
+    assert!(
+        result_rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the reconciliation pass must not complete while the worktree lock is still held"
+    );
+
+    let snapshot = GitSnapshotService::new(&repo_root)
+        .expect("a snapshot service should construct for the worktree");
+    std::fs::write(repo_root.join("under-lock.txt"), b"under the lock")
+        .expect("an edit under the lock should write");
+    let x = snapshot.capture_tree().expect("capturing X should succeed");
+    snapshot
+        .pin_tree(&worktree_id, &x)
+        .expect("pinning X should succeed");
+    seed_event(
+        &ok_db().expect("reopening the DB to seed the event should succeed"),
+        &worktree_id.0,
+        1,
+        &baseline_tree.0,
+        &x.0,
+    );
+
+    drop(held);
+
+    result_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the same reconciliation pass should complete once the lock is released");
+    let report = worker
+        .join()
+        .expect("the reconciliation worker thread should not panic")
+        .expect(
+            "reconciliation should succeed once it can acquire the worktree lock after release",
+        );
+
+    assert_eq!(
+        report.deleted, 0,
+        "reconciliation must retain X: it became a durable root under the very lock it was waiting on"
+    );
+    assert_eq!(
+        report.local_required, 2,
+        "the worktree's durable roots are exactly the baseline cursor tree and X"
+    );
+    run_git(
+        &repo_root,
+        &[
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/sce/mutation-cursor/{}/{}", worktree_id.0, x.0),
+        ],
     );
 
     cleanup(
