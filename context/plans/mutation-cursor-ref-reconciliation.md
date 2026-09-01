@@ -70,16 +70,17 @@ This is the deferred step 3 of the runtime completion sequence in
 `context/plans/mutation-cursor-runtime-coordinator.md` ("Follow-up PR — Runtime
 completion sequence"). Reconciliation is required before high-volume harness
 wiring to reclaim orphan/crash snapshot refs produced by interrupted
-`coordinate()` executions **in an identifiable, still-present worktree's
-namespace** — **not** because it guarantees bounded mutation-history storage
-under normal successful usage, and **not** because it reclaims every SCE ref
-that can accumulate: a deleted/retired linked worktree's namespace is beyond a
-per-worktree pass's reach (see "Active-worktree scope: retired-worktree
-namespaces are out of reach" and Design decisions Q16). The operational
-consequence is a **harness gate**: a persistent / current-worktree harness
-lifecycle can rely on this pass, but a harness that automatically creates and
-destroys ephemeral linked worktrees is not storage-cleanup complete until the
-future repository-scoped retired-worktree operation exists. This revision also
+`coordinate()` executions **in the namespace of a checkout identity a current
+worktree still owns** — **not** because it guarantees bounded mutation-history
+storage under normal successful usage, and **not** because it reclaims every SCE
+ref that can accumulate: a namespace whose checkout identity no current worktree
+derives is beyond a per-worktree pass's reach (see "Scope: unowned
+checkout-identity namespaces are out of reach" and Design decisions Q16). The
+operational consequence is a **harness gate**: a persistent / current-worktree
+harness whose checkout identity stays stable can rely on this pass, but any
+lifecycle that can retire, replace, lose, or recreate checkout identities is not
+storage-cleanup complete until the future repository-scoped unowned-namespace
+operation exists. This revision also
 makes a missing checkout identity an **observable skipped outcome**
 (`ReconciliationOutcome::SkippedNoCheckoutIdentity`) rather than a silent
 zero-count report (see "Missing checkout identity is an observable skip" and
@@ -160,76 +161,102 @@ mutation-event trees stop being durable roots; this plan builds only the
 reclamation half of that pipeline. Recorded as future work only — no retention
 system is designed or implemented in this plan.
 
-## Active-worktree scope: retired-worktree namespaces are out of reach (post-T04 clarification)
+## Scope: unowned checkout-identity namespaces are out of reach (post-T04 clarification, broadened post-T05/T06 review)
 
 `reconcile_worktree(repository_root, ..)` derives its owned ref prefix from the
-**current** checkout identity of a **still-present** worktree
+checkout identity a **current worktree still derives**
 (`resolve_git_dir → read_checkout_id`). It reclaims orphan / unreferenced pins
-**for a namespace whose worktree is still identifiable**. It is *not* a
-guarantee that SCE refs never accumulate:
+**only for a namespace whose checkout identity is still owned**. It is *not* a
+guarantee that SCE refs never accumulate. The fundamental unsupported lifecycle
+is **identity-based**, not "a worktree directory was deleted":
 
 ```
-<worktree-git-dir>/sce/checkout-id   ← per-worktree, disappears with the worktree
-refs/sce/mutation-cursor/<checkout-id>/<tree-sha>   ← repository-shared, survives
+refs/sce/mutation-cursor/<checkout-id>/*
+        ↓
+does any current worktree derive <checkout-id>?
+       / \
+     yes   no
+      |     |
+  active   unowned namespace
+ namespace (no per-worktree pass can ever inventory or reconcile it)
+```
 
-linked worktree W, checkout id = abc
-    ↓  git worktree remove W
-worktree-specific git dir gone  →  checkout-id abc gone
-    ↓
-refs/sce/mutation-cursor/abc/*  still in the shared repository refs
-    ↓
-no surviving worktree can derive `abc`, so no per-worktree pass can ever
-inventory or reconcile that namespace  →  the refs are stranded
+A namespace becomes **unowned** in at least two ways:
+
+**Case A — deleted linked worktree.** `git worktree remove W` deletes W's
+worktree-specific git dir, so its `<git-dir>/sce/checkout-id` disappears; the
+`refs/sce/mutation-cursor/<id>/*` it created live in the shared repository refs
+and survive. No surviving worktree can derive that id.
+
+**Case B — checkout-identity metadata loss / recreation.** A **still-present**
+worktree's `<git-dir>/sce/checkout-id` disappears (id `A`);
+`get_or_create_checkout_id` mints a fresh UUID when that file is absent, so a
+later identity-creating path (the next `coordinate()`, setup, a hook) creates
+`B`. The worktree now operates as `B` while `refs/sce/mutation-cursor/A/*`
+remain — unowned, though the physical worktree still exists. Between the loss
+and the recreation, `reconcile_worktree` returns `SkippedNoCheckoutIdentity`
+and does nothing. This is **not** normal operation — it is a metadata-loss /
+recreation lifecycle the maintenance model must handle conservatively;
+reconciliation never recreates `A` or adopts its namespace.
+
+```
+<worktree-git-dir>/sce/checkout-id                 per-worktree, easily lost
+refs/sce/mutation-cursor/<checkout-id>/<tree-sha>  repository-shared, survives
+
+  A: git worktree remove         → checkout-id file gone with the worktree
+  B: checkout-id file deleted     → skip → get_or_create mints a fresh id
+  either way → refs/.../<old-id>/* unreachable by every per-worktree pass
 ```
 
 The current pass is the right mechanism for its stated job — **high-frequency
-harness traffic against active worktrees**, where interrupted `coordinate()`
-runs leave orphan pins that must be reclaimed under the same `WorktreeLock`.
-**Ephemeral-worktree deletion** — an agent harness that creates and destroys
-linked worktrees — leaves whole retired namespaces the per-worktree reconciler
+harness traffic against a worktree with a stable checkout identity**, where
+interrupted `coordinate()` runs leave orphan pins reclaimed under the same
+`WorktreeLock`. Any lifecycle that can **retire, replace, lose, or recreate**
+checkout identities leaves whole unowned namespaces the per-worktree reconciler
 structurally cannot reach. That is a **separate repository-scoped lifecycle**,
 recorded as future work (see Design decisions Q16), not implemented here:
 
 ```
-enumerate repository mutation-cursor namespaces  (refs/sce/mutation-cursor/<id>/*)
+enumerate refs/sce/mutation-cursor/<checkout-id>/*  (git for-each-ref on the namespace)
         ↓
-determine active checkout ids  (git worktree list → each worktree's checkout-id)
+enumerate current worktrees → read each worktree's checkout-id → active checkout ids
         ↓
-identify retired ids  (namespace present, no active worktree owns it)
+namespace id ∉ active checkout ids  →  unowned / retired checkout namespace
         ↓
-for each retired namespace:
-    T ∈ its pinned trees  and  T ∉ durable_roots(repository)  →  delete refs/.../<id>/T
-    T ∈ durable_roots(repository)                              →  retain
+for each unowned namespace, each pinned tree T:
+    T ∈ durable_roots(repository)  →  retain
+    T ∉ durable_roots(repository)  →  safe candidate for deletion
 ```
 
 The same repository-wide durability invariant still governs it —
-`delete <retired-W>/T only if T ∉ durable_roots(repository)` — because a retired
-worktree may still own historical `mutation_trace_events` rows whose
-`before_tree` / `after_tree` other tooling will need. It must keep preferring
-**false retention over false deletion**; the unsafe shortcut "namespace has no
-active worktree → delete the whole namespace" is explicitly forbidden.
+`delete <namespace>/T only if T ∉ durable_roots(repository)` — because an
+unowned namespace may still own the only SCE ref protecting historical
+`mutation_trace_events` trees other tooling will need. It must keep preferring
+**false retention over false deletion**; the unsafe shortcut "checkout id is
+unowned → delete its whole namespace" is explicitly forbidden.
 
 ### Operational consequence: the harness gate
 
 ```
-harness uses / creates and keeps a persistent worktree
+persistent / current worktree, checkout identity stays stable
         ↓
-active-worktree reconciliation reclaims orphan/unreferenced refs in that
+per-worktree reconciliation reclaims orphan/unreferenced refs in that
 namespace  →  storage cleanup is complete for this plan's scope
 
-harness automatically creates → runs an agent → deletes a linked worktree
+any lifecycle that can retire / replace / lose / recreate a checkout identity
+(create → run agent → delete a linked worktree; a lost checkout-id file; …)
         ↓
-that worktree's checkout id disappears; its refs remain; no per-worktree pass
-can reach them  →  storage cleanup is NOT complete until repository-scoped
-retired-worktree reconciliation (Q16) exists
+old namespace becomes unowned; its refs remain; no per-worktree pass can reach
+them  →  storage cleanup is NOT complete until the repository-scoped
+unowned-namespace reconciliation (Q16) exists
 ```
 
-So this does **not** block harness integration in general — a persistent /
-current-worktree harness lifecycle can proceed on the current pass alone. But
-**a harness lifecycle that automatically creates and destroys ephemeral linked
-worktrees MUST NOT be treated as storage-cleanup complete** until the
-repository-scoped retired-worktree operation exists. This gate is recorded in
-Q15 (invocation timing) and Q16 (the future operation).
+So this does **not** block ordinary persistent-worktree harness wiring — a
+persistent / current-worktree harness **whose checkout identity remains stable**
+can proceed on the current pass alone. But **any harness lifecycle that can
+retire, replace, lose, or recreate checkout identities MUST NOT be treated as
+storage-cleanup complete** until the repository-scoped operation exists. This
+gate is recorded in Q15 (invocation timing) and Q16 (the future operation).
 
 ## Missing checkout identity is an observable skip, not a silent zero (post-T03 clarification)
 
@@ -242,9 +269,12 @@ distinct, non-error outcome — `ReconciliationOutcome::SkippedNoCheckoutIdentit
 (Design decisions Q17). A real zero-work pass instead returns
 `Ok(Reconciled(ReconciliationReport { 0, 0, 0 }))` (Q6). The skip means only:
 *no owned namespace was inventoried, no DB provider was called, no durable-root
-comparison was performed, no ref was deleted.* It makes **no** claim that the
-repository holds no SCE mutation-cursor refs for a prior checkout identity —
-those may be exactly the stranded retired-worktree namespaces above.
+comparison was performed, no ref was deleted, no identity was created or
+recovered.* It makes **no** claim that the repository holds no SCE
+mutation-cursor refs for a prior checkout identity — those may be exactly the
+unowned namespaces above (a `SkippedNoCheckoutIdentity` return is itself Case B
+of that lifecycle in progress: the metadata is gone and a fresh identity has
+not yet been minted).
 
 ## Core invariants
 
@@ -528,20 +558,28 @@ crate module path `services::mutation_trace::runtime::…` /
   rely on the object surviving indefinitely.
   - Validate: `services::mutation_trace::runtime::ref_reconciliation::tests::reconciliation_deletes_refs_without_reclaiming_objects`
 - [ ] AC13: The plan and the durable reconciliation context state, in precise
-  terms, that per-worktree reconciliation reclaims orphan / unreferenced refs
-  only for a **still-identifiable** worktree namespace, and that a
-  deleted / retired linked-worktree namespace (checkout id gone, shared refs
-  remaining) is beyond its reach and needs a separate repository-scoped
-  lifecycle. A future "retired worktree ref reconciliation" maintenance
-  operation is recorded (repository-scoped scan → active vs. retired checkout
-  ids → per-retired-namespace tree-vs-`durable_roots(repository)` comparison →
-  delete only non-durable trees), with the "no active worktree → delete the
-  whole namespace" shortcut explicitly forbidden. No repository-global deletion
-  behavior is implemented in this plan.
-  - Validate: inspection — the "Active-worktree scope" section of this plan and
-    Design decisions Q16; `context/cli/mutation-trace-ref-reconciliation.md` and
+  terms, that the fundamental unsupported lifecycle is **identity-based** — an
+  SCE ref namespace exists and **no current worktree owns / derives that
+  checkout id** — not merely "a linked worktree was deleted". A deleted linked
+  worktree stays documented as one concrete way a checkout identity becomes
+  unowned (Case A); checkout-id metadata loss followed by
+  `get_or_create_checkout_id` minting a fresh id, leaving the old namespace
+  unowned while the physical worktree still exists, is documented as the other
+  (Case B), described as a metadata-loss / recreation lifecycle rather than
+  normal operation. A future repository-scoped "unowned checkout-identity
+  reconciliation" operation is recorded (repository-scoped namespace scan →
+  active checkout ids from current worktrees → unowned ids →
+  per-unowned-namespace tree-vs-`durable_roots(repository)` comparison → delete
+  only non-durable trees), with `delete <namespace>/T only if
+  T ∉ durable_roots(repository)` preserved and the "checkout id is unowned →
+  delete the whole namespace" shortcut explicitly forbidden. No repository-global
+  scan or deletion behavior is implemented in this plan.
+  - Validate: inspection — the "Scope: unowned checkout-identity namespaces"
+    section of this plan and Design decisions Q16;
+    `context/cli/mutation-trace-ref-reconciliation.md` and
     `context/cli/mutation-trace-runtime-coordinator.md` carry the same
-    limitation; `git diff main -- cli/src/services/mutation_trace/` shows
+    identity-ownership framing and both Case A / Case B;
+    `git diff main -- cli/src/services/mutation_trace/` shows
     `list_pins` still constrains `git for-each-ref` to the single
     `refs/sce/mutation-cursor/<worktree-id>/` prefix and no new
     `git worktree list` / repository-wide `refs/sce/**` enumeration or
@@ -555,9 +593,14 @@ crate module path `services::mutation_trace::runtime::…` /
   - Validate: `services::mutation_trace::runtime::ref_reconciliation::tests::no_checkout_identity_returns_a_distinct_skipped_outcome`
 - [ ] AC15: On the missing-checkout-identity path, the caller's `open_db`
   provider is never invoked, no pin inventory is attempted, and every existing
-  ref under the repository's SCE namespace is left byte-identical. A test wiring
-  a `open_db` provider that panics if called proves it is not called, and
-  asserts a pre-seeded ref is still present and unchanged after the skip.
+  ref under the repository's SCE namespace is left **structurally** identical.
+  A test wiring an `open_db` provider that panics if called proves it is not
+  called, and captures the pre-seeded pin ref's full `git for-each-ref`
+  representation — `%(refname)` / `%(objectname)` / `%(objecttype)` /
+  `%(symref)` — before the skip and asserts it is byte-identical afterward, so a
+  direct ref silently turning symbolic (or any other structural change that
+  still resolves to the same SHA) would fail. Read with a test-local `git`
+  helper, not `list_pins`, which needs the checkout identity the test removes.
   - Validate: `services::mutation_trace::runtime::ref_reconciliation::tests::a_missing_checkout_identity_skip_touches_no_db_and_no_ref`
 - [ ] AC16: The plan (AC5), Design decisions Q18, and
   `context/cli/mutation-trace-ref-reconciliation.md` describe the T04 regression
@@ -674,11 +717,14 @@ Repository-wide checks `/validate` runs after the last task.
   that Git performs object GC itself on its normal schedule, and that **SCE
   deletes only its own refs, never Git objects directly**.
 - `context/cli/mutation-trace-ref-reconciliation.md` (added during T03 context
-  sync) — (T05) add the **retired-worktree limitation**: per-worktree
-  reconciliation cleans an identifiable current worktree's namespace only; a
-  deleted linked worktree's checkout id disappears while its shared refs
-  remain, and the current reconciler cannot derive that old namespace, so
-  repository-scoped retired-worktree cleanup is future work. Preserve the
+  sync) — (T05, broadened post-T05/T06 review) add the **unowned
+  checkout-identity limitation**: per-worktree reconciliation cleans only the
+  namespace of a checkout id a current worktree still derives; a namespace
+  becomes unreachable whenever no current worktree owns its checkout id — a
+  deleted linked worktree (Case A) or checkout-id metadata loss + recreation on
+  a still-present worktree (Case B) — so repository-scoped unowned-namespace
+  cleanup is future work, identity-ownership based, still governed by
+  `delete <namespace>/T only if T ∉ durable_roots(repository)`. Preserve the
   already-correct "reconciliation ≠ historical retention policy" statement.
   (T06) replace "`read_checkout_id → Ok(None)` … is a clean no-op
   `ReconciliationReport { 0, 0, 0 }`" with the
@@ -689,9 +735,10 @@ Repository-wide checks `/validate` runs after the last task.
   pin→CAS test's disposition.
 - `context/cli/mutation-trace-runtime-coordinator.md` — (T06) update the
   `reconcile_worktree` return-type mention to `ReconciliationOutcome`
-  (`Reconciled(ReconciliationReport)` | `SkippedNoCheckoutIdentity`); (T05)
-  carry the same active-worktree-only / retired-worktree-future-work
-  clarification; (T07) note the `pub(super)` `after_load` coordinator test seam
+  (`Reconciled(ReconciliationReport)` | `SkippedNoCheckoutIdentity`); (T05,
+  broadened post-T05/T06 review) carry the same owned-checkout-identity-only /
+  unowned-namespace-future-work clarification; (T07) note the `pub(super)`
+  `after_load` coordinator test seam
   exposed for the exact pin→CAS regression (test-only, no production behavior
   change to `coordinate()`).
 - Verify-only pass (expected: no edit): `context/architecture.md`,
@@ -752,9 +799,10 @@ Persist this field in every plan; this is durable plan state, not chat state:
 - **Out of scope:** harness adapters and any hook/command/`diff_traces`
   wiring; a `pub(crate)` re-export of `reconcile_worktree`; deciding *when*
   reconciliation runs (harness-wiring PR — see Design decisions Q15);
-  **implementing the retired-worktree repository-scoped reconciliation
-  operation** (recorded as future work only, Q16 — no repository-global
-  namespace scan or repository-global deletion is added by this plan);
+  **implementing the repository-scoped unowned checkout-identity namespace
+  reconciliation operation** (recorded as future work only, Q16 — no
+  repository-global namespace scan or repository-global deletion is added by
+  this plan);
   changing mutation-cursor protocol semantics, the Quint model, attribution,
   the scope state machine, `MutationEvent` semantics, CAS semantics,
   external-taint behavior, the DB schema, migrations, the durable-root
@@ -1696,6 +1744,26 @@ requirements.
     `context/context-map.md` updated as above; `context/architecture.md`,
     `context/glossary.md`, `context/patterns.md` need no change (no new module,
     term, or pattern — scope-limitation wording only).
+  - Post-completion review fix (docs only, no production semantic change): the
+    limitation was broadened from "retired / deleted linked worktree namespace"
+    to **unowned checkout-identity namespace** — the fundamental unsupported
+    lifecycle is "an SCE ref namespace exists and no current worktree owns /
+    derives that checkout id", of which a deleted linked worktree is **Case A**
+    and checkout-id metadata loss followed by `get_or_create_checkout_id`
+    minting a fresh id (leaving the old namespace unowned while the physical
+    worktree still exists) is **Case B** — a metadata-loss / recreation
+    lifecycle, not normal operation. The future repository-scoped operation now
+    reasons about checkout-identity ownership rather than worktree-path deletion,
+    still `delete <namespace>/T only if T ∉ durable_roots(repository)`, still
+    forbidding "unowned → delete the whole namespace". Harness wording:
+    "persistent worktree with a **stable** checkout identity" is covered by the
+    current pass; "any lifecycle that can retire, replace, lose, or recreate
+    checkout identities" needs the future op. Applied to this plan's "Scope"
+    section + Q15/Q16/Q17, the change-summary, AC13/AC15, the "Open questions"
+    summary, `context/cli/mutation-trace-ref-reconciliation.md`,
+    `context/cli/mutation-trace-runtime-coordinator.md`, and the `overview.md` /
+    `context-map.md` annotations. The stale "T04/T05 tests" wording deferred to
+    T07 was resolved separately during T07.
   - Context synchronization: synced
 
 - [x] T06: `Make missing checkout identity an observable skipped outcome` (status:done)
@@ -1789,6 +1857,25 @@ requirements.
     `ReconciliationOutcome` return type; `context/overview.md` describes the
     pass behaviorally and needs no change; `context/architecture.md`,
     `context/glossary.md`, `context/patterns.md` unaffected.
+  - Post-completion review fix (test + doc hardening, no production semantic
+    change; `reconcile_worktree` control flow, skip ordering, and all field
+    shapes unchanged):
+    (1) `ref_reconciliation.rs` — the `ReconciliationReport` doc comment's stale
+    "the only relation that holds on the `Ok` path is `local_required <=
+    retained`" (inaccurate once `Ok(SkippedNoCheckoutIdentity)` carries no
+    report) is now per-variant: `report.local_required <= report.retained` for
+    `Reconciled(report)`, and "`SkippedNoCheckoutIdentity` carries no report, so
+    no report invariant applies". The same stale sentence in
+    `context/cli/mutation-trace-ref-reconciliation.md` was fixed to match.
+    (2) `a_missing_checkout_identity_skip_touches_no_db_and_no_ref` — the
+    `git rev-parse <ref>` before/after comparison (which only pins the resolved
+    SHA) is replaced with a test-local `git for-each-ref
+    --format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)` capture, so
+    the skip is now proven to leave the ref's **name, target SHA, object type,
+    and direct/symbolic shape** all unchanged — a direct ref silently turning
+    symbolic while still resolving to the same SHA now fails. The
+    panic-on-`open_db` provider assertion is preserved unchanged. AC15 updated
+    to describe the structural check.
   - Context synchronization: synced
 
 - [x] T07: `Add the exact real-coordinator pin→CAS reconciliation regression` (status:done)
@@ -2128,8 +2215,7 @@ current checkout identity — no readable canonical `<git-dir>/sce/checkout-id`
 — from which it can derive a `WorktreeId` and therefore no safe worktree-owned
 `refs/sce/mutation-cursor/<worktree-id>/` prefix to reconcile. It is **not** a
 claim that no `WorktreeId` or ref ever existed for this checkout (those may be
-the Q16 stranded retired-worktree namespaces), only that none can be safely
-derived now.
+the Q16 unowned namespaces), only that none can be safely derived now.
 
 The final planned outcome (T06 — see Q17) for that branch:
 
@@ -2493,57 +2579,67 @@ or an explicit `sce` maintenance / `sce doctor --fix` path. Recorded as
 candidates only; this PR wires none of them and adds no `pub(crate)`
 re-export.
 
-The harness gate (see "Active-worktree scope"): a **persistent / current
-worktree** harness lifecycle can be wired to the current per-worktree pass and
-be storage-cleanup complete for this plan's scope. A harness that
-**automatically creates and destroys ephemeral linked worktrees** must not be
-treated as storage-cleanup complete until the repository-scoped
-retired-worktree operation (Q16) exists — the per-worktree pass structurally
-cannot reach a namespace whose worktree is gone.
+The harness gate (see "Scope: unowned checkout-identity namespaces"): a
+**persistent / current worktree** harness lifecycle **whose checkout identity
+stays stable** can be wired to the current per-worktree pass and be
+storage-cleanup complete for this plan's scope. Any lifecycle that can
+**retire, replace, lose, or recreate** checkout identities must not be treated
+as storage-cleanup complete until the repository-scoped unowned-namespace
+operation (Q16) exists — the per-worktree pass structurally cannot reach a
+namespace whose checkout identity no current worktree derives.
 
-### Q16 — Retired / deleted-worktree namespaces (post-T04 clarification, future work)
+### Q16 — Unowned checkout-identity namespaces (post-T04 clarification, broadened post-T05/T06 review, future work)
 
-`reconcile_worktree` derives its owned prefix from a **present** worktree's
-current checkout id. Once a linked worktree is removed
-(`git worktree remove`), its `<git-dir>/sce/checkout-id` is gone but its
-`refs/sce/mutation-cursor/<checkout-id>/*` refs remain in the shared repository
-namespace, and **no** surviving worktree can derive that id — so no
-per-worktree pass can ever inventory or reconcile that namespace. This matters
-specifically once agent harnesses use ephemeral linked worktrees.
+`reconcile_worktree` derives its owned prefix from the checkout id a **current
+worktree still derives**. A `refs/sce/mutation-cursor/<checkout-id>/*` namespace
+becomes **unowned** — permanently out of every per-worktree pass's reach —
+whenever no current worktree can derive `<checkout-id>`. Two lifecycles cause
+this, and the future operation must reason about **checkout-identity
+ownership**, not merely whether a worktree path was deleted:
+
+- **Case A — deleted linked worktree.** `git worktree remove` deletes the
+  worktree-specific git dir, so `<git-dir>/sce/checkout-id` is gone while
+  `refs/sce/mutation-cursor/<id>/*` survive in the shared repository namespace.
+- **Case B — checkout-identity metadata loss / recreation.** A still-present
+  worktree loses `<git-dir>/sce/checkout-id` (id `A`); the next
+  `get_or_create_checkout_id` mints a fresh id `B`; the worktree now operates as
+  `B` while `refs/.../A/*` are unowned. Not normal operation — a metadata-loss /
+  recreation lifecycle the model must handle conservatively.
 
 Not solved here. Recorded as a future **repository-scoped** maintenance
 operation:
 
 ```
-enumerate refs/sce/mutation-cursor/<id>/*   (git for-each-ref on the namespace)
+enumerate refs/sce/mutation-cursor/<checkout-id>/*   (git for-each-ref on the namespace)
         ↓
-active checkout ids   (git worktree list → read each worktree's checkout-id)
+enumerate current worktrees → read each worktree's checkout-id → active checkout ids
         ↓
-retired ids           (namespace present, no active worktree owns it)
+unowned ids           (namespace present, no current worktree derives it)
         ↓
-for each retired namespace, for each pinned tree T:
-    T ∉ durable_roots(repository)  →  delete refs/sce/mutation-cursor/<id>/T
+for each unowned namespace, for each pinned tree T:
     T ∈ durable_roots(repository)  →  retain
+    T ∉ durable_roots(repository)  →  safe candidate for deletion
 ```
 
 Constraints it must inherit from this plan: the repository-wide durability
-invariant (`delete <retired-W>/T only if T ∉ durable_roots(repository)` —
-`load_all_tree_roots()`), because a retired worktree may still own historical
-`mutation_trace_events` rows whose trees other tooling needs; the
-false-retention-over-false-deletion bias; and a hard prohibition on the
-shortcut "namespace has no active worktree → delete the whole namespace". It is
-a separate PR: it needs a repository-global namespace scan and a cross-worktree
-active-id inventory this plan deliberately does not build, and it is gated
-behind the same harness-wiring work as invocation timing (Q15). This plan's
-per-worktree pass remains the correct mechanism for high-frequency harness
-traffic against **active** worktrees.
+invariant (`delete <namespace>/T only if T ∉ durable_roots(repository)` —
+`load_all_tree_roots()`), because an unowned namespace may still hold the only
+SCE ref protecting historical `mutation_trace_events` trees other tooling needs;
+the false-retention-over-false-deletion bias; and a hard prohibition on the
+shortcut "checkout id is unowned → delete the whole namespace". It is a separate
+PR: it needs a repository-global namespace scan and a cross-worktree active-id
+inventory this plan deliberately does not build, and it is gated behind the same
+harness-wiring work as invocation timing (Q15). This plan's per-worktree pass
+remains the correct mechanism for high-frequency harness traffic against a
+worktree with a **stable** checkout identity.
 
-**Harness gate.** Until this operation exists, an agent harness that
-automatically creates and destroys ephemeral linked worktrees must not be
-considered storage-cleanup complete — each destroyed worktree strands its
-namespace. A persistent / current-worktree harness lifecycle is not gated by
-this (its namespace stays reconcilable). Recorded in Q15 and the
-"Active-worktree scope" section.
+**Harness gate.** Until this operation exists, any harness lifecycle that can
+retire, replace, lose, or recreate checkout identities — an agent harness
+creating and destroying ephemeral linked worktrees, or one exposed to
+checkout-id metadata loss — must not be considered storage-cleanup complete. A
+persistent / current-worktree harness whose checkout identity stays stable is
+not gated by this. Recorded in Q15 and the "Scope: unowned checkout-identity
+namespaces" section.
 
 ### Q17 — Missing checkout identity: an explicit skipped outcome (post-T03 clarification)
 
@@ -2569,9 +2665,10 @@ skip stays an `Ok`, never a `ReconcileError` (a corrupt id is still `Err(Checkou
 an absent one is not an error). Its meaning is exactly: no owned namespace was
 inventoried, no durable-root comparison ran, no ref was deleted — and **not** a
 claim that the repository holds no SCE mutation-cursor refs for a prior
-identity (those may be the Q16 stranded namespaces). The `WorktreeLock` is
+identity (those may be the Q16 unowned namespaces; a `SkippedNoCheckoutIdentity`
+return is itself Case B of that lifecycle mid-flight). The `WorktreeLock` is
 acquired before the identity read and released on the skip return; no identity
-is created.
+is created or recovered.
 
 ### Q18 — What T04 proves, and the exact pin→CAS regression (post-T04 review)
 
@@ -2843,10 +2940,14 @@ preflight-passed ref and asserts the issued `git update-ref --no-deref
 atomic-or-nothing (Q8, Q9). Invocation timing is intentionally deferred to
 the harness-wiring PR (Q15).
 
-This post-T03/T04-review revision adds: the retired-worktree namespace limitation
-and its future repository-scoped operation (recorded only, Q16, T05, AC13); an
-explicit `ReconciliationOutcome::SkippedNoCheckoutIdentity` distinct from a
-zero-count `Reconciled` report (Q17, T06, AC14/AC15); a precise reframing of
+This post-T03/T04-review revision adds: the unowned checkout-identity namespace
+limitation and its future repository-scoped operation — identity-ownership
+based, covering both a deleted linked worktree (Case A) and checkout-id metadata
+loss / recreation on a still-present worktree (Case B) — (recorded only, Q16,
+T05, AC13); an explicit `ReconciliationOutcome::SkippedNoCheckoutIdentity`
+distinct from a zero-count `Reconciled` report, with the skip proven to touch no
+DB and to leave the owned pin ref structurally identical (Q17, T06, AC14/AC15);
+a precise reframing of
 what T04 proves — the generic `WorktreeLock` happens-before edge, not a
 production CAS execution — plus the **required** exact real-coordinator pin→CAS
 regression through the existing `after_load` seam (Q18, T07, AC5/AC16); the
@@ -2918,9 +3019,11 @@ required, not optional (Q18).
    contract, local fail-closed check + repository-wide deletion set) → T04
    deterministic `WorktreeLock` happens-before regression through the
    `pub(super)` seam. The post-T03/T04-review revision then adds: T05 record the
-   retired-worktree limitation + future repository-scoped operation (docs
-   only, Q16, AC13) → T06 `ReconciliationOutcome::SkippedNoCheckoutIdentity`
-   distinct from a zero-count `Reconciled` report (Q17, AC14/AC15) → T07
+   unowned checkout-identity namespace limitation (Case A deleted worktree +
+   Case B checkout-id metadata loss/recreation) + future repository-scoped
+   operation (docs only, Q16, AC13) → T06
+   `ReconciliationOutcome::SkippedNoCheckoutIdentity` distinct from a zero-count
+   `Reconciled` report (Q17, AC14/AC15) → T07
    reframe what T04 proves and add the **required** exact real-coordinator
    pin→CAS regression through the `after_load` seam (Q18, AC5/AC16) → T08
    migrate `runtime/tests.rs` fixtures to RAII `tempfile::TempDir` (AC17) → T09
@@ -2929,12 +3032,14 @@ required, not optional (Q18).
    degraded-state retention / no-write / no-object-GC / skipped-identity, AC18).
 6. **`ReconciliationReport` / `ReconciliationOutcome`:** the report stays
    `{ local_required: usize, retained: usize, deleted: usize }` with
-   `retained == local_required` **not** an invariant (only `local_required ≤
-   retained` on the `Ok` path); T06 wraps it in
-   `ReconciliationOutcome::Reconciled(..)` and adds a sibling
+   `retained == local_required` **not** an invariant — for
+   `Reconciled(report)` the only relation is
+   `report.local_required ≤ report.retained`, and `SkippedNoCheckoutIdentity`
+   carries no report so no report invariant applies; T06 wraps the report in
+   `ReconciliationOutcome::Reconciled(..)` and adds the sibling
    `SkippedNoCheckoutIdentity` for the missing-checkout-identity path.
 7. **Acceptance-criteria count:** 18 (AC1–AC12 from the original stack; AC13
-   retired-worktree lifecycle recorded; AC14/AC15 observable skipped outcome;
+   unowned checkout-identity lifecycle recorded; AC14/AC15 observable skipped outcome;
    AC16 T04 framing + the **required** exact real-coordinator pin→CAS
    regression; AC17 RAII fixtures; AC18 the public/runtime integration suite).
 8. **Unresolved design questions that should block implementation:** None. The
