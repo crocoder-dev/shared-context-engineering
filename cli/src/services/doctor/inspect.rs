@@ -2511,6 +2511,16 @@ mod tests {
         .bytes
     }
 
+    fn legacy_claude_agent_trace_hook(event: &str) -> serde_json::Value {
+        serde_json::json!({
+            "hooks": [{
+                "type": "command",
+                "command": "bun",
+                "args": [".claude/plugins/sce-agent-trace.ts", event]
+            }]
+        })
+    }
+
     fn embedded_opencode_config_bytes() -> &'static [u8] {
         crate::services::setup::iter_embedded_assets_for_setup_target_with_selection(
             crate::services::setup::SetupTarget::OpenCode,
@@ -2849,6 +2859,92 @@ mod tests {
             settings_child_after_fix.content_state,
             IntegrationContentState::Match
         ));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn claude_settings_doctor_repairs_historical_bun_hooks_through_merge_path() {
+        let root = unique_temp_repository_root("claude-legacy-bun-fix");
+        let claude_dir = root.join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+
+        let existing = serde_json::json!({
+            "$schema": "https://old.example/schema.json",
+            "permissions": {"allow": ["Bash(git *)"]},
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "hooks": [{
+                            "type": "command",
+                            "command": "bun",
+                            "args": [".claude/plugins/my-company-hook.ts"]
+                        }]
+                    },
+                    legacy_claude_agent_trace_hook("SessionStart")
+                ],
+                "UserPromptSubmit": [legacy_claude_agent_trace_hook("UserPromptSubmit")],
+                "PostToolUse": [legacy_claude_agent_trace_hook("PostToolUse")],
+                "Stop": [legacy_claude_agent_trace_hook("Stop")]
+            }
+        });
+        let settings_path = claude_dir.join("settings.json");
+        std::fs::write(
+            &settings_path,
+            serde_json::to_vec_pretty(&existing).unwrap(),
+        )
+        .unwrap();
+
+        let before = collect_claude_integration_groups(&root, &[]);
+        let before_child = before
+            .iter()
+            .flat_map(|group| &group.children)
+            .find(|child| child.relative_path == "settings.json")
+            .expect("settings.json child present before repair");
+        assert_eq!(
+            before_child.content_state,
+            IntegrationContentState::Mismatch
+        );
+
+        let fix_results = super::repair_merge_target_configs(&root, &allowed_policy());
+        assert!(
+            fix_results
+                .iter()
+                .any(|result| matches!(result.outcome, super::FixResult::Fixed)),
+            "doctor --fix should repair historical SCE hooks: {fix_results:?}"
+        );
+
+        let repaired: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
+        assert_eq!(repaired["permissions"]["allow"][0], "Bash(git *)");
+        assert_eq!(
+            repaired["hooks"]["SessionStart"][0]["hooks"][0]["args"][0],
+            ".claude/plugins/my-company-hook.ts"
+        );
+        assert!(!repaired
+            .to_string()
+            .contains(".claude/plugins/sce-agent-trace.ts"));
+        assert_eq!(
+            repaired["hooks"]["SessionStart"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|entry| {
+                    entry["hooks"][0]["command"]
+                        .as_str()
+                        .is_some_and(|command| command.contains("sce hooks claude-model-state"))
+                })
+                .count(),
+            1
+        );
+
+        let after = collect_claude_integration_groups(&root, &[]);
+        let after_child = after
+            .iter()
+            .flat_map(|group| &group.children)
+            .find(|child| child.relative_path == "settings.json")
+            .expect("settings.json child present after repair");
+        assert_eq!(after_child.content_state, IntegrationContentState::Match);
 
         std::fs::remove_dir_all(&root).ok();
     }
