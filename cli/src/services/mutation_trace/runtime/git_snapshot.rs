@@ -556,6 +556,17 @@ mod tests {
         }
     }
 
+    fn unique_test_repo(label: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("sce-git-snapshot-{label}-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&path).expect("repo root should be created");
+        path
+    }
+
+    fn remove_test_repo(repo_root: &Path) {
+        std::fs::remove_dir_all(repo_root).expect("test repository should be removable");
+    }
+
     fn init_repo(repo_root: &Path) {
         std::fs::create_dir_all(repo_root).expect("repo root should be created");
         run(repo_root, &["init", "--quiet"]);

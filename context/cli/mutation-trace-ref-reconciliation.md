@@ -219,32 +219,32 @@ objects on its own schedule.
 
 ## Testing boundary
 
-`ref_reconciliation.rs`'s inline `#[cfg(test)] mod tests` uses a RAII
-`Fixture` (`tempfile::TempDir`, real `git init` repo, checkout id via
-`get_or_create_checkout_id`, a schema `RepositoryAgentTraceDb` at a path
-**beside** the worktree so it never perturbs a captured tree) with raw-SQL row
-seeders, following the filesystem-touching inline-test precedent
-(`context/patterns.md`). Coverage: orphan pin deleted (with and without a
-worktree row); current-cursor pin retained without a referencing event;
-historical `before`/`after` pins retained after the cursor advances; a pin
-another worktree durably requires retained (also the `retained > local_required`
-count case); `MissingRequiredPins` fail-closed; a malformed / symbolic namespace
-ref fail-closed; idempotence; refs deleted without object reclamation; and the
-no-checkout-identity skip (a distinct `SkippedNoCheckoutIdentity`; `open_db`
-never called; the owned pin ref structurally byte-identical — name, SHA, object
-type, direct/symbolic shape — across the skip, read via `git for-each-ref`).
+`ref_reconciliation.rs`'s inline `#[cfg(test)] mod tests` uses a RAII `Fixture`
+(`tempfile::TempDir`, real `git init` repo, checkout id via
+`get_or_create_checkout_id`, a schema `RepositoryAgentTraceDb` beside the
+worktree so it never perturbs a captured tree) with raw-SQL row seeders,
+following the filesystem-touching inline-test precedent (`context/patterns.md`).
+Coverage: orphan pin deleted (with/without a worktree row); current-cursor pin
+retained without a referencing event; historical `before`/`after` pins retained
+after the cursor advances; a pin another worktree durably requires retained
+(the `retained > local_required` case); `MissingRequiredPins` fail-closed; a
+malformed / symbolic ref fail-closed; idempotence; refs deleted without object
+reclamation; and the no-checkout-identity skip (`SkippedNoCheckoutIdentity`;
+`open_db` never called; the pin ref byte-identical across the skip).
 
-`runtime/tests.rs` holds the cross-module scenarios: linked-worktree isolation,
-and two deterministic lock-race regressions (no sleeps) — the generic
-`WorktreeLock` happens-before edge
-(`reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_durable_under_it`,
-X made durable directly) and the same edge across the real `coordinate()`
-`pin → store CAS` path
-(`reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree`,
-paused via the `pub(super)` `after_load` seam — test-only, production passes a
-no-op).
+`runtime/tests.rs` holds the cross-module integration suite (T09), driven
+through the public `reconcile_worktree` (and, for setup, `coordinate`) against
+real Git and a real `RepositoryAgentTraceDb`: active-worktree orphan deletion;
+current-cursor retention with no referencing event; historical `before`/`after`
+retention through a real `A → B → C → D` `coordinate()` history; idempotence;
+linked-worktree isolation and cross-worktree degraded-tree retention
+(byte-identical pins); a missing required pin failing closed despite another
+worktree pinning the same tree; a malformed / symbolic ref failing closed; no
+protocol/DB/marker write; no object reclamation; the no-checkout-identity skip;
+and two deterministic lock-race regressions (no sleeps):
+`reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_durable_under_it`
+(the generic `WorktreeLock` happens-before edge) and
+`reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree`
+(the same edge across the real `coordinate()` `pin → store CAS` path, test-only).
 
-See also: [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md),
-[`mutation-trace-snapshot-service.md`](mutation-trace-snapshot-service.md) (`list_pins` / `delete_pins`),
-[`mutation-trace-store.md`](mutation-trace-store.md) (`load_tree_roots` / `load_all_tree_roots`),
-[`mutation-trace-protocol.md`](mutation-trace-protocol.md).
+See also: [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md), [`mutation-trace-snapshot-service.md`](mutation-trace-snapshot-service.md) (`list_pins` / `delete_pins`), [`mutation-trace-store.md`](mutation-trace-store.md) (`load_tree_roots` / `load_all_tree_roots`), [`mutation-trace-protocol.md`](mutation-trace-protocol.md).

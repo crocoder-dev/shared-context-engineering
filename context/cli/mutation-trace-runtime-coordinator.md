@@ -270,7 +270,11 @@ provider closure that opens the one shared repository-scoped DB path
 coexist in it. A full failure/recovery cycle — baseline call, a
 snapshot-failing call that durably taints the worktree, then a recovery call
 that clears the taint before processing its boundary — also runs entirely
-through the public entrypoint.
+through the public entrypoint. The same module covers the public
+`reconcile_worktree` integration suite and the `coordinate_inner` /
+`reconcile_worktree_inner` lock-race seams, including orphan reclamation,
+durable-root retention, missing-pin fail-closed behavior, malformed refs,
+linked-worktree scoping, and the real coordinator CAS race.
 
 ## Status
 
