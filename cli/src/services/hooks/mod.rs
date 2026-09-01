@@ -20,7 +20,8 @@ use crate::services::agent_trace_db::{
     PAYLOAD_TYPE_STRUCTURED,
 };
 use crate::services::agent_trace_storage::{
-    resolve_agent_trace_storage_for_hook_runtime, AgentTraceStorageContext,
+    resolve_agent_trace_storage_for_hook_runtime,
+    resolve_agent_trace_storage_for_hook_runtime_at_state_root, AgentTraceStorageContext,
 };
 use crate::services::config;
 use crate::services::observability::traits::Logger;
@@ -367,6 +368,25 @@ fn open_agent_trace_db_for_hook_runtime(
     };
 
     resolve_agent_trace_storage_for_hook_runtime(&storage_context)
+        .map(|storage| storage.db)
+        .context(context_message)
+}
+
+#[cfg(test)]
+pub(crate) fn open_agent_trace_db_for_hook_runtime_at_state_root(
+    repository_root: &Path,
+    state_root: &Path,
+    context_message: &'static str,
+) -> Result<RepositoryAgentTraceDb> {
+    let storage_config = config::resolve_agent_trace_storage_runtime_config(repository_root)
+        .context("Failed to resolve Agent Trace repository storage config.")?;
+    let storage_context = AgentTraceStorageContext {
+        repository_root,
+        explicit_repository_id: storage_config.repository_id.as_deref(),
+        repository_remote: &storage_config.repository_remote,
+    };
+
+    resolve_agent_trace_storage_for_hook_runtime_at_state_root(&storage_context, state_root)
         .map(|storage| storage.db)
         .context(context_message)
 }
