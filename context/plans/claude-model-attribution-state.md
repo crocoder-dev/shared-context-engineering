@@ -207,13 +207,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized Claude hook command/runtime contract and lifecycle intake, with compile-time retention of the T02 typed state query API until T04 consumes it; synchronization must document the new hook route, synchronous/asynchronous lifecycle write contract, fail-open boundary, and inspect the mandatory root context files.
   - Context synchronization: synced
 
-- [ ] T04: `Consult claude_model_state at diff-trace persistence` (status:todo)
+- [x] T04: `Consult claude_model_state at diff-trace persistence` (status:done)
   - Task ID: T04
   - Scope: In — after `parse_claude_diff_trace_payload` returns a valid Claude diff trace with unresolved model and after the repository DB is already open, perform exactly one exact `(canonical cc_<session_id>, agent_id)` `claude_model_state` lookup and pass any result into `DiffTraceInsert.model_id`; extend the internal Claude parsed representation with optional ephemeral `agent_id`, extracting it from the raw event, mapping main-session `None` to `""`, and never serializing/storing/exporting it; preserve `direct -> transcript -> None` in the parser with no DB access; keep unsupported/no-op Claude events DB-free; do not poll, sleep, retry waiting for model state, or wait for another hook process; do not reparse stored raw Claude JSON; preserve subagent isolation (no fallback to `agent_id = ""`); persisted-row and precedence tests, plus OpenCode/Pi/Codex regression coverage. Out — schema/export changes, backfill, changes to direct/transcript resolution.
   - Dependencies: T02, T03
   - Done when: `direct > transcript > state > NULL` precedence and subagent isolation are proven on persisted rows, the parser still queries no storage, and one diff trace opens the repository DB once.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_attribution`.
-  - Context synchronization: pending
+  - Completed: 2026-09-01
+  - Files changed: `cli/src/services/hooks/mod.rs`
+  - Result: Added ephemeral Claude agent-scope capture and a single exact-scope model-state lookup at the already-open diff-trace persistence boundary, preserving direct/transcript precedence and non-Claude behavior.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_attribution` — pass (1 test); `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_diff_trace` — pass (3 tests); `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml 'services::hooks::tests'` — pass (34 tests).
+  - Done checks: All satisfied — persisted-row tests prove `direct > transcript > state > NULL` attribution and exact subagent isolation; parser agent context is ephemeral and storage-free; the production persistence path opens the repository DB once and performs the fallback lookup only for unresolved Claude traces.
+  - Context impact: localized Claude diff-trace persistence boundary — context synchronization must document the state fallback, ephemeral agent scope, and exact subagent isolation, then inspect the mandatory root context files.
+  - Context synchronization: synced
 
 - [ ] T05: `Register and merge Claude lifecycle hooks safely` (status:todo)
   - Task ID: T05

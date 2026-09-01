@@ -104,6 +104,8 @@ struct DiffTracePayload {
     diff: String,
     time: u64,
     model_id: Option<String>,
+    #[serde(skip)]
+    agent_id: Option<String>,
     tool_name: String,
     tool_version: Option<String>,
     payload_type: String,
@@ -895,26 +897,21 @@ fn run_diff_trace_subcommand_from_payload_with(
             );
         }
     }
-    let agent_trace_db_persisted = match persist_diff_trace_payload_to_agent_trace_db(
-        repository_root,
-        payload,
-        payload.model_id.as_deref(),
-        payload.tool_version.as_deref(),
-        logger,
-    ) {
-        Ok(persisted) => persisted,
-        Err(error) => {
-            if let Some(log) = logger {
-                log.warn(
-                    "sce.hooks.diff_trace.agent_trace_db_write_failed",
-                    &error.to_string(),
-                    &[],
-                    Some(&payload.session_id),
-                );
+    let agent_trace_db_persisted =
+        match persist_diff_trace_payload_to_agent_trace_db(repository_root, payload, logger) {
+            Ok(persisted) => persisted,
+            Err(error) => {
+                if let Some(log) = logger {
+                    log.warn(
+                        "sce.hooks.diff_trace.agent_trace_db_write_failed",
+                        &error.to_string(),
+                        &[],
+                        Some(&payload.session_id),
+                    );
+                }
+                false
             }
-            false
-        }
-    };
+        };
 
     if agent_trace_db_persisted {
         String::from("diff-trace hook intake persisted payload to AgentTraceDb.")
@@ -955,6 +952,7 @@ fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTraceParseResult>
         diff,
         time,
         model_id,
+        agent_id: None,
         tool_name,
         tool_version,
         payload_type: PAYLOAD_TYPE_PATCH.to_string(),
@@ -989,6 +987,7 @@ fn parse_claude_diff_trace_payload(
                 diff: stdin_payload.to_string(),
                 time: patch.time,
                 model_id: resolve_claude_model_id(payload),
+                agent_id: extract_claude_agent_id(payload)?,
                 tool_name: patch.tool_name,
                 tool_version: patch.tool_version,
                 payload_type: PAYLOAD_TYPE_STRUCTURED.to_string(),
@@ -1000,6 +999,27 @@ fn parse_claude_diff_trace_payload(
             )))
         }
     }
+}
+
+fn extract_claude_agent_id(payload: &serde_json::Map<String, Value>) -> Result<Option<String>> {
+    let Some(value) = payload.get("agent_id") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+
+    let value = value.as_str().ok_or_else(|| {
+        anyhow!(StdinPayloadKind::DiffTrace
+            .validation_error("field 'agent_id' must be null or a non-empty string"))
+    })?;
+    let value = value.trim();
+    if value.is_empty() {
+        bail!(StdinPayloadKind::DiffTrace
+            .validation_error("field 'agent_id' must be null or a non-empty string"));
+    }
+
+    Ok(Some(value.to_string()))
 }
 
 fn resolve_claude_model_id(payload: &serde_json::Map<String, Value>) -> Option<String> {
@@ -1290,34 +1310,63 @@ fn required_field<'a>(
 fn persist_diff_trace_payload_to_agent_trace_db(
     repository_root: &Path,
     payload: &DiffTracePayload,
-    model_id: Option<&str>,
-    tool_version: Option<&str>,
     logger: Option<&dyn Logger>,
 ) -> Result<bool> {
-    persist_diff_trace_payload_to_agent_trace_db_with(payload, model_id, tool_version, |input| {
-        let db = match open_agent_trace_db_for_hook_runtime(
-            repository_root,
-            "Failed to open Agent Trace DB for diff-trace persistence.",
-        ) {
-            Ok(db) => db,
-            Err(error) => {
-                if let Some(log) = logger {
-                    log.error(
-                        "sce.hooks.diff_trace.agent_trace_db_open_failed",
-                        &error.to_string(),
-                        &[],
-                        Some(&payload.session_id),
-                    );
-                }
-
-                return Ok(false);
+    let db = match open_agent_trace_db_for_hook_runtime(
+        repository_root,
+        "Failed to open Agent Trace DB for diff-trace persistence.",
+    ) {
+        Ok(db) => db,
+        Err(error) => {
+            if let Some(log) = logger {
+                log.error(
+                    "sce.hooks.diff_trace.agent_trace_db_open_failed",
+                    &error.to_string(),
+                    &[],
+                    Some(&payload.session_id),
+                );
             }
-        };
-        db.insert_diff_trace(input)
-            .context("Failed to persist diff-trace payload to Agent Trace DB.")?;
 
-        Ok(true)
+            return Ok(false);
+        }
+    };
+
+    persist_diff_trace_payload_to_agent_trace_db_with_db(&db, payload)?;
+    Ok(true)
+}
+
+fn persist_diff_trace_payload_to_agent_trace_db_with_db(
+    db: &RepositoryAgentTraceDb,
+    payload: &DiffTracePayload,
+) -> Result<()> {
+    let model_id = resolve_diff_trace_model_id(db, payload)?;
+    db.insert_diff_trace(DiffTraceInsert {
+        time_ms: diff_trace_db_time_ms(payload.time)?,
+        session_id: &prefixed_diff_trace_session_id(&payload.tool_name, &payload.session_id),
+        patch: &payload.diff,
+        model_id: model_id.as_deref(),
+        tool_name: &payload.tool_name,
+        tool_version: payload.tool_version.as_deref(),
+        payload_type: &payload.payload_type,
     })
+    .context("Failed to persist diff-trace payload to Agent Trace DB.")?;
+
+    Ok(())
+}
+
+fn resolve_diff_trace_model_id(
+    db: &RepositoryAgentTraceDb,
+    payload: &DiffTracePayload,
+) -> Result<Option<String>> {
+    if payload.model_id.is_some() || payload.tool_name != CLAUDE_TOOL_NAME {
+        return Ok(payload.model_id.clone());
+    }
+
+    let session_id = prefixed_diff_trace_session_id(CLAUDE_TOOL_NAME, &payload.session_id);
+    let agent_id = payload.agent_id.as_deref().unwrap_or("");
+    Ok(db
+        .claude_model_state_by_session_and_agent(&session_id, agent_id)?
+        .map(|state| state.model_id))
 }
 
 fn persist_diff_trace_payload_to_agent_trace_db_with<F, T>(
@@ -2315,10 +2364,17 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, path::Path};
+    use std::{
+        cell::RefCell,
+        fs,
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use super::*;
-    use crate::services::agent_trace_db::{ParsedDiffTracePatch, SkippedDiffTracePatch};
+    use crate::services::agent_trace_db::{
+        ClaudeModelStateObservation, ObservationKind, ParsedDiffTracePatch, SkippedDiffTracePatch,
+    };
 
     #[derive(Debug, Eq, PartialEq)]
     struct CapturedPostCommitIntersectionInsert {
@@ -2651,6 +2707,7 @@ mod tests {
             diff: String::from("diff text"),
             time: 1_800_000_000_000_u64,
             model_id: model_id.map(String::from),
+            agent_id: None,
             tool_name: String::from(tool_name),
             tool_version: tool_version.map(String::from),
             payload_type: String::from(payload_type),
@@ -2697,6 +2754,27 @@ mod tests {
                 panic!("Claude Write payload should persist, got no-op: {message}")
             }
         }
+    }
+
+    fn parsed_claude_diff_trace(event: &Value) -> DiffTracePayload {
+        match parse_diff_trace_payload(&event.to_string())
+            .expect("Claude PostToolUse diff-trace payload should parse")
+        {
+            DiffTraceParseResult::Persist(payload) => payload,
+            DiffTraceParseResult::NoOp(message) => {
+                panic!("Claude Write payload should persist, got no-op: {message}")
+            }
+        }
+    }
+
+    fn unique_attribution_db_path(label: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after Unix epoch")
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!("sce-claude-model-attribution-{label}-{suffix}"))
+            .join("agent-trace.db")
     }
 
     fn resolved_claude_model_id_with<F>(event: &Value, transcript_lookup: F) -> Option<String>
@@ -2757,6 +2835,132 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn claude_diff_trace_parser_keeps_agent_id_ephemeral_and_storage_free() {
+        let mut event = claude_model_test_event(Path::new("/virtual/missing.jsonl"), "tool-123");
+        event
+            .as_object_mut()
+            .expect("test event should be an object")
+            .insert("agent_id".to_string(), json!(" agent-1 "));
+
+        let payload = parsed_claude_diff_trace(&event);
+
+        assert_eq!(payload.agent_id.as_deref(), Some("agent-1"));
+        assert!(serde_json::to_value(&payload)
+            .expect("internal payload should serialize")
+            .get("agent_id")
+            .is_none());
+    }
+
+    #[test]
+    fn claude_diff_trace_persistence_uses_state_only_after_direct_and_transcript() {
+        let db_path = unique_attribution_db_path("precedence");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        db.upsert_claude_model_state(ClaudeModelStateObservation {
+            session_id: String::from("cc_session-123"),
+            agent_id: String::new(),
+            model_id: String::from("claude/state-model"),
+            observation_kind: ObservationKind::SessionStart,
+            source: String::from("startup"),
+            observed_at_ms: 1,
+        })
+        .expect("state should be seeded");
+
+        let mut state_event = claude_model_test_event(Path::new("/virtual/missing.jsonl"), "state");
+        let state_object = state_event
+            .as_object_mut()
+            .expect("test event should be an object");
+        state_object.remove("transcript_path");
+        state_object.remove("tool_use_id");
+        let state_payload = parsed_claude_diff_trace(&state_event);
+        persist_diff_trace_payload_to_agent_trace_db_with_db(&db, &state_payload)
+            .expect("state fallback should persist");
+
+        let mut direct_event = state_event.clone();
+        direct_event
+            .as_object_mut()
+            .expect("test event should be an object")
+            .insert("model".to_string(), json!("direct-model"));
+        let direct_payload = parsed_claude_diff_trace(&direct_event);
+        persist_diff_trace_payload_to_agent_trace_db_with_db(&db, &direct_payload)
+            .expect("direct attribution should persist");
+
+        let transcript_path = db_path.with_extension("jsonl");
+        fs::write(
+            &transcript_path,
+            concat!(
+                r#"{"type":"assistant","message":{"role":"assistant","model":"transcript-model","content":[{"type":"tool_use","id":"transcript"}]}}"#,
+                "\n"
+            ),
+        )
+        .expect("transcript fixture should be written");
+        let transcript_event = claude_model_test_event(&transcript_path, "transcript");
+        let transcript_payload = parsed_claude_diff_trace(&transcript_event);
+        persist_diff_trace_payload_to_agent_trace_db_with_db(&db, &transcript_payload)
+            .expect("transcript attribution should persist");
+
+        let models = db
+            .query_map(
+                "SELECT model_id FROM diff_traces ORDER BY id ASC",
+                (),
+                |row| row.get::<Option<String>>(0).map_err(Into::into),
+            )
+            .expect("persisted models should be readable");
+        assert_eq!(
+            models,
+            vec![
+                Some(String::from("claude/state-model")),
+                Some(String::from("claude/direct-model")),
+                Some(String::from("claude/transcript-model")),
+            ]
+        );
+
+        drop(db);
+        fs::remove_file(transcript_path).expect("transcript fixture should be removed");
+        fs::remove_dir_all(db_path.parent().expect("test DB should have a parent"))
+            .expect("test DB directory should be removed");
+    }
+
+    #[test]
+    fn claude_diff_trace_state_lookup_isolated_to_exact_subagent_scope() {
+        let db_path = unique_attribution_db_path("subagent");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        db.upsert_claude_model_state(ClaudeModelStateObservation {
+            session_id: String::from("cc_session-123"),
+            agent_id: String::new(),
+            model_id: String::from("claude/parent-model"),
+            observation_kind: ObservationKind::SessionStart,
+            source: String::from("startup"),
+            observed_at_ms: 1,
+        })
+        .expect("parent state should be seeded");
+
+        let mut event = claude_model_test_event(Path::new("/virtual/missing.jsonl"), "subagent");
+        let event_object = event
+            .as_object_mut()
+            .expect("test event should be an object");
+        event_object.remove("transcript_path");
+        event_object.remove("tool_use_id");
+        event_object.insert("agent_id".to_string(), json!("subagent-1"));
+        let payload = parsed_claude_diff_trace(&event);
+        persist_diff_trace_payload_to_agent_trace_db_with_db(&db, &payload)
+            .expect("subagent diff trace should persist");
+
+        let model = db
+            .query_map("SELECT model_id FROM diff_traces LIMIT 1", (), |row| {
+                row.get::<Option<String>>(0).map_err(Into::into)
+            })
+            .expect("persisted model should be readable")
+            .into_iter()
+            .next()
+            .expect("diff trace row should exist");
+        assert_eq!(model, None);
+
+        drop(db);
+        fs::remove_dir_all(db_path.parent().expect("test DB should have a parent"))
+            .expect("test DB directory should be removed");
     }
 
     #[test]
