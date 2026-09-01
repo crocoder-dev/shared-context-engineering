@@ -4,12 +4,12 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+use super::git_snapshot::resolve_worktree_id;
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
-use crate::services::checkout::{read_checkout_id, resolve_git_dir};
 use crate::services::mutation_trace::store::MutationTraceStore;
-use crate::services::mutation_trace::types::{TreeId, WorktreeId};
+use crate::services::mutation_trace::types::TreeId;
 
-use super::git_snapshot::{GitSnapshotService, PinInventoryError, PinnedRef};
+use super::git_snapshot::{resolve_git_dir, GitSnapshotService, PinInventoryError, PinnedRef};
 use super::worktree_lock::{acquire_inner, WorktreeLockError};
 
 /// Bounded wait for the worktree's `WorktreeLock` before a reconciliation pass
@@ -62,8 +62,7 @@ pub enum ReconcileError {
     GitDir(anyhow::Error),
     /// The worktree's `WorktreeLock` could not be acquired (timeout or I/O).
     Lock(WorktreeLockError),
-    /// `read_checkout_id` returned `Err` — a corrupt or unreadable checkout id,
-    /// which is **not** the same as an absent one (`Ok(None)` is a clean no-op).
+    /// Git topology could not be resolved into a worktree identity.
     CheckoutIdentity(anyhow::Error),
     /// The caller-supplied `open_db` provider returned `Err`. This is a
     /// reconciliation maintenance error only: it never arms
@@ -162,16 +161,11 @@ where
     let _lock = acquire_inner(&git_dir, RECONCILIATION_LOCK_TIMEOUT, on_lock_contention)
         .map_err(ReconcileError::Lock)?;
 
-    // The lock is held from here until this function returns.
-    let worktree_id = match read_checkout_id(&git_dir).map_err(ReconcileError::CheckoutIdentity)? {
-        Some(id) => WorktreeId(id),
-        // No current checkout identity to derive a `WorktreeId` and its owned
-        // `refs/sce/mutation-cursor/<worktree-id>/` prefix from — nothing to
-        // inventory, validate, or delete. Clean no-op; no identity is created.
-        None => {
-            return Ok(ReconciliationOutcome::SkippedNoCheckoutIdentity);
-        }
-    };
+    // The lock is held from here until this function returns. Worktree identity
+    // comes directly from Git topology and never creates or reads SCE identity
+    // metadata.
+    let worktree_id =
+        resolve_worktree_id(repository_root).map_err(ReconcileError::CheckoutIdentity)?;
 
     let db = open_db().map_err(ReconcileError::AgentTraceDbUnavailable)?;
 
@@ -236,9 +230,10 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
+    use super::super::git_snapshot::resolve_worktree_id;
     use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
-    use crate::services::checkout::get_or_create_checkout_id;
     use crate::services::mutation_trace::store::encode_revision;
+    use crate::services::mutation_trace::types::WorktreeId;
 
     use super::*;
 
@@ -292,8 +287,7 @@ mod tests {
             &["commit", "--allow-empty", "--quiet", "-m", "init"],
         );
 
-        let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
-        let checkout_id = get_or_create_checkout_id(&git_dir).expect("checkout id should resolve");
+        let worktree_id = resolve_worktree_id(&repo_root).expect("worktree id should resolve");
 
         // The DB lives beside the worktree, never inside it, so it can never
         // perturb a captured tree.
@@ -304,7 +298,7 @@ mod tests {
             _temp_dir: temp_dir,
             repo_root,
             db_path,
-            worktree_id: WorktreeId(checkout_id),
+            worktree_id,
         }
     }
 
@@ -698,56 +692,6 @@ mod tests {
             Some("tree"),
             "the now-unreachable object is still resolvable — reconciliation ran \
              no git gc / git prune"
-        );
-    }
-
-    #[test]
-    fn no_checkout_identity_returns_a_distinct_skipped_outcome() {
-        let fx = fixture("no-identity");
-        // Remove the checkout id so `read_checkout_id` returns `Ok(None)`.
-        let git_dir = resolve_git_dir(&fx.repo_root).expect("git dir should resolve");
-        std::fs::remove_file(git_dir.join("sce").join("checkout-id"))
-            .expect("checkout id file should be removable");
-
-        let orphan = fx.capture_after_writing("a.txt", "orphan\n");
-        fx.pin_for(&fx.worktree_id, &orphan);
-
-        let outcome = fx.reconcile().expect("the skip is an Ok, not an Err");
-
-        assert_eq!(outcome, ReconciliationOutcome::SkippedNoCheckoutIdentity);
-        assert!(
-            fx.ref_exists(&fx.owned_ref(&orphan)),
-            "no pin is inventoried, validated, or deleted without a derivable identity"
-        );
-    }
-
-    #[test]
-    fn a_missing_checkout_identity_skip_touches_no_db_and_no_ref() {
-        let fx = fixture("no-identity-no-db");
-        let git_dir = resolve_git_dir(&fx.repo_root).expect("git dir should resolve");
-        std::fs::remove_file(git_dir.join("sce").join("checkout-id"))
-            .expect("checkout id file should be removable");
-
-        let orphan = fx.capture_after_writing("a.txt", "orphan\n");
-        fx.pin_for(&fx.worktree_id, &orphan);
-        let owned = fx.owned_ref(&orphan);
-        let before = fx.ref_representation(&owned);
-        assert!(
-            !before.is_empty(),
-            "the pre-seeded pin ref must exist before the skip"
-        );
-
-        let outcome = reconcile_worktree(&fx.repo_root, || {
-            panic!("open_db must not be invoked on the missing-checkout-identity skip path")
-        })
-        .expect("the skip is an Ok, not an Err");
-
-        assert_eq!(outcome, ReconciliationOutcome::SkippedNoCheckoutIdentity);
-        assert_eq!(
-            fx.ref_representation(&owned),
-            before,
-            "the skip touches no ref: name, target SHA, object type, and direct/symbolic \
-             shape are all structurally unchanged"
         );
     }
 }

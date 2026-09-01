@@ -348,7 +348,7 @@ performs final validation. All `cargo` invocations go through
 crate module path `services::mutation_trace::runtime::…` /
 `services::mutation_trace::store::…`.
 
-- [ ] AC1: The store layer exposes two durable-root reads and each is exact.
+- [x] AC1: The store layer exposes two durable-root reads and each is exact.
   `load_tree_roots(W)` returns exactly the union of `W`'s
   `mutation_trace_worktrees.cursor_tree` and every
   `mutation_trace_events.before_tree` / `mutation_trace_events.after_tree` row
@@ -410,7 +410,7 @@ crate module path `services::mutation_trace::runtime::…` /
     `services::mutation_trace::store::tests::load_all_tree_roots_retains_previous_cursor_after_atomic_cursor_advance` (state-transition retention only — not proof of snapshot isolation),
     `services::mutation_trace::store::tests::load_all_tree_roots_reads_every_durable_root_in_one_sql_statement` and
     `services::mutation_trace::store::tests::load_tree_roots_reads_every_durable_root_in_one_sql_statement` (the deterministic single-statement snapshot regression: torn two-read set constructed explicitly, then production path asserted to issue exactly one read statement via `count_read_statements`)
-- [ ] AC2: An **orphan / unreferenced** pin — a pinned tree that is in no
+- [x] AC2: An **orphan / unreferenced** pin — a pinned tree that is in no
   durable root anywhere in the repository, the observable post-crash /
   post-no-op state `pin exists ∧ durable root does not` — is deleted by
   reconciliation, whether or not the worktree has a durable row at all;
@@ -424,11 +424,11 @@ crate module path `services::mutation_trace::runtime::…` /
   - Validate: `services::mutation_trace::runtime::ref_reconciliation::tests::orphan_pin_with_a_worktree_row_is_deleted`,
     `services::mutation_trace::runtime::ref_reconciliation::tests::orphan_pin_with_no_worktree_row_is_deleted`,
     and end-to-end `services::mutation_trace::runtime::tests::a_pin_with_no_durable_root_is_reclaimed_by_a_later_reconciliation`
-- [ ] AC3: A pin whose tree is the worktree's current
+- [x] AC3: A pin whose tree is the worktree's current
   `mutation_trace_worktrees.cursor_tree` survives reconciliation even when no
   `mutation_trace_events` row references that tree.
   - Validate: `services::mutation_trace::runtime::ref_reconciliation::tests::current_cursor_pin_is_retained_without_a_referencing_event`
-- [ ] AC4: Pins for the `before_tree` and `after_tree` of historical
+- [x] AC4: Pins for the `before_tree` and `after_tree` of historical
   `mutation_trace_events` rows survive reconciliation after the worktree's
   cursor has moved on to a later tree, so a future `diff_trees(before, after)`
   over that historical interval stays possible.
@@ -440,7 +440,7 @@ crate module path `services::mutation_trace::runtime::…` /
   storage is separate future retention/compaction work (see "Storage
   lifecycle").
   - Validate: `services::mutation_trace::runtime::ref_reconciliation::tests::historical_event_before_and_after_pins_are_retained_after_the_cursor_advances`
-- [ ] AC5: Reconciliation cannot inventory or delete a pin while another owner
+- [x] AC5: Reconciliation cannot inventory or delete a pin while another owner
   holds the worktree's `WorktreeLock` and, under that lock, makes a newly
   pinned tree durable. A deterministic test holds one worktree's `WorktreeLock`,
   starts `ref_reconciliation::reconcile_worktree_inner` (the `pub(super)` seam)
@@ -454,13 +454,13 @@ crate module path `services::mutation_trace::runtime::…` /
   in the test). The exact real-coordinator pin→CAS regression is a separate,
   **required** test (T07, AC16); T04 is kept as the generic proof.
   - Validate: `services::mutation_trace::runtime::tests::reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_durable_under_it`
-- [ ] AC6: Given target worktree W whose local durable root set is `{A, B}`,
+- [x] AC6: Given target worktree W whose local durable root set is `{A, B}`,
   W's pins `{A, X}` (root B has no pin), and no other worktree durably
   referencing X, reconciliation returns a distinct `missing-required-pins`
   error naming B, deletes zero refs, and leaves both A's and X's pins in
   place.
   - Validate: `services::mutation_trace::runtime::ref_reconciliation::tests::a_missing_required_pin_fails_closed_and_deletes_nothing`
-- [ ] AC7: A ref inside `refs/sce/mutation-cursor/<worktree-id>/` that is a
+- [x] AC7: A ref inside `refs/sce/mutation-cursor/<worktree-id>/` that is a
   **symbolic ref**, whose target is not a tree object, or whose name suffix
   disagrees with its target SHA, or whose `for-each-ref` line does not parse,
   makes `list_pins` return `PinInventoryError::MalformedRef { ref_name, reason
@@ -472,12 +472,12 @@ crate module path `services::mutation_trace::runtime::…` /
     `services::mutation_trace::runtime::git_snapshot::tests::list_pins_rejects_a_ref_whose_name_disagrees_with_its_target`,
     `services::mutation_trace::runtime::git_snapshot::tests::list_pins_rejects_a_symbolic_ref_inside_the_mutation_cursor_namespace`,
     `services::mutation_trace::runtime::ref_reconciliation::tests::a_malformed_namespace_ref_fails_closed_and_deletes_nothing`
-- [ ] AC8: Running reconciliation twice with no intervening state change:
+- [x] AC8: Running reconciliation twice with no intervening state change:
   the first run deletes the stale pins and returns success; the second run
   deletes zero and returns success with identical `local_required`/retained
   counts.
   - Validate: `services::mutation_trace::runtime::ref_reconciliation::tests::reconciliation_is_idempotent`
-- [ ] AC9: With linked worktrees A and B sharing one object database and ref
+- [x] AC9: With linked worktrees A and B sharing one object database and ref
   namespace, `reconcile_worktree` for A operates only under
   `refs/sce/mutation-cursor/<A-id>/`, acquires only A's `WorktreeLock`, leaves
   every `refs/sce/mutation-cursor/<B-id>/` ref untouched, requires no pause in
@@ -499,7 +499,7 @@ crate module path `services::mutation_trace::runtime::…` /
   evidence loss.
   - Validate: `services::mutation_trace::runtime::tests::reconcile_one_linked_worktree_leaves_the_other_worktrees_pins_and_shared_objects_intact`,
     `services::mutation_trace::runtime::tests::reconcile_a_retains_its_pin_when_another_worktree_durably_requires_the_same_tree`
-- [ ] AC10: The stale-pin deletion is one atomic
+- [x] AC10: The stale-pin deletion is one atomic
   `git update-ref --no-deref --stdin` transaction (no-dereference, so a
   `delete` can only ever remove the exact ref name given, never a ref reached
   through a symbolic ref) in which every `delete` is conditioned on the tree
@@ -534,7 +534,7 @@ crate module path `services::mutation_trace::runtime::…` /
   the `after_preflight` seam is private to `git_snapshot.rs` and test-only.
   - Validate: `services::mutation_trace::runtime::git_snapshot::tests::delete_pins_atomically_aborts_when_a_ref_changes_after_preflight`,
     `services::mutation_trace::runtime::git_snapshot::tests::delete_pins_refuses_to_act_when_an_inventoried_direct_ref_became_a_symbolic_ref`
-- [ ] AC11: A reconciliation pass performs no mutation-cursor protocol or
+- [x] AC11: A reconciliation pass performs no mutation-cursor protocol or
   durability write. Runtime-observable, asserted by the integration test: after
   a pass, `mutation_trace_worktrees` / `mutation_trace_scopes` /
   `mutation_trace_events` / `mutation_trace_processed_events` /
@@ -546,7 +546,7 @@ crate module path `services::mutation_trace::runtime::…` /
   `001`/`002`/`003` — this plan adds no migration.
   - Validate: `services::mutation_trace::runtime::tests::reconciliation_makes_no_protocol_or_marker_write`;
     inspection: `ls cli/migrations/agent-trace-repository/` shows only the three existing files
-- [ ] AC12: A reconciliation pass invokes no `git gc` / `git prune` / `git
+- [x] AC12: A reconciliation pass invokes no `git gc` / `git prune` / `git
   reflog expire` and no object-reclaiming command. Set up an object O that is
   reachable before the pass **only** through a stale SCE pin
   `refs/sce/mutation-cursor/<W>/O` (O is in no durable root). Reconciliation
@@ -557,7 +557,7 @@ crate module path `services::mutation_trace::runtime::…` /
   post-reconciliation resolvability, before any explicit GC; the plan does not
   rely on the object surviving indefinitely.
   - Validate: `services::mutation_trace::runtime::ref_reconciliation::tests::reconciliation_deletes_refs_without_reclaiming_objects`
-- [ ] AC13: The plan and the durable reconciliation context state, in precise
+- [x] AC13: The plan and the durable reconciliation context state, in precise
   terms, that the fundamental unsupported lifecycle is **identity-based** — an
   SCE ref namespace exists and **no current worktree owns / derives that
   checkout id** — not merely "a linked worktree was deleted". A deleted linked
@@ -584,14 +584,14 @@ crate module path `services::mutation_trace::runtime::…` /
     `refs/sce/mutation-cursor/<worktree-id>/` prefix and no new
     `git worktree list` / repository-wide `refs/sce/**` enumeration or
     repository-global ref deletion was added.
-- [ ] AC14: `reconcile_worktree` returns a result type that makes a real
+- [x] AC14: `reconcile_worktree` returns a result type that makes a real
   zero-work reconciliation (`Reconciled(ReconciliationReport { .., deleted: 0 })`)
   distinguishable from a skip because no checkout identity could be derived
   (`SkippedNoCheckoutIdentity`), and the skip is **not** an `Err`. The skip is
   returned with the `WorktreeLock` already released and no checkout identity
   created.
   - Validate: `services::mutation_trace::runtime::ref_reconciliation::tests::no_checkout_identity_returns_a_distinct_skipped_outcome`
-- [ ] AC15: On the missing-checkout-identity path, the caller's `open_db`
+- [x] AC15: On the missing-checkout-identity path, the caller's `open_db`
   provider is never invoked, no pin inventory is attempted, and every existing
   ref under the repository's SCE namespace is left **structurally** identical.
   A test wiring an `open_db` provider that panics if called proves it is not
@@ -602,7 +602,7 @@ crate module path `services::mutation_trace::runtime::…` /
   still resolves to the same SHA) would fail. Read with a test-local `git`
   helper, not `list_pins`, which needs the checkout identity the test removes.
   - Validate: `services::mutation_trace::runtime::ref_reconciliation::tests::a_missing_checkout_identity_skip_touches_no_db_and_no_ref`
-- [ ] AC16: The plan (AC5), Design decisions Q18, and
+- [x] AC16: The plan (AC5), Design decisions Q18, and
   `context/cli/mutation-trace-ref-reconciliation.md` describe the T04 regression
   as exactly what it proves — the generic `WorktreeLock` happens-before ordering
   that keeps reconciliation from inventorying/deleting while another owner holds
@@ -616,7 +616,7 @@ crate module path `services::mutation_trace::runtime::…` /
   durable through the coordinator flow), reached through the smallest
   `pub(super)` coordinator test seam with no production behavior change.
   - Validate: `services::mutation_trace::runtime::tests::reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree` (or the close-equivalent name) passes; inspection of AC5 / Q18 / the context doc wording; `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` stays clean (the seam is `#[cfg(test)]`/`pub(super)` only).
-- [ ] AC17: Every filesystem fixture in
+- [x] AC17: Every filesystem fixture in
   `cli/src/services/mutation_trace/runtime/tests.rs` is owned by a
   `tempfile::TempDir` whose `Drop` removes it; no test reaches a manual
   `cleanup()` call to avoid leaving a stale top-level temporary directory, and
@@ -627,7 +627,7 @@ crate module path `services::mutation_trace::runtime::…` /
   supported platform needs it, with the outer filesystem lifecycle still
   RAII-owned.
   - Validate: `grep -n "fn cleanup\|unique_path\|AtomicU64\|UNIX_EPOCH\|NEXT_ID" cli/src/services/mutation_trace/runtime/tests.rs` returns nothing unaccounted for; `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::tests::`
-- [ ] AC18: The T09 integration suite exercises the clarified contracts end to
+- [x] AC18: The T09 integration suite exercises the clarified contracts end to
   end, with the behavior under test always driven through `reconcile_worktree` /
   `coordinate` (lower-level `GitSnapshotService` / raw-SQL helpers used only to
   construct deliberately degraded prerequisite states), against real Git and a
@@ -2074,7 +2074,7 @@ requirements.
     requires an update for this task.
   - Context synchronization: synced
 
-- [ ] T09: `Add public/runtime reconciliation integration suite` (status:todo)
+- [x] T09: `Add public/runtime reconciliation integration suite` (status:done)
   - Task ID: T09
   - Scope: In — `cli/src/services/mutation_trace/runtime/tests.rs`, using the
     T08 RAII fixture against real `git init` / `git worktree add` repositories
@@ -2144,7 +2144,59 @@ requirements.
     `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml`;
     `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`;
     `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`.
-  - Context synchronization: pending
+  - Completed: 2026-09-01
+  - Files changed: `cli/src/services/mutation_trace/runtime/tests.rs`
+  - Result: Added the eleven integration tests the scenario list calls for,
+    every one driven through the public `reconcile_worktree` entrypoint (and,
+    for normal-flow setup, `coordinate`) against real Git repositories and a
+    real repository-scoped `RepositoryAgentTraceDb`, reusing the T08
+    `TestRepo` / `LinkedTestRepo` fixtures: `a_pin_with_no_durable_root_is_reclaimed_by_a_later_reconciliation`
+    (AC2, active-worktree orphan deletion), `current_cursor_pin_survives_reconciliation_without_a_referencing_event_through_the_public_api`
+    (AC3), `historical_before_and_after_pins_survive_reconciliation_after_real_coordinate_transitions`
+    (AC4, driven through four real `coordinate()` boundaries producing a real
+    A→B→C→D history), `reconciliation_through_the_public_api_is_idempotent`
+    (AC8), `reconcile_one_linked_worktree_leaves_the_other_worktrees_pins_and_shared_objects_intact`
+    and `reconcile_a_retains_its_pin_when_another_worktree_durably_requires_the_same_tree`
+    (AC9, the second constructing byte-identical tree content independently in
+    both worktrees), `missing_local_required_pin_fails_closed_and_deletes_nothing_even_when_another_worktree_pins_the_tree`
+    (AC6), `a_malformed_namespace_ref_fails_closed_through_the_public_entrypoint`
+    (AC7, a symbolic ref onto the worktree's own well-formed cursor pin),
+    `reconciliation_makes_no_protocol_or_marker_write` (AC11, asserting every
+    mutation-trace table's row count and the whole `WorktreeState` byte-
+    identical around a pass that still deletes one real orphan ref),
+    `reconciliation_deletes_a_stale_ref_without_reclaiming_the_object_through_the_public_api`
+    (AC12), and `missing_checkout_identity_through_the_public_entrypoint_returns_skipped_outcome`
+    (AC14/AC15, with a panicking `open_db` closure proving it is never called).
+    Lower-level `GitSnapshotService::{capture_tree, pin_tree}` calls and direct
+    raw-SQL `seed_event` seeding are used only to construct the deliberately
+    orphaned / degraded / malformed prerequisite states a public flow cannot
+    reach; the operation under test is always `reconcile_worktree(...)` itself.
+    Two small test-only helpers were added (`ref_exists`, `row_count`,
+    mirroring the equivalent helpers already in `git_snapshot.rs` and
+    `agent_trace_db/repository.rs`), and the existing `run_git` helper now
+    returns the captured stdout (as `git_snapshot.rs`'s sibling `run` helper
+    already does) so a test can read back a ref's resolved value, not only
+    assert the command succeeded. No production code changed.
+  - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::tests::`
+    — 23 passed, 0 failed (12 pre-existing + 11 new);
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` — 892
+    passed, 0 failed (full CLI suite; one earlier parallel run showed 5
+    unrelated `services::agent_trace_export::tests::` failures that did not
+    reproduce in isolation or on a clean re-run, confirming pre-existing
+    parallel-execution flakiness unconnected to this task's file);
+    `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
+    — clean;
+    `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`
+    — clean (after running `cargo fmt` to apply formatting).
+  - Context impact: New tests only, confined to
+    `cli/src/services/mutation_trace/runtime/tests.rs`, which compiles only
+    under `#[cfg(test)]`. No production type, module, behavior, dependency,
+    schema, protocol, or public-interface change. `context/cli/mutation-trace-ref-reconciliation.md`'s
+    and `context/cli/mutation-trace-runtime-coordinator.md`'s "Testing
+    boundary" sections named `runtime/tests.rs`'s prior, narrower coverage and
+    needed updating to describe the full T09 suite; no other context file was
+    affected.
+  - Context synchronization: synced
 
 ## Design decisions
 
@@ -3085,3 +3137,53 @@ required, not optional (Q18).
    final missing-checkout-identity contract is `SkippedNoCheckoutIdentity`
    (Q3/Q5/Q12/Q17); the exact pin→CAS regression is required via the existing
    `after_load` seam (Q18); no open questions remain.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-09-01
+
+### Commands run
+
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::` -> exit 0 (262 passed, 0 failed, 630 filtered out)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` -> exit 0 (892 passed, 0 failed)
+- `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` -> exit 0 (clean, no warnings)
+- `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` -> exit 0 (no formatting diff)
+- `nix flake check` -> exit 0 (`checks.cli-tests`, `checks.cli-clippy`, `checks.cli-fmt`, `checks.mutation-trace-quint-connect` all passed)
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral Pkl generation passed: 141 files, inventory sha256 7dc810bf…)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::` -> exit 0 (91 passed, 0 failed) — AC-named runtime/ref_reconciliation/git_snapshot tests
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::store::tests::load_` -> exit 0 (24 passed, 0 failed) — AC1 root-query tests
+- `ls cli/migrations/agent-trace-repository/` -> `001_repository_schema.sql`, `002_repository_source_instance_id.sql`, `003_mutation_trace_protocol.sql` only (AC11 inspection)
+- `grep -nE "fn cleanup|unique_path|AtomicU64|UNIX_EPOCH|NEXT_ID|SystemTime|Ordering" cli/src/services/mutation_trace/runtime/tests.rs` -> no matches (AC17 inspection)
+- `git diff main -- cli/src/services/mutation_trace/` -> `list_pins` still constrains `git for-each-ref` to the single `refs/sce/mutation-cursor/<worktree_id>/` prefix; no `git worktree list` / repository-wide `refs/sce/**` enumeration or repo-global deletion added (AC13 inspection)
+
+### Success-criteria verification
+
+- [x] AC1: Store exposes two exact durable-root reads, each a single `UNION` SQL statement -> `load_tree_roots_returns_cursor_and_every_event_tree_deduplicated`, `load_tree_roots_excludes_other_worktrees_trees`, `load_tree_roots_is_empty_for_an_unmaterialized_worktree`, `load_tree_roots_remains_worktree_scoped`, `load_all_tree_roots_returns_every_worktree_cursor_and_event_tree_deduplicated`, `load_all_tree_roots_deduplicates_a_tree_shared_by_multiple_worktrees`, `load_all_tree_roots_is_empty_for_an_empty_repository`, `load_all_tree_roots_retains_previous_cursor_after_atomic_cursor_advance`, `load_all_tree_roots_reads_every_durable_root_in_one_sql_statement`, `load_tree_roots_reads_every_durable_root_in_one_sql_statement` all pass
+- [x] AC2: Orphan/unreferenced pin deleted -> `ref_reconciliation::tests::orphan_pin_with_a_worktree_row_is_deleted`, `orphan_pin_with_no_worktree_row_is_deleted`, `runtime::tests::a_pin_with_no_durable_root_is_reclaimed_by_a_later_reconciliation` pass
+- [x] AC3: Current cursor pin retained without a referencing event -> `ref_reconciliation::tests::current_cursor_pin_is_retained_without_a_referencing_event` passes
+- [x] AC4: Historical `before_tree`/`after_tree` pins retained after cursor advances -> `ref_reconciliation::tests::historical_event_before_and_after_pins_are_retained_after_the_cursor_advances` passes
+- [x] AC5: Reconciliation blocks on the `WorktreeLock` and retains a pin made durable under it -> `runtime::tests::reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_durable_under_it` passes
+- [x] AC6: Missing local required pin fails closed naming the tree, deletes zero -> `ref_reconciliation::tests::a_missing_required_pin_fails_closed_and_deletes_nothing` passes
+- [x] AC7: Malformed/symbolic/mismatched namespace ref -> `MalformedRef`/`MalformedPin`, deletes nothing -> `git_snapshot::tests::list_pins_rejects_a_ref_whose_target_is_not_a_tree`, `list_pins_rejects_a_ref_whose_name_disagrees_with_its_target`, `list_pins_rejects_a_symbolic_ref_inside_the_mutation_cursor_namespace`, `ref_reconciliation::tests::a_malformed_namespace_ref_fails_closed_and_deletes_nothing` pass
+- [x] AC8: Idempotent (N then 0, stable counts) -> `ref_reconciliation::tests::reconciliation_is_idempotent` passes
+- [x] AC9: Linked-worktree isolation + cross-worktree degraded-state retention -> `runtime::tests::reconcile_one_linked_worktree_leaves_the_other_worktrees_pins_and_shared_objects_intact`, `reconcile_a_retains_its_pin_when_another_worktree_durably_requires_the_same_tree` pass
+- [x] AC10: Atomic `git update-ref --no-deref --stdin` with preflight revalidation + expected-old-value check -> `git_snapshot::tests::delete_pins_atomically_aborts_when_a_ref_changes_after_preflight`, `delete_pins_refuses_to_act_when_an_inventoried_direct_ref_became_a_symbolic_ref` pass
+- [x] AC11: No protocol/durability write, no marker -> `runtime::tests::reconciliation_makes_no_protocol_or_marker_write` passes; inspection: `cli/migrations/agent-trace-repository/` holds only `001`/`002`/`003`
+- [x] AC12: No `git gc`/`git prune`; object still resolvable immediately after ref delete -> `ref_reconciliation::tests::reconciliation_deletes_refs_without_reclaiming_objects` passes
+- [x] AC13: Identity-based unsupported-lifecycle framing (Case A deleted worktree, Case B checkout-id metadata loss/recreation) + future repository-scoped operation recorded -> plan "Scope: unowned checkout-identity namespaces" section + Q16; `context/cli/mutation-trace-ref-reconciliation.md` and `context/cli/mutation-trace-runtime-coordinator.md` both carry the identity-ownership framing and both cases; `git diff main` shows `list_pins` still single-prefix, no repo-wide enumeration/deletion added
+- [x] AC14: `ReconciliationOutcome` distinguishes `Reconciled(report{deleted:0})` from `SkippedNoCheckoutIdentity`, skip is not `Err`, lock released, no identity created -> `ref_reconciliation::tests::no_checkout_identity_returns_a_distinct_skipped_outcome` passes
+- [x] AC15: Missing-checkout-identity path never calls `open_db`, no inventory, every namespace ref structurally identical -> `ref_reconciliation::tests::a_missing_checkout_identity_skip_touches_no_db_and_no_ref` passes
+- [x] AC16: T04 documented as the generic `WorktreeLock` happens-before proof (not the production CAS); exact real-coordinator pin→CAS regression exists -> `runtime::tests::reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree` passes; AC5/Q18/`context/cli/mutation-trace-ref-reconciliation.md` wording confirmed; clippy clean (seam is `#[cfg(test)]`/`pub(super)`)
+- [x] AC17: All `runtime/tests.rs` fixtures RAII-owned by `tempfile::TempDir`; `cleanup`/`unique_path`/`AtomicU64`/`UNIX_EPOCH`/`NEXT_ID`/`SystemTime`/`Ordering` scaffolding gone -> grep returns nothing; `services::mutation_trace::runtime::tests::` suite passes
+- [x] AC18: T09 integration suite exercises every clarified contract through `reconcile_worktree`/`coordinate` against real Git + real repository DB -> full `services::mutation_trace::runtime::tests::` set passes; whole-suite `nix flake check` green
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- Reconciliation is not yet wired to any harness, hook, or command (explicitly out of scope); `reconcile_worktree` stays `runtime`-private and unreachable from outside until a follow-up harness-wiring PR (Q15).
+- Repository-scoped unowned checkout-identity namespace reconciliation (Q16) is recorded as future work only; any harness lifecycle that can retire, replace, lose, or recreate checkout identities is not storage-cleanup complete until that operation exists.
+- This plan builds only the reclamation half of the storage lifecycle; retained historical `mutation_trace_events` trees stay pinned indefinitely until a separate future retention/compaction lifecycle exists.
