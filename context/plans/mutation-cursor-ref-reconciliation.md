@@ -1275,7 +1275,7 @@ requirements.
     yet (T04/T05 add tests through the seam; harness wiring is a later PR).
   - Context synchronization: synced
 
-- [ ] T04: `Add the deterministic pin-to-CAS synchronization regression` (status:todo)
+- [x] T04: `Add the deterministic pin-to-CAS synchronization regression` (status:done)
   - Task ID: T04
   - Scope: In — `cli/src/services/mutation_trace/runtime/tests.rs` (a child of
     `runtime`, so it can reach the `pub(super)` seam): one deterministic
@@ -1302,7 +1302,56 @@ requirements.
     `services::mutation_trace::runtime::` passes.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::tests::reconciliation_blocks_on_the_worktree_lock`;
     `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::`.
-  - Context synchronization: pending
+  - Completed: 2026-09-01
+  - Files changed: `cli/src/services/mutation_trace/runtime/tests.rs`
+  - Result: Added the deterministic AC5 regression
+    `reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_durable_under_it`
+    to `runtime/tests.rs`, plus a local `seed_event` raw-SQL helper mirroring
+    the `ref_reconciliation.rs` / store helpers (`attribution_kind =
+    'ineligible_unscoped'`, `boundary_kind = 'flush'`). Four `use` items added:
+    `std::sync::mpsc`, `super::worktree_lock::acquire_inner`,
+    `super::ref_reconciliation::reconcile_worktree_inner`, and
+    `crate::services::mutation_trace::store::encode_revision`. The test runs a
+    real `coordinate()` Flush baseline (establishing checkout identity and a
+    pinned durable cursor row), then on the main thread takes the worktree's
+    `WorktreeLock` via `acquire_inner`; a worker thread calls
+    `reconcile_worktree_inner` with an `on_lock_contention` closure that signals
+    an `mpsc` channel. The test waits (bounded, `recv_timeout`) for the
+    contention signal, asserts via a 300 ms negative `recv_timeout` that the
+    pass has not completed while the lock is held, then — still holding the
+    lock — captures a fresh tree `X` (writes `under-lock.txt`), `pin_tree`s it,
+    and seeds a `mutation_trace_events` row (`before = baseline tree`, `after =
+    X`) making `X` a repository-wide durable root. It drops the lock, joins the
+    worker, and asserts `Ok` with `deleted == 0`, `local_required == 2`, and
+    `refs/sce/mutation-cursor/<W>/<X>` still resolvable via `git show-ref
+    --verify`. No `sleep`; the proof is the `WorktreeLock` happens-before edge.
+    No production code changed.
+  - Verify (actual):
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::tests::reconciliation_blocks_on_the_worktree_lock`
+    — 1 passed, 0 failed.
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::`
+    — 78 passed, 0 failed.
+    `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
+    — no warnings.
+    `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`
+    — clean.
+  - Deviations: Per a user instruction during implementation, no explanatory
+    code comments were added (the test is comment-free). The
+    `two_threads_on_the_same_worktree_serialize` structure reused for the
+    channel/timeout pattern lives in `coordinator.rs`, not `tests.rs` as the
+    scope note says — same `runtime` module tree. Durable identity and the
+    pre-existing local durable root were established with a real `coordinate()`
+    baseline (one of the plan's offered options); `X` was made a durable root
+    by a raw-SQL `mutation_trace_events` insert, the sibling-test convention.
+  - Context impact: None. Test-only addition to
+    `cli/src/services/mutation_trace/runtime/tests.rs`; no production code,
+    signature, schema, migration, protocol, marker, spec, Quint, or
+    cross-domain change; no new dependency. The `runtime::ref_reconciliation`
+    surface documented under this plan's Context sync section is unchanged by
+    this task — T03 already recorded the module's durable-context needs, and
+    T05 completes the integration-test coverage. No durable context file needs
+    an edit for T04.
+  - Context synchronization: synced
 
 - [ ] T05: `Add retained-root, orphan, missing-pin, idempotence, delete_pins-routing and linked-worktree integration tests` (status:todo)
   - Task ID: T05
