@@ -7,20 +7,71 @@ The mutation-cursor runtime pins every captured Git tree under
 shared object database and refs namespace, so a durable snapshot stays
 resolvable through `git gc`/`git prune`
 (`context/cli/mutation-trace-runtime-coordinator.md`,
-`context/plans/mutation-cursor-runtime-coordinator.md`). Those pins are
-**create-only** today: `GitSnapshotService::pin_tree` adds a ref on every
-`coordinate()` invocation and nothing ever removes one, so storage grows
-without bound in proportion to mutation-cursor invocation volume — every
-distinct tree a worktree ever observes leaves one permanent ref and the
-objects it protects.
+`context/plans/mutation-cursor-runtime-coordinator.md`).
 
-This plan adds a **conservative per-worktree ref reconciliation pass** that
-removes only SCE-owned pins that are provably outside the **repository-wide**
-durable mutation-cursor root set and provably cannot belong to an in-flight
-mutation-cursor transition. It is the deferred step 3 of the runtime
-completion sequence in `context/plans/mutation-cursor-runtime-coordinator.md`
-("Follow-up PR — Runtime completion sequence"), required before any harness
-adapter becomes a production consumer of `coordinate()`.
+Mutation-cursor snapshot refs are **create-only** during `coordinate()`:
+`GitSnapshotService::pin_tree` adds a ref on every invocation and nothing in
+the coordinate path ever removes one. A crash, failed transition, or other
+interrupted path can therefore leave an SCE-owned pin that has no corresponding
+durable mutation-cursor root.
+
+This plan adds a **conservative per-worktree reconciliation pass** that removes
+only such orphaned/unreferenced SCE refs while retaining every tree referenced
+by current or historical durable mutation-cursor state. It is best described as
+**conservative orphan/unreferenced mutation-cursor snapshot-ref
+reconciliation** — not a complete solution to historical mutation-cursor
+storage growth. A removed ref is one whose tree is provably outside the
+**repository-wide** durable mutation-cursor root set and provably cannot belong
+to an in-flight mutation-cursor transition.
+
+**Reconciliation does not bound storage occupied by retained historical
+mutation events.** The current durable-root definition is
+
+```
+current cursor_tree
+∪ every historical MutationEvent.before_tree
+∪ every historical MutationEvent.after_tree
+```
+
+and those historical `mutation_trace_events` rows are retained indefinitely. So
+`before_tree` and `after_tree` of every retained historical
+`mutation_trace_events` row remain durable roots and therefore remain pinned. A
+normal successful history
+
+```
+events:
+A → B
+B → C
+C → D
+
+durable roots:
+A, B, C, D
+
+reconciliation:
+deletes none
+```
+
+leaves every one of those pins in place. What reconciliation reclaims is the
+complementary case:
+
+```
+pin X exists
+X ∉ durable_roots(repository)
+
+reconciliation:
+delete X
+```
+
+— a snapshot pin created before a DB/CAS operation that never committed, a
+crash artifact, a failed/no-op transition artifact, or another SCE
+mutation-cursor pin that is no longer durably referenced.
+
+This is the deferred step 3 of the runtime completion sequence in
+`context/plans/mutation-cursor-runtime-coordinator.md` ("Follow-up PR — Runtime
+completion sequence"). Reconciliation is required before high-volume harness
+wiring to prevent accumulation of orphan/crash snapshot refs produced by
+interrupted `coordinate()` executions — **not** because it guarantees bounded
+mutation-history storage under normal successful usage.
 
 The design is deliberately asymmetric: **keeping an unnecessary ref costs disk
 space; deleting a required ref destroys durable evidence.** False retention is
@@ -60,6 +111,39 @@ SCE refs Git's own GC already knows how to act on, and lets Git reclaim the
 now-unreachable objects on its own schedule. It adds no harness, hook, or
 command wiring; `reconcile_worktree()` stays reachable only from within
 `runtime`, exactly like `coordinate()`.
+
+## Storage lifecycle: what this plan bounds and what it does not
+
+Ref reconciliation is the **reclamation mechanism** once a tree is no longer a
+durable root. It is not, by itself, a bound on storage growth for an
+indefinitely retained mutation-event history: every retained
+`mutation_trace_events` row keeps its `before_tree` and `after_tree` as durable
+roots, so their pins are retained for as long as the row is retained.
+
+Truly bounding historical snapshot storage requires a **separate future
+retention/compaction lifecycle** that is explicitly *not* designed or
+implemented here:
+
+```
+MutationEvent(before, after)
+        ↓
+derive/persist durable diff evidence
+        ↓
+raw tree snapshots no longer required after retention policy
+        ↓
+compact/delete historical raw-root references
+        ↓
+ref reconciliation sees them as unreferenced
+        ↓
+remove SCE refs
+        ↓
+Git may reclaim objects on its own GC schedule
+```
+
+A separate future retention/compaction policy is required to make historical
+mutation-event trees stop being durable roots; this plan builds only the
+reclamation half of that pipeline. Recorded as future work only — no retention
+system is designed or implemented in this plan.
 
 ## Core invariants
 
@@ -104,6 +188,25 @@ therefore repository-wide; the
 **lock** stays per-worktree (Q1, Q2). If `B` requires `T` and `A` also has a
 `T` pin, `A` retains it — `A`'s otherwise-stale ref then acts as conservative
 accidental backup reachability for `B`'s degraded state.
+
+### Historical retention is deliberate
+
+A historical event tree — the `before_tree` or `after_tree` of any retained
+`mutation_trace_events` row — is a member of `durable_roots(repository)`:
+
+```
+historical event tree ∈ durable_roots(repository)
+        ↓
+must be retained
+```
+
+Reconciliation therefore deliberately prefers historical retention. It never
+deletes a pin for a tree that any current or historical durable mutation-cursor
+state still references, and it does not attempt to bound the storage those
+retained historical trees occupy — that needs the separate future
+retention/compaction lifecycle described above. AC2 (unreferenced pin →
+delete) and AC4 (historically referenced pin → retain) together fix this
+contract.
 
 ## Acceptance criteria
 
@@ -176,11 +279,14 @@ crate module path `services::mutation_trace::runtime::…` /
     `services::mutation_trace::store::tests::load_all_tree_roots_retains_previous_cursor_after_atomic_cursor_advance` (state-transition retention only — not proof of snapshot isolation),
     `services::mutation_trace::store::tests::load_all_tree_roots_reads_every_durable_root_in_one_sql_statement` and
     `services::mutation_trace::store::tests::load_tree_roots_reads_every_durable_root_in_one_sql_statement` (the deterministic single-statement snapshot regression: torn two-read set constructed explicitly, then production path asserted to issue exactly one read statement via `count_read_statements`)
-- [ ] AC2: An orphan pin — a pinned tree that is in no durable root anywhere
-  in the repository, the observable post-crash / post-no-op state `pin exists
-  ∧ durable root does not` — is deleted by reconciliation, whether or not the
-  worktree has a durable row at all; `git for-each-ref` no longer lists that
-  ref afterward.
+- [ ] AC2: An **orphan / unreferenced** pin — a pinned tree that is in no
+  durable root anywhere in the repository, the observable post-crash /
+  post-no-op state `pin exists ∧ durable root does not` — is deleted by
+  reconciliation, whether or not the worktree has a durable row at all;
+  `git for-each-ref` no longer lists that ref afterward.
+  This criterion is about an unreferenced pin (`unreferenced pin → delete`),
+  **not** about a merely old one: a pin whose tree is still a current or
+  historical durable root is retained (AC3, AC4), no matter how old the ref is.
   The reconciler does not care how that orphan state arose, so the tests
   construct it directly: capture a tree, pin it via `GitSnapshotService`,
   create no durable root for it, then run the pass.
@@ -195,6 +301,13 @@ crate module path `services::mutation_trace::runtime::…` /
   `mutation_trace_events` rows survive reconciliation after the worktree's
   cursor has moved on to a later tree, so a future `diff_trees(before, after)`
   over that historical interval stays possible.
+  A historical event tree is a member of `durable_roots(repository)` and is
+  therefore retained (`historically referenced pin → retain`). Reconciliation
+  deliberately prefers historical retention; it does **not** bound the storage
+  these retained trees occupy — for the history `A → B → C → D` with all three
+  events retained, reconciliation deletes none of `{A, B, C, D}`. Bounding that
+  storage is separate future retention/compaction work (see "Storage
+  lifecycle").
   - Validate: `services::mutation_trace::runtime::ref_reconciliation::tests::historical_event_before_and_after_pins_are_retained_after_the_cursor_advances`
 - [ ] AC5: A reconciliation pass cannot observe or delete a pin that a
   concurrent `coordinate()` has created but not yet committed durably. A
@@ -360,9 +473,10 @@ Repository-wide checks `/validate` runs after the last task.
   without a repository-global lock);
   correct
   the "one ref per pinned tree, **create-only**" on-disk-layout note to
-  "create-only per invocation, reclaimed by the per-worktree reconciliation
-  pass"; record that the `WorktreeLock` now also guards reconciliation; extend
-  the testing boundary.
+  "create-only per invocation; orphan/unreferenced pins reclaimed by the
+  per-worktree reconciliation pass, every pin for a current or historical
+  durable mutation-cursor root retained"; record that the `WorktreeLock` now
+  also guards reconciliation; extend the testing boundary.
 - `context/cli/mutation-trace-protocol.md` — in "Target end-state
   architecture", note that ref reconciliation is imperative durability
   maintenance outside the verified protocol: it never advances the cursor,
@@ -435,11 +549,17 @@ Persist this field in every plan; this is durable plan state, not chat state:
   attribution rules; new `FailureKind`; new DB migration; the still-separate
   `mutation-cursor-external-taint` concerns (that plan has landed).
 - **Constraints:**
-  - No new Cargo dependencies. Reconciliation reuses `WorktreeLock`
-    (`std::fs::File` advisory locks) via `worktree_lock::acquire_inner`
-    (already `pub(super)`), `checkout::{resolve_git_dir, read_checkout_id}`,
-    `GitSnapshotService`, `MutationTraceStore`, and the `git` plumbing
-    subprocess pattern already in `git_snapshot.rs`.
+  - No new **production** Cargo dependencies. Reconciliation reuses
+    `WorktreeLock` (`std::fs::File` advisory locks) via
+    `worktree_lock::acquire_inner` (already `pub(super)`),
+    `checkout::{resolve_git_dir, read_checkout_id}`, `GitSnapshotService`,
+    `MutationTraceStore`, and the `git` plumbing subprocess pattern already in
+    `git_snapshot.rs`.
+    `tempfile` is a dev-dependency used only for RAII-owned isolated test
+    directories (added by the mutation-trace store-test isolation fix and
+    reused by the `git_snapshot.rs` test-isolation fix). It is not linked into
+    production behavior and introduces no runtime dependency for
+    reconciliation.
   - Reconciliation owns its own bounded lock timeout,
     `const RECONCILIATION_LOCK_TIMEOUT: Duration = Duration::from_secs(10)`
     in `ref_reconciliation.rs`. Its value intentionally matches the
@@ -904,6 +1024,10 @@ requirements.
     (`delete_pins_inner` seam + rewritten atomicity test): git_snapshot 24
     passed, `services::mutation_trace::runtime::` 67 passed, full CLI suite
     866 passed, clippy `--all-targets -D warnings` clean, fmt clean.
+    Re-verified after the PR #246 round-3 test-isolation fix (see the T02
+    test-infrastructure follow-up in Deviations): git_snapshot 24 passed and
+    stable across 20 back-to-back parallel runs, `services::mutation_trace::`
+    238 passed, clippy `--all-targets -D warnings` clean, fmt clean.
   - Deviations: Recorded assumption names and signatures (`PinnedRef`,
     `PinInventoryError` with its two variants, `list_pins` / `delete_pins`
     signatures) were used verbatim. `list_pins` also rejects a ref with an
@@ -935,6 +1059,22 @@ requirements.
     clearly separate proofs — preflight revalidation vs. the expected-old-value
     atomic Git transaction. Production `delete_pins` signature and behavior are
     unchanged (no-op hook).
+    **Test-infrastructure follow-up (same task, PR #246 review round 3):**
+    `git_snapshot.rs`'s test module still used a hand-rolled
+    PID/counter-derived temp path (`NEXT_TEST_REPO_ID` / `unique_test_repo`)
+    plus manual `remove_test_repo` cleanup, the same lifecycle weakness the
+    store tests shed in commit `6518c607` — a panicking test could leave a
+    directory a later process reuses. Replaced with an RAII-owned
+    `TestRepo { _temp_dir: tempfile::TempDir, root: PathBuf }` fixture and a
+    `test_repo(label)` constructor (`tempfile::Builder::prefix(..).tempdir()`);
+    every test now binds `let repo = test_repo(..); let repo_root =
+    repo.root().to_path_buf();` and holds `repo` (and its `TempDir`) for the
+    whole test, with no explicit cleanup call. `NEXT_TEST_REPO_ID`,
+    `unique_test_repo`, `remove_test_repo`, and the `AtomicU64`/`Ordering`
+    imports are gone. Tests are not serialized, use no sleeps/retries/mutex,
+    and the atomicity-test semantics are unchanged; `tempfile` was already a
+    dev-dependency. Production `git_snapshot.rs` (`capture_tree` / `pin_tree`
+    / `list_pins` / `delete_pins`) is untouched.
   - Context impact: Domain. Adds new public items to `GitSnapshotService`'s
     runtime-internal surface (`PinnedRef`, `PinInventoryError`, `list_pins`,
     `delete_pins`); no schema, migration, protocol, marker, or cross-domain
