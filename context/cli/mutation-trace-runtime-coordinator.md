@@ -54,12 +54,14 @@ API end to end. Only harness/command wiring remains.
   race cannot escape the inventoried namespace. Full contract in
   [`mutation-trace-snapshot-service.md`](mutation-trace-snapshot-service.md).
 - `cli/src/services/mutation_trace/runtime/ref_reconciliation.rs` — the
-  conservative per-worktree snapshot-ref maintenance pass (`reconcile_worktree`
-  / `pub(super) reconcile_worktree_inner`, `ReconciliationReport`,
-  `ReconcileError`, `RECONCILIATION_LOCK_TIMEOUT`): under the worktree's
-  `WorktreeLock`, delete only pins whose tree is a durable root of **no**
-  worktree, fail closed if any local root lacks a pin, write no
-  `mutation_trace_*` row, never arm the taint marker. Full contract in
+  conservative per-worktree snapshot-ref maintenance pass — `reconcile_worktree`
+  / `pub(super) reconcile_worktree_inner` return `Result<ReconciliationOutcome,
+  ReconcileError>` (`ReconciliationOutcome` = `Reconciled(ReconciliationReport)`
+  | `SkippedNoCheckoutIdentity`). Under the worktree's `WorktreeLock` it deletes
+  only pins whose tree is a durable root of **no** worktree, fails closed if any
+  local root lacks a pin, and writes no `mutation_trace_*` row or taint marker
+  (still-identifiable worktree namespace only, not a bound on total orphan-ref
+  growth — retired namespaces are future repository-scoped work). Full contract in
   [`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md).
 - `cli/src/services/mutation_trace/runtime/coordinator.rs` — the composition
   point that drives `protocol.rs`/`store.rs`/`git_snapshot.rs` together. Its
@@ -157,7 +159,7 @@ On-disk layout so far:
 
 <repository's normal, shared object database>       (runtime::git_snapshot writes here directly)
 <repository's normal, shared refs namespace>
-└── refs/sce/mutation-cursor/<worktree-id>/<tree-sha>   (runtime::git_snapshot, create-only per invocation; orphan/unreferenced pins reclaimed by runtime::ref_reconciliation, every pin for a current or historical durable mutation-cursor root retained)
+└── refs/sce/mutation-cursor/<worktree-id>/<tree-sha>   (runtime::git_snapshot, create-only per invocation; orphan/unreferenced pins reclaimed by runtime::ref_reconciliation for a still-identifiable worktree's namespace only, every pin for a current or historical durable mutation-cursor root retained; a retired worktree's namespace is stranded — future repository-scoped work)
 ```
 
 ## Testing boundary
