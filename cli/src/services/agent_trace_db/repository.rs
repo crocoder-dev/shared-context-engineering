@@ -249,6 +249,7 @@ impl RepositoryAgentTraceDb {
         upsert_claude_model_state_with(self, input)
     }
 
+    #[allow(dead_code)]
     pub fn claude_model_state_by_session_and_agent(
         &self,
         session_id: &str,

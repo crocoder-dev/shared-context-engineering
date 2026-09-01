@@ -323,6 +323,9 @@ pub enum HooksSubcommand {
 
     #[command(about = "Run Codex hook (reads JSON payload from STDIN)")]
     Codex,
+
+    #[command(about = "Run Claude model-state hook (reads JSON payload from STDIN)")]
+    ClaudeModelState,
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
