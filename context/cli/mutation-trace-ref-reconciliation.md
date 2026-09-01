@@ -16,20 +16,19 @@ failed transition, or other interrupted `coordinate()` path can leave a
 `refs/sce/mutation-cursor/<worktree-id>/<tree-sha>` pin with no corresponding
 durable root. Reconciliation is the reclamation step for exactly that state. It
 is **not** a bound on storage growth: every retained `mutation_trace_events`
-row keeps its `before_tree` / `after_tree` as durable roots, so a normal
-successful history `A → B → C → D` keeps all four pins. Truly bounding
-historical snapshot storage needs a separate future retention/compaction
-lifecycle that this plan does not design.
+row keeps its `before_tree` / `after_tree` as durable roots (a successful
+`A → B → C → D` history keeps all four pins). Bounding historical snapshot
+storage needs a separate future retention/compaction lifecycle this plan does
+not design.
 
 The design is deliberately asymmetric: **keeping an unnecessary ref costs disk;
 deleting a required ref destroys durable evidence.** False retention is
 acceptable; false deletion is not.
 
-`mod ref_reconciliation;` is private in `runtime/mod.rs` (like `mod
-coordinator;`). `reconcile_worktree` is `pub` only within `runtime` — no
-`pub(crate)` re-export — and nothing wires it into a hook, command, or the
-`diff_traces` path yet; deciding *when* it runs is deferred to the
-harness-wiring PR.
+`mod ref_reconciliation;` is private in `runtime/mod.rs` (like `coordinator`);
+`reconcile_worktree` is `pub` only within `runtime`, with no `pub(crate)`
+re-export and no hook / command / `diff_traces` wiring yet — when it runs is
+deferred to the harness-wiring PR.
 
 ## Entry point and identity
 
@@ -43,8 +42,8 @@ pub fn reconcile_worktree(
 A one-line delegation to `pub(super) fn reconcile_worktree_inner(..,
 on_lock_contention: impl FnOnce())` — the deterministic test seam mirroring
 `coordinate` / `coordinate_inner`, reachable from `runtime` and
-`runtime::tests` (where the T04/T05 tests live) but invisible outside
-`runtime`.
+`runtime::tests` (where the cross-module lock-race regressions live) but
+invisible outside `runtime`.
 
 Like `coordinate()`, it never accepts a `WorktreeId`, `TreeId`, or ref name,
 and never opens the DB itself: worktree identity is derived
@@ -166,14 +165,13 @@ repository-wide read — no repository-global lock is needed.
 Reconciliation holds the **same** `<git-dir>/sce/mutation-cursor.lock`
 `WorktreeLock` that `coordinate()` holds across `pin → CAS → return`, acquired
 via `worktree_lock::acquire_inner` and bounded by the module-owned
-`const RECONCILIATION_LOCK_TIMEOUT: Duration = Duration::from_secs(10)` (its
-value matches the coordinator's private `WORKTREE_LOCK_TIMEOUT` by intent, not
-a shared constant). Mutual exclusion on that one file makes the pin → DB-CAS
-race structurally impossible: the reconciler's inventory → diff → delete runs
-wholly before `coordinate()` takes the lock (tree not pinned yet) or wholly
-after it releases it (tree committed → a durable root → retained; or never
-committed → a true orphan → safe to delete). The lock is per-worktree; only the
-retention *read* is repository-wide.
+`RECONCILIATION_LOCK_TIMEOUT` (`Duration::from_secs(10)`, matching the
+coordinator's private `WORKTREE_LOCK_TIMEOUT` by intent, not a shared constant).
+Mutual exclusion on that one file makes the pin → DB-CAS race structurally
+impossible: the reconciler's inventory → diff → delete runs wholly before
+`coordinate()` takes the lock (nothing pinned yet) or wholly after it releases
+it (tree committed → durable root → retained; never committed → true orphan →
+deletable). The lock is per-worktree; only the retention *read* is repository-wide.
 
 ## Algorithm and error contract
 
@@ -231,20 +229,22 @@ seeders, following the filesystem-touching inline-test precedent
 worktree row); current-cursor pin retained without a referencing event;
 historical `before`/`after` pins retained after the cursor advances; a pin
 another worktree durably requires retained (also the `retained > local_required`
-count case); `MissingRequiredPins` fail-closed; a malformed namespace ref
-(symbolic ref) fail-closed; idempotence; refs deleted without object
-reclamation (`git cat-file -t` still resolves the orphan tree); and the
+count case); `MissingRequiredPins` fail-closed; a malformed / symbolic namespace
+ref fail-closed; idempotence; refs deleted without object reclamation; and the
 no-checkout-identity skip returning `SkippedNoCheckoutIdentity` rather than a
-zero-count `Reconciled` report (`no_checkout_identity_returns_a_distinct_skipped_outcome`
-and `a_missing_checkout_identity_skip_touches_no_db_and_no_ref`, the latter with
-an `open_db` provider that panics if invoked). The deterministic pin→CAS lock-race
-regression and the cross-module linked-worktree scenarios live in
-`runtime/tests.rs` (plan tasks T04/T05).
+zero-count `Reconciled` report.
+
+`runtime/tests.rs` holds the cross-module scenarios: linked-worktree isolation,
+and two deterministic lock-race regressions (no sleeps) —
+`reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_durable_under_it`
+(the generic `WorktreeLock` happens-before edge; X made durable directly) and
+`reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree` (the
+same edge across the real `capture → pin → load → prepare → store CAS` path, a
+real `coordinate()` paused between `pin X` and its CAS via the `pub(super)`
+`after_load` seam — test-only, production passes a no-op).
 
 See also:
 [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md),
-[`mutation-trace-snapshot-service.md`](mutation-trace-snapshot-service.md)
-(`list_pins` / `delete_pins`),
-[`mutation-trace-store.md`](mutation-trace-store.md)
-(`load_tree_roots` / `load_all_tree_roots`),
+[`mutation-trace-snapshot-service.md`](mutation-trace-snapshot-service.md) (`list_pins` / `delete_pins`),
+[`mutation-trace-store.md`](mutation-trace-store.md) (`load_tree_roots` / `load_all_tree_roots`),
 [`mutation-trace-protocol.md`](mutation-trace-protocol.md).

@@ -179,19 +179,28 @@ pub fn coordinate<P>(
 where
     P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
 {
-    coordinate_inner(repository_root, boundary, open_db, || {}, |_attempt| Ok(()))
+    coordinate_inner(
+        repository_root,
+        boundary,
+        open_db,
+        || {},
+        |_attempt| {},
+        |_attempt| Ok(()),
+    )
 }
 
-fn coordinate_inner<P, F, R>(
+pub(super) fn coordinate_inner<P, F, L, R>(
     repository_root: &Path,
     boundary: &RuntimeBoundary,
     open_db: P,
     on_lock_contention: F,
+    after_load: L,
     after_recovery: R,
 ) -> Result<CoordinateOutcome, CoordinateError>
 where
     P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
     F: FnOnce(),
+    L: FnMut(u32),
     R: FnMut(u32) -> Result<()>,
 {
     let git_dir = resolve_git_dir(repository_root).map_err(CoordinateError::Other)?;
@@ -220,6 +229,7 @@ where
         boundary,
         open_db,
         inherited_external_taint,
+        after_load,
         after_recovery,
     )?;
 
@@ -232,16 +242,18 @@ where
     }
 }
 
-fn coordinate_protected<P, R>(
+fn coordinate_protected<P, L, R>(
     repository_root: &Path,
     git_dir: &Path,
     boundary: &RuntimeBoundary,
     open_db: P,
     inherited_external_taint: bool,
+    after_load: L,
     after_recovery: R,
 ) -> Result<CoordinateOutcome, CoordinateError>
 where
     P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+    L: FnMut(u32),
     R: FnMut(u32) -> Result<()>,
 {
     let checkout_id = get_or_create_checkout_id(git_dir).map_err(CoordinateError::Other)?;
@@ -257,7 +269,7 @@ where
         &worktree_id,
         boundary,
         inherited_external_taint,
-        |_attempt| {},
+        after_load,
         after_recovery,
     )
 }
@@ -1510,6 +1522,7 @@ mod tests {
                         .send(())
                         .expect("contention signal channel should still be open");
                 },
+                |_attempt| {},
                 |_attempt| Ok(()),
             );
             result_tx
@@ -1719,6 +1732,7 @@ mod tests {
                             .send(())
                             .expect("contention signal channel should still be open");
                     },
+                    |_attempt| {},
                     |_attempt| Ok(()),
                 )
             })
@@ -2085,6 +2099,7 @@ mod tests {
             },
             ok_db,
             || {},
+            |_attempt| {},
             |_attempt| {
                 anyhow::bail!("injected failure after recovery, before the boundary commits")
             },

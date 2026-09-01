@@ -1791,7 +1791,7 @@ requirements.
     `context/glossary.md`, `context/patterns.md` unaffected.
   - Context synchronization: synced
 
-- [ ] T07: `Add the exact real-coordinator pin→CAS reconciliation regression` (status:todo)
+- [x] T07: `Add the exact real-coordinator pin→CAS reconciliation regression` (status:done)
   - Task ID: T07
   - Scope: In —
     (1) `cli/src/services/mutation_trace/runtime/coordinator.rs`: expose the
@@ -1837,7 +1837,87 @@ requirements.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::`;
     `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`;
     `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`.
-  - Context synchronization: pending
+  - Completed: 2026-09-01
+  - Files changed: `cli/src/services/mutation_trace/runtime/coordinator.rs`,
+    `cli/src/services/mutation_trace/runtime/tests.rs`,
+    `context/cli/mutation-trace-ref-reconciliation.md`
+  - Result:
+    (1) `coordinator.rs` — added an `after_load: L` (`L: FnMut(u32)`) parameter to
+    `coordinate_inner` and `coordinate_protected`, threading it into the existing
+    `coordinate_boundary_inner` `after_load` slot in place of the hardcoded
+    `|_attempt| {}`. Made `coordinate_inner` `pub(super)` (reachable from
+    `runtime` / `runtime::tests`, invisible outside `runtime`, mirroring
+    `reconcile_worktree_inner`).
+    Production `coordinate()` now passes `|_attempt| {}` for `after_load` — no
+    behavior change, no protocol / CAS / signature change. Updated the three
+    existing in-file `coordinate_inner` test call sites with the no-op
+    `after_load`.
+    (2) `runtime/tests.rs` — added
+    `reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree`
+    (`#[allow(clippy::too_many_lines)]`, matching the three existing such tests in
+    the file). A baseline `coordinate(Flush)` materializes the worktree; a real
+    edit is written; a worker runs `coordinate_inner(Flush, .., after_load,
+    ..)` whose `after_load` hook (a `move` `FnMut` guarded by a `paused` flag)
+    signals a channel then blocks on a second channel — pin X done, real
+    `store.commit` CAS not yet, `WorktreeLock` held. A reconciliation worker runs
+    `reconcile_worktree_inner` with a contention-signalling closure and must
+    block on the same lock (asserted: contention observed; the reconcile-done
+    channel stays empty for 300 ms). Releasing the coordinator lets the real
+    prepare + `store.commit` CAS commit X and drop the lock; reconciliation then
+    acquires the lock, reads `load_all_tree_roots`, and retains X
+    (`report.deleted == 0`, `report.local_required == 2`). Asserts X's
+    `refs/sce/mutation-cursor/<W>/<X>` ref survives (`git show-ref --verify`),
+    and the DB proves X durable through the real flow (`cursor_tree == X`, a
+    `mutation_trace_events` row with `before_tree == baseline`, `after_tree ==
+    X`). Deterministic `mpsc` channels only — no sleeps as the synchronization
+    mechanism.
+    (3) `context/cli/mutation-trace-ref-reconciliation.md` — the "Locking"
+    section now names both regressions and states precisely what each proves
+    (T04-equivalent = generic `WorktreeLock` happens-before, X made durable
+    directly; T07-equivalent = the same property across the real `capture → pin →
+    load → prepare → store.commit CAS` path via the `pub(super)` `after_load`
+    coordinator seam, test-only, production passes a no-op). "Testing boundary"
+    and the `reconcile_worktree_inner` seam note updated to match; the stale
+    "T04/T05 tests" / "deterministic pin→CAS lock-race regression" phrasings
+    (deferred to T07 by T05) are gone.
+    Plan AC5 / Q18 / AC16 already state the T04-vs-T07 distinction precisely
+    (pre-authored with this revision) — no plan-body edit was needed for the
+    "state precisely what T04 vs T07 prove" done-check.
+  - Verify (actual):
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::`
+    (via `nix develop -c`) — `ok. 80 passed; 0 failed` (was 79), including the
+    new `reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree`
+    and the kept T04 `reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_durable_under_it`.
+    `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
+    — `Finished`, no warnings.
+    `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`
+    — clean (exit 0, no diff).
+  - Deviations: `#[allow(clippy::too_many_lines)]` on the new test — the test is
+    ~150 lines (two coordinated worker threads plus DB/ref assertions), and the
+    file already carries the same allow on three comparably sized tests. No
+    smaller shape preserves the deterministic pin→CAS interleaving.
+    Per a user instruction during implementation, all explanatory comments added
+    by this task were removed — the new `coordinate_inner` seam and the new test
+    carry no added `//` or `///` comments.
+    Doc scope: only `context/cli/mutation-trace-ref-reconciliation.md` (named in
+    the task) was edited during execution; the `mutation-trace-runtime-coordinator.md`
+    seam note and the root-context annotations remain for the context-sync phase
+    (this plan's "Context sync" section, T07 items), matching the T06 precedent.
+  - Context impact: `coordinate_inner` visibility widened from module-private
+    (`coordinator.rs`) to `pub(super)` (`runtime`), and it and
+    `coordinate_protected` gained an `after_load` closure parameter — all
+    test-only reach; production `coordinate()`'s signature and behavior are
+    unchanged, no re-export, no caller outside `runtime`. No schema, migration,
+    protocol, marker, spec, Quint, or dependency change. Durable-context
+    follow-ups already enumerated in this plan's "Context sync" section (T07
+    items): `context/cli/mutation-trace-runtime-coordinator.md` (note the
+    `pub(super)` `after_load` seam) and, in
+    `context/cli/mutation-trace-ref-reconciliation.md`, the already-applied T04
+    reframing. Root-context files: `context/architecture.md`,
+    `context/glossary.md`, `context/patterns.md`, `context/overview.md`,
+    `context/context-map.md` — a test-only coordinator seam adds no module,
+    term, pattern, or architectural boundary; verify-only in context sync.
+  - Context synchronization: synced
 
 - [ ] T08: `Migrate runtime/tests.rs filesystem fixtures to RAII-owned TempDir` (status:todo)
   - Task ID: T08

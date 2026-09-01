@@ -15,7 +15,7 @@ use crate::services::mutation_trace::types::{
     ActorKind, EventId, FailureKind, ScopeId, ScopeStatus,
 };
 
-use super::coordinator::{coordinate, CoordinateError, RuntimeBoundary};
+use super::coordinator::{coordinate, coordinate_inner, CoordinateError, RuntimeBoundary};
 use super::external_taint::ExternalTaintMarker;
 use super::git_snapshot::GitSnapshotService;
 use super::ref_reconciliation::{reconcile_worktree_inner, ReconciliationOutcome};
@@ -1087,6 +1087,174 @@ fn reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_dur
             &format!("refs/sce/mutation-cursor/{}/{}", worktree_id.0, x.0),
         ],
     );
+
+    cleanup(
+        db_path
+            .parent()
+            .expect("the DB path has a parent directory"),
+    );
+    cleanup(&repo_root);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree() {
+    let repo_root = unique_path("reconcile-blocks-until-real-cas");
+    init_repo(&repo_root);
+    let db_path = unique_path("reconcile-blocks-until-real-cas-db").join("agent-trace.db");
+    RepositoryAgentTraceDb::new_at(&db_path).expect("the repository DB should open with schema");
+    let ok_db = || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path);
+
+    let baseline = coordinate(&repo_root, &RuntimeBoundary::Flush, ok_db)
+        .expect("the baseline observation should materialize the worktree");
+    let worktree_id = baseline.worktree_id.clone();
+    let baseline_tree = baseline.observed_tree.clone();
+
+    std::fs::write(
+        repo_root.join("under-real-cas.txt"),
+        b"observed before the real CAS",
+    )
+    .expect("an edit before the coordinated boundary should write");
+
+    let (pinned_tx, pinned_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let (coordinate_done_tx, coordinate_done_rx) = mpsc::channel();
+    let coord_repo_root = repo_root.clone();
+    let coord_db_path = db_path.clone();
+    let coordinator = thread::spawn(move || {
+        let mut paused = false;
+        let outcome = coordinate_inner(
+            &coord_repo_root,
+            &RuntimeBoundary::Flush,
+            || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&coord_db_path),
+            || {},
+            move |_attempt| {
+                if !paused {
+                    paused = true;
+                    pinned_tx
+                        .send(())
+                        .expect("the pin-done signal channel should still be open");
+                    release_rx
+                        .recv()
+                        .expect("the release channel should deliver before the real CAS");
+                }
+            },
+            |_attempt| Ok(()),
+        );
+        coordinate_done_tx
+            .send(())
+            .expect("the coordinate-done signal channel should still be open");
+        outcome
+    });
+
+    pinned_rx.recv_timeout(Duration::from_secs(5)).expect(
+        "coordinate_inner should pin X, load the worktree, and pause in after_load \
+         while still holding the WorktreeLock",
+    );
+
+    let (contention_tx, contention_rx) = mpsc::channel();
+    let (reconcile_done_tx, reconcile_done_rx) = mpsc::channel();
+    let rec_repo_root = repo_root.clone();
+    let rec_db_path = db_path.clone();
+    let reconciler = thread::spawn(move || {
+        let outcome = reconcile_worktree_inner(
+            &rec_repo_root,
+            || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&rec_db_path),
+            move || {
+                contention_tx
+                    .send(())
+                    .expect("the contention signal channel should still be open");
+            },
+        );
+        reconcile_done_tx
+            .send(())
+            .expect("the reconcile-done signal channel should still be open");
+        outcome
+    });
+
+    contention_rx.recv_timeout(Duration::from_secs(5)).expect(
+        "reconcile_worktree_inner should observe WorktreeLock contention while the \
+         real coordinate() CAS is still pending",
+    );
+    assert!(
+        reconcile_done_rx
+            .recv_timeout(Duration::from_millis(300))
+            .is_err(),
+        "reconciliation must not complete while coordinate() still holds the lock across pin -> CAS"
+    );
+
+    release_tx
+        .send(())
+        .expect("releasing the coordinate worker should succeed");
+
+    coordinate_done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the real coordinate() invocation should complete after the CAS");
+    let coordinate_outcome = coordinator
+        .join()
+        .expect("the coordinate worker thread should not panic")
+        .expect("the real coordinate() CAS should apply the observed drift");
+    let x = coordinate_outcome.observed_tree.clone();
+    assert_ne!(
+        x, baseline_tree,
+        "the coordinated Flush must observe a real drift from the baseline tree"
+    );
+    assert!(
+        coordinate_outcome.mutation_event.is_some(),
+        "the observed drift must commit exactly one durable MutationEvent through the real CAS"
+    );
+
+    reconcile_done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("reconciliation should complete once the coordinator releases the lock");
+    let outcome = reconciler
+        .join()
+        .expect("the reconciliation worker thread should not panic")
+        .expect(
+            "reconciliation should succeed once it can acquire the worktree lock after release",
+        );
+    let report = match outcome {
+        ReconciliationOutcome::Reconciled(report) => report,
+        ReconciliationOutcome::SkippedNoCheckoutIdentity => {
+            panic!("expected a Reconciled outcome, got SkippedNoCheckoutIdentity")
+        }
+    };
+    assert_eq!(
+        report.deleted, 0,
+        "reconciliation must retain X: it became a durable root through the real coordinate() CAS \
+         under the very lock reconciliation was waiting on"
+    );
+    assert_eq!(
+        report.local_required, 2,
+        "the worktree's durable roots are exactly the baseline cursor tree and X"
+    );
+
+    run_git(
+        &repo_root,
+        &[
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/sce/mutation-cursor/{}/{}", worktree_id.0, x.0),
+        ],
+    );
+
+    let db = ok_db().expect("reopening the DB for assertions should succeed");
+    let store = MutationTraceStore::new(&db);
+    let projection = store
+        .load_worktree(&worktree_id, None, None)
+        .expect("loading the worktree row should succeed")
+        .expect("the worktree row should exist");
+    assert_eq!(
+        projection.worktree_state.cursor_tree, x,
+        "the real coordinator CAS advanced the durable cursor to X"
+    );
+    let event = store
+        .load_mutation_event(&worktree_id, projection.worktree_state.revision)
+        .expect("loading the committed mutation event should succeed")
+        .expect("the observed drift must have committed one durable event");
+    assert_eq!(event.before_tree, baseline_tree);
+    assert_eq!(event.after_tree, x);
 
     cleanup(
         db_path
