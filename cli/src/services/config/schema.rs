@@ -739,6 +739,15 @@ mod agent_trace_config_tests {
     }
 
     #[test]
+    fn accepts_versioned_schema_declaration() {
+        let schema_url = format!(
+            "https://sce.crocoder.dev/v{}/config.json",
+            env!("CARGO_PKG_VERSION")
+        );
+        parse(&format!(r#"{{"$schema":"{schema_url}"}}"#)).unwrap();
+    }
+
+    #[test]
     fn parses_agent_trace_repository_identity_keys() {
         let config = parse(
             r#"{"agent_trace":{"repository_id":"team-monorepo","repository_remote":"upstream"}}"#,

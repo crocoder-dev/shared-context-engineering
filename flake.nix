@@ -174,6 +174,7 @@
           root = workspaceRoot;
           fileset = pkgs.lib.fileset.unions [
             ./config/pkl
+            ./.version
             ./config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts
             ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
             ./config/lib/pi-plugin/sce-pi-extension.ts
@@ -238,6 +239,7 @@
           root = workspaceRoot;
           fileset = pkgs.lib.fileset.unions [
             ./config/pkl
+            ./.version
             ./config/pkl/renderers/fixtures/atomic-commit-content-check.pkl
             ./config/pkl/renderers/fixtures/commit-forbidden-path-check.pkl
             ./config/pkl/renderers/fixtures/layout-reference-check.pkl
@@ -1155,6 +1157,7 @@
           runtimeInputs = [
             pkgs.coreutils
             pkgs.gnused
+            pkgs.pkl
           ];
           text = builtins.readFile ./nix/bump-version.sh;
         };
@@ -1646,7 +1649,7 @@
               type = "app";
               program = "${bumpVersionApp}/bin/bump-version";
               meta = {
-                description = "Bump the checked-in version in .version, Cargo.toml, Cargo.lock, npm package.json, and Flatpak metainfo";
+                description = "Bump the checked-in version and create the versioned SCE config schema";
               };
             };
 

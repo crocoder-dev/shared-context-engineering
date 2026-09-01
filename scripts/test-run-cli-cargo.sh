@@ -27,6 +27,7 @@ mkdir -p \
 cp "${helper}" "${test_repo}/scripts/run-cli-cargo.sh"
 cp "${producer}" "${test_repo}/scripts/produce-cli-generated-input.sh"
 cp "${input_declaration}" "${test_repo}/config/pkl/generator-inputs.txt"
+printf '0.0.0-test\n' > "${test_repo}/.version"
 
 printf 'generator-v1\n' > "${test_repo}/config/pkl/generate.pkl"
 printf 'agent-trace\n' > "${test_repo}/config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts"

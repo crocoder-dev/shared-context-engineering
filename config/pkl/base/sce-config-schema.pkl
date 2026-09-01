@@ -3,6 +3,7 @@ import "workflow-catalog.pkl" as catalog
 import "../deps/org.json_schema/JsonSchema.pkl"
 
 local presetIds = bash_policy_presets.presets.toList().map((preset) -> preset.id).toListing()
+local configSchemaUrl = "https://sce.crocoder.dev/v\(read("../../../.version").text.trim())/config.json"
 
 local optionalWorkflowIds = catalog.workflows.toMap()
   .filter((_, workflow) -> workflow.optional)
@@ -59,7 +60,7 @@ local perDbRetrySchema = new JsonSchema {
 
 local sceConfigSchema = new JsonSchema {
   $schema = "https://json-schema.org/draft/2020-12/schema"
-  $id = "https://sce.crocoder.dev/config.json"
+  $id = configSchemaUrl
   title = "SCE Config"
   description = "Canonical JSON Schema for global and repo-local sce/config.json files."
   type = "object"
@@ -67,7 +68,7 @@ local sceConfigSchema = new JsonSchema {
   properties {
     ["$schema"] = new JsonSchema {
       type = "string"
-      `const` = "https://sce.crocoder.dev/config.json"
+      `const` = configSchemaUrl
     }
     ["log_level"] = new JsonSchema {
       type = "string"

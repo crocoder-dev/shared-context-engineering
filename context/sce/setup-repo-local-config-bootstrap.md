@@ -7,7 +7,7 @@ Task `setup-repo-gate-and-local-config-bootstrap` T02, `turso-local-db-sync` T04
 ## Behavior
 
 - Any successful `sce setup` run in a git-backed repository creates `.sce/config.json` when the file is absent.
-- The bootstrap writes the canonical schema-only JSON payload: `{"$schema": "https://sce.crocoder.dev/config.json"}` (with trailing newline).
+- The bootstrap writes the canonical schema-only JSON payload: `{"$schema": "https://sce.crocoder.dev/v<version>/config.json"}` (where `<version>` is the CLI release version, with a trailing newline).
 - If `.sce/config.json` already exists, the bootstrap step returns `Ok(())` immediately and leaves the file untouched — no merge, no reformat, no overwrite.
 - The parent `.sce/` directory is created via `fs::create_dir_all` if missing.
 - The setup flow also bootstraps the canonical local DB through `LocalDbLifecycle::setup` and the Agent Trace DB through `AgentTraceDbLifecycle::setup`; both use the shared `TursoDb<M: DbSpec>` adapter.

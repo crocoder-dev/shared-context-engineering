@@ -31,6 +31,10 @@ use super::version::PACKAGE_VERSION;
 pub const AGENT_TRACE_VERSION: &str = "0.1.0";
 pub(crate) const SCE_WEB_BASE_URL: &str = "https://sce.crocoder.dev";
 
+pub(crate) fn sce_config_schema_url() -> String {
+    format!("{SCE_WEB_BASE_URL}/v{PACKAGE_VERSION}/config.json")
+}
+
 const RANGE_CONTENT_HASH_PREFIX: &str = "murmur3:";
 const RANGE_CONTENT_HASH_INPUT_VERSION: &[u8] = b"sce-agent-trace-range-content-hash-v1\0";
 const TOUCHED_LINE_ADDED_TAG: &[u8] = b"added\0";

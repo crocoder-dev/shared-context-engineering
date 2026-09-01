@@ -7,6 +7,7 @@ usage() {
   printf 'usage: bump-version.sh --repo-root <path> --version <version>\n\n' >&2
   printf 'Updates the project version in .version, cli/Cargo.toml, cli/Cargo.lock,\n' >&2
   printf 'npm/package.json, and the first release in packaging/flatpak/%s.metainfo.xml.\n' "$APP_ID" >&2
+  printf 'Also creates schema/v<version>/config.json from the generated SCE config schema.\n' >&2
   printf '\n' >&2
   printf 'Options:\n' >&2
   printf '  --repo-root <path>  Repository root directory\n' >&2
@@ -74,6 +75,7 @@ cargo_toml_path="$repo_root/cli/Cargo.toml"
 cargo_lock_path="$repo_root/cli/Cargo.lock"
 npm_package_path="$repo_root/npm/package.json"
 metainfo_path="$repo_root/packaging/flatpak/$APP_ID.metainfo.xml"
+schema_output_path="$repo_root/schema/v${version}/config.json"
 
 if [[ -z "$from_version" ]]; then
   from_version="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' < "$version_path")"
@@ -151,6 +153,36 @@ replace_once \
   "$metainfo_path" \
   "primary Flatpak release version" \
   "0,/<release /{/<release version=\"$from_version_regex\"/s//<release version=\"$version_replacement\"/}"
+
+schema_rel="${schema_output_path#"$repo_root"/}"
+if [[ "$dry_run" -eq 1 ]]; then
+  printf '  %s: would create from config/schema/sce-config.schema.json\n' "$schema_rel"
+  changes=$((changes + 1))
+else
+  schema_tmp_root="$(mktemp -d)"
+  cleanup_schema() {
+    rm -rf "$schema_tmp_root"
+  }
+  trap cleanup_schema EXIT
+  mkdir -p "$schema_tmp_root/config"
+  (
+    cd "$repo_root"
+    pkl eval -m "$schema_tmp_root" config/pkl/generate.pkl >/dev/null
+  )
+  config_schema_path="$schema_tmp_root/config/schema/sce-config.schema.json"
+  if [[ ! -r "$config_schema_path" ]]; then
+    printf 'error: Pkl generation did not produce config/schema/sce-config.schema.json\n' >&2
+    exit 1
+  fi
+  if [[ -f "$schema_output_path" ]] && cmp -s "$config_schema_path" "$schema_output_path"; then
+    printf '  %s: warning: already matches config/schema/sce-config.schema.json\n' "$schema_rel"
+  else
+    mkdir -p "$(dirname "$schema_output_path")"
+    cp "$config_schema_path" "$schema_output_path"
+    printf '  %s: updated from config/schema/sce-config.schema.json\n' "$schema_rel"
+    changes=$((changes + 1))
+  fi
+fi
 
 if [[ "$dry_run" -eq 1 ]]; then
   printf 'Dry run: %d file(s) would change\n' "$changes"

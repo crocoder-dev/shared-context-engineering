@@ -20,6 +20,7 @@ const PACKAGE_FALLBACK_INVENTORY: &str = "SHA256SUMS";
 const OPTIONAL_WORKFLOW_MANIFEST: &str = "config/optional-workflows.json";
 const OPTIONAL_WORKFLOW_MANIFEST_SCHEMA_VERSION: u64 = 1;
 const CANONICAL_GENERATOR_INPUTS: &[&str] = &[
+    ".version",
     "config/pkl",
     "config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts",
     "config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts",

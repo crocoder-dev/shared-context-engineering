@@ -59,8 +59,8 @@ pub(crate) fn is_missing_git_remote_error(error: &anyhow::Error) -> bool {
 /// Contains only the `$schema` declaration pointing to the SCE config JSON Schema.
 fn repo_local_config_bootstrap_payload() -> String {
     format!(
-        "{{\n  \"$schema\": \"{}/config.json\"\n}}\n",
-        crate::services::agent_trace::SCE_WEB_BASE_URL
+        "{{\n  \"$schema\": \"{}\"\n}}\n",
+        crate::services::agent_trace::sce_config_schema_url()
     )
 }
 
@@ -1947,6 +1947,19 @@ mod tests {
         ] {
             assert!(path.exists(), "expected baseline path {}", path.display());
         }
+    }
+
+    #[test]
+    fn repo_local_config_bootstrap_payload_uses_versioned_schema_url() {
+        let payload = repo_local_config_bootstrap_payload();
+
+        assert_eq!(
+            payload,
+            format!(
+                "{{\n  \"$schema\": \"https://sce.crocoder.dev/v{}/config.json\"\n}}\n",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
     }
 
     #[test]
