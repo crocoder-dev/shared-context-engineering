@@ -41,6 +41,15 @@ pub struct ReconciliationReport {
     pub deleted: usize,
 }
 
+/// Outcome of one reconciliation pass: a real pass that ran, carrying its
+/// [`ReconciliationReport`], versus a skip because no current checkout identity
+/// could be derived (an `Ok`, never an `Err`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconciliationOutcome {
+    Reconciled(ReconciliationReport),
+    SkippedNoCheckoutIdentity,
+}
+
 /// Why a reconciliation pass could not complete. One variant per fallible step,
 /// no `Other` catch-all — mirroring `CoordinateError`'s convention. Every
 /// non-`Ok` outcome leaves the SCE ref namespace in a consistent state: either
@@ -120,7 +129,7 @@ impl std::error::Error for ReconcileError {}
 pub fn reconcile_worktree<P>(
     repository_root: &Path,
     open_db: P,
-) -> std::result::Result<ReconciliationReport, ReconcileError>
+) -> std::result::Result<ReconciliationOutcome, ReconcileError>
 where
     P: FnOnce() -> Result<RepositoryAgentTraceDb>,
 {
@@ -141,7 +150,7 @@ pub(super) fn reconcile_worktree_inner<P, F>(
     repository_root: &Path,
     open_db: P,
     on_lock_contention: F,
-) -> std::result::Result<ReconciliationReport, ReconcileError>
+) -> std::result::Result<ReconciliationOutcome, ReconcileError>
 where
     P: FnOnce() -> Result<RepositoryAgentTraceDb>,
     F: FnOnce(),
@@ -158,11 +167,7 @@ where
         // `refs/sce/mutation-cursor/<worktree-id>/` prefix from — nothing to
         // inventory, validate, or delete. Clean no-op; no identity is created.
         None => {
-            return Ok(ReconciliationReport {
-                local_required: 0,
-                retained: 0,
-                deleted: 0,
-            });
+            return Ok(ReconciliationOutcome::SkippedNoCheckoutIdentity);
         }
     };
 
@@ -217,11 +222,11 @@ where
             .map_err(ReconcileError::DeleteTransaction)?;
     }
 
-    Ok(ReconciliationReport {
+    Ok(ReconciliationOutcome::Reconciled(ReconciliationReport {
         local_required: required_local.len(),
         retained: actual.len() - stale.len(),
         deleted: stale.len(),
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -242,6 +247,17 @@ mod tests {
         repo_root: PathBuf,
         db_path: PathBuf,
         worktree_id: WorktreeId,
+    }
+
+    fn expect_reconciled(
+        outcome: std::result::Result<ReconciliationOutcome, ReconcileError>,
+    ) -> ReconciliationReport {
+        match outcome.expect("reconciliation should succeed") {
+            ReconciliationOutcome::Reconciled(report) => report,
+            ReconciliationOutcome::SkippedNoCheckoutIdentity => {
+                panic!("expected a Reconciled outcome, got SkippedNoCheckoutIdentity")
+            }
+        }
     }
 
     fn git(dir: &Path, args: &[&str]) -> String {
@@ -325,7 +341,7 @@ mod tests {
                 .expect("pin should succeed");
         }
 
-        fn reconcile(&self) -> std::result::Result<ReconciliationReport, ReconcileError> {
+        fn reconcile(&self) -> std::result::Result<ReconciliationOutcome, ReconcileError> {
             reconcile_worktree(&self.repo_root, || self.open_db())
         }
 
@@ -412,7 +428,7 @@ mod tests {
         fx.pin(&orphan);
         seed_worktree_cursor(&fx.db(), &fx.worktree_id.0, 1, &cursor.0);
 
-        let report = fx.reconcile().expect("reconciliation should succeed");
+        let report = expect_reconciled(fx.reconcile());
 
         assert_eq!(
             report,
@@ -432,7 +448,7 @@ mod tests {
         let orphan = fx.capture_after_writing("a.txt", "orphan\n");
         fx.pin(&orphan);
 
-        let report = fx.reconcile().expect("reconciliation should succeed");
+        let report = expect_reconciled(fx.reconcile());
 
         assert_eq!(
             report,
@@ -452,7 +468,7 @@ mod tests {
         fx.pin(&cursor);
         seed_worktree_cursor(&fx.db(), &fx.worktree_id.0, 3, &cursor.0);
 
-        let report = fx.reconcile().expect("reconciliation should succeed");
+        let report = expect_reconciled(fx.reconcile());
 
         assert_eq!(
             report,
@@ -485,7 +501,7 @@ mod tests {
         seed_event(&db, &fx.worktree_id.0, 2, &tree_b.0, &tree_c.0);
         seed_event(&db, &fx.worktree_id.0, 3, &tree_c.0, &tree_d.0);
 
-        let report = fx.reconcile().expect("reconciliation should succeed");
+        let report = expect_reconciled(fx.reconcile());
 
         assert_eq!(
             report,
@@ -516,7 +532,7 @@ mod tests {
         // this worktree does not.
         seed_worktree_cursor(&fx.db(), "other-worktree", 1, &shared.0);
 
-        let report = fx.reconcile().expect("reconciliation should succeed");
+        let report = expect_reconciled(fx.reconcile());
 
         assert_eq!(
             report,
@@ -626,7 +642,7 @@ mod tests {
         fx.pin(&orphan);
         seed_worktree_cursor(&fx.db(), &fx.worktree_id.0, 1, &cursor.0);
 
-        let first = fx.reconcile().expect("first pass should succeed");
+        let first = expect_reconciled(fx.reconcile());
         assert_eq!(
             first,
             ReconciliationReport {
@@ -636,7 +652,7 @@ mod tests {
             }
         );
 
-        let second = fx.reconcile().expect("second pass should succeed");
+        let second = expect_reconciled(fx.reconcile());
         assert_eq!(
             second,
             ReconciliationReport {
@@ -657,7 +673,7 @@ mod tests {
 
         assert_eq!(fx.object_type(&orphan.0).as_deref(), Some("tree"));
 
-        let report = fx.reconcile().expect("reconciliation should succeed");
+        let report = expect_reconciled(fx.reconcile());
         assert_eq!(report.deleted, 1);
         assert!(
             !fx.ref_exists(&fx.owned_ref(&orphan)),
@@ -673,7 +689,7 @@ mod tests {
     }
 
     #[test]
-    fn no_checkout_identity_is_a_clean_no_op() {
+    fn no_checkout_identity_returns_a_distinct_skipped_outcome() {
         let fx = fixture("no-identity");
         // Remove the checkout id so `read_checkout_id` returns `Ok(None)`.
         let git_dir = resolve_git_dir(&fx.repo_root).expect("git dir should resolve");
@@ -683,21 +699,37 @@ mod tests {
         let orphan = fx.capture_after_writing("a.txt", "orphan\n");
         fx.pin_for(&fx.worktree_id, &orphan);
 
-        let report = fx
-            .reconcile()
-            .expect("reconciliation should be a clean no-op");
+        let outcome = fx.reconcile().expect("the skip is an Ok, not an Err");
 
-        assert_eq!(
-            report,
-            ReconciliationReport {
-                local_required: 0,
-                retained: 0,
-                deleted: 0,
-            }
-        );
+        assert_eq!(outcome, ReconciliationOutcome::SkippedNoCheckoutIdentity);
         assert!(
             fx.ref_exists(&fx.owned_ref(&orphan)),
             "no pin is inventoried, validated, or deleted without a derivable identity"
+        );
+    }
+
+    #[test]
+    fn a_missing_checkout_identity_skip_touches_no_db_and_no_ref() {
+        let fx = fixture("no-identity-no-db");
+        let git_dir = resolve_git_dir(&fx.repo_root).expect("git dir should resolve");
+        std::fs::remove_file(git_dir.join("sce").join("checkout-id"))
+            .expect("checkout id file should be removable");
+
+        let orphan = fx.capture_after_writing("a.txt", "orphan\n");
+        fx.pin_for(&fx.worktree_id, &orphan);
+        let owned = fx.owned_ref(&orphan);
+        let before = git(&fx.repo_root, &["rev-parse", &owned]);
+
+        let outcome = reconcile_worktree(&fx.repo_root, || {
+            panic!("open_db must not be invoked on the missing-checkout-identity skip path")
+        })
+        .expect("the skip is an Ok, not an Err");
+
+        assert_eq!(outcome, ReconciliationOutcome::SkippedNoCheckoutIdentity);
+        assert_eq!(
+            git(&fx.repo_root, &["rev-parse", &owned]),
+            before,
+            "the pre-seeded ref is byte-identical after the skip"
         );
     }
 }
