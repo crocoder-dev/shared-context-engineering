@@ -12,8 +12,10 @@ same `#[allow(dead_code)]` precedent as the rest of `mutation_trace`.
 `coordinator::coordinate()` is the public entrypoint, but `runtime/mod.rs`
 still declares `mod coordinator;` privately, so `coordinate()` is reachable
 only from within `runtime` itself (its own tests) for now; a `pub(crate)`
-re-export is deferred until a harness adapter needs it. Nothing under
-`runtime/` is wired into any hook, command, or `diff_traces` insertion yet.
+re-export is deferred until a harness adapter needs it. `mod
+ref_reconciliation;` and its `reconcile_worktree` entrypoint are private the
+same way. Nothing under `runtime/` is wired into any hook, command, or
+`diff_traces` insertion yet.
 
 `runtime` depends on `protocol`/`store`/`types` and on `services::checkout`,
 never the reverse — this is a structural module boundary, not merely a
@@ -51,6 +53,14 @@ API end to end. Only harness/command wiring remains.
   `delete_pins` uses no-dereference semantics so an inventory→delete ref-type
   race cannot escape the inventoried namespace. Full contract in
   [`mutation-trace-snapshot-service.md`](mutation-trace-snapshot-service.md).
+- `cli/src/services/mutation_trace/runtime/ref_reconciliation.rs` — the
+  conservative per-worktree snapshot-ref maintenance pass (`reconcile_worktree`
+  / `pub(super) reconcile_worktree_inner`, `ReconciliationReport`,
+  `ReconcileError`, `RECONCILIATION_LOCK_TIMEOUT`): under the worktree's
+  `WorktreeLock`, delete only pins whose tree is a durable root of **no**
+  worktree, fail closed if any local root lacks a pin, write no
+  `mutation_trace_*` row, never arm the taint marker. Full contract in
+  [`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md).
 - `cli/src/services/mutation_trace/runtime/coordinator.rs` — the composition
   point that drives `protocol.rs`/`store.rs`/`git_snapshot.rs` together. Its
   `SnapshotCapture` trait (`capture(&self) -> Result<TreeId>`, `pin(&self,
@@ -118,7 +128,9 @@ marker arming/clearing, snapshot capture, worktree/scope materialization,
 recovery, and the CAS retry loop): `coordinate()` acquires it before arming the
 marker and resolving checkout identity, and holds it until the call returns. It
 is held on every `coordinate()` call, unlike the checkout-identity-creation
-lock.
+lock. `ref_reconciliation::reconcile_worktree` acquires the **same** lock file
+(bounded by its own `RECONCILIATION_LOCK_TIMEOUT`) before it inventories pins,
+reads durable roots, or deletes anything.
 
 ## Two distinct locks, two distinct invariants
 
@@ -145,7 +157,7 @@ On-disk layout so far:
 
 <repository's normal, shared object database>       (runtime::git_snapshot writes here directly)
 <repository's normal, shared refs namespace>
-└── refs/sce/mutation-cursor/<worktree-id>/<tree-sha>   (runtime::git_snapshot, one ref per pinned tree, create-only)
+└── refs/sce/mutation-cursor/<worktree-id>/<tree-sha>   (runtime::git_snapshot, create-only per invocation; orphan/unreferenced pins reclaimed by runtime::ref_reconciliation, every pin for a current or historical durable mutation-cursor root retained)
 ```
 
 ## Testing boundary
@@ -225,7 +237,9 @@ marker is now overlaid onto `database_failure` recovery on the next invocation. 
 wiring remain future work tracked by the `mutation-cursor-external-taint` and
 `mutation-cursor-runtime-coordinator` plans.
 
-See also: [`mutation-trace-snapshot-service.md`](mutation-trace-snapshot-service.md)
+See also: [`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md)
+(the per-worktree snapshot-ref maintenance pass under the same `WorktreeLock`),
+[`mutation-trace-snapshot-service.md`](mutation-trace-snapshot-service.md)
 (the `GitSnapshotService` capture/pin/diff/inventory/delete contract),
 [`mutation-trace-protocol.md`](mutation-trace-protocol.md),
 [`mutation-trace-store.md`](mutation-trace-store.md),
