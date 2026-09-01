@@ -475,18 +475,31 @@ impl Drop for TempIndexGuard {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
     use super::*;
 
-    static NEXT_TEST_REPO_ID: AtomicU64 = AtomicU64::new(0);
+    struct TestRepo {
+        _temp_dir: tempfile::TempDir,
+        root: PathBuf,
+    }
 
-    fn unique_test_repo(label: &str) -> PathBuf {
-        let id = NEXT_TEST_REPO_ID.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "sce-git-snapshot-{label}-{}-{id}",
-            std::process::id()
-        ))
+    impl TestRepo {
+        fn root(&self) -> &Path {
+            &self.root
+        }
+    }
+
+    fn test_repo(label: &str) -> TestRepo {
+        let temp_dir = tempfile::Builder::new()
+            .prefix(&format!("sce-git-snapshot-{label}-"))
+            .tempdir()
+            .expect("test repository temp directory should be created");
+
+        let root = temp_dir.path().to_path_buf();
+
+        TestRepo {
+            _temp_dir: temp_dir,
+            root,
+        }
     }
 
     fn init_repo(repo_root: &Path) {
@@ -515,17 +528,14 @@ mod tests {
         run(repo_root, &["commit", "--quiet", "-m", message]);
     }
 
-    fn remove_test_repo(repo_root: &Path) {
-        let _ = std::fs::remove_dir_all(repo_root);
-    }
-
     fn worktree_id() -> WorktreeId {
         WorktreeId("test-worktree".to_string())
     }
 
     #[test]
     fn capture_preserves_real_index_and_working_tree_state() {
-        let repo_root = unique_test_repo("preserves-index");
+        let repo = test_repo("preserves-index");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         std::fs::write(repo_root.join("committed.txt"), b"original\n")
             .expect("committed file should be writable");
@@ -562,13 +572,12 @@ mod tests {
         assert!(ls_tree.contains("untracked.txt"));
         let committed_blob = run(&repo_root, &["show", &format!("{}:committed.txt", tree.0)]);
         assert_eq!(committed_blob, "modified\n");
-
-        remove_test_repo(&repo_root);
     }
 
     #[test]
     fn capture_excludes_ignored_files() {
-        let repo_root = unique_test_repo("ignored-files");
+        let repo = test_repo("ignored-files");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         std::fs::write(repo_root.join(".gitignore"), b"ignored.txt\n")
             .expect(".gitignore should be writable");
@@ -583,13 +592,12 @@ mod tests {
 
         let ls_tree = run(&repo_root, &["ls-tree", "-r", "--name-only", &tree.0]);
         assert!(!ls_tree.contains("ignored.txt"));
-
-        remove_test_repo(&repo_root);
     }
 
     #[test]
     fn capture_reflects_deletion_of_a_committed_file() {
-        let repo_root = unique_test_repo("deletion");
+        let repo = test_repo("deletion");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         std::fs::write(repo_root.join("to-delete.txt"), b"will be removed\n")
             .expect("file should be writable");
@@ -603,13 +611,12 @@ mod tests {
 
         let ls_tree = run(&repo_root, &["ls-tree", "-r", "--name-only", &tree.0]);
         assert!(!ls_tree.contains("to-delete.txt"));
-
-        remove_test_repo(&repo_root);
     }
 
     #[test]
     fn capture_on_unborn_head_with_a_file_produces_a_valid_tree() {
-        let repo_root = unique_test_repo("unborn-head-with-file");
+        let repo = test_repo("unborn-head-with-file");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         std::fs::write(repo_root.join("untracked.txt"), b"before any commit\n")
             .expect("untracked file should be writable");
@@ -631,13 +638,12 @@ mod tests {
 
         let ls_tree = run(&repo_root, &["ls-tree", "-r", "--name-only", &tree.0]);
         assert!(ls_tree.contains("untracked.txt"));
-
-        remove_test_repo(&repo_root);
     }
 
     #[test]
     fn an_unexpected_head_probe_failure_propagates_instead_of_using_read_tree_empty() {
-        let repo_root = unique_test_repo("head-probe-failure");
+        let repo = test_repo("head-probe-failure");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         std::fs::write(repo_root.join("file.txt"), b"content\n").expect("file should be writable");
         commit_all(&repo_root, "initial commit");
@@ -652,8 +658,6 @@ mod tests {
             result.is_err(),
             "an unexpected HEAD-probe failure must surface as an error, not a false empty-baseline capture"
         );
-
-        remove_test_repo(&repo_root);
     }
 
     fn relative_path_from(base: &Path, target: &Path) -> PathBuf {
@@ -678,7 +682,8 @@ mod tests {
 
     #[test]
     fn resolves_an_absolute_git_dir_from_a_relative_repository_root() {
-        let repo_root_abs = unique_test_repo("relative-root");
+        let repo = test_repo("relative-root");
+        let repo_root_abs = repo.root().to_path_buf();
         init_repo(&repo_root_abs);
         std::fs::write(repo_root_abs.join("file.txt"), b"relative content\n")
             .expect("file should be writable");
@@ -713,13 +718,12 @@ mod tests {
             .diff_trees(&tree, &tree)
             .expect("diff should succeed with a relative repository root");
         assert!(diff.is_empty());
-
-        remove_test_repo(&repo_root_abs);
     }
 
     #[test]
     fn capture_on_unborn_head_with_no_files_produces_an_empty_tree() {
-        let repo_root = unique_test_repo("unborn-head-no-files");
+        let repo = test_repo("unborn-head-no-files");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
 
         let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
@@ -729,13 +733,12 @@ mod tests {
 
         let ls_tree = run(&repo_root, &["ls-tree", "-r", "--name-only", &tree.0]);
         assert_eq!(ls_tree.trim(), "");
-
-        remove_test_repo(&repo_root);
     }
 
     #[test]
     fn snapshot_survives_a_fresh_process_and_temp_index_deletion() {
-        let repo_root = unique_test_repo("survives-process-exit");
+        let repo = test_repo("survives-process-exit");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         std::fs::write(repo_root.join("file.txt"), b"content\n").expect("file should be writable");
 
@@ -750,13 +753,12 @@ mod tests {
 
         let resolved = run(&repo_root, &["cat-file", "-t", &tree.0]);
         assert_eq!(resolved.trim(), "tree");
-
-        remove_test_repo(&repo_root);
     }
 
     #[test]
     fn pinned_snapshot_survives_git_gc_prune_now() {
-        let repo_root = unique_test_repo("gc-prune-now");
+        let repo = test_repo("gc-prune-now");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         std::fs::write(repo_root.join("pinned.txt"), b"pinned content\n")
             .expect("file should be writable");
@@ -789,13 +791,12 @@ mod tests {
             !unpinned_probe.status.success(),
             "an unpinned, unreachable tree should be reclaimed by git gc --prune=now"
         );
-
-        remove_test_repo(&repo_root);
     }
 
     #[test]
     fn pinned_snapshot_survives_git_prune_expire_now() {
-        let repo_root = unique_test_repo("prune-expire-now");
+        let repo = test_repo("prune-expire-now");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         std::fs::write(repo_root.join("pinned.txt"), b"pinned content\n")
             .expect("file should be writable");
@@ -828,13 +829,12 @@ mod tests {
             !unpinned_probe.status.success(),
             "an unpinned, unreachable tree should be reclaimed by git prune --expire=now"
         );
-
-        remove_test_repo(&repo_root);
     }
 
     #[test]
     fn pin_tree_is_idempotent_for_the_same_worktree_and_tree() {
-        let repo_root = unique_test_repo("pin-idempotent");
+        let repo = test_repo("pin-idempotent");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         std::fs::write(repo_root.join("file.txt"), b"content\n").expect("file should be writable");
 
@@ -851,13 +851,12 @@ mod tests {
         let ref_name = pin_ref_name(&worktree_id(), &tree);
         let resolved = run(&repo_root, &["rev-parse", &ref_name]);
         assert_eq!(resolved.trim(), tree.0);
-
-        remove_test_repo(&repo_root);
     }
 
     #[test]
     fn diff_trees_returns_parseable_git_diff_output() {
-        let repo_root = unique_test_repo("diff-trees");
+        let repo = test_repo("diff-trees");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         std::fs::write(repo_root.join("file.txt"), b"before\n").expect("file should be writable");
         let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
@@ -872,13 +871,12 @@ mod tests {
         assert!(diff.contains("file.txt"));
         assert!(diff.contains("-before"));
         assert!(diff.contains("+after"));
-
-        remove_test_repo(&repo_root);
     }
 
     #[test]
     fn capture_and_pin_work_against_a_sha256_repository_when_supported() {
-        let repo_root = unique_test_repo("sha256");
+        let repo = test_repo("sha256");
+        let repo_root = repo.root().to_path_buf();
         std::fs::create_dir_all(&repo_root).expect("repo root should be created");
         let init = Command::new("git")
             .args(["init", "--quiet", "--object-format=sha256"])
@@ -886,7 +884,6 @@ mod tests {
             .output()
             .expect("git init should spawn");
         if !init.status.success() {
-            remove_test_repo(&repo_root);
             return;
         }
         run(&repo_root, &["config", "user.email", "test@example.com"]);
@@ -903,8 +900,6 @@ mod tests {
 
         let ls_tree = run(&repo_root, &["ls-tree", "-r", "--name-only", &tree.0]);
         assert!(ls_tree.contains("file.txt"));
-
-        remove_test_repo(&repo_root);
     }
 
     fn other_worktree_id() -> WorktreeId {
@@ -939,7 +934,8 @@ mod tests {
 
     #[test]
     fn list_pins_returns_only_the_target_worktree_prefix() {
-        let repo_root = unique_test_repo("list-pins-scoped");
+        let repo = test_repo("list-pins-scoped");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
 
@@ -977,13 +973,12 @@ mod tests {
             &repo_root,
             &format!("{REF_NAMESPACE}/{}/{}", other_worktree_id().0, tree_a.0)
         ));
-
-        remove_test_repo(&repo_root);
     }
 
     #[test]
     fn list_pins_is_empty_when_the_worktree_has_no_pins() {
-        let repo_root = unique_test_repo("list-pins-empty");
+        let repo = test_repo("list-pins-empty");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
 
@@ -991,13 +986,12 @@ mod tests {
             .list_pins(&worktree_id())
             .expect("inventory should succeed");
         assert!(pins.is_empty());
-
-        remove_test_repo(&repo_root);
     }
 
     #[test]
     fn list_pins_rejects_a_ref_whose_target_is_not_a_tree() {
-        let repo_root = unique_test_repo("list-pins-non-tree");
+        let repo = test_repo("list-pins-non-tree");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         std::fs::write(repo_root.join("file.txt"), b"content\n").expect("file should be writable");
         commit_all(&repo_root, "initial commit");
@@ -1020,13 +1014,12 @@ mod tests {
             }
             other => panic!("expected MalformedRef for a non-tree target, got {other:?}"),
         }
-
-        remove_test_repo(&repo_root);
     }
 
     #[test]
     fn list_pins_rejects_a_ref_whose_name_disagrees_with_its_target() {
-        let repo_root = unique_test_repo("list-pins-name-mismatch");
+        let repo = test_repo("list-pins-name-mismatch");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
 
@@ -1046,13 +1039,12 @@ mod tests {
             }
             other => panic!("expected MalformedRef for a name/target mismatch, got {other:?}"),
         }
-
-        remove_test_repo(&repo_root);
     }
 
     #[test]
     fn list_pins_rejects_a_ref_with_an_unexpected_extra_path_segment() {
-        let repo_root = unique_test_repo("list-pins-extra-segment");
+        let repo = test_repo("list-pins-extra-segment");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
 
@@ -1069,13 +1061,12 @@ mod tests {
             }
             other => panic!("expected MalformedRef for an extra path segment, got {other:?}"),
         }
-
-        remove_test_repo(&repo_root);
     }
 
     #[test]
     fn list_pins_reports_a_for_each_ref_execution_failure_as_the_git_variant() {
-        let repo_root = unique_test_repo("list-pins-git-failure");
+        let repo = test_repo("list-pins-git-failure");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
 
@@ -1087,13 +1078,12 @@ mod tests {
                 "expected the Git variant for a for-each-ref execution failure, got {other:?}"
             ),
         }
-
-        remove_test_repo(&repo_root);
     }
 
     #[test]
     fn delete_pins_removes_exactly_the_supplied_refs() {
-        let repo_root = unique_test_repo("delete-pins-exact");
+        let repo = test_repo("delete-pins-exact");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
 
@@ -1124,13 +1114,12 @@ mod tests {
             &repo_root,
             &format!("{REF_NAMESPACE}/{}/{}", worktree_id().0, tree_a.0)
         ));
-
-        remove_test_repo(&repo_root);
     }
 
     #[test]
     fn delete_pins_is_a_successful_noop_for_an_empty_slice() {
-        let repo_root = unique_test_repo("delete-pins-empty");
+        let repo = test_repo("delete-pins-empty");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
 
@@ -1147,13 +1136,12 @@ mod tests {
             &repo_root,
             &format!("{REF_NAMESPACE}/{}/{}", worktree_id().0, tree_a.0)
         ));
-
-        remove_test_repo(&repo_root);
     }
 
     #[test]
     fn delete_pins_atomically_aborts_when_a_ref_changes_after_preflight() {
-        let repo_root = unique_test_repo("delete-pins-atomic-abort");
+        let repo = test_repo("delete-pins-atomic-abort");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
 
@@ -1205,13 +1193,12 @@ mod tests {
             tree_c.0,
             "the mismatched ref keeps the value it was given after preflight"
         );
-
-        remove_test_repo(&repo_root);
     }
 
     #[test]
     fn list_pins_rejects_a_symbolic_ref_inside_the_mutation_cursor_namespace() {
-        let repo_root = unique_test_repo("list-pins-symref");
+        let repo = test_repo("list-pins-symref");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
 
@@ -1245,13 +1232,12 @@ mod tests {
             b_ref,
             "A/T must still be the untouched symbolic ref"
         );
-
-        remove_test_repo(&repo_root);
     }
 
     #[test]
     fn delete_pins_refuses_to_act_when_an_inventoried_direct_ref_became_a_symbolic_ref() {
-        let repo_root = unique_test_repo("delete-pins-symref-race");
+        let repo = test_repo("delete-pins-symref-race");
+        let repo_root = repo.root().to_path_buf();
         init_repo(&repo_root);
         let service = GitSnapshotService::new(&repo_root).expect("service should resolve git-dir");
 
@@ -1292,7 +1278,5 @@ mod tests {
             b_ref,
             "A/T is not touched — delete_pins prefers failure over acting on a symref"
         );
-
-        remove_test_repo(&repo_root);
     }
 }
