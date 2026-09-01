@@ -2,33 +2,33 @@
 
 `cli/src/services/mutation_trace/runtime/ref_reconciliation.rs` is a
 conservative, per-worktree maintenance pass that removes orphaned / unreferenced
-SCE-owned snapshot pins **within one still-identifiable worktree's ref
-namespace** while retaining every tree any current or historical durable
-mutation-cursor state in the repository still references. Built by the
-`mutation-cursor-ref-reconciliation` plan
+SCE-owned snapshot pins **within the ref namespace of a checkout identity a
+current worktree still owns** while retaining every tree any current or
+historical durable mutation-cursor state in the repository still references.
+Built by the `mutation-cursor-ref-reconciliation` plan
 (`context/plans/mutation-cursor-ref-reconciliation.md`). It is deliberately
-**not** a guarantee that SCE snapshot refs never accumulate: a retired linked
-worktree's namespace is beyond its reach (see
-[Scope: an active, still-identifiable worktree namespace only](#scope-an-active-still-identifiable-worktree-namespace-only)).
+**not** a guarantee that SCE snapshot refs never accumulate: a namespace whose
+checkout identity no current worktree derives is beyond its reach (see
+[Scope: an owned checkout-identity namespace only](#scope-an-owned-checkout-identity-namespace-only)).
 
 `GitSnapshotService::pin_tree` is **create-only per invocation** — a crash,
 failed transition, or other interrupted `coordinate()` path can leave a
 `refs/sce/mutation-cursor/<worktree-id>/<tree-sha>` pin with no corresponding
 durable root. Reconciliation is the reclamation step for exactly that state. It
 is **not** a bound on storage growth: every retained `mutation_trace_events`
-row keeps its `before_tree` / `after_tree` as durable roots (a successful
-`A → B → C → D` history keeps all four pins). Bounding historical snapshot
-storage needs a separate future retention/compaction lifecycle this plan does
+row keeps its `before_tree` / `after_tree` as durable roots, so a successful
+`A → B → C → D` history keeps all four pins. Bounding historical snapshot
+storage needs a separate future retention/compaction lifecycle this module does
 not design.
 
-The design is deliberately asymmetric: **keeping an unnecessary ref costs disk;
-deleting a required ref destroys durable evidence.** False retention is
-acceptable; false deletion is not.
+The design is deliberately asymmetric and this bias governs every rule below:
+**keeping an unnecessary ref costs disk; deleting a required ref destroys
+durable evidence.** False retention is acceptable; false deletion is not.
 
 `mod ref_reconciliation;` is private in `runtime/mod.rs` (like `coordinator`);
-`reconcile_worktree` is `pub` only within `runtime`, with no `pub(crate)`
-re-export and no hook / command / `diff_traces` wiring yet — when it runs is
-deferred to the harness-wiring PR.
+`reconcile_worktree` is `pub` only within `runtime` — no `pub(crate)` re-export,
+no hook / command / `diff_traces` wiring yet (invocation timing is the
+harness-wiring PR's).
 
 ## Entry point and identity
 
@@ -40,59 +40,62 @@ pub fn reconcile_worktree(
 ```
 
 A one-line delegation to `pub(super) fn reconcile_worktree_inner(..,
-on_lock_contention: impl FnOnce())` — the deterministic test seam mirroring
-`coordinate` / `coordinate_inner`, reachable from `runtime` and
-`runtime::tests` (where the cross-module lock-race regressions live) but
-invisible outside `runtime`.
+on_lock_contention: impl FnOnce())` — the deterministic test seam (mirroring
+`coordinate` / `coordinate_inner`), visible only within `runtime`.
 
-Like `coordinate()`, it never accepts a `WorktreeId`, `TreeId`, or ref name,
-and never opens the DB itself: worktree identity is derived
-`repository_root → checkout::resolve_git_dir → checkout::read_checkout_id`, and
-`open_db` is a caller-supplied provider. `read_checkout_id → Ok(None)` (no
-current checkout identity to derive an owned ref prefix from) returns
-`Ok(ReconciliationOutcome::SkippedNoCheckoutIdentity)` — an observable skip,
-**not** a zero-count report: no namespace inventoried, `open_db` never called,
-no durable-root comparison, no ref deleted, lock released on return, no identity
-created. It makes **no** claim that the repository holds no SCE mutation-cursor
-refs for a prior checkout identity — those may be the stranded retired-worktree
-namespaces below. `Err` is `ReconcileError::CheckoutIdentity` (a corrupt id, not an absent one).
+Like `coordinate()`, it never accepts a `WorktreeId`, `TreeId`, or ref name and
+never opens the DB itself: identity is
+`repository_root → resolve_git_dir → read_checkout_id`, `open_db` is
+caller-supplied. `read_checkout_id → Ok(None)` returns
+`Ok(SkippedNoCheckoutIdentity)` — an observable skip, **not** a zero-count
+report: nothing inventoried, `open_db` never called, no ref touched, lock
+released, no identity created or recovered; it makes **no** claim the repository
+holds no SCE refs for a prior checkout identity (those are the unowned
+namespaces below). `Err` is `ReconcileError::CheckoutIdentity` (a corrupt id, not an absent one).
 
-## Scope: an active, still-identifiable worktree namespace only
+## Scope: an owned checkout-identity namespace only
 
-Reconciliation reclaims orphan / unreferenced pins **only for a namespace whose
-worktree is still present and identifiable**. The owned ref prefix is derived
-from the *current* checkout identity of the worktree at `repository_root`
-(`resolve_git_dir → read_checkout_id`), so a pass can only ever inventory
-`refs/sce/mutation-cursor/<that-id>/`. High-frequency harness traffic against an
-active worktree — where interrupted `coordinate()` runs leave orphan pins — is
-exactly the case this pass reclaims under the `WorktreeLock`.
-
-A per-worktree `<git-dir>/sce/checkout-id` disappears when its linked worktree
-is removed (`git worktree remove`), but the
-`refs/sce/mutation-cursor/<checkout-id>/*` refs it created live in the shared
-repository ref namespace and survive. No surviving worktree can derive that
-retired id, so no per-worktree pass can ever inventory or reconcile that
-namespace — those refs are stranded.
+Reconciliation reclaims orphan / unreferenced pins **only** under
+`refs/sce/mutation-cursor/<id>/` where `<id>` is a checkout identity a **current
+worktree still derives** (`resolve_git_dir → read_checkout_id`). The unsupported
+case is identity-based, not path-based:
 
 ```text
-<worktree-git-dir>/sce/checkout-id                  per-worktree, gone with the worktree
-refs/sce/mutation-cursor/<checkout-id>/<tree-sha>   repository-shared, survives
-
-    git worktree remove W  →  checkout id gone  →  refs/.../<retired-id>/*
-    unreachable by every per-worktree pass  →  stranded
+refs/sce/mutation-cursor/<checkout-id>/*  —  does a current worktree derive <checkout-id>?
+    yes → active namespace   (reclaimed here under the WorktreeLock)
+     no → unowned namespace  (no per-worktree pass can ever reach it)
 ```
 
-**Harness gate.** A persistent / current-worktree harness lifecycle can rely on
-this pass and is storage-cleanup complete for this module's scope. A harness
-that **automatically creates and destroys ephemeral linked worktrees** must
-**not** be treated as storage-cleanup complete until the repository-scoped
-operation below exists — each removed worktree strands its whole namespace.
-This is a limitation of scope, not a bug: it is orthogonal to the "reconciliation
-≠ historical retention policy" boundary above (historical event trees stay
-pinned because they remain durable roots; retired namespaces stay pinned because
-no pass can reach them).
+High-frequency harness traffic against a worktree with a **stable** checkout
+identity — where interrupted `coordinate()` runs leave orphan pins — is exactly
+the active-namespace case this pass covers.
 
-### Future work: repository-scoped retired-worktree reconciliation
+A namespace becomes **unowned** whenever no current worktree can derive its
+checkout id. Two lifecycles cause this:
+
+**Case A — deleted linked worktree.** `git worktree remove W` deletes W's
+worktree-specific git dir, so its `<git-dir>/sce/checkout-id` is gone; the
+`refs/sce/mutation-cursor/<id>/*` it created survive in the shared repository
+ref namespace.
+
+**Case B — checkout-identity metadata loss / recreation.** A **present**
+worktree's `<git-dir>/sce/checkout-id` disappears (id `A`). `reconcile_worktree`
+returns `SkippedNoCheckoutIdentity` and does nothing. A later
+`get_or_create_checkout_id` (e.g. the next `coordinate()`) mints a **new** id
+`B`; the worktree now operates as `B` while `refs/.../A/*` are unowned. This is
+**not** normal operation: it is a metadata-loss / recreation lifecycle the
+maintenance model must handle conservatively — reconciliation never recreates
+`A` or adopts its namespace.
+
+**Harness gate.** A persistent / current-worktree harness whose **checkout
+identity stays stable** relies on this pass for active-namespace orphan cleanup
+and is storage-cleanup complete for this module's scope. Any lifecycle that can
+**retire, replace, lose, or recreate** checkout identities (ephemeral linked
+worktrees among them, but not only those) can leave unowned namespaces and needs
+the future repository-scoped operation below. This is a scope limit, not a bug,
+orthogonal to the "reconciliation ≠ historical retention policy" boundary above.
+
+### Future work: repository-scoped unowned-namespace reconciliation
 
 Not implemented here — this module adds **no** repository-global namespace scan
 and **no** repository-global ref deletion. Recorded shape:
@@ -100,33 +103,29 @@ and **no** repository-global ref deletion. Recorded shape:
 ```text
 enumerate refs/sce/mutation-cursor/<id>/*   (git for-each-ref on the namespace)
         ↓
-active checkout ids                         (git worktree list → each worktree's checkout-id)
+active checkout ids   (enumerate current worktrees → read each one's checkout-id)
         ↓
-retired ids                                 (namespace present, no active worktree owns it)
+unowned ids           (namespace present, no current worktree derives it)
         ↓
-for each retired namespace, each pinned tree T:
-    T ∉ durable_roots(repository)  →  delete refs/sce/mutation-cursor/<id>/T
+for each unowned namespace, each pinned tree T:
     T ∈ durable_roots(repository)  →  retain
+    T ∉ durable_roots(repository)  →  safe deletion candidate
 ```
 
 It must inherit this module's guarantees: the repository-wide durability
-invariant (`delete <retired-W>/T` only if `T ∉ durable_roots(repository)`, read
-through `load_all_tree_roots()`) because a retired worktree may still own
-historical `mutation_trace_events` rows other tooling needs; the
-false-retention-over-false-deletion bias; and a hard prohibition on the shortcut
-"namespace has no active worktree → delete the whole namespace". It is a
-separate PR — it needs the repository-global namespace scan and cross-worktree
-active-id inventory this module deliberately omits — gated behind the same
-harness-wiring work as invocation timing. This module's per-worktree pass
-remains the correct mechanism for high-frequency harness traffic against
-**active** worktrees.
+invariant (`delete <namespace>/T` only if `T ∉ durable_roots(repository)`, read
+through `load_all_tree_roots()`) because an unowned namespace may still hold the
+only SCE ref protecting historical `mutation_trace_events` trees other tooling
+needs; the false-retention-over-false-deletion bias; and a hard prohibition on
+the shortcut "checkout id is unowned → delete its whole namespace". It is a
+separate PR (a repository-global scan and cross-worktree active-id inventory this
+module omits), gated behind the same harness-wiring work as invocation timing.
 
 ## Two invariants
 
 Conflating them — deciding deletion from the target worktree's roots alone — is
-the cross-worktree safety bug this design exists to avoid. Linked worktrees
-share one Git object database, so an `A`-owned ref can be the last SCE ref
-protecting a tree that only worktree `B` durably requires.
+the cross-worktree safety bug this design avoids: linked worktrees share one
+object database, so an `A`-owned ref can be the last SCE ref protecting a tree only `B` durably requires.
 
 ```mermaid
 flowchart TD
@@ -147,16 +146,15 @@ flowchart TD
   missing pin in some *other* worktree never makes `W`'s pass fail — that would
   let one worktree's degradation block maintenance everywhere.
 - **Deletion safety** (`load_all_tree_roots()`) is repository-wide. `W/T` is
-  deleted only when `T` is in **no** worktree's durable root set. If `B`
-  durably needs `T` and `A` also has a `T` pin, `A` retains it — `A`'s
-  otherwise-stale ref then supplies accidental backup reachability for `B`'s
-  degraded state (`reconcile_a_retains_its_pin_when_another_worktree_durably_requires_the_same_tree`).
+  deleted only when `T` is in **no** worktree's durable root set. If `B` durably
+  needs `T` and `A` also has a `T` pin, `A` retains it as accidental backup
+  reachability for `B`'s degraded state.
 
 A DB `TreeId` is a *logical* durability requirement, not itself a Git
 reachability edge: it obliges reconciliation to keep at least one SCE ref
-protecting that tree, and that retained ref is what supplies physical Git
-reachability. Each root-set query is [one SQL statement over one DB
-snapshot](mutation-trace-store.md), which is what keeps a concurrent atomic
+protecting that tree, and that retained ref supplies physical Git reachability.
+Each root-set query is [one SQL statement over one DB
+snapshot](mutation-trace-store.md), which keeps a concurrent atomic
 `cursor T → X` + `event T → X` commit on another worktree from tearing the
 repository-wide read — no repository-global lock is needed.
 
@@ -171,7 +169,7 @@ Mutual exclusion on that one file makes the pin → DB-CAS race structurally
 impossible: the reconciler's inventory → diff → delete runs wholly before
 `coordinate()` takes the lock (nothing pinned yet) or wholly after it releases
 it (tree committed → durable root → retained; never committed → true orphan →
-deletable). The lock is per-worktree; only the retention *read* is repository-wide.
+deletable). The lock stays per-worktree; only the durable-root *read* is repository-wide.
 
 ## Algorithm and error contract
 
@@ -192,8 +190,8 @@ Every step runs under the lock, and every fallible step maps to one dedicated
 | `delete_pins` transaction | `DeleteTransaction`, delete nothing (atomic-or-nothing) |
 
 `AgentTraceDbUnavailable` here is a **maintenance** error only: reconciliation
-never arms `ExternalTaintMarker`, never calls `protocol::*`, never writes any
-`mutation_trace_*` row, and a failure never becomes
+never arms `ExternalTaintMarker`, calls `protocol::*`, or writes a
+`mutation_trace_*` row, and never becomes
 `CoordinateError::AgentTraceDbUnavailable` — no mutation boundary is being
 coordinated (contrast [`mutation-trace-external-taint.md`](mutation-trace-external-taint.md)).
 
@@ -205,18 +203,19 @@ Both entrypoints return `Result<ReconciliationOutcome, ReconcileError>` —
 
 `ReconciliationReport { local_required: usize, retained: usize, deleted: usize }`
 — `local_required = load_tree_roots(W).len()`, `deleted` = stale pins removed,
-`retained = actual.len() − deleted`. `retained == local_required` is **not**
-an invariant (a pin another worktree needs counts toward `retained` only); the
-only `Ok`-path relation is `local_required ≤ retained`.
+`retained = actual.len() − deleted`. `retained == local_required` is **not** an
+invariant (a pin another worktree needs counts toward `retained` only); for
+`Reconciled(report)` the only relation is `report.local_required ≤ report.retained`,
+and `SkippedNoCheckoutIdentity` carries no report.
 
 ## Model boundary
 
 Ref reconciliation is imperative durability maintenance **below** the verified
 `spec/mutation_cursor.qnt` protocol — it never advances the cursor, chooses
-attribution, changes scope state, or creates a `MutationEvent`, so no Quint or
-refinement-matrix change is warranted. It deletes only SCE-owned refs, never
-Git objects; Git reclaims the now-unreachable objects itself on its own GC
-schedule (this pass runs no `git gc` / `git prune` / `git reflog expire`).
+attribution, changes scope state, or creates a `MutationEvent`, so no Quint
+change is warranted. It deletes only SCE-owned refs, never Git objects, and runs
+no `git gc` / `git prune` / `git reflog expire`; Git reclaims unreachable
+objects on its own schedule.
 
 ## Testing boundary
 
@@ -231,20 +230,21 @@ historical `before`/`after` pins retained after the cursor advances; a pin
 another worktree durably requires retained (also the `retained > local_required`
 count case); `MissingRequiredPins` fail-closed; a malformed / symbolic namespace
 ref fail-closed; idempotence; refs deleted without object reclamation; and the
-no-checkout-identity skip returning `SkippedNoCheckoutIdentity` rather than a
-zero-count `Reconciled` report.
+no-checkout-identity skip (a distinct `SkippedNoCheckoutIdentity`; `open_db`
+never called; the owned pin ref structurally byte-identical — name, SHA, object
+type, direct/symbolic shape — across the skip, read via `git for-each-ref`).
 
 `runtime/tests.rs` holds the cross-module scenarios: linked-worktree isolation,
-and two deterministic lock-race regressions (no sleeps) —
-`reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_durable_under_it`
-(the generic `WorktreeLock` happens-before edge; X made durable directly) and
-`reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree` (the
-same edge across the real `capture → pin → load → prepare → store CAS` path, a
-real `coordinate()` paused between `pin X` and its CAS via the `pub(super)`
-`after_load` seam — test-only, production passes a no-op).
+and two deterministic lock-race regressions (no sleeps) — the generic
+`WorktreeLock` happens-before edge
+(`reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_durable_under_it`,
+X made durable directly) and the same edge across the real `coordinate()`
+`pin → store CAS` path
+(`reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree`,
+paused via the `pub(super)` `after_load` seam — test-only, production passes a
+no-op).
 
-See also:
-[`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md),
+See also: [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md),
 [`mutation-trace-snapshot-service.md`](mutation-trace-snapshot-service.md) (`list_pins` / `delete_pins`),
 [`mutation-trace-store.md`](mutation-trace-store.md) (`load_tree_roots` / `load_all_tree_roots`),
 [`mutation-trace-protocol.md`](mutation-trace-protocol.md).
