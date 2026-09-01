@@ -190,7 +190,7 @@ On-disk layout so far:
 
 <repository's normal, shared object database>       (runtime::git_snapshot writes here directly)
 <repository's normal, shared refs namespace>
-└── refs/sce/mutation-cursor/<worktree-id>/<tree-sha>   (runtime::git_snapshot, create-only per invocation; orphan/unreferenced pins reclaimed by runtime::ref_reconciliation for a still-identifiable worktree's namespace only, every pin for a current or historical durable mutation-cursor root retained; a retired worktree's namespace is stranded — future repository-scoped work)
+└── refs/sce/mutation-cursor/<worktree-id>/<tree-sha>   (runtime::git_snapshot, create-only per invocation; orphan/unreferenced pins reclaimed by runtime::ref_reconciliation only for a checkout id a current worktree still derives, every pin for a current or historical durable mutation-cursor root retained; a namespace no current worktree owns — deleted worktree or checkout-id metadata loss/recreation — is unreachable, future repository-scoped work)
 ```
 
 ## Testing boundary
@@ -252,9 +252,8 @@ durable, the boundary unprocessed with no `MutationEvent`, the marker still
 present, and a later `coordinate()` re-recovering off it; another proves an
 attributable `Advance` that commits then fails its trailing `marker.clear()`
 surfaces `MarkerClearAfterCommit` with the matching committed outcome. The
-`after_load` seam is exercised by the reconciliation pin→CAS lock-race
-regression ([`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md)),
-pausing a real `coordinate()` between `pin` and CAS.
+`after_load` seam is exercised by the reconciliation pin→CAS lock-race regression
+([`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md)), pausing a real `coordinate()` between `pin` and CAS.
 
 `runtime/tests.rs` is `runtime`'s own `#[cfg(test)] mod tests`, holding
 cross-module integration tests that drive only the public `coordinate()` API
