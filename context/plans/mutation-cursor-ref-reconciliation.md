@@ -2006,7 +2006,7 @@ requirements.
     term, pattern, or architectural boundary; verify-only in context sync.
   - Context synchronization: synced
 
-- [ ] T08: `Migrate runtime/tests.rs filesystem fixtures to RAII-owned TempDir` (status:todo)
+- [x] T08: `Migrate runtime/tests.rs filesystem fixtures to RAII-owned TempDir` (status:done)
   - Task ID: T08
   - Scope: In — `cli/src/services/mutation_trace/runtime/tests.rs` only.
     Introduce an RAII fixture (e.g.
@@ -2033,7 +2033,46 @@ requirements.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::tests::`;
     `grep -n "fn cleanup\|unique_path\|AtomicU64\|UNIX_EPOCH\|NEXT_ID" cli/src/services/mutation_trace/runtime/tests.rs`;
     `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`.
-  - Context synchronization: pending
+  - Completed: 2026-09-01
+  - Files changed: `cli/src/services/mutation_trace/runtime/tests.rs`
+  - Result: Introduced two RAII test-only fixtures — `TestRepo` (single worktree:
+    `TempDir/{repo/, agent-trace.db}`) and `LinkedTestRepo` (linked worktrees:
+    `TempDir/{main/, linked/, agent-trace.db}`) — mirroring the `TempDir`
+    fixture pattern already established in `git_snapshot.rs` and
+    `ref_reconciliation.rs` during T02/T03. Every one of the 12 tests in the
+    file (10 single-worktree, 2 linked-worktree) now constructs its repository
+    and DB through one of these fixtures instead of `unique_path` +
+    `std::env::temp_dir()`, and no test calls a manual `cleanup(..)`; the
+    `TempDir`'s `Drop` removes the whole tree on success, panic, or early
+    return. Removed the `NEXT_ID` / `unique_path` / `SystemTime` / `UNIX_EPOCH`
+    / `AtomicU64` / `Ordering` / `cleanup` scaffolding entirely — no remaining
+    test needs it. The linked-worktree fixture places both worktrees under one
+    `TempDir` with no explicit `git worktree remove` before drop: nothing
+    outlives the fixture that could observe a stale `.git/worktrees/` entry
+    once the whole tree is removed together, and the prior manual `cleanup()`
+    (a plain `remove_dir_all`) already relied on the same property for these
+    same two tests. No production code changed; no test behavior or assertion
+    changed except reopening the DB for assertions via
+    `RepositoryAgentTraceDb::open_for_hooks_without_migrations_at` (the
+    idiom already used by the majority of tests in this file) in the two tests
+    that previously held the `new_at`-returned handle across the whole test.
+  - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::tests::`
+    — 12 passed, 0 failed;
+    `grep -n "fn cleanup\|unique_path\|AtomicU64\|UNIX_EPOCH\|NEXT_ID" cli/src/services/mutation_trace/runtime/tests.rs`
+    — no matches;
+    `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
+    — clean;
+    `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` —
+    clean (after running `cargo fmt` to apply formatting);
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` — 881
+    passed, 0 failed (full CLI suite, confirming no other module regressed).
+  - Context impact: Test-only fixture reorganization confined to
+    `cli/src/services/mutation_trace/runtime/tests.rs`, which compiles only
+    under `#[cfg(test)]`. No production type, module, behavior, dependency,
+    schema, protocol, or public-interface change. No context doc references
+    this file's internal test-fixture shape, so no durable context file
+    requires an update for this task.
+  - Context synchronization: synced
 
 - [ ] T09: `Add public/runtime reconciliation integration suite` (status:todo)
   - Task ID: T09
