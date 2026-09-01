@@ -25,20 +25,20 @@ sync --format json
 ```
 
 The child runs with the repository root as its working directory, null stdin and
-stdout, and inherited stderr. An internal `SCE_INTERNAL_AUTO_SYNC=1` process
+stdout, and piped stderr. An internal `SCE_INTERNAL_AUTO_SYNC=1` process
 marker lets the child classify this invocation as automatic without adding a
 user-facing option or configuration layer. The launcher waits for the child to
-reach terminal completion before returning, making the child lifetime and
-inherited-stderr closure deterministic. This intentionally adds the child
-synchronization duration to post-commit latency; no timeout policy is part of
-the boundary. A non-zero child exit remains
-fail-open after the child has rendered its own single typed `SCE-ERR-RUNTIME`
-diagnostic through inherited stderr; the launcher does not duplicate it. If the
-current executable cannot be resolved, the child cannot be spawned, or waiting
-fails, the launcher emits the same typed automatic-sync diagnostic with the
-startup or wait reason on stderr. All launcher and child failures remain
-fail-open, so they cannot turn a successful post-commit operation into a
-failure.
+reach terminal completion before returning, draining the pipe while waiting and
+forwarding the captured bytes through the parent's stderr. This makes the child
+lifetime and pipe-drain completion deterministic. This intentionally adds the
+child synchronization duration to post-commit latency; no timeout policy is part
+of the boundary. A non-zero child exit remains fail-open after the child has
+rendered its own single typed `SCE-ERR-RUNTIME` diagnostic; the launcher forwards
+the captured bytes and does not duplicate it. If the current executable cannot be
+resolved, the child cannot be spawned, or waiting fails, the launcher emits the
+same typed automatic-sync diagnostic with the startup or wait reason on stderr.
+All launcher and child failures remain fail-open, so they cannot turn a
+successful post-commit operation into a failure.
 
 Automatic synchronization is not invoked by `pre-commit`, `diff-trace`, or
 `conversation-trace`. It is one post-commit launch, not a high-frequency hook,
@@ -93,4 +93,4 @@ or background retry machinery is required.
 
 See [the sync command contract](sync-command.md), [the config precedence
 contract](config-precedence-contract.md), [the hook routing contract](../sce/agent-trace-hooks-command-routing.md),
-and [the completion decision](../decisions/2026-08-31-synchronous-automatic-sync-completion.md).
+and [the captured-stderr decision](../decisions/2026-09-01-parent-owned-automatic-sync-stderr.md).

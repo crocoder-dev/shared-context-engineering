@@ -1,8 +1,8 @@
 //! Best-effort launcher for one-shot automatic Agent Trace synchronization.
 
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 
 use crate::services::app_support;
 use crate::services::error::{AutomaticSyncFailureKind, CliError, UserError};
@@ -13,7 +13,7 @@ const SYNC_ARGS: &[&str] = &["sync", "--format", "json"];
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StdioMode {
     Null,
-    Inherit,
+    Piped,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -35,7 +35,7 @@ impl AutoSyncCommand {
             current_dir: repository_root.to_path_buf(),
             stdin: StdioMode::Null,
             stdout: StdioMode::Null,
-            stderr: StdioMode::Inherit,
+            stderr: StdioMode::Piped,
             environment: vec![(
                 AUTOMATIC_SYNC_INVOCATION_ENV.to_string(),
                 AUTOMATIC_SYNC_INVOCATION_VALUE.to_string(),
@@ -72,17 +72,17 @@ impl std::error::Error for AutoSyncLaunchError {
 }
 
 struct AutoSyncChild {
-    wait: Option<Box<dyn FnOnce() -> io::Result<ExitStatus>>>,
+    wait: Option<Box<dyn FnOnce() -> io::Result<Output>>>,
 }
 
 impl AutoSyncChild {
-    fn from_child(mut child: Child) -> Self {
+    fn from_child(child: Child) -> Self {
         Self {
-            wait: Some(Box::new(move || child.wait())),
+            wait: Some(Box::new(move || child.wait_with_output())),
         }
     }
 
-    fn wait(mut self) -> io::Result<ExitStatus> {
+    fn wait_with_output(mut self) -> io::Result<Output> {
         (self
             .wait
             .take()
@@ -105,10 +105,16 @@ fn launcher_failure_diagnostic(error: AutoSyncLaunchError) -> CliError {
 /// the one-shot child to reach terminal completion. Launcher failures are
 /// reported on stderr but remain fail-open to the post-commit caller.
 pub fn launch(repository_root: &Path) {
-    if let Err(error) = launch_with(repository_root, std::env::current_exe, spawn_command) {
-        let diagnostic = launcher_failure_diagnostic(error);
-        let mut stderr = io::stderr();
-        app_support::write_error_diagnostic(&mut stderr, &diagnostic);
+    match launch_with(repository_root, std::env::current_exe, spawn_command) {
+        Ok(captured_stderr) => {
+            let mut stderr = io::stderr();
+            let _ = stderr.write_all(&captured_stderr);
+        }
+        Err(error) => {
+            let diagnostic = launcher_failure_diagnostic(error);
+            let mut stderr = io::stderr();
+            app_support::write_error_diagnostic(&mut stderr, &diagnostic);
+        }
     }
 }
 
@@ -116,7 +122,7 @@ fn launch_with<FCurrentExe, FSpawn>(
     repository_root: &Path,
     current_exe: FCurrentExe,
     spawn: FSpawn,
-) -> Result<(), AutoSyncLaunchError>
+) -> Result<Vec<u8>, AutoSyncLaunchError>
 where
     FCurrentExe: FnOnce() -> io::Result<PathBuf>,
     FSpawn: FnOnce(AutoSyncCommand) -> io::Result<AutoSyncChild>,
@@ -125,7 +131,10 @@ where
 
     let child = spawn(AutoSyncCommand::new(executable, repository_root))
         .map_err(AutoSyncLaunchError::Spawn)?;
-    child.wait().map(|_| ()).map_err(AutoSyncLaunchError::Wait)
+    child
+        .wait_with_output()
+        .map(|output| output.stderr)
+        .map_err(AutoSyncLaunchError::Wait)
 }
 
 fn spawn_command(spec: AutoSyncCommand) -> io::Result<AutoSyncChild> {
@@ -136,7 +145,7 @@ fn spawn_command(spec: AutoSyncCommand) -> io::Result<AutoSyncChild> {
         .envs(spec.environment)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::piped());
 
     Ok(AutoSyncChild::from_child(command.spawn()?))
 }
@@ -146,6 +155,7 @@ mod tests {
     use std::cell::RefCell;
     use std::io;
     use std::path::{Path, PathBuf};
+    use std::process::Output;
     use std::rc::Rc;
 
     use super::{
@@ -155,10 +165,18 @@ mod tests {
 
     fn child_with_wait<F>(wait: F) -> AutoSyncChild
     where
-        F: FnOnce() -> io::Result<std::process::ExitStatus> + 'static,
+        F: FnOnce() -> io::Result<Output> + 'static,
     {
         AutoSyncChild {
             wait: Some(Box::new(wait)),
+        }
+    }
+
+    fn child_output(success: bool, stderr: &[u8]) -> Output {
+        Output {
+            status: exit_status(success),
+            stdout: Vec::new(),
+            stderr: stderr.to_vec(),
         }
     }
 
@@ -188,7 +206,7 @@ mod tests {
             || Ok(PathBuf::from("/usr/local/bin/sce")),
             move |command: AutoSyncCommand| {
                 *captured_by_spawn.borrow_mut() = Some(command);
-                Ok(child_with_wait(|| Ok(exit_status(true))))
+                Ok(child_with_wait(|| Ok(child_output(true, &[]))))
             },
         );
 
@@ -201,7 +219,7 @@ mod tests {
                 current_dir: PathBuf::from("/repo/root"),
                 stdin: StdioMode::Null,
                 stdout: StdioMode::Null,
-                stderr: StdioMode::Inherit,
+                stderr: StdioMode::Piped,
                 environment: vec![(
                     AUTOMATIC_SYNC_INVOCATION_ENV.to_string(),
                     AUTOMATIC_SYNC_INVOCATION_VALUE.to_string(),
@@ -220,7 +238,7 @@ mod tests {
             || Err(io::Error::other("current executable unavailable")),
             move |_| -> io::Result<AutoSyncChild> {
                 *spawn_called_by_spawn.borrow_mut() = true;
-                Ok(child_with_wait(|| Ok(exit_status(true))))
+                Ok(child_with_wait(|| Ok(child_output(true, &[]))))
             },
         );
 
