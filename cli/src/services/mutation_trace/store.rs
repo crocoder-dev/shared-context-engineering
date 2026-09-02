@@ -3,7 +3,7 @@
 //!
 //! The codecs are the only translation between `super::types` domain values
 //! and the `TEXT`/`BLOB` representations `cli/migrations/agent-trace-
-//! repository/003_mutation_trace_protocol.sql` constrains those columns to.
+//! repository/004_mutation_trace_protocol.sql` constrains those columns to.
 //! Every codec here is an explicit function over a fixed set of variants — no
 //! codec derives from `Debug` or a serde representation, so a variant rename
 //! cannot silently change the durable encoding.
@@ -21,13 +21,13 @@ use super::types::{
 };
 
 /// Encodes a worktree/event revision as the 8-byte big-endian `BLOB` stored
-/// by every `revision` column in migration `003`.
+/// by every `revision` column in migration `004`.
 pub fn encode_revision(revision: u64) -> [u8; 8] {
     revision.to_be_bytes()
 }
 
 /// Decodes a worktree/event revision from the 8-byte big-endian `BLOB`
-/// migration `003`'s `CHECK (typeof(revision) = 'blob' AND length(revision)
+/// migration `004`'s `CHECK (typeof(revision) = 'blob' AND length(revision)
 /// = 8)` constraint guarantees on every stored value.
 pub fn decode_revision(blob: &[u8]) -> Result<u64> {
     let bytes: [u8; 8] = blob.try_into().map_err(|_| {
@@ -37,7 +37,7 @@ pub fn decode_revision(blob: &[u8]) -> Result<u64> {
 }
 
 /// Encodes an [`ActorKind`] as the `mutation_trace_scopes.actor_kind` `TEXT`
-/// value migration `003`'s `CHECK (actor_kind IN (...))` allow-list expects.
+/// value migration `004`'s `CHECK (actor_kind IN (...))` allow-list expects.
 pub fn encode_actor_kind(actor_kind: ActorKind) -> &'static str {
     match actor_kind {
         ActorKind::ClaudeCode => "claude_code",
@@ -78,7 +78,7 @@ pub fn decode_failure_kind(value: &str) -> Result<FailureKind> {
 }
 
 /// Encodes a [`ScopeStatus`] as the `mutation_trace_scopes.status` `TEXT`
-/// value migration `003`'s `CHECK (status IN (...))` allow-list expects.
+/// value migration `004`'s `CHECK (status IN (...))` allow-list expects.
 pub fn encode_scope_status(status: ScopeStatus) -> &'static str {
     match status {
         ScopeStatus::NeverSeen => "never_seen",
@@ -120,7 +120,7 @@ pub fn attribution_kind(attribution: &Attribution) -> AttributionKind {
 }
 
 /// Encodes an [`AttributionKind`] as the
-/// `mutation_trace_events.attribution_kind` `TEXT` value migration `003`'s
+/// `mutation_trace_events.attribution_kind` `TEXT` value migration `004`'s
 /// `CHECK (attribution_kind IN (...))` allow-list expects.
 pub fn encode_attribution_kind(kind: AttributionKind) -> &'static str {
     match kind {
@@ -164,7 +164,7 @@ pub fn boundary_kind(boundary: &Boundary) -> BoundaryKind {
 }
 
 /// Encodes a [`BoundaryKind`] as the `mutation_trace_events.boundary_kind`
-/// `TEXT` value migration `003`'s `CHECK (boundary_kind IN (...))`
+/// `TEXT` value migration `004`'s `CHECK (boundary_kind IN (...))`
 /// allow-list expects.
 pub fn encode_boundary_kind(kind: BoundaryKind) -> &'static str {
     match kind {
