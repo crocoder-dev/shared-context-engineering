@@ -1,4 +1,5 @@
 use crate::{cli_schema, command_surface, services};
+use clap::{ArgAction, CommandFactory};
 use services::command_registry::{CommandRegistry, RuntimeCommand};
 use services::error::{CliError, FailureClass};
 use services::observability::traits::Logger as LoggerTrait;
@@ -68,6 +69,16 @@ fn handle_clap_error(
         ));
     }
 
+    if error.kind() == clap::error::ErrorKind::InvalidSubcommand {
+        if let Some((name, text)) = render_unknown_subcommand_help(args, error) {
+            return Ok(RuntimeCommand::HelpText(
+                services::help::command::HelpTextCommand { name, text },
+            ));
+        }
+
+        return registry_command(registry, services::help::NAME);
+    }
+
     if error.kind() == clap::error::ErrorKind::DisplayVersion {
         return registry_command(registry, services::version::NAME);
     }
@@ -108,22 +119,82 @@ fn classify_clap_error(error: &clap::Error) -> CliError {
 }
 
 fn render_subcommand_help_from_args(args: &[String]) -> Option<(String, String)> {
-    let command_name = args.get(1)?.to_owned();
-    let command_path = args[1..]
+    let command_path = command_path_from_args(args, args.len());
+
+    render_help_for_command_path(&command_path)
+}
+
+fn render_unknown_subcommand_help(
+    args: &[String],
+    error: &clap::Error,
+) -> Option<(String, String)> {
+    let unknown = extract_quoted_value(&error.to_string())?;
+    let unknown_index = args
         .iter()
-        .take_while(|arg| !arg.starts_with('-'))
-        .map(String::as_str)
-        .collect::<Vec<_>>();
+        .enumerate()
+        .skip(1)
+        .find_map(|(index, arg)| (arg == &unknown).then_some(index))?;
+    let command_path = command_path_from_args(args, unknown_index);
 
-    if command_path.is_empty() {
-        return None;
-    }
+    render_help_for_command_path(&command_path)
+}
 
-    if command_path.as_slice() == [services::auth_command::NAME] {
+fn render_help_for_command_path(command_path: &[String]) -> Option<(String, String)> {
+    let command_name = command_path.first()?.clone();
+
+    if command_path.len() == 1 && command_path[0] == services::auth_command::NAME {
         return Some((command_name, cli_schema::auth_help_text()));
     }
 
+    let command_path = command_path.iter().map(String::as_str).collect::<Vec<_>>();
     cli_schema::render_help_for_path(&command_path).map(|text| (command_name, text))
+}
+
+fn command_path_from_args(args: &[String], end: usize) -> Vec<String> {
+    let mut command = cli_schema::Cli::command();
+    let mut command_path = Vec::new();
+    let mut index = 1;
+
+    while index < end {
+        let arg = &args[index];
+        if arg == "--" {
+            break;
+        }
+        if arg.starts_with('-') {
+            if option_takes_value(&command, arg) && !arg.contains('=') {
+                index += 2;
+            } else {
+                index += 1;
+            }
+            continue;
+        }
+
+        let Some(subcommand) = command.find_subcommand(arg) else {
+            break;
+        };
+
+        command_path.push(arg.clone());
+        command = subcommand.clone();
+        index += 1;
+    }
+
+    command_path
+}
+
+fn option_takes_value(command: &clap::Command, token: &str) -> bool {
+    let (long_name, short_name) = if let Some(name) = token.strip_prefix("--") {
+        (name.split('=').next(), None)
+    } else if let Some(name) = token.strip_prefix('-') {
+        (None, name.chars().next().filter(|_| name.len() == 1))
+    } else {
+        return false;
+    };
+
+    command.get_arguments().any(|argument| {
+        let matches_name = long_name.is_some_and(|name| argument.get_long() == Some(name))
+            || short_name.is_some_and(|name| argument.get_short() == Some(name));
+        matches_name && matches!(argument.get_action(), ArgAction::Set | ArgAction::Append)
+    })
 }
 
 fn render_missing_subcommand_help(args: &[String]) -> Option<RuntimeCommand> {
@@ -466,6 +537,7 @@ fn parse_optional_hook_remote_url(remote_url: Option<String>) -> Result<String, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::ExitCode;
 
     fn parse(args: &[&str]) -> RuntimeCommand {
         parse_runtime_command(
@@ -474,6 +546,14 @@ mod tests {
             None,
         )
         .expect("command should parse")
+    }
+
+    fn help_payload(command: RuntimeCommand) -> String {
+        match command {
+            RuntimeCommand::Help(_) => services::help::help_text(),
+            RuntimeCommand::HelpText(command) => command.text,
+            _ => panic!("expected a help command"),
+        }
     }
 
     #[test]
@@ -519,17 +599,64 @@ mod tests {
     }
 
     #[test]
-    fn removed_trace_command_is_rejected() {
-        let result = parse_runtime_command(
-            ["sce", "trace", "sync"].into_iter().map(String::from),
-            &CommandRegistry::default(),
-            None,
+    fn unknown_top_level_command_routes_to_top_level_help() {
+        let fallback = help_payload(parse(&["sce", "some_random_non_existing_command"]));
+        let expected = help_payload(parse(&["sce", "--help"]));
+
+        assert_eq!(fallback, expected);
+    }
+
+    #[test]
+    fn unknown_auth_subcommand_routes_to_auth_help() {
+        let fallback = help_payload(parse(&["sce", "auth", "some_random_non_existing_command"]));
+        let expected = cli_schema::auth_help_text();
+
+        assert_eq!(fallback, expected);
+    }
+
+    #[test]
+    fn unknown_non_auth_subcommand_routes_to_closest_parent_help() {
+        let fallback = help_payload(parse(&["sce", "hooks", "some_random_non_existing_command"]));
+        let expected = help_payload(parse(&["sce", "hooks", "--help"]));
+
+        assert_eq!(fallback, expected);
+    }
+
+    #[test]
+    fn unknown_command_help_uses_the_success_rendering_path() {
+        let payload = help_payload(parse(&["sce", "some_random_non_existing_command"]));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let exit_code = services::app_support::render_run_outcome(
+            services::app_support::RunOutcome {
+                result: Ok(payload.clone()),
+                logger: None::<services::observability::traits::NoopLogger>,
+                startup_diagnostic: None,
+            },
+            &mut stdout,
+            &mut stderr,
         );
 
-        match result {
-            Ok(_) => panic!("trace should be unavailable"),
-            Err(error) => assert!(error.to_string().contains("Unknown command 'trace'")),
-        }
+        assert_eq!(exit_code, ExitCode::SUCCESS);
+        assert_eq!(stdout, format!("{payload}\n").as_bytes());
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn valid_command_and_unknown_option_keep_existing_routing() {
+        assert!(matches!(parse(&["sce", "sync"]), RuntimeCommand::Sync(_)));
+
+        let Err(error) = parse_runtime_command(
+            ["sce", "--not-an-option"].into_iter().map(String::from),
+            &CommandRegistry::default(),
+            None,
+        ) else {
+            panic!("unknown option should remain an error");
+        };
+
+        assert_eq!(error.class(), FailureClass::Parse);
+        assert!(error.to_string().contains("Unknown option"));
     }
 
     #[test]
@@ -547,16 +674,10 @@ mod tests {
     }
 
     #[test]
-    fn auth_renew_is_rejected_as_parse_error() {
-        let Err(error) = parse_runtime_command(
-            ["sce", "auth", "renew"].into_iter().map(String::from),
-            &CommandRegistry::default(),
-            None,
-        ) else {
-            panic!("removed auth renew command should not parse")
-        };
-
-        assert_eq!(error.class(), FailureClass::Parse);
-        assert!(error.to_string().contains("Unknown command 'renew'"));
+    fn removed_auth_renew_command_routes_to_auth_help() {
+        assert_eq!(
+            help_payload(parse(&["sce", "auth", "renew"])),
+            cli_schema::auth_help_text()
+        );
     }
 }

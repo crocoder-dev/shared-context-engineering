@@ -8,7 +8,7 @@ The contract is intentionally class-based so automation can branch on failure ca
 ## Exit-code classes
 
 - `0` (`success`): command completed successfully.
-- `2` (`parse_failure`): top-level CLI parsing failed (for example unknown top-level command/option or malformed command token).
+- `2` (`parse_failure`): CLI parsing failed for an invocation that is not an unknown command/subcommand help request (for example an unknown option or malformed command token). Unknown top-level commands and unknown subcommands instead resolve to successful help with exit code `0`.
 - `3` (`validation_failure`): command/subcommand arguments parsed but failed invocation validation (for example incompatible or missing command-local arguments).
 - `4` (`runtime_failure`): command invocation was valid but runtime execution failed (filesystem/process/environment/runtime operation errors).
 - `5` (`dependency_failure`): startup dependency checks failed before command parsing/dispatch.
