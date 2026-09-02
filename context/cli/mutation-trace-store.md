@@ -5,7 +5,7 @@ Durable persistence for the verified mutation-cursor protocol
 `mutation-cursor-store-persistence` plan. `store.rs` is the protocol's first
 real database call site: it stores worktree/scope/processed-event/mutation-event
 state in the repository-scoped Agent Trace DB (`RepositoryAgentTraceDb`) via
-migration `003_mutation_trace_protocol.sql`.
+migration `004_mutation_trace_protocol.sql`.
 
 ## Boundary shape
 
