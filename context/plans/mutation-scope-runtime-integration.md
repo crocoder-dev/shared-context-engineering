@@ -1,0 +1,362 @@
+# Plan: mutation-scope-runtime-integration
+
+## Change summary
+
+Make the already-verified `protocol::abandon()` action reachable from production
+runtime code, so a future harness adapter has a safe way to end a mutation scope
+it can prove is stale but for which it never observed a trustworthy final
+worktree boundary. Today `cli/src/services/mutation_trace/runtime/` exposes only
+`coordinate()` — an *observed*-boundary path (`Start`/`Advance`/`Close`/`Flush`)
+that always captures a Git snapshot. A dead agent process has no terminal
+observation, so an adapter has no way to retire its scope. A dead execution can
+therefore leave its scope `Active` indefinitely. This is unsafe: a later `Start`
+observes the worktree before activating its successor — `commit` computes
+`active_scopes`/`attribution` against the state as it existed *before* the same
+call's own scope-lifecycle transition — so changes made after the dead execution
+may be incorrectly classified as `AiExclusive` to the stale scope. Once another
+scope starts, subsequent overlapping intervals also become `AiContended` against
+the zombie.
+
+This change adds a second runtime entrypoint, `abandon_scope()`, that shares
+`coordinate()`'s safety prefix (worktree lock → external-taint fence → checkout
+identity → DB) but deliberately takes **no Git snapshot**: abandonment means the
+final mutation boundary was never observed, and snapshotting would silently give
+it `Close`'s observation semantics. It extracts that shared prefix into one
+internal `ProtectedWorktree` primitive so the two entrypoints cannot drift,
+exposes the smallest read seam the new path needs from `MutationTraceStore`, and
+records the mutation-scope lifecycle contract every later harness adapter (Codex,
+Claude Code, OpenCode, Pi) must uphold.
+
+This extends existing behavior and preserves it: `coordinate()`'s externally
+observable ordering, error variants, and outcomes are unchanged, `Abandon` does
+**not** become a `RuntimeBoundary` variant, and nothing here changes
+`spec/mutation_cursor.qnt`, `protocol.rs` semantics, the mutation-trace SQL
+schema, migrations, or `diff_traces`. No harness is wired by this plan.
+
+## Acceptance criteria
+
+How this plan is proven complete. Each criterion is observable and names the
+check that proves it. `/validate` runs these checks; no task in the stack
+performs final validation.
+
+- [ ] AC1: The `coordinate()` path runs through the shared protected-worktree
+  primitive with its current externally observable ordering and error semantics
+  intact: worktree lock → external marker inspect/persist → checkout identity →
+  DB provider → snapshot/recovery/protocol/CAS → explicit marker clear, with
+  `CoordinateError::LockAcquisition`, `ExternalTaintMarker { Inspect | Persist }`,
+  `AgentTraceDbUnavailable`, and `MarkerClearAfterCommit { source, committed }`
+  produced on exactly the same conditions as before.
+  - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::coordinator::` — the pre-existing fence, lock-contention, and `MarkerClearAfterCommit` tests pass unmodified in assertion content.
+- [ ] AC2: Abandoning an `Active` scope changes only that scope's status to
+  `Abandoned`, advances its worktree `revision` by exactly one, sets
+  `needs_rebaseline = true`, leaves `cursor_tree` / `tainted` / `failure_kind`
+  unchanged, and writes no `mutation_trace_events`,
+  `mutation_trace_event_active_scopes`, or `mutation_trace_processed_events` row.
+  - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::scope_runtime::` — a test reads the durable rows back after a successful abandonment and asserts each field and each absent row.
+- [ ] AC3: `abandon_scope()` performs no Git snapshot, tree pin, tree diff, ref
+  reconciliation, scope registration, or worktree initialization; it reads and
+  transitions only already-durable mutation-scope state.
+  - Validate: inspect `cli/src/services/mutation_trace/runtime/scope_runtime.rs` — it names none of `GitSnapshotService`, `SnapshotCapture`, `capture_tree`, `pin_tree`, `diff_trees`, `reconcile_worktree`, `initialize_worktree`, or `register_scope`; confirm with `rg -n 'GitSnapshotService|SnapshotCapture|capture_tree|pin_tree|diff_trees|reconcile_worktree|initialize_worktree|register_scope' cli/src/services/mutation_trace/runtime/scope_runtime.rs` returning no non-test hit.
+- [ ] AC4: A target scope already `Closed` or `Abandoned` settles as a successful
+  terminal no-op: no revision change, no row write, and the external-taint marker
+  is cleared.
+  - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::scope_runtime::` — separate `Closed` and `Abandoned` tests assert the outcome variant, the unchanged durable revision, and that the marker file is gone.
+- [ ] AC5: A target `ScopeId` with no durable row, and one whose row is
+  `NeverSeen`, both return the recovery-required outcome, leave the
+  external-taint marker armed on disk, and commit no normal abandonment — no
+  durable row changes, and the worktree revision does not advance. This
+  deliberately forces the next `coordinate()` into conservative strong recovery
+  (see **Design decisions**, D1).
+  - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::scope_runtime::` — separate missing-scope and `NeverSeen` tests assert the reason variant, that `<git-dir>/sce/mutation-cursor-tainted` still exists, and that the worktree revision and every scope status are unchanged.
+- [ ] AC6: An external-taint marker already present when `abandon_scope()` is
+  called returns the recovery-required outcome for that reason without clearing
+  the marker and without invoking the caller-supplied DB provider.
+  - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::scope_runtime::` — a test arms the marker first, passes a provider that sets a flag and returns `Err`, and asserts the recovery-required reason, the still-present marker, and that the provider flag was never set.
+- [ ] AC7: A target scope whose durable `worktree_id` is not the `WorktreeId` this
+  invocation derived from its own checkout is rejected as an error, and neither
+  the scope row nor either worktree row is modified.
+  - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::` — a two-linked-worktree test abandons worktree A's scope through worktree B's checkout, asserts the error, and asserts both worktree revisions and the scope status are unchanged.
+- [ ] AC8: A CAS conflict makes `abandon_scope()` reload the durable projection and
+  recompute the abandonment from that fresh state, bounded by the same retry limit
+  the coordinator uses; when the competing writer left the scope terminal, the
+  retry settles as the terminal no-op outcome rather than overwriting it.
+  - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::` — a real-thread CAS-race test against one on-disk DB asserts the settled outcome and that the scope's final status is the competitor's, not a second abandonment.
+- [ ] AC9: An `Active` target on a worktree at `revision: u64::MAX` produces an
+  explicit revision-exhaustion error, never an abandonment success and never a
+  terminal no-op.
+  - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::scope_runtime::` — a test seeds `u64::MAX` and asserts the distinct error variant.
+- [ ] AC10: With no inherited marker, a DB-provider `Err` or a persistence failure
+  after the marker is armed leaves the marker on disk; a successful abandonment
+  and a proven-terminal no-op each clear it; a `clear()` failure after either
+  completes returns an error that carries the already-completed outcome rather
+  than reporting the durable transition as failed.
+  - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::` — one test per row of that table, the clear-failure test asserting the carried outcome matches the durable state.
+- [ ] AC11: Against a real Git repository and a real repository-scoped Agent Trace
+  DB: `Start(A)` → edit → `abandon_scope(A)` → a further unobserved edit →
+  `coordinate(Start(B))` leaves the worktree cursor at the tree observed at
+  `Start(B)`, emits no `MutationEvent` for the ambiguous A→B interval, leaves A
+  `Abandoned`, and leaves B `Active`.
+  - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::tests::` — the end-to-end sequence test asserts the cursor tree, the absence of any `mutation_trace_events` row for the gap, and both scope statuses.
+- [ ] AC12: Abandoning stale scope A while unrelated scope B is legitimately
+  `Active` on the same worktree leaves B `Active` through the subsequent
+  `needs_rebaseline` recovery.
+  - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::tests::` — the surviving-scope test asserts B's status after the next `coordinate()` call.
+- [ ] AC13: `runtime/mod.rs` re-exports `coordinate`, `CoordinateError`,
+  `CoordinateOutcome`, `RuntimeBoundary`, `abandon_scope`, `AbandonScopeError`,
+  and `AbandonScopeOutcome` (with its reason type) at `pub(crate)`, and exports
+  nothing from `git_snapshot`, `external_taint`, `worktree_lock`,
+  `ref_reconciliation`, or the protected-worktree primitive.
+  - Validate: inspect `cli/src/services/mutation_trace/runtime/mod.rs` for exactly those re-exports, and `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` stays clean.
+- [ ] AC14: `spec/mutation_cursor.qnt`, the Quint refinement matrix in
+  `cli/src/services/mutation_trace/mod.rs`, `protocol.rs`'s transition semantics,
+  `004_mutation_trace_protocol.sql`, and the migration set carry no change
+  attributable to this PR. The baseline is this PR's own base branch, `ref-rec`,
+  not `main`: the mutation-cursor protocol, the Quint model, the migration, and
+  the runtime coordinator already exist on `ref-rec`, so a `main` baseline would
+  report the entire stack below this PR as if it were this PR's change.
+  - Validate: `git fetch origin` first, then `git diff --stat origin/ref-rec...HEAD -- spec/mutation_cursor.qnt cli/src/services/mutation_trace/protocol.rs cli/migrations/agent-trace-repository/` produces empty output. Use `origin/ref-rec`, not a local `ref-rec`, which can lag behind a rewritten base and would report the whole rebased stack as this PR's change. Additionally, the `mutation-trace-quint-connect` and Quint checks inside `nix flake check` stay green.
+- [ ] AC15: `context/cli/mutation-scope-runtime.md` exists and states, in the
+  repository's own terms: a mutation scope is one independently mutation-capable
+  execution (so concurrent main agent and subagent need distinct `ScopeId`s);
+  `Start`/`Advance`/`Close` semantics including that a failed tool still requires
+  `Advance` and that a `ScopeId` is never reused after a terminal status;
+  `abandon_scope()` requires positive staleness evidence and must not be inferred
+  from `ActorKind`; the `abandon` → `coordinate(Start(successor))` sequence and
+  what each abandonment outcome implies for it; that abandonment is not a
+  `RuntimeBoundary` and needs no Quint change; that a missing or `NeverSeen`
+  target deliberately forces conservative strong recovery which may invalidate
+  other live scopes on the worktree, with the reason that outranks the lost
+  evidence (**Design decisions**, D1); and that `AiExclusive(scope)` means scope
+  exclusivity, not standalone proof that no human edited the worktree.
+  - Validate: read `context/cli/mutation-scope-runtime.md` and confirm each of those statements is present and consistent with the shipped code.
+
+### Full validation
+
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::`
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml`
+- `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
+- `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`
+- `nix flake check`
+- `nix run .#pkl-check-generated`
+
+### Context sync
+
+- `context/cli/mutation-scope-runtime.md` — new: the mutation-scope lifecycle and
+  harness-adapter contract, including the attribution boundary.
+- `context/cli/mutation-trace-runtime-coordinator.md` — the protected-worktree
+  primitive, the two-entrypoint runtime surface, and the `pub(crate)` export seam.
+- `context/cli/mutation-trace-external-taint.md` — the fence's abandonment-path
+  completion semantics (clear on abandoned/terminal, stay armed on
+  recovery-required, marker-clear-after-completion).
+- `context/cli/mutation-trace-protocol.md` — that `protocol::abandon` now has a
+  production call site, and that abandonment is not a `RuntimeBoundary`.
+- `context/cli/mutation-trace-store.md` — the new bounded scope read seam.
+- `context/context-map.md` and `context/overview.md` — index and status lines for
+  the new module and context file.
+- `context/patterns.md` — repair the recorded unit-testing pattern, which still
+  describes unique `std::env::temp_dir()` paths as the mutation-trace fixture
+  convention while `runtime/tests.rs` has moved to RAII `tempfile::TempDir`.
+
+## Task context synchronization lifecycle
+
+Persist this field in every plan; this is durable plan state, not chat state:
+
+- **Task context synchronization:** every task carries `pending | synced | blocked`.
+  A completed task must be `synced` before another task can start or the plan can
+  finish.
+- For `blocked`, record **Blocker**, **Required action**, and **Retry condition**
+  beside the status. Never infer `synced` from conversation history; write every
+  lifecycle transition to the plan file.
+
+## Constraints and non-goals
+
+- **In scope:** `cli/src/services/mutation_trace/runtime/` (new
+  `protected_worktree.rs` and `scope_runtime.rs`, edits to `coordinator.rs`,
+  `mod.rs`, `tests.rs`), the read seam in
+  `cli/src/services/mutation_trace/store.rs`, and the durable context files listed
+  under **Context sync**.
+- **Out of scope:** Codex, Claude Code, OpenCode, and Pi hook/plugin/extension
+  wiring; each harness's concrete `ScopeId` / `EventId` format; harness-specific
+  stale-process detection; adding `Abandon` to `RuntimeBoundary`; changes to
+  `spec/mutation_cursor.qnt`, `protocol::abandon`, the mutation-trace SQL schema,
+  or migrations; a new mutation-cursor table; `diff_traces` redesign;
+  mutation-history retention; repository-scoped unowned checkout-identity ref
+  cleanup; human-vs-AI authorship proof; a daemon or background liveness monitor;
+  a `mutation_scope_adapter.qnt` model.
+- **Constraints:**
+  - The protected prefix ordering is safety-critical and must not move: worktree
+    lock **before** external-marker inspect/persist **before** checkout identity,
+    DB acquisition, and any runtime work. The guard never clears the marker in
+    `Drop`; only an explicit successful completion clears it.
+  - `abandon_scope()` must classify the target's durable state *before* invoking
+    `protocol::abandon`. `abandon` is a guarded no-op for `NeverSeen`, `Closed`,
+    `Abandoned`, an unknown scope, a missing `WorktreeState`, and
+    `revision == u64::MAX` alike, and returns an unchanged state in every case —
+    the runtime cannot recover the reason by diffing its output.
+  - The bounded retry limit is the coordinator's existing
+    `MAX_CAS_RETRY_ATTEMPTS` (5, no backoff); reuse it rather than introducing a
+    second constant.
+  - `#[allow(dead_code)]` on `pub mod mutation_trace` in
+    `cli/src/services/mod.rs` covers unused items, not necessarily unused
+    `pub(crate) use` re-exports. `clippy --all-targets -- -D warnings` is the
+    gate; keep it green using the module's existing allowance precedent rather
+    than by adding a placeholder consumer.
+  - Filesystem-touching tests follow the repository's Nix-sandbox-safe inline
+    `#[cfg(test)] mod tests` convention with RAII `tempfile::TempDir` fixtures, as
+    `runtime/tests.rs` already does.
+- **Non-goal:** a general-purpose "runtime operation" abstraction over
+  `coordinate()` and `abandon_scope()`. The two paths deliberately differ (one
+  observes, one does not); the shared piece is the protected prefix only.
+
+## Design decisions
+
+Decided before implementation. Do not reopen these during T01–T05; a change of
+mind is a new plan revision, not a task-time judgement call.
+
+### D1: A missing or `NeverSeen` target forces conservative strong recovery, and that may invalidate other live scopes
+
+`abandon_scope()` on a `ScopeId` with no durable row, or one whose row is still
+`NeverSeen`, returns the recovery-required outcome and leaves the external-taint
+marker armed. The next `coordinate()` on that worktree therefore performs
+*inherited-taint* recovery, and `protocol::recover` abandons **every** live scope
+on a worktree recovering from external taint — not only the scope the adapter
+named.
+
+That consequence is accepted deliberately, not overlooked. The reasoning:
+
+```text
+execution lifecycle not durably observed
+        ↓
+filesystem interval may contain unknown mutations
+        ↓
+cannot safely preserve exclusive attribution assumptions
+        ↓
+force conservative recovery
+```
+
+A missing row means the scope's `Start` never committed while the execution may
+well have run and edited files; a `NeverSeen` row means the identity exists but
+no accepted `Start` was ever observed for it. Neither proves the execution
+mutated nothing. The runtime cannot bound what happened inside that interval, so
+it cannot let any scope keep an exclusivity claim that spans it.
+
+**The tradeoff, stated plainly:** this is a false-negative cost. Legitimately
+live mutation scopes on the same worktree can be abandoned by a recovery they did
+nothing to cause, and the evidence for their in-flight intervals is discarded.
+That cost is acceptable because the alternative is a false positive — attributing
+an interval exclusively to a scope while an unobserved execution may have been
+mutating the same worktree. Preserving attribution safety outranks preserving
+potentially valid evidence.
+
+This is *not* in tension with AC12. AC12 covers the `Abandoned` outcome, whose
+`needs_rebaseline`-only recovery preserves live scopes by design. D1 covers the
+recovery-required outcomes, where the stronger external-taint recovery is the
+whole point.
+
+### D2: The DB is never consulted before the external-taint fence is armed
+
+The protected ordering stays exactly as `coordinate()` already has it:
+
+```text
+WorktreeLock
+    ↓
+inspect / persist external-taint marker
+    ↓
+checkout identity
+    ↓
+DB
+    ↓
+runtime operation
+```
+
+The alternative of resolving the target scope first, so an unresolvable
+`ScopeId` could be rejected without arming the fence —
+
+```text
+lock
+  → DB lookup
+  → maybe arm marker
+```
+
+— is **rejected**. Any failure between reading the DB and establishing the fence
+(process death, `SIGKILL`, an I/O error, a panic) reopens exactly the uncertainty
+window the external-taint marker exists to close: the invocation would have
+touched durable state, or decided something about it, with no worktree-local
+signal left behind for the next invocation. The fence must be armed write-ahead
+of every fallible step that follows it, including the scope lookup that decides
+D1's outcome.
+
+The one lookup-order concession already in the plan is the inherited-marker
+short-circuit: when a marker was *already* present on entry, `abandon_scope()`
+returns recovery-required without invoking the DB provider at all (AC6). That
+does not weaken the fence — the fence is already armed by an earlier invocation,
+which is precisely why there is nothing left for this one to decide.
+
+## Assumptions
+
+- Module and type names follow the change request's suggestions
+  (`runtime/protected_worktree.rs`, `runtime/scope_runtime.rs`,
+  `ProtectedWorktree::acquire`, `abandon_scope`, `AbandonScopeOutcome`,
+  `AbandonScopeError`); adjust to whatever reads best beside the existing
+  `coordinator.rs` naming, since only the semantic distinctions are contractual.
+- `abandon_scope()` takes the same caller-supplied
+  `open_db: impl FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>` provider
+  shape as `coordinate()`, so DB acquisition falls inside the same fence.
+- The recovery-required reasons are modelled as a distinct enum
+  (`InheritedExternalTaint`, `MissingScope`, `NeverSeenScope`,
+  `MissingWorktreeState`) carried in the outcome, so callers and tests can match
+  on them.
+- `abandon_scope()` reuses `coordinator.rs`'s `WORKTREE_LOCK_TIMEOUT` rather than
+  declaring its own, matching the reconciliation pass's precedent of an
+  operation-appropriate timeout only where the operation genuinely differs.
+
+## Task stack
+
+- [ ] T01: `Extract the protected-worktree runtime guard` (status:todo)
+  - Task ID: T01
+  - Scope: In — new `cli/src/services/mutation_trace/runtime/protected_worktree.rs` owning git-dir resolution, `WorktreeLock` acquisition, external-marker inspect + persist, checkout identity, `WorktreeId` derivation, and an explicit `complete`/`clear` step; refactor `coordinator.rs`'s `coordinate_inner` / `coordinate_protected` prefix onto it; keep the `on_lock_contention` test seam working. Out — any new entrypoint, any store change, any behavior change to the pipeline below the prefix, any `runtime/mod.rs` export change.
+  - Dependencies: none
+  - Done when: the guard exposes the derived `WorktreeId`, whether a marker was already present before this invocation, and an explicit completion that clears the marker; it never clears the marker in `Drop`; it holds the `WorktreeLock` for its own lifetime; `coordinate()` produces identical outcomes and identical `CoordinateError` variants on every existing path, with the existing coordinator fence/lock tests passing without assertion changes; focused tests cover the guard itself for lock-timeout failure, an inherited marker being reported, a fresh marker being armed, and the marker surviving a dropped guard that was never completed.
+  - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::`; `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`; `git diff` on `coordinator.rs` shows no reordering of lock → marker → checkout → DB.
+  - Context synchronization: pending
+
+- [ ] T02: `Expose a bounded scope read on MutationTraceStore` (status:todo)
+  - Task ID: T02
+  - Scope: In — promote the existing private `MutationTraceStore::load_scope` to the smallest public read seam `scope_runtime` needs (one `mutation_trace_scopes` row → `Option<ScopeState>`), with a doc comment stating it is a cold-path read that never widens into a projection; tests for an existing scope, a missing scope, and a scope belonging to another worktree. Out — any change to `load_worktree`'s hook-boundary semantics or error contract, any schema/migration change, any new query, any write path.
+  - Dependencies: none
+  - Done when: the read returns the durable `ScopeState` (status, `actor_kind`, `worktree_id`) for a known `ScopeId` and `None` for an unknown one, without consulting `mutation_trace_events` or the worktree row; `load_worktree`'s existing behavior, including its `Err` on a mismatched or missing effective referenced scope, is untouched; the mismatched-worktree case is proven to be the caller's decision, not a store-level rejection.
+  - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::store::`; `git diff cli/migrations/` is empty.
+  - Context synchronization: pending
+
+- [ ] T03: `Implement abandon_scope() on the protected runtime path` (status:todo)
+  - Task ID: T03
+  - Scope: In — new `cli/src/services/mutation_trace/runtime/scope_runtime.rs` with `abandon_scope`, `AbandonScopeOutcome`, its recovery-reason enum, and `AbandonScopeError`, built on T01's guard and T02's read; inline `#[cfg(test)] mod tests` against a real temp-file `RepositoryAgentTraceDb` covering active abandonment, `Closed`/`Abandoned` terminal no-op, missing and `NeverSeen` recovery-required, inherited-marker short-circuit before the DB provider, worktree-identity rejection, revision exhaustion, CAS reload/recompute/retry, DB-provider failure, and marker-clear-after-completion. Out — any Git snapshot, pin, diff, reconciliation, scope registration, or worktree initialization; any `runtime/mod.rs` export; any real-Git cross-worktree test (T04).
+  - Dependencies: T01, T02
+  - Done when: an inherited marker returns recovery-required for that reason without invoking `open_db` and without clearing the marker; a missing or `NeverSeen` scope returns recovery-required, writes nothing, and leaves the marker armed, per **Design decisions** D1 — the scope lookup happens after the fence is armed, never before it (D2); a `Closed`/`Abandoned` scope returns the terminal no-op with the current revision and clears the marker; an `Active` scope belonging to another `WorktreeId` is an error that writes nothing; an `Active` scope on a worktree at `u64::MAX` returns a distinct revision-exhaustion error; otherwise the durable transition sets the scope `Abandoned`, advances revision by exactly one, sets `needs_rebaseline`, writes no event or processed-event row, and clears the marker; a `CasResult::Conflict` reloads and recomputes from fresh state within `MAX_CAS_RETRY_ATTEMPTS`, settling as the terminal no-op when a competitor won; a failing `clear()` after a completed abandonment or terminal no-op returns an error carrying that completed outcome; the module names no Git-snapshot or reconciliation symbol.
+  - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::scope_runtime::`; `rg -n 'GitSnapshotService|SnapshotCapture|capture_tree|pin_tree|diff_trees|reconcile_worktree|initialize_worktree|register_scope' cli/src/services/mutation_trace/runtime/scope_runtime.rs` returns nothing; `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`.
+  - Context synchronization: pending
+
+- [ ] T04: `Add cross-runtime abandonment safety regressions` (status:todo)
+  - Task ID: T04
+  - Scope: In — integration tests in `cli/src/services/mutation_trace/runtime/tests.rs` driving `coordinate()` and `abandon_scope()` together against real `git init` / `git worktree add` repositories and a real repository-scoped Agent Trace DB: the abandon → unobserved edit → successor `Start` rebaseline sequence with no evidence for the gap; a concurrently active unrelated scope surviving that recovery; abandoning a scope through the wrong checkout; and a real-thread CAS race between `abandon_scope()` and a competing writer. Out — the single-module cases T03 already covers with a temp-file DB and no real Git.
+  - Dependencies: T03
+  - Done when: `Start(A)` → edit → `abandon_scope(A)` → unobserved edit → `coordinate(Start(B))` leaves the cursor at the tree observed at `Start(B)`, emits no `mutation_trace_events` row for the A→B interval, leaves A `Abandoned` and B `Active`; a second scope B active across `abandon_scope(A)` is still `Active` after the next `coordinate()`; abandoning worktree A's scope through worktree B's checkout errors and changes no row in either worktree; the CAS-race test settles deterministically on the competitor's terminal status without a second abandonment.
+  - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::tests::`; `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::`.
+  - Context synchronization: pending
+
+- [ ] T05: `Export the runtime seam and record the adapter contract` (status:todo)
+  - Task ID: T05
+  - Scope: In — `pub(crate) use` re-exports in `runtime/mod.rs` for `coordinate`, `CoordinateError`, `CoordinateOutcome`, `RuntimeBoundary`, `abandon_scope`, `AbandonScopeError`, `AbandonScopeOutcome` and its reason type; keeping `git_snapshot`, `external_taint`, `worktree_lock`, `ref_reconciliation`, and `protected_worktree` unexported; new `context/cli/mutation-scope-runtime.md` plus its `context/context-map.md` and `context/overview.md` index entries. Out — any harness, hook, or command wiring; any change to the runtime implementation; the per-task context updates T01–T04 each own for their own domain files.
+  - Dependencies: T04
+  - Done when: the seven names above are reachable as `crate::services::mutation_trace::runtime::*` and nothing from the five private modules is; `clippy --all-targets -- -D warnings` is clean with no placeholder consumer added to satisfy it; `context/cli/mutation-scope-runtime.md` states the scope-identity rule, the `Start`/`Advance`/`Close` semantics, the positive-evidence requirement for `abandon_scope()` and the prohibition on inferring staleness from `ActorKind`, the successor-scope sequence and what each outcome implies for it (including that a failed abandonment must not be treated as a safely started successor), that abandonment is not a `RuntimeBoundary` and requires no Quint change, the D1 strong-recovery tradeoff for a missing or `NeverSeen` target, and the `AiExclusive` attribution boundary; `context-map.md` and `overview.md` name the new module and file.
+  - Verify: `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`; `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml`; read `context/cli/mutation-scope-runtime.md` against the shipped `scope_runtime.rs` signatures.
+  - Context synchronization: pending
+
+## Open questions
+
+- T04's CAS-race regression is the one test in this plan that needs real OS
+  threads against one on-disk DB. `coordinator.rs` already has that machinery for
+  its own CAS tests. If reusing it means exporting a test helper across modules,
+  the cheaper option is to leave the abandonment CAS race in `scope_runtime.rs`'s
+  own inline tests (T03) and drop it from T04, since nothing about the race needs
+  real Git. Not blocking — T03's `Done when` already covers the behavior.
