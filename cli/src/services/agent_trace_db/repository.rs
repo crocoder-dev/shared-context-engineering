@@ -452,7 +452,7 @@ mod tests {
                 String::from("001_repository_schema"),
                 String::from("002_repository_source_instance_id"),
                 String::from("003_claude_model_state"),
-                String::from("003_mutation_trace_protocol"),
+                String::from("004_mutation_trace_protocol"),
             ],
             "repository DBs should be initialized from the baseline schema plus \
              its additive source-instance-id, Claude model-state, and \
@@ -498,6 +498,7 @@ mod tests {
                 String::from("001_repository_schema"),
                 String::from("002_repository_source_instance_id"),
                 String::from("003_claude_model_state"),
+                String::from("004_mutation_trace_protocol"),
             ]
         );
 
@@ -1051,7 +1052,7 @@ mod tests {
         seed_001_and_002_only_fixture(&db_path, &repository_id);
 
         let migrated = RepositoryAgentTraceDb::new_at(&db_path)
-            .expect("repository DB should migrate a 001+002-only fixture to 003");
+            .expect("repository DB should migrate a 001+002-only fixture through 004");
 
         let applied_ids = migrated
             .query_map(
@@ -1065,9 +1066,10 @@ mod tests {
             vec![
                 String::from("001_repository_schema"),
                 String::from("002_repository_source_instance_id"),
-                String::from("003_mutation_trace_protocol"),
+                String::from("003_claude_model_state"),
+                String::from("004_mutation_trace_protocol"),
             ],
-            "an existing 001+002 database should get 003 applied on top through the setup/lifecycle path, without reapplying 001/002"
+            "an existing 001+002 database should get 003 and 004 applied on top through the setup/lifecycle path, without reapplying 001/002"
         );
 
         for table in [
@@ -1138,7 +1140,7 @@ mod tests {
                 String::from("001_repository_schema"),
                 String::from("002_repository_source_instance_id"),
             ],
-            "the no-migration hook-runtime path must never record or apply 003"
+            "the no-migration hook-runtime path must never record or apply 003 or 004"
         );
 
         for table in [
