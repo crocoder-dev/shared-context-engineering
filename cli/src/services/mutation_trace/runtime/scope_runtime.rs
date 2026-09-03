@@ -121,7 +121,7 @@ where
     abandon_scope_inner(repository_root, scope, open_db, |_attempt| {})
 }
 
-fn abandon_scope_inner<P, L>(
+pub(super) fn abandon_scope_inner<P, L>(
     repository_root: &Path,
     scope: &ScopeId,
     open_db: P,
