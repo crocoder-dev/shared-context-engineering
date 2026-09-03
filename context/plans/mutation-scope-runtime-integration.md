@@ -39,7 +39,7 @@ How this plan is proven complete. Each criterion is observable and names the
 check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation.
 
-- [ ] AC1: The `coordinate()` path runs through the shared protected-worktree
+- [x] AC1: The `coordinate()` path runs through the shared protected-worktree
   primitive with its current externally observable ordering and error semantics
   intact: worktree lock → external marker inspect/persist → checkout identity →
   DB provider → snapshot/recovery/protocol/CAS → explicit marker clear, with
@@ -47,61 +47,61 @@ performs final validation.
   `AgentTraceDbUnavailable`, and `MarkerClearAfterCommit { source, committed }`
   produced on exactly the same conditions as before.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::coordinator::` — the pre-existing fence, lock-contention, and `MarkerClearAfterCommit` tests pass unmodified in assertion content.
-- [ ] AC2: Abandoning an `Active` scope changes only that scope's status to
+- [x] AC2: Abandoning an `Active` scope changes only that scope's status to
   `Abandoned`, advances its worktree `revision` by exactly one, sets
   `needs_rebaseline = true`, leaves `cursor_tree` / `tainted` / `failure_kind`
   unchanged, and writes no `mutation_trace_events`,
   `mutation_trace_event_active_scopes`, or `mutation_trace_processed_events` row.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::scope_runtime::` — a test reads the durable rows back after a successful abandonment and asserts each field and each absent row.
-- [ ] AC3: `abandon_scope()` performs no Git snapshot, tree pin, tree diff, ref
+- [x] AC3: `abandon_scope()` performs no Git snapshot, tree pin, tree diff, ref
   reconciliation, scope registration, or worktree initialization; it reads and
   transitions only already-durable mutation-scope state.
   - Validate: inspect `cli/src/services/mutation_trace/runtime/scope_runtime.rs` — it names none of `GitSnapshotService`, `SnapshotCapture`, `capture_tree`, `pin_tree`, `diff_trees`, `reconcile_worktree`, `initialize_worktree`, or `register_scope`; confirm with `rg -n 'GitSnapshotService|SnapshotCapture|capture_tree|pin_tree|diff_trees|reconcile_worktree|initialize_worktree|register_scope' cli/src/services/mutation_trace/runtime/scope_runtime.rs` returning no non-test hit.
-- [ ] AC4: A target scope already `Closed` or `Abandoned` settles as a successful
+- [x] AC4: A target scope already `Closed` or `Abandoned` settles as a successful
   terminal no-op: no revision change, no row write, and the external-taint marker
   is cleared.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::scope_runtime::` — separate `Closed` and `Abandoned` tests assert the outcome variant, the unchanged durable revision, and that the marker file is gone.
-- [ ] AC5: A target `ScopeId` with no durable row, and one whose row is
+- [x] AC5: A target `ScopeId` with no durable row, and one whose row is
   `NeverSeen`, both return the recovery-required outcome, leave the
   external-taint marker armed on disk, and commit no normal abandonment — no
   durable row changes, and the worktree revision does not advance. This
   deliberately forces the next `coordinate()` into conservative strong recovery
   (see **Design decisions**, D1).
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::scope_runtime::` — separate missing-scope and `NeverSeen` tests assert the reason variant, that `<git-dir>/sce/mutation-cursor-tainted` still exists, and that the worktree revision and every scope status are unchanged.
-- [ ] AC6: An external-taint marker already present when `abandon_scope()` is
+- [x] AC6: An external-taint marker already present when `abandon_scope()` is
   called returns the recovery-required outcome for that reason without clearing
   the marker and without invoking the caller-supplied DB provider.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::scope_runtime::` — a test arms the marker first, passes a provider that sets a flag and returns `Err`, and asserts the recovery-required reason, the still-present marker, and that the provider flag was never set.
-- [ ] AC7: A target scope whose durable `worktree_id` is not the `WorktreeId` this
+- [x] AC7: A target scope whose durable `worktree_id` is not the `WorktreeId` this
   invocation derived from its own checkout is rejected as an error, and neither
   the scope row nor either worktree row is modified.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::` — a two-linked-worktree test abandons worktree A's scope through worktree B's checkout, asserts the error, and asserts both worktree revisions and the scope status are unchanged.
-- [ ] AC8: A CAS conflict makes `abandon_scope()` reload the durable projection and
+- [x] AC8: A CAS conflict makes `abandon_scope()` reload the durable projection and
   recompute the abandonment from that fresh state, bounded by the same retry limit
   the coordinator uses; when the competing writer left the scope terminal, the
   retry settles as the terminal no-op outcome rather than overwriting it.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::` — a real-thread CAS-race test against one on-disk DB asserts the settled outcome and that the scope's final status is the competitor's, not a second abandonment.
-- [ ] AC9: An `Active` target on a worktree at `revision: u64::MAX` produces an
+- [x] AC9: An `Active` target on a worktree at `revision: u64::MAX` produces an
   explicit revision-exhaustion error, never an abandonment success and never a
   terminal no-op.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::scope_runtime::` — a test seeds `u64::MAX` and asserts the distinct error variant.
-- [ ] AC10: With no inherited marker, a DB-provider `Err` or a persistence failure
+- [x] AC10: With no inherited marker, a DB-provider `Err` or a persistence failure
   after the marker is armed leaves the marker on disk; a successful abandonment
   and a proven-terminal no-op each clear it; a `clear()` failure after either
   completes returns an error that carries the already-completed outcome rather
   than reporting the durable transition as failed.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::` — one test per row of that table, the clear-failure test asserting the carried outcome matches the durable state.
-- [ ] AC11: Against a real Git repository and a real repository-scoped Agent Trace
+- [x] AC11: Against a real Git repository and a real repository-scoped Agent Trace
   DB: `Start(A)` → edit → `abandon_scope(A)` → a further unobserved edit →
   `coordinate(Start(B))` leaves the worktree cursor at the tree observed at
   `Start(B)`, emits no `MutationEvent` for the ambiguous A→B interval, leaves A
   `Abandoned`, and leaves B `Active`.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::tests::` — the end-to-end sequence test asserts the cursor tree, the absence of any `mutation_trace_events` row for the gap, and both scope statuses.
-- [ ] AC12: Abandoning stale scope A while unrelated scope B is legitimately
+- [x] AC12: Abandoning stale scope A while unrelated scope B is legitimately
   `Active` on the same worktree leaves B `Active` through the subsequent
   `needs_rebaseline` recovery.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::tests::` — the surviving-scope test asserts B's status after the next `coordinate()` call.
-- [ ] AC13: `runtime/mod.rs` re-exports, at `pub(crate)`, exactly `coordinate`,
+- [x] AC13: `runtime/mod.rs` re-exports, at `pub(crate)`, exactly `coordinate`,
   `CoordinateError`, `CoordinateOutcome`, `ExternalTaintOperation`,
   `RuntimeBoundary`, `abandon_scope`, `AbandonScopeError`, and
   `AbandonScopeOutcome` (with its reason type). `ExternalTaintOperation` is part
@@ -117,7 +117,7 @@ performs final validation.
   `ProtectedWorktree`, `ProtectedWorktreeError`, and `WORKTREE_LOCK_TIMEOUT`
   remain internal to `runtime`.
   - Validate: inspect `cli/src/services/mutation_trace/runtime/mod.rs` for exactly those re-exports and confirm every `mod` declaration there is still private (`rg -n '^\s*(pub(\(crate\))?\s+)?mod |pub\(crate\) use' cli/src/services/mutation_trace/runtime/mod.rs`), and `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` stays clean.
-- [ ] AC14: `spec/mutation_cursor.qnt`, the Quint refinement matrix in
+- [x] AC14: `spec/mutation_cursor.qnt`, the Quint refinement matrix in
   `cli/src/services/mutation_trace/mod.rs`, `protocol.rs`'s transition semantics,
   `004_mutation_trace_protocol.sql`, and the migration set carry no change
   attributable to this PR. The baseline is this PR's own base branch, `ref-rec`,
@@ -125,7 +125,7 @@ performs final validation.
   the runtime coordinator already exist on `ref-rec`, so a `main` baseline would
   report the entire stack below this PR as if it were this PR's change.
   - Validate: `git fetch origin` first, then `git diff --stat origin/ref-rec...HEAD -- spec/mutation_cursor.qnt cli/src/services/mutation_trace/protocol.rs cli/migrations/agent-trace-repository/` produces empty output. Use `origin/ref-rec`, not a local `ref-rec`, which can lag behind a rewritten base and would report the whole rebased stack as this PR's change. Additionally, the `mutation-trace-quint-connect` and Quint checks inside `nix flake check` stay green.
-- [ ] AC15: `context/cli/mutation-scope-runtime.md` exists and states, in the
+- [x] AC15: `context/cli/mutation-scope-runtime.md` exists and states, in the
   repository's own terms: a mutation scope is one independently mutation-capable
   execution (so concurrent main agent and subagent need distinct `ScopeId`s);
   `Start`/`Advance`/`Close` semantics including that a failed tool still requires
@@ -574,13 +574,88 @@ which is precisely why there is nothing left for this one to decide.
     to follow via RAII `tempfile::TempDir`.
   - Context synchronization: synced
 
-- [ ] T05: `Export the runtime seam and record the adapter contract` (status:todo)
+- [x] T05: `Export the runtime seam and record the adapter contract` (status:done)
   - Task ID: T05
   - Scope: In — `pub(crate) use` re-exports in `runtime/mod.rs` for `coordinate`, `CoordinateError`, `CoordinateOutcome`, `ExternalTaintOperation`, `RuntimeBoundary`, `abandon_scope`, `AbandonScopeError`, `AbandonScopeOutcome` and its reason type — conceptually `pub(crate) use coordinator::{coordinate, CoordinateError, CoordinateOutcome, ExternalTaintOperation, RuntimeBoundary};` plus the `scope_runtime` names, `ExternalTaintOperation` riding through `coordinator`'s own `pub use` of it because `CoordinateError::ExternalTaintMarker` carries it; keeping the `git_snapshot`, `external_taint`, `worktree_lock`, `ref_reconciliation`, and `protected_worktree` **modules** private and re-exporting nothing else from any of them (`ProtectedWorktree`, `ProtectedWorktreeError`, and `WORKTREE_LOCK_TIMEOUT` stay internal); new `context/cli/mutation-scope-runtime.md` plus its `context/context-map.md` and `context/overview.md` index entries. Out — any harness, hook, or command wiring; any change to the runtime implementation, including moving `ExternalTaintOperation` or `WORKTREE_LOCK_TIMEOUT` back out of `protected_worktree.rs`; the per-task context updates T01–T04 each own for their own domain files.
   - Dependencies: T04
   - Done when: the eight names above are reachable as `crate::services::mutation_trace::runtime::*`, including `ExternalTaintOperation` so a crate-level caller can match `CoordinateError::ExternalTaintMarker`; the five modules remain private and nothing else from them is reachable; `clippy --all-targets -- -D warnings` is clean with no placeholder consumer added to satisfy it; `context/cli/mutation-scope-runtime.md` states the scope-identity rule, the `Start`/`Advance`/`Close` semantics, the positive-evidence requirement for `abandon_scope()` and the prohibition on inferring staleness from `ActorKind`, the successor-scope sequence and what each outcome implies for it (including that a failed abandonment must not be treated as a safely started successor), that abandonment is not a `RuntimeBoundary` and requires no Quint change, the D1 strong-recovery tradeoff for a missing or `NeverSeen` target, and the `AiExclusive` attribution boundary; `context-map.md` and `overview.md` name the new module and file.
   - Verify: `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`; `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml`; read `context/cli/mutation-scope-runtime.md` against the shipped `scope_runtime.rs` signatures.
-  - Context synchronization: pending
+  - Completed: 2026-09-03
+  - Files changed:
+    - `cli/src/services/mutation_trace/runtime/mod.rs`
+    - `context/cli/mutation-scope-runtime.md` (new)
+    - `context/context-map.md`
+    - `context/overview.md`
+  - Result: `runtime/mod.rs` gained two `#[allow(unused_imports)] pub(crate) use`
+    blocks — `coordinator::{coordinate, CoordinateError, CoordinateOutcome,
+    ExternalTaintOperation, RuntimeBoundary}` and `scope_runtime::{abandon_scope,
+    AbandonRecoveryReason, AbandonScopeError, AbandonScopeOutcome}` — nine names
+    total (the plan's "eight names ... and its reason type" is `AbandonRecoveryReason`
+    counted separately, matching the file's own header count). Every `mod`
+    declaration in the file stays private; nothing else is re-exported. The
+    `#[allow(unused_imports)]` on each `use` block follows the repository's
+    existing precedent for a seam with no consumer yet (`services/style.rs`,
+    `services/hooks/codex/apply_patch/mod.rs`) rather than the module-level
+    `#[allow(dead_code)]` on `pub mod mutation_trace`, which covers unused items,
+    not unused re-exports, and rather than a placeholder consumer, which the
+    plan's constraints forbid. Reachability was proven by a temporary crate-level
+    test module importing and using all nine names through
+    `crate::services::mutation_trace::runtime::*` (compiled and passed), and
+    module privacy was proven by a second temporary test module attempting direct
+    imports of `protected_worktree`, `worktree_lock`, `git_snapshot`,
+    `external_taint`, and `ref_reconciliation`, each failing with `E0603: module
+    ... is private`; both probes were reverted before this task's own edit, and
+    `git status`/`git diff` on `cli/src/services/mod.rs` confirm it carries no
+    diff from this task. New `context/cli/mutation-scope-runtime.md` records the
+    adapter contract: the scope-identity rule (one independently mutation-capable
+    execution per `ScopeId`, so a concurrent main agent and subagent need distinct
+    ids); `Start`/`Advance`/`Close`/`Flush` semantics including that a failed tool
+    still requires `Advance` (a boundary observes the worktree, not a successful
+    edit) and that a `ScopeId` is never reused after a terminal status (the
+    `NeverSeen` guard silently refuses to reactivate it); that `coordinate()`
+    registers `(worktree_id, actor_kind)` identity on every scope-carrying
+    variant, not only `Start`, with a mismatch surfacing as
+    `CoordinateError::ScopeIdentityConflict`; the positive-evidence requirement
+    for `abandon_scope()` and the explicit prohibition on inferring staleness
+    from `ActorKind`; the abandon → `coordinate(Start(successor))` sequence as an
+    outcome table, including that a failed abandonment (an `Err`, `Abandoned`
+    excluded) must never be treated as a safely started successor; that
+    abandonment is not a `RuntimeBoundary` and needs no Quint change; D1's
+    strong-recovery tradeoff for a missing or `NeverSeen` target verbatim from the
+    plan's **Design decisions**; and the `AiExclusive` attribution boundary — that
+    it states scope exclusivity only, never standalone proof no human edited the
+    worktree. `context-map.md` gained one index entry in file order after
+    `mutation-trace-scope-abandonment.md` and before
+    `mutation-trace-ref-reconciliation.md`; `overview.md`'s existing
+    mutation-trace status paragraph gained a sentence naming the new
+    `abandon_scope()` entrypoint, the nine re-exports, and the new context file,
+    replacing its prior "the module is still not wired into any hook or command"
+    citation list with the expanded one including the two new files. A pre-write
+    cross-check against the shipped `scope_runtime.rs`/`coordinator.rs` found and
+    corrected two drafting errors before this record was written: `Flush` carries
+    no fields (not a `worktree` field — corrected from an earlier draft that
+    stated `Flush { worktree }`), and `coordinate()`'s `hook_identity` /
+    `register_scope` call runs for all three scope-carrying variants, not only
+    `Start`. No production runtime logic, signature, or behavior changed; no code
+    comments were added, consistent with T01/T03/T04's precedent on this plan.
+  - Verify results:
+    - `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` — passed, clean.
+    - `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` — passed: 951 passed, 0 failed, 0 ignored.
+    - `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` — passed.
+    - `rg -n '^\s*(pub(\(crate\))?\s+)?mod |pub\(crate\) use' cli/src/services/mutation_trace/runtime/mod.rs` — confirmed every `mod` line has no `pub`/`pub(crate)` prefix and exactly two `pub(crate) use` blocks are present.
+    - Read `context/cli/mutation-scope-runtime.md` against the shipped `scope_runtime.rs`/`coordinator.rs` signatures — confirmed, after the two corrections above.
+  - Context impact: this task's own deliverable *is* the context change — a new
+    root-adjacent domain file plus its two index entries. No production code
+    behavior changed beyond the re-export visibility itself (a compile-time-only
+    seam widening); `coordinate()`'s and `abandon_scope()`'s signatures, outcomes,
+    and error variants are unchanged. Durable context affected:
+    `context/cli/mutation-scope-runtime.md` (new), `context/context-map.md`,
+    `context/overview.md`. Two sibling domain files this task's own change made
+    stale were also corrected during synchronization:
+    `context/cli/mutation-trace-runtime-coordinator.md` and
+    `context/cli/mutation-trace-scope-abandonment.md` (both previously described
+    the `pub(crate)` re-export as future work).
+  - Context synchronization: synced
 
 ## Open questions
 
@@ -590,3 +665,50 @@ which is precisely why there is nothing left for this one to decide.
   the cheaper option is to leave the abandonment CAS race in `scope_runtime.rs`'s
   own inline tests (T03) and drop it from T04, since nothing about the race needs
   real Git. Not blocking — T03's `Done when` already covers the behavior.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-09-03
+
+### Commands run
+
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::` -> exit 0 (288 passed; 0 failed; 663 filtered out)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` -> exit 0 (951 passed; 0 failed; 0 ignored)
+- `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` -> exit 0 (clean, no placeholder consumer)
+- `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` -> exit 0 (clean)
+- `nix flake check` -> exit 0 (all checks passed, incl. `sce-cli-clippy`, `sce-cli-fmt`, `sce-cli-tests`, `sce-mutation-trace-quint-connect`)
+- `nix run .#pkl-check-generated` -> exit 0 (141 files, inventory sha256 5516770e…)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::scope_runtime::` -> exit 0 (14 passed)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::coordinator::` -> exit 0 (26 passed, assertions unmodified)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::tests::` -> exit 0 (27 passed)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::store::` -> exit 0 (86 passed)
+- `rg -n 'GitSnapshotService|SnapshotCapture|capture_tree|pin_tree|diff_trees|reconcile_worktree|initialize_worktree|register_scope' cli/src/services/mutation_trace/runtime/scope_runtime.rs` -> exit 1 (no match)
+- `rg -n '^\s*(pub(\(crate\))?\s+)?mod |pub\(crate\) use' cli/src/services/mutation_trace/runtime/mod.rs` -> exit 0 (every `mod` private; two `pub(crate) use` blocks)
+- `git fetch origin && git diff --stat origin/ref-rec...HEAD -- spec/mutation_cursor.qnt cli/src/services/mutation_trace/protocol.rs cli/migrations/agent-trace-repository/` -> exit 0 (empty output; also empty for `cli/src/services/mutation_trace/mod.rs` and `004_mutation_trace_protocol.sql`)
+
+### Success-criteria verification
+
+- [x] AC1: `coordinate()` runs through the shared protected-worktree primitive with ordering and error semantics intact -> `services::mutation_trace::runtime::coordinator::` — 26 passed; the fence, lock-contention, and `MarkerClearAfterCommit` tests pass with assertion content unmodified (confirmed against T01 record).
+- [x] AC2: Abandoning an `Active` scope changes only that scope's status, advances revision by one, sets `needs_rebaseline`, writes no event rows -> `scope_runtime::tests::abandoning_a_live_scope_writes_only_the_scope_and_worktree_rows` passed.
+- [x] AC3: `abandon_scope()` performs no snapshot/pin/diff/reconciliation/registration/init -> `rg` over `scope_runtime.rs` returns no match (exit 1); the module reads only durable mutation-scope state.
+- [x] AC4: A `Closed`/`Abandoned` target settles as a successful terminal no-op with the marker cleared -> `scope_runtime::tests::a_closed_scope_settles_as_a_terminal_no_op` and `…an_already_abandoned_scope_settles_as_a_terminal_no_op` passed.
+- [x] AC5: A missing and a `NeverSeen` target both return recovery-required, leave the marker armed, commit no abandonment -> `scope_runtime::tests::a_missing_scope_row_requires_recovery_and_leaves_the_fence_armed` and `…a_never_seen_scope_requires_recovery_and_leaves_the_fence_armed` passed.
+- [x] AC6: A pre-existing marker returns recovery-required for that reason without clearing it and without invoking the DB provider -> `scope_runtime::tests::an_inherited_marker_requires_recovery_without_consulting_the_db_provider` passed.
+- [x] AC7: A target owned by another `WorktreeId` is rejected as an error writing nothing -> `runtime::tests::abandoning_a_scope_through_another_worktrees_checkout_is_rejected_without_writing` passed; `scope_runtime::tests::a_scope_owned_by_another_worktree_is_rejected_without_writing` passed.
+- [x] AC8: A CAS conflict reloads and recomputes within the coordinator's retry limit; a competitor-terminal scope settles as the terminal no-op -> `runtime::tests::a_real_thread_cas_race_settles_on_the_competitors_terminal_status` and `scope_runtime::tests::a_cas_conflict_whose_competitor_ended_the_scope_settles_as_a_terminal_no_op` / `…a_cas_conflict_recomputes_the_abandonment_from_fresh_state` passed.
+- [x] AC9: An `Active` target at `revision: u64::MAX` produces a distinct revision-exhaustion error -> `scope_runtime::tests::a_live_scope_on_an_exhausted_revision_is_a_distinct_error` passed.
+- [x] AC10: Marker stays armed on DB-provider `Err` / persistence failure; cleared on abandonment and terminal no-op; a `clear()` failure returns an error carrying the completed outcome -> `scope_runtime::tests::a_db_provider_failure_leaves_the_fence_armed`, `…a_persistence_failure_rolls_back_the_whole_transition_and_leaves_the_fence_armed`, `…a_marker_clear_failure_carries_the_already_settled_outcome` passed.
+- [x] AC11: Real Git + real repo-scoped DB: `Start(A)` → edit → `abandon_scope(A)` → edit → `coordinate(Start(B))` leaves the cursor at `Start(B)`'s tree, emits no event for the gap, A `Abandoned`, B `Active` -> `runtime::tests::an_abandoned_scope_rebaselines_the_successor_start_without_evidence_for_the_gap` passed.
+- [x] AC12: Abandoning stale A leaves unrelated live B `Active` through the recovery -> `runtime::tests::abandoning_a_stale_scope_leaves_an_unrelated_live_scope_active_through_the_recovery` passed.
+- [x] AC13: `runtime/mod.rs` re-exports exactly `coordinate`, `CoordinateError`, `CoordinateOutcome`, `ExternalTaintOperation`, `RuntimeBoundary`, `abandon_scope`, `AbandonRecoveryReason`, `AbandonScopeError`, `AbandonScopeOutcome`; every `mod` private -> inspected `mod.rs` (two `pub(crate) use` blocks, all `mod` lines private); `clippy --all-targets -- -D warnings` clean.
+- [x] AC14: No change attributable to this PR in `spec/mutation_cursor.qnt`, the Quint refinement matrix, `protocol.rs`, `004_mutation_trace_protocol.sql`, or the migration set, baselined on `origin/ref-rec` -> `git diff --stat origin/ref-rec...HEAD` over those paths is empty; `nix flake check` Quint checks green.
+- [x] AC15: `context/cli/mutation-scope-runtime.md` exists and states each required item -> read in full: scope-identity rule, `Start`/`Advance`/`Close` semantics (failed tool still requires `Advance`, no `ScopeId` reuse after terminal), positive-staleness-evidence requirement and the `ActorKind` prohibition, the abandon → successor-`Start` outcome table (including that a failed abandonment is not a safely started successor), abandonment is not a `RuntimeBoundary` and needs no Quint change, D1's strong-recovery tradeoff, and the `AiExclusive` attribution boundary — all present and consistent with the shipped `scope_runtime.rs` / `coordinator.rs`.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- No harness adapter exercises either entrypoint yet, so `abandon_scope()` has no production caller; the re-export blocks carry `#[allow(unused_imports)]` and coverage rests entirely on the inline and integration test suites. This is the plan's explicit end state, not a regression.
