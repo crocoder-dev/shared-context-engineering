@@ -427,6 +427,129 @@ fn a_non_ai_replacement_of_an_ai_line_owns_the_new_line() {
 }
 
 #[test]
+fn a_suffix_related_mutation_file_never_pairs_with_the_committed_target() {
+    let page_source = FakePageSource::new(vec![ai_row(1, "t0", "t1", "scope-1")]);
+    let tree_source = FakeTreeSource::new()
+        .with_file("t0", "src/lib.rs", "a\nunique_line\n")
+        .with_file("t0", "packages/foo/src/lib.rs", "a\n")
+        .with_diff(
+            "t0",
+            "t1",
+            "diff --git a/packages/foo/src/lib.rs b/packages/foo/src/lib.rs\n\
+             --- a/packages/foo/src/lib.rs\n\
+             +++ b/packages/foo/src/lib.rs\n\
+             @@ -1,1 +1,2 @@\n a\n+unique_line\n",
+        );
+
+    let attr = resolve_bounded_mutation_attribution(
+        &page_source,
+        &tree_source,
+        &worktree(),
+        &empty(),
+        &committed("src/lib.rs", 1, 1, 1, vec![added(2, "unique_line")]),
+        &tree("t1"),
+        Some(1),
+    );
+
+    assert!(
+        ai_contents(&attr).is_empty(),
+        "a suffix-related mutation path must not attribute the committed line"
+    );
+    assert_eq!(unresolved_contents(&attr), vec!["unique_line".to_owned()]);
+}
+
+#[test]
+fn an_exact_nested_repository_path_still_attributes() {
+    let page_source = FakePageSource::new(vec![ai_row(1, "t0", "t1", "scope-1")]);
+    let tree_source = FakeTreeSource::new()
+        .with_file("t0", "src/lib.rs", "a\n")
+        .with_diff(
+            "t0",
+            "t1",
+            "diff --git a/src/lib.rs b/src/lib.rs\n\
+             --- a/src/lib.rs\n\
+             +++ b/src/lib.rs\n\
+             @@ -1,1 +1,2 @@\n a\n+unique_line\n",
+        );
+
+    let attr = resolve_bounded_mutation_attribution(
+        &page_source,
+        &tree_source,
+        &worktree(),
+        &empty(),
+        &committed("src/lib.rs", 1, 1, 1, vec![added(2, "unique_line")]),
+        &tree("t1"),
+        Some(1),
+    );
+
+    assert_eq!(ai_contents(&attr), vec!["unique_line".to_owned()]);
+    assert!(unresolved_contents(&attr).is_empty());
+}
+
+#[test]
+fn multiple_similar_nested_mutation_paths_stay_independent_of_the_target() {
+    let page_source = FakePageSource::new(vec![ai_row(1, "t0", "t1", "scope-1")]);
+    let tree_source = FakeTreeSource::new()
+        .with_file("t0", "src/lib.rs", "a\nunique_line\n")
+        .with_file("t0", "packages/a/src/lib.rs", "a\n")
+        .with_file("t0", "packages/b/src/lib.rs", "a\n")
+        .with_diff(
+            "t0",
+            "t1",
+            "diff --git a/packages/a/src/lib.rs b/packages/a/src/lib.rs\n\
+             --- a/packages/a/src/lib.rs\n\
+             +++ b/packages/a/src/lib.rs\n\
+             @@ -1,1 +1,2 @@\n a\n+unique_line\n\
+             diff --git a/packages/b/src/lib.rs b/packages/b/src/lib.rs\n\
+             --- a/packages/b/src/lib.rs\n\
+             +++ b/packages/b/src/lib.rs\n\
+             @@ -1,1 +1,2 @@\n a\n+unique_line\n",
+        );
+
+    let attr = resolve_bounded_mutation_attribution(
+        &page_source,
+        &tree_source,
+        &worktree(),
+        &empty(),
+        &committed("src/lib.rs", 1, 1, 1, vec![added(2, "unique_line")]),
+        &tree("t1"),
+        Some(1),
+    );
+
+    assert!(ai_contents(&attr).is_empty());
+    assert_eq!(unresolved_contents(&attr), vec!["unique_line".to_owned()]);
+}
+
+#[test]
+fn a_shared_basename_between_mutation_and_target_is_not_a_match() {
+    let page_source = FakePageSource::new(vec![ai_row(1, "t0", "t1", "scope-1")]);
+    let tree_source = FakeTreeSource::new()
+        .with_file("t0", "bar/config.rs", "a\nunique_line\n")
+        .with_file("t0", "foo/config.rs", "a\n")
+        .with_diff(
+            "t0",
+            "t1",
+            "diff --git a/foo/config.rs b/foo/config.rs\n\
+             --- a/foo/config.rs\n\
+             +++ b/foo/config.rs\n\
+             @@ -1,1 +1,2 @@\n a\n+unique_line\n",
+        );
+
+    let attr = resolve_bounded_mutation_attribution(
+        &page_source,
+        &tree_source,
+        &worktree(),
+        &empty(),
+        &committed("bar/config.rs", 1, 1, 1, vec![added(2, "unique_line")]),
+        &tree("t1"),
+        Some(1),
+    );
+
+    assert!(ai_contents(&attr).is_empty());
+    assert_eq!(unresolved_contents(&attr), vec!["unique_line".to_owned()]);
+}
+
+#[test]
 fn a_history_gap_is_not_crossed_by_older_provenance() {
     let page_source = FakePageSource::new(vec![
         ai_row(2, "t9", "commit", "scope-2"),
