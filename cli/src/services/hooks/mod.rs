@@ -4251,7 +4251,7 @@ mod tests {
                 "mutation history resolves only the committed line direct evidence missed"
             );
 
-            let trace = persist_trace(&flow_result, &db, &mutation_ai_patch);
+            persist_trace(&flow_result, &db, &mutation_ai_patch);
 
             assert_eq!(
                 row_count(&db, "diff_traces"),
@@ -4299,8 +4299,19 @@ mod tests {
             );
 
             assert_eq!(row_count(&db, "agent_traces"), 1);
-            validate_agent_trace_value(&trace)
-                .expect("the persisted trace validates against the embedded Agent Trace schema");
+            let stored_trace_json: String = db
+                .query_map("SELECT trace_json FROM agent_traces", (), |row| {
+                    row.get::<String>(0).map_err(anyhow::Error::from)
+                })
+                .expect("agent_traces query should succeed")
+                .into_iter()
+                .next()
+                .expect("one Agent Trace row should exist");
+            let trace: Value = serde_json::from_str(&stored_trace_json)
+                .expect("the persisted Agent Trace JSON should parse");
+            validate_agent_trace_value(&trace).expect(
+                "the persisted agent_traces.trace_json validates against the embedded Agent Trace schema",
+            );
             assert_eq!(
                 trace["metadata"]["sce"]["line_changes"]["ai"]["added"],
                 json!(2),
