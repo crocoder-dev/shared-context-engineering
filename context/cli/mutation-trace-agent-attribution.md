@@ -16,6 +16,15 @@ introduced, that event's provenance is dead and no older event can resurrect it.
 filesystem, or mutation state). It tracks, per repo path, a vector of
 `(content, LineProvenance)` lines and advances it one transition at a time.
 
+File identity is **exact logical repository path** equality only. A file's
+logical path is `new_path` when non-empty and otherwise `old_path`; the lineage
+keys its tracked vectors by that path and a reconstructed transition only
+affects a tracked file when its own `old_path`/`new_path` is byte-equal to a
+tracked path. There is no normalized-suffix or basename equivalence here:
+`packages/foo/src/lib.rs` never pairs with `src/lib.rs`. Suffix matching stays
+confined to the direct-evidence matchers in
+[patch-service.md](patch-service.md).
+
 `LineProvenance` is `Unknown`, `MutationAi { scope_id }`, or `MutationNonAi`.
 A `TransitionOrigin` is:
 
@@ -161,7 +170,11 @@ observable tree difference.
   tail adds `Unknown` but keeps surviving AI; an event past the commit cut has
   no influence; event 128 contributes and 129 is never loaded; a page-query
   failure is a conservative barrier; a reconstruction failure reloads and
-  continues; real `GitSnapshotService` + store seams.
+  continues; real `GitSnapshotService` + store seams. Exact-path identity: a
+  suffix-related mutation file (`packages/foo/src/lib.rs`) never pairs with a
+  committed `src/lib.rs` even with identical added text and line number; an
+  exact nested path still attributes; multiple similar nested mutation paths
+  stay independent of the target; a shared basename alone is not a match.
 - `runtime/tests.rs` — a still-relevant event behind 128 newer events is never
   loaded or reconstructed.
 - `hooks/mod.rs` (`mutation_attribution_e2e`) — real Git/DB: mutation-only `ai`
