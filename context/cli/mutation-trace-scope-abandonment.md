@@ -161,9 +161,10 @@ a DB-provider `Err` leaving the fence armed; a persistence failure rolling the
 whole transition back (below); and a `clear()` failure returning
 `MarkerClearAfterCompletion` whose carried outcome matches the durable state.
 
-A private `abandon_scope_inner(.., after_load)` seam (mirroring
+A `pub(super) abandon_scope_inner(.., after_load)` seam (mirroring
 `coordinate_inner`) fires once per CAS attempt after the projection loads, so a
-test can land a competing write inside the CAS window. Production passes a
+test — in this module or in `runtime/tests.rs` — can land a competing write
+inside the CAS window. It is invisible outside `runtime`; production passes a
 no-op.
 
 ### Proving the transition is all-or-nothing
@@ -185,11 +186,46 @@ After the resulting `Err`, the worktree is still at its original revision with
 exists, and the external-taint marker is still armed — the general rule that
 **every** runtime error after the fence is armed leaves it armed.
 
+### Cross-runtime regressions
+
+`runtime/tests.rs` ([`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md#testing-boundary))
+drives `coordinate()` and `abandon_scope()` together over real `git init` /
+`git worktree add` repositories and one real repository-scoped Agent Trace DB,
+covering what a single-module test with no real Git cannot:
+
+- **The successor sequence.** `Start(A)` → edit → `abandon_scope(A)` →
+  unobserved edit → `coordinate(Start(B))`. The abandonment's
+  `needs_rebaseline` sends the successor's invocation through recovery first, so
+  the cursor lands on the tree observed at `Start(B)`, A stays `Abandoned`, B
+  becomes `Active`, and the ambiguous A→B interval produces no
+  `mutation_trace_events` row at any revision.
+- **An unrelated live scope survives it.** With B legitimately `Active` across
+  `abandon_scope(A)`, B is still `Active` after its next `Advance` — the
+  `needs_rebaseline` recovery preserves live scopes, unlike the external-taint
+  recovery a `RecoveryRequired` outcome forces (above).
+- **Wrong checkout.** Abandoning worktree A's scope through worktree B's
+  checkout is `WorktreeIdentityMismatch`; neither worktree's revision moves and
+  the scope stays `Active`. The fence ends up armed only on the *invoking*
+  checkout, because the guard derives its `WorktreeId` from the caller's own
+  checkout before any scope is read — the rejection is the invoking worktree's
+  error, not the target's.
+- **A real CAS race.** A competing OS thread with its own handle on the same
+  on-disk DB commits a genuine `Close` (`load_worktree` →
+  `protocol::prepare`/`commit` → `DurableTransition` → `store.commit`) while the
+  abandonment sits between its own load and commit. The abandonment loses the
+  CAS, reloads, and settles as `AlreadyTerminal { status: Closed }` at the
+  competitor's revision. That competitor writes through the store rather than
+  through `coordinate()` deliberately: `abandon_scope()` holds the worktree lock
+  for its whole body, so a competitor taking the same lock would serialize
+  behind it instead of racing. Within one worktree the lock is what actually
+  prevents this race; the CAS retry is defense in depth for anything that
+  reaches the store without it.
+
 ## Status
 
-The entrypoint, its outcome/error types, and its unit coverage exist. Real-Git
-cross-worktree and successor-scope regressions, the `pub(crate)` re-export out
-of `runtime`, and the harness-adapter contract document remain future work in
+The entrypoint, its outcome/error types, its unit coverage, and its cross-runtime
+regressions against real Git repositories all exist. The `pub(crate)` re-export
+out of `runtime` and the harness-adapter contract document remain future work in
 the same plan; no harness, hook, or command calls this yet.
 
 See also: [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md),

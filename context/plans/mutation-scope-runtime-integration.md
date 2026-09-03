@@ -495,13 +495,84 @@ which is precisely why there is nothing left for this one to decide.
     production call site, and abandonment is not a `RuntimeBoundary`).
   - Context synchronization: synced
 
-- [ ] T04: `Add cross-runtime abandonment safety regressions` (status:todo)
+- [x] T04: `Add cross-runtime abandonment safety regressions` (status:done)
   - Task ID: T04
   - Scope: In — integration tests in `cli/src/services/mutation_trace/runtime/tests.rs` driving `coordinate()` and `abandon_scope()` together against real `git init` / `git worktree add` repositories and a real repository-scoped Agent Trace DB: the abandon → unobserved edit → successor `Start` rebaseline sequence with no evidence for the gap; a concurrently active unrelated scope surviving that recovery; abandoning a scope through the wrong checkout; and a real-thread CAS race between `abandon_scope()` and a competing writer. Out — the single-module cases T03 already covers with a temp-file DB and no real Git.
   - Dependencies: T03
   - Done when: `Start(A)` → edit → `abandon_scope(A)` → unobserved edit → `coordinate(Start(B))` leaves the cursor at the tree observed at `Start(B)`, emits no `mutation_trace_events` row for the A→B interval, leaves A `Abandoned` and B `Active`; a second scope B active across `abandon_scope(A)` is still `Active` after the next `coordinate()`; abandoning worktree A's scope through worktree B's checkout errors and changes no row in either worktree; the CAS-race test settles deterministically on the competitor's terminal status without a second abandonment.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::tests::`; `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::`.
-  - Context synchronization: pending
+  - Completed: 2026-09-03
+  - Files changed:
+    - `cli/src/services/mutation_trace/runtime/tests.rs`
+    - `cli/src/services/mutation_trace/runtime/scope_runtime.rs`
+  - Result: `runtime/tests.rs` gained four public-entrypoint integration tests that
+    drive `coordinate()` and `abandon_scope()` together over real `git init` /
+    `git worktree add` repositories and a real repository-scoped Agent Trace DB,
+    reusing the file's existing RAII `TestRepo` / `LinkedTestRepo` fixtures.
+    `an_abandoned_scope_rebaselines_the_successor_start_without_evidence_for_the_gap`
+    runs baseline `Flush` → `Start(A)` → a real edit → `abandon_scope(A)` → a second
+    unobserved edit → `coordinate(Start(B))`, asserting the abandonment advanced the
+    revision by exactly one, that `Start(B)` observed a tree different from the
+    baseline, that the durable cursor sits at the tree observed at `Start(B)` with
+    `needs_rebaseline`/`tainted` cleared and `failure_kind` healthy, that A is
+    `Abandoned` and B `Active`, and that the whole gap carries no evidence — both
+    `mutation_trace_events` being empty and `load_mutation_event` being `None` for
+    every revision from `Start(A)` through `Start(B)`.
+    `abandoning_a_stale_scope_leaves_an_unrelated_live_scope_active_through_the_recovery`
+    starts two scopes with different `ActorKind`s, abandons only the stale one, then
+    drives a real `Advance` on the live one; the live scope is still `Active`, the
+    stale one `Abandoned`, and the `needs_rebaseline` recovery consumes the ambiguous
+    interval rather than attributing it — the AC12 counterpart to D1's stronger
+    external-taint recovery.
+    `abandoning_a_scope_through_another_worktrees_checkout_is_rejected_without_writing`
+    materializes two linked worktrees over one shared DB, starts a scope on the main
+    checkout, and abandons it through the linked checkout: the error is
+    `WorktreeIdentityMismatch` carrying both `WorktreeId`s, neither worktree's
+    revision moved, the scope is still `Active`, and the fence is armed only on the
+    invoking (linked) worktree, not on the target's.
+    `a_real_thread_cas_race_settles_on_the_competitors_terminal_status` runs a genuine
+    OS thread with its own DB handle against the same on-disk DB. Released through
+    `abandon_scope_inner`'s `after_load` seam while the abandonment sits between its
+    load and its commit, the competitor performs a real store-level `Close` —
+    `load_worktree` → `protocol::prepare` → `protocol::commit` →
+    `DurableTransition::between` → `MutationTraceStore::commit`, asserting
+    `CasResult::Applied` — and reports its committed revision back over a channel. The
+    competitor writes through the store rather than through `coordinate()` on purpose:
+    `abandon_scope()` holds the worktree lock for its whole body, so a competitor
+    taking the same lock would serialize instead of racing. The abandonment then loses
+    its CAS, reloads, re-classifies the now-`Closed` scope, and settles as
+    `AlreadyTerminal { status: Closed, revision: <competitor's> }`; the durable scope
+    status stays `Closed` and the revision stays at the competitor's, proving no second
+    abandonment was written. One supporting edit outside the test file:
+    `scope_runtime.rs`'s private `abandon_scope_inner` widened to `pub(super)` so the
+    sibling `tests` module can reach its `after_load` seam, exactly as
+    `coordinator.rs` already exposes `pub(super) fn coordinate_inner` for the same
+    reason. No behavior, signature, or runtime logic changed. The plan's **Open
+    questions** allowed dropping the CAS race from T04 if reuse required exporting a
+    test helper across modules; no helper was exported, so AC8's real-thread
+    requirement was implemented rather than dropped. Consistent with T01 and T03, no
+    comments were added to the code.
+  - Verify results:
+    - `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::tests::` — passed: 27 passed, 0 failed (23 pre-existing plus the 4 new integration tests).
+    - `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::` — passed: 288 passed, 0 failed (284 before this task plus the 4 new tests), confirming the coordinator, scope-runtime, store, protocol, and MBT suites are unaffected.
+    - Also run: `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` — passed, clean; the CAS-race test carries `#[allow(clippy::too_many_lines)]`, matching the file's existing precedent for long integration tests.
+    - Also run: `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` — passed after `cargo fmt`.
+  - Context impact: local to `cli/src/services/mutation_trace/runtime/`. Test-only
+    except for one visibility widening (`abandon_scope_inner` private ->
+    `pub(super)`), which is a sibling-module test seam, not a crate-visible surface.
+    No public interface, schema, migration, spec, or protocol change; `coordinate()`
+    and `abandon_scope()` behavior is untouched and nothing new is reachable outside
+    `runtime`. Durable context affected:
+    `context/cli/mutation-trace-runtime-coordinator.md` (the two entrypoints are now
+    covered by cross-runtime integration regressions, and the `pub(super)`
+    `*_inner` test seam is the recorded convention for both) and
+    `context/cli/mutation-trace-scope-abandonment.md` (the abandon →
+    successor-`Start` rebaseline sequence, the live-scope survival guarantee, the
+    cross-checkout rejection, and why a CAS competitor must bypass the worktree lock
+    to race at all). `context/patterns.md` is the plan's recorded repair target for
+    the mutation-trace unit-testing fixture convention, which these tests continue
+    to follow via RAII `tempfile::TempDir`.
+  - Context synchronization: synced
 
 - [ ] T05: `Export the runtime seam and record the adapter contract` (status:todo)
   - Task ID: T05
