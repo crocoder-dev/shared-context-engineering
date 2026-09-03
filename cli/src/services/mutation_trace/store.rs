@@ -720,6 +720,34 @@ impl<'a> MutationTraceStore<'a> {
         Ok(rows.into_iter().collect())
     }
 
+    /// Loads the durable [`ScopeState`] for `scope_id` — its status,
+    /// `actor_kind`, and `worktree_id` — or `None` when no
+    /// `mutation_trace_scopes` row exists for it.
+    ///
+    /// A cold-path single-row read, and deliberately the narrowest scope seam
+    /// there is: it reads one `mutation_trace_scopes` row and nothing else. It
+    /// never consults `mutation_trace_events`,
+    /// `mutation_trace_processed_events`, or the scope's
+    /// `mutation_trace_worktrees` row, and it must not widen into a
+    /// projection — [`MutationTraceStore::load_worktree`] is the projection
+    /// seam, and a caller needing worktree state alongside a scope belongs
+    /// there instead.
+    ///
+    /// This never adjudicates worktree identity: a scope whose `worktree_id`
+    /// differs from the caller's own worktree is returned as-is, not rejected.
+    /// Comparing the two is the caller's decision, since the same row is a
+    /// legitimate read from its owning worktree and a cross-worktree reference
+    /// from any other.
+    pub fn load_scope(&self, scope_id: &ScopeId) -> Result<Option<ScopeState>> {
+        let rows = self.db.query_map(
+            SELECT_SCOPE_BY_ID_SQL,
+            (scope_id.0.as_str(),),
+            scope_row_from_turso,
+        )?;
+
+        Ok(rows.into_iter().next().map(|(_, scope_state)| scope_state))
+    }
+
     fn load_worktree_state(&self, worktree: &WorktreeId) -> Result<Option<WorktreeState>> {
         let rows = self.db.query_map(
             SELECT_WORKTREE_SQL,
@@ -741,16 +769,6 @@ impl<'a> MutationTraceStore<'a> {
         )?;
 
         Ok(rows.into_iter().collect())
-    }
-
-    fn load_scope(&self, scope_id: &ScopeId) -> Result<Option<ScopeState>> {
-        let rows = self.db.query_map(
-            SELECT_SCOPE_BY_ID_SQL,
-            (scope_id.0.as_str(),),
-            scope_row_from_turso,
-        )?;
-
-        Ok(rows.into_iter().next().map(|(_, scope_state)| scope_state))
     }
 
     fn processed_event_exists(&self, event_key: &EventKey) -> Result<bool> {
@@ -1575,6 +1593,95 @@ mod tests {
             .expect_err("disagreeing scope/event_key.scope_id should error");
         assert!(error.to_string().contains("scope-a"));
         assert!(error.to_string().contains("scope-b"));
+    }
+
+    #[test]
+    fn load_scope_returns_the_durable_state_for_a_known_scope() {
+        let db_fixture = test_db_path("load-scope-known");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree(&db, "wt-1", 7);
+        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Closed);
+        insert_mutation_event(
+            &db,
+            "wt-1",
+            7,
+            "tree-0",
+            "tree-1",
+            "ai_exclusive",
+            Some("scope-1"),
+            "close",
+            Some("scope-1"),
+            Some("event-1"),
+            &["scope-1"],
+        );
+        insert_processed_event(&db, "scope-1", "event-1");
+
+        let scope_state = store
+            .load_scope(&ScopeId("scope-1".to_string()))
+            .expect("load_scope should succeed")
+            .expect("known scope should be present");
+
+        assert_eq!(
+            scope_state,
+            ScopeState {
+                status: ScopeStatus::Closed,
+                actor_kind: ActorKind::ClaudeCode,
+                worktree_id: WorktreeId("wt-1".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn load_scope_returns_none_for_an_unknown_scope() {
+        let db_fixture = test_db_path("load-scope-unknown");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree(&db, "wt-1", 0);
+        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Active);
+
+        let scope_state = store
+            .load_scope(&ScopeId("scope-missing".to_string()))
+            .expect("load_scope should succeed for an unknown scope");
+        assert!(scope_state.is_none());
+    }
+
+    #[test]
+    fn load_scope_returns_a_scope_belonging_to_another_worktree() {
+        let db_fixture = test_db_path("load-scope-other-worktree");
+        let db_path = db_fixture.path();
+        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let store = MutationTraceStore::new(&db);
+
+        insert_worktree(&db, "wt-1", 0);
+        insert_scope(&db, "scope-other", "wt-2", ScopeStatus::Active);
+
+        let scope_state = store
+            .load_scope(&ScopeId("scope-other".to_string()))
+            .expect("load_scope should not reject a scope on another worktree")
+            .expect("the scope row should be returned as-is");
+
+        assert_eq!(
+            scope_state,
+            ScopeState {
+                status: ScopeStatus::Active,
+                actor_kind: ActorKind::ClaudeCode,
+                worktree_id: WorktreeId("wt-2".to_string()),
+            }
+        );
+
+        let error = store
+            .load_worktree(
+                &WorktreeId("wt-1".to_string()),
+                Some(&ScopeId("scope-other".to_string())),
+                None,
+            )
+            .expect_err("load_worktree should still reject the cross-worktree scope");
+        assert!(error.to_string().contains("scope-other"));
     }
 
     #[test]
