@@ -15,7 +15,7 @@ use super::protected_worktree::{ProtectedWorktree, ProtectedWorktreeError};
 
 pub use super::protected_worktree::ExternalTaintOperation;
 
-const MAX_CAS_RETRY_ATTEMPTS: u32 = 5;
+pub(super) const MAX_CAS_RETRY_ATTEMPTS: u32 = 5;
 
 #[derive(Clone, Debug)]
 pub enum RuntimeBoundary {
@@ -499,8 +499,10 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::services::checkout::{get_or_create_checkout_id, resolve_git_dir};
     use crate::services::mutation_trace::runtime::external_taint::ExternalTaintMarker;
+    use crate::services::mutation_trace::runtime::git_snapshot::{
+        resolve_git_dir, resolve_worktree_id,
+    };
     use crate::services::mutation_trace::runtime::worktree_lock::acquire_inner;
     use crate::services::mutation_trace::store::encode_revision;
     use crate::services::mutation_trace::types::{Attribution, EventKey, FailureKind, ScopeStatus};
