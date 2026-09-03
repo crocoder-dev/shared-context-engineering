@@ -24,7 +24,7 @@ use uuid::{NoContext, Timestamp, Uuid};
 
 use super::patch::{
     intersect_patches, parse_patch, FileChangeKind, ParsedPatch, PatchFileChange, PatchHunk,
-    TouchedLineKind,
+    TouchedLine, TouchedLineKind,
 };
 use super::version::PACKAGE_VERSION;
 
@@ -90,6 +90,12 @@ pub struct AgentTraceMetadataInput<'a> {
     pub vcs_type: Option<AgentTraceVcsType>,
     pub tool_name: Option<&'a str>,
     pub tool_version: Option<&'a str>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AgentTraceEvidence<'a> {
+    pub direct_patch: &'a ParsedPatch,
+    pub mutation_ai_patch: &'a ParsedPatch,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -380,6 +386,7 @@ pub struct AgentTrace {
 ///   touched lines differ from the `post_commit_patch` hunk's touched lines.
 /// - `HunkContributor::Unknown` when no `intersection_patch` hunk with the same
 ///   `old_start` exists for this `post_commit_patch` hunk.
+#[allow(dead_code)]
 pub fn classify_hunk(
     post_commit_hunk: &PatchHunk,
     intersection_hunks: &[PatchHunk],
@@ -395,6 +402,60 @@ pub fn classify_hunk(
         HunkContributor::Ai
     } else {
         HunkContributor::Mixed
+    }
+}
+
+type CoverageLineKey<'a> = (TouchedLineKind, u64, &'a str);
+
+fn coverage_line_key(line: &TouchedLine) -> CoverageLineKey<'_> {
+    (line.kind, line.line_number, line.content.as_str())
+}
+
+fn combined_covered_line_count(
+    post_commit_hunk: &PatchHunk,
+    direct_hunk: Option<&PatchHunk>,
+    mutation_hunk: Option<&PatchHunk>,
+) -> usize {
+    let mut direct_pool: Vec<CoverageLineKey<'_>> = direct_hunk
+        .map(|hunk| hunk.lines.iter().map(coverage_line_key).collect())
+        .unwrap_or_default();
+    let mut mutation_pool: Vec<CoverageLineKey<'_>> = mutation_hunk
+        .map(|hunk| hunk.lines.iter().map(coverage_line_key).collect())
+        .unwrap_or_default();
+
+    post_commit_hunk
+        .lines
+        .iter()
+        .filter(|line| {
+            let key = coverage_line_key(line);
+            if let Some(index) = direct_pool.iter().position(|candidate| *candidate == key) {
+                direct_pool.swap_remove(index);
+                true
+            } else if let Some(index) = mutation_pool.iter().position(|candidate| *candidate == key)
+            {
+                mutation_pool.swap_remove(index);
+                true
+            } else {
+                false
+            }
+        })
+        .count()
+}
+
+fn classify_hunk_combined(
+    post_commit_hunk: &PatchHunk,
+    direct_hunk: Option<&PatchHunk>,
+    mutation_hunk: Option<&PatchHunk>,
+) -> HunkContributor {
+    let total = post_commit_hunk.lines.len();
+    let covered = combined_covered_line_count(post_commit_hunk, direct_hunk, mutation_hunk);
+
+    if total > 0 && covered == total {
+        HunkContributor::Ai
+    } else if covered > 0 {
+        HunkContributor::Mixed
+    } else {
+        HunkContributor::Unknown
     }
 }
 
@@ -495,6 +556,7 @@ fn parse_embedded_deleted_patch(file: &PatchFileChange) -> Option<ParsedPatch> {
 fn build_trace_file(
     post_commit_file: &PatchFileChange,
     intersection_patch: &ParsedPatch,
+    mutation_ai_patch: &ParsedPatch,
     conversation_url: &str,
     line_changes: &mut LineChangeAttribution,
 ) -> Option<TraceFile> {
@@ -506,33 +568,38 @@ fn build_trace_file(
         .files
         .iter()
         .find(|ifile| ifile.new_path == post_commit_file.new_path);
+    let mutation_file = mutation_ai_patch
+        .files
+        .iter()
+        .find(|mfile| trace_path(mfile) == trace_path(post_commit_file));
 
     let conversations = post_commit_file
         .hunks
         .iter()
         .map(|post_commit_hunk| {
-            let (contributor_kind, contributor_model_id, matched_intersection_hunk) =
-                match intersection_file {
-                    Some(ifile) => {
-                        let contributor_kind = classify_hunk(post_commit_hunk, &ifile.hunks);
-                        let matched_intersection_hunk = ifile
-                            .hunks
-                            .iter()
-                            .find(|h| h.old_start == post_commit_hunk.old_start);
-                        let contributor_model_id = match contributor_kind {
-                            HunkContributor::Ai | HunkContributor::Mixed => {
-                                matched_intersection_hunk.and_then(|hunk| hunk.model_id.clone())
-                            }
-                            HunkContributor::Unknown => None,
-                        };
-                        (
-                            contributor_kind,
-                            contributor_model_id,
-                            matched_intersection_hunk,
-                        )
-                    }
-                    None => (HunkContributor::Unknown, None, None),
-                };
+            let matched_intersection_hunk = intersection_file.and_then(|ifile| {
+                ifile
+                    .hunks
+                    .iter()
+                    .find(|h| h.old_start == post_commit_hunk.old_start)
+            });
+            let matched_mutation_hunk = mutation_file.and_then(|mfile| {
+                mfile
+                    .hunks
+                    .iter()
+                    .find(|h| h.old_start == post_commit_hunk.old_start)
+            });
+            let contributor_kind = classify_hunk_combined(
+                post_commit_hunk,
+                matched_intersection_hunk,
+                matched_mutation_hunk,
+            );
+            let contributor_model_id = match contributor_kind {
+                HunkContributor::Ai | HunkContributor::Mixed => {
+                    matched_intersection_hunk.and_then(|hunk| hunk.model_id.clone())
+                }
+                HunkContributor::Unknown => None,
+            };
             record_hunk_line_changes(line_changes, contributor_kind, post_commit_hunk);
             let related_session_ids = matched_intersection_hunk
                 .into_iter()
@@ -568,62 +635,71 @@ fn build_trace_file(
     })
 }
 
-/// Build the minimal agent-trace payload from two patches.
-///
-/// Computes `intersection_patch = intersect_patches(constructed_patch, post_commit_patch)`,
-/// then iterates over `post_commit_patch`'s files and hunks to classify each hunk
-/// against `intersection_patch`. Deleted `.patch` files whose removed contents are
-/// themselves valid patch text are expanded into trace entries for the embedded
-/// patch's files. Metadata-only entries with no hunks are omitted. The output
-/// preserves the surrounding `post_commit_patch` file ordering and per-file hunk
-/// ordering.
-///
-/// Files in `post_commit_patch` that have no corresponding file in
-/// `intersection_patch` still appear in the output with all hunks classified
-/// as `Unknown`.
 #[allow(dead_code)]
 pub fn build_agent_trace(
     constructed_patch: &ParsedPatch,
     post_commit_patch: &ParsedPatch,
     metadata: AgentTraceMetadataInput<'_>,
 ) -> Result<AgentTrace> {
+    let empty_mutation_ai_patch = ParsedPatch { files: Vec::new() };
+
+    build_agent_trace_from_evidence(
+        AgentTraceEvidence {
+            direct_patch: constructed_patch,
+            mutation_ai_patch: &empty_mutation_ai_patch,
+        },
+        post_commit_patch,
+        metadata,
+    )
+}
+
+#[allow(dead_code)]
+pub fn build_agent_trace_from_evidence(
+    evidence: AgentTraceEvidence<'_>,
+    post_commit_patch: &ParsedPatch,
+    metadata: AgentTraceMetadataInput<'_>,
+) -> Result<AgentTrace> {
+    let AgentTraceEvidence {
+        direct_patch,
+        mutation_ai_patch,
+    } = evidence;
+
     let commit_time = parse_commit_timestamp(metadata.commit_timestamp)?;
     let id = generate_agent_trace_id(commit_time)?;
     let conversation_url = agent_trace_conversation_url(&id);
     let timestamp = metadata.commit_timestamp.to_owned();
-    let intersection_patch = intersect_patches(constructed_patch, post_commit_patch);
+    let intersection_patch = intersect_patches(direct_patch, post_commit_patch);
+    let empty_mutation_ai_patch = ParsedPatch { files: Vec::new() };
 
     let mut files = Vec::new();
     let mut line_changes = LineChangeAttribution::default();
 
     for post_commit_file in &post_commit_patch.files {
         if let Some(embedded_patch) = parse_embedded_deleted_patch(post_commit_file) {
-            // The literal deleted-`.patch` file's own hunks describe the actual
-            // canonical commit content, so they are classified and counted here
-            // against the top-level `intersection_patch` even though they never
-            // produce a `Conversation` in this branch. The embedded reconstructed
-            // hunks below describe the deleted patch's logical content, not the
-            // canonical commit, and must never be counted toward `line_changes`.
-            // Matched by `old_path` (always non-empty for a deleted file), not
-            // `new_path` (always empty for every deleted file, which would
-            // otherwise collide across multiple deleted files in the same patch).
+            let direct_file = intersection_patch
+                .files
+                .iter()
+                .find(|ifile| ifile.old_path == post_commit_file.old_path);
+            let mutation_file = mutation_ai_patch
+                .files
+                .iter()
+                .find(|mfile| trace_path(mfile) == trace_path(post_commit_file));
             for hunk in &post_commit_file.hunks {
-                let kind = intersection_patch
-                    .files
-                    .iter()
-                    .find(|ifile| ifile.old_path == post_commit_file.old_path)
-                    .map_or(HunkContributor::Unknown, |ifile| {
-                        classify_hunk(hunk, &ifile.hunks)
-                    });
+                let direct_hunk = direct_file
+                    .and_then(|ifile| ifile.hunks.iter().find(|h| h.old_start == hunk.old_start));
+                let mutation_hunk = mutation_file
+                    .and_then(|mfile| mfile.hunks.iter().find(|h| h.old_start == hunk.old_start));
+                let kind = classify_hunk_combined(hunk, direct_hunk, mutation_hunk);
                 record_hunk_line_changes(&mut line_changes, kind, hunk);
             }
 
-            let embedded_intersection = intersect_patches(constructed_patch, &embedded_patch);
+            let embedded_intersection = intersect_patches(direct_patch, &embedded_patch);
             let mut discarded_line_changes = LineChangeAttribution::default();
             files.extend(embedded_patch.files.iter().filter_map(|embedded_file| {
                 build_trace_file(
                     embedded_file,
                     &embedded_intersection,
+                    &empty_mutation_ai_patch,
                     &conversation_url,
                     &mut discarded_line_changes,
                 )
@@ -634,6 +710,7 @@ pub fn build_agent_trace(
         if let Some(trace_file) = build_trace_file(
             post_commit_file,
             &intersection_patch,
+            mutation_ai_patch,
             &conversation_url,
             &mut line_changes,
         ) {
