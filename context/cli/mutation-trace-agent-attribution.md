@@ -139,5 +139,11 @@ Real Git/DB regressions cover this path end to end: `cli/src/services/hooks/mod.
 proves mutation-only `ai` without provenance, direct+mutation completion, a
 newer non-exclusive event keeping a line non-AI, and adversarial linked-worktree
 isolation (a newer foreign `AiContended` event cannot block an older
-current-worktree `AiExclusive` one); `runtime/tests.rs` proves a still-relevant
-event behind 128 newer events is never loaded or reconstructed.
+current-worktree `AiExclusive` one). One regression there drives the real
+`run_post_commit_intersection_flow_with` direct intersection flow from a real
+`diff_traces` row plus a real `mutation_trace_events` row and asserts the three
+persistence layers separately: `diff_traces` and `post_commit_patch_intersections`
+each hold only the direct line, `mutation_trace_events` only the mutation line,
+and `agent_traces.trace_json` the combined `ai` classification with direct-derived
+`tool` provenance. `runtime/tests.rs` proves a still-relevant event behind 128
+newer events is never loaded or reconstructed.

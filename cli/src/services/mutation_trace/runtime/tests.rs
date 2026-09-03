@@ -2296,11 +2296,6 @@ fn a_real_thread_cas_race_settles_on_the_competitors_terminal_status() {
     );
 }
 
-/// Real Git + repository-DB proof that a still-relevant mutation event that
-/// sits behind 128 newer events is never loaded or reconstructed: the bounded
-/// consumer inspects exactly the newest 128 events for the invoking worktree
-/// and stops, so the 129th (oldest) event cannot contribute AI coverage even
-/// though it safely matches the committed line.
 #[test]
 fn a_relevant_event_behind_128_newer_events_is_never_loaded_or_reconstructed() {
     let repo = TestRepo::new("attribution-horizon");
@@ -2321,7 +2316,6 @@ fn a_relevant_event_behind_128_newer_events_is_never_loaded_or_reconstructed() {
         .expect("capturing the after tree should succeed");
 
     let db = repo.db();
-    // The only safely matching event is the oldest one: revision 1.
     seed_attribution_event(
         &db,
         &checkout_id,
@@ -2331,7 +2325,6 @@ fn a_relevant_event_behind_128_newer_events_is_never_loaded_or_reconstructed() {
         "ai_exclusive",
         Some("scope-behind-the-horizon"),
     );
-    // 128 newer no-op events (revisions 2..=129) fill the whole 128-event budget.
     for revision in 2..=129 {
         seed_attribution_event(
             &db,
