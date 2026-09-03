@@ -145,6 +145,7 @@
 //! unchanged).
 
 pub mod protocol;
+pub(crate) mod runtime;
 pub mod store;
 pub mod types;
 

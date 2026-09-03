@@ -117,13 +117,19 @@ returns `Err`.
 
 ## Non-goals
 
-- No Git or filesystem I/O — no `coordinator.rs` or `git_snapshot.rs` exists
-  yet; those remain future work building on this store.
+- No Git or filesystem I/O — `store.rs` itself calls neither Git nor the
+  filesystem. `runtime/git_snapshot.rs` and `runtime/coordinator.rs` (through
+  its public `coordinate()` entrypoint) now wire this store together with the
+  Git snapshot service (see
+  [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md));
+  `store.rs` itself remains unmodified and still performs no Git or
+  filesystem I/O of its own.
 - No attribution or boundary-kind decisions — `DurableTransition::between`
   and `store.rs` are both structurally blind to protocol meaning.
 - No retry-after-`Conflict` loop — `CasResult::Conflict` is returned to the
-  caller; retrying with a freshly reloaded revision is a future adapter's
-  responsibility, not this module's.
+  caller; retrying with a freshly reloaded revision is the calling adapter's
+  responsibility, not this module's. `runtime::coordinator`'s bounded
+  CAS-retry loop is now that adapter.
 - No deletion of terminal (`Closed`/`Abandoned`) scope rows or historical
   `mutation_trace_events` rows — scope garbage collection is out of scope for
   this plan.
