@@ -8,3 +8,12 @@ mod worktree_lock;
 
 #[cfg(test)]
 mod tests;
+
+#[allow(unused_imports)]
+pub(crate) use coordinator::{
+    coordinate, CoordinateError, CoordinateOutcome, ExternalTaintOperation, RuntimeBoundary,
+};
+#[allow(unused_imports)]
+pub(crate) use scope_runtime::{
+    abandon_scope, AbandonRecoveryReason, AbandonScopeError, AbandonScopeOutcome,
+};

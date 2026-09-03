@@ -9,10 +9,10 @@ Git worktree, built by the `mutation-cursor-runtime-coordinator` plan
 `cli/src/services/mutation_trace/runtime/` is a private submodule
 (`pub(crate) mod runtime;` in `mutation_trace/mod.rs`), registered under the
 same `#[allow(dead_code)]` precedent as the rest of `mutation_trace`.
-Every submodule — `coordinator`, `protected_worktree`, `ref_reconciliation`,
-and the rest — is declared privately in `runtime/mod.rs`, so `coordinate()`, `abandon_scope()`, and `reconcile_worktree` are reachable
-only from within `runtime` itself (its own tests) for now; a `pub(crate)`
-re-export is deferred until a harness adapter needs it. Nothing under
+Every submodule is declared privately in `runtime/mod.rs`, which re-exports
+`coordinate` and `abandon_scope` at `pub(crate)` while `reconcile_worktree`
+stays `runtime`-internal. The exported seam is documented in
+[`mutation-scope-runtime.md`](mutation-scope-runtime.md), and nothing under
 `runtime/` is wired into any hook, command, or `diff_traces` insertion yet.
 
 `runtime` depends on `protocol`/`store`/`types` only, and has no dependency
@@ -311,16 +311,15 @@ the real coordinator and abandonment CAS races.
 
 The shared `ProtectedWorktree` prefix, per-worktree runtime lock, isolated Git
 snapshot service (including Git-topology-derived `WorktreeId` resolution),
-protocol-integration pipeline, and public `coordinate()` entrypoint (prefix →
-DB provider → pipeline → `complete()` on success) are implemented, with
-`runtime/tests.rs` covering the public API end to end. An inherited marker is
-now overlaid onto `database_failure` recovery on the next invocation. The
-`abandon_scope()` entrypoint also shares the prefix and has focused
-unit and cross-runtime integration coverage; a `pub(crate)` re-export of either
-entrypoint beyond `runtime` and harness/command wiring remain future work
-tracked by the `mutation-cursor-external-taint`,
-`mutation-cursor-runtime-coordinator`, and `mutation-scope-runtime-integration`
-plans.
+protocol-integration pipeline, public `coordinate()` entrypoint, and
+`abandon_scope()` entrypoint are implemented. Both entrypoints are
+`pub(crate)` re-exported from `runtime/mod.rs` and described in
+[`mutation-scope-runtime.md`](mutation-scope-runtime.md); `runtime/tests.rs`
+covers their public behavior and cross-runtime regressions. An inherited marker
+is overlaid onto `database_failure` recovery on the next invocation. Harness and
+command wiring remain future work tracked by the
+`mutation-cursor-external-taint`, `mutation-cursor-runtime-coordinator`, and
+`mutation-scope-runtime-integration` plans.
 
 See also: [`mutation-trace-protocol.md`](mutation-trace-protocol.md),
 [`mutation-trace-store.md`](mutation-trace-store.md),
