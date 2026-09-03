@@ -9,11 +9,11 @@ Git worktree, built by the `mutation-cursor-runtime-coordinator` plan
 `cli/src/services/mutation_trace/runtime/` is a private submodule
 (`pub(crate) mod runtime;` in `mutation_trace/mod.rs`), registered under the
 same `#[allow(dead_code)]` precedent as the rest of `mutation_trace`. Every
-submodule is declared privately in `runtime/mod.rs`, so `coordinate()`,
-`abandon_scope()`, and `reconcile_worktree` are reachable only from within
-`runtime` itself (its own tests) for now; a `pub(crate)` re-export is deferred
-until a harness adapter needs it, and nothing under `runtime/` is wired into any
-hook, command, or `diff_traces` insertion yet.
+submodule is declared privately in `runtime/mod.rs`, which re-exports
+`coordinate` and `abandon_scope` at `pub(crate)` — reachable crate-wide, contract
+in [`mutation-scope-runtime.md`](mutation-scope-runtime.md) — while
+`reconcile_worktree` stays `runtime`-internal and nothing under `runtime/` is
+wired into any hook, command, or `diff_traces` insertion yet.
 
 `runtime` depends on `protocol`/`store`/`types` and on `services::checkout`,
 never the reverse — this is a structural module boundary, not merely a
@@ -231,12 +231,12 @@ baseline → snapshot-failing taint → recovery cycle runs through the public e
 The `ProtectedWorktree` prefix, lock, snapshot service, protocol-integration
 pipeline, the public `coordinate()` entrypoint (prefix → DB provider → pipeline
 → `complete()` on success), and the second `abandon_scope()` entrypoint sharing
-that prefix are all implemented, with `runtime/tests.rs` covering `coordinate()`
-end to end and both entrypoints driven together; an inherited external-taint
-marker is overlaid onto `database_failure` recovery on the next invocation. A
-`pub(crate)` re-export of either entrypoint and harness/command wiring remain
-future work (`mutation-cursor-external-taint`,
-`mutation-cursor-runtime-coordinator`, `mutation-scope-runtime-integration`).
+that prefix are all implemented and both `pub(crate)` re-exported from
+`runtime/mod.rs` ([`mutation-scope-runtime.md`](mutation-scope-runtime.md)),
+with `runtime/tests.rs` covering `coordinate()` end to end and both entrypoints
+driven together; an inherited external-taint marker is overlaid onto
+`database_failure` recovery on the next invocation. Harness/command wiring
+remains future work.
 
 See also: [`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md)
 (the per-worktree snapshot-ref maintenance pass under the same `WorktreeLock`),
