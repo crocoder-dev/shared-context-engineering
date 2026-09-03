@@ -214,17 +214,17 @@ surfaces `MarkerClearAfterCommit` with the matching committed outcome. The
 
 `runtime/tests.rs` is `runtime`'s own `#[cfg(test)] mod tests` of cross-module
 integration tests against real Git repositories (`git init`, `git worktree
-add`) and real temp-file `RepositoryAgentTraceDb`s — the public `coordinate()`,
-the public `reconcile_worktree` integration suite (detailed in
-[`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md#testing-boundary)), and the `pub(super)` `coordinate_inner` / `reconcile_worktree_inner` lock-race seams. Two linked worktrees (different `git_dir` →
+add`) and real temp-file `RepositoryAgentTraceDb`s — the public `coordinate()`;
+`coordinate()` and `abandon_scope()` driven together (detailed in
+[`mutation-trace-scope-abandonment.md`](mutation-trace-scope-abandonment.md#cross-runtime-regressions)); the public `reconcile_worktree` integration suite (detailed in
+[`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md#testing-boundary)); and the `pub(super)` `coordinate_inner` / `reconcile_worktree_inner` / `abandon_scope_inner` seams. Two linked worktrees (different `git_dir` →
 different lock paths → different `WorktreeId`s) are proven independently locked
 by holding one worktree's `WorktreeLock` across a synchronous `coordinate()`
 call for the other and seeing it return `Ok` only after the guard drops; each
 call's provider closure opens the one shared repository-scoped DB path and both
 worktree rows coexist in it. A first-ever `agent_trace_storage` resolution and a
-`coordinate()` call on one checkout converge on one checkout identity; and a
-full baseline → snapshot-failing taint → recovery cycle runs through the public
-entrypoint.
+`coordinate()` call on one checkout converge on one checkout identity, and a full
+baseline → snapshot-failing taint → recovery cycle runs through the public entrypoint.
 
 ## Status
 
@@ -232,10 +232,10 @@ The `ProtectedWorktree` prefix, lock, snapshot service, protocol-integration
 pipeline, the public `coordinate()` entrypoint (prefix → DB provider → pipeline
 → `complete()` on success), and the second `abandon_scope()` entrypoint sharing
 that prefix are all implemented, with `runtime/tests.rs` covering `coordinate()`
-end to end; an inherited external-taint marker is overlaid onto
-`database_failure` recovery on the next invocation. Real-Git abandonment
-regressions, a `pub(crate)` re-export of either entrypoint, and harness/command
-wiring remain future work (`mutation-cursor-external-taint`,
+end to end and both entrypoints driven together; an inherited external-taint
+marker is overlaid onto `database_failure` recovery on the next invocation. A
+`pub(crate)` re-export of either entrypoint and harness/command wiring remain
+future work (`mutation-cursor-external-taint`,
 `mutation-cursor-runtime-coordinator`, `mutation-scope-runtime-integration`).
 
 See also: [`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md)
