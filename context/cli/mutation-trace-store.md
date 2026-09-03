@@ -82,6 +82,15 @@ cursor is supplied. Each request caps `requested_limit` at
 `MUTATION_ATTRIBUTION_PAGE_SIZE` (32), and it does not read active scopes,
 processed events, boundary fields, or timestamps. The caller owns any broader
 history horizon and advances the cursor from the last returned revision.
+[Attribution](mutation-trace-agent-attribution.md) reverses each page to replay
+oldest-to-newest, and starts the cursor at `commit_cut + 1` (exclusive) so only
+`revision <= commit_cut` events are eligible.
+
+`MutationTraceStore::latest_mutation_event_revision(worktree) -> Result<Option<u64>>`
+is a one-row cold read of the highest `mutation_trace_events.revision` for the
+worktree (or `None` when it has none). Post-commit attribution reads it under
+the worktree lock as its commit attribution cut: an event with a higher
+revision was produced after the commit and must not participate.
 
 `MutationTraceStore::load_scope(scope_id) -> Result<Option<ScopeState>>` is the
 public single-scope read seam: one `mutation_trace_scopes` row by primary key,

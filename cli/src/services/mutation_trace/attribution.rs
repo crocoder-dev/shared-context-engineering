@@ -1,16 +1,15 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashSet};
 
-use super::types::{Attribution, FailureKind};
 use crate::services::patch::{
     ParsedPatch, PatchFileChange, PatchHunk, TouchedLine, TouchedLineKind,
 };
 
+#[allow(clippy::struct_field_names)]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MutationPatchEvidence {
-    pub patch: ParsedPatch,
-    pub tainted: bool,
-    pub failure_kind: FailureKind,
-    pub attribution: Attribution,
+pub struct MutationAttributionResult {
+    pub mutation_ai_patch: ParsedPatch,
+    pub resolved_non_ai_patch: ParsedPatch,
+    pub unresolved_patch: ParsedPatch,
 }
 
 #[allow(clippy::struct_field_names)]
@@ -21,35 +20,13 @@ pub struct PatchLineLocation {
     pub line_index: usize,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MutationLineMatch {
-    pub mutation: PatchLineLocation,
-    pub target: PatchLineLocation,
-}
-
-#[allow(clippy::struct_field_names)]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MutationAttributionResult {
-    pub mutation_ai_patch: ParsedPatch,
-    pub resolved_non_ai_patch: ParsedPatch,
-    pub unresolved_patch: ParsedPatch,
-}
-
 #[must_use]
 pub fn exclude_direct_coverage(
     target_patch: &ParsedPatch,
     direct_coverage: &ParsedPatch,
 ) -> ParsedPatch {
-    let selected = locations_without_direct_coverage(target_patch, direct_coverage);
-    patch_for_locations(target_patch, &selected)
-}
-
-fn locations_without_direct_coverage(
-    target_patch: &ParsedPatch,
-    direct_coverage: &ParsedPatch,
-) -> BTreeSet<PatchLineLocation> {
     let direct_lines = direct_line_keys(direct_coverage);
-    all_locations(target_patch)
+    let selected: BTreeSet<PatchLineLocation> = all_locations(target_patch)
         .into_iter()
         .filter(|location| {
             let line = line_at(target_patch, *location);
@@ -60,301 +37,8 @@ fn locations_without_direct_coverage(
                 line.content.clone(),
             ))
         })
-        .collect()
-}
-
-#[must_use]
-pub fn resolve_mutation_attribution(
-    direct_coverage: &ParsedPatch,
-    unresolved_patch: &ParsedPatch,
-    mutation_evidence: &[MutationPatchEvidence],
-) -> MutationAttributionResult {
-    let mut remaining = locations_without_direct_coverage(unresolved_patch, direct_coverage);
-    let mut mutation_ai = BTreeSet::new();
-    let mut resolved_non_ai = BTreeSet::new();
-
-    for evidence in mutation_evidence {
-        if remaining.is_empty() {
-            break;
-        }
-
-        let matches =
-            strict_mutation_matches_for_locations(&evidence.patch, unresolved_patch, &remaining);
-        if matches.is_empty() {
-            continue;
-        }
-
-        let positive = !evidence.tainted
-            && evidence.failure_kind == FailureKind::Healthy
-            && matches!(evidence.attribution, Attribution::AiExclusive(_));
-
-        for matched in matches {
-            remaining.remove(&matched.target);
-            if positive {
-                mutation_ai.insert(matched.target);
-            } else {
-                resolved_non_ai.insert(matched.target);
-            }
-        }
-    }
-
-    MutationAttributionResult {
-        mutation_ai_patch: patch_for_locations(unresolved_patch, &mutation_ai),
-        resolved_non_ai_patch: patch_for_locations(unresolved_patch, &resolved_non_ai),
-        unresolved_patch: patch_for_locations(unresolved_patch, &remaining),
-    }
-}
-
-#[must_use]
-pub fn strict_mutation_matches(
-    mutation_patch: &ParsedPatch,
-    target_patch: &ParsedPatch,
-) -> Vec<MutationLineMatch> {
-    let remaining = all_locations(target_patch);
-    strict_mutation_matches_for_locations(mutation_patch, target_patch, &remaining)
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct ExactLineKey<'a> {
-    kind: TouchedLineKind,
-    line_number: u64,
-    content: &'a str,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct HistoricalLineKey<'a> {
-    kind: TouchedLineKind,
-    content: &'a str,
-}
-
-#[allow(clippy::too_many_lines)]
-fn strict_mutation_matches_for_locations(
-    mutation_patch: &ParsedPatch,
-    target_patch: &ParsedPatch,
-    remaining: &BTreeSet<PatchLineLocation>,
-) -> Vec<MutationLineMatch> {
-    let file_pairs = pair_files(mutation_patch, target_patch, remaining);
-    let mut matches = Vec::new();
-
-    for (mutation_file_index, target_file_index) in file_pairs {
-        let mutation_lines = file_locations(
-            mutation_file_index,
-            &mutation_patch.files[mutation_file_index],
-        );
-        let target_lines =
-            file_locations(target_file_index, &target_patch.files[target_file_index])
-                .into_iter()
-                .filter(|location| remaining.contains(location))
-                .collect::<Vec<_>>();
-
-        let mut mutation_used = BTreeSet::new();
-        let mut target_used = BTreeSet::new();
-
-        let target_exact_counts = counts_by(&target_lines, |location| {
-            let line = line_at(target_patch, *location);
-            ExactLineKey {
-                kind: line.kind,
-                line_number: line.line_number,
-                content: &line.content,
-            }
-        });
-
-        let mutation_exact_counts = counts_by(&mutation_lines, |location| {
-            let line = line_at(mutation_patch, *location);
-            ExactLineKey {
-                kind: line.kind,
-                line_number: line.line_number,
-                content: &line.content,
-            }
-        });
-
-        let mut mutation_exact = HashMap::new();
-        for location in &mutation_lines {
-            let line = line_at(mutation_patch, *location);
-            let key = ExactLineKey {
-                kind: line.kind,
-                line_number: line.line_number,
-                content: &line.content,
-            };
-            if mutation_exact_counts.get(&key) == Some(&1)
-                && target_exact_counts.get(&key) == Some(&1)
-            {
-                mutation_exact.insert(key, *location);
-            }
-        }
-        for location in &target_lines {
-            let line = line_at(target_patch, *location);
-            let key = ExactLineKey {
-                kind: line.kind,
-                line_number: line.line_number,
-                content: &line.content,
-            };
-            if let Some(&mutation_location) = mutation_exact.get(&key) {
-                mutation_used.insert(mutation_location);
-                target_used.insert(*location);
-                matches.push(MutationLineMatch {
-                    mutation: mutation_location,
-                    target: *location,
-                });
-            }
-        }
-
-        let remaining_mutation = mutation_lines
-            .into_iter()
-            .filter(|location| !mutation_used.contains(location))
-            .collect::<Vec<_>>();
-        let remaining_target = target_lines
-            .into_iter()
-            .filter(|location| !target_used.contains(location))
-            .collect::<Vec<_>>();
-        let mutation_historical_counts = counts_by(&remaining_mutation, |location| {
-            let line = line_at(mutation_patch, *location);
-            HistoricalLineKey {
-                kind: line.kind,
-                content: &line.content,
-            }
-        });
-        let target_historical_counts = counts_by(&remaining_target, |location| {
-            let line = line_at(target_patch, *location);
-            HistoricalLineKey {
-                kind: line.kind,
-                content: &line.content,
-            }
-        });
-
-        let mut mutation_historical = HashMap::new();
-        for location in &remaining_mutation {
-            let line = line_at(mutation_patch, *location);
-            let key = HistoricalLineKey {
-                kind: line.kind,
-                content: &line.content,
-            };
-            if mutation_historical_counts.get(&key) == Some(&1)
-                && target_historical_counts.get(&key) == Some(&1)
-            {
-                mutation_historical.insert(key, *location);
-            }
-        }
-        for location in &remaining_target {
-            let line = line_at(target_patch, *location);
-            let key = HistoricalLineKey {
-                kind: line.kind,
-                content: &line.content,
-            };
-            if let Some(&mutation_location) = mutation_historical.get(&key) {
-                matches.push(MutationLineMatch {
-                    mutation: mutation_location,
-                    target: *location,
-                });
-            }
-        }
-    }
-
-    matches.sort_by_key(|matched| matched.target);
-    matches
-}
-
-fn pair_files(
-    mutation_patch: &ParsedPatch,
-    target_patch: &ParsedPatch,
-    remaining: &BTreeSet<PatchLineLocation>,
-) -> Vec<(usize, usize)> {
-    let active_targets = target_patch
-        .files
-        .iter()
-        .enumerate()
-        .filter(|(file_index, file)| {
-            file_locations(*file_index, file)
-                .into_iter()
-                .any(|location| remaining.contains(&location))
-        })
-        .map(|(index, _)| index)
-        .collect::<Vec<_>>();
-    let mutation_files = mutation_patch
-        .files
-        .iter()
-        .enumerate()
-        .filter(|(file_index, file)| !file_locations(*file_index, file).is_empty())
-        .map(|(index, _)| index)
-        .collect::<Vec<_>>();
-
-    let mut pairs = Vec::new();
-    let mut used_mutation_files = BTreeSet::new();
-    let mut used_target_files = BTreeSet::new();
-
-    for &target_index in &active_targets {
-        let target_logical_path = logical_path(&target_patch.files[target_index]);
-        let exact = mutation_files
-            .iter()
-            .copied()
-            .filter(|mutation_index| {
-                !used_mutation_files.contains(mutation_index)
-                    && logical_path(&mutation_patch.files[*mutation_index]) == target_logical_path
-            })
-            .collect::<Vec<_>>();
-        let same_target_path_count = active_targets
-            .iter()
-            .filter(|other| logical_path(&target_patch.files[**other]) == target_logical_path)
-            .count();
-        if exact.len() == 1 && same_target_path_count == 1 {
-            let mutation_index = exact[0];
-            pairs.push((mutation_index, target_index));
-            used_mutation_files.insert(mutation_index);
-            used_target_files.insert(target_index);
-        }
-    }
-
-    for &target_index in &active_targets {
-        if used_target_files.contains(&target_index) {
-            continue;
-        }
-        let target_logical_path = logical_path(&target_patch.files[target_index]);
-        let candidates = mutation_files
-            .iter()
-            .copied()
-            .filter(|mutation_index| {
-                !used_mutation_files.contains(mutation_index)
-                    && paths_have_normalized_suffix(
-                        logical_path(&mutation_patch.files[*mutation_index]),
-                        target_logical_path,
-                    )
-            })
-            .collect::<Vec<_>>();
-        if candidates.len() != 1 {
-            continue;
-        }
-        let mutation_index = candidates[0];
-        let reverse_targets = active_targets
-            .iter()
-            .filter(|other| {
-                !used_target_files.contains(other)
-                    && paths_have_normalized_suffix(
-                        logical_path(&mutation_patch.files[mutation_index]),
-                        logical_path(&target_patch.files[**other]),
-                    )
-            })
-            .count();
-        if reverse_targets == 1 {
-            pairs.push((mutation_index, target_index));
-            used_mutation_files.insert(mutation_index);
-            used_target_files.insert(target_index);
-        }
-    }
-
-    pairs.sort_by_key(|(_, target_index)| *target_index);
-    pairs
-}
-
-fn counts_by<K, F>(locations: &[PatchLineLocation], mut key_for: F) -> HashMap<K, usize>
-where
-    K: Eq + std::hash::Hash,
-    F: FnMut(&PatchLineLocation) -> K,
-{
-    let mut counts = HashMap::new();
-    for location in locations {
-        *counts.entry(key_for(location)).or_insert(0) += 1;
-    }
-    counts
+        .collect();
+    patch_for_locations(target_patch, &selected)
 }
 
 fn direct_line_keys(direct_patch: &ParsedPatch) -> HashSet<(String, TouchedLineKind, u64, String)> {
@@ -398,25 +82,11 @@ fn all_locations(patch: &ParsedPatch) -> BTreeSet<PatchLineLocation> {
         .collect()
 }
 
-fn file_locations(file_index: usize, file: &PatchFileChange) -> Vec<PatchLineLocation> {
-    file.hunks
-        .iter()
-        .enumerate()
-        .flat_map(|(hunk_index, hunk)| {
-            (0..hunk.lines.len()).map(move |line_index| PatchLineLocation {
-                file_index,
-                hunk_index,
-                line_index,
-            })
-        })
-        .collect()
-}
-
 fn line_at(patch: &ParsedPatch, location: PatchLineLocation) -> &TouchedLine {
     &patch.files[location.file_index].hunks[location.hunk_index].lines[location.line_index]
 }
 
-fn logical_path(file: &PatchFileChange) -> &str {
+pub(crate) fn logical_path(file: &PatchFileChange) -> &str {
     if file.new_path.is_empty() {
         &file.old_path
     } else {
@@ -424,24 +94,10 @@ fn logical_path(file: &PatchFileChange) -> &str {
     }
 }
 
-fn normalized_components(path: &str) -> Vec<&str> {
-    path.split('/')
-        .filter(|part| !part.is_empty() && *part != ".")
-        .collect()
-}
-
-fn paths_have_normalized_suffix(left: &str, right: &str) -> bool {
-    let left = normalized_components(left);
-    let right = normalized_components(right);
-    if left.is_empty() || right.is_empty() {
-        return false;
-    }
-    left == right
-        || (left.len() > right.len() && left.ends_with(&right))
-        || (right.len() > left.len() && right.ends_with(&left))
-}
-
-fn patch_for_locations(patch: &ParsedPatch, selected: &BTreeSet<PatchLineLocation>) -> ParsedPatch {
+pub fn patch_for_locations(
+    patch: &ParsedPatch,
+    selected: &BTreeSet<PatchLineLocation>,
+) -> ParsedPatch {
     let files = patch
         .files
         .iter()
@@ -484,7 +140,6 @@ fn patch_for_locations(patch: &ParsedPatch, selected: &BTreeSet<PatchLineLocatio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::mutation_trace::types::ScopeId;
     use crate::services::patch::FileChangeKind;
 
     fn line(kind: TouchedLineKind, number: u64, content: &str) -> TouchedLine {
@@ -514,20 +169,7 @@ mod tests {
         }
     }
 
-    fn evidence(patch: ParsedPatch, attribution: Attribution) -> MutationPatchEvidence {
-        MutationPatchEvidence {
-            patch,
-            tainted: false,
-            failure_kind: FailureKind::Healthy,
-            attribution,
-        }
-    }
-
-    fn exclusive() -> Attribution {
-        Attribution::AiExclusive(ScopeId("scope".to_owned()))
-    }
-
-    fn locations(result: &ParsedPatch) -> Vec<(u64, String)> {
+    fn contents(result: &ParsedPatch) -> Vec<(u64, String)> {
         result
             .files
             .iter()
@@ -538,203 +180,38 @@ mod tests {
     }
 
     #[test]
-    fn mutation_attribution_direct_lines_are_excluded_before_matching() {
+    fn exclude_direct_coverage_removes_exactly_the_directly_covered_lines() {
         let direct = patch(
             "src/lib.rs",
             vec![line(TouchedLineKind::Added, 1, "direct")],
         );
-        let unresolved = patch(
+        let target = patch(
             "src/lib.rs",
             vec![
                 line(TouchedLineKind::Added, 1, "direct"),
                 line(TouchedLineKind::Added, 2, "mutation"),
             ],
         );
-        let result = resolve_mutation_attribution(
-            &direct,
-            &unresolved,
-            &[evidence(
-                patch(
-                    "src/lib.rs",
-                    vec![
-                        line(TouchedLineKind::Added, 1, "direct"),
-                        line(TouchedLineKind::Added, 2, "mutation"),
-                    ],
-                ),
-                exclusive(),
-            )],
-        );
 
-        assert_eq!(
-            locations(&result.mutation_ai_patch),
-            vec![(2, "mutation".into())]
-        );
-        assert!(result.resolved_non_ai_patch.files.is_empty());
-        assert!(result.unresolved_patch.files.is_empty());
+        let remaining = exclude_direct_coverage(&target, &direct);
+        assert_eq!(contents(&remaining), vec![(2, "mutation".to_owned())]);
     }
 
     #[test]
-    fn mutation_attribution_newest_nonexclusive_match_blocks_older_evidence() {
-        let unresolved = patch("src/lib.rs", vec![line(TouchedLineKind::Added, 8, "same")]);
-        let newest = MutationPatchEvidence {
-            tainted: false,
-            failure_kind: FailureKind::Healthy,
-            attribution: Attribution::AiContended,
-            patch: patch("src/lib.rs", vec![line(TouchedLineKind::Added, 8, "same")]),
-        };
-        let older = evidence(
-            patch("src/lib.rs", vec![line(TouchedLineKind::Added, 8, "same")]),
-            exclusive(),
-        );
-        let result = resolve_mutation_attribution(
-            &ParsedPatch { files: vec![] },
-            &unresolved,
-            &[newest, older],
-        );
-
-        assert!(result.mutation_ai_patch.files.is_empty());
-        assert_eq!(
-            locations(&result.resolved_non_ai_patch),
-            vec![(8, "same".into())]
-        );
-        assert!(result.unresolved_patch.files.is_empty());
+    fn exclude_direct_coverage_keeps_everything_when_direct_is_empty() {
+        let target = patch("src/lib.rs", vec![line(TouchedLineKind::Added, 1, "x")]);
+        let remaining = exclude_direct_coverage(&target, &ParsedPatch { files: vec![] });
+        assert_eq!(contents(&remaining), vec![(1, "x".to_owned())]);
     }
 
     #[test]
-    fn mutation_attribution_unrelated_newer_event_does_not_block_older_exclusive_match() {
-        let unresolved = patch(
-            "src/lib.rs",
-            vec![line(TouchedLineKind::Added, 8, "target")],
-        );
-        let newest = evidence(
-            patch(
-                "src/lib.rs",
-                vec![line(TouchedLineKind::Added, 20, "unrelated")],
-            ),
-            exclusive(),
-        );
-        let older = evidence(
-            patch(
-                "src/lib.rs",
-                vec![line(TouchedLineKind::Added, 8, "target")],
-            ),
-            exclusive(),
-        );
-        let result = resolve_mutation_attribution(
-            &ParsedPatch { files: vec![] },
-            &unresolved,
-            &[newest, older],
-        );
-
-        assert_eq!(
-            locations(&result.mutation_ai_patch),
-            vec![(8, "target".into())]
-        );
-        assert!(result.resolved_non_ai_patch.files.is_empty());
-        assert!(result.unresolved_patch.files.is_empty());
-    }
-
-    #[test]
-    fn mutation_attribution_exact_matching_precedes_unique_historical_fallback() {
+    fn exclude_direct_coverage_matches_on_content_not_only_position() {
+        let direct = patch("src/lib.rs", vec![line(TouchedLineKind::Added, 1, "kept")]);
         let target = patch(
             "src/lib.rs",
-            vec![
-                line(TouchedLineKind::Added, 10, "exact"),
-                line(TouchedLineKind::Added, 20, "fallback"),
-            ],
+            vec![line(TouchedLineKind::Added, 1, "different")],
         );
-        let mutation = patch(
-            "src/lib.rs",
-            vec![
-                line(TouchedLineKind::Added, 10, "exact"),
-                line(TouchedLineKind::Added, 99, "fallback"),
-            ],
-        );
-
-        let matches = strict_mutation_matches(&mutation, &target);
-        assert_eq!(matches.len(), 2);
-        assert_eq!(matches[0].target.line_index, 0);
-        assert_eq!(matches[1].target.line_index, 1);
-    }
-
-    #[test]
-    fn mutation_attribution_duplicate_lines_and_ambiguous_paths_are_not_guessed() {
-        let duplicate_target = patch(
-            "src/lib.rs",
-            vec![
-                line(TouchedLineKind::Added, 1, "repeat"),
-                line(TouchedLineKind::Added, 2, "repeat"),
-            ],
-        );
-        let duplicate_mutation = patch(
-            "src/lib.rs",
-            vec![
-                line(TouchedLineKind::Added, 9, "repeat"),
-                line(TouchedLineKind::Added, 10, "repeat"),
-            ],
-        );
-        assert!(strict_mutation_matches(&duplicate_mutation, &duplicate_target).is_empty());
-
-        let ambiguous_target = ParsedPatch {
-            files: vec![
-                PatchFileChange {
-                    old_path: "src/foo.rs".into(),
-                    new_path: "src/foo.rs".into(),
-                    ..duplicate_target.files[0].clone()
-                },
-                PatchFileChange {
-                    old_path: "tests/foo.rs".into(),
-                    new_path: "tests/foo.rs".into(),
-                    ..duplicate_target.files[0].clone()
-                },
-            ],
-        };
-        let suffix_mutation = patch("foo.rs", vec![line(TouchedLineKind::Added, 1, "repeat")]);
-        assert!(strict_mutation_matches(&suffix_mutation, &ambiguous_target).is_empty());
-    }
-
-    #[test]
-    fn mutation_attribution_tainted_and_unhealthy_exclusive_matches_are_non_ai() {
-        let unresolved = patch("src/lib.rs", vec![line(TouchedLineKind::Added, 1, "line")]);
-        let mut tainted = evidence(
-            patch("src/lib.rs", vec![line(TouchedLineKind::Added, 1, "line")]),
-            exclusive(),
-        );
-        tainted.tainted = true;
-        let result =
-            resolve_mutation_attribution(&ParsedPatch { files: vec![] }, &unresolved, &[tainted]);
-        assert!(result.mutation_ai_patch.files.is_empty());
-        assert_eq!(
-            locations(&result.resolved_non_ai_patch),
-            vec![(1, "line".into())]
-        );
-    }
-
-    #[test]
-    fn mutation_attribution_every_nonpositive_state_resolves_as_non_ai() {
-        let unresolved = patch("src/lib.rs", vec![line(TouchedLineKind::Added, 1, "line")]);
-        let cases = [
-            (Attribution::AiContended, FailureKind::Healthy, false),
-            (Attribution::IneligibleUnscoped, FailureKind::Healthy, false),
-            (exclusive(), FailureKind::SnapshotFailure, false),
-            (exclusive(), FailureKind::Healthy, true),
-        ];
-
-        for (attribution, failure_kind, tainted) in cases {
-            let mut event = evidence(
-                patch("src/lib.rs", vec![line(TouchedLineKind::Added, 1, "line")]),
-                attribution,
-            );
-            event.failure_kind = failure_kind;
-            event.tainted = tainted;
-            let result =
-                resolve_mutation_attribution(&ParsedPatch { files: vec![] }, &unresolved, &[event]);
-            assert!(result.mutation_ai_patch.files.is_empty());
-            assert_eq!(
-                locations(&result.resolved_non_ai_patch),
-                vec![(1, "line".into())]
-            );
-            assert!(result.unresolved_patch.files.is_empty());
-        }
+        let remaining = exclude_direct_coverage(&target, &direct);
+        assert_eq!(contents(&remaining), vec![(1, "different".to_owned())]);
     }
 }
