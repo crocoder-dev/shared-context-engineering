@@ -15,7 +15,7 @@ use super::protected_worktree::{ProtectedWorktree, ProtectedWorktreeError};
 
 pub use super::protected_worktree::ExternalTaintOperation;
 
-const MAX_CAS_RETRY_ATTEMPTS: u32 = 5;
+pub(super) const MAX_CAS_RETRY_ATTEMPTS: u32 = 5;
 
 #[derive(Clone, Debug)]
 pub enum RuntimeBoundary {
