@@ -16,8 +16,9 @@ pub(crate) use coordinator::{
 };
 #[allow(unused_imports)]
 pub(crate) use mutation_attribution::{
-    resolve_bounded_mutation_attribution, BoundedMutationAttribution, MutationAttributionBarrier,
-    MutationEventPageSource, TreeDiffSource, MAX_MUTATION_ATTRIBUTION_EVENTS,
+    resolve_bounded_mutation_attribution, resolve_post_commit_mutation_ai_patch,
+    BoundedMutationAttribution, MutationAttributionBarrier, MutationEventPageSource,
+    TreeDiffSource, MAX_MUTATION_ATTRIBUTION_EVENTS,
 };
 #[allow(unused_imports)]
 pub(crate) use scope_runtime::{
