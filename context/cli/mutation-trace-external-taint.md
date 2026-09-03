@@ -177,6 +177,33 @@ proves an attributable `Advance` commits durably, the returned
 (`worktree_id` / `revision` / `observed_tree`, and `mutation_event.is_some()`),
 and a later invocation still recovers off the still-armed marker.
 
+## Abandonment-path completion
+
+`abandon_scope()`
+([`mutation-trace-scope-abandonment.md`](mutation-trace-scope-abandonment.md))
+is the second entrypoint behind the same prefix, so it inherits the same fence
+ordering. What differs is which of its settled results count as a proven
+completion:
+
+| Result | Marker |
+| --- | --- |
+| `Abandoned` (durable transition landed) | **cleared** |
+| `AlreadyTerminal` (scope proved `Closed`/`Abandoned`) | **cleared** |
+| `RecoveryRequired` (inherited marker, missing/`NeverSeen` scope, missing worktree row) | **stays armed** |
+| any error (DB provider, identity mismatch, revision exhaustion, CAS exhaustion) | **stays armed** |
+
+A `RecoveryRequired` outcome is a *success* that deliberately declines to clear
+the fence: nothing durable was decided, so the next `coordinate()` must promote
+the marker to `external_taint` and recover conservatively. The inherited-marker
+case short-circuits before `open_db()` is ever invoked — the fence an earlier
+invocation armed already covers this interval, so there is nothing left for this
+one to decide.
+
+`AbandonScopeError::MarkerClearAfterCompletion { source, completed }` mirrors
+`MarkerClearAfterCommit`: the abandonment already settled durably, so the
+settled `AbandonScopeOutcome` rides along in `completed` rather than being lost,
+and the marker stays logically armed.
+
 ## On-disk layout addition
 
 ```text
@@ -187,5 +214,7 @@ and a later invocation still recovers off the still-armed marker.
 See also: [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md),
 [`mutation-trace-protected-worktree.md`](mutation-trace-protected-worktree.md)
 (the shared prefix that owns arming and clearing this fence),
+[`mutation-trace-scope-abandonment.md`](mutation-trace-scope-abandonment.md)
+(the second entrypoint behind that prefix),
 [`mutation-trace-protocol.md`](mutation-trace-protocol.md),
 [`checkout-identity.md`](checkout-identity.md).

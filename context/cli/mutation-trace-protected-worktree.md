@@ -8,7 +8,11 @@ safety-critical, and one owner is the mechanism that keeps it single-sourced.
 
 Extracted by the `mutation-scope-runtime-integration` plan
 (`context/plans/mutation-scope-runtime-integration.md`) ahead of the
-`abandon_scope()` entrypoint that will share it.
+`abandon_scope()` entrypoint
+([`mutation-trace-scope-abandonment.md`](mutation-trace-scope-abandonment.md)),
+which now shares it: `coordinate()` observes a boundary and snapshots, while
+`abandon_scope()` observes nothing and snapshots nothing, and this prefix is the
+only piece they hold in common.
 
 ## The fixed order
 
@@ -66,7 +70,8 @@ map it onto its own error surface without losing which safety step failed:
 
 `ExternalTaintOperation` lives here, beside the fence step that produces it, and
 is re-exported by `coordinator.rs` so `CoordinateError::ExternalTaintMarker`
-keeps naming it. `coordinate()` maps `GitDirResolution` and `CheckoutIdentity`
+keeps naming it; `AbandonScopeError::ExternalTaintMarker` carries the same type.
+`coordinate()` maps `GitDirResolution` and `CheckoutIdentity`
 onto `CoordinateError::Other`, `LockAcquisition` onto
 `CoordinateError::LockAcquisition`, and the fence variant onto
 `CoordinateError::ExternalTaintMarker` with the same `operation` — the exact
@@ -89,5 +94,6 @@ pass unchanged through the guard, which is what proves `coordinate()`'s
 externally observable ordering and error semantics survived the extraction.
 
 See also: [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md),
+[`mutation-trace-scope-abandonment.md`](mutation-trace-scope-abandonment.md),
 [`mutation-trace-external-taint.md`](mutation-trace-external-taint.md),
 [`checkout-identity.md`](checkout-identity.md).
