@@ -101,5 +101,43 @@ injectable traits — `MutationEventPageSource` (implemented for
   result; the function never returns `Err`.
 
 The consumer performs no mutation-cursor write and creates no worktree or
-scope identity. Post-commit composition and Agent Trace provenance remain
-owned by their later hook and generator seams.
+scope identity.
+
+## Post-commit composition
+
+`resolve_post_commit_mutation_ai_patch(repository_root, &db, direct_coverage,
+committed_patch) -> ParsedPatch` is the read-only entrypoint the post-commit
+Agent Trace flow calls after it has resolved direct evidence. It resolves the
+invoking worktree's *existing* checkout identity with
+[`checkout::resolve_git_dir`](checkout-identity.md) + `read_checkout_id` (never
+`get_or_create_*`), builds a `GitSnapshotService` and `MutationTraceStore`
+internally, and returns `resolve_bounded_mutation_attribution(..).result.mutation_ai_patch`.
+An unresolvable git dir, an absent/unreadable checkout identity, or an
+unavailable snapshot service each yield an empty patch, so post-commit falls
+back to direct-only Agent Trace behavior. It creates no identity and writes no
+mutation-cursor state.
+
+- **Direct evidence stays authoritative.** The post-commit flow first computes
+  the existing direct `intersect_patches` intersection and passes it as
+  `direct_coverage`; only the committed lines it does not cover reach mutation
+  history. `post_commit_patch_intersections` keeps its direct-only meaning, and
+  mutation evidence never enters `diff_traces`.
+- **No fabricated provenance.** The mutation-AI patch is target-shaped and
+  carries no model, session, tool, or tool-version metadata. `ScopeId`,
+  `ActorKind`, and `AiExclusive(scope)` are never translated into direct
+  provenance. Hunk model/session and the top-level `tool` object still derive
+  from direct evidence only; mutation-only coverage merely widens `ai` / `mixed`
+  classification. See
+  [../sce/agent-trace-minimal-generator.md](../sce/agent-trace-minimal-generator.md).
+- **Final persistence.** The single combined Agent Trace (direct + mutation AI
+  coverage) is validated against the embedded schema and stored in
+  `agent_traces.trace_json`; no schema, migration, or checkpoint is added. Hook
+  wiring detail lives in
+  [../sce/agent-trace-hooks-command-routing.md](../sce/agent-trace-hooks-command-routing.md).
+
+Real Git/DB regressions cover this path end to end: `cli/src/services/hooks/mod.rs`
+proves mutation-only `ai` without provenance, direct+mutation completion, a
+newer non-exclusive event keeping a line non-AI, and adversarial linked-worktree
+isolation (a newer foreign `AiContended` event cannot block an older
+current-worktree `AiExclusive` one); `runtime/tests.rs` proves a still-relevant
+event behind 128 newer events is never loaded or reconstructed.
