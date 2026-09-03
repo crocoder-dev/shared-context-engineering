@@ -105,10 +105,14 @@ helper are the single source of truth for the pin path; `pin_tree`,
 
 ## Callers
 
-`coordinator.rs` is the only caller of `capture`/`pin`/`diff_trees` so far, via
-its `SnapshotCapture` trait; `list_pins` / `delete_pins` have no caller yet —
-the deferred per-worktree ref-reconciliation maintenance pass is their first
-consumer.
+`coordinator.rs` is the only caller of `capture`/`pin` so far, via its
+`SnapshotCapture` trait. `diff_trees` has a second, read-only caller: the
+bounded mutation-history attribution consumer
+(`runtime/mutation_attribution.rs`) reconstructs each historical event's tree
+transition through its own `TreeDiffSource` trait (see
+[`mutation-trace-agent-attribution.md`](mutation-trace-agent-attribution.md)).
+`list_pins` / `delete_pins` are consumed by the per-worktree
+ref-reconciliation maintenance pass.
 
 ## Testing boundary
 
