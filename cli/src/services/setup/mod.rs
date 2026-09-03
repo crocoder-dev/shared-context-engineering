@@ -13,24 +13,6 @@ pub(crate) mod config_merge;
 pub(crate) mod hook_merge;
 
 #[derive(Debug)]
-struct NotGitRepositoryError {
-    directory: PathBuf,
-}
-
-impl std::fmt::Display for NotGitRepositoryError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Directory '{}' is not a git repository. Try: run 'git init' in '{}', then rerun 'sce setup'.",
-            self.directory.display(),
-            self.directory.display()
-        )
-    }
-}
-
-impl std::error::Error for NotGitRepositoryError {}
-
-#[derive(Debug)]
 struct MissingGitRemoteError {
     remote_name: String,
 }
@@ -47,10 +29,6 @@ impl std::fmt::Display for MissingGitRemoteError {
 
 impl std::error::Error for MissingGitRemoteError {}
 
-pub(crate) fn is_not_git_repository_error(error: &anyhow::Error) -> bool {
-    error.downcast_ref::<NotGitRepositoryError>().is_some()
-}
-
 pub(crate) fn is_missing_git_remote_error(error: &anyhow::Error) -> bool {
     error.downcast_ref::<MissingGitRemoteError>().is_some()
 }
@@ -65,6 +43,49 @@ fn repo_local_config_bootstrap_payload() -> String {
 }
 
 pub const NAME: &str = "setup";
+
+/// Classifies repository-root resolution failures while retaining the
+/// underlying technical error for the CLI's observability boundary.
+#[derive(Debug)]
+pub enum GitRepositoryResolutionError {
+    /// Git positively identified the target as outside a repository.
+    NotGitRepository(anyhow::Error),
+    /// Resolution failed for an unexpected filesystem, process, or output
+    /// reason.
+    Unexpected(anyhow::Error),
+}
+
+impl std::fmt::Display for GitRepositoryResolutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotGitRepository(source) | Self::Unexpected(source) => write!(f, "{source:#}"),
+        }
+    }
+}
+
+impl std::error::Error for GitRepositoryResolutionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotGitRepository(source) | Self::Unexpected(source) => Some(source.as_ref()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GitExitKind {
+    NotRepository,
+    Other,
+}
+
+const NOT_GIT_REPOSITORY_PREFIX: &str = "fatal: not a git repository";
+
+fn classify_git_exit(stderr: &str) -> GitExitKind {
+    if stderr.starts_with(NOT_GIT_REPOSITORY_PREFIX) {
+        GitExitKind::NotRepository
+    } else {
+        GitExitKind::Other
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SetupTarget {
@@ -461,9 +482,9 @@ pub fn persisted_optional_workflows(repository_root: &Path) -> Vec<String> {
 }
 
 /// Preflight check that verifies the given directory is inside a git repository.
-/// Returns the resolved repository root path on success.
-/// Returns an actionable error telling the operator to run `git init` on failure.
-pub fn ensure_git_repository(directory: &Path) -> Result<PathBuf> {
+/// Returns the resolved repository root path on success, or a typed error that
+/// distinguishes a Git-confirmed non-repository directory from other failures.
+pub fn ensure_git_repository(directory: &Path) -> Result<PathBuf, GitRepositoryResolutionError> {
     install::ensure_git_repository(directory)
 }
 
@@ -930,9 +951,10 @@ mod install {
     use super::config_merge;
     use super::hook_merge;
     use super::{
-        cleanup_path_if_exists, concrete_targets_for, embedded_assets_for_concrete_target,
-        hook_install_recovery_guidance, iter_embedded_assets_for_setup_target_with_selection,
-        iter_required_hook_assets, setup_install_recovery_guidance, EmbeddedAsset,
+        classify_git_exit, cleanup_path_if_exists, concrete_targets_for,
+        embedded_assets_for_concrete_target, hook_install_recovery_guidance,
+        iter_embedded_assets_for_setup_target_with_selection, iter_required_hook_assets,
+        setup_install_recovery_guidance, EmbeddedAsset, GitExitKind, GitRepositoryResolutionError,
         RequiredHookInstallResult, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
         SetupInstallOutcome, SetupInstallTargetResult, SetupTarget,
     };
@@ -941,10 +963,12 @@ mod install {
 
     pub(super) fn prepare_setup_hooks_repository(repository_root: &Path) -> Result<PathBuf> {
         let normalized_repository_root = normalize_user_repository_path(repository_root)?;
-        resolve_git_repository_root(&normalized_repository_root)
+        Ok(resolve_git_repository_root(&normalized_repository_root)?)
     }
 
-    pub(super) fn ensure_git_repository(directory: &Path) -> Result<PathBuf> {
+    pub(super) fn ensure_git_repository(
+        directory: &Path,
+    ) -> Result<PathBuf, GitRepositoryResolutionError> {
         resolve_git_repository_root(directory)
     }
 
@@ -1206,13 +1230,35 @@ mod install {
         Ok(canonical_repository_root)
     }
 
-    fn resolve_git_repository_root(repository_root: &Path) -> Result<PathBuf> {
-        run_git_command_in_directory(
+    fn resolve_git_repository_root(
+        repository_root: &Path,
+    ) -> Result<PathBuf, GitRepositoryResolutionError> {
+        let repository_root_output = run_git_command_in_directory(
             repository_root,
             &["rev-parse", "--show-toplevel"],
             "Failed to resolve repository root. Ensure '--repo' points to an accessible git repository.",
         )
-        .map(PathBuf::from)
+        .map_err(map_setup_repository_resolution_error)?;
+        Ok(PathBuf::from(repository_root_output))
+    }
+
+    fn map_setup_repository_resolution_error(
+        error: GitCommandError,
+    ) -> GitRepositoryResolutionError {
+        let is_not_repository = matches!(
+            &error,
+            GitCommandError::NonZeroExit {
+                kind: GitExitKind::NotRepository,
+                ..
+            }
+        );
+        let source = anyhow::Error::new(error);
+
+        if is_not_repository {
+            GitRepositoryResolutionError::NotGitRepository(source)
+        } else {
+            GitRepositoryResolutionError::Unexpected(source)
+        }
     }
 
     fn resolve_git_hooks_directory(repository_root: &Path) -> Result<PathBuf> {
@@ -1230,45 +1276,124 @@ mod install {
         Ok(repository_root.join(hooks_directory))
     }
 
+    #[derive(Debug)]
+    enum GitCommandError {
+        Spawn {
+            context: String,
+            directory: PathBuf,
+            source: std::io::Error,
+        },
+        NonZeroExit {
+            context: String,
+            directory: PathBuf,
+            status: std::process::ExitStatus,
+            kind: GitExitKind,
+            diagnostic: String,
+        },
+        InvalidUtf8 {
+            context: String,
+            source: std::string::FromUtf8Error,
+        },
+        EmptyOutput {
+            context: String,
+            directory: PathBuf,
+        },
+    }
+
+    impl std::fmt::Display for GitCommandError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Spawn {
+                    context,
+                    directory,
+                    source,
+                } => write!(
+                    f,
+                    "{context} (directory: '{}'): {source}",
+                    directory.display()
+                ),
+                Self::NonZeroExit {
+                    context,
+                    directory,
+                    status,
+                    diagnostic,
+                    ..
+                } => write!(
+                    f,
+                    "{context} (directory: '{}', status: {status:?}) {diagnostic}",
+                    directory.display()
+                ),
+                Self::InvalidUtf8 { context, source } => {
+                    write!(
+                        f,
+                        "{context}: git command output contained invalid UTF-8: {source}"
+                    )
+                }
+                Self::EmptyOutput { context, directory } => write!(
+                    f,
+                    "{context} (directory: '{}'): git command returned empty output",
+                    directory.display()
+                ),
+            }
+        }
+    }
+
+    impl std::error::Error for GitCommandError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            match self {
+                Self::Spawn { source, .. } => Some(source),
+                Self::InvalidUtf8 { source, .. } => Some(source),
+                Self::NonZeroExit { .. } | Self::EmptyOutput { .. } => None,
+            }
+        }
+    }
+
     fn run_git_command_in_directory(
         repository_root: &Path,
         args: &[&str],
         context_message: &str,
-    ) -> Result<String> {
+    ) -> std::result::Result<String, GitCommandError> {
         let output = Command::new("git")
+            .env("LC_ALL", "C")
+            .env("LANG", "C")
+            .env_remove("LANGUAGE")
             .args(args)
             .current_dir(repository_root)
-            .env("LC_ALL", "C")
             .output()
-            .with_context(|| {
-                format!(
-                    "{} (directory: '{}')",
-                    context_message,
-                    repository_root.display()
-                )
+            .map_err(|source| GitCommandError::Spawn {
+                context: context_message.to_string(),
+                directory: repository_root.to_path_buf(),
+                source,
             })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            if args == ["rev-parse", "--show-toplevel"] && stderr.contains("not a git repository") {
-                return Err(anyhow::Error::new(super::NotGitRepositoryError {
-                    directory: repository_root.to_path_buf(),
-                }));
-            }
+            let kind = classify_git_exit(&stderr);
             let diagnostic = if stderr.is_empty() {
                 String::from("git command exited with a non-zero status")
             } else {
                 redact_sensitive_text(&stderr)
             };
-            bail!("{context_message} {diagnostic}");
+            return Err(GitCommandError::NonZeroExit {
+                context: context_message.to_string(),
+                directory: repository_root.to_path_buf(),
+                status: output.status,
+                kind,
+                diagnostic,
+            });
         }
 
-        let stdout = String::from_utf8(output.stdout)
-            .context("git command output contained invalid UTF-8")?
-            .trim()
-            .to_string();
+        let stdout =
+            String::from_utf8(output.stdout).map_err(|source| GitCommandError::InvalidUtf8 {
+                context: context_message.to_string(),
+                source,
+            })?;
+        let stdout = stdout.trim().to_string();
         if stdout.is_empty() {
-            bail!("{context_message} git command returned empty output");
+            return Err(GitCommandError::EmptyOutput {
+                context: context_message.to_string(),
+                directory: repository_root.to_path_buf(),
+            });
         }
 
         Ok(stdout)
@@ -1960,495 +2085,500 @@ mod tests {
                 env!("CARGO_PKG_VERSION")
             )
         );
-    }
 
-    #[test]
-    fn resolve_setup_request_accepts_pi_target() {
-        let request = resolve_setup_request(options_with(|options| {
-            options.pi = true;
-            options.non_interactive = true;
-        }))
-        .expect("pi target should resolve");
+        #[test]
+        fn resolve_setup_request_accepts_pi_target() {
+            let request = resolve_setup_request(options_with(|options| {
+                options.pi = true;
+                options.non_interactive = true;
+            }))
+            .expect("pi target should resolve");
 
-        assert_eq!(
-            request.config_mode,
-            Some(SetupMode::NonInteractive(SetupTarget::Pi))
-        );
-        assert!(!request.context_only);
-    }
-
-    #[test]
-    fn resolve_setup_request_accepts_codex_target() {
-        let request = resolve_setup_request(options_with(|options| {
-            options.codex = true;
-            options.non_interactive = true;
-        }))
-        .expect("codex target should resolve");
-
-        assert_eq!(
-            request.config_mode,
-            Some(SetupMode::NonInteractive(SetupTarget::Codex))
-        );
-        assert!(!request.context_only);
-    }
-
-    #[test]
-    fn resolve_setup_request_accepts_all_target() {
-        let request = resolve_setup_request(options_with(|options| {
-            options.all = true;
-            options.non_interactive = true;
-        }))
-        .expect("all target should resolve");
-
-        assert_eq!(
-            request.config_mode,
-            Some(SetupMode::NonInteractive(SetupTarget::All))
-        );
-        assert!(!request.context_only);
-    }
-
-    #[test]
-    fn resolve_setup_request_accepts_bootstrap_context_alone() {
-        let request = resolve_setup_request(options_with(|options| {
-            options.bootstrap_context = true;
-        }))
-        .expect("bootstrap-context alone should resolve");
-
-        assert!(request.context_only);
-        assert_eq!(request.config_mode, None);
-        assert!(!request.install_hooks);
-        assert_eq!(request.hooks_repo_path, None);
-    }
-
-    #[test]
-    fn resolve_setup_request_rejects_bootstrap_context_with_target() {
-        let error = resolve_setup_request(options_with(|options| {
-            options.bootstrap_context = true;
-            options.opencode = true;
-        }))
-        .expect_err("bootstrap-context with target must be rejected");
-
-        assert!(error.to_string().contains("--bootstrap-context"));
-        assert!(error.to_string().contains("alone"));
-    }
-
-    #[test]
-    fn resolve_setup_request_rejects_combined_target_flags() {
-        let error = resolve_setup_request(options_with(|options| {
-            options.pi = true;
-            options.all = true;
-        }))
-        .expect_err("combined target flags must be rejected");
-
-        assert!(error.to_string().contains("mutually exclusive"));
-    }
-
-    #[test]
-    fn resolve_setup_request_non_interactive_error_lists_pi_and_all() {
-        let error = resolve_setup_request(options_with(|options| {
-            options.non_interactive = true;
-        }))
-        .expect_err("non-interactive without target must be rejected");
-
-        let message = error.to_string();
-        assert!(message.contains("--pi"));
-        assert!(message.contains("--all"));
-    }
-
-    #[test]
-    fn parser_routes_bootstrap_context_to_context_only_request() {
-        let registry = CommandRegistry::default();
-        let command = parse_runtime_command(
-            [
-                "sce".to_string(),
-                "setup".to_string(),
-                "--bootstrap-context".to_string(),
-            ],
-            &registry,
-            None,
-        )
-        .expect("bootstrap-context should parse");
-
-        match command {
-            RuntimeCommand::Setup(setup_command) => {
-                assert!(setup_command.request.context_only);
-                assert_eq!(setup_command.request.config_mode, None);
-                assert!(!setup_command.request.install_hooks);
-            }
-            _ => panic!("expected Setup command for --bootstrap-context"),
+            assert_eq!(
+                request.config_mode,
+                Some(SetupMode::NonInteractive(SetupTarget::Pi))
+            );
+            assert!(!request.context_only);
         }
-    }
 
-    #[test]
-    fn help_documents_bootstrap_context_flag() {
-        let top_level_help = command_surface::help_text();
-        assert!(
-            top_level_help.contains("--bootstrap-context"),
-            "top-level help should document --bootstrap-context"
-        );
+        #[test]
+        fn resolve_setup_request_accepts_codex_target() {
+            let request = resolve_setup_request(options_with(|options| {
+                options.codex = true;
+                options.non_interactive = true;
+            }))
+            .expect("codex target should resolve");
 
-        let registry = CommandRegistry::default();
-        let command = parse_runtime_command(
-            ["sce".to_string(), "setup".to_string(), "--help".to_string()],
-            &registry,
-            None,
-        )
-        .expect("setup --help should parse");
-
-        match command {
-            RuntimeCommand::HelpText(help) => {
-                assert!(
-                    help.text.contains("--bootstrap-context"),
-                    "setup --help should document --bootstrap-context:\n{}",
-                    help.text
-                );
-            }
-            _ => panic!("expected HelpText for setup --help"),
+            assert_eq!(
+                request.config_mode,
+                Some(SetupMode::NonInteractive(SetupTarget::Codex))
+            );
+            assert!(!request.context_only);
         }
-    }
 
-    #[test]
-    fn bootstrap_context_baseline_creates_expected_paths() {
-        let repo = init_git_repo("create-baseline");
-        let message = bootstrap_context_baseline(&repo).expect("bootstrap should create baseline");
-        assert!(message.contains("Context baseline ensured."));
-        assert_baseline_paths_exist(&repo);
+        #[test]
+        fn resolve_setup_request_accepts_all_target() {
+            let request = resolve_setup_request(options_with(|options| {
+                options.all = true;
+                options.non_interactive = true;
+            }))
+            .expect("all target should resolve");
 
-        let paths = RepoPaths::new(&repo);
-        assert!(!paths.opencode_dir().exists());
-        assert!(!paths.claude_dir().exists());
-        assert!(!paths.pi_dir().exists());
+            assert_eq!(
+                request.config_mode,
+                Some(SetupMode::NonInteractive(SetupTarget::All))
+            );
+            assert!(!request.context_only);
+        }
 
-        let gitignore = fs::read_to_string(paths.context_tmp_gitignore_file())
-            .expect("tmp gitignore should be readable");
-        assert_eq!(gitignore, CONTEXT_TMP_GITIGNORE_CONTENT);
+        #[test]
+        fn resolve_setup_request_accepts_bootstrap_context_alone() {
+            let request = resolve_setup_request(options_with(|options| {
+                options.bootstrap_context = true;
+            }))
+            .expect("bootstrap-context alone should resolve");
 
-        let _ = fs::remove_dir_all(&repo);
-    }
+            assert!(request.context_only);
+            assert_eq!(request.config_mode, None);
+            assert!(!request.install_hooks);
+            assert_eq!(request.hooks_repo_path, None);
+        }
 
-    #[test]
-    fn bootstrap_context_baseline_is_additive_and_idempotent() {
-        let repo = init_git_repo("idempotent-baseline");
-        bootstrap_context_baseline(&repo).expect("initial bootstrap");
+        #[test]
+        fn resolve_setup_request_rejects_bootstrap_context_with_target() {
+            let error = resolve_setup_request(options_with(|options| {
+                options.bootstrap_context = true;
+                options.opencode = true;
+            }))
+            .expect_err("bootstrap-context with target must be rejected");
 
-        let paths = RepoPaths::new(&repo);
-        let sentinel = "SENTINEL_OVERVIEW_CONTENT\n";
-        fs::write(paths.context_overview_file(), sentinel).expect("seed overview sentinel");
-        fs::write(paths.context_map_file(), "SENTINEL_CONTEXT_MAP\n")
-            .expect("seed context-map sentinel");
-        fs::write(paths.context_tmp_gitignore_file(), "SENTINEL_GITIGNORE\n")
-            .expect("seed gitignore sentinel");
+            assert!(error.to_string().contains("--bootstrap-context"));
+            assert!(error.to_string().contains("alone"));
+        }
 
-        fs::remove_file(paths.context_architecture_file()).expect("remove architecture");
-        fs::remove_dir_all(paths.context_plans_dir()).expect("remove plans");
+        #[test]
+        fn resolve_setup_request_rejects_combined_target_flags() {
+            let error = resolve_setup_request(options_with(|options| {
+                options.pi = true;
+                options.all = true;
+            }))
+            .expect_err("combined target flags must be rejected");
 
-        bootstrap_context_baseline(&repo).expect("rerun bootstrap");
+            assert!(error.to_string().contains("mutually exclusive"));
+        }
 
-        assert_eq!(
-            fs::read_to_string(paths.context_overview_file()).expect("read overview"),
-            sentinel
-        );
-        assert_eq!(
-            fs::read_to_string(paths.context_map_file()).expect("read context-map"),
-            "SENTINEL_CONTEXT_MAP\n"
-        );
-        assert_eq!(
-            fs::read_to_string(paths.context_tmp_gitignore_file()).expect("read gitignore"),
-            "SENTINEL_GITIGNORE\n"
-        );
-        assert!(paths.context_architecture_file().exists());
-        assert!(paths.context_plans_dir().is_dir());
+        #[test]
+        fn resolve_setup_request_non_interactive_error_lists_pi_and_all() {
+            let error = resolve_setup_request(options_with(|options| {
+                options.non_interactive = true;
+            }))
+            .expect_err("non-interactive without target must be rejected");
 
-        let _ = fs::remove_dir_all(&repo);
-    }
+            let message = error.to_string();
+            assert!(message.contains("--pi"));
+            assert!(message.contains("--all"));
+        }
 
-    #[test]
-    fn concrete_targets_for_all_expands_to_four_targets() {
-        assert_eq!(
-            concrete_targets_for(SetupTarget::All),
-            &[
-                SetupTarget::OpenCode,
-                SetupTarget::Claude,
-                SetupTarget::Pi,
-                SetupTarget::Codex
-            ]
-        );
-    }
+        #[test]
+        fn parser_routes_bootstrap_context_to_context_only_request() {
+            let registry = CommandRegistry::default();
+            let command = parse_runtime_command(
+                [
+                    "sce".to_string(),
+                    "setup".to_string(),
+                    "--bootstrap-context".to_string(),
+                ],
+                &registry,
+                None,
+            )
+            .expect("bootstrap-context should parse");
 
-    #[test]
-    fn integration_target_id_str_maps_pi() {
-        assert_eq!(integration_target_id_str(SetupTarget::Pi), "pi");
-    }
-
-    #[test]
-    fn integration_target_id_str_maps_codex() {
-        assert_eq!(integration_target_id_str(SetupTarget::Codex), "codex");
-    }
-
-    /// Every optional workflow selected, so filtering drops nothing.
-    fn every_optional_workflow() -> Vec<&'static str> {
-        super::OPTIONAL_WORKFLOWS
-            .iter()
-            .map(|workflow| workflow.id)
-            .collect()
-    }
-
-    #[test]
-    fn iter_embedded_assets_for_all_covers_each_concrete_target() {
-        let selection = every_optional_workflow();
-        let count = |target| {
-            iter_embedded_assets_for_setup_target_with_selection(target, &selection).count()
-        };
-
-        let concrete_sum = count(SetupTarget::OpenCode)
-            + count(SetupTarget::Claude)
-            + count(SetupTarget::Pi)
-            + count(SetupTarget::Codex);
-
-        assert!(count(SetupTarget::Pi) > 0);
-        assert!(count(SetupTarget::Codex) > 0);
-        assert_eq!(count(SetupTarget::All), concrete_sum);
-    }
-
-    #[test]
-    fn embedded_build_payload_contains_generated_targets_and_static_hooks() {
-        let selection = every_optional_workflow();
-        let contains = |target, path| {
-            iter_embedded_assets_for_setup_target_with_selection(target, &selection)
-                .any(|asset| asset.relative_path == path && !asset.bytes.is_empty())
-        };
-
-        assert!(contains(SetupTarget::OpenCode, "command/next-task.md"));
-        assert!(contains(
-            SetupTarget::OpenCode,
-            "lib/bash-policy-presets.json"
-        ));
-        assert!(contains(SetupTarget::Claude, "commands/next-task.md"));
-        assert!(contains(SetupTarget::Pi, "prompts/next-task.md"));
-        assert!(contains(SetupTarget::Pi, "extensions/sce/index.ts"));
-        assert!(iter_required_hook_assets().all(|asset| !asset.bytes.is_empty()));
-    }
-
-    #[test]
-    fn codex_embedded_assets_cover_both_output_roots_with_no_command_dir() {
-        let has = |path: &str| {
-            CODEX_EMBEDDED_ASSETS
-                .iter()
-                .any(|asset| asset.relative_path == path && !asset.bytes.is_empty())
-        };
-
-        assert!(has(".agents/skills/sce-next-task/SKILL.md"));
-        assert!(has(".codex/hooks.json"));
-        assert!(has(".codex/hooks/run-sce-or-show-install-guidance.sh"));
-        assert!(!CODEX_EMBEDDED_ASSETS
-            .iter()
-            .any(|asset| asset.relative_path.starts_with(".agents/commands/")));
-    }
-
-    #[test]
-    fn install_writes_codex_assets_directly_under_repo_root() {
-        let repo = init_git_repo("install-codex-dual-roots");
-        let selection: Vec<String> = every_optional_workflow()
-            .into_iter()
-            .map(str::to_string)
-            .collect();
-
-        install_embedded_setup_assets(&repo, SetupTarget::Codex, &selection)
-            .expect("codex install should succeed");
-
-        assert!(repo.join(".agents/skills/sce-next-task/SKILL.md").is_file());
-        assert!(repo.join(".codex/hooks.json").is_file());
-        assert!(repo
-            .join(".codex/hooks/run-sce-or-show-install-guidance.sh")
-            .is_file());
-        assert!(!repo.join(".codex/.agents").exists());
-        assert!(!repo.join(".agents/.codex").exists());
-
-        let _ = fs::remove_dir_all(&repo);
-    }
-
-    #[test]
-    fn install_merges_codex_hooks_and_replaces_stale_owned_handlers_idempotently() {
-        let repo = init_git_repo("install-merges-codex-hooks");
-        let hooks_path = repo.join(".codex/hooks.json");
-        fs::create_dir_all(hooks_path.parent().unwrap()).expect("create Codex directory");
-        let stale_command = "bash .codex/hooks/run-sce-or-show-install-guidance.sh sce hooks codex";
-        let existing = json!({
-            "description": "user hooks",
-            "hooks": {
-                "UserPromptSubmit": [{"hooks": [
-                    {"type": "command", "command": "echo user"},
-                    {"type": "command", "command": stale_command}
-                ]}],
-                "SessionStart": [{"hooks": [{"type": "command", "command": "echo session"}]}]
+            match command {
+                RuntimeCommand::Setup(setup_command) => {
+                    assert!(setup_command.request.context_only);
+                    assert_eq!(setup_command.request.config_mode, None);
+                    assert!(!setup_command.request.install_hooks);
+                }
+                _ => panic!("expected Setup command for --bootstrap-context"),
             }
-        });
-        fs::write(&hooks_path, serde_json::to_vec(&existing).unwrap()).expect("seed hooks config");
-        let selection: Vec<String> = every_optional_workflow()
-            .into_iter()
-            .map(str::to_string)
-            .collect();
+        }
 
-        install_embedded_setup_assets(&repo, SetupTarget::Codex, &selection)
-            .expect("first Codex install should succeed");
-        let first = fs::read(&hooks_path).expect("read merged hooks config");
-        install_embedded_setup_assets(&repo, SetupTarget::Codex, &selection)
-            .expect("second Codex install should succeed");
-        let second = fs::read(&hooks_path).expect("read merged hooks config again");
-        assert_eq!(first, second);
+        #[test]
+        fn help_documents_bootstrap_context_flag() {
+            let top_level_help = command_surface::help_text();
+            assert!(
+                top_level_help.contains("--bootstrap-context"),
+                "top-level help should document --bootstrap-context"
+            );
 
-        let merged: serde_json::Value = serde_json::from_slice(&second).unwrap();
-        assert_eq!(merged["description"], "user hooks");
-        assert_eq!(
-            merged["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-            "echo session"
-        );
-        assert_eq!(
-            merged["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"],
-            "echo user"
-        );
-        assert_eq!(merged["hooks"].as_object().unwrap().len(), 5);
+            let registry = CommandRegistry::default();
+            let command = parse_runtime_command(
+                ["sce".to_string(), "setup".to_string(), "--help".to_string()],
+                &registry,
+                None,
+            )
+            .expect("setup --help should parse");
 
-        let _ = fs::remove_dir_all(&repo);
-    }
+            match command {
+                RuntimeCommand::HelpText(help) => {
+                    assert!(
+                        help.text.contains("--bootstrap-context"),
+                        "setup --help should document --bootstrap-context:\n{}",
+                        help.text
+                    );
+                }
+                _ => panic!("expected HelpText for setup --help"),
+            }
+        }
 
-    #[test]
-    fn invalid_codex_hooks_are_not_modified() {
-        let invalid_documents = [
-            br#"{\"hooks\":{"#.to_vec(),
-            serde_json::to_vec(&json!({"custom": true})).unwrap(),
-            serde_json::to_vec(&json!({"hooks": {"Stop": [{"matcher": 42}]}})).unwrap(),
-            serde_json::to_vec(&json!({"hooks": {"Stop": [{"hooks": "invalid"}]}})).unwrap(),
-            serde_json::to_vec(&json!({"hooks": {"Stop": [{"hooks": [{"nonsense": true}]}]}}))
-                .unwrap(),
-            serde_json::to_vec(&json!({"hooks": {"Stop": [{"hooks": [{"type": "unknown"}]}]}}))
-                .unwrap(),
-        ];
-        let selection: Vec<String> = every_optional_workflow()
-            .into_iter()
-            .map(str::to_string)
-            .collect();
+        #[test]
+        fn bootstrap_context_baseline_creates_expected_paths() {
+            let repo = init_git_repo("create-baseline");
+            let message =
+                bootstrap_context_baseline(&repo).expect("bootstrap should create baseline");
+            assert!(message.contains("Context baseline ensured."));
+            assert_baseline_paths_exist(&repo);
 
-        for (index, original) in invalid_documents.iter().enumerate() {
-            let repo = init_git_repo(&format!("install-rejects-malformed-codex-hooks-{index}"));
-            let hooks_path = repo.join(".codex/hooks.json");
-            fs::create_dir_all(hooks_path.parent().unwrap()).expect("create Codex directory");
-            fs::write(&hooks_path, original).expect("seed malformed hooks config");
+            let paths = RepoPaths::new(&repo);
+            assert!(!paths.opencode_dir().exists());
+            assert!(!paths.claude_dir().exists());
+            assert!(!paths.pi_dir().exists());
 
-            let error = install_embedded_setup_assets(&repo, SetupTarget::Codex, &selection)
-                .expect_err("malformed Codex hooks should fail setup");
-            assert!(error.to_string().contains(".codex/hooks.json"));
-            assert_eq!(fs::read(&hooks_path).unwrap(), original.as_slice());
+            let gitignore = fs::read_to_string(paths.context_tmp_gitignore_file())
+                .expect("tmp gitignore should be readable");
+            assert_eq!(gitignore, CONTEXT_TMP_GITIGNORE_CONTENT);
 
             let _ = fs::remove_dir_all(&repo);
         }
-    }
 
-    #[test]
-    fn install_preserves_user_owned_files_and_writes_sce_assets() {
-        let repo = init_git_repo("install-preserves-user-files");
-        let claude_dir = default_paths::InstallTargetPaths::new(&repo).claude_target_dir();
+        #[test]
+        fn bootstrap_context_baseline_is_additive_and_idempotent() {
+            let repo = init_git_repo("idempotent-baseline");
+            bootstrap_context_baseline(&repo).expect("initial bootstrap");
 
-        fs::create_dir_all(claude_dir.join("skills/my-own-skill")).expect("create user skill dir");
-        fs::create_dir_all(claude_dir.join("commands")).expect("create commands dir");
+            let paths = RepoPaths::new(&repo);
+            let sentinel = "SENTINEL_OVERVIEW_CONTENT\n";
+            fs::write(paths.context_overview_file(), sentinel).expect("seed overview sentinel");
+            fs::write(paths.context_map_file(), "SENTINEL_CONTEXT_MAP\n")
+                .expect("seed context-map sentinel");
+            fs::write(paths.context_tmp_gitignore_file(), "SENTINEL_GITIGNORE\n")
+                .expect("seed gitignore sentinel");
 
-        fs::write(claude_dir.join("MY_NOTES.md"), "top level user notes\n")
-            .expect("seed top-level user file");
-        fs::write(
-            claude_dir.join("skills/my-own-skill/SKILL.md"),
-            "user skill content\n",
-        )
-        .expect("seed user skill file");
-        fs::write(
-            claude_dir.join("commands/my-command.md"),
-            "user command content\n",
-        )
-        .expect("seed user command file");
+            fs::remove_file(paths.context_architecture_file()).expect("remove architecture");
+            fs::remove_dir_all(paths.context_plans_dir()).expect("remove plans");
 
-        let selection: Vec<String> = every_optional_workflow()
-            .into_iter()
-            .map(str::to_string)
-            .collect();
+            bootstrap_context_baseline(&repo).expect("rerun bootstrap");
 
-        install_embedded_setup_assets(&repo, SetupTarget::Claude, &selection)
-            .expect("install should succeed");
+            assert_eq!(
+                fs::read_to_string(paths.context_overview_file()).expect("read overview"),
+                sentinel
+            );
+            assert_eq!(
+                fs::read_to_string(paths.context_map_file()).expect("read context-map"),
+                "SENTINEL_CONTEXT_MAP\n"
+            );
+            assert_eq!(
+                fs::read_to_string(paths.context_tmp_gitignore_file()).expect("read gitignore"),
+                "SENTINEL_GITIGNORE\n"
+            );
+            assert!(paths.context_architecture_file().exists());
+            assert!(paths.context_plans_dir().is_dir());
 
-        assert_eq!(
-            fs::read_to_string(claude_dir.join("MY_NOTES.md")).expect("read top-level user file"),
-            "top level user notes\n"
-        );
-        assert_eq!(
-            fs::read_to_string(claude_dir.join("skills/my-own-skill/SKILL.md"))
-                .expect("read user skill file"),
-            "user skill content\n"
-        );
-        assert_eq!(
-            fs::read_to_string(claude_dir.join("commands/my-command.md"))
-                .expect("read user command file"),
-            "user command content\n"
-        );
+            let _ = fs::remove_dir_all(&repo);
+        }
 
-        let expected_next_task_bytes =
-            iter_embedded_assets_for_setup_target_with_selection(SetupTarget::Claude, &selection)
-                .find(|asset| asset.relative_path == "commands/next-task.md")
-                .expect("next-task asset should be in the catalog")
-                .bytes;
-        assert_eq!(
-            fs::read(claude_dir.join("commands/next-task.md")).expect("read installed sce asset"),
-            expected_next_task_bytes
-        );
+        #[test]
+        fn concrete_targets_for_all_expands_to_four_targets() {
+            assert_eq!(
+                concrete_targets_for(SetupTarget::All),
+                &[
+                    SetupTarget::OpenCode,
+                    SetupTarget::Claude,
+                    SetupTarget::Pi,
+                    SetupTarget::Codex
+                ]
+            );
+        }
 
-        let _ = fs::remove_dir_all(&repo);
-    }
+        #[test]
+        fn integration_target_id_str_maps_pi() {
+            assert_eq!(integration_target_id_str(SetupTarget::Pi), "pi");
+        }
 
-    #[test]
-    fn install_merges_into_existing_claude_settings_json_and_stays_idempotent() {
-        let repo = init_git_repo("install-merges-claude-settings");
-        let claude_dir = default_paths::InstallTargetPaths::new(&repo).claude_target_dir();
+        #[test]
+        fn integration_target_id_str_maps_codex() {
+            assert_eq!(integration_target_id_str(SetupTarget::Codex), "codex");
+        }
 
-        fs::create_dir_all(&claude_dir).expect("create claude dir");
-        fs::write(
-            claude_dir.join("settings.json"),
-            serde_json::to_string_pretty(&json!({
-                "permissions": {"allow": ["Bash(git *)"]},
-                "env": {"FOO": "bar"},
+        /// Every optional workflow selected, so filtering drops nothing.
+        fn every_optional_workflow() -> Vec<&'static str> {
+            super::OPTIONAL_WORKFLOWS
+                .iter()
+                .map(|workflow| workflow.id)
+                .collect()
+        }
+
+        #[test]
+        fn iter_embedded_assets_for_all_covers_each_concrete_target() {
+            let selection = every_optional_workflow();
+            let count = |target| {
+                iter_embedded_assets_for_setup_target_with_selection(target, &selection).count()
+            };
+
+            let concrete_sum = count(SetupTarget::OpenCode)
+                + count(SetupTarget::Claude)
+                + count(SetupTarget::Pi)
+                + count(SetupTarget::Codex);
+
+            assert!(count(SetupTarget::Pi) > 0);
+            assert!(count(SetupTarget::Codex) > 0);
+            assert_eq!(count(SetupTarget::All), concrete_sum);
+        }
+
+        #[test]
+        fn embedded_build_payload_contains_generated_targets_and_static_hooks() {
+            let selection = every_optional_workflow();
+            let contains = |target, path| {
+                iter_embedded_assets_for_setup_target_with_selection(target, &selection)
+                    .any(|asset| asset.relative_path == path && !asset.bytes.is_empty())
+            };
+
+            assert!(contains(SetupTarget::OpenCode, "command/next-task.md"));
+            assert!(contains(
+                SetupTarget::OpenCode,
+                "lib/bash-policy-presets.json"
+            ));
+            assert!(contains(SetupTarget::Claude, "commands/next-task.md"));
+            assert!(contains(SetupTarget::Pi, "prompts/next-task.md"));
+            assert!(contains(SetupTarget::Pi, "extensions/sce/index.ts"));
+            assert!(iter_required_hook_assets().all(|asset| !asset.bytes.is_empty()));
+        }
+
+        #[test]
+        fn codex_embedded_assets_cover_both_output_roots_with_no_command_dir() {
+            let has = |path: &str| {
+                CODEX_EMBEDDED_ASSETS
+                    .iter()
+                    .any(|asset| asset.relative_path == path && !asset.bytes.is_empty())
+            };
+
+            assert!(has(".agents/skills/sce-next-task/SKILL.md"));
+            assert!(has(".codex/hooks.json"));
+            assert!(has(".codex/hooks/run-sce-or-show-install-guidance.sh"));
+            assert!(!CODEX_EMBEDDED_ASSETS
+                .iter()
+                .any(|asset| asset.relative_path.starts_with(".agents/commands/")));
+        }
+
+        #[test]
+        fn install_writes_codex_assets_directly_under_repo_root() {
+            let repo = init_git_repo("install-codex-dual-roots");
+            let selection: Vec<String> = every_optional_workflow()
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+
+            install_embedded_setup_assets(&repo, SetupTarget::Codex, &selection)
+                .expect("codex install should succeed");
+
+            assert!(repo.join(".agents/skills/sce-next-task/SKILL.md").is_file());
+            assert!(repo.join(".codex/hooks.json").is_file());
+            assert!(repo
+                .join(".codex/hooks/run-sce-or-show-install-guidance.sh")
+                .is_file());
+            assert!(!repo.join(".codex/.agents").exists());
+            assert!(!repo.join(".agents/.codex").exists());
+
+            let _ = fs::remove_dir_all(&repo);
+        }
+
+        #[test]
+        fn install_merges_codex_hooks_and_replaces_stale_owned_handlers_idempotently() {
+            let repo = init_git_repo("install-merges-codex-hooks");
+            let hooks_path = repo.join(".codex/hooks.json");
+            fs::create_dir_all(hooks_path.parent().unwrap()).expect("create Codex directory");
+            let stale_command =
+                "bash .codex/hooks/run-sce-or-show-install-guidance.sh sce hooks codex";
+            let existing = json!({
+                "description": "user hooks",
                 "hooks": {
-                    "PreToolUse": [
-                        {
-                            "matcher": "Bash",
-                            "hooks": [{"type": "command", "command": "echo user-hook"}]
-                        }
-                    ]
+                    "UserPromptSubmit": [{"hooks": [
+                        {"type": "command", "command": "echo user"},
+                        {"type": "command", "command": stale_command}
+                    ]}],
+                    "SessionStart": [{"hooks": [{"type": "command", "command": "echo session"}]}]
                 }
-            }))
-            .expect("serialize seeded settings"),
-        )
-        .expect("seed existing settings.json");
+            });
+            fs::write(&hooks_path, serde_json::to_vec(&existing).unwrap())
+                .expect("seed hooks config");
+            let selection: Vec<String> = every_optional_workflow()
+                .into_iter()
+                .map(str::to_string)
+                .collect();
 
-        let selection: Vec<String> = every_optional_workflow()
-            .into_iter()
-            .map(str::to_string)
-            .collect();
+            install_embedded_setup_assets(&repo, SetupTarget::Codex, &selection)
+                .expect("first Codex install should succeed");
+            let first = fs::read(&hooks_path).expect("read merged hooks config");
+            install_embedded_setup_assets(&repo, SetupTarget::Codex, &selection)
+                .expect("second Codex install should succeed");
+            let second = fs::read(&hooks_path).expect("read merged hooks config again");
+            assert_eq!(first, second);
 
-        install_embedded_setup_assets(&repo, SetupTarget::Claude, &selection)
-            .expect("first install should succeed");
+            let merged: serde_json::Value = serde_json::from_slice(&second).unwrap();
+            assert_eq!(merged["description"], "user hooks");
+            assert_eq!(
+                merged["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+                "echo session"
+            );
+            assert_eq!(
+                merged["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"],
+                "echo user"
+            );
+            assert_eq!(merged["hooks"].as_object().unwrap().len(), 5);
 
-        let after_first =
-            fs::read_to_string(claude_dir.join("settings.json")).expect("read merged settings");
-        let merged: serde_json::Value =
-            serde_json::from_str(&after_first).expect("merged settings should be valid JSON");
+            let _ = fs::remove_dir_all(&repo);
+        }
 
-        assert_eq!(merged["permissions"]["allow"][0], "Bash(git *)");
-        assert_eq!(merged["env"]["FOO"], "bar");
-        let pre_tool_use = merged["hooks"]["PreToolUse"]
-            .as_array()
-            .expect("PreToolUse should be an array");
-        assert!(pre_tool_use
-            .iter()
-            .any(|entry| entry["hooks"][0]["command"] == "echo user-hook"));
-        assert!(pre_tool_use
-            .iter()
-            .any(|entry| entry["hooks"]
+        #[test]
+        fn invalid_codex_hooks_are_not_modified() {
+            let invalid_documents = [
+                br#"{\"hooks\":{"#.to_vec(),
+                serde_json::to_vec(&json!({"custom": true})).unwrap(),
+                serde_json::to_vec(&json!({"hooks": {"Stop": [{"matcher": 42}]}})).unwrap(),
+                serde_json::to_vec(&json!({"hooks": {"Stop": [{"hooks": "invalid"}]}})).unwrap(),
+                serde_json::to_vec(&json!({"hooks": {"Stop": [{"hooks": [{"nonsense": true}]}]}}))
+                    .unwrap(),
+                serde_json::to_vec(&json!({"hooks": {"Stop": [{"hooks": [{"type": "unknown"}]}]}}))
+                    .unwrap(),
+            ];
+            let selection: Vec<String> = every_optional_workflow()
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+
+            for (index, original) in invalid_documents.iter().enumerate() {
+                let repo = init_git_repo(&format!("install-rejects-malformed-codex-hooks-{index}"));
+                let hooks_path = repo.join(".codex/hooks.json");
+                fs::create_dir_all(hooks_path.parent().unwrap()).expect("create Codex directory");
+                fs::write(&hooks_path, original).expect("seed malformed hooks config");
+
+                let error = install_embedded_setup_assets(&repo, SetupTarget::Codex, &selection)
+                    .expect_err("malformed Codex hooks should fail setup");
+                assert!(error.to_string().contains(".codex/hooks.json"));
+                assert_eq!(fs::read(&hooks_path).unwrap(), original.as_slice());
+
+                let _ = fs::remove_dir_all(&repo);
+            }
+        }
+
+        #[test]
+        fn install_preserves_user_owned_files_and_writes_sce_assets() {
+            let repo = init_git_repo("install-preserves-user-files");
+            let claude_dir = default_paths::InstallTargetPaths::new(&repo).claude_target_dir();
+
+            fs::create_dir_all(claude_dir.join("skills/my-own-skill"))
+                .expect("create user skill dir");
+            fs::create_dir_all(claude_dir.join("commands")).expect("create commands dir");
+
+            fs::write(claude_dir.join("MY_NOTES.md"), "top level user notes\n")
+                .expect("seed top-level user file");
+            fs::write(
+                claude_dir.join("skills/my-own-skill/SKILL.md"),
+                "user skill content\n",
+            )
+            .expect("seed user skill file");
+            fs::write(
+                claude_dir.join("commands/my-command.md"),
+                "user command content\n",
+            )
+            .expect("seed user command file");
+
+            let selection: Vec<String> = every_optional_workflow()
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+
+            install_embedded_setup_assets(&repo, SetupTarget::Claude, &selection)
+                .expect("install should succeed");
+
+            assert_eq!(
+                fs::read_to_string(claude_dir.join("MY_NOTES.md"))
+                    .expect("read top-level user file"),
+                "top level user notes\n"
+            );
+            assert_eq!(
+                fs::read_to_string(claude_dir.join("skills/my-own-skill/SKILL.md"))
+                    .expect("read user skill file"),
+                "user skill content\n"
+            );
+            assert_eq!(
+                fs::read_to_string(claude_dir.join("commands/my-command.md"))
+                    .expect("read user command file"),
+                "user command content\n"
+            );
+
+            let expected_next_task_bytes = iter_embedded_assets_for_setup_target_with_selection(
+                SetupTarget::Claude,
+                &selection,
+            )
+            .find(|asset| asset.relative_path == "commands/next-task.md")
+            .expect("next-task asset should be in the catalog")
+            .bytes;
+            assert_eq!(
+                fs::read(claude_dir.join("commands/next-task.md"))
+                    .expect("read installed sce asset"),
+                expected_next_task_bytes
+            );
+
+            let _ = fs::remove_dir_all(&repo);
+        }
+
+        #[test]
+        fn install_merges_into_existing_claude_settings_json_and_stays_idempotent() {
+            let repo = init_git_repo("install-merges-claude-settings");
+            let claude_dir = default_paths::InstallTargetPaths::new(&repo).claude_target_dir();
+
+            fs::create_dir_all(&claude_dir).expect("create claude dir");
+            fs::write(
+                claude_dir.join("settings.json"),
+                serde_json::to_string_pretty(&json!({
+                    "permissions": {"allow": ["Bash(git *)"]},
+                    "env": {"FOO": "bar"},
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Bash",
+                                "hooks": [{"type": "command", "command": "echo user-hook"}]
+                            }
+                        ]
+                    }
+                }))
+                .expect("serialize seeded settings"),
+            )
+            .expect("seed existing settings.json");
+
+            let selection: Vec<String> = every_optional_workflow()
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+
+            install_embedded_setup_assets(&repo, SetupTarget::Claude, &selection)
+                .expect("first install should succeed");
+
+            let after_first =
+                fs::read_to_string(claude_dir.join("settings.json")).expect("read merged settings");
+            let merged: serde_json::Value =
+                serde_json::from_str(&after_first).expect("merged settings should be valid JSON");
+
+            assert_eq!(merged["permissions"]["allow"][0], "Bash(git *)");
+            assert_eq!(merged["env"]["FOO"], "bar");
+            let pre_tool_use = merged["hooks"]["PreToolUse"]
+                .as_array()
+                .expect("PreToolUse should be an array");
+            assert!(pre_tool_use
+                .iter()
+                .any(|entry| entry["hooks"][0]["command"] == "echo user-hook"));
+            assert!(pre_tool_use.iter().any(|entry| entry["hooks"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -2457,543 +2587,549 @@ mod tests {
                     .unwrap()
                     .contains("run-sce-or-show-install-guidance.sh"))));
 
-        install_embedded_setup_assets(&repo, SetupTarget::Claude, &selection)
-            .expect("second install should succeed");
+            install_embedded_setup_assets(&repo, SetupTarget::Claude, &selection)
+                .expect("second install should succeed");
 
-        let after_second =
-            fs::read_to_string(claude_dir.join("settings.json")).expect("read re-merged settings");
-        assert_eq!(
-            after_first, after_second,
-            "two consecutive installs should merge to byte-identical output"
-        );
+            let after_second = fs::read_to_string(claude_dir.join("settings.json"))
+                .expect("read re-merged settings");
+            assert_eq!(
+                after_first, after_second,
+                "two consecutive installs should merge to byte-identical output"
+            );
 
-        let _ = fs::remove_dir_all(&repo);
-    }
+            let _ = fs::remove_dir_all(&repo);
+        }
 
-    #[test]
-    fn install_merges_into_existing_opencode_config_json_and_stays_idempotent() {
-        let repo = init_git_repo("install-merges-opencode-config");
-        let opencode_dir = default_paths::InstallTargetPaths::new(&repo).opencode_target_dir();
+        #[test]
+        fn install_merges_into_existing_opencode_config_json_and_stays_idempotent() {
+            let repo = init_git_repo("install-merges-opencode-config");
+            let opencode_dir = default_paths::InstallTargetPaths::new(&repo).opencode_target_dir();
 
-        fs::create_dir_all(&opencode_dir).expect("create opencode dir");
-        fs::write(
-            opencode_dir.join("opencode.json"),
-            serde_json::to_string_pretty(&json!({
-                "model": "anthropic/claude",
-                "mcp": {"my-server": {"command": "my-server"}},
-                "plugin": ["./plugins/my-plugin.ts", "./plugins/sce-old-feature.ts"]
-            }))
-            .expect("serialize seeded opencode config"),
-        )
-        .expect("seed existing opencode.json");
+            fs::create_dir_all(&opencode_dir).expect("create opencode dir");
+            fs::write(
+                opencode_dir.join("opencode.json"),
+                serde_json::to_string_pretty(&json!({
+                    "model": "anthropic/claude",
+                    "mcp": {"my-server": {"command": "my-server"}},
+                    "plugin": ["./plugins/my-plugin.ts", "./plugins/sce-old-feature.ts"]
+                }))
+                .expect("serialize seeded opencode config"),
+            )
+            .expect("seed existing opencode.json");
 
-        let selection: Vec<String> = every_optional_workflow()
-            .into_iter()
-            .map(str::to_string)
-            .collect();
+            let selection: Vec<String> = every_optional_workflow()
+                .into_iter()
+                .map(str::to_string)
+                .collect();
 
-        install_embedded_setup_assets(&repo, SetupTarget::OpenCode, &selection)
-            .expect("first install should succeed");
+            install_embedded_setup_assets(&repo, SetupTarget::OpenCode, &selection)
+                .expect("first install should succeed");
 
-        let after_first = fs::read_to_string(opencode_dir.join("opencode.json"))
-            .expect("read merged opencode config");
-        let merged: serde_json::Value = serde_json::from_str(&after_first)
-            .expect("merged opencode config should be valid JSON");
+            let after_first = fs::read_to_string(opencode_dir.join("opencode.json"))
+                .expect("read merged opencode config");
+            let merged: serde_json::Value = serde_json::from_str(&after_first)
+                .expect("merged opencode config should be valid JSON");
 
-        assert_eq!(merged["model"], "anthropic/claude");
-        assert_eq!(merged["mcp"]["my-server"]["command"], "my-server");
+            assert_eq!(merged["model"], "anthropic/claude");
+            assert_eq!(merged["mcp"]["my-server"]["command"], "my-server");
 
-        let plugin = merged["plugin"]
-            .as_array()
-            .expect("plugin should be an array");
-        assert!(plugin.contains(&json!("./plugins/my-plugin.ts")));
-        assert!(plugin.contains(&json!("./plugins/sce-bash-policy.ts")));
-        assert!(plugin.contains(&json!("./plugins/sce-agent-trace.ts")));
-        assert!(!plugin.contains(&json!("./plugins/sce-old-feature.ts")));
+            let plugin = merged["plugin"]
+                .as_array()
+                .expect("plugin should be an array");
+            assert!(plugin.contains(&json!("./plugins/my-plugin.ts")));
+            assert!(plugin.contains(&json!("./plugins/sce-bash-policy.ts")));
+            assert!(plugin.contains(&json!("./plugins/sce-agent-trace.ts")));
+            assert!(!plugin.contains(&json!("./plugins/sce-old-feature.ts")));
 
-        install_embedded_setup_assets(&repo, SetupTarget::OpenCode, &selection)
-            .expect("second install should succeed");
+            install_embedded_setup_assets(&repo, SetupTarget::OpenCode, &selection)
+                .expect("second install should succeed");
 
-        let after_second = fs::read_to_string(opencode_dir.join("opencode.json"))
-            .expect("read re-merged opencode config");
-        assert_eq!(
-            after_first, after_second,
-            "two consecutive installs should merge to byte-identical output"
-        );
+            let after_second = fs::read_to_string(opencode_dir.join("opencode.json"))
+                .expect("read re-merged opencode config");
+            assert_eq!(
+                after_first, after_second,
+                "two consecutive installs should merge to byte-identical output"
+            );
 
-        let _ = fs::remove_dir_all(&repo);
-    }
+            let _ = fs::remove_dir_all(&repo);
+        }
 
-    #[test]
-    fn reinstall_with_empty_selection_prunes_deselected_workflow_without_touching_sibling_skill() {
-        let repo = init_git_repo("install-prunes-deselected-workflow");
-        let claude_dir = default_paths::InstallTargetPaths::new(&repo).claude_target_dir();
+        #[test]
+        fn reinstall_with_empty_selection_prunes_deselected_workflow_without_touching_sibling_skill(
+        ) {
+            let repo = init_git_repo("install-prunes-deselected-workflow");
+            let claude_dir = default_paths::InstallTargetPaths::new(&repo).claude_target_dir();
 
-        let brownfield_selection = vec!["brownfield".to_string()];
-        install_embedded_setup_assets(&repo, SetupTarget::Claude, &brownfield_selection)
-            .expect("initial install with brownfield selected should succeed");
+            let brownfield_selection = vec!["brownfield".to_string()];
+            install_embedded_setup_assets(&repo, SetupTarget::Claude, &brownfield_selection)
+                .expect("initial install with brownfield selected should succeed");
 
-        let brownfield_command = claude_dir.join("commands/brownfield.md");
-        let brownfield_skill_dir = claude_dir.join("skills/sce-brownfield");
-        assert!(
-            brownfield_command.is_file(),
-            "brownfield command should be installed"
-        );
-        assert!(
-            brownfield_skill_dir.is_dir(),
-            "brownfield skill dir should be installed"
-        );
+            let brownfield_command = claude_dir.join("commands/brownfield.md");
+            let brownfield_skill_dir = claude_dir.join("skills/sce-brownfield");
+            assert!(
+                brownfield_command.is_file(),
+                "brownfield command should be installed"
+            );
+            assert!(
+                brownfield_skill_dir.is_dir(),
+                "brownfield skill dir should be installed"
+            );
 
-        fs::create_dir_all(claude_dir.join("skills/my-skill")).expect("create user skill dir");
-        fs::write(
-            claude_dir.join("skills/my-skill/SKILL.md"),
-            "sibling user skill\n",
-        )
-        .expect("seed sibling user skill file");
+            fs::create_dir_all(claude_dir.join("skills/my-skill")).expect("create user skill dir");
+            fs::write(
+                claude_dir.join("skills/my-skill/SKILL.md"),
+                "sibling user skill\n",
+            )
+            .expect("seed sibling user skill file");
 
-        install_embedded_setup_assets(&repo, SetupTarget::Claude, &[])
-            .expect("reinstall with empty selection should succeed");
+            install_embedded_setup_assets(&repo, SetupTarget::Claude, &[])
+                .expect("reinstall with empty selection should succeed");
 
-        assert!(
-            !brownfield_command.exists(),
-            "deselected workflow command should be pruned"
-        );
-        assert!(
-            !brownfield_skill_dir.exists(),
-            "deselected workflow skill dir should be pruned entirely once empty"
-        );
-        assert_eq!(
-            fs::read_to_string(claude_dir.join("skills/my-skill/SKILL.md"))
-                .expect("read sibling user skill file"),
-            "sibling user skill\n"
-        );
+            assert!(
+                !brownfield_command.exists(),
+                "deselected workflow command should be pruned"
+            );
+            assert!(
+                !brownfield_skill_dir.exists(),
+                "deselected workflow skill dir should be pruned entirely once empty"
+            );
+            assert_eq!(
+                fs::read_to_string(claude_dir.join("skills/my-skill/SKILL.md"))
+                    .expect("read sibling user skill file"),
+                "sibling user skill\n"
+            );
 
-        let _ = fs::remove_dir_all(&repo);
-    }
+            let _ = fs::remove_dir_all(&repo);
+        }
 
-    #[test]
-    fn reinstall_with_empty_selection_keeps_pruned_skill_dir_holding_a_user_file() {
-        let repo = init_git_repo("install-prunes-but-keeps-user-file");
-        let claude_dir = default_paths::InstallTargetPaths::new(&repo).claude_target_dir();
+        #[test]
+        fn reinstall_with_empty_selection_keeps_pruned_skill_dir_holding_a_user_file() {
+            let repo = init_git_repo("install-prunes-but-keeps-user-file");
+            let claude_dir = default_paths::InstallTargetPaths::new(&repo).claude_target_dir();
 
-        let brownfield_selection = vec!["brownfield".to_string()];
-        install_embedded_setup_assets(&repo, SetupTarget::Claude, &brownfield_selection)
-            .expect("initial install with brownfield selected should succeed");
+            let brownfield_selection = vec!["brownfield".to_string()];
+            install_embedded_setup_assets(&repo, SetupTarget::Claude, &brownfield_selection)
+                .expect("initial install with brownfield selected should succeed");
 
-        let brownfield_skill_dir = claude_dir.join("skills/sce-brownfield");
-        fs::write(
-            brownfield_skill_dir.join("MY_OVERRIDE.md"),
-            "user file inside sce skill dir\n",
-        )
-        .expect("seed user file inside sce-owned skill dir");
+            let brownfield_skill_dir = claude_dir.join("skills/sce-brownfield");
+            fs::write(
+                brownfield_skill_dir.join("MY_OVERRIDE.md"),
+                "user file inside sce skill dir\n",
+            )
+            .expect("seed user file inside sce-owned skill dir");
 
-        install_embedded_setup_assets(&repo, SetupTarget::Claude, &[])
-            .expect("reinstall with empty selection should succeed");
+            install_embedded_setup_assets(&repo, SetupTarget::Claude, &[])
+                .expect("reinstall with empty selection should succeed");
 
-        assert!(
-            !brownfield_skill_dir.join("SKILL.md").exists(),
-            "deselected workflow skill file should be pruned"
-        );
-        assert!(
-            brownfield_skill_dir.is_dir(),
-            "sce-owned skill dir should survive because it still holds a user file"
-        );
-        assert_eq!(
-            fs::read_to_string(brownfield_skill_dir.join("MY_OVERRIDE.md"))
-                .expect("read user file inside pruned skill dir"),
-            "user file inside sce skill dir\n"
-        );
+            assert!(
+                !brownfield_skill_dir.join("SKILL.md").exists(),
+                "deselected workflow skill file should be pruned"
+            );
+            assert!(
+                brownfield_skill_dir.is_dir(),
+                "sce-owned skill dir should survive because it still holds a user file"
+            );
+            assert_eq!(
+                fs::read_to_string(brownfield_skill_dir.join("MY_OVERRIDE.md"))
+                    .expect("read user file inside pruned skill dir"),
+                "user file inside sce skill dir\n"
+            );
 
-        let _ = fs::remove_dir_all(&repo);
-    }
+            let _ = fs::remove_dir_all(&repo);
+        }
 
-    #[test]
-    fn install_cleans_up_staging_and_reports_asset_path_on_rename_failure() {
-        let repo = init_git_repo("install-rename-failure");
-        let selection: Vec<String> = every_optional_workflow()
-            .into_iter()
-            .map(str::to_string)
-            .collect();
+        #[test]
+        fn install_cleans_up_staging_and_reports_asset_path_on_rename_failure() {
+            let repo = init_git_repo("install-rename-failure");
+            let selection: Vec<String> = every_optional_workflow()
+                .into_iter()
+                .map(str::to_string)
+                .collect();
 
-        let claude_dir = default_paths::InstallTargetPaths::new(&repo).claude_target_dir();
-        let failing_destination = claude_dir.join("commands/next-task.md");
+            let claude_dir = default_paths::InstallTargetPaths::new(&repo).claude_target_dir();
+            let failing_destination = claude_dir.join("commands/next-task.md");
 
-        fs::create_dir_all(claude_dir.join("commands")).expect("create commands dir");
-        let prior_content = b"prior next-task content\n";
-        fs::write(&failing_destination, prior_content).expect("seed prior next-task content");
+            fs::create_dir_all(claude_dir.join("commands")).expect("create commands dir");
+            let prior_content = b"prior next-task content\n";
+            fs::write(&failing_destination, prior_content).expect("seed prior next-task content");
 
-        let result = install::install_embedded_setup_assets_with_rename(
-            &repo,
-            SetupTarget::Claude,
-            &selection,
-            |from, to| {
-                if to == failing_destination {
+            let result = install::install_embedded_setup_assets_with_rename(
+                &repo,
+                SetupTarget::Claude,
+                &selection,
+                |from, to| {
+                    if to == failing_destination {
+                        Err(std::io::Error::other("simulated rename failure"))
+                    } else {
+                        fs::rename(from, to)
+                    }
+                },
+            );
+
+            let error = result.expect_err("rename failure should surface as an error");
+            let message = format!("{error:#}");
+            assert!(
+                message.contains(&failing_destination.display().to_string()),
+                "error should name the failing asset path: {message}"
+            );
+            assert!(
+                message.contains("does not create backups"),
+                "error should include recovery guidance: {message}"
+            );
+
+            assert_eq!(
+                fs::read(&failing_destination)
+                    .expect("read failing destination after rename failure"),
+                prior_content,
+                "prior content at the failing destination should survive a rename failure"
+            );
+
+            let commands_staging_dir = claude_dir.join("commands");
+            if commands_staging_dir.exists() {
+                let leftover_staging_files = fs::read_dir(&commands_staging_dir)
+                    .expect("read commands staging dir")
+                    .filter_map(Result::ok)
+                    .any(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".sce-setup-staging-")
+                    });
+                assert!(
+                    !leftover_staging_files,
+                    "staging artifact for the failed asset should be cleaned up"
+                );
+            }
+
+            let _ = fs::remove_dir_all(&repo);
+        }
+
+        #[test]
+        fn hook_install_leaves_prior_hook_intact_on_rename_failure() {
+            let repo = init_git_repo("hook-install-rename-failure");
+
+            let initial_outcome = install::install_required_git_hooks(&repo)
+                .expect("initial hook install should succeed");
+            let pre_commit_result = initial_outcome
+                .hook_results
+                .iter()
+                .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
+                .expect("pre-commit hook should be installed");
+            let pre_commit_path = pre_commit_result.hook_path.clone();
+
+            let prior_hook_bytes = b"#!/bin/sh\necho prior pre-commit\n".to_vec();
+            fs::write(&pre_commit_path, &prior_hook_bytes).expect("seed prior pre-commit hook");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&pre_commit_path, fs::Permissions::from_mode(0o755))
+                    .expect("mark prior pre-commit hook executable");
+            }
+            let prior_mode = fs::metadata(&pre_commit_path)
+                .expect("stat prior pre-commit hook")
+                .permissions();
+
+            let result = install::install_required_git_hooks_with_rename(&repo, |from, to| {
+                if to == pre_commit_path {
                     Err(std::io::Error::other("simulated rename failure"))
                 } else {
                     fs::rename(from, to)
                 }
-            },
-        );
+            });
 
-        let error = result.expect_err("rename failure should surface as an error");
-        let message = format!("{error:#}");
-        assert!(
-            message.contains(&failing_destination.display().to_string()),
-            "error should name the failing asset path: {message}"
-        );
-        assert!(
-            message.contains("does not create backups"),
-            "error should include recovery guidance: {message}"
-        );
+            let error = result.expect_err("rename failure should surface as an error");
+            let message = format!("{error:#}");
+            assert!(
+                message.contains(&pre_commit_path.display().to_string()),
+                "error should name the failing hook path: {message}"
+            );
 
-        assert_eq!(
-            fs::read(&failing_destination).expect("read failing destination after rename failure"),
-            prior_content,
-            "prior content at the failing destination should survive a rename failure"
-        );
+            assert_eq!(
+                fs::read(&pre_commit_path).expect("read pre-commit hook after rename failure"),
+                prior_hook_bytes,
+                "prior hook content should survive a rename failure"
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode_after = fs::metadata(&pre_commit_path)
+                    .expect("stat pre-commit hook after rename failure")
+                    .permissions();
+                assert_eq!(
+                    mode_after.mode() & 0o777,
+                    prior_mode.mode() & 0o777,
+                    "prior hook executable mode should survive a rename failure"
+                );
+            }
 
-        let commands_staging_dir = claude_dir.join("commands");
-        if commands_staging_dir.exists() {
-            let leftover_staging_files = fs::read_dir(&commands_staging_dir)
-                .expect("read commands staging dir")
+            let hooks_staging_dir = pre_commit_path
+                .parent()
+                .expect("pre-commit hook should have a parent directory");
+            let leftover_staging_files = fs::read_dir(hooks_staging_dir)
+                .expect("read hooks staging dir")
                 .filter_map(Result::ok)
                 .any(|entry| {
                     entry
                         .file_name()
                         .to_string_lossy()
-                        .starts_with(".sce-setup-staging-")
+                        .starts_with(".sce-hook-staging-")
                 });
             assert!(
                 !leftover_staging_files,
-                "staging artifact for the failed asset should be cleaned up"
+                "staging artifact for the failed hook should be cleaned up"
             );
+
+            let _ = fs::remove_dir_all(&repo);
         }
 
-        let _ = fs::remove_dir_all(&repo);
-    }
+        #[test]
+        fn foreign_pre_commit_hook_keeps_its_content_and_gains_the_sce_block() {
+            let repo = init_git_repo("hook-install-foreign-append");
 
-    #[test]
-    fn hook_install_leaves_prior_hook_intact_on_rename_failure() {
-        let repo = init_git_repo("hook-install-rename-failure");
+            let initial_outcome = install::install_required_git_hooks(&repo)
+                .expect("initial hook install should succeed");
+            let pre_commit_path = initial_outcome
+                .hook_results
+                .iter()
+                .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
+                .expect("pre-commit hook should be installed")
+                .hook_path
+                .clone();
 
-        let initial_outcome = install::install_required_git_hooks(&repo)
-            .expect("initial hook install should succeed");
-        let pre_commit_result = initial_outcome
-            .hook_results
-            .iter()
-            .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
-            .expect("pre-commit hook should be installed");
-        let pre_commit_path = pre_commit_result.hook_path.clone();
-
-        let prior_hook_bytes = b"#!/bin/sh\necho prior pre-commit\n".to_vec();
-        fs::write(&pre_commit_path, &prior_hook_bytes).expect("seed prior pre-commit hook");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&pre_commit_path, fs::Permissions::from_mode(0o755))
-                .expect("mark prior pre-commit hook executable");
-        }
-        let prior_mode = fs::metadata(&pre_commit_path)
-            .expect("stat prior pre-commit hook")
-            .permissions();
-
-        let result = install::install_required_git_hooks_with_rename(&repo, |from, to| {
-            if to == pre_commit_path {
-                Err(std::io::Error::other("simulated rename failure"))
-            } else {
-                fs::rename(from, to)
+            let foreign_bytes = b"#!/bin/sh\necho husky-style-guard\n".to_vec();
+            fs::write(&pre_commit_path, &foreign_bytes).expect("seed foreign pre-commit hook");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&pre_commit_path, fs::Permissions::from_mode(0o755))
+                    .expect("mark foreign pre-commit hook executable");
             }
-        });
 
-        let error = result.expect_err("rename failure should surface as an error");
-        let message = format!("{error:#}");
-        assert!(
-            message.contains(&pre_commit_path.display().to_string()),
-            "error should name the failing hook path: {message}"
-        );
+            let outcome = install::install_required_git_hooks(&repo)
+                .expect("hook install over a foreign hook should succeed");
+            let result = outcome
+                .hook_results
+                .iter()
+                .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
+                .expect("pre-commit hook result should be present");
 
-        assert_eq!(
-            fs::read(&pre_commit_path).expect("read pre-commit hook after rename failure"),
-            prior_hook_bytes,
-            "prior hook content should survive a rename failure"
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode_after = fs::metadata(&pre_commit_path)
-                .expect("stat pre-commit hook after rename failure")
-                .permissions();
-            assert_eq!(
-                mode_after.mode() & 0o777,
-                prior_mode.mode() & 0o777,
-                "prior hook executable mode should survive a rename failure"
+            assert_eq!(result.status, RequiredHookInstallStatus::Updated);
+            assert!(!result.unreachable_block_advisory);
+
+            let installed_bytes =
+                fs::read(&pre_commit_path).expect("read installed pre-commit hook");
+            assert!(
+                installed_bytes.starts_with(&foreign_bytes),
+                "foreign hook content should survive as an exact prefix"
             );
+            let installed_text = String::from_utf8(installed_bytes).expect("hook should be utf8");
+            assert!(installed_text.contains(hook_merge::MANAGED_BLOCK_START));
+            assert!(installed_text.contains(hook_merge::MANAGED_BLOCK_END));
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = fs::metadata(&pre_commit_path)
+                    .expect("stat installed pre-commit hook")
+                    .permissions()
+                    .mode();
+                assert_ne!(mode & 0o111, 0, "installed hook should remain executable");
+            }
+
+            let _ = fs::remove_dir_all(&repo);
         }
 
-        let hooks_staging_dir = pre_commit_path
-            .parent()
-            .expect("pre-commit hook should have a parent directory");
-        let leftover_staging_files = fs::read_dir(hooks_staging_dir)
-            .expect("read hooks staging dir")
-            .filter_map(Result::ok)
-            .any(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(".sce-hook-staging-")
-            });
-        assert!(
-            !leftover_staging_files,
-            "staging artifact for the failed hook should be cleaned up"
-        );
+        #[test]
+        fn rerunning_hook_install_is_idempotent_for_block_only_and_foreign_plus_block_shapes() {
+            let repo = init_git_repo("hook-install-idempotent");
 
-        let _ = fs::remove_dir_all(&repo);
-    }
+            let first_outcome = install::install_required_git_hooks(&repo)
+                .expect("first hook install should succeed");
+            let pre_commit_result = first_outcome
+                .hook_results
+                .iter()
+                .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
+                .expect("pre-commit hook should be installed");
+            assert_eq!(
+                pre_commit_result.status,
+                RequiredHookInstallStatus::Installed
+            );
 
-    #[test]
-    fn foreign_pre_commit_hook_keeps_its_content_and_gains_the_sce_block() {
-        let repo = init_git_repo("hook-install-foreign-append");
+            let second_outcome = install::install_required_git_hooks(&repo)
+                .expect("second hook install should succeed");
+            let second_pre_commit = second_outcome
+                .hook_results
+                .iter()
+                .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
+                .expect("pre-commit hook result should be present");
+            assert_eq!(second_pre_commit.status, RequiredHookInstallStatus::Skipped);
+            assert_eq!(
+                fs::read(&second_pre_commit.hook_path).expect("read block-only pre-commit hook"),
+                fs::read(&pre_commit_result.hook_path).expect("read initial pre-commit hook"),
+                "block-only hook bytes should be unchanged across reruns"
+            );
 
-        let initial_outcome = install::install_required_git_hooks(&repo)
-            .expect("initial hook install should succeed");
-        let pre_commit_path = initial_outcome
-            .hook_results
-            .iter()
-            .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
-            .expect("pre-commit hook should be installed")
-            .hook_path
-            .clone();
+            let commit_msg_result = first_outcome
+                .hook_results
+                .iter()
+                .find(|result| result.hook_name == default_paths::hook_dir::COMMIT_MSG)
+                .expect("commit-msg hook should be installed");
+            let commit_msg_path = commit_msg_result.hook_path.clone();
+            let foreign_prefix = b"#!/bin/sh\necho foreign-commit-msg-guard\n".to_vec();
+            fs::write(&commit_msg_path, &foreign_prefix).expect("seed foreign commit-msg hook");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&commit_msg_path, fs::Permissions::from_mode(0o755))
+                    .expect("mark foreign commit-msg hook executable");
+            }
 
-        let foreign_bytes = b"#!/bin/sh\necho husky-style-guard\n".to_vec();
-        fs::write(&pre_commit_path, &foreign_bytes).expect("seed foreign pre-commit hook");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&pre_commit_path, fs::Permissions::from_mode(0o755))
-                .expect("mark foreign pre-commit hook executable");
+            let appended_outcome = install::install_required_git_hooks(&repo)
+                .expect("hook install appending to foreign commit-msg hook should succeed");
+            let appended_result = appended_outcome
+                .hook_results
+                .iter()
+                .find(|result| result.hook_name == default_paths::hook_dir::COMMIT_MSG)
+                .expect("commit-msg hook result should be present");
+            assert_eq!(appended_result.status, RequiredHookInstallStatus::Updated);
+            let appended_bytes = fs::read(&commit_msg_path).expect("read appended commit-msg hook");
+
+            let rerun_outcome = install::install_required_git_hooks(&repo)
+                .expect("rerunning hook install over foreign-plus-block hook should succeed");
+            let rerun_result = rerun_outcome
+                .hook_results
+                .iter()
+                .find(|result| result.hook_name == default_paths::hook_dir::COMMIT_MSG)
+                .expect("commit-msg hook result should be present");
+            assert_eq!(rerun_result.status, RequiredHookInstallStatus::Skipped);
+            assert_eq!(
+                fs::read(&commit_msg_path).expect("read commit-msg hook after rerun"),
+                appended_bytes,
+                "foreign-plus-block hook bytes should be unchanged across reruns"
+            );
+
+            let _ = fs::remove_dir_all(&repo);
         }
 
-        let outcome = install::install_required_git_hooks(&repo)
-            .expect("hook install over a foreign hook should succeed");
-        let result = outcome
-            .hook_results
-            .iter()
-            .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
-            .expect("pre-commit hook result should be present");
+        #[test]
+        fn legacy_pre_marker_hook_upgrades_to_the_managed_block_form() {
+            let repo = init_git_repo("hook-install-legacy-upgrade");
 
-        assert_eq!(result.status, RequiredHookInstallStatus::Updated);
-        assert!(!result.unreachable_block_advisory);
+            let initial_outcome = install::install_required_git_hooks(&repo)
+                .expect("initial hook install should succeed");
+            let pre_commit_path = initial_outcome
+                .hook_results
+                .iter()
+                .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
+                .expect("pre-commit hook should be installed")
+                .hook_path
+                .clone();
+            let canonical_bytes =
+                fs::read(&pre_commit_path).expect("read canonical pre-commit hook");
 
-        let installed_bytes = fs::read(&pre_commit_path).expect("read installed pre-commit hook");
-        assert!(
-            installed_bytes.starts_with(&foreign_bytes),
-            "foreign hook content should survive as an exact prefix"
-        );
-        let installed_text = String::from_utf8(installed_bytes).expect("hook should be utf8");
-        assert!(installed_text.contains(hook_merge::MANAGED_BLOCK_START));
-        assert!(installed_text.contains(hook_merge::MANAGED_BLOCK_END));
+            let legacy_bytes = b"#!/bin/sh\nset -eu\nif ! command -v sce >/dev/null 2>&1; then\n  echo 'Install: https://sce.crocoder.dev/docs/getting-started#install-cli'\n  exit 0\nfi\nexec sce hooks pre-commit \"$@\"\n".to_vec();
+            fs::write(&pre_commit_path, &legacy_bytes).expect("seed legacy pre-commit hook");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&pre_commit_path, fs::Permissions::from_mode(0o755))
+                    .expect("mark legacy pre-commit hook executable");
+            }
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(&pre_commit_path)
-                .expect("stat installed pre-commit hook")
-                .permissions()
-                .mode();
-            assert_ne!(mode & 0o111, 0, "installed hook should remain executable");
+            let outcome = install::install_required_git_hooks(&repo)
+                .expect("hook install upgrading a legacy hook should succeed");
+            let result = outcome
+                .hook_results
+                .iter()
+                .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
+                .expect("pre-commit hook result should be present");
+
+            assert_eq!(result.status, RequiredHookInstallStatus::Updated);
+            assert_eq!(
+                fs::read(&pre_commit_path).expect("read upgraded pre-commit hook"),
+                canonical_bytes,
+                "a legacy pre-marker hook should upgrade to the canonical marker form"
+            );
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = fs::metadata(&pre_commit_path)
+                    .expect("stat upgraded pre-commit hook")
+                    .permissions()
+                    .mode();
+                assert_ne!(mode & 0o111, 0, "upgraded hook should remain executable");
+            }
+
+            let _ = fs::remove_dir_all(&repo);
         }
 
-        let _ = fs::remove_dir_all(&repo);
-    }
+        #[test]
+        fn foreign_hook_ending_in_exec_installs_the_block_and_reports_the_advisory() {
+            let repo = init_git_repo("hook-install-unreachable-advisory");
 
-    #[test]
-    fn rerunning_hook_install_is_idempotent_for_block_only_and_foreign_plus_block_shapes() {
-        let repo = init_git_repo("hook-install-idempotent");
+            let initial_outcome = install::install_required_git_hooks(&repo)
+                .expect("initial hook install should succeed");
+            let pre_commit_path = initial_outcome
+                .hook_results
+                .iter()
+                .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
+                .expect("pre-commit hook should be installed")
+                .hook_path
+                .clone();
+            let commit_msg_path = initial_outcome
+                .hook_results
+                .iter()
+                .find(|result| result.hook_name == default_paths::hook_dir::COMMIT_MSG)
+                .expect("commit-msg hook should be installed")
+                .hook_path
+                .clone();
 
-        let first_outcome =
-            install::install_required_git_hooks(&repo).expect("first hook install should succeed");
-        let pre_commit_result = first_outcome
-            .hook_results
-            .iter()
-            .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
-            .expect("pre-commit hook should be installed");
-        assert_eq!(
-            pre_commit_result.status,
-            RequiredHookInstallStatus::Installed
-        );
+            let unreachable_foreign = b"#!/bin/sh\nexec some-other-tool \"$@\"\n".to_vec();
+            fs::write(&pre_commit_path, &unreachable_foreign)
+                .expect("seed unreachable foreign hook");
+            let ordinary_foreign = b"#!/bin/sh\necho foreign-commit-msg-guard\n".to_vec();
+            fs::write(&commit_msg_path, &ordinary_foreign).expect("seed ordinary foreign hook");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&pre_commit_path, fs::Permissions::from_mode(0o755))
+                    .expect("mark unreachable foreign hook executable");
+                fs::set_permissions(&commit_msg_path, fs::Permissions::from_mode(0o755))
+                    .expect("mark ordinary foreign hook executable");
+            }
 
-        let second_outcome =
-            install::install_required_git_hooks(&repo).expect("second hook install should succeed");
-        let second_pre_commit = second_outcome
-            .hook_results
-            .iter()
-            .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
-            .expect("pre-commit hook result should be present");
-        assert_eq!(second_pre_commit.status, RequiredHookInstallStatus::Skipped);
-        assert_eq!(
-            fs::read(&second_pre_commit.hook_path).expect("read block-only pre-commit hook"),
-            fs::read(&pre_commit_result.hook_path).expect("read initial pre-commit hook"),
-            "block-only hook bytes should be unchanged across reruns"
-        );
+            let outcome = install::install_required_git_hooks(&repo)
+                .expect("hook install over foreign hooks should succeed");
 
-        let commit_msg_result = first_outcome
-            .hook_results
-            .iter()
-            .find(|result| result.hook_name == default_paths::hook_dir::COMMIT_MSG)
-            .expect("commit-msg hook should be installed");
-        let commit_msg_path = commit_msg_result.hook_path.clone();
-        let foreign_prefix = b"#!/bin/sh\necho foreign-commit-msg-guard\n".to_vec();
-        fs::write(&commit_msg_path, &foreign_prefix).expect("seed foreign commit-msg hook");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&commit_msg_path, fs::Permissions::from_mode(0o755))
-                .expect("mark foreign commit-msg hook executable");
+            let pre_commit_result = outcome
+                .hook_results
+                .iter()
+                .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
+                .expect("pre-commit hook result should be present");
+            assert_eq!(pre_commit_result.status, RequiredHookInstallStatus::Updated);
+            assert!(
+                pre_commit_result.unreachable_block_advisory,
+                "a hook ending in a zero-indent exec should report the advisory"
+            );
+            assert!(
+                fs::read(&pre_commit_path)
+                    .expect("read pre-commit hook")
+                    .starts_with(&unreachable_foreign),
+                "the block should still be installed even though it is unreachable"
+            );
+
+            let commit_msg_result = outcome
+                .hook_results
+                .iter()
+                .find(|result| result.hook_name == default_paths::hook_dir::COMMIT_MSG)
+                .expect("commit-msg hook result should be present");
+            assert!(
+                !commit_msg_result.unreachable_block_advisory,
+                "a hook ending in an ordinary command should not report the advisory"
+            );
+
+            let _ = fs::remove_dir_all(&repo);
         }
-
-        let appended_outcome = install::install_required_git_hooks(&repo)
-            .expect("hook install appending to foreign commit-msg hook should succeed");
-        let appended_result = appended_outcome
-            .hook_results
-            .iter()
-            .find(|result| result.hook_name == default_paths::hook_dir::COMMIT_MSG)
-            .expect("commit-msg hook result should be present");
-        assert_eq!(appended_result.status, RequiredHookInstallStatus::Updated);
-        let appended_bytes = fs::read(&commit_msg_path).expect("read appended commit-msg hook");
-
-        let rerun_outcome = install::install_required_git_hooks(&repo)
-            .expect("rerunning hook install over foreign-plus-block hook should succeed");
-        let rerun_result = rerun_outcome
-            .hook_results
-            .iter()
-            .find(|result| result.hook_name == default_paths::hook_dir::COMMIT_MSG)
-            .expect("commit-msg hook result should be present");
-        assert_eq!(rerun_result.status, RequiredHookInstallStatus::Skipped);
-        assert_eq!(
-            fs::read(&commit_msg_path).expect("read commit-msg hook after rerun"),
-            appended_bytes,
-            "foreign-plus-block hook bytes should be unchanged across reruns"
-        );
-
-        let _ = fs::remove_dir_all(&repo);
-    }
-
-    #[test]
-    fn legacy_pre_marker_hook_upgrades_to_the_managed_block_form() {
-        let repo = init_git_repo("hook-install-legacy-upgrade");
-
-        let initial_outcome = install::install_required_git_hooks(&repo)
-            .expect("initial hook install should succeed");
-        let pre_commit_path = initial_outcome
-            .hook_results
-            .iter()
-            .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
-            .expect("pre-commit hook should be installed")
-            .hook_path
-            .clone();
-        let canonical_bytes = fs::read(&pre_commit_path).expect("read canonical pre-commit hook");
-
-        let legacy_bytes = b"#!/bin/sh\nset -eu\nif ! command -v sce >/dev/null 2>&1; then\n  echo 'Install: https://sce.crocoder.dev/docs/getting-started#install-cli'\n  exit 0\nfi\nexec sce hooks pre-commit \"$@\"\n".to_vec();
-        fs::write(&pre_commit_path, &legacy_bytes).expect("seed legacy pre-commit hook");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&pre_commit_path, fs::Permissions::from_mode(0o755))
-                .expect("mark legacy pre-commit hook executable");
-        }
-
-        let outcome = install::install_required_git_hooks(&repo)
-            .expect("hook install upgrading a legacy hook should succeed");
-        let result = outcome
-            .hook_results
-            .iter()
-            .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
-            .expect("pre-commit hook result should be present");
-
-        assert_eq!(result.status, RequiredHookInstallStatus::Updated);
-        assert_eq!(
-            fs::read(&pre_commit_path).expect("read upgraded pre-commit hook"),
-            canonical_bytes,
-            "a legacy pre-marker hook should upgrade to the canonical marker form"
-        );
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(&pre_commit_path)
-                .expect("stat upgraded pre-commit hook")
-                .permissions()
-                .mode();
-            assert_ne!(mode & 0o111, 0, "upgraded hook should remain executable");
-        }
-
-        let _ = fs::remove_dir_all(&repo);
-    }
-
-    #[test]
-    fn foreign_hook_ending_in_exec_installs_the_block_and_reports_the_advisory() {
-        let repo = init_git_repo("hook-install-unreachable-advisory");
-
-        let initial_outcome = install::install_required_git_hooks(&repo)
-            .expect("initial hook install should succeed");
-        let pre_commit_path = initial_outcome
-            .hook_results
-            .iter()
-            .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
-            .expect("pre-commit hook should be installed")
-            .hook_path
-            .clone();
-        let commit_msg_path = initial_outcome
-            .hook_results
-            .iter()
-            .find(|result| result.hook_name == default_paths::hook_dir::COMMIT_MSG)
-            .expect("commit-msg hook should be installed")
-            .hook_path
-            .clone();
-
-        let unreachable_foreign = b"#!/bin/sh\nexec some-other-tool \"$@\"\n".to_vec();
-        fs::write(&pre_commit_path, &unreachable_foreign).expect("seed unreachable foreign hook");
-        let ordinary_foreign = b"#!/bin/sh\necho foreign-commit-msg-guard\n".to_vec();
-        fs::write(&commit_msg_path, &ordinary_foreign).expect("seed ordinary foreign hook");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&pre_commit_path, fs::Permissions::from_mode(0o755))
-                .expect("mark unreachable foreign hook executable");
-            fs::set_permissions(&commit_msg_path, fs::Permissions::from_mode(0o755))
-                .expect("mark ordinary foreign hook executable");
-        }
-
-        let outcome = install::install_required_git_hooks(&repo)
-            .expect("hook install over foreign hooks should succeed");
-
-        let pre_commit_result = outcome
-            .hook_results
-            .iter()
-            .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
-            .expect("pre-commit hook result should be present");
-        assert_eq!(pre_commit_result.status, RequiredHookInstallStatus::Updated);
-        assert!(
-            pre_commit_result.unreachable_block_advisory,
-            "a hook ending in a zero-indent exec should report the advisory"
-        );
-        assert!(
-            fs::read(&pre_commit_path)
-                .expect("read pre-commit hook")
-                .starts_with(&unreachable_foreign),
-            "the block should still be installed even though it is unreachable"
-        );
-
-        let commit_msg_result = outcome
-            .hook_results
-            .iter()
-            .find(|result| result.hook_name == default_paths::hook_dir::COMMIT_MSG)
-            .expect("commit-msg hook result should be present");
-        assert!(
-            !commit_msg_result.unreachable_block_advisory,
-            "a hook ending in an ordinary command should not report the advisory"
-        );
-
-        let _ = fs::remove_dir_all(&repo);
     }
 }

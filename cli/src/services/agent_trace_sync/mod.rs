@@ -125,6 +125,17 @@ impl StreamSyncError {
             Self::Read(_) | Self::InvalidResponse(_) | Self::DidNotConverge => false,
         }
     }
+
+    /// True only when the underlying `ControlPlaneError` (from a `Refresh`
+    /// or `Terminal` failure) means local credential storage is unavailable.
+    /// `Read`, `InvalidResponse`, and `DidNotConverge` never carry a
+    /// `ControlPlaneError` and are never storage failures.
+    pub fn is_storage_failure(&self) -> bool {
+        match self {
+            Self::Refresh(error) | Self::Terminal(error) => error.is_storage_failure(),
+            Self::Read(_) | Self::InvalidResponse(_) | Self::DidNotConverge => false,
+        }
+    }
 }
 
 /// Outcome of a fully converged [`sync_stream`] run for one stream.

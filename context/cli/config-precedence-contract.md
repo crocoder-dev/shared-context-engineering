@@ -37,7 +37,7 @@ Resolved observability values that currently have no CLI flag layer follow the s
 2. config file values (`log_format`, `log_to_file`, `log_dir`)
 3. defaults (`log_format=text`, `log_to_file=true`; `log_dir=<state_root>/sce/logs` through `default_paths::observability_log_dir()`, resolving on Linux to `$XDG_STATE_HOME/sce/logs` or `~/.local/state/sce/logs` when `XDG_STATE_HOME` is unset)
 
-`log_to_file` is config-file/default only; unlike `log_dir`, it has no environment variable or CLI flag. Omitting either property does not produce a cross-property validation error: `log_to_file` defaults to `true`, and omitted `log_dir` resolves to the default location. An explicit empty config value for `log_dir` is rejected by the generated schema.
+`log_to_file` is config-file/default only; unlike `log_dir`, it has no environment variable or CLI flag. Omitting either property does not produce a cross-property validation error: `log_to_file` defaults to `true`, and omitted `log_dir` resolves to the default location. At runtime, enabled file logging suppresses normal logger records on `stderr`; disabled file logging routes only error-level logger records to `stderr`. An explicit empty config value for `log_dir` is rejected by the generated schema.
 
 `log_file_retention_limit` intentionally has no environment or CLI-flag layer:
 
