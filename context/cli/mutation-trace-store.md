@@ -73,6 +73,23 @@ cold path: it reconstructs one historical `MutationEvent`, including full
 called from `load_worktree` or from any hook-boundary path, so a
 projection load never pays for the full historical event set.
 
+`MutationTraceStore::load_scope(scope_id) -> Result<Option<ScopeState>>` is the
+public single-scope read seam: one `mutation_trace_scopes` row by primary key,
+returning the durable `status` / `actor_kind` / `worktree_id`, or `None` when no
+row exists. It is a cold path and deliberately the narrowest scope read there
+is — it consults neither `mutation_trace_events`,
+`mutation_trace_processed_events`, nor the scope's `mutation_trace_worktrees`
+row, and it must not widen into a projection; `load_worktree` remains the
+projection seam for any caller that needs worktree state alongside a scope.
+
+Unlike `load_worktree`, it **never adjudicates worktree identity**: a scope whose
+stored `worktree_id` differs from the caller's own worktree is returned as-is
+rather than rejected. The same row is a legitimate read from its owning worktree
+and a cross-worktree reference from any other, so the comparison — and the
+decision of what a mismatch means — belongs to the caller. `load_worktree`'s
+stricter contract is unchanged: an effective referenced scope on another
+worktree is still an `Err` there.
+
 ## Durable tree-root reads (ref reconciliation)
 
 `load_tree_roots(worktree)` and `load_all_tree_roots()` are two further
