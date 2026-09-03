@@ -40,7 +40,7 @@ sync is best-effort). The marker is never removed via `Drop`; only an explicit
 `clear()` removes it. It is never authoritative for normal cursor state.
 
 Every method — `new`/`exists`/`persist`/`clear` — is now reached by the
-`coordinate()` fence (below), so the module carries no `allow(dead_code)`.
+`ProtectedWorktree` prefix (below), so the module carries no `allow(dead_code)`.
 
 Inline `#[cfg(test)] mod tests` follows the unique-`std::env::temp_dir()`-path
 precedent (see [`../patterns.md`](../patterns.md)): marker path is worktree
@@ -59,18 +59,21 @@ coordinate(repository_root, boundary, open_db)
   open_db: impl FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>
 ```
 
-Order inside the held `WorktreeLock`:
+The fence's arming and clearing is owned by the shared `ProtectedWorktree`
+prefix ([`mutation-trace-protected-worktree.md`](mutation-trace-protected-worktree.md)),
+not by `coordinate()` directly, so every runtime entrypoint built on that prefix
+inherits the same fence semantics. Order inside the held `WorktreeLock`:
 
 ```text
-resolve git_dir → acquire WorktreeLock
-  → ExternalTaintMarker::new(git_dir)
-  → inherited_external_taint = marker.exists()?
-  → marker.persist()?                         ← fence armed here, write-ahead
-  → get_or_create_checkout_id → WorktreeId
+resolve git_dir → acquire WorktreeLock            ┐
+  → ExternalTaintMarker::new(git_dir)             │
+  → inherited_external_taint = marker.exists()?   │ ProtectedWorktree::acquire
+  → marker.persist()?      ← fence armed here     │
+  → get_or_create_checkout_id → WorktreeId        ┘
   → open_db()                                 ← DB acquired INSIDE the fence
   → GitSnapshotService::new
   → coordinate_boundary(&db, .., inherited_external_taint)
-  → marker.clear()?                           ← only on a successful outcome
+  → ProtectedWorktree::complete()             ← clears; only on a successful outcome
 ```
 
 **Safety invariant:** no failure after the marker is armed — including a
@@ -80,11 +83,12 @@ Arming *before* `open_db()` is the whole point: if the DB open fails, the marker
 is already on disk, so a later invocation that opens the DB successfully still
 sees the inherited signal instead of trusting a lost interval.
 
-The marker is cleared only by `coordinate()`'s success path (`marker.clear()`
-after an `Ok` outcome). Every error path — snapshot failure, DB provider `Err`,
-checkout-identity failure, DB read/write failure, CAS exhaustion, scope-identity
-conflict, unexpected error — returns with the marker present. No `Drop` clears
-it.
+The marker is cleared only by `coordinate()`'s success path, through
+`ProtectedWorktree::complete()` after an `Ok` outcome. Every error path —
+snapshot failure, DB provider `Err`, checkout-identity failure, DB read/write
+failure, CAS exhaustion, scope-identity conflict, unexpected error — returns
+with the marker present, because the guard's `Drop` releases the worktree lock
+but never clears the marker.
 
 ### `CoordinateError` variants
 
@@ -181,5 +185,7 @@ and a later invocation still recovers off the still-armed marker.
 ```
 
 See also: [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md),
+[`mutation-trace-protected-worktree.md`](mutation-trace-protected-worktree.md)
+(the shared prefix that owns arming and clearing this fence),
 [`mutation-trace-protocol.md`](mutation-trace-protocol.md),
 [`checkout-identity.md`](checkout-identity.md).

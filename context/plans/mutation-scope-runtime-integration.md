@@ -101,12 +101,22 @@ performs final validation.
   `Active` on the same worktree leaves B `Active` through the subsequent
   `needs_rebaseline` recovery.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::tests::` — the surviving-scope test asserts B's status after the next `coordinate()` call.
-- [ ] AC13: `runtime/mod.rs` re-exports `coordinate`, `CoordinateError`,
-  `CoordinateOutcome`, `RuntimeBoundary`, `abandon_scope`, `AbandonScopeError`,
-  and `AbandonScopeOutcome` (with its reason type) at `pub(crate)`, and exports
-  nothing from `git_snapshot`, `external_taint`, `worktree_lock`,
-  `ref_reconciliation`, or the protected-worktree primitive.
-  - Validate: inspect `cli/src/services/mutation_trace/runtime/mod.rs` for exactly those re-exports, and `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` stays clean.
+- [ ] AC13: `runtime/mod.rs` re-exports, at `pub(crate)`, exactly `coordinate`,
+  `CoordinateError`, `CoordinateOutcome`, `ExternalTaintOperation`,
+  `RuntimeBoundary`, `abandon_scope`, `AbandonScopeError`, and
+  `AbandonScopeOutcome` (with its reason type). `ExternalTaintOperation` is part
+  of `CoordinateError::ExternalTaintMarker`'s own public shape — a crate-visible
+  `CoordinateError` a caller cannot match on is not a usable seam — so it must
+  cross the boundary alongside it. Since T01 it lives in `protected_worktree.rs`
+  and reaches the seam through `coordinator.rs`'s existing
+  `pub use super::protected_worktree::ExternalTaintOperation`, so the type
+  becomes crate-visible **without** `protected_worktree` becoming a public
+  module. Every `mod` declaration in `runtime/mod.rs` stays private, and nothing
+  else is re-exported from `git_snapshot`, `external_taint`, `worktree_lock`,
+  `ref_reconciliation`, or `protected_worktree` — in particular
+  `ProtectedWorktree`, `ProtectedWorktreeError`, and `WORKTREE_LOCK_TIMEOUT`
+  remain internal to `runtime`.
+  - Validate: inspect `cli/src/services/mutation_trace/runtime/mod.rs` for exactly those re-exports and confirm every `mod` declaration there is still private (`rg -n '^\s*(pub(\(crate\))?\s+)?mod |pub\(crate\) use' cli/src/services/mutation_trace/runtime/mod.rs`), and `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` stays clean.
 - [ ] AC14: `spec/mutation_cursor.qnt`, the Quint refinement matrix in
   `cli/src/services/mutation_trace/mod.rs`, `protocol.rs`'s transition semantics,
   `004_mutation_trace_protocol.sql`, and the migration set carry no change
@@ -306,19 +316,61 @@ which is precisely why there is nothing left for this one to decide.
   (`InheritedExternalTaint`, `MissingScope`, `NeverSeenScope`,
   `MissingWorktreeState`) carried in the outcome, so callers and tests can match
   on them.
-- `abandon_scope()` reuses `coordinator.rs`'s `WORKTREE_LOCK_TIMEOUT` rather than
-  declaring its own, matching the reconciliation pass's precedent of an
-  operation-appropriate timeout only where the operation genuinely differs.
+- `abandon_scope()` goes through the same protected-worktree acquisition path as
+  `coordinate()` and therefore uses the `WORKTREE_LOCK_TIMEOUT` owned by
+  `runtime/protected_worktree.rs` (T01 moved the constant there with the prefix);
+  it must not declare a second mutation-scope lock timeout. `ref_reconciliation`
+  keeps its separately owned `RECONCILIATION_LOCK_TIMEOUT` — that remains
+  intentional, matching by value but not by ownership, since a reconciliation
+  pass is an operation that genuinely differs.
 
 ## Task stack
 
-- [ ] T01: `Extract the protected-worktree runtime guard` (status:todo)
+- [x] T01: `Extract the protected-worktree runtime guard` (status:done)
   - Task ID: T01
   - Scope: In — new `cli/src/services/mutation_trace/runtime/protected_worktree.rs` owning git-dir resolution, `WorktreeLock` acquisition, external-marker inspect + persist, checkout identity, `WorktreeId` derivation, and an explicit `complete`/`clear` step; refactor `coordinator.rs`'s `coordinate_inner` / `coordinate_protected` prefix onto it; keep the `on_lock_contention` test seam working. Out — any new entrypoint, any store change, any behavior change to the pipeline below the prefix, any `runtime/mod.rs` export change.
   - Dependencies: none
   - Done when: the guard exposes the derived `WorktreeId`, whether a marker was already present before this invocation, and an explicit completion that clears the marker; it never clears the marker in `Drop`; it holds the `WorktreeLock` for its own lifetime; `coordinate()` produces identical outcomes and identical `CoordinateError` variants on every existing path, with the existing coordinator fence/lock tests passing without assertion changes; focused tests cover the guard itself for lock-timeout failure, an inherited marker being reported, a fresh marker being armed, and the marker surviving a dropped guard that was never completed.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::`; `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`; `git diff` on `coordinator.rs` shows no reordering of lock → marker → checkout → DB.
-  - Context synchronization: pending
+  - Completed: 2026-09-03
+  - Files changed:
+    - `cli/src/services/mutation_trace/runtime/protected_worktree.rs` (new)
+    - `cli/src/services/mutation_trace/runtime/mod.rs`
+    - `cli/src/services/mutation_trace/runtime/coordinator.rs`
+    - `cli/src/services/mutation_trace/runtime/ref_reconciliation.rs`
+  - Result: `protected_worktree.rs` now owns the safety prefix as `ProtectedWorktree`,
+    running resolve `git_dir` → `WorktreeLock` → marker inspect → marker persist →
+    checkout identity → `WorktreeId` in the coordinator's existing order. It exposes
+    `worktree_id()`, `inherited_external_taint()`, and a consuming `complete()` that
+    clears the marker while the lock is still held; `Drop` releases only the lock and
+    never clears the marker. `acquire` uses the relocated `WORKTREE_LOCK_TIMEOUT`
+    (10s, value unchanged), `pub(super) acquire_inner` carries the `on_lock_contention`
+    seam, and a private `acquire_with_timeout` serves the guard's own timeout test.
+    `coordinate_inner` now acquires the guard and maps `ProtectedWorktreeError` onto
+    the pre-existing `CoordinateError` variants (git-dir resolution and checkout
+    identity → `Other`, lock → `LockAcquisition`, fence → `ExternalTaintMarker` with
+    the same operation); `coordinate_protected` lost its `git_dir` parameter and takes
+    the guard's `&WorktreeId`. `ExternalTaintOperation` moved to `protected_worktree.rs`
+    and is `pub use`-re-exported from `coordinator.rs`, so `CoordinateError`'s shape is
+    unchanged. No coordinator test assertion was modified — only test-module imports
+    were added. Per an explicit user instruction during implementation, every comment
+    this task wrote or touched was then removed from the code, including
+    `ref_reconciliation.rs`'s pre-existing `RECONCILIATION_LOCK_TIMEOUT` doc comment
+    (which had named `WORKTREE_LOCK_TIMEOUT`'s old home); the rationale it carried is
+    preserved in `context/cli/mutation-trace-ref-reconciliation.md`.
+  - Verify results:
+    - `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::` — passed: 96 passed, 0 failed (91 pre-existing plus the 5 new guard tests).
+    - `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` — passed, clean.
+    - `git diff` on `coordinator.rs` — confirmed: the prefix steps moved verbatim, lock → marker inspect → marker persist → checkout identity → `open_db` order intact, no reordering.
+    - Also run: `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` — passed after formatting the new file.
+  - Context impact: local to `cli/src/services/mutation_trace/runtime/`. No public
+    interface, schema, migration, spec, or protocol change; `coordinate()`'s signature,
+    outcomes, and error variants are unchanged. Durable context affected:
+    `context/cli/mutation-trace-runtime-coordinator.md` (the prefix is now the
+    `ProtectedWorktree` primitive rather than inline coordinator code) and
+    `context/cli/mutation-trace-external-taint.md` (the fence's arm/clear ownership
+    moved to that guard, whose `Drop` never clears).
+  - Context synchronization: synced
 
 - [ ] T02: `Expose a bounded scope read on MutationTraceStore` (status:todo)
   - Task ID: T02
@@ -346,9 +398,9 @@ which is precisely why there is nothing left for this one to decide.
 
 - [ ] T05: `Export the runtime seam and record the adapter contract` (status:todo)
   - Task ID: T05
-  - Scope: In — `pub(crate) use` re-exports in `runtime/mod.rs` for `coordinate`, `CoordinateError`, `CoordinateOutcome`, `RuntimeBoundary`, `abandon_scope`, `AbandonScopeError`, `AbandonScopeOutcome` and its reason type; keeping `git_snapshot`, `external_taint`, `worktree_lock`, `ref_reconciliation`, and `protected_worktree` unexported; new `context/cli/mutation-scope-runtime.md` plus its `context/context-map.md` and `context/overview.md` index entries. Out — any harness, hook, or command wiring; any change to the runtime implementation; the per-task context updates T01–T04 each own for their own domain files.
+  - Scope: In — `pub(crate) use` re-exports in `runtime/mod.rs` for `coordinate`, `CoordinateError`, `CoordinateOutcome`, `ExternalTaintOperation`, `RuntimeBoundary`, `abandon_scope`, `AbandonScopeError`, `AbandonScopeOutcome` and its reason type — conceptually `pub(crate) use coordinator::{coordinate, CoordinateError, CoordinateOutcome, ExternalTaintOperation, RuntimeBoundary};` plus the `scope_runtime` names, `ExternalTaintOperation` riding through `coordinator`'s own `pub use` of it because `CoordinateError::ExternalTaintMarker` carries it; keeping the `git_snapshot`, `external_taint`, `worktree_lock`, `ref_reconciliation`, and `protected_worktree` **modules** private and re-exporting nothing else from any of them (`ProtectedWorktree`, `ProtectedWorktreeError`, and `WORKTREE_LOCK_TIMEOUT` stay internal); new `context/cli/mutation-scope-runtime.md` plus its `context/context-map.md` and `context/overview.md` index entries. Out — any harness, hook, or command wiring; any change to the runtime implementation, including moving `ExternalTaintOperation` or `WORKTREE_LOCK_TIMEOUT` back out of `protected_worktree.rs`; the per-task context updates T01–T04 each own for their own domain files.
   - Dependencies: T04
-  - Done when: the seven names above are reachable as `crate::services::mutation_trace::runtime::*` and nothing from the five private modules is; `clippy --all-targets -- -D warnings` is clean with no placeholder consumer added to satisfy it; `context/cli/mutation-scope-runtime.md` states the scope-identity rule, the `Start`/`Advance`/`Close` semantics, the positive-evidence requirement for `abandon_scope()` and the prohibition on inferring staleness from `ActorKind`, the successor-scope sequence and what each outcome implies for it (including that a failed abandonment must not be treated as a safely started successor), that abandonment is not a `RuntimeBoundary` and requires no Quint change, the D1 strong-recovery tradeoff for a missing or `NeverSeen` target, and the `AiExclusive` attribution boundary; `context-map.md` and `overview.md` name the new module and file.
+  - Done when: the eight names above are reachable as `crate::services::mutation_trace::runtime::*`, including `ExternalTaintOperation` so a crate-level caller can match `CoordinateError::ExternalTaintMarker`; the five modules remain private and nothing else from them is reachable; `clippy --all-targets -- -D warnings` is clean with no placeholder consumer added to satisfy it; `context/cli/mutation-scope-runtime.md` states the scope-identity rule, the `Start`/`Advance`/`Close` semantics, the positive-evidence requirement for `abandon_scope()` and the prohibition on inferring staleness from `ActorKind`, the successor-scope sequence and what each outcome implies for it (including that a failed abandonment must not be treated as a safely started successor), that abandonment is not a `RuntimeBoundary` and requires no Quint change, the D1 strong-recovery tradeoff for a missing or `NeverSeen` target, and the `AiExclusive` attribution boundary; `context-map.md` and `overview.md` name the new module and file.
   - Verify: `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`; `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml`; read `context/cli/mutation-scope-runtime.md` against the shipped `scope_runtime.rs` signatures.
   - Context synchronization: pending
 
