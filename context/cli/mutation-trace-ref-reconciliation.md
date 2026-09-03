@@ -163,8 +163,10 @@ repository-wide read — no repository-global lock is needed.
 Reconciliation holds the **same** `<git-dir>/sce/mutation-cursor.lock`
 `WorktreeLock` that `coordinate()` holds across `pin → CAS → return`, acquired
 via `worktree_lock::acquire_inner` and bounded by the module-owned
-`RECONCILIATION_LOCK_TIMEOUT` (`Duration::from_secs(10)`, matching the
-coordinator's private `WORKTREE_LOCK_TIMEOUT` by intent, not a shared constant).
+`RECONCILIATION_LOCK_TIMEOUT` (`Duration::from_secs(10)`, matching
+`runtime::protected_worktree`'s private `WORKTREE_LOCK_TIMEOUT` by intent, not a
+shared constant — there is no semantic reason the two must stay identical, so
+each module owns its own).
 Mutual exclusion on that one file makes the pin → DB-CAS race structurally
 impossible: the reconciler's inventory → diff → delete runs wholly before
 `coordinate()` takes the lock (nothing pinned yet) or wholly after it releases
