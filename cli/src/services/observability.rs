@@ -306,7 +306,7 @@ fn cli_error_fields(error: &CliError) -> Vec<(&'static str, String)> {
 }
 
 fn should_emit_to_stderr(level: LogLevel, log_to_file: bool) -> bool {
-    level != LogLevel::Error || !log_to_file
+    level == LogLevel::Error && !log_to_file
 }
 
 fn validate_log_dir(value: &str) -> Result<()> {
@@ -752,10 +752,17 @@ mod tests {
     }
 
     #[test]
-    fn non_error_records_remain_on_stderr_when_file_logging_is_enabled() {
-        assert!(should_emit_to_stderr(LogLevel::Warn, true));
-        assert!(should_emit_to_stderr(LogLevel::Info, true));
-        assert!(should_emit_to_stderr(LogLevel::Debug, true));
+    fn non_error_records_do_not_route_to_stderr_when_file_logging_is_enabled() {
+        assert!(!should_emit_to_stderr(LogLevel::Warn, true));
+        assert!(!should_emit_to_stderr(LogLevel::Info, true));
+        assert!(!should_emit_to_stderr(LogLevel::Debug, true));
+    }
+
+    #[test]
+    fn non_error_records_do_not_route_to_stderr_when_file_logging_is_disabled() {
+        assert!(!should_emit_to_stderr(LogLevel::Warn, false));
+        assert!(!should_emit_to_stderr(LogLevel::Info, false));
+        assert!(!should_emit_to_stderr(LogLevel::Debug, false));
     }
 
     #[test]
