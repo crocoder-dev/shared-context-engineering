@@ -187,4 +187,6 @@ and a later invocation still recovers off the still-armed marker.
 See also: [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md),
 [`mutation-trace-protected-worktree.md`](mutation-trace-protected-worktree.md)
 (the shared prefix that owns arming and clearing this fence),
+[`mutation-trace-scope-abandonment.md`](mutation-trace-scope-abandonment.md)
+(the second runtime entrypoint behind that prefix),
 [`mutation-trace-protocol.md`](mutation-trace-protocol.md).

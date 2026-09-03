@@ -10,11 +10,10 @@ Git worktree, built by the `mutation-cursor-runtime-coordinator` plan
 (`pub(crate) mod runtime;` in `mutation_trace/mod.rs`), registered under the
 same `#[allow(dead_code)]` precedent as the rest of `mutation_trace`.
 Every submodule — `coordinator`, `protected_worktree`, `ref_reconciliation`,
-and the rest — is declared privately in `runtime/mod.rs`, so `coordinate()` and
-`reconcile_worktree` are reachable only from within `runtime` itself (its own
-tests) for now; a `pub(crate)` re-export is deferred until a harness adapter
-needs it. Nothing under `runtime/` is wired into any hook, command, or
-`diff_traces` insertion yet.
+and the rest — is declared privately in `runtime/mod.rs`, so `coordinate()`, `abandon_scope()`, and `reconcile_worktree` are reachable
+only from within `runtime` itself (its own tests) for now; a `pub(crate)`
+re-export is deferred until a harness adapter needs it. Nothing under
+`runtime/` is wired into any hook, command, or `diff_traces` insertion yet.
 
 `runtime` depends on `protocol`/`store`/`types` only, and has no dependency
 on any checkout-identity service — that service was removed from SCE
@@ -120,6 +119,13 @@ exercising the public API end to end. Only harness/command wiring remains.
   resolve `git_dir` → `WorktreeLock` → external-taint fence → Git-derived
   `WorktreeId`, plus an explicit `complete()` as the only thing that clears the
   marker). Full contract in [`mutation-trace-protected-worktree.md`](mutation-trace-protected-worktree.md).
+- `cli/src/services/mutation_trace/runtime/scope_runtime.rs` — the second
+  protected entrypoint, `abandon_scope(repository_root, scope, open_db)`, which
+  retires an unobserved scope without capturing or pinning a Git snapshot. It
+  classifies durable scope state before applying `protocol::abandon`, retries
+  CAS conflicts from fresh state, and clears the shared fence only after a
+  settled outcome. Full contract in
+  [`mutation-trace-scope-abandonment.md`](mutation-trace-scope-abandonment.md).
 - `cli/src/services/mutation_trace/runtime/coordinator.rs` — the composition
   point that drives `protocol.rs`/`store.rs`/`git_snapshot.rs` together. Its
   `SnapshotCapture` trait (`capture(&self) -> Result<TreeId>`, `pin(&self,
@@ -186,11 +192,11 @@ exercising the public API end to end. Only harness/command wiring remains.
   `Conflict`, reporting `persisted_taint: false` only once every bounded
   attempt has been exhausted.
 
-The runtime lock guards the coordinator's own critical section (external-taint
-marker arming/clearing, snapshot capture, worktree/scope materialization,
-recovery, and the CAS retry loop): `coordinate()` acquires it before arming the
-marker and resolving `WorktreeId`, and holds it until the call returns, on
-every `coordinate()` call. The separate `ref_reconciliation::reconcile_worktree`
+The runtime lock guards every runtime entrypoint's critical section
+(external-taint marker arming/clearing, snapshot capture where applicable,
+worktree/scope materialization, recovery, and the CAS retry loop):
+`coordinate()` and `abandon_scope()` acquire it before their protected work and
+hold it until the call returns. The separate `ref_reconciliation::reconcile_worktree`
 pass acquires this same lock before inventorying pins, reading durable roots,
 or deleting refs, with its own bounded timeout. `<git-dir>/sce/mutation-cursor.lock`
 remains worktree-specific because `git_dir` itself is worktree-specific for linked
@@ -225,6 +231,10 @@ inline-unit-test precedent already used in
 `ProtectedWorktree`'s inline tests use RAII `tempfile::TempDir` fixtures over
 real `git init` repositories; coverage in
 [`mutation-trace-protected-worktree.md`](mutation-trace-protected-worktree.md#testing-boundary).
+
+`scope_runtime`'s inline tests use the same RAII fixtures and a real temporary
+Agent Trace DB; coverage in
+[`mutation-trace-scope-abandonment.md`](mutation-trace-scope-abandonment.md#testing-boundary).
 
 `GitSnapshotService`'s inline `#[cfg(test)] mod tests` in `git_snapshot.rs`
 uses the same precedent, extended to real per-test `git init` repositories:
@@ -305,16 +315,19 @@ snapshot service (including Git-topology-derived `WorktreeId` resolution),
 protocol-integration pipeline, and public `coordinate()` entrypoint (prefix →
 DB provider → pipeline → `complete()` on success) are implemented, with
 `runtime/tests.rs` covering the public API end to end. An inherited marker is
-now overlaid onto `database_failure` recovery on the next invocation. A
-`pub(crate)` re-export of `coordinate()` beyond `runtime`, the
-`abandon_scope()` entrypoint that will share the prefix, and harness/command
-wiring remain future work tracked by the
-`mutation-cursor-external-taint`, `mutation-cursor-runtime-coordinator`, and
-`mutation-scope-runtime-integration` plans.
+now overlaid onto `database_failure` recovery on the next invocation. The
+`abandon_scope()` entrypoint also shares the prefix and has focused unit
+coverage; a `pub(crate)` re-export of either entrypoint beyond `runtime`, real
+cross-runtime integration regressions, and harness/command wiring remain
+future work tracked by the `mutation-cursor-external-taint`,
+`mutation-cursor-runtime-coordinator`, and `mutation-scope-runtime-integration`
+plans.
 
 See also: [`mutation-trace-protocol.md`](mutation-trace-protocol.md),
 [`mutation-trace-store.md`](mutation-trace-store.md),
 [`mutation-trace-external-taint.md`](mutation-trace-external-taint.md)
 (the `<git-dir>/sce/mutation-cursor-tainted` write-ahead fence),
 [`mutation-trace-protected-worktree.md`](mutation-trace-protected-worktree.md)
-(the shared prefix that arms it), [`checkout-identity.md`](checkout-identity.md).
+(the shared prefix that arms it),
+[`mutation-trace-scope-abandonment.md`](mutation-trace-scope-abandonment.md),
+[`checkout-identity.md`](checkout-identity.md).

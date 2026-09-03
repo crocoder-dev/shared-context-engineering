@@ -8,16 +8,20 @@ safety-critical, and one owner is the mechanism that keeps it single-sourced.
 
 Extracted by the `mutation-scope-runtime-integration` plan
 (`context/plans/mutation-scope-runtime-integration.md`) ahead of the
-`abandon_scope()` entrypoint that will share it.
+`abandon_scope()` entrypoint
+([`mutation-trace-scope-abandonment.md`](mutation-trace-scope-abandonment.md)),
+which now shares it: `coordinate()` observes a boundary and snapshots, while
+`abandon_scope()` observes nothing and snapshots nothing, and this prefix is the
+only piece they hold in common.
 
 ## The fixed order
 
 ```mermaid
 flowchart TD
-    A["resolve git_dir<br/>(checkout::resolve_git_dir)"] --> B["acquire WorktreeLock<br/>(bounded WORKTREE_LOCK_TIMEOUT, 10s)"]
+    A["resolve git_dir<br/>(runtime::git_snapshot::resolve_git_dir)"] --> B["acquire WorktreeLock<br/>(bounded WORKTREE_LOCK_TIMEOUT, 10s)"]
     B --> C["ExternalTaintMarker::exists()<br/>→ inherited_external_taint"]
     C --> D["ExternalTaintMarker::persist()<br/><b>fence armed, write-ahead</b>"]
-    D --> E["get_or_create_checkout_id<br/>→ WorktreeId"]
+    D --> E["resolve_worktree_id from Git topology<br/>→ WorktreeId"]
     E --> F["caller's runtime operation<br/>(DB provider, snapshot, protocol, CAS)"]
     F --> G["complete() clears the marker<br/>(lock still held)"]
 ```
@@ -34,8 +38,8 @@ marker primitive itself and the recovery it triggers.
 `ProtectedWorktree::acquire(repository_root) -> Result<ProtectedWorktree,
 ProtectedWorktreeError>` runs the whole prefix. The guard then exposes:
 
-- `worktree_id() -> &WorktreeId` — the durable identity derived from this
-  checkout. No caller ever supplies a `WorktreeId`; it is always derived here.
+- `worktree_id() -> &WorktreeId` — the durable identity derived from Git's topology for this
+  worktree. No caller ever supplies a `WorktreeId`; it is always derived here.
 - `inherited_external_taint() -> bool` — whether a marker was already present
   on entry, i.e. whether some earlier invocation never proved a trustworthy
   durable completion.
@@ -62,11 +66,12 @@ map it onto its own error surface without losing which safety step failed:
 | `GitDirResolution(anyhow::Error)` | before the lock | untouched |
 | `LockAcquisition(WorktreeLockError)` | lock acquire/timeout | untouched |
 | `ExternalTaintMarker { operation: Inspect \| Persist, source }` | fence inspect/arm | left as it was |
-| `CheckoutIdentity(anyhow::Error)` | after the fence is armed | **armed** |
+| `CheckoutIdentity(anyhow::Error)` | Git-derived worktree identity resolution, after the fence is armed | **armed** |
 
 `ExternalTaintOperation` lives here, beside the fence step that produces it, and
 is re-exported by `coordinator.rs` so `CoordinateError::ExternalTaintMarker`
-keeps naming it. `coordinate()` maps `GitDirResolution` and `CheckoutIdentity`
+keeps naming it; `AbandonScopeError::ExternalTaintMarker` carries the same type.
+`coordinate()` maps `GitDirResolution` and `CheckoutIdentity`
 onto `CoordinateError::Other`, `LockAcquisition` onto
 `CoordinateError::LockAcquisition`, and the fence variant onto
 `CoordinateError::ExternalTaintMarker` with the same `operation` — the exact
@@ -89,5 +94,6 @@ pass unchanged through the guard, which is what proves `coordinate()`'s
 externally observable ordering and error semantics survived the extraction.
 
 See also: [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md),
+[`mutation-trace-scope-abandonment.md`](mutation-trace-scope-abandonment.md),
 [`mutation-trace-external-taint.md`](mutation-trace-external-taint.md),
-[`checkout-identity.md`](checkout-identity.md).
+[`checkout-identity.md`](checkout-identity.md) (historical removal and identity boundary).
