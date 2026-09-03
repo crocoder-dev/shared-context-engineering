@@ -1,0 +1,10 @@
+Index: src/widget.ts
+===================================================================
+--- src/widget.ts
++++ src/widget.ts
+@@ -2,1 +2,5 @@
+ line two
++alpha added
++beta added
++gamma added
++delta added
