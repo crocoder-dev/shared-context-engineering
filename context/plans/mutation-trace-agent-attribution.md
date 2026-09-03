@@ -100,13 +100,18 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Freeze pure attribution semantics` (status:todo)
+- [x] T01: `Freeze pure attribution semantics` (status:done)
   - Task ID: T01
   - Scope: In — add the pure resolver and strict mutation-line matcher. Inputs are target-shaped direct coverage, unresolved committed lines, and newest-first already-reconstructed `MutationPatchEvidence`; outputs are mutation-derived AI coverage, resolved/non-AI lines, and still-unresolved lines. Resolve exact matches before unique historical fallback and process safe matches newest-first. Out — Agent Trace JSON/goldens, DB pagination, Git reconstruction, worktree identity, hook composition, and persistence.
   - Dependencies: none
   - Done when: table-driven tests prove direct lines are never mutation-consulted; healthy untainted exclusive matches add AI coverage; every other safe match resolves non-AI and blocks older events; exact matching and unique fallback work one-to-one; duplicate mutation candidates, duplicate unresolved targets, and ambiguous logical-file matches remain unresolved; output sets are deterministic.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_attribution`.
-  - Context synchronization: pending
+  - Completed: 2026-09-03
+  - Files changed: `cli/src/services/mutation_trace/attribution.rs`, `cli/src/services/mutation_trace/mod.rs`
+  - Result: Added the pure `MutationPatchEvidence`/`MutationAttributionResult` domain types, newest-first resolver, and strict mutation matcher. Direct coverage is excluded before mutation matching; exact identity wins over unique kind/content fallback; exact and normalized-suffix file pairing is conservative; healthy untainted `AiExclusive` matches produce mutation AI coverage, while all other safe matches resolve as non-AI and prevent older evidence from reclaiming lines. Added focused table-driven regressions for direct precedence, newest blocking, fallback ordering, ambiguity, and unhealthy/tainted states.
+  - Verify (actual): `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_attribution` — 6 attribution tests passed, 0 failed. Additional `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` and `nix flake check` runs passed.
+  - Context impact: Domain. Adds a pure mutation-attribution module and public resolver/matcher types for later pagination, history-consumer, and Agent Trace composition tasks; no persistence, protocol, schema, or repository-wide context change in this task.
+  - Context synchronization: synced
 
 - [ ] T02: `Add descending mutation-event pagination` (status:todo)
   - Task ID: T02
