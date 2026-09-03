@@ -145,6 +145,7 @@
 //! unchanged).
 
 pub mod attribution;
+pub mod lineage;
 pub mod protocol;
 pub(crate) mod runtime;
 pub mod store;
