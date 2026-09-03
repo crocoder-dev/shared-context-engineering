@@ -108,18 +108,23 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_attribution`.
   - Completed: 2026-09-03
   - Files changed: `cli/src/services/mutation_trace/attribution.rs`, `cli/src/services/mutation_trace/mod.rs`
-  - Result: Added the pure `MutationPatchEvidence`/`MutationAttributionResult` domain types, newest-first resolver, and strict mutation matcher. Direct coverage is excluded before mutation matching; exact identity wins over unique kind/content fallback; exact and normalized-suffix file pairing is conservative; healthy untainted `AiExclusive` matches produce mutation AI coverage, while all other safe matches resolve as non-AI and prevent older evidence from reclaiming lines. Added focused table-driven regressions for direct precedence, newest blocking, fallback ordering, ambiguity, and unhealthy/tainted states.
-  - Verify (actual): `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_attribution` — 6 attribution tests passed, 0 failed. Additional `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` and `nix flake check` runs passed.
+  - Result: Added the pure `MutationPatchEvidence`/`MutationAttributionResult` domain types, newest-first resolver, and strict mutation matcher. Direct coverage is excluded before mutation matching; exact identity wins over unique kind/content fallback; exact and normalized-suffix file pairing is conservative; healthy untainted `AiExclusive` matches produce mutation AI coverage, while all other safe matches resolve as non-AI and prevent older evidence from reclaiming lines. Added focused table-driven regressions for direct precedence, newest blocking, fallback ordering, ambiguity, and unhealthy/tainted states, plus a regression proving an unrelated newer event does not block an older matching healthy untainted `AiExclusive` event (newest *matching* event wins, not newest event regardless of what it touched).
+  - Verify (actual): `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_attribution` — 7 pure attribution tests passed, 0 failed (plus the 2 nested `store::tests::mutation_attribution` pagination tests the filter also matches). Additional `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` and `nix flake check` runs passed.
   - Context impact: Domain. Adds a pure mutation-attribution module and public resolver/matcher types for later pagination, history-consumer, and Agent Trace composition tasks; no persistence, protocol, schema, or repository-wide context change in this task.
   - Context synchronization: synced
 
-- [ ] T02: `Add descending mutation-event pagination` (status:todo)
+- [x] T02: `Add descending mutation-event pagination` (status:done)
   - Task ID: T02
   - Scope: In — add a cold-path `MutationTraceStore` page reader filtered by exact `worktree_id`, ordered by fixed-width big-endian `revision DESC`, using an exclusive revision cursor and a requested limit capped at `MUTATION_ATTRIBUTION_PAGE_SIZE = 32`; return only revision, before/after trees, taint/failure, attribution kind, and the attribution scope needed to decode `AiExclusive`. Out — active scopes, processed events, boundary projection, Git reconstruction, the caller-owned 128-event cap, and post-commit wiring.
   - Dependencies: T01
   - Done when: one call returns at most 32 rows; pagination has no duplicates or omissions; another worktree cannot contribute; revisions `u64::MAX`, `256`, `255`, and `1` sort correctly; the exclusive cursor continues from the last returned revision; no timestamp field or predicate participates.
-  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace::store::mutation_attribution`.
-  - Context synchronization: pending
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace::store::tests::mutation_attribution`.
+  - Completed: 2026-09-03
+  - Files changed: `cli/src/services/mutation_trace/store.rs`
+  - Result: Added a read-only `MutationTraceStore::load_mutation_event_page` cold reader with exact worktree filtering, descending fixed-width revision ordering, an exclusive revision cursor, and a 32-row cap. The page projection decodes only revision, tree transition, health, attribution kind, and the optional exclusive scope, while validating attribution shape; focused regressions cover u64 boundary ordering, linked-worktree isolation, cap behavior, and cursor continuation. The focused pagination regressions live in the nested `store::tests::mutation_attribution` module, leaving the existing `store::tests` suite in place.
+  - Verify (actual): `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace::store::tests::mutation_attribution` — 2 focused pagination tests passed, 0 failed. `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` also passed.
+  - Context impact: Interface. Adds the cold paged mutation-event read API and its fixed-width descending revision cursor contract for the bounded history consumer; durable store context synchronization is recorded below.
+  - Context synchronization: synced
 
 - [ ] T03: `Build bounded mutation-history consumer` (status:todo)
   - Task ID: T03
