@@ -10,8 +10,9 @@ use serde::Serialize;
 use serde_json::{json, to_string as serialize_to_json, Value};
 
 use crate::services::agent_trace::{
-    agent_trace_persisted_url, build_agent_trace, patch_has_touched_lines, patches_have_overlap,
-    validate_agent_trace_value, AgentTrace, AgentTraceMetadataInput, AgentTraceVcsType,
+    agent_trace_persisted_url, build_agent_trace_from_evidence, patch_has_touched_lines,
+    patches_have_overlap, validate_agent_trace_value, AgentTrace, AgentTraceEvidence,
+    AgentTraceMetadataInput, AgentTraceVcsType,
 };
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::agent_trace_db::{
@@ -1580,10 +1581,26 @@ fn run_post_commit_agent_trace_flow(
         "Failed to open Agent Trace DB for post-commit trace.",
     )?;
 
+    // Direct evidence is resolved first with the existing intersection, then the
+    // committed lines it does not cover are offered to bounded mutation history
+    // (read-only, current-worktree-only, direct-only fallback on absent identity).
+    let direct_intersection = intersect_patches_fn(
+        &flow_result.combined_recent_patch,
+        &flow_result.post_commit_data.parsed_patch,
+    );
+    let mutation_ai_patch =
+        crate::services::mutation_trace::runtime::resolve_post_commit_mutation_ai_patch(
+            repository_root,
+            &db,
+            &direct_intersection,
+            &flow_result.post_commit_data.parsed_patch,
+        );
+
     run_post_commit_agent_trace_flow_with(
         flow_result,
         vcs_type,
         remote_url,
+        &mutation_ai_patch,
         |trace_value| {
             validate_agent_trace_value(trace_value)
                 .map_err(|error| anyhow!(error.to_string()))
@@ -1604,6 +1621,7 @@ fn run_post_commit_agent_trace_flow_with<V, I>(
     flow_result: &PostCommitIntersectionFlowResult,
     vcs_type: Option<AgentTraceVcsType>,
     remote_url: &str,
+    mutation_ai_patch: &ParsedPatch,
     validate_agent_trace: V,
     persist_agent_trace: I,
 ) -> Result<AgentTrace>
@@ -1621,8 +1639,11 @@ where
             })?
             .to_rfc3339();
 
-    let agent_trace = build_agent_trace(
-        &flow_result.combined_recent_patch,
+    let agent_trace = build_agent_trace_from_evidence(
+        AgentTraceEvidence {
+            direct_patch: &flow_result.combined_recent_patch,
+            mutation_ai_patch,
+        },
         &flow_result.post_commit_data.parsed_patch,
         AgentTraceMetadataInput {
             commit_timestamp: &commit_timestamp,
@@ -3567,6 +3588,7 @@ mod tests {
                     flow_result,
                     vcs_type,
                     remote_url,
+                    &ParsedPatch { files: Vec::new() },
                     |_| {
                         *validation_called.borrow_mut() = true;
                         Err(anyhow!("Agent Trace validation failed"))
@@ -3591,6 +3613,133 @@ mod tests {
         assert!(!error.to_string().is_empty());
         assert!(!*config_called.borrow());
         assert!(!*launch_called.borrow());
+    }
+
+    fn post_commit_flow_result_for(
+        direct: ParsedPatch,
+        committed: ParsedPatch,
+    ) -> PostCommitIntersectionFlowResult {
+        PostCommitIntersectionFlowResult {
+            combined_recent_patch: direct,
+            post_commit_data: PostCommitPatchData {
+                commit_oid: String::from("abc123"),
+                commit_time_ms: 1_800_000_000_000,
+                parsed_patch: committed,
+            },
+            tool_name: Some(String::from("claude")),
+            tool_version: Some(String::from("9.9.9")),
+        }
+    }
+
+    fn persisted_post_commit_trace(
+        flow_result: &PostCommitIntersectionFlowResult,
+        mutation_ai_patch: &ParsedPatch,
+    ) -> Value {
+        let persisted = RefCell::new(None);
+
+        run_post_commit_agent_trace_flow_with(
+            flow_result,
+            Some(AgentTraceVcsType::Git),
+            "",
+            mutation_ai_patch,
+            |_| Ok(()),
+            |insert| {
+                *persisted.borrow_mut() = Some(insert.trace_json.to_string());
+                Ok(())
+            },
+        )
+        .expect("post-commit Agent Trace flow should build and persist");
+
+        serde_json::from_str(
+            persisted
+                .into_inner()
+                .expect("trace should have been persisted")
+                .as_str(),
+        )
+        .expect("persisted trace JSON should parse")
+    }
+
+    #[test]
+    fn post_commit_agent_trace_flow_attributes_mutation_only_lines_as_ai_without_provenance() {
+        let flow_result = post_commit_flow_result_for(
+            ParsedPatch { files: Vec::new() },
+            valid_patch("src/lib.rs", "mutated line"),
+        );
+        let mutation_ai_patch = valid_patch("src/lib.rs", "mutated line");
+
+        let trace = persisted_post_commit_trace(&flow_result, &mutation_ai_patch);
+
+        assert_eq!(
+            trace["metadata"]["sce"]["line_changes"]["ai"]["added"],
+            json!(1)
+        );
+        assert_eq!(
+            trace["metadata"]["sce"]["line_changes"]["unknown"]["added"],
+            json!(0)
+        );
+        assert!(
+            trace.get("tool").is_none(),
+            "mutation-only coverage fabricates no tool provenance"
+        );
+        let contributor = &trace["files"][0]["conversations"][0]["contributor"];
+        assert_eq!(contributor["type"], json!("ai"));
+        assert!(
+            contributor.get("model_id").is_none(),
+            "mutation-only coverage carries no model provenance"
+        );
+        assert!(
+            trace["files"][0]["conversations"][0]
+                .get("related")
+                .is_none(),
+            "mutation-only coverage carries no session provenance"
+        );
+    }
+
+    #[test]
+    fn post_commit_agent_trace_flow_keeps_direct_provenance_when_direct_covers_the_line() {
+        let flow_result = post_commit_flow_result_for(
+            valid_patch("src/lib.rs", "shared line"),
+            valid_patch("src/lib.rs", "shared line"),
+        );
+
+        let trace = persisted_post_commit_trace(&flow_result, &ParsedPatch { files: Vec::new() });
+
+        assert_eq!(
+            trace["metadata"]["sce"]["line_changes"]["ai"]["added"],
+            json!(1)
+        );
+        assert_eq!(
+            trace["tool"],
+            json!({ "name": "claude", "version": "9.9.9" })
+        );
+        assert_eq!(
+            trace["files"][0]["conversations"][0]["contributor"]["type"],
+            json!("ai")
+        );
+    }
+
+    #[test]
+    fn post_commit_agent_trace_flow_with_empty_mutation_patch_leaves_uncovered_lines_unknown() {
+        let flow_result = post_commit_flow_result_for(
+            ParsedPatch { files: Vec::new() },
+            valid_patch("src/lib.rs", "human line"),
+        );
+
+        let trace = persisted_post_commit_trace(&flow_result, &ParsedPatch { files: Vec::new() });
+
+        assert_eq!(
+            trace["metadata"]["sce"]["line_changes"]["unknown"]["added"],
+            json!(1)
+        );
+        assert_eq!(
+            trace["metadata"]["sce"]["line_changes"]["ai"]["added"],
+            json!(0)
+        );
+        assert!(trace.get("tool").is_none());
+        assert_eq!(
+            trace["files"][0]["conversations"][0]["contributor"]["type"],
+            json!("unknown")
+        );
     }
 
     #[test]
