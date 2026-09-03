@@ -1,126 +1,128 @@
 # Mutation-trace Agent Trace attribution
 
-The pure attribution seam in `cli/src/services/mutation_trace/attribution.rs`
-adds mutation history as a conservative secondary source for committed touched
-lines. It does not read Git, SQLite, the filesystem, or mutation state. A caller
-supplies target-shaped direct coverage, the committed lines still unresolved,
-and already-reconstructed mutation evidence in newest-first order.
+Mutation history is a conservative secondary source for committed touched lines
+that direct `diff_traces` evidence does not cover. Direct evidence is always
+resolved first and is never revoked or replaced by mutation evidence.
 
-## Resolution contract
+Attribution is **causal**, not textual. The retained mutation history is treated
+as one ordered sequence of tree transitions and provenance is propagated forward
+through it. Historical mutation events are never searched independently for text
+matching the committed patch. Once a later transition removes a line an event
+introduced, that event's provenance is dead and no older event can resurrect it.
 
-- Directly covered lines are removed before mutation matching. Mutation history
-  cannot revoke or replace direct evidence.
-- Each mutation event is considered in caller-supplied newest-first order. The
-  first safe event matching a line resolves it; a later event cannot reclaim
-  that line.
-- An event contributes mutation-derived AI coverage only when it is untainted,
-  has `FailureKind::Healthy`, and carries `Attribution::AiExclusive(_)`.
-  Contended, unscoped, unhealthy, and tainted matches resolve as non-AI.
-- Mutation AI, resolved non-AI, and still-unresolved results retain the
-  committed target patch's file/hunk shape and deterministic target ordering.
-  Mutation-derived results do not acquire direct model, session, tool, or
-  tool-version provenance.
+## Ordered lineage
 
-## Safe matching
+`cli/src/services/mutation_trace/lineage.rs` is a pure module (no Git, SQLite,
+filesystem, or mutation state). It tracks, per repo path, a vector of
+`(content, LineProvenance)` lines and advances it one transition at a time.
 
-A `MutationPatchEvidence` patch is matched to unresolved target lines using a
-separate strict matcher; the existing permissive direct `intersect_patches`
-operation is unchanged.
+`LineProvenance` is `Unknown`, `MutationAi { scope_id }`, or `MutationNonAi`.
+A `TransitionOrigin` is:
 
-1. A file's logical path is `new_path` when it is non-empty, otherwise
-   `old_path`.
-2. Exact logical-path pairing is attempted first. Normalized suffix pairing is
-   allowed only when exactly one mutation file and one unresolved target file
-   can be paired.
-3. Within a safely paired file, equal `(kind, line_number, content)` keys are
-   matched first, one-to-one.
-4. Remaining lines may use the historical `(kind, content)` fallback only when
-   that key occurs exactly once in each side.
-5. Repeated candidates and ambiguous file or line matches are left unresolved;
-   attribution prefers false negatives to guessed ownership.
+- `MutationAi(scope)` — a recorded event that is untainted, `FailureKind::Healthy`,
+  and `Attribution::AiExclusive(scope)`; its added lines become `MutationAi`.
+- `MutationNonAi` — any other recorded event (contended, unscoped, unhealthy, or
+  tainted); its added lines become `MutationNonAi`.
+- `Unobserved` — a transition with no recorded event: the conservative baseline
+  reload after a history gap, and the final latest-observed-tree to
+  committed-tree tail. Its added lines are `Unknown`.
 
-The matcher exposes location-based matches so repeated lines cannot be
-silently collapsed in the result. The seam is intentionally independent of
-pagination, event reconstruction, worktree identity, and post-commit Agent
-Trace persistence; those boundaries remain owned by their respective runtime
-and storage services.
+`MutationLineage::apply(patch, origin)` transforms the tracked line vectors
+structurally from the hunk positions (`parse_patch` drops context lines, so
+carried context is reconstructed from `old_count`/`new_count` and the removed/
+added line numbers):
+
+- context / carried line — provenance carried forward unchanged even as its line
+  number moves;
+- removed line — deleted permanently, verified against the tracked line's
+  content;
+- added line — a new entry whose provenance comes only from `origin`;
+- replacement (`-old` / `+new`) — remove the old entry, create a new one from
+  `origin`; textual similarity never transfers provenance;
+- duplicate identical lines stay at distinct positions; provenance never jumps
+  between occurrences.
+
+Any structurally inconsistent transition (content mismatch, inconsistent hunk
+lengths, out-of-range hunk) returns `LineageError`; the caller fails closed for
+the affected file.
 
 ## Bounded history consumer
 
 `resolve_bounded_mutation_attribution` in
-`cli/src/services/mutation_trace/runtime/mutation_attribution.rs` is the
-runtime consumer that feeds the pure seam above. It composes the store's
-descending [`load_mutation_event_page`](mutation-trace-store.md) reader, a
-tree-to-tree Git diff, `patch.rs::parse_patch`, and the resolver, over two
-injectable traits — `MutationEventPageSource` (implemented for
-`MutationTraceStore`) and `TreeDiffSource` (implemented for
-`GitSnapshotService`, reusing its existing `diff_trees`).
+`cli/src/services/mutation_trace/runtime/mutation_attribution.rs` composes the
+store's descending [`load_mutation_event_page`](mutation-trace-store.md) reader
+and read-only Git tree access over two injectable traits —
+`MutationEventPageSource` (implemented for `MutationTraceStore`) and
+`TreeReadSource` (implemented for `GitSnapshotService`, adding `file_at_tree`
+alongside `diff_trees`).
 
-- **Direct evidence resolves first.** The consumer's first step is
-  `attribution::exclude_direct_coverage(committed_target, direct_coverage)`,
-  the same `(logical path, kind, line_number, content)` exclusion the pure
-  resolver applies internally. Direct-covered committed lines are removed
-  before the first mutation-history page request. If no unresolved lines
-  remain, the bounded consumer performs no SQLite or Git work — zero page
-  requests, zero loaded rows, zero inspected events, zero tree diffs — and
-  returns an empty result with `barrier: None`. A partially direct-covered
-  target sends only the remaining lines into traversal. Mutation history can
-  never revoke or re-resolve a directly covered line.
-- **Aggregation uses logical target-file identity.** Per-event result parts
-  are unioned with a mutation-attribution-local helper keyed on
-  `new_path` when non-empty, otherwise `old_path` — not raw `new_path`. Two
-  distinct deleted files (both with an empty `new_path`) stay separate in the
-  combined `mutation_ai_patch` / `resolved_non_ai_patch`. The helper preserves
-  target-shaped file/hunk metadata and deterministic ordering, deduplicates
-  only identical selected target lines, and introduces no provenance. Global
-  `combine_patches` is unchanged.
-- **Current-worktree-only, revision-descending, timestamp-independent.**
-  Traversal pages by exclusive revision cursor for exactly the invoking
-  worktree; no `created_at` value participates.
-- **Bounded horizon.** The consumer — not the store — owns
-  `MAX_MUTATION_ATTRIBUTION_EVENTS = 128`. Every page request asks for
-  `min(MUTATION_ATTRIBUTION_PAGE_SIZE, MAX_MUTATION_ATTRIBUTION_EVENTS −
-  inspected_events)` rows, so it never loads past the budget even if the two
-  constants stop being exact multiples. Event 128 may be loaded, inspected,
-  and resolve a line; event 129 is never loaded or inspected. Under the
-  current 32/128 constants this is at most four pages.
-- **Early termination.** The moment the unresolved set empties, traversal
-  stops: rows already materialized in the current page are left
-  unreconstructed and no further page is requested. A short page also ends
-  traversal rather than issuing a guaranteed-empty follow-up query.
-- **Separate work counters.** `loaded_pages` / `loaded_rows` (database) are
-  tracked apart from `inspected_events` / `reconstructed_events` (Git).
-  `inspected_events` increments when reconstruction begins, including an event
-  whose tree diff or patch parse then fails; irrelevant events that match
-  nothing still count toward the horizon.
-- **Failure barrier.** A page query/decode failure, or an inspected event's
-  tree-diff/patch-parse failure, is a hard barrier: it keeps direct evidence
-  and every line already resolved by a newer successfully reconstructed
-  event, inspects no older event, requests no further page, and leaves every
-  remaining line unresolved/unknown. The barrier kind is reported on the
-  result; the function never returns `Err`.
+- **Direct evidence resolves first.** `attribution::exclude_direct_coverage`
+  removes directly covered committed lines by `(logical path, kind, line_number,
+  content)` before any mutation-history work. If no lines remain, the consumer
+  performs zero SQLite and zero Git work.
+- **Load window.** The invoking worktree's events are paged newest first, bounded
+  by both `MAX_MUTATION_ATTRIBUTION_EVENTS = 128` and the commit attribution cut
+  (`revision <= ceiling`, applied as an exclusive `ceiling + 1` first cursor).
+  Every request asks for `min(MUTATION_ATTRIBUTION_PAGE_SIZE, 128 − loaded)`
+  rows; at most four pages under the 32/128 constants. Event 128 may contribute;
+  event 129 is never loaded. Traversal is current-worktree-only and
+  timestamp-independent; no `created_at` participates.
+- **Replay oldest to newest.** The window is reversed. The baseline is the
+  oldest retained event's `before_tree`, every line `Unknown`, read with
+  `file_at_tree`. Each event's transition is `diff_trees(before, after)` parsed
+  and applied with its `MutationAi`/`MutationNonAi` origin.
+- **Transition continuity.** Before each event, if its `before_tree` does not
+  equal the previous event's `after_tree`, the tracked files are reloaded to an
+  all-`Unknown` baseline from that `before_tree` and older provenance does not
+  cross the gap. Newer events still establish provenance.
+- **Unobserved tail.** After the last replayed event, if its `after_tree`
+  differs from `commit_tree`, `diff(after, commit_tree)` is applied as an
+  `Unobserved` transition: new and replaced tail lines are `Unknown`, surviving
+  lines keep their provenance.
+- **Projection.** Only after the lineage reaches `commit_tree`, each committed
+  added line is looked up at its exact committed-tree position:
+  `MutationAi -> mutation AI coverage`, `MutationNonAi -> resolved non-AI`,
+  `Unknown` / missing / content mismatch -> unresolved.
+- **Conservative failure.** A page-query failure truncates history (the window
+  is simply smaller and the baseline older). A tree-diff / patch-parse /
+  structural-apply failure reloads the affected files to an all-`Unknown`
+  baseline from a real tree state and replay continues. A tail failure leaves
+  tail lines `Unknown`. Bounded history that cannot prove an older line's
+  provenance is a false negative, never a false positive. The barrier kind is
+  reported on the result; the function never returns `Err`.
+- **Work counters.** `loaded_pages` / `loaded_rows` (database) are separate from
+  `inspected_events` / `reconstructed_events` (Git); `gap_resets` counts
+  conservative reloads during replay.
 
-The consumer performs no mutation-cursor write and creates no worktree or
-scope identity.
+The consumer performs no mutation-cursor write and creates no worktree or scope
+identity.
+
+## Commit attribution cut
+
+`resolve_post_commit_mutation_ai_patch(repository_root, &db, direct_coverage,
+committed_patch) -> ParsedPatch` is the read-only post-commit entrypoint. It
+resolves the invoking worktree's *existing* checkout identity
+([`checkout::resolve_git_dir`](checkout-identity.md) + `read_checkout_id`, never
+`get_or_create_*`), reads `HEAD^{tree}` as `commit_tree`, and captures the
+commit attribution cut: under the same worktree lock that serializes
+mutation-event transitions
+([`worktree_lock`](mutation-trace-runtime-coordinator.md)), it reads
+`MutationTraceStore::latest_mutation_event_revision` for the worktree. An event
+produced after the commit has a higher revision and cannot participate. The
+critical section is a single indexed read.
+
+An unresolvable git dir, an absent/unreadable checkout identity, an unavailable
+snapshot service, an unreadable `HEAD` tree, a lock timeout, or no mutation
+history at all each yield an empty patch, so post-commit falls back to
+direct-only Agent Trace behavior. The entrypoint creates no identity and writes
+no mutation-cursor state.
 
 ## Post-commit composition
 
-`resolve_post_commit_mutation_ai_patch(repository_root, &db, direct_coverage,
-committed_patch) -> ParsedPatch` is the read-only entrypoint the post-commit
-Agent Trace flow calls after it has resolved direct evidence. It resolves the
-invoking worktree's *existing* checkout identity with
-[`checkout::resolve_git_dir`](checkout-identity.md) + `read_checkout_id` (never
-`get_or_create_*`), builds a `GitSnapshotService` and `MutationTraceStore`
-internally, and returns `resolve_bounded_mutation_attribution(..).result.mutation_ai_patch`.
-An unresolvable git dir, an absent/unreadable checkout identity, or an
-unavailable snapshot service each yield an empty patch, so post-commit falls
-back to direct-only Agent Trace behavior. It creates no identity and writes no
-mutation-cursor state.
-
-- **Direct evidence stays authoritative.** The post-commit flow first computes
-  the existing direct `intersect_patches` intersection and passes it as
-  `direct_coverage`; only the committed lines it does not cover reach mutation
-  history. `post_commit_patch_intersections` keeps its direct-only meaning, and
+- **Direct evidence stays authoritative.** The post-commit flow computes the
+  existing direct `intersect_patches` intersection and passes it as
+  `direct_coverage`; only committed lines it does not cover reach mutation
+  history. `post_commit_patch_intersections` keeps its direct-only meaning and
   mutation evidence never enters `diff_traces`.
 - **No fabricated provenance.** The mutation-AI patch is target-shaped and
   carries no model, session, tool, or tool-version metadata. `ScopeId`,
@@ -135,15 +137,36 @@ mutation-cursor state.
   wiring detail lives in
   [../sce/agent-trace-hooks-command-routing.md](../sce/agent-trace-hooks-command-routing.md).
 
-Real Git/DB regressions cover this path end to end: `cli/src/services/hooks/mod.rs`
-proves mutation-only `ai` without provenance, direct+mutation completion, a
-newer non-exclusive event keeping a line non-AI, and adversarial linked-worktree
-isolation (a newer foreign `AiContended` event cannot block an older
-current-worktree `AiExclusive` one). One regression there drives the real
-`run_post_commit_intersection_flow_with` direct intersection flow from a real
-`diff_traces` row plus a real `mutation_trace_events` row and asserts the three
-persistence layers separately: `diff_traces` and `post_commit_patch_intersections`
-each hold only the direct line, `mutation_trace_events` only the mutation line,
-and `agent_traces.trace_json` the combined `ai` classification with direct-derived
-`tool` provenance. `runtime/tests.rs` proves a still-relevant event behind 128
-newer events is never loaded or reconstructed.
+## Known limitation
+
+A tree-snapshot system cannot observe an intermediate remove/re-add that leaves
+no tree-state difference. If the latest observed tree already contains an AI
+line and a human removes and re-adds byte-identical text before the commit so
+that the committed tree matches the latest observed tree, the lineage still
+reports the surviving AI provenance. The fix this path delivers is that observed
+history must be *causal*: it does not reconstruct mutations that produced no
+observable tree difference.
+
+## Regressions
+
+- `lineage.rs` — added AI line carries provenance; removed line loses it
+  permanently; identical remove/re-add takes the new transition's provenance;
+  context provenance survives line-number movement; `Unobserved` introduces
+  `Unknown`; content mismatch is a `LineageError`; duplicate lines do not let
+  provenance jump; deleted file drops out.
+- `runtime/mutation_attribution/tests.rs` — surviving AI line attributed; AI
+  survives an unrelated later mutation; a stale AI mutation cannot resurrect
+  through an unobserved tail; a non-AI replacement owns the new line; a history
+  gap is not crossed; bounded-history baseline starts `Unknown`; an unobserved
+  tail adds `Unknown` but keeps surviving AI; an event past the commit cut has
+  no influence; event 128 contributes and 129 is never loaded; a page-query
+  failure is a conservative barrier; a reconstruction failure reloads and
+  continues; real `GitSnapshotService` + store seams.
+- `runtime/tests.rs` — a still-relevant event behind 128 newer events is never
+  loaded or reconstructed.
+- `hooks/mod.rs` (`mutation_attribution_e2e`) — real Git/DB: mutation-only `ai`
+  without provenance; direct+mutation completion; a newer non-exclusive event
+  keeps a line non-AI; adversarial linked-worktree isolation; the three
+  persistence layers stay separated (`diff_traces` and
+  `post_commit_patch_intersections` direct-only, `agent_traces.trace_json`
+  combined).

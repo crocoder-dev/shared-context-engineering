@@ -231,6 +231,10 @@ const SELECT_MUTATION_EVENT_PAGE_AFTER_SQL: &str =
      WHERE worktree_id = ?1 AND revision < ?2
      ORDER BY revision DESC
      LIMIT ?3";
+const SELECT_LATEST_MUTATION_EVENT_REVISION_SQL: &str = "SELECT revision FROM mutation_trace_events
+     WHERE worktree_id = ?1
+     ORDER BY revision DESC
+     LIMIT 1";
 const SELECT_MUTATION_EVENT_ACTIVE_SCOPES_SQL: &str =
     "SELECT scope_id FROM mutation_trace_event_active_scopes WHERE worktree_id = ?1 AND revision = ?2";
 /// One worktree's complete durable tree root set — its cursor tree plus the
@@ -736,6 +740,20 @@ impl<'a> MutationTraceStore<'a> {
         };
 
         Ok(rows)
+    }
+
+    pub fn latest_mutation_event_revision(&self, worktree: &WorktreeId) -> Result<Option<u64>> {
+        let rows = self.db.query_map(
+            SELECT_LATEST_MUTATION_EVENT_REVISION_SQL,
+            (worktree.0.as_str(),),
+            |row| {
+                let blob: Vec<u8> = row
+                    .get(0)
+                    .context("failed to read mutation_trace_events.revision")?;
+                decode_revision(&blob)
+            },
+        )?;
+        Ok(rows.into_iter().next())
     }
 
     /// Reads `worktree`'s complete durable tree root set: its

@@ -2350,6 +2350,8 @@ fn a_relevant_event_behind_128_newer_events_is_never_loaded_or_reconstructed() {
         &WorktreeId(checkout_id.clone()),
         &ParsedPatch { files: Vec::new() },
         &committed,
+        &after,
+        None,
     );
 
     assert_eq!(
