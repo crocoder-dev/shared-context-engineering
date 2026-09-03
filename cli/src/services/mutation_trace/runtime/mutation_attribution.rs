@@ -1,7 +1,10 @@
 use anyhow::Result;
 
 use std::collections::HashMap;
+use std::path::Path;
 
+use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
+use crate::services::checkout::{read_checkout_id, resolve_git_dir};
 use crate::services::mutation_trace::attribution::{
     exclude_direct_coverage, resolve_mutation_attribution, MutationAttributionResult,
     MutationPatchEvidence,
@@ -181,6 +184,46 @@ where
 
 fn requested_page_limit(page_size: usize, horizon: usize, inspected_events: usize) -> usize {
     page_size.min(horizon.saturating_sub(inspected_events))
+}
+
+/// Post-commit entry point: mutation-history AI coverage for the committed
+/// patch's lines that direct evidence (`direct_coverage`, the post-commit-shaped
+/// direct intersection) does not already cover, scoped to the invoking linked
+/// worktree's existing checkout identity only.
+///
+/// Read-only and fail-open. An unresolvable git directory, an absent or
+/// unreadable checkout identity, or an unavailable snapshot service each yield
+/// an empty patch, so the caller falls back to direct-only Agent Trace
+/// behavior. This path never creates checkout identity and never writes
+/// mutation-cursor state.
+pub(crate) fn resolve_post_commit_mutation_ai_patch(
+    repository_root: &Path,
+    db: &RepositoryAgentTraceDb,
+    direct_coverage: &ParsedPatch,
+    committed_patch: &ParsedPatch,
+) -> ParsedPatch {
+    let empty = || ParsedPatch { files: Vec::new() };
+
+    let Ok(git_dir) = resolve_git_dir(repository_root) else {
+        return empty();
+    };
+    let Ok(Some(checkout_id)) = read_checkout_id(&git_dir) else {
+        return empty();
+    };
+    let Ok(snapshot) = GitSnapshotService::new(repository_root) else {
+        return empty();
+    };
+    let store = MutationTraceStore::new(db);
+
+    resolve_bounded_mutation_attribution(
+        &store,
+        &snapshot,
+        &WorktreeId(checkout_id),
+        direct_coverage,
+        committed_patch,
+    )
+    .result
+    .mutation_ai_patch
 }
 
 fn attribution_from_row(kind: AttributionKind, scope_id: Option<ScopeId>) -> Attribution {
@@ -1244,5 +1287,128 @@ mod tests {
         assert_eq!(attribution.inspected_events, 1);
         assert_eq!(attribution.reconstructed_events, 1);
         assert_eq!(attribution.barrier, None);
+    }
+
+    fn init_repo_with_commit(repo_root: &std::path::Path) {
+        use std::process::Command;
+        std::fs::create_dir_all(repo_root).expect("repo dir");
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repo_root)
+                .output()
+                .expect("git spawns");
+            assert!(output.status.success(), "git {args:?} failed");
+        };
+        git(&["init", "--quiet"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["commit", "--allow-empty", "--quiet", "-m", "init"]);
+    }
+
+    #[test]
+    fn post_commit_entry_point_without_checkout_identity_yields_empty_patch_and_creates_none() {
+        use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
+
+        let temp = tempfile::Builder::new()
+            .prefix("sce-post-commit-attribution-no-identity-")
+            .tempdir()
+            .expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        init_repo_with_commit(&repo_root);
+
+        let git_dir = crate::services::checkout::resolve_git_dir(&repo_root).expect("git dir");
+        let checkout_id_path = git_dir.join("sce").join("checkout-id");
+        assert!(
+            !checkout_id_path.exists(),
+            "precondition: no checkout identity"
+        );
+
+        let db =
+            RepositoryAgentTraceDb::new_at(temp.path().join("agent-trace.db")).expect("db opens");
+
+        let result = resolve_post_commit_mutation_ai_patch(
+            &repo_root,
+            &db,
+            &empty_patch(),
+            &target_patch("file.rs", vec![added_line(2, "two")]),
+        );
+
+        assert!(
+            result.files.is_empty(),
+            "absent identity falls back to direct-only"
+        );
+        assert!(
+            !checkout_id_path.exists(),
+            "attribution lookup must not create checkout identity"
+        );
+    }
+
+    #[test]
+    fn post_commit_entry_point_resolves_current_worktree_mutation_ai_coverage() {
+        use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
+
+        let temp = tempfile::Builder::new()
+            .prefix("sce-post-commit-attribution-current-")
+            .tempdir()
+            .expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        init_repo_with_commit(&repo_root);
+
+        let git_dir = crate::services::checkout::resolve_git_dir(&repo_root).expect("git dir");
+        let checkout_id =
+            crate::services::checkout::get_or_create_checkout_id(&git_dir).expect("checkout id");
+
+        let snapshot = GitSnapshotService::new(&repo_root).expect("snapshot service");
+        std::fs::write(repo_root.join("file.rs"), b"one\n").expect("write");
+        let before = snapshot.capture_tree().expect("capture before");
+        std::fs::write(repo_root.join("file.rs"), b"one\ntwo\n").expect("write");
+        let after = snapshot.capture_tree().expect("capture after");
+
+        let db =
+            RepositoryAgentTraceDb::new_at(temp.path().join("agent-trace.db")).expect("db opens");
+        db.execute(
+            "INSERT INTO mutation_trace_events
+                (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
+                 attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id)
+             VALUES (?1, ?2, ?3, ?4, 0, 'healthy', 'ai_exclusive', 'scope-current', 'flush', NULL, NULL)",
+            (
+                checkout_id.as_str(),
+                crate::services::mutation_trace::store::encode_revision(1).as_slice(),
+                before.0.as_str(),
+                after.0.as_str(),
+            ),
+        )
+        .expect("event insert");
+        // A foreign worktree's row for the same trees must never contribute.
+        db.execute(
+            "INSERT INTO mutation_trace_events
+                (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
+                 attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id)
+             VALUES (?1, ?2, ?3, ?4, 0, 'healthy', 'ai_exclusive', 'scope-foreign', 'flush', NULL, NULL)",
+            (
+                "wt-foreign",
+                crate::services::mutation_trace::store::encode_revision(2).as_slice(),
+                before.0.as_str(),
+                after.0.as_str(),
+            ),
+        )
+        .expect("foreign event insert");
+
+        let result = resolve_post_commit_mutation_ai_patch(
+            &repo_root,
+            &db,
+            &empty_patch(),
+            &target_patch("file.rs", vec![added_line(2, "two")]),
+        );
+
+        let ai_lines: Vec<u64> = result
+            .files
+            .iter()
+            .flat_map(|file| file.hunks.iter())
+            .flat_map(|hunk| hunk.lines.iter())
+            .map(|line| line.line_number)
+            .collect();
+        assert_eq!(ai_lines, vec![2]);
     }
 }
