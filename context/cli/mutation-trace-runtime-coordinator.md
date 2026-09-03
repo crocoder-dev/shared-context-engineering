@@ -288,25 +288,24 @@ surfaces `MarkerClearAfterCommit` with the matching committed outcome. The
 ([`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md)), pausing a real `coordinate()` between `pin` and CAS.
 
 `runtime/tests.rs` is `runtime`'s own `#[cfg(test)] mod tests`, holding
-cross-module integration tests that drive only the public `coordinate()` API
-against real Git repositories (`git init`, `git worktree add`) and real
-temp-file `RepositoryAgentTraceDb`s, following the same unique-temp-path
-precedent: two linked worktrees of one repository (different `git_dir` →
-different lock paths → different `WorktreeId`s) are proven independently
-locked by holding one worktree's `WorktreeLock` across a synchronous
-`coordinate()` call for the other and observing that call return `Ok` before
-the held guard is dropped — a shared lock could not be acquired while the
-guard is alive, and no wall-clock timing is used. Each call is handed a
-provider closure that opens the one shared repository-scoped DB path
+cross-module integration tests that drive the public `coordinate()` and
+`abandon_scope()` APIs against real Git repositories (`git init`, `git worktree
+add`) and real temp-file `RepositoryAgentTraceDb`s, following the same
+unique-temp-path precedent: two linked worktrees of one repository (different
+`git_dir` → different lock paths → different `WorktreeId`s) are proven
+independently locked by holding one worktree's `WorktreeLock` across a
+synchronous `coordinate()` call for the other and observing that call return
+`Ok` before the held guard is dropped — a shared lock could not be acquired
+while the guard is alive, and no wall-clock timing is used. Each call is handed
+a provider closure that opens the one shared repository-scoped DB path
 (`coordinate()` never resolves the DB), and both distinct worktree rows then
-coexist in it. A full failure/recovery cycle — baseline call, a
-snapshot-failing call that durably taints the worktree, then a recovery call
-that clears the taint before processing its boundary — also runs entirely
-through the public entrypoint. The same module covers the public
-`reconcile_worktree` integration suite and the `coordinate_inner` /
-`reconcile_worktree_inner` lock-race seams, including orphan reclamation,
-durable-root retention, missing-pin fail-closed behavior, malformed refs,
-linked-worktree scoping, and the real coordinator CAS race.
+coexist in it. A full failure/recovery cycle and the cross-runtime abandonment
+regressions also run through the public entrypoints. The same module covers the
+public `reconcile_worktree` integration suite and the
+`coordinate_inner` / `reconcile_worktree_inner` / `abandon_scope_inner`
+lock-race seams, including orphan reclamation, durable-root retention,
+missing-pin fail-closed behavior, malformed refs, linked-worktree scoping, and
+the real coordinator and abandonment CAS races.
 
 ## Status
 
@@ -316,10 +315,10 @@ protocol-integration pipeline, and public `coordinate()` entrypoint (prefix →
 DB provider → pipeline → `complete()` on success) are implemented, with
 `runtime/tests.rs` covering the public API end to end. An inherited marker is
 now overlaid onto `database_failure` recovery on the next invocation. The
-`abandon_scope()` entrypoint also shares the prefix and has focused unit
-coverage; a `pub(crate)` re-export of either entrypoint beyond `runtime`, real
-cross-runtime integration regressions, and harness/command wiring remain
-future work tracked by the `mutation-cursor-external-taint`,
+`abandon_scope()` entrypoint also shares the prefix and has focused
+unit and cross-runtime integration coverage; a `pub(crate)` re-export of either
+entrypoint beyond `runtime` and harness/command wiring remain future work
+tracked by the `mutation-cursor-external-taint`,
 `mutation-cursor-runtime-coordinator`, and `mutation-scope-runtime-integration`
 plans.
 
