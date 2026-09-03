@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::time::Duration;
 
 use anyhow::Result;
 use uuid::Uuid;
@@ -11,13 +10,12 @@ use crate::services::mutation_trace::types::{
     self, ActorKind, AttemptId, Boundary, EventId, MutationEvent, ScopeId, TreeId, WorktreeId,
 };
 
-use super::external_taint::ExternalTaintMarker;
-use super::git_snapshot::{resolve_git_dir, resolve_worktree_id, GitSnapshotService};
-use super::worktree_lock::{acquire_inner, WorktreeLockError};
+use super::git_snapshot::GitSnapshotService;
+use super::protected_worktree::{ProtectedWorktree, ProtectedWorktreeError};
+
+pub use super::protected_worktree::ExternalTaintOperation;
 
 const MAX_CAS_RETRY_ATTEMPTS: u32 = 5;
-
-const WORKTREE_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug)]
 pub enum RuntimeBoundary {
@@ -46,18 +44,6 @@ pub struct CoordinateOutcome {
     pub revision: u64,
     pub evaluation: protocol::CommitEvaluation,
     pub mutation_event: Option<MutationEvent>,
-}
-
-/// Which pre-commit [`ExternalTaintMarker`] operation failed while coordinating a
-/// boundary. Both happen **before** any protected work, so no
-/// [`CoordinateOutcome`] exists yet. A marker-clear failure happens *after* a
-/// durable commit and is reported through
-/// [`CoordinateError::MarkerClearAfterCommit`] instead, which carries the
-/// committed outcome.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExternalTaintOperation {
-    Inspect,
-    Persist,
 }
 
 #[derive(Debug)]
@@ -160,16 +146,6 @@ impl SnapshotCapture for GitSnapshotService {
     }
 }
 
-/// Coordinates one mutation-cursor runtime boundary end to end.
-///
-/// The entrypoint owns the whole protected operation: it resolves `git_dir`,
-/// acquires the [`WorktreeLock`](super::worktree_lock::WorktreeLock), arms the
-/// worktree-local [`ExternalTaintMarker`] write-ahead — **before** acquiring the
-/// Agent Trace DB — and only then invokes the caller-supplied `open_db`
-/// provider, captures a snapshot, runs the snapshot / recovery / protocol / CAS
-/// pipeline, and clears the marker on complete success. Any failure after the
-/// marker is armed — including `open_db` returning `Err` — leaves the marker in
-/// place for the next invocation.
 pub fn coordinate<P>(
     repository_root: &Path,
     boundary: &RuntimeBoundary,
@@ -202,36 +178,20 @@ where
     L: FnMut(u32),
     R: FnMut(u32) -> Result<()>,
 {
-    let git_dir = resolve_git_dir(repository_root).map_err(CoordinateError::Other)?;
-
-    let _lock = acquire_inner(&git_dir, WORKTREE_LOCK_TIMEOUT, on_lock_contention)
-        .map_err(lock_acquisition)?;
-
-    let marker = ExternalTaintMarker::new(&git_dir);
-    let inherited_external_taint =
-        marker
-            .exists()
-            .map_err(|source| CoordinateError::ExternalTaintMarker {
-                operation: ExternalTaintOperation::Inspect,
-                source,
-            })?;
-    marker
-        .persist()
-        .map_err(|source| CoordinateError::ExternalTaintMarker {
-            operation: ExternalTaintOperation::Persist,
-            source,
-        })?;
+    let protected = ProtectedWorktree::acquire_inner(repository_root, on_lock_contention)
+        .map_err(protected_worktree_failure)?;
 
     let outcome = coordinate_protected(
         repository_root,
+        protected.worktree_id(),
         boundary,
         open_db,
-        inherited_external_taint,
+        protected.inherited_external_taint(),
         after_load,
         after_recovery,
     )?;
 
-    match marker.clear() {
+    match protected.complete() {
         Ok(()) => Ok(outcome),
         Err(source) => Err(CoordinateError::MarkerClearAfterCommit {
             source,
@@ -242,6 +202,7 @@ where
 
 fn coordinate_protected<P, L, R>(
     repository_root: &Path,
+    worktree_id: &WorktreeId,
     boundary: &RuntimeBoundary,
     open_db: P,
     inherited_external_taint: bool,
@@ -253,8 +214,6 @@ where
     L: FnMut(u32),
     R: FnMut(u32) -> Result<()>,
 {
-    let worktree_id = resolve_worktree_id(repository_root).map_err(CoordinateError::Other)?;
-
     let db = open_db().map_err(CoordinateError::AgentTraceDbUnavailable)?;
 
     let snapshot = GitSnapshotService::new(repository_root).map_err(CoordinateError::Other)?;
@@ -262,7 +221,7 @@ where
     coordinate_boundary_inner(
         &db,
         &snapshot,
-        &worktree_id,
+        worktree_id,
         boundary,
         inherited_external_taint,
         after_load,
@@ -270,8 +229,17 @@ where
     )
 }
 
-fn lock_acquisition(error: WorktreeLockError) -> CoordinateError {
-    CoordinateError::LockAcquisition(anyhow::Error::new(error))
+fn protected_worktree_failure(error: ProtectedWorktreeError) -> CoordinateError {
+    match error {
+        ProtectedWorktreeError::GitDirResolution(source)
+        | ProtectedWorktreeError::CheckoutIdentity(source) => CoordinateError::Other(source),
+        ProtectedWorktreeError::LockAcquisition(source) => {
+            CoordinateError::LockAcquisition(anyhow::Error::new(source))
+        }
+        ProtectedWorktreeError::ExternalTaintMarker { operation, source } => {
+            CoordinateError::ExternalTaintMarker { operation, source }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -528,8 +496,12 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc;
     use std::thread;
+    use std::time::Duration;
 
     use super::*;
+    use crate::services::checkout::{get_or_create_checkout_id, resolve_git_dir};
+    use crate::services::mutation_trace::runtime::external_taint::ExternalTaintMarker;
+    use crate::services::mutation_trace::runtime::worktree_lock::acquire_inner;
     use crate::services::mutation_trace::store::encode_revision;
     use crate::services::mutation_trace::types::{Attribution, EventKey, FailureKind, ScopeStatus};
 
