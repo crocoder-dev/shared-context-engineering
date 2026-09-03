@@ -708,6 +708,7 @@ mod tests {
             &flow,
             None,
             "https://example.invalid/codex-t19.git",
+            &crate::services::patch::ParsedPatch { files: Vec::new() },
             |value| {
                 crate::services::agent_trace::validate_agent_trace_value(value)
                     .map_err(|error| anyhow::anyhow!(error.to_string()))
