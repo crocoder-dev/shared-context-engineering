@@ -587,6 +587,40 @@ mod tests {
     }
 
     #[test]
+    fn mutation_attribution_unrelated_newer_event_does_not_block_older_exclusive_match() {
+        let unresolved = patch(
+            "src/lib.rs",
+            vec![line(TouchedLineKind::Added, 8, "target")],
+        );
+        let newest = evidence(
+            patch(
+                "src/lib.rs",
+                vec![line(TouchedLineKind::Added, 20, "unrelated")],
+            ),
+            exclusive(),
+        );
+        let older = evidence(
+            patch(
+                "src/lib.rs",
+                vec![line(TouchedLineKind::Added, 8, "target")],
+            ),
+            exclusive(),
+        );
+        let result = resolve_mutation_attribution(
+            &ParsedPatch { files: vec![] },
+            &unresolved,
+            &[newest, older],
+        );
+
+        assert_eq!(
+            locations(&result.mutation_ai_patch),
+            vec![(8, "target".into())]
+        );
+        assert!(result.resolved_non_ai_patch.files.is_empty());
+        assert!(result.unresolved_patch.files.is_empty());
+    }
+
+    #[test]
     fn mutation_attribution_exact_matching_precedes_unique_historical_fallback() {
         let target = patch(
             "src/lib.rs",
