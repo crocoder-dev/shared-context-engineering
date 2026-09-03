@@ -1,0 +1,151 @@
+name: Bootstrap SCE audit workflow branch
+
+on:
+  push:
+    branches:
+      - feat/sce-audit-workflow
+
+concurrency:
+  group: sce-audit-bootstrap
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  apply:
+    if: "${{ github.event.head_commit.message == 'bootstrap: stage sce-audit implementation' }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout bootstrap branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Enable Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Decode implementation driver
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .github/sce-audit-bootstrap/part-* > /tmp/apply-sce-audit.py.gz.b64
+          base64 --decode /tmp/apply-sce-audit.py.gz.b64 | gzip --decompress > /tmp/apply-sce-audit.py
+          chmod +x /tmp/apply-sce-audit.py
+          test "$(sha256sum /tmp/apply-sce-audit.py | cut -d' ' -f1)" = "fafc9fac43f9aa930d1a0eb452cb038ad3ead067e92683c81fcc71fffa53b84d"
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("/tmp/apply-sce-audit.py")
+          text = path.read_text()
+          old = 'anchor = "- `brownfield confidence model`:"'
+          new = 'anchor = "- brownfield confidence model:"'
+          if text.count(old) != 1:
+              raise SystemExit("expected exactly one glossary anchor to patch")
+          path.write_text(text.replace(old, new, 1))
+          PY
+          test "$(sha256sum /tmp/apply-sce-audit.py | cut -d' ' -f1)" = "85ce8fe78337b4a74f3f6f362cd2657d5e5f6c12c679e49d6288cbd7f41ac051"
+          python /tmp/apply-sce-audit.py --help >/dev/null
+
+      - name: Run the SCE plan and task loop
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          readonly expected_base="2d14959c6770d3635dfadb457e137c6fc05feba4"
+          readonly bootstrap_sha="$(git rev-parse HEAD)"
+          readonly base_sha="$(git rev-parse HEAD^)"
+
+          if [[ "$base_sha" != "$expected_base" ]]; then
+            echo "Bootstrap parent $base_sha does not match expected main $expected_base" >&2
+            exit 1
+          fi
+
+          git config user.name "SCE"
+          git config user.email "sce@crocoder.dev"
+          git fetch origin main:refs/remotes/origin/main
+          readonly remote_main="$(git rev-parse refs/remotes/origin/main)"
+          if [[ "$remote_main" != "$expected_base" ]]; then
+            echo "origin/main moved to $remote_main; rebuild the bootstrap commit from current main" >&2
+            exit 1
+          fi
+          git reset --hard "$base_sha"
+          git clean -fdx
+
+          python /tmp/apply-sce-audit.py plan
+          git add context/plans/sce-audit-workflow.md
+          git commit -m "plan: add optional context audit workflow"
+
+          python /tmp/apply-sce-audit.py t01
+          python /tmp/apply-sce-audit.py verify-static
+          nix run .#pkl-check-generated
+          git add config/pkl context
+          git commit -m "feat: add optional context audit workflow"
+
+          python /tmp/apply-sce-audit.py t02
+          nix develop --command ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml --test setup_optional_workflows
+          nix develop --command ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup::
+          git add cli/tests/setup_optional_workflows.rs context/plans/sce-audit-workflow.md
+          git commit -m "test: cover multiple optional workflows"
+
+          printf '%s\n' "$bootstrap_sha" > /tmp/bootstrap-sha
+
+      - name: Run final validation and record the Validation Report
+        shell: bash
+        run: |
+          set +e
+
+          python /tmp/apply-sce-audit.py verify-static > /tmp/static.log 2>&1
+          static_code=$?
+
+          nix run .#pkl-check-generated > /tmp/pkl.log 2>&1
+          pkl_code=$?
+
+          nix develop --command ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml --test setup_optional_workflows > /tmp/optional.log 2>&1
+          optional_code=$?
+
+          nix develop --command ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup:: > /tmp/setup.log 2>&1
+          setup_code=$?
+
+          nix flake check --print-build-logs > /tmp/flake.log 2>&1
+          flake_code=$?
+
+          set -e
+
+          for log in static pkl optional setup flake; do
+            echo "::group::${log} validation"
+            cat "/tmp/${log}.log"
+            echo "::endgroup::"
+          done
+
+          python /tmp/apply-sce-audit.py finalize-validation \
+            --static-code "$static_code" \
+            --pkl-code "$pkl_code" \
+            --optional-code "$optional_code" \
+            --setup-code "$setup_code" \
+            --flake-code "$flake_code"
+
+          git add context/plans/sce-audit-workflow.md
+          git commit -m "validate: record sce-audit workflow evidence"
+
+          readonly bootstrap_sha="$(cat /tmp/bootstrap-sha)"
+          git push \
+            --force-with-lease="refs/heads/feat/sce-audit-workflow:${bootstrap_sha}" \
+            origin HEAD:refs/heads/feat/sce-audit-workflow
+
+          if (( static_code != 0 || pkl_code != 0 || optional_code != 0 || setup_code != 0 || flake_code != 0 )); then
+            exit 1
+          fi
