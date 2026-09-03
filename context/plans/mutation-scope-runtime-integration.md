@@ -372,13 +372,51 @@ which is precisely why there is nothing left for this one to decide.
     moved to that guard, whose `Drop` never clears).
   - Context synchronization: synced
 
-- [ ] T02: `Expose a bounded scope read on MutationTraceStore` (status:todo)
+- [x] T02: `Expose a bounded scope read on MutationTraceStore` (status:done)
   - Task ID: T02
   - Scope: In — promote the existing private `MutationTraceStore::load_scope` to the smallest public read seam `scope_runtime` needs (one `mutation_trace_scopes` row → `Option<ScopeState>`), with a doc comment stating it is a cold-path read that never widens into a projection; tests for an existing scope, a missing scope, and a scope belonging to another worktree. Out — any change to `load_worktree`'s hook-boundary semantics or error contract, any schema/migration change, any new query, any write path.
   - Dependencies: none
   - Done when: the read returns the durable `ScopeState` (status, `actor_kind`, `worktree_id`) for a known `ScopeId` and `None` for an unknown one, without consulting `mutation_trace_events` or the worktree row; `load_worktree`'s existing behavior, including its `Err` on a mismatched or missing effective referenced scope, is untouched; the mismatched-worktree case is proven to be the caller's decision, not a store-level rejection.
   - Verify: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::store::`; `git diff cli/migrations/` is empty.
-  - Context synchronization: pending
+  - Completed: 2026-09-03
+  - Files changed:
+    - `cli/src/services/mutation_trace/store.rs`
+  - Result: `MutationTraceStore::load_scope` is now `pub`, relocated from the private
+    helper block to sit beside the other public reads (after `load_all_tree_roots`,
+    before `load_worktree_state`). Its signature and body are byte-identical —
+    `pub fn load_scope(&self, scope_id: &ScopeId) -> Result<Option<ScopeState>>`,
+    one `SELECT_SCOPE_BY_ID_SQL` `query_map` through `scope_row_from_turso` — so
+    both existing internal callers (`register_scope`, `load_worktree`) are
+    unaffected and no new query was added. The new doc comment states that it is a
+    cold-path single-row read that reads one `mutation_trace_scopes` row and
+    nothing else, never consults `mutation_trace_events`,
+    `mutation_trace_processed_events`, or the scope's `mutation_trace_worktrees`
+    row, must not widen into a projection (naming `load_worktree` as the projection
+    seam), and never adjudicates worktree identity — a scope on another worktree is
+    returned as-is because comparing the two is the caller's decision. Three tests
+    were added to the existing inline `#[cfg(test)] mod tests`, using its
+    `test_db_path` / `insert_worktree` / `insert_scope` fixtures:
+    `load_scope_returns_the_durable_state_for_a_known_scope` (seeds an event row,
+    an active-scope row, and a processed-event row alongside the scope, then
+    asserts the exact `ScopeState`, proving those tables are not consulted),
+    `load_scope_returns_none_for_an_unknown_scope`, and
+    `load_scope_returns_a_scope_belonging_to_another_worktree` (a scope on `wt-2`
+    with no `wt-2` worktree row returns `Ok(Some(..))` carrying `wt-2`, while the
+    same scope through `load_worktree(wt-1, ..)` still errors — proving the
+    mismatch is the caller's decision and that `load_worktree`'s contract is
+    untouched). No schema, migration, or write path was touched.
+  - Verify results:
+    - `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::store::` — passed: 86 passed, 0 failed (83 pre-existing plus the 3 new tests); the three new tests were also run in isolation via the `...::tests::load_scope` filter and all passed.
+    - `git diff cli/migrations/` — empty, confirmed.
+    - Also run: `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` — passed, clean, with no placeholder consumer added for the newly public method.
+    - Also run: `./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` — passed.
+  - Context impact: local to `cli/src/services/mutation_trace/store.rs`. One method
+    widened from private to `pub` on `MutationTraceStore`; no signature, schema,
+    migration, spec, protocol, or behavior change, and `load_worktree`'s error
+    contract is untouched. Durable context affected:
+    `context/cli/mutation-trace-store.md` (the new bounded scope read seam and its
+    deliberate non-adjudication of worktree identity).
+  - Context synchronization: synced
 
 - [ ] T03: `Implement abandon_scope() on the protected runtime path` (status:todo)
   - Task ID: T03
