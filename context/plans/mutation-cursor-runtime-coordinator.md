@@ -46,11 +46,14 @@ construction and could miss a worktree row another caller materializes
 concurrently; the decision now always comes from a fresh read taken *after*
 the failure. Third, this plan corrects its own earlier claim that
 create-only ref pinning produces "bounded" storage growth — growth is
-unbounded over the repository's lifetime without a reconciliation pass, and
-the Follow-up PR section now sequences that reconciliation pass and the
-still-deferred filesystem external-taint marker as required runtime
-completion work *before* any harness adapter may become a production
-consumer of this coordinator.
+unbounded over the repository's lifetime, and the Follow-up PR section now
+sequences a reconciliation pass and the still-deferred filesystem
+external-taint marker as required runtime completion work *before* any
+harness adapter may become a production consumer of this coordinator. That
+reconciliation pass reclaims only orphan/crash refs left by interrupted
+`coordinate()` executions and keeps them from accumulating under harness
+traffic; it is not a bound on storage under a retained mutation history
+(which needs separate future retention/compaction work).
 
 A third revision (further PR #244 review) corrects two remaining Git-level
 issues in the snapshot mechanism itself, with the surrounding architecture
@@ -1542,7 +1545,7 @@ two invocations that happen to observe identical content) is a harmless,
 idempotent `git update-ref` — verified experimentally.
 
 **Pin lifecycle: create-only in this PR — and that growth is unbounded, not
-bounded, until reconciliation exists.** The coordinator (T04) calls
+bounded.** The coordinator (T04) calls
 `pin_tree(worktree_id, observed_tree)` exactly once per invocation,
 immediately after `capture_tree` succeeds and *before* any DB operation —
 whether or not that invocation's boundary ultimately commits, is rejected,
@@ -1573,6 +1576,20 @@ hook traffic through `coordinate()` would no longer hold. This is exactly
 why the Follow-up PR section below sequences a reconciliation pass as
 required runtime-completion work *before* that wiring, not as an optional
 later enhancement.
+
+The follow-up reconciliation pass narrows this but does **not** by itself
+make growth bounded: it reclaims only orphan/unreferenced pins — crash
+artifacts, failed/no-op transition artifacts, uncommitted CAS observations —
+whose tree is in no durable root anywhere in the repository. Every pin for a
+tree that is still a current or historical durable root (worktree
+`cursor_tree`, or a historical `mutation_trace_events`
+`before_tree`/`after_tree`) is retained, and those event rows are retained
+indefinitely, so a repository with a long retained mutation history still
+holds one pin per distinct historical tree. Actually bounding that requires a
+separate future retention/compaction lifecycle — recorded as future work in
+`context/plans/mutation-cursor-ref-reconciliation.md`, not designed here.
+Reconciliation's runtime-completion gate is specifically about keeping
+orphan/crash refs from *accumulating* under harness traffic.
 
 This directly answers "when can refs safely be deleted": not from inside
 this PR's per-invocation coordinator at all; only from a pass with
@@ -2514,7 +2531,14 @@ for a direct, itemized accounting.
     "bounded, linear" description was imprecise and is corrected above.
     Growth is linear *in hook-invocation volume*, which is itself unbounded
     over a repository's life; nothing in this PR's own scope ever removes a
-    pin.
+    pin. Note that the follow-up `mutation-cursor-ref-reconciliation` pass
+    does **not** by itself make this bounded either: it reclaims only
+    orphan/unreferenced pins (crash artifacts, failed/no-op transitions,
+    uncommitted CAS observations). Every pin for a current or historical
+    durable root — the retained-roots contract below — stays pinned, and
+    historical `mutation_trace_events` rows are retained indefinitely, so
+    bounding storage under a retained history needs a separate future
+    retention/compaction lifecycle, not this reconciliation pass.
 18. **What exact PR must add ref reconciliation, and what exact PR must add
     filesystem external-taint durability?** `mutation-cursor-ref-reconciliation`
     and `mutation-cursor-external-taint` respectively — see "Runtime
@@ -2620,14 +2644,20 @@ Design decisions) rather than leaving it unstated; this follow-up is where
 it closes.
 
 **Step 3 — ref reconciliation (why it cannot wait):** see "Pin lifecycle:
-create-only in this PR — and that growth is unbounded, not bounded, until
-reconciliation exists" above for the corrected growth analysis and the
+create-only in this PR" above for the corrected growth analysis and the
 retained-roots contract this follow-up must implement (worktree
 `cursor_tree` and every historical `mutation_trace_events`
 `before_tree`/`after_tree`), plus the concurrency-safety requirement any
 implementation must satisfy (never delete a ref for a tree that could still
 become durable — see that section for the two candidate strategies this
-plan leaves for the follow-up to choose between).
+plan leaves for the follow-up to choose between). Its purpose is to keep
+**orphan/crash snapshot refs** — pins left by interrupted `coordinate()`
+executions — from accumulating once a harness drives high-frequency traffic;
+it is *not* a claim that reconciliation bounds mutation-history storage under
+normal successful usage. Pins for retained current/historical durable roots
+stay pinned, and bounding that requires a separate future
+retention/compaction lifecycle (`mutation-cursor-ref-reconciliation` records
+this as future work).
 
 ### Step 4: harness boundary → runtime coordinator → committed `MutationEvent` → `diff_trees(before, after)` → existing Agent Trace `diff_traces` evidence
 
@@ -2719,11 +2749,16 @@ one coordinator invocation path.
 
 ### Residual risks
 
-- Ref-pin storage growth is unbounded until the deferred
-  `refs/sce/mutation-cursor/**` reconciliation pass ships, and the DB-unavailable
-  case leaves no filesystem external-taint marker. Both are documented,
-  intentionally deferred, and sequenced (`mutation-cursor-external-taint`,
+- Ref-pin storage growth is unbounded: create-only pinning leaves one
+  permanent ref per distinct observed tree, and the DB-unavailable case leaves
+  no filesystem external-taint marker. Both are documented, intentionally
+  deferred, and sequenced (`mutation-cursor-external-taint`,
   `mutation-cursor-ref-reconciliation`) as required runtime-completion work
   before any harness adapter becomes a production consumer of `coordinate()`.
+  The deferred `refs/sce/mutation-cursor/**` reconciliation pass reclaims only
+  orphan/unreferenced pins (crash and interrupted-`coordinate()` artifacts) —
+  it keeps those from accumulating under harness traffic but does not by itself
+  bound storage under a retained mutation history, which needs a separate
+  future retention/compaction lifecycle.
 - The coordinator is standalone and not wired into any hook, CLI command, or
   `diff_traces` — no production caller exercises it yet.

@@ -73,6 +73,48 @@ cold path: it reconstructs one historical `MutationEvent`, including full
 called from `load_worktree` or from any hook-boundary path, so a
 projection load never pays for the full historical event set.
 
+## Durable tree-root reads (ref reconciliation)
+
+`load_tree_roots(worktree)` and `load_all_tree_roots()` are two further
+cold-path, read-only queries — siblings of `load_mutation_event`, never
+reached from `load_worktree` or a hook-boundary path — that expose the set of
+Git tree SHAs the mutation-cursor protocol still durably depends on, for the
+per-worktree ref-reconciliation pass (see
+[`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md)).
+
+- `load_tree_roots(worktree) -> BTreeSet<TreeId>` returns one worktree's roots:
+  its `mutation_trace_worktrees.cursor_tree` plus the `before_tree` and
+  `after_tree` of every `mutation_trace_events` row for that worktree,
+  deduplicated. A worktree with no durable row yields the empty set, not an
+  error. Nothing from another worktree, from `mutation_trace_scopes` /
+  `mutation_trace_processed_events` / `mutation_trace_event_active_scopes`, or
+  from transient `AttemptState` / `external_taint` is ever included.
+- `load_all_tree_roots() -> BTreeSet<TreeId>` returns the union of those same
+  three `TreeId` columns across **every** worktree, deduplicated; an empty
+  repository yields the empty set. This is the reconciler's repository-wide
+  retention set: linked worktrees share one Git object database, so a ref
+  owned by one worktree may be the last SCE ref protecting a tree only another
+  worktree durably requires.
+
+Each query is backed by a **single SQL statement** — a `UNION` of the
+`cursor_tree` / `before_tree` / `after_tree` columns
+(`SELECT_TREE_ROOTS_BY_WORKTREE_SQL` / `SELECT_ALL_TREE_ROOTS_SQL`) — run
+through one `query_map` call, never independent per-table `SELECT`s unioned in
+Rust. So the whole root set is read from one coherent database snapshot: a
+concurrent mutation-cursor commit that atomically moves `cursor_tree` from `T`
+to `X` and inserts `MutationEvent { before_tree = T, after_tree = X }` in the
+same transaction cannot expose a torn set that omits `T` — the statement
+observes either the pre-commit snapshot (`cursor_tree` still `T`) or the
+post-commit snapshot (`before_tree` is `T`). The one-statement property is the
+concurrency boundary here, and it is enforced by a regression test, not left
+to code review: a `#[cfg(test)]` read-statement counter in `services::db`
+(`count_read_statements`) asserts that one `load_tree_roots` / one
+`load_all_tree_roots` call issues exactly one `TursoDb` read — splitting
+either into a cursor `SELECT` plus an events `SELECT` fails it. A separate
+state-transition test only checks that `T` stays a root across an atomic
+cursor advance and is explicitly not treated as proof of snapshot isolation.
+These are pure reads: no schema change, no migration, no write path.
+
 ## Write path
 
 `MutationTraceStore::commit(transition: &DurableTransition) -> Result<CasResult>`
@@ -130,6 +172,8 @@ returns `Err`.
   caller; retrying with a freshly reloaded revision is the calling adapter's
   responsibility, not this module's. `runtime::coordinator`'s bounded
   CAS-retry loop is now that adapter.
-- No deletion of terminal (`Closed`/`Abandoned`) scope rows or historical
-  `mutation_trace_events` rows — scope garbage collection is out of scope for
-  this plan.
+- No row deletion — `store.rs` never deletes a terminal (`Closed`/`Abandoned`)
+  scope row or a historical `mutation_trace_events` row; scope garbage
+  collection is out of scope. `load_tree_roots` / `load_all_tree_roots` are
+  read-only durable-tree queries for ref reconciliation and change nothing
+  about this.
