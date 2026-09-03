@@ -36,26 +36,40 @@ pub struct MutationAttributionResult {
 }
 
 #[must_use]
-pub fn resolve_mutation_attribution(
+pub fn exclude_direct_coverage(
+    target_patch: &ParsedPatch,
     direct_coverage: &ParsedPatch,
-    unresolved_patch: &ParsedPatch,
-    mutation_evidence: &[MutationPatchEvidence],
-) -> MutationAttributionResult {
+) -> ParsedPatch {
+    let selected = locations_without_direct_coverage(target_patch, direct_coverage);
+    patch_for_locations(target_patch, &selected)
+}
+
+fn locations_without_direct_coverage(
+    target_patch: &ParsedPatch,
+    direct_coverage: &ParsedPatch,
+) -> BTreeSet<PatchLineLocation> {
     let direct_lines = direct_line_keys(direct_coverage);
-    let target_locations = all_locations(unresolved_patch)
+    all_locations(target_patch)
         .into_iter()
         .filter(|location| {
-            let line = line_at(unresolved_patch, *location);
+            let line = line_at(target_patch, *location);
             !direct_lines.contains(&(
-                logical_path(&unresolved_patch.files[location.file_index]).to_owned(),
+                logical_path(&target_patch.files[location.file_index]).to_owned(),
                 line.kind,
                 line.line_number,
                 line.content.clone(),
             ))
         })
-        .collect::<BTreeSet<_>>();
+        .collect()
+}
 
-    let mut remaining = target_locations;
+#[must_use]
+pub fn resolve_mutation_attribution(
+    direct_coverage: &ParsedPatch,
+    unresolved_patch: &ParsedPatch,
+    mutation_evidence: &[MutationPatchEvidence],
+) -> MutationAttributionResult {
+    let mut remaining = locations_without_direct_coverage(unresolved_patch, direct_coverage);
     let mut mutation_ai = BTreeSet::new();
     let mut resolved_non_ai = BTreeSet::new();
 
