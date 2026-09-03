@@ -1,0 +1,10 @@
+diff --git a/src/widget.ts b/src/widget.ts
+index 1111111..2222222 100644
+--- a/src/widget.ts
++++ b/src/widget.ts
+@@ -2,1 +2,5 @@
+ line two
++alpha added
++beta added
++gamma added
++delta added
