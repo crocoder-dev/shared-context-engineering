@@ -10,17 +10,6 @@
 //!
 //! No Git, database, filesystem, environment, network, async, or lock I/O is
 //! performed here.
-//! The module is not yet wired into any hook, command, or database call
-//! site: that integration, along with the `coordinator.rs` (imperative
-//! shell), `git_snapshot.rs` (isolated Git snapshot capture), and `store.rs`
-//! (DB-backed CAS persistence) seams the target architecture will grow into,
-//! is left for later work. This layout leaves those three seams as the
-//! natural home for: `coordinator.rs` loading/persisting state and supplying
-//! the observed-tree inputs `prepare`/`recover` take as explicit parameters;
-//! `git_snapshot.rs` capturing and diffing worktree trees; and `store.rs`
-//! implementing the CAS-transactional persistence and runtime scope
-//! materialization contract described in
-//! `context/cli/mutation-trace-protocol.md`.
 //!
 //! # Quint refinement matrix
 //!
@@ -72,9 +61,9 @@
 //! population of every `ScopeState`/`WorktreeState` are **external adapter
 //! responsibility**: this refinement's `ScopeId`/`WorktreeId` spaces are
 //! unbounded runtime strings, so scope/worktree identity is materialized at
-//! runtime by the future `coordinator.rs`/`store.rs` layer rather than at
-//! protocol startup (see the "Runtime scope materialization" assumption
-//! recorded in the plan and in `context/cli/mutation-trace-protocol.md`).
+//! runtime by the future `coordinator.rs` layer rather than at protocol
+//! startup (see the "Runtime scope materialization" assumption recorded in
+//! the plan and in `context/cli/mutation-trace-protocol.md`).
 //!
 //! ## Semantic properties
 //!
@@ -156,6 +145,7 @@
 //! unchanged).
 
 pub mod protocol;
+pub mod store;
 pub mod types;
 
 #[cfg(test)]
