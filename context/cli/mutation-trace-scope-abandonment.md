@@ -223,13 +223,14 @@ covering what a single-module test with no real Git cannot:
 
 ## Status
 
-The entrypoint, its outcome/error types, its unit coverage, and its cross-runtime
-regressions against real Git repositories all exist. The `pub(crate)` re-export
-out of `runtime` and the harness-adapter contract document remain future work in
-the same plan; no harness, hook, or command calls this yet.
+The entrypoint, its outcome/error types, its unit coverage, its cross-runtime
+regressions against real Git repositories, its `pub(crate)` re-export out of
+`runtime`, and the harness-adapter contract document all exist; no harness,
+hook, or command calls this yet.
 
 See also: [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md),
 [`mutation-trace-protected-worktree.md`](mutation-trace-protected-worktree.md),
 [`mutation-trace-external-taint.md`](mutation-trace-external-taint.md),
 [`mutation-trace-protocol.md`](mutation-trace-protocol.md),
-[`mutation-trace-store.md`](mutation-trace-store.md).
+[`mutation-trace-store.md`](mutation-trace-store.md),
+[`mutation-scope-runtime.md`](mutation-scope-runtime.md).
