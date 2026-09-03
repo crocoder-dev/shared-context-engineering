@@ -21,7 +21,7 @@ Given a `constructed_patch` (AI candidate) and a `post_commit_patch` (canonical 
 `build_agent_trace_from_evidence(evidence, post_commit_patch, metadata)` is the seam that classifies from two independent AI-evidence sources:
 
 - `evidence.direct_patch` — the reconstructed direct patch, intersected against `post_commit_patch` internally exactly as before. It is the sole source of `Conversation.contributor.model_id`, `Conversation.related` session links, and the top-level `tool` object (still omitted when the direct intersection is empty).
-- `evidence.mutation_ai_patch` — a target-shaped, provenance-free set of committed touched lines that bounded mutation history attributed to AI, produced by [../cli/mutation-trace-agent-attribution.md](../cli/mutation-trace-agent-attribution.md). It only widens combined AI coverage for hunk classification and contributes no model, session, tool, or tool-version metadata.
+- `evidence.mutation_ai_patch` — a target-shaped, provenance-free set of committed touched lines that causal mutation-lineage replay attributed to AI (an AI event's line that survived every later observed tree transition into the committed tree), produced by [../cli/mutation-trace-agent-attribution.md](../cli/mutation-trace-agent-attribution.md). It only widens combined AI coverage for hunk classification and contributes no model, session, tool, or tool-version metadata.
 
 Per hunk, a `post_commit_patch` touched line is covered when it pairs one-to-one on `(kind, line_number, content)` with a line in the direct intersection hunk or the mutation-AI hunk at the same `old_start`; the covered fraction drives `ai` / `mixed` / `unknown` as in the Contract above. `line_changes` buckets follow that combined classification.
 
