@@ -10,8 +10,9 @@ use serde::Serialize;
 use serde_json::{json, to_string as serialize_to_json, Value};
 
 use crate::services::agent_trace::{
-    agent_trace_persisted_url, build_agent_trace, patch_has_touched_lines, patches_have_overlap,
-    validate_agent_trace_value, AgentTrace, AgentTraceMetadataInput, AgentTraceVcsType,
+    agent_trace_persisted_url, build_agent_trace_from_evidence, patch_has_touched_lines,
+    patches_have_overlap, validate_agent_trace_value, AgentTrace, AgentTraceEvidence,
+    AgentTraceMetadataInput, AgentTraceVcsType,
 };
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::agent_trace_db::{
@@ -1580,10 +1581,26 @@ fn run_post_commit_agent_trace_flow(
         "Failed to open Agent Trace DB for post-commit trace.",
     )?;
 
+    // Direct evidence is resolved first with the existing intersection, then the
+    // committed lines it does not cover are offered to bounded mutation history
+    // (read-only, current-worktree-only, direct-only fallback on absent identity).
+    let direct_intersection = intersect_patches_fn(
+        &flow_result.combined_recent_patch,
+        &flow_result.post_commit_data.parsed_patch,
+    );
+    let mutation_ai_patch =
+        crate::services::mutation_trace::runtime::resolve_post_commit_mutation_ai_patch(
+            repository_root,
+            &db,
+            &direct_intersection,
+            &flow_result.post_commit_data.parsed_patch,
+        );
+
     run_post_commit_agent_trace_flow_with(
         flow_result,
         vcs_type,
         remote_url,
+        &mutation_ai_patch,
         |trace_value| {
             validate_agent_trace_value(trace_value)
                 .map_err(|error| anyhow!(error.to_string()))
@@ -1604,6 +1621,7 @@ fn run_post_commit_agent_trace_flow_with<V, I>(
     flow_result: &PostCommitIntersectionFlowResult,
     vcs_type: Option<AgentTraceVcsType>,
     remote_url: &str,
+    mutation_ai_patch: &ParsedPatch,
     validate_agent_trace: V,
     persist_agent_trace: I,
 ) -> Result<AgentTrace>
@@ -1621,8 +1639,11 @@ where
             })?
             .to_rfc3339();
 
-    let agent_trace = build_agent_trace(
-        &flow_result.combined_recent_patch,
+    let agent_trace = build_agent_trace_from_evidence(
+        AgentTraceEvidence {
+            direct_patch: &flow_result.combined_recent_patch,
+            mutation_ai_patch,
+        },
         &flow_result.post_commit_data.parsed_patch,
         AgentTraceMetadataInput {
             commit_timestamp: &commit_timestamp,
@@ -3567,6 +3588,7 @@ mod tests {
                     flow_result,
                     vcs_type,
                     remote_url,
+                    &ParsedPatch { files: Vec::new() },
                     |_| {
                         *validation_called.borrow_mut() = true;
                         Err(anyhow!("Agent Trace validation failed"))
@@ -3591,6 +3613,730 @@ mod tests {
         assert!(!error.to_string().is_empty());
         assert!(!*config_called.borrow());
         assert!(!*launch_called.borrow());
+    }
+
+    fn post_commit_flow_result_for(
+        direct: ParsedPatch,
+        committed: ParsedPatch,
+    ) -> PostCommitIntersectionFlowResult {
+        PostCommitIntersectionFlowResult {
+            combined_recent_patch: direct,
+            post_commit_data: PostCommitPatchData {
+                commit_oid: String::from("abc123"),
+                commit_time_ms: 1_800_000_000_000,
+                parsed_patch: committed,
+            },
+            tool_name: Some(String::from("claude")),
+            tool_version: Some(String::from("9.9.9")),
+        }
+    }
+
+    fn persisted_post_commit_trace(
+        flow_result: &PostCommitIntersectionFlowResult,
+        mutation_ai_patch: &ParsedPatch,
+    ) -> Value {
+        let persisted = RefCell::new(None);
+
+        run_post_commit_agent_trace_flow_with(
+            flow_result,
+            Some(AgentTraceVcsType::Git),
+            "",
+            mutation_ai_patch,
+            |_| Ok(()),
+            |insert| {
+                *persisted.borrow_mut() = Some(insert.trace_json.to_string());
+                Ok(())
+            },
+        )
+        .expect("post-commit Agent Trace flow should build and persist");
+
+        serde_json::from_str(
+            persisted
+                .into_inner()
+                .expect("trace should have been persisted")
+                .as_str(),
+        )
+        .expect("persisted trace JSON should parse")
+    }
+
+    #[test]
+    fn post_commit_agent_trace_flow_attributes_mutation_only_lines_as_ai_without_provenance() {
+        let flow_result = post_commit_flow_result_for(
+            ParsedPatch { files: Vec::new() },
+            valid_patch("src/lib.rs", "mutated line"),
+        );
+        let mutation_ai_patch = valid_patch("src/lib.rs", "mutated line");
+
+        let trace = persisted_post_commit_trace(&flow_result, &mutation_ai_patch);
+
+        assert_eq!(
+            trace["metadata"]["sce"]["line_changes"]["ai"]["added"],
+            json!(1)
+        );
+        assert_eq!(
+            trace["metadata"]["sce"]["line_changes"]["unknown"]["added"],
+            json!(0)
+        );
+        assert!(
+            trace.get("tool").is_none(),
+            "mutation-only coverage fabricates no tool provenance"
+        );
+        let contributor = &trace["files"][0]["conversations"][0]["contributor"];
+        assert_eq!(contributor["type"], json!("ai"));
+        assert!(
+            contributor.get("model_id").is_none(),
+            "mutation-only coverage carries no model provenance"
+        );
+        assert!(
+            trace["files"][0]["conversations"][0]
+                .get("related")
+                .is_none(),
+            "mutation-only coverage carries no session provenance"
+        );
+    }
+
+    #[test]
+    fn post_commit_agent_trace_flow_keeps_direct_provenance_when_direct_covers_the_line() {
+        let flow_result = post_commit_flow_result_for(
+            valid_patch("src/lib.rs", "shared line"),
+            valid_patch("src/lib.rs", "shared line"),
+        );
+
+        let trace = persisted_post_commit_trace(&flow_result, &ParsedPatch { files: Vec::new() });
+
+        assert_eq!(
+            trace["metadata"]["sce"]["line_changes"]["ai"]["added"],
+            json!(1)
+        );
+        assert_eq!(
+            trace["tool"],
+            json!({ "name": "claude", "version": "9.9.9" })
+        );
+        assert_eq!(
+            trace["files"][0]["conversations"][0]["contributor"]["type"],
+            json!("ai")
+        );
+    }
+
+    #[test]
+    fn post_commit_agent_trace_flow_with_empty_mutation_patch_leaves_uncovered_lines_unknown() {
+        let flow_result = post_commit_flow_result_for(
+            ParsedPatch { files: Vec::new() },
+            valid_patch("src/lib.rs", "human line"),
+        );
+
+        let trace = persisted_post_commit_trace(&flow_result, &ParsedPatch { files: Vec::new() });
+
+        assert_eq!(
+            trace["metadata"]["sce"]["line_changes"]["unknown"]["added"],
+            json!(1)
+        );
+        assert_eq!(
+            trace["metadata"]["sce"]["line_changes"]["ai"]["added"],
+            json!(0)
+        );
+        assert!(trace.get("tool").is_none());
+        assert_eq!(
+            trace["files"][0]["conversations"][0]["contributor"]["type"],
+            json!("unknown")
+        );
+    }
+
+    mod mutation_attribution_e2e {
+        use super::*;
+        use crate::services::checkout::{get_or_create_checkout_id, resolve_git_dir};
+        use crate::services::mutation_trace::runtime::resolve_post_commit_mutation_ai_patch;
+        use crate::services::mutation_trace::store::encode_revision;
+
+        fn git(repo: &Path, args: &[&str]) -> String {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .output()
+                .expect("git should spawn");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).expect("git output should be UTF-8")
+        }
+
+        fn commit_all(repo: &Path, message: &str) {
+            git(repo, &["add", "-A"]);
+            git(
+                repo,
+                &[
+                    "-c",
+                    "user.name=SCE Test",
+                    "-c",
+                    "user.email=sce@example.invalid",
+                    "commit",
+                    "-qm",
+                    message,
+                ],
+            );
+        }
+
+        struct E2eRepo {
+            _temp: tempfile::TempDir,
+            root: PathBuf,
+            db_path: PathBuf,
+        }
+
+        impl E2eRepo {
+            fn new(label: &str) -> Self {
+                let temp = tempfile::Builder::new()
+                    .prefix(&format!("sce-mutation-attr-e2e-{label}-"))
+                    .tempdir()
+                    .expect("temp dir should be created");
+                let root = temp.path().join("repo");
+                fs::create_dir_all(&root).expect("repo dir should be created");
+                git(&root, &["init", "-q"]);
+                git(
+                    &root,
+                    &["remote", "add", "origin", "git@github.com:acme/widgets.git"],
+                );
+                fs::write(root.join("file.rs"), "one\n").expect("seed file should write");
+                commit_all(&root, "base");
+                let db_path = temp.path().join("agent-trace.db");
+                RepositoryAgentTraceDb::new_at(&db_path)
+                    .expect("repository DB should open with schema");
+                Self {
+                    _temp: temp,
+                    root,
+                    db_path,
+                }
+            }
+
+            fn db(&self) -> RepositoryAgentTraceDb {
+                RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&self.db_path)
+                    .expect("repository DB should reopen")
+            }
+
+            fn head_tree(&self) -> String {
+                git(&self.root, &["rev-parse", "HEAD^{tree}"])
+                    .trim()
+                    .to_owned()
+            }
+
+            fn parent_tree(&self) -> String {
+                git(&self.root, &["rev-parse", "HEAD~1^{tree}"])
+                    .trim()
+                    .to_owned()
+            }
+
+            fn checkout_id(&self) -> String {
+                let git_dir = resolve_git_dir(&self.root).expect("git dir should resolve");
+                get_or_create_checkout_id(&git_dir).expect("checkout identity should resolve")
+            }
+        }
+
+        fn seed_event(
+            db: &RepositoryAgentTraceDb,
+            worktree_id: &str,
+            revision: u64,
+            before_tree: &str,
+            after_tree: &str,
+            attribution_kind: &str,
+            attribution_scope_id: Option<&str>,
+        ) {
+            db.execute(
+                "INSERT INTO mutation_trace_events
+                    (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
+                     attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id,
+                     boundary_event_id)
+                 VALUES (?1, ?2, ?3, ?4, 0, 'healthy', ?5, ?6, 'flush', NULL, NULL)",
+                (
+                    worktree_id,
+                    encode_revision(revision).as_slice(),
+                    before_tree,
+                    after_tree,
+                    attribution_kind,
+                    attribution_scope_id,
+                ),
+            )
+            .expect("mutation event insert should succeed");
+        }
+
+        fn row_count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
+            db.query_map(&format!("SELECT COUNT(*) FROM {table}"), (), |row| {
+                row.get::<i64>(0).map_err(anyhow::Error::from)
+            })
+            .expect("count query should succeed")
+            .into_iter()
+            .next()
+            .expect("count row should exist")
+        }
+
+        fn touched_line_count(patch: &ParsedPatch) -> usize {
+            patch
+                .files
+                .iter()
+                .flat_map(|file| file.hunks.iter())
+                .map(|hunk| hunk.lines.len())
+                .sum()
+        }
+
+        fn flow_result_for(
+            repo: &E2eRepo,
+            direct: ParsedPatch,
+        ) -> PostCommitIntersectionFlowResult {
+            let post_commit_data = capture_post_commit_patch_from_git(&repo.root)
+                .expect("capturing the post-commit patch should succeed");
+            PostCommitIntersectionFlowResult {
+                combined_recent_patch: direct,
+                post_commit_data,
+                tool_name: None,
+                tool_version: None,
+            }
+        }
+
+        fn resolve_mutation_ai(
+            repo: &E2eRepo,
+            db: &RepositoryAgentTraceDb,
+            flow_result: &PostCommitIntersectionFlowResult,
+        ) -> ParsedPatch {
+            let direct_intersection = intersect_patches_fn(
+                &flow_result.combined_recent_patch,
+                &flow_result.post_commit_data.parsed_patch,
+            );
+            resolve_post_commit_mutation_ai_patch(
+                &repo.root,
+                db,
+                &direct_intersection,
+                &flow_result.post_commit_data.parsed_patch,
+            )
+        }
+
+        fn persist_trace(
+            flow_result: &PostCommitIntersectionFlowResult,
+            db: &RepositoryAgentTraceDb,
+            mutation_ai_patch: &ParsedPatch,
+        ) -> Value {
+            let persisted = RefCell::new(None);
+            run_post_commit_agent_trace_flow_with(
+                flow_result,
+                Some(AgentTraceVcsType::Git),
+                "git@github.com:acme/widgets.git",
+                mutation_ai_patch,
+                |value| {
+                    validate_agent_trace_value(value).map_err(|error| anyhow!(error.to_string()))
+                },
+                |insert| {
+                    *persisted.borrow_mut() = Some(insert.trace_json.to_string());
+                    db.insert_agent_trace(insert).map(|_| ())
+                },
+            )
+            .expect("the post-commit Agent Trace flow should build, validate, and persist");
+
+            serde_json::from_str(
+                persisted
+                    .into_inner()
+                    .expect("a trace should have been persisted")
+                    .as_str(),
+            )
+            .expect("the persisted trace JSON should parse")
+        }
+
+        #[test]
+        fn a_mutation_only_line_persists_as_ai_without_fabricated_provenance() {
+            let repo = E2eRepo::new("mutation-only");
+            fs::write(repo.root.join("file.rs"), "one\ntwo\n").expect("the edit should write");
+            commit_all(&repo.root, "add two");
+
+            let db = repo.db();
+            seed_event(
+                &db,
+                &repo.checkout_id(),
+                1,
+                &repo.parent_tree(),
+                &repo.head_tree(),
+                "ai_exclusive",
+                Some("scope-x"),
+            );
+
+            let flow_result = flow_result_for(&repo, ParsedPatch { files: Vec::new() });
+            let mutation_ai_patch = resolve_mutation_ai(&repo, &db, &flow_result);
+            assert_eq!(
+                touched_line_count(&mutation_ai_patch),
+                1,
+                "a healthy untainted exclusive event covers the committed line"
+            );
+
+            let trace = persist_trace(&flow_result, &db, &mutation_ai_patch);
+            assert_eq!(
+                trace["metadata"]["sce"]["line_changes"]["ai"]["added"],
+                json!(1)
+            );
+            assert_eq!(
+                trace["metadata"]["sce"]["line_changes"]["unknown"]["added"],
+                json!(0)
+            );
+            assert!(
+                trace.get("tool").is_none(),
+                "mutation-only coverage fabricates no tool provenance"
+            );
+            let contributor = &trace["files"][0]["conversations"][0]["contributor"];
+            assert_eq!(contributor["type"], json!("ai"));
+            assert!(
+                contributor.get("model_id").is_none(),
+                "mutation-only coverage carries no model provenance"
+            );
+
+            assert_eq!(
+                row_count(&db, "diff_traces"),
+                0,
+                "mutation evidence is never inserted into diff_traces"
+            );
+            assert_eq!(
+                row_count(&db, "post_commit_patch_intersections"),
+                0,
+                "the direct-only intersection table is untouched by this flow"
+            );
+            assert_eq!(row_count(&db, "agent_traces"), 1);
+        }
+
+        #[test]
+        fn direct_plus_mutation_evidence_completes_hunk_coverage_and_keeps_direct_provenance() {
+            let repo = E2eRepo::new("direct-plus-mutation");
+            fs::write(repo.root.join("file.rs"), "one\ntwo\nthree\n")
+                .expect("the edit should write");
+            commit_all(&repo.root, "add two and three");
+
+            let db = repo.db();
+            seed_event(
+                &db,
+                &repo.checkout_id(),
+                1,
+                &repo.parent_tree(),
+                &repo.head_tree(),
+                "ai_exclusive",
+                Some("scope-x"),
+            );
+
+            let direct = parse_patch_from_text(
+                "diff --git a/file.rs b/file.rs\n--- a/file.rs\n+++ b/file.rs\n@@ -1,1 +1,2 @@\n one\n+two\n",
+                None,
+            )
+            .expect("the direct patch should parse");
+            let mut flow_result = flow_result_for(&repo, direct);
+            flow_result.tool_name = Some(String::from("claude"));
+            flow_result.tool_version = Some(String::from("9.9.9"));
+
+            let mutation_ai_patch = resolve_mutation_ai(&repo, &db, &flow_result);
+            assert_eq!(
+                touched_line_count(&mutation_ai_patch),
+                1,
+                "only the line direct evidence did not cover is resolved from mutation history"
+            );
+
+            let trace = persist_trace(&flow_result, &db, &mutation_ai_patch);
+            assert_eq!(
+                trace["metadata"]["sce"]["line_changes"]["ai"]["added"],
+                json!(2),
+                "the union of direct and mutation coverage classifies the hunk ai"
+            );
+            assert_eq!(
+                trace["metadata"]["sce"]["line_changes"]["unknown"]["added"],
+                json!(0)
+            );
+            assert_eq!(
+                trace["tool"],
+                json!({ "name": "claude", "version": "9.9.9" })
+            );
+        }
+
+        #[test]
+        fn a_newer_nonexclusive_event_keeps_the_line_non_ai() {
+            let repo = E2eRepo::new("newer-nonexclusive");
+            fs::write(repo.root.join("file.rs"), "one\ntwo\n").expect("the edit should write");
+            commit_all(&repo.root, "add two");
+
+            let db = repo.db();
+            let worktree = repo.checkout_id();
+            seed_event(
+                &db,
+                &worktree,
+                1,
+                &repo.parent_tree(),
+                &repo.head_tree(),
+                "ai_exclusive",
+                Some("scope-old"),
+            );
+            seed_event(
+                &db,
+                &worktree,
+                2,
+                &repo.parent_tree(),
+                &repo.head_tree(),
+                "ai_contended",
+                None,
+            );
+
+            let flow_result = flow_result_for(&repo, ParsedPatch { files: Vec::new() });
+            let mutation_ai_patch = resolve_mutation_ai(&repo, &db, &flow_result);
+            assert_eq!(
+                touched_line_count(&mutation_ai_patch),
+                0,
+                "the newer contended match resolves the line and blocks the older exclusive event"
+            );
+
+            let trace = persist_trace(&flow_result, &db, &mutation_ai_patch);
+            assert_eq!(
+                trace["metadata"]["sce"]["line_changes"]["unknown"]["added"],
+                json!(1)
+            );
+            assert_eq!(
+                trace["metadata"]["sce"]["line_changes"]["ai"]["added"],
+                json!(0)
+            );
+            assert_eq!(
+                trace["files"][0]["conversations"][0]["contributor"]["type"],
+                json!("unknown")
+            );
+        }
+
+        #[test]
+        fn an_adversarial_foreign_worktree_event_cannot_block_the_current_worktrees_exclusive_event(
+        ) {
+            let repo = E2eRepo::new("adversarial-linked");
+
+            let linked_root = repo
+                .root
+                .parent()
+                .expect("the repo should have a parent directory")
+                .join("linked");
+            git(
+                &repo.root,
+                &[
+                    "worktree",
+                    "add",
+                    "-q",
+                    linked_root.to_str().expect("worktree path should be UTF-8"),
+                ],
+            );
+
+            fs::write(repo.root.join("file.rs"), "one\ntwo\n").expect("the edit should write");
+            commit_all(&repo.root, "add two");
+
+            let db = repo.db();
+            let current_worktree = repo.checkout_id();
+            let linked_git_dir =
+                resolve_git_dir(&linked_root).expect("the linked git dir should resolve");
+            let foreign_worktree = get_or_create_checkout_id(&linked_git_dir)
+                .expect("the linked worktree's checkout identity should resolve");
+            assert_ne!(
+                current_worktree, foreign_worktree,
+                "the linked worktree must derive its own distinct identity"
+            );
+
+            seed_event(
+                &db,
+                &current_worktree,
+                1,
+                &repo.parent_tree(),
+                &repo.head_tree(),
+                "ai_exclusive",
+                Some("scope-current"),
+            );
+            seed_event(
+                &db,
+                &foreign_worktree,
+                2,
+                &repo.parent_tree(),
+                &repo.head_tree(),
+                "ai_contended",
+                None,
+            );
+
+            let flow_result = flow_result_for(&repo, ParsedPatch { files: Vec::new() });
+            let mutation_ai_patch = resolve_mutation_ai(&repo, &db, &flow_result);
+            assert_eq!(
+                touched_line_count(&mutation_ai_patch),
+                1,
+                "only the current worktree's history is eligible, so the older exclusive event contributes"
+            );
+
+            let trace = persist_trace(&flow_result, &db, &mutation_ai_patch);
+            assert_eq!(
+                trace["metadata"]["sce"]["line_changes"]["ai"]["added"],
+                json!(1),
+                "worktree isolation lets the current worktree's exclusive event classify the target ai"
+            );
+            assert_eq!(
+                trace["files"][0]["conversations"][0]["contributor"]["type"],
+                json!("ai")
+            );
+            assert!(trace.get("tool").is_none());
+        }
+
+        fn touched_contents(patch: &ParsedPatch) -> Vec<String> {
+            patch
+                .files
+                .iter()
+                .flat_map(|file| file.hunks.iter())
+                .flat_map(|hunk| hunk.lines.iter())
+                .map(|line| line.content.clone())
+                .collect()
+        }
+
+        #[test]
+        #[allow(clippy::too_many_lines)]
+        fn persistence_boundaries_stay_separated_across_diff_traces_intersection_and_agent_trace() {
+            let repo = E2eRepo::new("persistence-boundary");
+
+            fs::write(repo.root.join("file.rs"), "one\ntwo\n")
+                .expect("the direct edit should write");
+            git(&repo.root, &["add", "-A"]);
+            let intermediate_tree = git(&repo.root, &["write-tree"]).trim().to_owned();
+
+            fs::write(repo.root.join("file.rs"), "one\ntwo\nthree\n")
+                .expect("the mutation edit should write");
+            commit_all(&repo.root, "add two and three");
+
+            let base_tree = repo.parent_tree();
+            let final_tree = repo.head_tree();
+            assert_ne!(
+                base_tree, intermediate_tree,
+                "the direct edit must move the tree"
+            );
+            assert_ne!(
+                intermediate_tree, final_tree,
+                "the mutation edit must move the tree again"
+            );
+
+            let db = repo.db();
+
+            let now_ms = current_unix_time_ms().expect("the clock should resolve");
+            db.insert_diff_trace(DiffTraceInsert {
+                time_ms: now_ms - 60_000,
+                session_id: "cc_session-direct",
+                patch: "diff --git a/file.rs b/file.rs\n--- a/file.rs\n+++ b/file.rs\n@@ -1,1 +1,2 @@\n one\n+two\n",
+                model_id: Some("claude/model-direct"),
+                tool_name: "claude",
+                tool_version: Some("9.9.9"),
+                payload_type: PAYLOAD_TYPE_PATCH,
+            })
+            .expect("the direct diff_traces row should insert");
+
+            seed_event(
+                &db,
+                &repo.checkout_id(),
+                1,
+                &intermediate_tree,
+                &final_tree,
+                "ai_exclusive",
+                Some("scope-mutation"),
+            );
+
+            let flow_result = run_post_commit_intersection_flow_with(
+                &repo.root,
+                capture_post_commit_patch_from_git,
+                current_unix_time_ms,
+                |cutoff_ms, end_ms| db.recent_diff_trace_patches(cutoff_ms, end_ms),
+                |insert| db.insert_post_commit_patch_intersection(insert).map(|_| ()),
+            )
+            .expect("the real post-commit intersection flow should run");
+            assert_eq!(
+                touched_contents(&flow_result.combined_recent_patch),
+                vec!["two".to_owned()],
+                "the combined recent patch comes from the real diff_traces query, not an in-memory patch"
+            );
+
+            let mutation_ai_patch = resolve_mutation_ai(&repo, &db, &flow_result);
+            assert_eq!(
+                touched_contents(&mutation_ai_patch),
+                vec!["three".to_owned()],
+                "mutation history resolves only the committed line direct evidence missed"
+            );
+
+            persist_trace(&flow_result, &db, &mutation_ai_patch);
+
+            assert_eq!(
+                row_count(&db, "diff_traces"),
+                1,
+                "mutation attribution must not create another diff_traces row"
+            );
+            let stored_direct_patch: String = db
+                .query_map("SELECT patch FROM diff_traces", (), |row| {
+                    row.get::<String>(0).map_err(anyhow::Error::from)
+                })
+                .expect("diff_traces query should succeed")
+                .into_iter()
+                .next()
+                .expect("one diff_traces row should exist");
+            let stored_direct = parse_patch_from_text(&stored_direct_patch, None)
+                .expect("the stored direct patch should parse");
+            assert_eq!(
+                touched_contents(&stored_direct),
+                vec!["two".to_owned()],
+                "the direct diff_traces row contains 'two' and never 'three'"
+            );
+
+            assert_eq!(
+                row_count(&db, "post_commit_patch_intersections"),
+                1,
+                "the intersection flow persists exactly one direct-only row"
+            );
+            let stored_intersection_json: String = db
+                .query_map(
+                    "SELECT intersection_patch FROM post_commit_patch_intersections",
+                    (),
+                    |row| row.get::<String>(0).map_err(anyhow::Error::from),
+                )
+                .expect("intersection query should succeed")
+                .into_iter()
+                .next()
+                .expect("one intersection row should exist");
+            let stored_intersection = load_patch_from_json(&stored_intersection_json)
+                .expect("the persisted intersection patch should reconstruct");
+            assert_eq!(
+                touched_contents(&stored_intersection),
+                vec!["two".to_owned()],
+                "post_commit_patch_intersections stays direct-only; the mutation line 'three' \
+                 must never contaminate this table"
+            );
+
+            assert_eq!(row_count(&db, "agent_traces"), 1);
+            let stored_trace_json: String = db
+                .query_map("SELECT trace_json FROM agent_traces", (), |row| {
+                    row.get::<String>(0).map_err(anyhow::Error::from)
+                })
+                .expect("agent_traces query should succeed")
+                .into_iter()
+                .next()
+                .expect("one Agent Trace row should exist");
+            let trace: Value = serde_json::from_str(&stored_trace_json)
+                .expect("the persisted Agent Trace JSON should parse");
+            validate_agent_trace_value(&trace).expect(
+                "the persisted agent_traces.trace_json validates against the embedded Agent Trace schema",
+            );
+            assert_eq!(
+                trace["metadata"]["sce"]["line_changes"]["ai"]["added"],
+                json!(2),
+                "direct + mutation coverage classifies both committed added lines as ai"
+            );
+            assert_eq!(
+                trace["metadata"]["sce"]["line_changes"]["unknown"]["added"],
+                json!(0)
+            );
+            assert_eq!(
+                trace["files"][0]["conversations"][0]["contributor"]["type"],
+                json!("ai")
+            );
+
+            assert_eq!(
+                trace["tool"],
+                json!({ "name": "claude", "version": "9.9.9" })
+            );
+
+            assert_eq!(
+                row_count(&db, "mutation_trace_events"),
+                1,
+                "attribution performs no mutation-cursor write"
+            );
+        }
     }
 
     #[test]

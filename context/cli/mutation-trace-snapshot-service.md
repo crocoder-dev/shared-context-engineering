@@ -50,6 +50,13 @@ tree in the same repository.
 SHAs, returning the raw diff text `patch.rs::parse_patch` already knows how to
 parse.
 
+`head_tree(&self) -> Result<TreeId>` resolves `HEAD^{tree}`.
+`file_at_tree(&self, tree, path) -> Result<Option<String>>` reads one blob's
+UTF-8 text via `git cat-file blob <tree>:<path>`, returning `None` for a missing
+path or a non-UTF-8 blob. Both exist only for post-commit mutation attribution:
+`head_tree` is the terminal tree state the lineage must reach, `file_at_tree`
+builds the conservative all-`Unknown` baseline and gap/failure reloads.
+
 ## Pin inventory and conditional deletion
 
 **Mutation-cursor pins are direct refs.** Every valid pin is a direct ref
@@ -105,10 +112,15 @@ helper are the single source of truth for the pin path; `pin_tree`,
 
 ## Callers
 
-`coordinator.rs` is the only caller of `capture`/`pin`/`diff_trees` so far, via
-its `SnapshotCapture` trait; `list_pins` / `delete_pins` have no caller yet —
-the deferred per-worktree ref-reconciliation maintenance pass is their first
-consumer.
+`coordinator.rs` is the only caller of `capture`/`pin` so far, via its
+`SnapshotCapture` trait. `diff_trees`, `head_tree`, and `file_at_tree` have a
+second, read-only caller: the bounded mutation-history attribution consumer
+(`runtime/mutation_attribution.rs`) reconstructs each historical event's tree
+transition and reads baseline file content through its own `TreeReadSource`
+trait (see
+[`mutation-trace-agent-attribution.md`](mutation-trace-agent-attribution.md)).
+`list_pins` / `delete_pins` are consumed by the per-worktree
+ref-reconciliation maintenance pass.
 
 ## Testing boundary
 

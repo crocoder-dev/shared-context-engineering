@@ -144,6 +144,8 @@
 //! no-change `Flush` still commits successfully at `u64::MAX`, with revision
 //! unchanged).
 
+pub mod attribution;
+pub mod lineage;
 pub mod protocol;
 pub(crate) mod runtime;
 pub mod store;

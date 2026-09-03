@@ -8,19 +8,21 @@ use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::agent_trace_storage::{
     resolve_agent_trace_storage_at_state_root, AgentTraceStorageContext,
 };
-use crate::services::checkout::{read_checkout_id, resolve_git_dir};
+use crate::services::checkout::{get_or_create_checkout_id, read_checkout_id, resolve_git_dir};
 use crate::services::mutation_trace::protocol;
 use crate::services::mutation_trace::store::{
     encode_revision, CasResult, DurableTransition, MutationTraceStore,
 };
 use crate::services::mutation_trace::types::{
     boundary_event_key, boundary_scope, ActorKind, AttemptId, Boundary, EventId, FailureKind,
-    ScopeId, ScopeStatus,
+    ScopeId, ScopeStatus, WorktreeId,
 };
+use crate::services::patch::{parse_patch, ParsedPatch};
 
 use super::coordinator::{coordinate, coordinate_inner, CoordinateError, RuntimeBoundary};
 use super::external_taint::ExternalTaintMarker;
 use super::git_snapshot::GitSnapshotService;
+use super::mutation_attribution::resolve_bounded_mutation_attribution;
 use super::ref_reconciliation::{
     reconcile_worktree, reconcile_worktree_inner, ReconcileError, ReconciliationOutcome,
 };
@@ -152,6 +154,33 @@ fn seed_event(
         ),
     )
     .expect("event row insert should succeed");
+}
+
+fn seed_attribution_event(
+    db: &RepositoryAgentTraceDb,
+    worktree_id: &str,
+    revision: u64,
+    before_tree: &str,
+    after_tree: &str,
+    attribution_kind: &str,
+    attribution_scope_id: Option<&str>,
+) {
+    db.execute(
+        "INSERT INTO mutation_trace_events
+            (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
+             attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id,
+             boundary_event_id)
+         VALUES (?1, ?2, ?3, ?4, 0, 'healthy', ?5, ?6, 'flush', NULL, NULL)",
+        (
+            worktree_id,
+            encode_revision(revision).as_slice(),
+            before_tree,
+            after_tree,
+            attribution_kind,
+            attribution_scope_id,
+        ),
+    )
+    .expect("attribution event row insert should succeed");
 }
 
 fn ref_exists(dir: &Path, ref_name: &str) -> bool {
@@ -2264,5 +2293,103 @@ fn a_real_thread_cas_race_settles_on_the_competitors_terminal_status() {
     assert_eq!(
         projection.worktree_state.revision, competitor_revision,
         "the settled no-op writes nothing, so the revision stays at the competitor's"
+    );
+}
+
+#[test]
+fn a_relevant_event_behind_128_newer_events_is_never_loaded_or_reconstructed() {
+    let repo = TestRepo::new("attribution-horizon");
+    let git_dir = resolve_git_dir(&repo.repo_root).expect("git dir should resolve");
+    let checkout_id =
+        get_or_create_checkout_id(&git_dir).expect("checkout identity should resolve");
+    let snapshot =
+        GitSnapshotService::new(&repo.repo_root).expect("a snapshot service should build");
+
+    std::fs::write(repo.repo_root.join("file.rs"), b"one\n").expect("the before edit should write");
+    let before = snapshot
+        .capture_tree()
+        .expect("capturing the before tree should succeed");
+    std::fs::write(repo.repo_root.join("file.rs"), b"one\ntwo\n")
+        .expect("the after edit should write");
+    let after = snapshot
+        .capture_tree()
+        .expect("capturing the after tree should succeed");
+
+    let db = repo.db();
+    seed_attribution_event(
+        &db,
+        &checkout_id,
+        1,
+        &before.0,
+        &after.0,
+        "ai_exclusive",
+        Some("scope-behind-the-horizon"),
+    );
+    for revision in 2..=129 {
+        seed_attribution_event(
+            &db,
+            &checkout_id,
+            revision,
+            &after.0,
+            &after.0,
+            "ineligible_unscoped",
+            None,
+        );
+    }
+
+    let store = MutationTraceStore::new(&db);
+    let committed = parse_patch(
+        "diff --git a/file.rs b/file.rs\n--- a/file.rs\n+++ b/file.rs\n@@ -1,1 +1,2 @@\n one\n+two\n",
+        None,
+    )
+    .expect("the committed patch should parse");
+
+    let attribution = resolve_bounded_mutation_attribution(
+        &store,
+        &snapshot,
+        &WorktreeId(checkout_id.clone()),
+        &ParsedPatch { files: Vec::new() },
+        &committed,
+        &after,
+        None,
+    );
+
+    assert_eq!(
+        attribution.inspected_events, 128,
+        "the 128-event horizon caps inspection at exactly 128 events"
+    );
+    assert_eq!(
+        attribution.reconstructed_events, 128,
+        "every inspected no-op event still reconstructs"
+    );
+    assert_eq!(
+        attribution.loaded_pages, 4,
+        "the 32/128 constants imply exactly four pages here"
+    );
+    assert_eq!(
+        attribution.loaded_rows, 128,
+        "the 129th row is never loaded"
+    );
+    assert!(
+        attribution.barrier.is_none(),
+        "exhausting the horizon is not a failure barrier"
+    );
+    assert!(
+        attribution
+            .result
+            .mutation_ai_patch
+            .files
+            .iter()
+            .all(|file| file.hunks.iter().all(|hunk| hunk.lines.is_empty())),
+        "the relevant event beyond the horizon never contributes AI coverage"
+    );
+    assert!(
+        !attribution
+            .result
+            .unresolved_patch
+            .files
+            .iter()
+            .all(|file| file.hunks.iter().all(|hunk| hunk.lines.is_empty())),
+        "the committed line stays unresolved because its only match was never inspected"
     );
 }
