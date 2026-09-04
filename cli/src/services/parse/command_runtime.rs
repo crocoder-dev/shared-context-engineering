@@ -504,6 +504,9 @@ fn convert_hooks_subcommand_request(
         cli_schema::HooksSubcommand::ClaudeModelState => {
             Ok(services::hooks::HookSubcommand::ClaudeModelState)
         }
+        cli_schema::HooksSubcommand::MutationScope => {
+            Ok(services::hooks::HookSubcommand::MutationScope)
+        }
     }
 }
 
@@ -581,6 +584,20 @@ mod tests {
         assert_eq!(
             command.subcommand,
             services::hooks::HookSubcommand::ClaudeModelState
+        );
+    }
+
+    #[test]
+    fn mutation_scope_hook_parses_to_hook_subcommand() {
+        let command = parse(&["sce", "hooks", "mutation-scope"]);
+
+        let RuntimeCommand::Hooks(command) = command else {
+            panic!("expected hooks command");
+        };
+
+        assert_eq!(
+            command.subcommand,
+            services::hooks::HookSubcommand::MutationScope
         );
     }
 
