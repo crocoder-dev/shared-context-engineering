@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub(crate) mod state;
+
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{Map, Value};
 
