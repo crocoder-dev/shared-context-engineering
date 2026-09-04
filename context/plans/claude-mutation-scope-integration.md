@@ -49,7 +49,11 @@ Claude Code `2.1.258` (see T01's Verify record in the Task stack below and
 `cli/src/services/hooks/claude_mutation_scope/fixtures/NOTES.md`); the
 decisions whose correctness depended on one of them actually firing — D10, D13,
 D15, D20, and D22 — are each marked with T01's resolved finding rather than a
-pending gate.
+pending gate. D20 carries a second, narrower open sub-finding: T01 proved only
+that Claude itself keeps the `Bash` tool foregrounded for the invoked process's
+own duration, never whether that process can leave a detached descendant
+running past `PostToolUse`. T04 (a T01 follow-up) captures live evidence for
+that specific gap; see D20.
 
 ### D1 — Scope = one independently mutation-capable Claude tool execution
 
@@ -274,7 +278,7 @@ gone. Only after a successful `flush` does the adapter clear `recovery_pending`;
 a failed `flush` keeps it fail-closed for subsequent mutation-capable
 `PreToolUse`.
 
-### D20 — Detached background Bash/PowerShell is unsupported and denied — resolved by T01: PASS
+### D20 — Detached background Bash/PowerShell is unsupported and denied — resolved by T01: PASS for Claude-managed backgrounding; self-detaching descendants are a separate, explicit unsupported boundary (T04 pending)
 
 A detached shell can keep mutating the repository after `PostToolUse` returns and
 can outlive a session; the generic mutation-scope contract has no process
@@ -292,10 +296,32 @@ finding (Claude Code `2.1.258`):** a `run_in_background=false` call remained
 foreground for the full command duration (`duration_ms: 4018` for a `sleep 4`)
 before `PostToolUse` fired; a `run_in_background=true` call returned
 immediately (`duration_ms: 8`) with a `tool_response.backgroundTaskId` stub.
-**PASS** — the foreground-only correctness boundary this decision depends on is
-validated; no unsound workaround is needed. Background **subagents** are not
-excluded here: their internal mutation-capable tool calls still fire hooks with
-`agent_id` and establish their own scopes.
+**PASS, narrowly** — this proves only that Claude itself keeps the `Bash` tool
+call foregrounded for as long as the *invoked* process runs; it does **not**
+prove that command cannot leave a *detached descendant* process still running,
+and still mutating the repository, after `PostToolUse` fires. Background
+**subagents** are not excluded here: their internal mutation-capable tool calls
+still fire hooks with `agent_id` and establish their own scopes.
+
+**Explicit unsupported boundary — self-detaching descendant processes.** A
+`run_in_background=false` `Bash`/`PowerShell` call can still leave a
+repository-mutating descendant process running after `PostToolUse` returns,
+because the *invoked shell command itself* detaches a child before exiting.
+Examples: shell backgrounding (`command &`), `nohup command &`, `setsid
+command`, double-fork daemonization, or a child process a script starts with
+detached/session-leader semantics (e.g. Python
+`subprocess.Popen(..., start_new_session=True)`). **SCE cannot currently
+guarantee attribution for shell commands that leave repository-mutating
+descendant processes running after `PostToolUse`.** This is not solvable by
+inspecting the command string: arbitrarily nested shell, script, and
+interpreter invocations can detach a descendant no static text scan can
+reliably catch, and this PR does not attempt one. Correct support would
+require process/process-group supervision, which is out of scope here (see
+Constraints and non-goals). This boundary holds regardless of what T04's probe
+observes for the specific pattern it tests, because no detection or
+supervision is being added either way; T04 records the concrete observed
+`PostToolUse`-vs-descendant-mutation ordering as evidence, and this section is
+updated with that finding once T04 completes.
 
 ### D21 — Raw Claude hook cwd is authoritative
 
@@ -332,7 +358,7 @@ Claude adapter's production code must not import or reference
 `crate::services::mutation_trace::runtime`, `::protocol`, or `::store`, and must
 not name `RepositoryAgentTraceDb`, `WorktreeId`, or `GitSnapshotService`. It
 reaches the runtime only through the smallest crate-visible in-process seam on
-`cli/src/services/hooks/mutation_scope.rs` (T04) — no second `RuntimeBoundary`
+`cli/src/services/hooks/mutation_scope.rs` (T05) — no second `RuntimeBoundary`
 construction path and no spawned `sce` subprocess. That seam reuses the strict
 generic payload parser, `RuntimeBoundary` mapping, lazy DB acquisition,
 durable-completion error classification, and empty-stdout semantics already in
@@ -360,11 +386,11 @@ performs final validation.
 - [ ] AC3: No `Start` boundary is emitted for `SessionStart`, `UserPromptSubmit`,
   or `SubagentStart` merely because that lifecycle event occurred. Only an
   independently mutation-capable tool execution attempt establishes a scope.
-  - Validate: adapter mapping unit tests; T07 Test-series assertions on
+  - Validate: adapter mapping unit tests; T08 Test-series assertions on
     processed-event keys.
 - [ ] AC4: Duplicate delivery of the same live `PreToolUse` reuses the same
   `attempt_seq`, `ScopeId`, and `Start` `EventId`.
-  - Validate: state + adapter unit tests; T07 Test4 (duplicate `Pre`/`Post`
+  - Validate: state + adapter unit tests; T08 Test4 (duplicate `Pre`/`Post`
     replay).
 - [ ] AC5: A later execution attempt of the same Claude `tool_use_id`, after the
   previous attempt became terminal, receives a new `attempt_seq` and a new
@@ -377,8 +403,8 @@ performs final validation.
 - [ ] AC7: A tracked mutation-capable `PreToolUse` reaches durable
   generic-ingress `Start` before the hook returns success to Claude
   (write-ahead `pending_start` -> ingress `Start` -> `active`).
-  - Validate: T05 adapter ordering unit test with injected ingress; optionally
-    also T07 Test1 as production-path confirmation.
+  - Validate: T06 adapter ordering unit test with injected ingress; optionally
+    also T08 Test1 as production-path confirmation.
 - [ ] AC8: Any failure to establish required adapter state or `Start` during a
   mutation-capable `PreToolUse` returns a Claude `permissionDecision: "deny"`
   object, never a plain non-zero exit and never `allow`.
@@ -387,36 +413,36 @@ performs final validation.
 - [ ] AC9: `PreToolUse` -> real filesystem mutation -> `PostToolUse` produces
   exactly one eligible tool interval and one terminal (`Closed`) scope with
   attribution `AiExclusive`.
-  - Validate: T07 Test1 (real Git repo + real Agent Trace DB).
+  - Validate: T08 Test1 (real Git repo + real Agent Trace DB).
 - [ ] AC10: `PreToolUse` -> partial filesystem mutation -> `PostToolUseFailure`
   also observes the mutation and closes the scope (`AiExclusive` + `Closed`).
-  - Validate: T07 Test2.
+  - Validate: T08 Test2.
 - [ ] AC11: Two simultaneously tracked tools create two active scopes; a tree
   transition observed while both are live is attributed `AiContended`.
-  - Validate: T07 Test3 and Test9 (main + subagent).
+  - Validate: T08 Test3 and Test9 (main + subagent).
 - [ ] AC12: `PreToolUse` followed by `PermissionDenied` creates no mutation event
   for the denied execution and leaves the worktree `needs_rebaseline`.
-  - Validate: T07 Test5.
+  - Validate: T08 Test5.
 - [ ] AC13: A `PreToolUse` with no `PostToolUse`/`PostToolUseFailure` is retired
   by one of the positive stale signals (`Stop`, `StopFailure`,
   main-thread `UserPromptSubmit`, matching-agent `SubagentStop`, `SessionEnd`,
   `WorktreeRemove`) via `abandon_scope`.
-  - Validate: T07 Test6, Test7, Test11; T05 adapter cleanup unit tests.
+  - Validate: T08 Test6, Test7, Test11; T06 adapter cleanup unit tests.
 - [ ] AC14: `PreToolUse` -> partial change/interruption -> no `Stop` -> next
   main-thread `UserPromptSubmit` abandons the stale main attempt before another
   mutation-capable tool can start.
-  - Validate: T07 Test7.
+  - Validate: T08 Test7.
 - [ ] AC15: A resumed subagent may carry the same Claude `agent_id`, but a new
   tool attempt receives a fresh tool `ScopeId`; no terminal mutation `ScopeId`
   is reused.
-  - Validate: T05 adapter identity unit tests; T07 Test8.
+  - Validate: T06 adapter identity unit tests; T08 Test8.
 - [ ] AC16: A hook process launched from checkout A with raw payload
   `cwd = checkout B` drives mutation state for checkout B.
-  - Validate: T07 Test10 (isolated-worktree cwd) asserting the correct
+  - Validate: T08 Test10 (isolated-worktree cwd) asserting the correct
     `WorktreeId`/cursor is advanced.
 - [ ] AC17: Mutations from an `isolation: worktree` subagent change only that
   worktree's mutation cursor; the main checkout's cursor is unchanged.
-  - Validate: T07 Test10.
+  - Validate: T08 Test10.
 - [ ] AC18: The dependency direction is exactly
   `claude_mutation_scope -> hooks::mutation_scope -> mutation_trace::runtime`.
   Production Claude-adapter code (everything in
@@ -426,7 +452,7 @@ performs final validation.
   `crate::services::mutation_trace::protocol`,
   `crate::services::mutation_trace::store`, `RepositoryAgentTraceDb`,
   `WorktreeId`, or `GitSnapshotService`, and its only dependency into the
-  mutation stack is the single T04 seam import from
+  mutation stack is the single T05 seam import from
   `crate::services::hooks::mutation_scope`.
   - Validate: focused source inspection of
     `cli/src/services/hooks/claude_mutation_scope/{mod.rs,state.rs}`, excluding
@@ -440,14 +466,14 @@ performs final validation.
     in comments, diagnostics, or test code that fabricates outcomes.
 - [ ] AC19: Claude adapter state lives only below `<git-dir>/sce/` and writes no
   Agent Trace or mutation database table directly.
-  - Validate: state-module inspection; T07 Test16.
+  - Validate: state-module inspection; T08 Test16.
 - [ ] AC20: Claude mutation-scope-only regressions leave `diff_traces`,
   `post_commit_patch_intersections`, and `agent_traces` unchanged.
-  - Validate: T07 Test16 (row-count assertions before/after).
+  - Validate: T08 Test16 (row-count assertions before/after).
 - [ ] AC21: Explicit background `Bash`/`PowerShell`
   (`run_in_background = true`) is denied in `PreToolUse` with the documented
   reason and creates no mutation scope.
-  - Validate: T05 adapter classification unit test; T07 Test15.
+  - Validate: T06 adapter classification unit test; T08 Test15.
 - [ ] AC22: Generated Claude settings still include and correctly merge
   `claude-model-state`, the bash policy hook, `diff-trace`, and
   `conversation-trace` alongside the new mutation adapter; user-owned Claude
@@ -465,6 +491,15 @@ performs final validation.
   fail-closed `PreToolUse`, and the background-shell limitation.
   - Validate: inspection of `context/cli/claude-mutation-scope-integration.md`
     and the updated cross-reference files.
+- [ ] AC25: A foreground Bash/PowerShell tool call (`run_in_background = false`)
+  that starts a detached, self-backgrounding descendant process which mutates
+  the repository after `PostToolUse` returns is not silently attributed as if
+  the mutation happened inside that tool's own observed scope; the adapter
+  documents this as an explicit unsupported boundary (D20) rather than
+  fabricating detection or supervision.
+  - Validate: T04's captured fixture + `NOTES.md` finding; D20 in the Design
+    section carries the reconciled wording; T08 Test17 (documented
+    unsupported-case regression).
 
 ### Full validation
 
@@ -496,7 +531,7 @@ the PR remains stacked on #261.
 - `context/sce/generated-opencode-plugin-registration.md` is **not** a target for
   this plan — it owns OpenCode plugin registration, not Claude generated
   settings. `context/sce/claude-raw-hook-capture.md` is the update target unless
-  T06/T08 implementation proves a new dedicated Claude settings domain file is
+  T07/T09 implementation proves a new dedicated Claude settings domain file is
   required, in which case that new file becomes the owner and this list is
   updated then.
 
@@ -523,9 +558,11 @@ Persist this field in every plan; this is durable plan state, not chat state:
   if the generated-fragment comparison does not already cover the new
   registrations), and the context files listed under Context sync.
 - **Out of scope:** Codex/OpenCode/Pi adapters, a generic adapter-framework
-  extraction, a background-process supervisor / PID tracking / cross-process
-  detached Bash attribution, protocol or Quint changes, Agent Trace schema
-  changes, any new mutation-attribution algorithm, `#259` attribution code.
+  extraction, a background-process supervisor / PID tracking / process-group
+  tracking / cross-process detached Bash attribution, shell-command parsing or
+  deny-listing to detect backgrounding/detachment patterns, protocol or Quint
+  changes, Agent Trace schema changes, any new mutation-attribution algorithm,
+  `#259` attribution code.
 - **Constraints:** the adapter depends only on `hooks::mutation_scope`, never on
   `mutation_trace::runtime` directly (`claude_mutation_scope -> mutation_scope ->
   mutation_trace::runtime`); it may call `checkout::resolve_git_dir(cwd)` but not
@@ -537,13 +574,20 @@ Persist this field in every plan; this is durable plan state, not chat state:
   here); ScopeId uses length-prefixed tuple encoding, no hashing / no crypto
   dependency.
 - **Non-goal:** treating `PostToolUse(background Bash)` as a completed execution;
-  turning `abandon` into a `RuntimeBoundary`; deriving any `ScopeId` from
-  `agent_id` alone; a long-lived Claude "session" or "agent" scope.
+  treating a foreground (`run_in_background = false`) `PostToolUse` as proof
+  that every descendant process the tool call spawned has also terminated or
+  stopped mutating the repository; turning `abandon` into a `RuntimeBoundary`;
+  deriving any `ScopeId` from `agent_id` alone; a long-lived Claude "session"
+  or "agent" scope.
 
 ## Assumptions
 
-- Task numbering here is `T01..T08`; the change request's `T00..T07` map to
-  `T01..T08` in order.
+- Task numbering here is `T01..T09`; the original change request's `T00..T07`
+  mapped to `T01..T08` in order, and a later change request inserted a T01
+  follow-up (detached-descendant lifecycle probe) as `T04`, shifting the
+  original `T04..T08` to `T05..T09`. Only not-yet-completed tasks were
+  renumbered; `T01`, `T02`, and `T03`, already complete when this insertion
+  happened, keep their original IDs and recorded evidence unchanged.
 - The crate-visible seam added to `mutation_scope.rs` is the existing private
   `run_mutation_scope_from_payload(repository_root, stdin_payload, logger)` made
   `pub(crate)` (or a thin `pub(crate)` wrapper), reused verbatim; no second
@@ -680,7 +724,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     temporarily modified during capture (with explicit approval) and fully
     reverted before this task closed.
   - Context impact: None beyond this plan. No Rust, Pkl, generated-settings,
-    schema, migration, Quint, or `context/cli|sce` file was changed. T08 will
+    schema, migration, Quint, or `context/cli|sce` file was changed. T09 will
     draw on these findings (the fixture manifest, `NOTES.md`, and the
     dispositions recorded here) when it authors
     `context/cli/claude-mutation-scope-integration.md`.
@@ -700,7 +744,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     potentially mutation-capable), the explicit-background-shell classifier
     `is_explicit_background_shell` (`tool_name` in `{Bash, PowerShell}` AND
     `run_in_background == true`; model/classify only — D20's `PreToolUse`
-    denial is T05's), owner identity (`agent_id` absent = main, present =
+    denial is T06's), owner identity (`agent_id` absent = main, present =
     subagent), attempt-key type `(session_id, agent_id?, tool_use_id)`, the
     length-prefixed `cc-tool-v1|n=..|s=..|a=..|t=..` `ScopeId` formatter, and
     the `<scope-id>|start` / `<scope-id>|close` `EventId` formatter. Out — any
@@ -725,7 +769,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `is_explicit_background_shell(tool_name, run_in_background)` classifier
     (`true` only for `tool_name` in `{Bash, PowerShell}` with
     `run_in_background == true`; a pure model function — no denial behavior,
-    which stays T05's), and the D4 `format_claude_scope_id` /
+    which stays T06's), and the D4 `format_claude_scope_id` /
     `claude_scope_start_event_id` / `claude_scope_close_event_id` formatters.
     The strict parser (`parse_claude_hook_event`) follows the existing
     `mutation_scope.rs`/`hooks/mod.rs` validation-helper style
@@ -734,7 +778,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     and rejects malformed/wrong-type payloads without fabricating identities.
     The module is marked `#![allow(dead_code)]` (matching the
     `services::capabilities` staged-implementation convention) since nothing
-    calls it until T05 wires a CLI command. No durable state, ingress call, or
+    calls it until T06 wires a CLI command. No durable state, ingress call, or
     CLI wiring was added, matching the task's Out-of-scope boundary.
 
     PR #263 follow-up: the original AC21 tests only exercised the
@@ -756,8 +800,8 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: None beyond this plan. This task adds only an internal,
     not-yet-wired data-model module and one module registration; no CLI
     surface, settings, schema, or documented behavior changed yet, so no
-    `context/cli|sce` file needed an update for this task. T08 will document
-    the shipped adapter (including this model) once T05 wires it in.
+    `context/cli|sce` file needed an update for this task. T09 will document
+    the shipped adapter (including this model) once T06 wires it in.
   - Context synchronization: synced — root pass confirmed
     `context/{overview,architecture,glossary,patterns,context-map}.md` contain
     no mention of `claude_mutation_scope`/this task and are unaffected;
@@ -766,10 +810,10 @@ Persist this field in every plan; this is durable plan state, not chat state:
     no concrete harness adapter is wired yet, which T02 leaves true (the new
     module is `#[allow(dead_code)]` and has no caller). No feature, public
     interface, or observable behavior was introduced. No decision qualified
-    for an ADR. Documentation of this model is intentionally deferred to T08
+    for an ADR. Documentation of this model is intentionally deferred to T09
     per the plan's own task boundary.
 
-- [ ] T03: `Durable checkout-local adapter state` (status:todo)
+- [x] T03: `Durable checkout-local adapter state` (status:done)
   - Task ID: T03
   - Scope: In — `cli/src/services/hooks/claude_mutation_scope/state.rs`:
     versioned JSON schema (`version`, `next_attempt_seq`, `recovery_pending`,
@@ -785,10 +829,119 @@ Persist this field in every plan; this is durable plan state, not chat state:
     followed by a fresh allocation. Proves AC4, AC5, AC19 (path + no DB/table
     writes).
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::claude_mutation_scope::state`; `clippy` clean.
+  - Completed: 2026-09-04
+  - Files changed:
+    - `cli/src/services/hooks/claude_mutation_scope/state.rs` (new)
+    - `cli/src/services/hooks/claude_mutation_scope/mod.rs` (add
+      `pub(crate) mod state;` registration)
+  - Result: Implemented the D5/D6 adapter-state store: `AdapterState`
+    (`version`, `next_attempt_seq`, `recovery_pending`, `attempts: Vec<AdapterAttempt>`)
+    and `AdapterAttempt` (`attempt_seq`, `scope_id`, `session_id`, `agent_id`,
+    `tool_use_id`, `tool_name`, `phase: AttemptPhase { PendingStart, Active }`),
+    versioned via a rejected-not-fabricated `ADAPTER_STATE_VERSION` check. A
+    self-contained `AdapterStateLock` (bounded `try_lock` polling with a
+    `TimedOut` error, modeled on `mutation_trace::runtime::worktree_lock`'s
+    pattern but with no dependency on that type, per D23) guards
+    `<git-dir>/sce/claude-mutation-scope-state.lock`; state itself is written
+    via a temp-file -> `sync_data` -> rename -> best-effort parent `sync_all`
+    durability sequence matching `checkout::persist_checkout_id_inner`, through
+    an injectable-hook inner function used by the interruption test. Four
+    helpers cover the task's Scope: `read_state` (missing file -> default,
+    malformed/wrong-version -> rejected), `allocate_attempt` (idempotent reuse
+    of an existing live attempt for the same `AttemptKey`, AC4; otherwise a
+    fresh monotonic `attempt_seq` and `ScopeId` via
+    `format_claude_scope_id`, never reused once terminal, AC5),
+    `mark_active` (`PendingStart` -> `Active`), and `remove_attempt`
+    (safe no-op on an already-removed scope, matching D9's duplicate-terminal-
+    delivery note). All four are lock-guarded read-modify-write operations.
+    Thirteen new unit tests cover: default-on-missing-file, sequential
+    `attempt_seq` allocation across distinct keys, duplicate-key reuse without
+    advancing the counter, a terminal attempt followed by a fresh
+    (non-reused) allocation, the `PendingStart`->`Active` transition,
+    idempotent removal, malformed-JSON rejection, unsupported-version
+    rejection, an injected pre-rename interruption leaving the canonical path
+    untouched, a leftover lock file (no active OS lock) not blocking a new
+    acquirer, concurrent writers on distinct keys converging without lost
+    updates, lock contention between two acquirers, and an AC19 path-boundary
+    check that every written path stays under `<git-dir>/sce/`. No Agent
+    Trace DB, mutation-runtime, or hook-event-handling code was touched,
+    matching the task's Out-of-scope boundary.
+  - Verify: `services::hooks::claude_mutation_scope` (including the new
+    `::state` module) — 55 passed, 0 failed (42 existing + 13 new state
+    tests); `clippy --all-targets -- -D warnings` — clean; `fmt -- --check` —
+    clean; AC18 dependency-boundary grep
+    (`rg -n --type rust '^\s*use\s+crate::services::mutation_trace::(runtime|protocol|store)|::(RepositoryAgentTraceDb|WorktreeId|GitSnapshotService)\b' cli/src/services/hooks/claude_mutation_scope/`)
+    — no matches.
+  - Context impact: None beyond this plan. This task adds only an internal,
+    not-yet-wired durable-state module (no CLI surface, settings, schema, or
+    documented behavior changed), so no `context/cli|sce` file needed an
+    update for this task. T09 will document the shipped adapter state (this
+    module) once T06 wires it in, per the plan's existing Context sync list.
+  - Context synchronization: synced — root pass confirmed
+    `context/{overview,architecture,glossary,patterns,context-map}.md`
+    contain no mention of `claude_mutation_scope`/this task and are
+    unaffected; `context/cli/mutation-scope-hook-ingress.md` and
+    `context/cli/mutation-scope-runtime.md` both already correctly state that
+    no concrete harness adapter is wired yet, which T03 leaves true (the new
+    state module is internal bookkeeping with no caller). No feature, public
+    interface, or observable behavior was introduced. No decision qualified
+    for an ADR. Documentation of this state module is intentionally deferred
+    to T09 per the plan's own task boundary.
+
+- [ ] T04: `Capture the detached-descendant Bash lifecycle probe` (status:todo)
+  - Task ID: T04
+  - Scope: In — a T01 follow-up, using the same live-capture methodology
+    against the same pinned Claude Code version (`2.1.258`, or whatever
+    version this plan still targets at execution time): drive one foreground
+    `Bash` tool call (`run_in_background=false`) whose command starts a
+    detached, self-backgrounding descendant process that writes a repository
+    file after a short delay, with the invoked (parent) process exiting
+    immediately — e.g. Python `subprocess.Popen([...], start_new_session=True)`
+    launched from the `Bash` command, or an equivalent `setsid`/double-fork
+    shell pattern. Record the `PreToolUse` timestamp, the `PostToolUse`
+    timestamp, and the wall-clock time the detached child actually wrote the
+    file, and determine whether `PostToolUse` fired before or after that
+    write. Commit the raw fixture(s) under the existing
+    `cli/src/services/hooks/claude_mutation_scope/fixtures/` directory,
+    following the existing `probeNN-*` naming convention (e.g.
+    `probe17-detached-child-after-post-tool-use`), and record the observation,
+    the exact timestamps, and the reconciled D20 disposition in `NOTES.md`.
+    Update D20 in this plan's Design section with the concrete finding (the
+    exact observed ordering and the process pattern actually tested).
+    Out — any production code, any Rust module or CLI wiring, any process
+    supervision / PID tracking / process-group implementation, any shell-
+    command parsing or deny-listing, any change to the generic mutation-scope
+    protocol, Quint model, schema, or attribution algorithm, and modifying any
+    existing (already-committed) T01 fixture file.
+  - Dependencies: T01
+  - Done when: the new fixture(s) exist and are referenced from this plan;
+    `NOTES.md` records the exact `PreToolUse`/`PostToolUse`/child-write
+    timestamps and the derived ordering; and D20 is updated with exactly one
+    of these two dispositions, chosen by what was actually observed rather
+    than assumed:
+    - If the descendant's mutation is observed to land after `PostToolUse`:
+      D20 stays PASS only for Claude-managed explicit background execution
+      (`run_in_background=true`); the self-detaching-descendant boundary this
+      task's evidence supports is recorded as confirmed, not merely
+      theoretical — foreground shell execution is not claimed to be
+      universally safe.
+    - If `PostToolUse` is observed to wait for the descendant to exit too:
+      record that exact observed behavior for this specific process pattern
+      and this specific Claude Code version, without generalizing it into a
+      safety guarantee for every detachment technique — `nohup`, `setsid`,
+      double-fork, and daemonizing patterns this probe did not exercise
+      remain unproven, and the unsupported-boundary wording in D20 stays in
+      place regardless (this PR still implements no detection or
+      supervision).
+    Satisfies AC25 together with T08 Test17.
+  - Verify: fixture(s) exist under
+    `cli/src/services/hooks/claude_mutation_scope/fixtures/`; `NOTES.md`
+    documents the observation and timestamps; this plan's D20 section reflects
+    the reconciled finding.
   - Context synchronization: pending
 
-- [ ] T04: `Expose the in-process generic-ingress seam` (status:todo)
-  - Task ID: T04
+- [ ] T05: `Expose the in-process generic-ingress seam` (status:todo)
+  - Task ID: T05
   - Scope: In — make the minimal crate-visible function on
     `cli/src/services/hooks/mutation_scope.rs` that runs a normalized JSON
     payload against `coordinate()` / `abandon_scope()` in-repo with a lazy DB
@@ -804,8 +957,8 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::mutation_scope`; `git diff` shows only a visibility/wrapper change.
   - Context synchronization: pending
 
-- [ ] T05: `Claude adapter driver + CLI command` (status:todo)
-  - Task ID: T05
+- [ ] T06: `Claude adapter driver + CLI command` (status:todo)
+  - Task ID: T06
   - Scope: In — `cli_schema::HooksSubcommand::ClaudeMutationScope` (hidden),
     `convert_hooks_subcommand_request` arm,
     `services::hooks::HookSubcommand::ClaudeMutationScope`,
@@ -823,8 +976,8 @@ Persist this field in every plan; this is durable plan state, not chat state:
     outstanding attempts remain; `flush` through the seam once quiescent). Reads
     exactly one raw Claude hook JSON object from STDIN; emits empty stdout except
     the intentional `PreToolUse` decision object. Out — generated settings /
-    `sce setup` wiring (T06), real Git/DB regressions (T07).
-  - Dependencies: T02, T03, T04
+    `sce setup` wiring (T07), real Git/DB regressions (T08).
+  - Dependencies: T02, T03, T05
   - Done when: focused tests with an injected generic-ingress seam cover every
     event-to-operation mapping, fail-closed `PreToolUse` (exact
     `permissionDecision: "deny"` JSON, AC8), write-ahead ordering (AC7),
@@ -834,8 +987,8 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::claude_mutation_scope`; `sce hooks claude-mutation-scope </dev/null` shows the strict-parser error; `sce hooks --help` omits it.
   - Context synchronization: pending
 
-- [ ] T06: `Generated Claude integration, setup merge, and doctor` (status:todo)
-  - Task ID: T06
+- [ ] T07: `Generated Claude integration, setup merge, and doctor` (status:todo)
+  - Task ID: T07
   - Scope: In — `config/pkl/renderers/claude-content.pkl`: add
     `sce hooks claude-mutation-scope` registrations for `PreToolUse`,
     `PostToolUse`, `PostToolUseFailure`, `PermissionDenied`, `UserPromptSubmit`,
@@ -846,15 +999,15 @@ Persist this field in every plan; this is durable plan state, not chat state:
     stays idempotent; add or adjust the focused setup/doctor tests only if the
     existing generated-fragment comparison does not already cover the new
     registrations. Out — any adapter behavior change, any non-Claude renderer.
-  - Dependencies: T05
+  - Dependencies: T06
   - Done when: `nix run .#pkl-check-generated` passes with the new registrations;
     `config_merge.rs` tests prove AC22 (merge + idempotency + user-hook
     preservation); doctor recognizes a missing/stale new registration.
   - Verify: `nix run .#pkl-check-generated`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::setup::`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::doctor::` (or the specific test module the new registrations land in, if narrower).
   - Context synchronization: pending
 
-- [ ] T07: `Real Git/DB regressions through the production path` (status:todo)
-  - Task ID: T07
+- [ ] T08: `Real Git/DB regressions through the production path` (status:todo)
+  - Task ID: T08
   - Scope: In — regressions using real temporary Git repositories and real
     repository Agent Trace DBs, driven through the production Claude-adapter ->
     generic-ingress path (no manual `mutation_trace_*` inserts): Test1 foreground
@@ -875,25 +1028,39 @@ Persist this field in every plan; this is durable plan state, not chat state:
     settlement -> abandonment recovery; Test14 terminal runtime success before
     state cleanup -> replay-safe; Test15 explicit background `Bash` -> denied, no
     scope; Test16 raw Agent Trace tables (`diff_traces`,
-    `post_commit_patch_intersections`, `agent_traces`) unchanged. Each applicable
-    test asserts scope status, processed-event keys, revision, `cursor_tree`,
-    mutation-event count, attribution kind, `needs_rebaseline`, and adapter
-    state. Out — new production behavior; any test that inserts the event it
-    means to prove.
-  - Dependencies: T05 (and T06 for any test that installs generated settings)
-  - Done when: all sixteen regressions pass and collectively satisfy AC9–AC17,
-    AC19, AC20, AC21.
+    `post_commit_patch_intersections`, `agent_traces`) unchanged; Test17 a
+    foreground `Bash` (`run_in_background=false`) that starts a detached,
+    self-backgrounding descendant which mutates the repository after
+    `PostToolUse` returns — asserts that the scope closes (`Closed`) at the
+    tool's own observed tree and that the descendant's later mutation is
+    **not** captured by that scope or folded into its attribution; this is a
+    documented unsupported-case regression proving the adapter does not
+    silently claim correct attribution for a mutation occurring after the
+    tool scope already closed, not an assertion that the adapter detects or
+    supervises the descendant. Each applicable test asserts scope status,
+    processed-event keys, revision, `cursor_tree`, mutation-event count,
+    attribution kind, `needs_rebaseline`, and adapter state. Out — new
+    production behavior; any process supervision, PID tracking, or
+    detached-child detection; any test that inserts the event it means to
+    prove.
+  - Dependencies: T06 (and T07 for any test that installs generated settings);
+    Test17 also depends on T04's captured fixture/evidence.
+  - Done when: all seventeen regressions pass and collectively satisfy
+    AC9–AC17, AC19, AC20, AC21, AC25.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::claude_mutation_scope`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::`.
   - Context synchronization: pending
 
-- [ ] T08: `Author the durable adapter context` (status:todo)
-  - Task ID: T08
+- [ ] T09: `Author the durable adapter context` (status:todo)
+  - Task ID: T09
   - Scope: In — create `context/cli/claude-mutation-scope-integration.md` owning
     the tool-attempt scope model, tool classification, `ScopeId`/`EventId`
     derivation, adapter state, write-ahead `Start`, fail-closed `PreToolUse`,
     terminal `Close` and failed-tool behavior, abandonment cleanup signals, the
     recovery barrier, subagent identity, worktree-cwd ownership, the
-    background-shell limitation, and the generic-ingress dependency boundary;
+    background-shell limitation (both Claude-managed `run_in_background=true`
+    denial and the separate self-detaching-descendant unsupported boundary
+    D20 records, with T04's reconciled finding), and the generic-ingress
+    dependency boundary;
     update `context/cli/mutation-scope-runtime.md`,
     `context/cli/mutation-scope-hook-ingress.md`,
     `context/sce/agent-trace-hooks-command-routing.md`,
@@ -903,13 +1070,13 @@ Persist this field in every plan; this is durable plan state, not chat state:
     plugin registration), `context/context-map.md`, `context/overview.md`,
     `context/architecture.md` to reference the shipped adapter and the new
     in-process seam. Out — any code change; describing behavior not actually
-    shipped by T02–T07.
-  - Dependencies: T02, T03, T04, T05, T06, T07
+    shipped by T02–T08.
+  - Dependencies: T02, T03, T04, T05, T06, T07, T08
   - Done when: the new file exists and the cross-references are updated; AC24
-    inspection passes; `nix flake check` (context has no generated check but the
-    map/overview must stay internally consistent).
-  - Verify: inspection against AC24; `grep` shows the new route documented in the
-    routing file and the new file linked from `context/context-map.md`.
+    and AC25 inspection passes; `nix flake check` (context has no generated
+    check but the map/overview must stay internally consistent).
+  - Verify: inspection against AC24/AC25; `grep` shows the new route documented
+    in the routing file and the new file linked from `context/context-map.md`.
   - Context synchronization: pending
 
 ## Open questions
@@ -923,7 +1090,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   carry the required identity fields (**PASS** for both). `WorktreeRemove` was
   not observed to fire for either isolated-worktree cleanup path tested, and
   `StopFailure` could not be exercised without deliberately failing a turn.
-  Neither is treated as blocking, and neither registration is dropped: T05/T06
+  Neither is treated as blocking, and neither registration is dropped: T06/T07
   keep the `WorktreeRemove` handler and registration, and the adapter keeps
   `StopFailure` support, but correctness does not depend on either firing
   (D22 accepted best-effort; D15 doc-verified/non-load-bearing). `SessionEnd`
@@ -946,5 +1113,5 @@ Persist this field in every plan; this is durable plan state, not chat state:
   PR land the core loop (`PreToolUse`/`PostToolUse` + `Stop`/`SessionEnd`
   cleanup, foreground `Write`/`Edit`/`Bash`, no subagent-worktree isolation) and
   leave subagent identity, `isolation: worktree`, and the full cleanup matrix to
-  a stacked follow-up? The current slicing is coherent, but T05 is large and its
+  a stacked follow-up? The current slicing is coherent, but T06 is large and its
   correctness rests entirely on T01's findings.
