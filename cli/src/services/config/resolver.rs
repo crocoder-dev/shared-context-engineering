@@ -187,13 +187,6 @@ where
         resolve_global_config_path,
     )?;
 
-    if !runtime.validation_errors.is_empty() {
-        bail!(
-            "Agent Trace storage config resolution failed because a discovered config file is invalid: {}",
-            runtime.validation_errors.join(" | ")
-        );
-    }
-
     Ok(ResolvedAgentTraceStorageRuntimeConfig {
         repository_id: runtime.agent_trace_repository_id.value,
         repository_remote: runtime.agent_trace_repository_remote.value,
