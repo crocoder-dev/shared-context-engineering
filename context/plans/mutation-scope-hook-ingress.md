@@ -265,7 +265,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Add strict normalized mutation-scope payload parser` (status:todo)
+- [x] T01: `Add strict normalized mutation-scope payload parser` (status:done)
   - Task ID: T01
   - Scope: In — new `cli/src/services/hooks/mutation_scope.rs` with the local
     `MutationScopePayload` transport enum (`Start`/`Advance`/`Close`/`Flush`/
@@ -287,7 +287,44 @@ Persist this field in every plan; this is durable plan state, not chat state:
     tests pass; `cargo clippy --all-targets -- -D warnings` and `fmt --check` are
     clean for the new file.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::mutation_scope`; `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`.
-  - Context synchronization: pending
+  - Completed: 2026-09-04
+  - Files changed:
+    - `cli/src/services/hooks/mutation_scope.rs` (new) — `MutationScopePayload`
+      transport enum (`Start`/`Advance`/`Close`/`Flush`/`Abandon`), private
+      `parse_actor_kind` wire-string mapper, `parse_mutation_scope_payload`
+      strict parser, and `#[cfg(test)] mod tests` (20 tests).
+    - `cli/src/services/hooks/mod.rs` — `#[allow(dead_code)] pub mod mutation_scope;`
+      registration only.
+  - Result: Added the ingress-local wire-format parser. `MutationScopePayload`
+    carries `scope_id`/`event_id` as raw owned strings (no trim/prefix/hash) and
+    `actor_kind` as the real `ActorKind`. `parse_mutation_scope_payload` guards
+    empty/blank input, requires a JSON object with a required `operation` string,
+    and dispatches to a shared scope-boundary parser (`start`/`advance`/`close`),
+    a flush parser, or an abandon parser. Each enforces its exact allowed key set
+    via `reject_unexpected_keys`, which emits a dedicated diagnostic for any
+    `worktree_id` key. Rejected: malformed JSON, non-object JSON, wrong field
+    types, unknown operation, unknown `actor_kind` (`claude_code`/`codex`/
+    `opencode`/`pi` only), missing/blank `scope_id`/`event_id`, unexpected fields,
+    `flush` with any scope/event/actor field, `abandon` with anything but
+    `scope_id`. Error type is `anyhow::Result` with the existing
+    `Invalid <label> payload from STDIN: <detail>.` message convention. No CLI
+    routing, runtime invocation, or STDIN reading (all T02). Module never names
+    `WorktreeId`.
+  - Verify results:
+    - `test ... services::hooks::mutation_scope` — pass (20 passed, 0 failed).
+    - `clippy --all-targets -- -D warnings` — pass (clean).
+    - `fmt --check` — pass.
+  - Deviation: per a follow-up user instruction, all comments (module and item
+    doc comments included) were stripped from the new file; behavior and tests
+    unchanged, re-verified clean.
+  - Context impact: Additive-internal. New crate-internal module and one module
+    registration line. No public interface, data shape, persistence, or
+    documented-behavior change; the parser has no production consumer until T02.
+    Root context files (`context/overview.md`, `context/context-map.md`, etc.)
+    describe the mutation-scope runtime as unwired — still accurate after T01,
+    since nothing invokes the runtime yet. No context file requires an update for
+    this task; the durable-context work is planned as T04.
+  - Context synchronization: synced
 
 - [ ] T02: `Add CLI routing and wire the existing runtime` (status:todo)
   - Task ID: T02
