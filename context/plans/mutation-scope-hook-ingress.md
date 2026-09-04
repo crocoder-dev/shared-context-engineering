@@ -65,24 +65,24 @@ How this plan is proven complete. Each criterion is observable and names the
 check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation.
 
-- [ ] AC1: `sce hooks mutation-scope` exists and routes through the normal
+- [x] AC1: `sce hooks mutation-scope` exists and routes through the normal
   CLI/hook command stack (`cli_schema::HooksSubcommand::MutationScope` →
   `convert_hooks_subcommand_request` → `services::hooks::HookSubcommand::MutationScope`
   → `run_hooks_subcommand_in_repo`), hidden with the rest of the `hooks` surface.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::parse::command_runtime` plus `services::hooks::` — a parser test asserts `sce hooks mutation-scope` converts to `HookSubcommand::MutationScope`; `sce hooks --help` does not appear in top-level `sce --help`.
-- [ ] AC2: The normalized JSON contract strictly supports exactly `start`,
+- [x] AC2: The normalized JSON contract strictly supports exactly `start`,
   `advance`, `close`, `flush`, `abandon` with exact field validation, rejecting
   unknown operation, unknown `actor_kind`, missing/empty/blank `scope_id` or
   `event_id`, unexpected fields, any `worktree_id` key, wrong JSON type, and
   malformed JSON. `flush` accepts no scope/event/actor fields; `abandon` accepts
   only `scope_id`.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::mutation_scope` — focused parser tests cover every operation and every listed rejection case.
-- [ ] AC3: `start` / `advance` / `close` map exactly to `RuntimeBoundary::Start`
+- [x] AC3: `start` / `advance` / `close` map exactly to `RuntimeBoundary::Start`
   / `Advance` / `Close` and forward `ScopeId`, `EventId`, and `ActorKind`
   unchanged (`claude_code → ClaudeCode`, `codex → Codex`, `opencode → OpenCode`,
   `pi → Pi`).
   - Validate: integration test T03-Test1 asserts durable processed-event keys `(A,e1)`,`(A,e2)`,`(A,e3)` exactly as supplied; T03-Test3 asserts a mismatched `actor_kind` reaches `ScopeIdentityConflict`.
-- [ ] AC4: `flush` maps to `RuntimeBoundary::Flush` with no scope/event/actor
+- [x] AC4: `flush` maps to `RuntimeBoundary::Flush` with no scope/event/actor
   identity, and drives the runtime's real observed-flush behavior. Against a
   baseline tree followed by an unscoped filesystem edit, a `{"operation":"flush"}`
   advances `cursor_tree` to the edited Git tree, advances `revision` by one,
@@ -90,14 +90,14 @@ performs final validation.
   `attribution = IneligibleUnscoped`, invents no `mutation_trace_scopes` row, and
   invents no `mutation_trace_processed_events` row.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::mutation_scope` — integration test T03-Test5 asserts each durable value against real Git trees; a `Flush => Ok("")` stub fails it.
-- [ ] AC5: `abandon` calls `abandon_scope()` directly and never acquires
+- [x] AC5: `abandon` calls `abandon_scope()` directly and never acquires
   `Close`/`Flush` snapshot semantics. In `start(A,e1) → record cursor_tree →
   unobserved filesystem edit → abandon(A)`, `abandon_scope()` captures no Git
   snapshot and no mutation boundary, and `cursor_tree` stays the pre-edit tree —
   it does **not** become the edited Git tree — with no `mutation_trace_events`
   row for the edit.
   - Validate: `rg -n 'RuntimeBoundary|GitSnapshotService|capture_tree|pin_tree|diff_trees|coordinate\(' cli/src/services/hooks/mutation_scope.rs` shows the abandon arm calls only `abandon_scope`; integration test T03-Test4 asserts the `cursor_tree` invariance and absent rows.
-- [ ] AC6: The normalized payload contains no `worktree_id` field. The
+- [x] AC6: The normalized payload contains no `worktree_id` field. The
   production ingress does not accept, derive from input, or construct a
   `WorktreeId`; worktree identity remains exclusively derived by the existing
   mutation runtime from the invoking checkout. Test-only (`#[cfg(test)]`) code
@@ -114,12 +114,12 @@ performs final validation.
     production section, or with a check scoped to it — e.g. `rg -n 'WorktreeId'
     cli/src/services/hooks/mutation_scope.rs` shows matches only within the
     `#[cfg(test)]` module.
-- [ ] AC7: DB acquisition stays lazy inside the runtime's protected-worktree
+- [x] AC7: DB acquisition stays lazy inside the runtime's protected-worktree
   sequence — the ingress passes a `FnOnce` provider closure to `coordinate()` and
   `abandon_scope()`, never an already-open handle, reusing
   `open_agent_trace_db_for_hook_runtime`.
   - Validate: `rg -n 'open_agent_trace_db_for_hook_runtime|open_db|coordinate\(|abandon_scope\(' cli/src/services/hooks/mutation_scope.rs` shows the DB resolver is invoked only inside the provider closure passed to the runtime entrypoint.
-- [ ] AC8: Runtime results are classified by durable completion, not fail-open:
+- [x] AC8: Runtime results are classified by durable completion, not fail-open:
   - a pre-completion `CoordinateError` / `AbandonScopeError` (any variant other
     than the two carried-outcome variants) → `CliError` / non-zero exit;
   - `CoordinateError::MarkerClearAfterCommit { committed, .. }` and
@@ -129,16 +129,16 @@ performs final validation.
     runtime transition is **not** executed or retried again;
   - no `"failed open" / exit 0` branch exists for a dropped or malformed boundary.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::mutation_scope` — tests assert (a) malformed JSON and an injected ordinary runtime error return `Err`; (b) an injected `MarkerClearAfterCommit` and an injected `MarkerClearAfterCompletion` each return `Ok` with empty stdout and the runtime entrypoint is invoked exactly once (no second transition); `rg -n 'fail.open|failed open|exit 0' cli/src/services/hooks/mutation_scope.rs` returns nothing.
-- [ ] AC9: A successful mutation-scope hook execution produces empty stdout, with
+- [x] AC9: A successful mutation-scope hook execution produces empty stdout, with
   no serialized `CoordinateOutcome`, `AbandonScopeOutcome`, `MutationEvent`,
   revision, worktree ID, or scope state.
   - Validate: integration tests assert the returned success string is empty (zero stdout bytes).
-- [ ] AC10: A real Git/DB `Start → edit → Advance → Close` flow through the
+- [x] AC10: A real Git/DB `Start → edit → Advance → Close` flow through the
   ingress creates scope status `Closed`, processed events `(A,e1)`,`(A,e2)`,`(A,e3)`,
   exactly one mutation event over the edit interval with `AiExclusive(A)`, and a
   cursor tree equal to the final observed Git tree.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::mutation_scope` — integration test T03-Test1 asserts each durable value against real Git trees, with no manually inserted mutation event.
-- [ ] AC11: A replayed `(ScopeId, EventId)` boundary through the ingress is
+- [x] AC11: A replayed `(ScopeId, EventId)` boundary through the ingress is
   fully idempotent. In `start(A,e1) → edit → advance(A,e2)`, with `revision`,
   `mutation_trace_events` count, and `mutation_trace_processed_events` count
   snapshotted immediately after the first `advance(A,e2)`, a second
@@ -146,7 +146,7 @@ performs final validation.
   holds exactly one key `(A,e2)`. The test fails if the ingress regenerates,
   prefixes, hashes, or otherwise transforms `EventId`.
   - Validate: integration test T03-Test2 snapshots the three values before replay and asserts equality plus the single `(A,e2)` processed key via direct DB reads.
-- [ ] AC12: A conflicting `ActorKind` for an existing scope commits no second
+- [x] AC12: A conflicting `ActorKind` for an existing scope commits no second
   boundary. In `start(A,e1,claude_code)` (recording `revision`, processed-event
   rows, scope actor/status) → `advance(A,e2,codex)`, the runtime returns
   `ScopeIdentityConflict` and afterwards: `revision` is unchanged, `(A,e2)` is
@@ -155,7 +155,7 @@ performs final validation.
   `mutation_trace_events` row exists (the assertion holds even when the rejected
   boundary observed no tree change).
   - Validate: integration test T03-Test3 asserts each value.
-- [ ] AC13: Abandonment through the ingress retains no-snapshot semantics and
+- [x] AC13: Abandonment through the ingress retains no-snapshot semantics and
   the correct durable transition. In `start(A,e1) → record cursor_tree →
   unobserved edit → abandon(A)`: scope `A` is `Abandoned`, `revision` advances
   exactly once for the abandonment, `needs_rebaseline` is `true`, `cursor_tree`
@@ -163,18 +163,18 @@ performs final validation.
   `mutation_trace_events` row for the edit and no `mutation_trace_processed_events`
   row from abandon exist.
   - Validate: integration test T03-Test4 asserts each durable value after the sequence, exercising the real `abandon_scope()` path.
-- [ ] AC14: The ingress reaches durable storage only through the existing
+- [x] AC14: The ingress reaches durable storage only through the existing
   mutation runtime, writing `mutation_trace_*` rows only. No production ingress
   path writes `diff_traces`, `post_commit_patch_intersections`, or `agent_traces`.
   The T03 integration tests are expected to read/assert those three table names in
   order to prove they stay empty; the ban is on the production write path, not on
   table names appearing in the source file.
   - Validate: the T03 regressions assert `diff_traces`, `post_commit_patch_intersections`, and `agent_traces` each hold zero rows after every ingress flow; and the production implementation (excluding the `#[cfg(test)]` section) calls none of `insert_diff_trace`, `DiffTraceInsert`, `insert_post_commit_patch_intersection`, `PostCommitPatchIntersectionInsert`, `insert_agent_trace`, or `AgentTraceInsert` — confirm by inspecting the non-test module body, or `rg -n 'insert_diff_trace|DiffTraceInsert|insert_post_commit_patch_intersection|PostCommitPatchIntersectionInsert|insert_agent_trace|AgentTraceInsert' cli/src/services/hooks/mutation_scope.rs` shows hits only within the `#[cfg(test)]` test module, if any.
-- [ ] AC15: No change attributable to this plan exists in
+- [x] AC15: No change attributable to this plan exists in
   `spec/mutation_cursor.qnt`, `cli/src/services/mutation_trace/protocol.rs`,
   `cli/migrations/agent-trace-repository/`, or the Agent Trace schema.
   - Validate: `git diff origin/mutation-trace-agent-attribution -- spec/mutation_cursor.qnt cli/src/services/mutation_trace/protocol.rs cli/migrations/agent-trace-repository/ config/schema/agent-trace.schema.json` is empty.
-- [ ] AC16: Durable context establishes this as the generic adapter seam and
+- [x] AC16: Durable context establishes this as the generic adapter seam and
   states that concrete harness lifecycle integration remains future work.
   - Validate: `context/cli/mutation-scope-hook-ingress.md` exists and documents the JSON contract, operation mapping, identity ownership, the no-`worktree_id` rule, the no-`ScopeId`/`EventId`-generation rule, the non-fail-open error semantics including the marker-clear-after-durable-completion classification, the lazy DB-provider requirement, the empty-stdout contract, abandonment ownership, and the generic-ingress vs harness-adapter boundary; `context/cli/mutation-scope-runtime.md` Status says a generic ingress now drives the runtime with no concrete harness adapter wired.
 
@@ -619,7 +619,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     requires an update for this task.
   - Context synchronization: synced
 
-- [ ] T04: `Document the mutation-scope hook ingress` (status:todo)
+- [x] T04: `Document the mutation-scope hook ingress` (status:done)
   - Task ID: T04
   - Scope: In — create `context/cli/mutation-scope-hook-ingress.md` (JSON
     contract, operation mapping, identity ownership, no-`worktree_id` rationale,
@@ -639,7 +639,67 @@ Persist this field in every plan; this is durable plan state, not chat state:
     generic-ingress vs harness-adapter distinction, and `nix run .#pkl-check-generated`
     plus `nix flake check` pass.
   - Verify: `nix run .#pkl-check-generated`; `nix flake check`; `rg -n 'mutation-scope-hook-ingress' context/context-map.md context/cli/mutation-scope-runtime.md`.
-  - Context synchronization: pending
+  - Completed: 2026-09-04
+  - Files changed:
+    - `context/cli/mutation-scope-hook-ingress.md` (new) — the durable domain
+      file for the ingress: command routing chain, the normalized JSON contract
+      and full rejection set, operation mapping, identity ownership (no
+      `worktree_id`, verbatim `ScopeId`/`EventId`), non-fail-open error
+      classification with the two carried-outcome success variants, the lazy DB
+      provider, the empty-stdout contract, abandonment ownership, the durable
+      storage boundary, and the generic-ingress vs harness-adapter boundary.
+    - `context/cli/mutation-scope-runtime.md` — intro and Status now link the new
+      ingress domain file and summarize its verbatim-identity / no-`worktree_id`
+      / durable-completion classification behavior.
+    - `context/sce/agent-trace-hooks-command-routing.md` — new `sce hooks
+      mutation-scope` runtime-behavior entry with the non-fail-open intake
+      contract (unwrapped dispatch like `pre-commit`, durable-completion
+      classification, the two carried-outcome success variants) distinct from
+      `diff-trace`/`conversation-trace`; two new Related-context links.
+    - `context/context-map.md` — registered
+      `context/cli/mutation-scope-hook-ingress.md` in the feature/domain list and
+      extended the `mutation-scope-runtime.md` neighbour and
+      `agent-trace-hooks-command-routing.md` annotations.
+    - `context/overview.md` — finalized the `mutation_trace` wiring paragraph
+      against the shipped contract (strict parse, verbatim identities,
+      `worktree_id` refusal, lazy DB provider, non-fail-open durable-completion
+      classification, `mutation_trace_*`-only writes, no harness adapter / no
+      `session→ScopeId` derivation) and added the new file to the See-also list.
+    - `context/architecture.md` — mandatory-root-pass edit beyond the plan's
+      stated five files: the `cli/src/services/hooks/mod.rs` module description
+      now names its new `mutation_scope.rs` sibling (parallel to the already-named
+      `claude_model_state.rs`) with a one-clause summary and a pointer to the new
+      domain file. T02 wired the dispatch arm without recording it here; T04's
+      comprehensive pass closes that gap.
+  - Result: Documentation-only. Created the new domain file covering every point
+    listed in the plan's Context sync section and AC16, and updated the four
+    related files to reflect the shipped ingress while preserving the
+    generic-ingress vs concrete-harness-adapter distinction (T02 had already
+    removed the "not wired into any hook or command" clauses; T04 confirmed the
+    remaining wording against `cli/src/services/hooks/mutation_scope.rs` and
+    added the non-fail-open intake contract and the new domain file). No code
+    changed.
+  - Verify results:
+    - `nix run .#pkl-check-generated` — pass (141 files, inventory sha256
+      `5516770e515d599e9815dc62dab98e4caccd27deffcb673cdeaa6ac6a438883b`;
+      unchanged — `context/` is not a generated input).
+    - `nix flake check` — pass (`all checks passed!`; `cli-tests`, `cli-clippy`,
+      `cli-fmt`, `mutation-trace-quint-connect`, plus every inventory/parity
+      check).
+    - `rg -n 'mutation-scope-hook-ingress' context/context-map.md context/cli/mutation-scope-runtime.md`
+      — matches in both files (context-map registration line; runtime intro +
+      Status links).
+  - Context impact: Documentation-only, but root-context-touching by design.
+    This task *is* the plan's durable-context synchronization work: it adds one
+    new domain file and finalizes five existing files (three root — `overview.md`,
+    `context-map.md`, `architecture.md`). No code, interface, data-shape, or
+    behavior change. The mandatory five-root-file pass verified all five:
+    `overview.md`, `context-map.md`, and `architecture.md` were edited to match
+    the shipped ingress; `patterns.md` and `glossary.md` were verified unchanged
+    (the mutation-scope runtime/ingress terminology has consistently lived in
+    domain files, not the glossary, per the `mutation-scope-runtime-integration`
+    precedent, and the ingress introduces no new pattern).
+  - Context synchronization: synced
 
 ## Open questions
 
@@ -648,3 +708,53 @@ contract are all fixed by `context/cli/mutation-scope-runtime.md`, the runtime
 source on the current base, and the request; the one implementation wrinkle
 (serde `deny_unknown_fields` on an internally tagged enum) is a local parser
 choice recorded under Assumptions, not a scope question.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-09-04
+
+### Commands run
+
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::` -> exit 0 (224 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::` -> exit 0 (323 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` -> exit 0 (1038 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` -> exit 0 (clean)
+- `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` -> exit 0 (clean)
+- `nix run .#pkl-check-generated` -> exit 0 (141 files, inventory sha256 5516770e515d599e9815dc62dab98e4caccd27deffcb673cdeaa6ac6a438883b)
+- `nix flake check` -> exit 0 (all checks passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::mutation_scope` -> exit 0 (36 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::parse::command_runtime` -> exit 0 (11 passed, 0 failed)
+- `git diff origin/mutation-trace-agent-attribution -- spec/mutation_cursor.qnt cli/src/services/mutation_trace/protocol.rs cli/migrations/agent-trace-repository/ config/schema/agent-trace.schema.json` -> exit 0 (empty)
+- `git log --oneline origin/mutation-trace-agent-attribution..HEAD` -> exit 0 (branch stacked on `origin/mutation-trace-agent-attribution`, not `main`)
+- `nix run nixpkgs#ripgrep -- -n 'WorktreeId' cli/src/services/hooks/mutation_scope.rs` -> exit 0 (matches only at lines 575/579/589, inside `#[cfg(test)] mod tests` which starts at line 344)
+- `nix run nixpkgs#ripgrep -- -n 'fail.open|failed open|exit 0' cli/src/services/hooks/mutation_scope.rs` -> exit 1 (no matches)
+- `nix run nixpkgs#ripgrep -- -n 'insert_diff_trace|DiffTraceInsert|insert_post_commit_patch_intersection|PostCommitPatchIntersectionInsert|insert_agent_trace|AgentTraceInsert' cli/src/services/hooks/mutation_scope.rs` -> exit 1 (no matches)
+- `sce --help` (via `run-cli-cargo.sh run -- --help`) -> exit 0 (`hooks` absent from the Commands list)
+
+### Success-criteria verification
+
+- [x] AC1: `sce hooks mutation-scope` routes through the normal CLI/hook stack, hidden -> `mutation_scope_hook_parses_to_hook_subcommand` in `services::parse::command_runtime` passes (converts to `HookSubcommand::MutationScope`); `sce --help` Commands list omits `hooks`.
+- [x] AC2: strict JSON contract for exactly `start`/`advance`/`close`/`flush`/`abandon` with full rejection set -> `services::hooks::mutation_scope` parser tests (incl. `unknown_actor_kind_is_rejected`, worktree_id / unexpected-field / malformed-JSON / wrong-type rejections) pass, 36/36.
+- [x] AC3: `start`/`advance`/`close` map to `RuntimeBoundary::Start/Advance/Close` with identities and actor kinds forwarded verbatim -> `start_forwards_identities_verbatim_to_coordinate`, `test1_observed_start_advance_close_lifecycle_persists_durable_rows` (keys `(A,e1)/(A,e2)/(A,e3)`), `test3_conflicting_actor_kind_commits_no_second_boundary` (`ScopeIdentityConflict`) pass.
+- [x] AC4: `flush` maps to `RuntimeBoundary::Flush` with no identity and drives real observed-flush behavior -> `test5_adversarial_flush_drives_real_observed_flush_behavior` asserts `cursor_tree` advance, `revision` +1, one `IneligibleUnscoped` event row, no scope/processed rows, against real Git trees.
+- [x] AC5: `abandon` calls `abandon_scope()` only, no snapshot semantics -> `drive_mutation_scope` abandon arm calls `abandon(...)` only (source lines 288-290); `test4_abandonment_keeps_no_snapshot_semantics_for_an_unobserved_edit` asserts `cursor_tree` invariance and absent rows.
+- [x] AC6: no `worktree_id` field; production code never constructs `WorktreeId` or reads a worktree-identity field -> parser rejects any `worktree_id` key (`field 'worktree_id' is not accepted`); `rg 'WorktreeId'` hits only inside `#[cfg(test)]` (lines 575+, test module begins line 344).
+- [x] AC7: DB acquisition stays lazy inside the runtime -> `run_mutation_scope_from_payload_with` passes `|| open_db(root, MUTATION_SCOPE_DB_CONTEXT)` closures into `coordinate()` / `abandon_scope()` (source lines 243-244); resolver never opened eagerly.
+- [x] AC8: results classified by durable completion, no fail-open -> `classify_coordinate` / `classify_abandon`: `Ok` -> empty stdout, `MarkerClearAfterCommit` / `MarkerClearAfterCompletion` -> logged + empty stdout + `Ok`, other errors -> `Err`; `test6`/`test7` prove single runtime invocation; `rg 'fail.open|failed open|exit 0'` empty.
+- [x] AC9: successful execution produces empty stdout -> `successful_boundary_produces_empty_stdout` and every T03 integration test assert zero-byte success string.
+- [x] AC10: real `Start -> edit -> Advance -> Close` flow -> `test1_...` asserts scope `Closed`, processed `(A,e1)/(A,e2)/(A,e3)`, one `AiExclusive(A)` event over the edit, cursor tree = final Git tree.
+- [x] AC11: replayed `(ScopeId, EventId)` boundary is idempotent -> `test2_replayed_advance_is_fully_idempotent` snapshots revision + event count + processed count and asserts all unchanged with a single `(A,e2)` key.
+- [x] AC12: conflicting `ActorKind` commits no second boundary -> `test3_...` asserts `ScopeIdentityConflict`, unchanged revision/scope actor/status, `(A,e2)` absent, no new event row.
+- [x] AC13: abandonment retains no-snapshot semantics and correct transition -> `test4_...` asserts scope `Abandoned`, revision +1, `needs_rebaseline = true`, `cursor_tree` = pre-edit tree, no edit event / no processed row.
+- [x] AC14: durable storage reached only through the mutation runtime, `mutation_trace_*` only -> every T03 test asserts `diff_traces` / `post_commit_patch_intersections` / `agent_traces` hold zero rows; `rg` for the six insert symbols returns nothing in the production body.
+- [x] AC15: no change to `spec/mutation_cursor.qnt`, `protocol.rs`, `cli/migrations/agent-trace-repository/`, Agent Trace schema -> `git diff origin/mutation-trace-agent-attribution -- <those paths>` is empty.
+- [x] AC16: durable context establishes the generic adapter seam and future-work boundary -> `context/cli/mutation-scope-hook-ingress.md` exists (12,202 bytes) and documents the JSON contract, operation mapping, identity ownership, no-`worktree_id`, no-id-generation, non-fail-open + marker-clear classification, lazy DB provider, empty-stdout contract, abandonment ownership, and the generic-ingress vs harness-adapter boundary; `context/cli/mutation-scope-runtime.md` Status records the generic ingress with no concrete harness adapter.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- Concrete Claude Code / Codex / OpenCode / Pi lifecycle adapters remain out of scope and unwritten; nothing in a real harness invokes `sce hooks mutation-scope` yet. Recorded as intended future work in `context/cli/mutation-scope-hook-ingress.md` and the runtime Status section.
