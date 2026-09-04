@@ -32,6 +32,7 @@
   - config `policies.attribution_hooks.enabled`
   - precedence: env over config file
   - default: enabled
+- Hook-runtime Agent Trace DB opening resolves repository identity through the shared config resolver. Invalid default-discovered global or repo-local config layers are skipped in favor of the remaining valid layer or the default `origin` remote; explicit `--config` / `SCE_CONFIG_FILE` failures remain fatal. This degradation does not change no-migration schema readiness, repository identity canonicalization, or genuine DB fail-open diagnostics.
 - `commit-msg` is the only active attribution path.
   - Reads the message file as UTF-8.
   - Applies exactly one canonical trailer: `Co-authored-by: SCE <sce@crocoder.dev>`.
