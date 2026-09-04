@@ -8,7 +8,8 @@ boundaries against a real worktree behind the shared `ProtectedWorktree` safety
 prefix, and `abandon_scope()` retires a scope whose final boundary was never
 observed. Both are `pub(crate)` re-exported from `runtime/mod.rs`, and the
 harness-adapter contract is recorded in `context/cli/mutation-scope-runtime.md`.
-Nothing calls either entrypoint — no hook, plugin, extension, or command.
+Before this plan, nothing called either entrypoint — no hook, plugin, extension,
+or command.
 
 This plan adds one harness-neutral CLI ingress, `sce hooks mutation-scope`, that
 reads a single normalized JSON object from STDIN, strictly parses and validates
@@ -18,6 +19,11 @@ existing runtime with a **lazy** DB provider so DB acquisition stays inside the
 runtime's protected-worktree ordering. It is the generic transport/normalization
 seam every future Claude Code, Codex, OpenCode, and Pi adapter will target; it
 contains no concrete harness mapping and no lifecycle-event translation.
+
+State now (after T02): `sce hooks mutation-scope` exists and drives
+`coordinate()` / `abandon_scope()`. Concrete Claude Code, Codex, OpenCode, and
+Pi lifecycle adapters remain out of scope for this plan (T04 records that
+boundary in durable context).
 
 The ingress owns nothing durable. The external adapter owns `scope_id`,
 `event_id`, and `actor_kind`; SCE owns `worktree_id`, Git tree identities,
@@ -91,9 +97,23 @@ performs final validation.
   it does **not** become the edited Git tree — with no `mutation_trace_events`
   row for the edit.
   - Validate: `rg -n 'RuntimeBoundary|GitSnapshotService|capture_tree|pin_tree|diff_trees|coordinate\(' cli/src/services/hooks/mutation_scope.rs` shows the abandon arm calls only `abandon_scope`; integration test T03-Test4 asserts the `cursor_tree` invariance and absent rows.
-- [ ] AC6: The ingress never accepts or constructs a `WorktreeId`; the payload
-  type has no worktree field and the module never names `WorktreeId`.
-  - Validate: `rg -n 'WorktreeId|worktree_id' cli/src/services/hooks/mutation_scope.rs` returns no constructor/field use; parser test rejects a payload containing `"worktree_id"`.
+- [ ] AC6: The normalized payload contains no `worktree_id` field. The
+  production ingress does not accept, derive from input, or construct a
+  `WorktreeId`; worktree identity remains exclusively derived by the existing
+  mutation runtime from the invoking checkout. Test-only (`#[cfg(test)]`) code
+  may construct `WorktreeId` values purely to fabricate injected
+  `CoordinateOutcome` / `AbandonScopeOutcome` runtime results.
+  - Validate — wire contract: a parser regression rejects any payload containing
+    a `worktree_id` key (the production rejection diagnostic
+    `field 'worktree_id' is not accepted` is expected to contain that literal, so
+    do not text-ban the string outright).
+  - Validate — production code: inspecting only the module body *before*
+    `#[cfg(test)]`, it never constructs `WorktreeId(...)`, never reads a
+    worktree-identity field from the JSON payload, and never passes a
+    `WorktreeId` into `coordinate()` / `abandon_scope()`. Confirm by reading the
+    production section, or with a check scoped to it — e.g. `rg -n 'WorktreeId'
+    cli/src/services/hooks/mutation_scope.rs` shows matches only within the
+    `#[cfg(test)]` module.
 - [ ] AC7: DB acquisition stays lazy inside the runtime's protected-worktree
   sequence — the ingress passes a `FnOnce` provider closure to `coordinate()` and
   `abandon_scope()`, never an already-open handle, reusing
@@ -171,6 +191,18 @@ performs final validation.
 
 ### Context sync
 
+T02's task synchronization already removed the now-false "the runtime is not
+wired into any hook or command" / "nothing calls either entrypoint" clauses from
+`context/overview.md`, `context/context-map.md`,
+`context/cli/mutation-scope-runtime.md`,
+`context/cli/mutation-trace-runtime-coordinator.md`,
+`context/cli/mutation-trace-scope-abandonment.md`, and
+`context/cli/mutation-trace-protocol.md`, and added the command to the
+implemented surface list in
+`context/sce/agent-trace-hooks-command-routing.md`. The remaining work below is
+T04's comprehensive pass — chiefly the new domain file and the full non-fail-open
+intake contract.
+
 - New: `context/cli/mutation-scope-hook-ingress.md` — the normalized JSON
   contract, operation mapping, identity ownership, why `worktree_id` is refused,
   why `ScopeId`/`EventId` are not generated, why errors are not fail-open, the
@@ -186,8 +218,9 @@ performs final validation.
   variants) distinct from `diff-trace`/`conversation-trace`.
 - `context/context-map.md` — register the new domain file and update the
   hooks-routing / mutation-scope-runtime annotations.
-- `context/overview.md` — update the `mutation_trace` paragraph clause that says
-  the runtime entrypoints are "still not wired into any hook or command".
+- `context/overview.md` — finalize the `mutation_trace` paragraph (T02 already
+  replaced the "still not wired into any hook or command" clause with the
+  generic-ingress description; T04 confirms it against the shipped contract).
 
 ## Task context synchronization lifecycle
 
@@ -326,7 +359,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     this task; the durable-context work is planned as T04.
   - Context synchronization: synced
 
-- [ ] T02: `Add CLI routing and wire the existing runtime` (status:todo)
+- [x] T02: `Add CLI routing and wire the existing runtime` (status:done)
   - Task ID: T02
   - Scope: In — `cli_schema::HooksSubcommand::MutationScope` (hidden, kebab
     `mutation-scope`, "reads JSON payload from STDIN" about text);
@@ -368,7 +401,90 @@ Persist this field in every plan; this is durable plan state, not chat state:
     parser/help tests plus the new conversion and classification tests pass;
     `clippy --all-targets -- -D warnings` and `fmt --check` are clean.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::parse::command_runtime`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::`; `rg -n 'open_db|coordinate\(|abandon_scope\(|MarkerClearAfterCommit|MarkerClearAfterCompletion|open_agent_trace_db_for_hook_runtime' cli/src/services/hooks/mutation_scope.rs`; `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`.
-  - Context synchronization: pending
+  - Completed: 2026-09-04
+  - Files changed:
+    - `cli/src/cli_schema.rs` — added the hidden `HooksSubcommand::MutationScope`
+      variant (kebab `mutation-scope`, "reads JSON payload from STDIN" about text).
+    - `cli/src/services/parse/command_runtime.rs` —
+      `convert_hooks_subcommand_request` arm mapping
+      `HooksSubcommand::MutationScope` → `HookSubcommand::MutationScope`; new
+      `mutation_scope_hook_parses_to_hook_subcommand` parser test.
+    - `cli/src/services/hooks/mod.rs` — `HookSubcommand::MutationScope` variant;
+      `run_hooks_subcommand_in_repo` dispatch arm calling
+      `mutation_scope::run_mutation_scope_subcommand(repository_root, logger)`
+      (unwrapped `Result`, non-fail-open like `PreCommit`);
+      `hook_runtime_invocation_name` arm ("mutation-scope runtime invocation");
+      dropped the now-unnecessary `#[allow(dead_code)]` on `pub mod mutation_scope`.
+    - `cli/src/services/hooks/mutation_scope.rs` — `run_mutation_scope_subcommand`
+      (reads STDIN via `super::read_hook_stdin`), `run_mutation_scope_from_payload`,
+      and a testable `drive_mutation_scope` generic over injectable
+      `coordinate`/`abandon_scope` seams; `classify_coordinate` /
+      `classify_abandon` durable-completion classification;
+      `log_marker_clear_after_durable_completion`; `#[cfg(test)] mod
+      runtime_dispatch` (10 tests).
+  - Result: `sce hooks mutation-scope` now routes through the normal
+    CLI/hook stack to `HookSubcommand::MutationScope` and stays hidden (no
+    `hooks` entry in `sce --help`; `sce hooks --help` lists it).
+    `run_mutation_scope_subcommand` reads one STDIN payload, parses it with the
+    T01 `parse_mutation_scope_payload`, and `drive_mutation_scope` builds one
+    `RuntimeBoundary` (`Start`/`Advance`/`Close`/`Flush`) forwarding
+    `ScopeId`/`EventId`/`ActorKind` verbatim, or returns early into
+    `abandon_scope` for `Abandon`. The real path passes a `FnOnce` provider
+    closure (`|| super::open_agent_trace_db_for_hook_runtime(root,
+    MUTATION_SCOPE_DB_CONTEXT)`) straight into `runtime::coordinate` /
+    `runtime::abandon_scope`, so DB acquisition stays inside the runtime's
+    protected-worktree ordering. Classification is by durable completion:
+    `Ok(_)` → empty stdout; `CoordinateError::MarkerClearAfterCommit` /
+    `AbandonScopeError::MarkerClearAfterCompletion` → cleanup failure logged via
+    `logger.warn`, empty stdout, `Ok` (transition not re-run — the injected
+    seam is `FnOnce` and is invoked exactly once); every other error →
+    `Err(anyhow!(...))`, surfaced as `CliError` by `HooksCommand::execute`.
+    Successful runs serialize nothing (`Ok(String::new())`). No production
+    write path touches `diff_traces`/`post_commit_patch_intersections`/
+    `agent_traces`. Real Git/DB regressions and durable context are T03/T04.
+  - Verify results:
+    - `test services::parse::command_runtime` — pass (11 passed, 0 failed;
+      includes `mutation_scope_hook_parses_to_hook_subcommand`).
+    - `test services::hooks::` — pass (217 passed, 0 failed).
+    - `test services::hooks::mutation_scope` — pass (29 passed, 0 failed;
+      10 new `runtime_dispatch` tests).
+    - `rg` seam check — `open_agent_trace_db_for_hook_runtime` appears only
+      inside the provider closures passed to `coordinate(...)` /
+      `abandon_scope(...)`; `rg 'fail.open|failed open|exit 0'
+      cli/src/services/hooks/mutation_scope.rs` returns nothing.
+    - `clippy --all-targets -- -D warnings` — pass (clean).
+    - `fmt --check` — pass (after `cargo fmt`).
+  - Deviation: the ingress→runtime call is split into `drive_mutation_scope`
+    generic over two injectable `FnOnce` seams (defaulting to the real
+    `coordinate` / `abandon_scope` wrapped with the DB-provider closure), per
+    the plan's "seam that lets the test inject each runtime result" and the
+    cover note allowing local shape choices. `run_mutation_scope_subcommand`
+    returns `Result<String>` dispatched without an `Ok(...)` fail-open wrapper;
+    empty-stdout success is `Ok(String::new())`. This task was implemented on
+    branch `mutation-scope-ingress` (the plan and T01 output live only there;
+    the plan is stacked on `origin/mutation-trace-agent-attribution`).
+  - Context impact: Additive behavior. New hidden CLI subcommand `sce hooks
+    mutation-scope` and its runtime wiring; no change to existing hooks,
+    mutation protocol, DB schema, migrations, or attribution behavior. Task
+    synchronization corrected every durable statement made false by T02 — the
+    "not wired into any hook or command" / "nothing calls either entrypoint" /
+    "no harness, hook, or command calls this" / "harness/command wiring remains
+    future work" / "a seam whose consumers do not exist yet" / "only
+    harness/command wiring remains" clauses in `context/overview.md`,
+    `context/context-map.md`, `context/cli/mutation-scope-runtime.md` (Status and
+    the seam re-export rationale), `context/cli/mutation-trace-runtime-coordinator.md`
+    (intro + Status), `context/cli/mutation-trace-scope-abandonment.md` (Status),
+    `context/cli/mutation-trace-protocol.md` (intro + "Target end-state
+    architecture"), and this plan's own Change summary and Context sync section —
+    and added the command to the implemented surface list in
+    `context/sce/agent-trace-hooks-command-routing.md`. Every correction keeps
+    the generic-SCE-ingress-exists vs concrete-harness-adapter-exists
+    distinction, and `context/cli/mutation-trace-ref-reconciliation.md`'s
+    "`reconcile_worktree` … no harness/command wiring yet" was verified still
+    accurate and left unchanged. The comprehensive
+    `context/cli/mutation-scope-hook-ingress.md` domain file and the full
+    non-fail-open intake contract remain T04's scope per the plan.
+  - Context synchronization: synced
 
 - [ ] T03: `Add real Git/DB mutation-scope ingress regressions` (status:todo)
   - Task ID: T03
@@ -431,8 +547,9 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `context/cli/mutation-scope-runtime.md` Status; add the command to
     `context/sce/agent-trace-hooks-command-routing.md` with its non-fail-open
     intake contract; register the new file and adjust annotations in
-    `context/context-map.md`; update the "not wired into any hook or command"
-    clause in `context/overview.md`. Out — code changes.
+    `context/context-map.md`; finalize the `mutation_trace` wiring paragraph in
+    `context/overview.md` (T02 already removed the "not wired into any hook or
+    command" clause). Out — code changes.
   - Dependencies: T03
   - Done when: the new context file exists and covers every listed point, the
     four updated files reflect the shipped ingress while preserving the
