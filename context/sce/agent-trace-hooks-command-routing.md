@@ -15,6 +15,7 @@
 - `sce hooks conversation-trace`
 - `sce hooks codex`
 - `sce hooks claude-model-state`
+- `sce hooks mutation-scope` (hidden; reads one normalized JSON lifecycle object from STDIN)
 
 ## Parser and dispatch behavior
 
