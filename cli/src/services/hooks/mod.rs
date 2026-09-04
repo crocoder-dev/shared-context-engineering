@@ -40,6 +40,7 @@ use crate::services::structured_patch::{
 };
 use crate::services::sync::auto_sync;
 pub mod claude_model_state;
+pub mod claude_mutation_scope;
 pub mod claude_transcript;
 pub mod codex;
 pub mod command;
