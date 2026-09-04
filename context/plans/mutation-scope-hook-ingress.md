@@ -486,7 +486,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     non-fail-open intake contract remain T04's scope per the plan.
   - Context synchronization: synced
 
-- [ ] T03: `Add real Git/DB mutation-scope ingress regressions` (status:todo)
+- [x] T03: `Add real Git/DB mutation-scope ingress regressions` (status:done)
   - Task ID: T03
   - Scope: In — `#[cfg(test)] mod tests` coverage (in `mutation_scope.rs` or a
     sibling test module following `hooks/mod.rs`'s `mutation_attribution_e2e`
@@ -534,7 +534,90 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Done when: all seven regressions pass, exercising the real `coordinate()` /
     `abandon_scope()` paths through the ingress.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::mutation_scope`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::`.
-  - Context synchronization: pending
+  - Completed: 2026-09-04
+  - Files changed:
+    - `cli/src/services/hooks/mutation_scope.rs` — refactored
+      `run_mutation_scope_from_payload` to delegate to a new private
+      `run_mutation_scope_from_payload_with<O>` seam parametrized by a DB-resolver
+      closure (`O: Fn(&Path, &'static str) -> Result<RepositoryAgentTraceDb> + Copy`),
+      keeping the production path unchanged (it passes
+      `super::open_agent_trace_db_for_hook_runtime` verbatim); added a
+      `#[cfg(test)] pub(super) run_mutation_scope_from_payload_at_state_root`
+      wrapper mirroring the `claude_model_state` precedent; added
+      `use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;`;
+      added `#[cfg(test)] mod tests::real_git_db_ingress` with 7 integration tests
+      (`test1`..`test7`) plus `IngressRepo` (RAII `tempfile::TempDir` + real
+      `git init` + `origin` remote + state-root `RepositoryAgentTraceDb`) and
+      direct-SQL assertion helpers (`count`, `worktree_revision`, `cursor_tree`,
+      `needs_rebaseline`, `processed_events`, `scope_status`, `mutation_events`).
+  - Result: Added seven real Git/DB regressions that drive the production ingress
+    (`run_mutation_scope_from_payload_at_state_root` → `_with` → real
+    `parse_mutation_scope_payload` + real `coordinate()` / `abandon_scope()`)
+    against a real temp `git` worktree and a real state-root
+    `RepositoryAgentTraceDb`, asserting durable rows by direct SQL:
+    - T03-Test1 (`test1_...`): observed `start(A,e1)→edit→advance(A,e2)→close(A,e3)`
+      (all `claude_code`) → scope status `closed`, processed events exactly
+      `(A,e1),(A,e2),(A,e3)` verbatim, exactly one `mutation_trace_events` row
+      (`ai_exclusive`/`A`/`advance`), `cursor_tree` = final `git write-tree`,
+      `diff_traces`/`post_commit_patch_intersections`/`agent_traces` all zero.
+    - T03-Test2 (`test2_...`): replayed `advance(A,e2)` leaves `revision` +
+      `mutation_trace_events` count + `mutation_trace_processed_events` count
+      unchanged and exactly one `(A,e2)` processed key (fails if `EventId` is
+      transformed).
+    - T03-Test3 (`test3_...`): `advance(A,e2,codex)` after `start(A,e1,claude_code)`
+      returns `Err`; the test now specifically proves the `ScopeIdentityConflict`
+      path by asserting the ingress error text carries the `register_scope`
+      actor-mismatch diagnostic (`is already registered to actor`), not merely
+      that some error occurred. `revision`, processed rows, scope
+      `(actor_kind, status)`, and `mutation_trace_events` count are all unchanged
+      and `(A,e2)` absent.
+    - T03-Test4 (`test4_...`): `start(A,e1)→unobserved edit→abandon(A)` → scope
+      `abandoned`, `revision` +1, `needs_rebaseline` true, `cursor_tree` still the
+      pre-edit tree (≠ edited `git write-tree`), zero `mutation_trace_events`,
+      processed events still exactly `(A,e1)`.
+    - T03-Test5 (`test5_...`): baseline `flush` → unscoped edit → `flush` advances
+      `cursor_tree` to the edited tree, `revision` +1, exactly one
+      `mutation_trace_events` row (`ineligible_unscoped`/NULL/`flush`), zero
+      `mutation_trace_scopes` and zero `mutation_trace_processed_events`.
+    - T03-Test6 (`test6_...`): an attributable `advance` whose in-`coordinate`
+      DB-resolver sabotages the external-taint marker path (removes the armed file,
+      plants a non-empty dir) → runtime returns
+      `CoordinateError::MarkerClearAfterCommit`, ingress returns empty stdout, the
+      resolver ran exactly once, and the committed `ai_exclusive` event / single
+      `(A,e2)` processed key are durable.
+    - T03-Test7 (`test7_...`): the `abandon` equivalent —
+      `AbandonScopeError::MarkerClearAfterCompletion` → empty-stdout success,
+      resolver invoked once, scope `abandoned`, `revision` +1, `needs_rebaseline`
+      true, zero `mutation_trace_events`.
+    - All seven regressions assert the raw Agent Trace tables `diff_traces`,
+      `post_commit_patch_intersections`, and `agent_traces` each hold zero rows
+      after the ingress flow, expressed once via the shared
+      `assert_raw_agent_trace_tables_untouched` helper.
+  - Verify results:
+    - `test ... services::hooks::mutation_scope` — pass (36 passed, 0 failed;
+      7 new `real_git_db_ingress` tests).
+    - `test ... services::hooks::` — pass (224 passed, 0 failed).
+    - `test ... services::mutation_trace::` — pass (323 passed, 0 failed).
+    - `clippy --all-targets -- -D warnings` — pass (clean).
+    - `fmt --check` — pass (after `cargo fmt`).
+  - Deviation: the tests inject the DB provider (state-root
+    `open_agent_trace_db_for_hook_runtime_at_state_root`, and for Test6/Test7 a
+    marker-sabotaging wrapper around it) exactly as the runtime's own test suite
+    and the `claude_model_state` hook tests do; a hermetic test cannot use the
+    global-state-root DB resolver. This required the small non-behavioral
+    production refactor above (extract `run_mutation_scope_from_payload_with`,
+    add the `#[cfg(test)]` `_at_state_root` wrapper) rather than a
+    tests-only change; the production ingress path and its runtime call sites
+    are byte-for-byte equivalent. Implemented on branch `mutation-scope-ingress`.
+  - Context impact: Additive-internal / test-only. New integration tests plus a
+    private test seam; the production `sce hooks mutation-scope` behavior,
+    CLI surface, JSON contract, runtime call sequence, DB schema, and
+    attribution behavior are unchanged. No public interface, data shape, or
+    documented-behavior change. The comprehensive
+    `context/cli/mutation-scope-hook-ingress.md` domain file and the four
+    context-file updates remain T04's scope per the plan; no root context file
+    requires an update for this task.
+  - Context synchronization: synced
 
 - [ ] T04: `Document the mutation-scope hook ingress` (status:todo)
   - Task ID: T04
