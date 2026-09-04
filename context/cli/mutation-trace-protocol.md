@@ -1,8 +1,10 @@
 # Mutation-cursor protocol module (`mutation_trace`)
 
 Pure Rust refinement of the verified `spec/mutation_cursor.qnt` protocol, living
-at `cli/src/services/mutation_trace/`. `protocol.rs`'s transitions are not yet
-wired into any hook/command; `store.rs` now provides a real database call site
+at `cli/src/services/mutation_trace/`. `protocol.rs` is invoked only through the
+`runtime/` layer; that runtime is now driven by the generic
+`sce hooks mutation-scope` CLI ingress, with no concrete harness lifecycle
+adapter wired. `store.rs` provides the real database call site
 (see "Target end-state architecture" below).
 
 ## Current state
@@ -21,9 +23,7 @@ kinds — `Start`/`Advance`/`Close`/`Flush` — in one pass, refining
 `recoverNeeded`/`recover`). Cross-action sequence/invariant tests and a
 module-level Quint refinement matrix (`mod.rs`) close out the
 `mutation-cursor-protocol-kernel` plan's task stack (T01-T07). Registered in
-`cli/src/services/mod.rs` with `#[allow(dead_code)]`, matching the existing
-precedent for modules not yet consumed by production call sites
-(`bash_policy`, `repository_identity`, `agent_trace_export`).
+`cli/src/services/mod.rs` with `#[allow(dead_code)]`.
 
 `commit` materializes exactly one `MutationEvent` into `mutation_events` when
 `changed` is true, with `active_scopes`/`attribution` computed by
@@ -225,7 +225,11 @@ loads a `ProtocolState`; `protocol.rs` only transitions already-known ones.
 The plan's file split anticipated three seams beyond `protocol.rs`. `store.rs`,
 `runtime/git_snapshot.rs`, and `coordinator.rs` (with its public `coordinate()`
 entrypoint) now all exist as real call sites, covered by cross-module
-integration tests; only harness/command wiring remains:
+integration tests. The generic command ingress is implemented — the
+`sce hooks mutation-scope` command drives `coordinate()` / `abandon_scope()` —
+so only concrete Claude Code, Codex, OpenCode, and Pi lifecycle adapters remain
+future work; `protocol.rs` itself stays pure and unaware of any CLI or harness
+concept:
 
 ```mermaid
 flowchart LR
