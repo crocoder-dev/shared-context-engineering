@@ -6,10 +6,11 @@ uphold when it drives that surface.
 
 Built by the `mutation-scope-runtime-integration` plan
 (`context/plans/mutation-scope-runtime-integration.md`). The generic
-`sce hooks mutation-scope` CLI ingress now drives this seam, but **no concrete
-harness adapter (Codex, Claude Code, OpenCode, Pi) is wired to it yet.** This
-file is the contract a future harness adapter is written against, not a
-description of shipped adapter behavior. See the Status section below.
+`sce hooks mutation-scope` CLI ingress
+([`mutation-scope-hook-ingress.md`](mutation-scope-hook-ingress.md)) now drives
+this seam, but **no concrete harness adapter (Codex, Claude Code, OpenCode, Pi)
+is wired to it yet.** This file is the contract a future harness adapter is
+written against, not shipped adapter behavior. See the Status section below.
 
 The mechanics behind each entrypoint live in their own domain files:
 [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md)
@@ -237,11 +238,14 @@ scope, or the worktree is unhealthy, externally tainted, or needs rebaseline).
 ## Status
 
 The seam is exported and the contract is recorded. It is now driven by the
-generic `sce hooks mutation-scope` CLI ingress
-(see [agent-trace hooks command routing](../sce/agent-trace-hooks-command-routing.md)):
-it reads one normalized JSON lifecycle object from STDIN and calls `coordinate()`
+generic `sce hooks mutation-scope` CLI ingress, which reads one normalized JSON
+lifecycle object from STDIN and calls `coordinate()`
 (`start` / `advance` / `close` / `flush`) or `abandon_scope()` (`abandon`) with a
-lazy DB provider.
+lazy DB provider, translating `scope_id` / `event_id` / `actor_kind` verbatim,
+refusing any `worktree_id` key, and classifying results by durable completion
+rather than failing open. Full transport/normalization contract in
+[`mutation-scope-hook-ingress.md`](mutation-scope-hook-ingress.md); routing in
+[agent-trace hooks command routing](../sce/agent-trace-hooks-command-routing.md).
 
 A generic SCE ingress existing is not concrete harness integration existing. No
 Claude Code, Codex, OpenCode, or Pi lifecycle adapter is wired yet — none of
