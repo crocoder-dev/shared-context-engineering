@@ -225,8 +225,10 @@ covering what a single-module test with no real Git cannot:
 
 The entrypoint, its outcome/error types, its unit coverage, its cross-runtime
 regressions against real Git repositories, its `pub(crate)` re-export out of
-`runtime`, and the harness-adapter contract document all exist; no harness,
-hook, or command calls this yet.
+`runtime`, and the harness-adapter contract document all exist. The generic
+`sce hooks mutation-scope` CLI ingress now calls `abandon_scope()` for an
+`abandon` payload; no concrete harness lifecycle adapter (Claude Code, Codex,
+OpenCode, Pi) is wired to it yet.
 
 See also: [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md),
 [`mutation-trace-protected-worktree.md`](mutation-trace-protected-worktree.md),
