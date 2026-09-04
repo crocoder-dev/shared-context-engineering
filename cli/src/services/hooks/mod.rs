@@ -44,6 +44,8 @@ pub mod claude_transcript;
 pub mod codex;
 pub mod command;
 pub mod lifecycle;
+#[allow(dead_code)]
+pub mod mutation_scope;
 
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
