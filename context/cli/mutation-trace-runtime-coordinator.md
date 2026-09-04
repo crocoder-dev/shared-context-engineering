@@ -8,12 +8,14 @@ Git worktree, built by the `mutation-cursor-runtime-coordinator` plan
 
 `cli/src/services/mutation_trace/runtime/` is a private submodule
 (`pub(crate) mod runtime;` in `mutation_trace/mod.rs`), registered under the
-same `#[allow(dead_code)]` precedent as the rest of `mutation_trace`.
-Every submodule is declared privately in `runtime/mod.rs`, which re-exports
-`coordinate` and `abandon_scope` at `pub(crate)` while `reconcile_worktree`
-stays `runtime`-internal. The exported seam is documented in
-[`mutation-scope-runtime.md`](mutation-scope-runtime.md), and nothing under
-`runtime/` is wired into any hook, command, or `diff_traces` insertion yet.
+same `#[allow(dead_code)]` precedent as the rest of `mutation_trace`. Every
+submodule is declared privately in `runtime/mod.rs`, which re-exports
+`coordinate` and `abandon_scope` at `pub(crate)` — reachable crate-wide, contract
+in [`mutation-scope-runtime.md`](mutation-scope-runtime.md). `coordinate()` and
+`abandon_scope()` are now driven by the generic `sce hooks mutation-scope` CLI
+ingress. `reconcile_worktree` stays `runtime`-internal and unwired, and the
+mutation runtime does not itself insert into `diff_traces`. No concrete Claude
+Code, Codex, OpenCode, or Pi lifecycle adapter is wired to the seam yet.
 
 `runtime` depends on `protocol`/`store`/`types` only, and has no dependency
 on any checkout-identity service — that service was removed from SCE
@@ -309,17 +311,18 @@ the real coordinator and abandonment CAS races.
 
 ## Status
 
-The shared `ProtectedWorktree` prefix, per-worktree runtime lock, isolated Git
-snapshot service (including Git-topology-derived `WorktreeId` resolution),
-protocol-integration pipeline, public `coordinate()` entrypoint, and
-`abandon_scope()` entrypoint are implemented. Both entrypoints are
-`pub(crate)` re-exported from `runtime/mod.rs` and described in
-[`mutation-scope-runtime.md`](mutation-scope-runtime.md); `runtime/tests.rs`
-covers their public behavior and cross-runtime regressions. An inherited marker
-is overlaid onto `database_failure` recovery on the next invocation. Harness and
-command wiring remain future work tracked by the
-`mutation-cursor-external-taint`, `mutation-cursor-runtime-coordinator`, and
-`mutation-scope-runtime-integration` plans.
+The `ProtectedWorktree` prefix, lock, snapshot service, protocol-integration
+pipeline, the public `coordinate()` entrypoint (prefix → DB provider → pipeline
+→ `complete()` on success), and the second `abandon_scope()` entrypoint sharing
+that prefix are all implemented and both `pub(crate)` re-exported from
+`runtime/mod.rs` ([`mutation-scope-runtime.md`](mutation-scope-runtime.md)),
+with `runtime/tests.rs` covering `coordinate()` end to end and both entrypoints
+driven together; an inherited external-taint marker is overlaid onto
+`database_failure` recovery on the next invocation. The generic
+`sce hooks mutation-scope` CLI ingress now drives both entrypoints
+(`start`/`advance`/`close`/`flush` → `coordinate()`, `abandon` → `abandon_scope()`);
+concrete harness lifecycle adapters (Claude Code, Codex, OpenCode, Pi) remain
+future work.
 
 See also: [`mutation-trace-protocol.md`](mutation-trace-protocol.md),
 [`mutation-trace-store.md`](mutation-trace-store.md),
