@@ -690,16 +690,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
     this reconciled plan record. No code or domain context file changed, so no
     cross-file context synchronization was required.
 
-- [ ] T02: `Raw event model, tool classification, and identity` (status:todo)
+- [x] T02: `Raw event model, tool classification, and identity` (status:done)
   - Task ID: T02
   - Scope: In — `cli/src/services/hooks/claude_mutation_scope/mod.rs`: raw event
     parser, supported hook-event enum, tool classifier (known
     mutation-capable: `Bash`, `PowerShell`, `Write`, `Edit`, `NotebookEdit`,
     `MultiEdit` when emitted, `mcp__*`; known read-only: `Read`, `Glob`, `Grep`,
     `WebFetch`, `WebSearch`, `AskUserQuestion`; `Agent` = not a scope; unknown =
-    potentially mutation-capable), owner identity (`agent_id` absent = main,
-    present = subagent), attempt-key type `(session_id, agent_id?, tool_use_id)`,
-    the length-prefixed `cc-tool-v1|n=..|s=..|a=..|t=..` `ScopeId` formatter, and
+    potentially mutation-capable), the explicit-background-shell classifier
+    `is_explicit_background_shell` (`tool_name` in `{Bash, PowerShell}` AND
+    `run_in_background == true`; model/classify only — D20's `PreToolUse`
+    denial is T05's), owner identity (`agent_id` absent = main, present =
+    subagent), attempt-key type `(session_id, agent_id?, tool_use_id)`, the
+    length-prefixed `cc-tool-v1|n=..|s=..|a=..|t=..` `ScopeId` formatter, and
     the `<scope-id>|start` / `<scope-id>|close` `EventId` formatter. Out — any
     durable state, any runtime/ingress call, any CLI wiring.
   - Dependencies: T01
@@ -708,7 +711,63 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `attempt_seq`), AC6, AC21 (classification of explicit background shell), and
     the read-only / delegation / unknown classification table.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::claude_mutation_scope`; `clippy` clean.
-  - Context synchronization: pending
+  - Completed: 2026-09-04
+  - Files changed:
+    - `cli/src/services/hooks/claude_mutation_scope/mod.rs` (new)
+    - `cli/src/services/hooks/mod.rs` (add `pub mod claude_mutation_scope;`
+      registration, alphabetically ordered)
+  - Result: Implemented the raw Claude hook-event model: `ClaudeHookEvent` (all
+    ten tracked/lifecycle variants plus the no-scope `SessionStart`/
+    `SubagentStart` units), `ClaudeToolIdentity`/`ClaudeToolExecution`/
+    `ClaudeSessionIdentity`/`ClaudeAgentIdentity`/`ClaudeWorktreeRemove`,
+    `AttemptKey` and `ClaudeToolIdentity::attempt_key()`/`is_subagent()`, the
+    D2 `classify_tool` classifier, the D20/AC21
+    `is_explicit_background_shell(tool_name, run_in_background)` classifier
+    (`true` only for `tool_name` in `{Bash, PowerShell}` with
+    `run_in_background == true`; a pure model function — no denial behavior,
+    which stays T05's), and the D4 `format_claude_scope_id` /
+    `claude_scope_start_event_id` / `claude_scope_close_event_id` formatters.
+    The strict parser (`parse_claude_hook_event`) follows the existing
+    `mutation_scope.rs`/`hooks/mod.rs` validation-helper style
+    (`required_field`/`required_non_blank_str`/`optional_non_blank_str` +
+    local `validation_error`), validates required identity fields per event,
+    and rejects malformed/wrong-type payloads without fabricating identities.
+    The module is marked `#![allow(dead_code)]` (matching the
+    `services::capabilities` staged-implementation convention) since nothing
+    calls it until T05 wires a CLI command. No durable state, ingress call, or
+    CLI wiring was added, matching the task's Out-of-scope boundary.
+
+    PR #263 follow-up: the original AC21 tests only exercised the
+    `run_in_background` field parser against the default `Write` tool, never
+    proving the classification condition on the two tools D20 actually
+    targets. Added `is_explicit_background_shell` plus five dedicated
+    classification tests (`Bash+true` and `Bash+false` parsed from the real
+    committed T01 fixtures `probe14-run-in-background-true.pre_tool_use.json`
+    and `probe15-run-in-background-false-hard-gate.pre_tool_use.json` via
+    `include_str!`; `PowerShell+true`, `PowerShell+false`, and `Write+true`
+    as direct unit calls), so AC21's classification is now actually proven
+    rather than only its field-parsing prerequisite.
+  - Verify: `services::hooks::claude_mutation_scope` — 42 passed, 0 failed
+    (37 + 5 new `is_explicit_background_shell` classification tests);
+    `clippy --all-targets -- -D warnings` — clean; `fmt -- --check` — clean;
+    AC18 dependency-boundary grep
+    (`rg -n --type rust '^\s*use\s+crate::services::mutation_trace::(runtime|protocol|store)|::(RepositoryAgentTraceDb|WorktreeId|GitSnapshotService)\b' cli/src/services/hooks/claude_mutation_scope/`)
+    — no matches.
+  - Context impact: None beyond this plan. This task adds only an internal,
+    not-yet-wired data-model module and one module registration; no CLI
+    surface, settings, schema, or documented behavior changed yet, so no
+    `context/cli|sce` file needed an update for this task. T08 will document
+    the shipped adapter (including this model) once T05 wires it in.
+  - Context synchronization: synced — root pass confirmed
+    `context/{overview,architecture,glossary,patterns,context-map}.md` contain
+    no mention of `claude_mutation_scope`/this task and are unaffected;
+    `context/cli/mutation-scope-runtime.md` and
+    `context/cli/mutation-scope-hook-ingress.md` already correctly state that
+    no concrete harness adapter is wired yet, which T02 leaves true (the new
+    module is `#[allow(dead_code)]` and has no caller). No feature, public
+    interface, or observable behavior was introduced. No decision qualified
+    for an ADR. Documentation of this model is intentionally deferred to T08
+    per the plan's own task boundary.
 
 - [ ] T03: `Durable checkout-local adapter state` (status:todo)
   - Task ID: T03
