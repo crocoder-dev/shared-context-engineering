@@ -44,6 +44,7 @@ pub mod claude_transcript;
 pub mod codex;
 pub mod command;
 pub mod lifecycle;
+pub mod mutation_scope;
 
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
@@ -100,6 +101,7 @@ pub enum HookSubcommand {
     ConversationTrace,
     Codex,
     ClaudeModelState,
+    MutationScope,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -241,6 +243,9 @@ fn run_hooks_subcommand_in_repo(
         HookSubcommand::ClaudeModelState => Ok(
             claude_model_state::run_claude_model_state_subcommand(repository_root, logger),
         ),
+        HookSubcommand::MutationScope => {
+            mutation_scope::run_mutation_scope_subcommand(repository_root, logger)
+        }
     }
 }
 
@@ -1951,6 +1956,7 @@ fn hook_runtime_invocation_name(subcommand: &HookSubcommand) -> &'static str {
         HookSubcommand::ConversationTrace => "conversation-trace runtime invocation",
         HookSubcommand::Codex => "codex runtime invocation",
         HookSubcommand::ClaudeModelState => "Claude model-state runtime invocation",
+        HookSubcommand::MutationScope => "mutation-scope runtime invocation",
     }
 }
 
