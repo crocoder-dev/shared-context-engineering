@@ -485,23 +485,6 @@ pub fn ensure_git_remote(repository_root: &Path, remote_name: &str) -> Result<()
     }))
 }
 
-/// Validates an existing repo-local `.sce/config.json` before setup performs
-/// any other repository or lifecycle work. An absent config remains eligible
-/// for the normal bootstrap path.
-pub fn validate_existing_repo_local_config(repository_root: &Path) -> Result<()> {
-    let config_file = RepoPaths::new(repository_root).sce_config_file();
-    if !config_file.exists() {
-        return Ok(());
-    }
-
-    crate::services::config::validate_config_file(&config_file).with_context(|| {
-        format!(
-            "Setup preflight rejected invalid repo-local config file '{}'",
-            config_file.display()
-        )
-    })
-}
-
 /// Bootstraps the repo-local `.sce/config.json` file if it does not already exist.
 ///
 /// Creates the `.sce/` parent directory as needed, then writes the canonical
@@ -844,6 +827,15 @@ pub fn persist_integration_targets(
 ) -> Result<()> {
     let repo_paths = RepoPaths::new(repository_root);
     let config_file = repo_paths.sce_config_file();
+
+    // Default-discovered invalid config is intentionally degradable during
+    // setup. Do not rewrite it while recording the installed target: the
+    // startup resolver already reported the invalid layer and setup must leave
+    // the user's file byte-for-byte unchanged.
+    if config_file.exists() && crate::services::config::validate_config_file(&config_file).is_err()
+    {
+        return Ok(());
+    }
 
     // Read existing config or start with bootstrap payload.
     let raw = if config_file.exists() {
