@@ -278,7 +278,7 @@ gone. Only after a successful `flush` does the adapter clear `recovery_pending`;
 a failed `flush` keeps it fail-closed for subsequent mutation-capable
 `PreToolUse`.
 
-### D20 — Detached background Bash/PowerShell is unsupported and denied — resolved by T01: PASS for Claude-managed backgrounding; self-detaching descendants are a separate, explicit unsupported boundary (T04 pending)
+### D20 — Detached background Bash/PowerShell is unsupported and denied — resolved by T01: PASS for Claude-managed backgrounding; self-detaching descendants confirmed as a separate, explicit unsupported boundary by T04
 
 A detached shell can keep mutating the repository after `PostToolUse` returns and
 can outlive a session; the generic mutation-scope contract has no process
@@ -319,9 +319,49 @@ reliably catch, and this PR does not attempt one. Correct support would
 require process/process-group supervision, which is out of scope here (see
 Constraints and non-goals). This boundary holds regardless of what T04's probe
 observes for the specific pattern it tests, because no detection or
-supervision is being added either way; T04 records the concrete observed
-`PostToolUse`-vs-descendant-mutation ordering as evidence, and this section is
-updated with that finding once T04 completes.
+supervision is being added either way.
+
+**T04 finding (Claude Code `2.1.258`), corrected 2026-09-05:** the original
+capture wrote its marker under `context/tmp/`, which `context/tmp/.gitignore`
+ignores wholesale — `GitSnapshotService::capture_tree()`'s
+`git read-tree HEAD` / `git add -A -- .` / `git write-tree` sequence never
+sees an ignored path, so that capture only proved a detached descendant
+*survives* `PostToolUse`, not that its mutation is one SCE's Git snapshot
+would actually observe. T04 was rerun with a non-ignored, repository-root
+marker path and explicit `"run_in_background":false` present in the real
+captured `tool_input` (not merely omitted and defaulted): a foreground `Bash`
+call ran `setsid bash -c '... sleep 3; <write-marker> ...' &` (a shell-level
+self-detaching descendant, the `setsid`/backgrounding equivalent of Python
+`subprocess.Popen(..., start_new_session=True)`) and returned in
+`duration_ms: 13` — the invoked shell never waited on the detached child.
+`PreToolUse` fired at `2026-09-04T22:18:09.195Z`, `PostToolUse` fired at
+`2026-09-04T22:18:21.678Z`, and the detached descendant's own write landed at
+`2026-09-04T22:18:24.674140Z` — roughly three seconds *after* `PostToolUse`,
+matching the child's own `sleep 3`. `git check-ignore` confirmed the marker
+path is not ignored, and a `GIT_INDEX_FILE`-scoped temporary index (never the
+real `.git/index`) reproduced `capture_tree()`'s exact sequence before and
+after the child's write, yielding two different tree hashes
+(`596fcceafa2ebf70a087f606d7e16645f18ee17e` vs
+`b24d653632e478298b625e86c99f51f4016f9f57`) — direct proof the descendant's
+mutation is one SCE's snapshot model would observe.
+
+**The self-detaching-descendant boundary is therefore confirmed by direct,
+Git-observable evidence, not merely theoretical**, for this process pattern
+and this Claude Code version: a foreground Claude `Bash` tool call can return
+`PostToolUse` — closing the adapter's mutation scope at the tree observed at
+that moment — while a descendant it spawned remains alive and later performs
+a mutation that changes SCE's observable Git tree; that later mutation falls
+outside the tool's own observed scope boundary and would be misattributed
+(or silently dropped) if the adapter ever treated `PostToolUse` as proof no
+descendant process is still running or mutating the repository. This does
+not generalize to `nohup`, double-fork, daemonization, interpreter, or other
+descendant-detachment patterns T04 did not exercise — those remain unproven
+— and the unsupported-boundary wording above stays in place regardless,
+since this PR implements no detection or supervision either way and adds no
+static shell-command inspection. See
+`cli/src/services/hooks/claude_mutation_scope/fixtures/probe17-detached-child-after-post-tool-use.*`
+(including the `.evidence.json` capture-metadata artifact) and the T04
+addendum in `NOTES.md` for the full captured evidence.
 
 ### D21 — Raw Claude hook cwd is authoritative
 
@@ -888,7 +928,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     for an ADR. Documentation of this state module is intentionally deferred
     to T09 per the plan's own task boundary.
 
-- [ ] T04: `Capture the detached-descendant Bash lifecycle probe` (status:todo)
+- [x] T04: `Capture the detached-descendant Bash lifecycle probe` (status:done)
   - Task ID: T04
   - Scope: In — a T01 follow-up, using the same live-capture methodology
     against the same pinned Claude Code version (`2.1.258`, or whatever
@@ -938,7 +978,121 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `cli/src/services/hooks/claude_mutation_scope/fixtures/`; `NOTES.md`
     documents the observation and timestamps; this plan's D20 section reflects
     the reconciled finding.
-  - Context synchronization: pending
+  - Completed: 2026-09-04
+  - Files changed:
+    - `cli/src/services/hooks/claude_mutation_scope/fixtures/probe17-detached-child-after-post-tool-use.pre_tool_use.json`
+      (new, then replaced with a corrected real recapture — see PR #263
+      follow-up below)
+    - `cli/src/services/hooks/claude_mutation_scope/fixtures/probe17-detached-child-after-post-tool-use.post_tool_use.json`
+      (new, then replaced with a corrected real recapture for the same
+      `tool_use_id` — see PR #263 follow-up below)
+    - `cli/src/services/hooks/claude_mutation_scope/fixtures/probe17-detached-child-after-post-tool-use.evidence.json`
+      (new — PR #263 follow-up — machine-readable capture metadata:
+      versions, timestamps, `git check-ignore`/`git status` results, and the
+      before/after tree hashes)
+    - `cli/src/services/hooks/claude_mutation_scope/fixtures/NOTES.md` (update
+      — new probe-17 table row plus a "T04 addendum" section recording the
+      exact captured timestamps, the tested process pattern, and the
+      reconciled D20 disposition; rewritten in the PR #263 follow-up to
+      separate Claude lifecycle evidence from Git-observable mutation
+      evidence)
+    - `context/plans/claude-mutation-scope-integration.md` (this
+      reconciliation — D20 updated with the concrete T04 finding, then
+      corrected in the PR #263 follow-up)
+  - Result: Captured a real, live Claude Code `2.1.258` fixture for the
+    detached-descendant probe using T01's exact methodology (a scratch
+    `PreToolUse`/`PostToolUse` dump hook temporarily registered on the `Bash`
+    matcher in `.claude/settings.json`, alongside the existing SCE entries).
+    Drove one foreground `Bash` call (`run_in_background` omitted, i.e.
+    `false`) running `setsid bash -c '... sleep 3; <write-marker> ...' &` — a
+    shell-level self-detaching descendant, the `setsid`/backgrounding
+    equivalent of Python `subprocess.Popen(..., start_new_session=True)`
+    named in the task. The invoked shell returned in `duration_ms: 15`
+    (`tool_response.stdout` independently confirms `"parent exiting at
+    2026-09-04T21:45:07.207863Z"`), never waiting on the detached child.
+    Observed timestamps: `PreToolUse` `2026-09-04T21:44:58.468Z`,
+    `PostToolUse` `2026-09-04T21:45:07.219Z`, descendant's own
+    repository-mutating write `2026-09-04T21:45:10.221976Z` (~3.00s after
+    `PostToolUse`, matching the child's `sleep 3`). **Ordering: the
+    descendant's mutation landed after `PostToolUse`** — the first of the
+    task's two anticipated dispositions. D20 was updated accordingly: the
+    self-detaching-descendant boundary is now a confirmed, observed finding
+    for this process pattern and Claude Code version, not merely a
+    theoretical one, without generalizing to `nohup`/double-fork/daemonizing
+    patterns this probe did not exercise. No production code, Rust module,
+    CLI wiring, process supervision, or protocol/schema change was made,
+    matching the task's Out-of-scope boundary; no already-committed T01
+    fixture file was modified. `.claude/settings.json` was temporarily
+    modified during capture (with explicit user approval, since the
+    auto-mode classifier initially blocked the edit) and fully reverted
+    (byte-for-byte, confirmed via diff) before this task closed.
+
+    **PR #263 follow-up (2026-09-05):** review found the original capture's
+    marker path (`context/tmp/probe17-detached-child-write.marker`) was
+    wholesale-ignored by `context/tmp/.gitignore`, so
+    `GitSnapshotService::capture_tree()`'s `git add -A -- .` would never see
+    it — the original evidence proved only that a detached descendant
+    survives `PostToolUse`, not that its mutation is Git-observable to SCE's
+    own snapshot model. T04 was rerun end-to-end with: (1) a non-ignored,
+    repository-root marker path
+    (`probe17-detached-child-write.marker`), verified via
+    `git check-ignore -v` (exit `1`, not ignored) both before the probe and
+    after the child's write; (2) explicit `"run_in_background":false`
+    present in the real captured `tool_input` (previously omitted, not
+    hand-edited in afterward); (3) the same `setsid`-based self-detaching
+    descendant pattern; and (4) a `GIT_INDEX_FILE`-scoped temporary index
+    (never the real `.git/index`) that reproduced
+    `capture_tree()`'s exact `git read-tree HEAD` / `git add -A -- .` /
+    `git write-tree` sequence before and after the child's write, yielding
+    two different tree hashes
+    (`596fcceafa2ebf70a087f606d7e16645f18ee17e` vs
+    `b24d653632e478298b625e86c99f51f4016f9f57` — T1 ≠ T2). New observed
+    timestamps: `PreToolUse` `2026-09-04T22:18:09.195Z`, `PostToolUse`
+    `2026-09-04T22:18:21.678Z` (`duration_ms: 13`), descendant's write
+    `2026-09-04T22:18:24.674140Z` (~3.00s after `PostToolUse`) — the same
+    `t1 < t2 < t3` ordering and disposition as before, now with direct proof
+    the descendant's mutation is Git-observable. The two raw fixture files
+    were replaced with these real recaptured payloads (same `tool_use_id`
+    `toolu_011DiMMHcxCZr6HzXWZhWzmD` across both), a new `.evidence.json`
+    artifact was added, `NOTES.md`'s T04 addendum was rewritten to separate
+    Claude lifecycle evidence from Git-observable mutation evidence and the
+    derived SCE attribution consequence, and D20 above was updated
+    accordingly. The temporary marker file was deleted after capture and is
+    not part of the committed fixture set. `.claude/settings.json` was again
+    temporarily modified (with explicit user approval) and fully reverted
+    (byte-for-byte, confirmed via diff) before this follow-up closed. No
+    production code, Rust module, CLI wiring, protocol, Quint, or schema
+    change was made; no already-committed T01 fixture file was touched.
+  - Verify: fixtures
+    `probe17-detached-child-after-post-tool-use.{pre_tool_use,post_tool_use,evidence}.json`
+    committed and referenced from this plan and from `NOTES.md`; `NOTES.md`'s
+    "T04 addendum" documents the exact observation and timestamps plus the
+    Git-observability proof; this plan's D20 section reflects the corrected,
+    reconciled finding — all satisfied. `git diff --stat` against the prior
+    commit confirms no file outside
+    `cli/src/services/hooks/claude_mutation_scope/fixtures/` and this plan
+    changed.
+  - Context impact: None beyond this plan. No Rust, Pkl, generated-settings,
+    schema, migration, Quint, or `context/cli|sce` file was changed; only new
+    fixture files, `NOTES.md`, and this plan's own D20/task record were
+    touched. T09 will incorporate this finding when it authors
+    `context/cli/claude-mutation-scope-integration.md` per the plan's
+    existing task boundary.
+  - Context synchronization: synced — root pass confirmed
+    `context/{overview,architecture,glossary,patterns,context-map}.md` contain
+    no mention of the detached-descendant finding and are unaffected;
+    `context/cli/mutation-scope-runtime.md` and
+    `context/cli/mutation-scope-hook-ingress.md` both already correctly state
+    that no concrete harness adapter is wired yet, which T04 leaves true (only
+    a research fixture, `NOTES.md`, and this plan's own D20 wording changed —
+    no adapter, CLI, or production code exists yet for D20's confirmed finding
+    to attach to). No feature, public interface, or observable behavior was
+    introduced. The detached-descendant boundary D20 now confirms was already
+    an established design decision in this plan before T04 ran; T04 supplied
+    empirical evidence for it rather than establishing a new system-wide
+    decision, so no ADR qualified. Documentation of this finding in durable
+    `context/cli` files is intentionally deferred to T09 per the plan's own
+    task boundary.
 
 - [ ] T05: `Expose the in-process generic-ingress seam` (status:todo)
   - Task ID: T05
