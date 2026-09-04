@@ -1,4 +1,4 @@
-# T01 fixture capture notes
+# T01/T04 fixture capture notes
 
 Raw Claude Code hook-event payloads captured live, in-session, by temporarily
 wiring a throwaway dump hook into this checkout's own `.claude/settings.json`
@@ -43,6 +43,7 @@ wrote to the hook script's STDIN.
 | 14 | Explicit `run_in_background=true` Bash | captured | `probe14-run-in-background-true.*` |
 | 15 | `run_in_background=false` long-running Bash (**hard gate**) | captured — **PASS** | `probe15-run-in-background-false-hard-gate.*` |
 | 16 | (optional) `PostToolBatch` | captured | `probe16-post-tool-batch-optional.*` |
+| 17 | T04 follow-up: foreground `Bash` starts a self-detaching descendant | captured | `probe17-detached-child-after-post-tool-use.*` — see T04 addendum below |
 
 12 of 15 required probes captured with real, live payloads. Probes 5 and 9
 could not be produced at all in this session (see below); probe 8 is answered
@@ -189,3 +190,131 @@ uncaptured since D13 and D14/D16 do not depend on their exact payload shape
 for correctness — only on `session_id`/`tool_use_id` presence, which every
 other captured event already confirms is standard across this Claude Code
 version's hook payloads.
+
+## T04 addendum: detached-descendant Bash lifecycle probe
+
+**Revised 2026-09-05.** The original T04 capture wrote its marker to
+`context/tmp/`, which `context/tmp/.gitignore` ignores wholesale. SCE's
+`GitSnapshotService::capture_tree()` observes repository state through
+`git read-tree HEAD` / `git add -A -- .` / `git write-tree`, which never sees
+an ignored path. That evidence therefore only proved *a detached descendant
+survives `PostToolUse` and writes an ignored file later* — not the stronger,
+required claim that the descendant's mutation is one SCE's Git snapshot
+would actually observe, and therefore one that falls outside the tool's
+closed scope. This section replaces the original addendum with a corrected
+capture using a non-ignored marker path and direct proof of Git-observability.
+The two raw hook-payload fixtures below are real re-captured payloads from
+the corrected rerun, not hand edits of the originals.
+
+Captured live, in-session, using the exact same methodology as T01: a scratch
+dump hook (`.../scratchpad/hook-capture/capture17.sh`) was registered as an
+*additional* `PreToolUse`/`PostToolUse` entry for the `Bash` matcher
+(alongside, not replacing, the existing SCE hook entries) in
+`.claude/settings.json`, dumping raw STDIN JSON plus a wall-clock capture
+timestamp to per-event files. The scratch hook was removed from
+`.claude/settings.json` before this task finished; see the task's `Files
+changed` record.
+
+### Claude lifecycle evidence
+
+- **Tested Claude Code version:** `2.1.258` (`claude --version`), same as T01
+  — still the version installed in this environment.
+- **Session:** `3cd16464-cf03-44f5-825b-27296fd55c34`, captured 2026-09-05
+  (UTC timestamps below fall on 2026-09-04, the session's UTC day).
+- **Process pattern tested:** a foreground `Bash` call with **explicit**
+  `"run_in_background":false` present in the real captured `tool_input`
+  (not merely omitted and defaulted) running:
+
+  ```bash
+  setsid bash -c 'sleep 3; date -u +%Y-%m-%dT%H:%M:%S.%6NZ > probe17-detached-child-write.marker' < /dev/null > /dev/null 2>&1 &
+  disown
+  echo "parent exiting at $(date -u +%Y-%m-%dT%H:%M:%S.%6NZ)"
+  ```
+
+  `setsid` starts the inner `bash -c '...'` in a new session, detached from
+  the invoking shell's session/controlling terminal — the shell-level
+  equivalent of Python `subprocess.Popen(..., start_new_session=True)` named
+  as an option in the plan. The backgrounding `&` plus `disown` and the
+  redirected stdio mean the invoked (parent) shell returns immediately
+  without waiting for the detached descendant; the descendant itself sleeps
+  3 seconds, then writes its own wall-clock write-timestamp to
+  `probe17-detached-child-write.marker` at the repository root — a
+  deliberately **non-ignored** test-only path, verified below, not committed
+  as a file (removed immediately after evidence capture).
+- Both the `PreToolUse` and `PostToolUse` fixtures carry the identical
+  `tool_use_id` `toolu_011DiMMHcxCZr6HzXWZhWzmD`, confirming they describe
+  the same tool-execution attempt.
+
+- **Observed timestamps** (all UTC):
+  - `t1` — `PreToolUse` (hook capture time): `2026-09-04T22:18:09.195Z`
+    (`probe17-detached-child-after-post-tool-use.pre_tool_use.json`).
+  - `t2` — `PostToolUse` (hook capture time): `2026-09-04T22:18:21.678Z`
+    (`probe17-detached-child-after-post-tool-use.post_tool_use.json`);
+    the payload's own `tool_response.stdout` independently confirms
+    `"parent exiting at 2026-09-04T22:18:21.668321Z"` with `duration_ms: 13`
+    — the invoked shell itself returned in 13ms, never waiting on the
+    detached descendant.
+  - `t3` — descendant's actual write, timestamped by the descendant process
+    itself (not the hook capture wrapper): `2026-09-04T22:18:24.674140Z`
+    (~3.00s after `t2`, matching the child's own `sleep 3`).
+
+- **Derived ordering:** `t1` (22:18:09.195) < `t2` (22:18:21.678) < `t3`
+  (22:18:24.674). **`PostToolUse` fired roughly three seconds before the
+  detached descendant actually wrote to the repository.**
+
+### Git-observable mutation evidence
+
+- **Marker path:** `probe17-detached-child-write.marker` (repository root).
+- **Not gitignored:** `git check-ignore -v probe17-detached-child-write.marker`
+  exited `1` (no match) both before the probe ran and again after the
+  descendant's write; `git status --short -- probe17-detached-child-write.marker`
+  reported `?? probe17-detached-child-write.marker` — an untracked path Git
+  actually reports, not one silently swallowed by `.gitignore`.
+- **Tree-hash proof, reproducing `GitSnapshotService::capture_tree()`
+  exactly:** using a `GIT_INDEX_FILE`-scoped temporary index (never the real
+  `.git/index`), `git read-tree HEAD` → `git add -A -- .` → `git write-tree`
+  was run twice — once with the marker present (post-child-write state) and
+  once with it removed (pre-child-write state), restoring the marker
+  immediately after:
+  - Tree **before** the child's write: `596fcceafa2ebf70a087f606d7e16645f18ee17e`
+  - Tree **after** the child's write: `b24d653632e478298b625e86c99f51f4016f9f57`
+  - The two tree hashes differ: **T1 ≠ T2**. The descendant's mutation is
+    Git-observable and would change the tree an SCE snapshot captures.
+- The temporary marker file was deleted immediately after capture and does
+  not appear in the committed fixture set; see
+  `probe17-detached-child-after-post-tool-use.evidence.json` for the full
+  machine-readable capture metadata (versions, timestamps, tree hashes,
+  ignore-check result).
+
+### Derived SCE attribution consequence
+
+Chaining the two evidence sections: the adapter's mutation scope for this
+`Bash` tool execution closes at `PostToolUse` (`t2`), observing the tree as
+it stood at that moment. The detached descendant then mutates a
+non-ignored, Git-tracked-by-`add -A` repository path at `t3`, changing the
+tree an SCE snapshot would capture (`T1 ≠ T2` above) — strictly after the
+scope already closed. **A foreground Claude `Bash` tool call can return
+`PostToolUse` while a descendant it spawned remains alive and later performs
+a mutation that changes SCE's observable Git tree; `PostToolUse` is
+therefore not proof that all descendant mutation activity has ended.**
+
+### D20 disposition (T04)
+
+This matches the plan's first anticipated disposition exactly: the
+descendant's mutation is observed to land *after* `PostToolUse`, and is now
+directly proven Git-observable rather than merely surviving past
+`PostToolUse`. Per the plan's own instruction, D20 is updated (not left as a
+theoretical boundary) to record this as a **confirmed, observed** finding
+for this specific process pattern (`setsid`-based shell detachment) and this
+specific Claude Code version (`2.1.258`): a foreground
+(`run_in_background=false`, explicitly captured as such) `Bash` call's
+`PostToolUse` closes the adapter's mutation scope before a self-detaching
+descendant it spawned goes on to mutate the repository in a way SCE's own
+Git snapshot would observe, so that later mutation is **not** observed
+inside the tool's own scope boundary and would be misattributed (or silently
+dropped) if the adapter ever treated `PostToolUse` as proof no descendant
+process is still running. This does **not** generalize to `nohup`,
+double-fork, or daemonizing patterns this probe did not exercise — those
+remain unproven, and D20's unsupported-boundary wording stays in place
+regardless, since this PR implements no detection or supervision either way,
+and no static shell-command inspection is added.
