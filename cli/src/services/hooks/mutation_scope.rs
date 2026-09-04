@@ -3,6 +3,7 @@ use std::path::Path;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{Map, Value};
 
+use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::mutation_trace::runtime::{
     abandon_scope, coordinate, AbandonScopeError, AbandonScopeOutcome, CoordinateError,
     CoordinateOutcome, RuntimeBoundary,
@@ -195,22 +196,52 @@ fn run_mutation_scope_from_payload(
     stdin_payload: &str,
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
+    run_mutation_scope_from_payload_with(
+        repository_root,
+        stdin_payload,
+        logger,
+        super::open_agent_trace_db_for_hook_runtime,
+    )
+}
+
+#[cfg(test)]
+pub(super) fn run_mutation_scope_from_payload_at_state_root(
+    repository_root: &Path,
+    state_root: &Path,
+    stdin_payload: &str,
+    logger: Option<&dyn Logger>,
+) -> Result<String> {
+    run_mutation_scope_from_payload_with(
+        repository_root,
+        stdin_payload,
+        logger,
+        |root, context_message| {
+            super::open_agent_trace_db_for_hook_runtime_at_state_root(
+                root,
+                state_root,
+                context_message,
+            )
+        },
+    )
+}
+
+fn run_mutation_scope_from_payload_with<O>(
+    repository_root: &Path,
+    stdin_payload: &str,
+    logger: Option<&dyn Logger>,
+    open_db: O,
+) -> Result<String>
+where
+    O: Fn(&Path, &'static str) -> Result<RepositoryAgentTraceDb> + Copy,
+{
     let payload = parse_mutation_scope_payload(stdin_payload)?;
 
     drive_mutation_scope(
         repository_root,
         payload,
         logger,
-        |root, boundary| {
-            coordinate(root, boundary, || {
-                super::open_agent_trace_db_for_hook_runtime(root, MUTATION_SCOPE_DB_CONTEXT)
-            })
-        },
-        |root, scope| {
-            abandon_scope(root, scope, || {
-                super::open_agent_trace_db_for_hook_runtime(root, MUTATION_SCOPE_DB_CONTEXT)
-            })
-        },
+        |root, boundary| coordinate(root, boundary, || open_db(root, MUTATION_SCOPE_DB_CONTEXT)),
+        |root, scope| abandon_scope(root, scope, || open_db(root, MUTATION_SCOPE_DB_CONTEXT)),
     )
 }
 
@@ -741,6 +772,529 @@ mod tests {
         fn malformed_payload_returns_err() {
             let result = run_mutation_scope_from_payload(Path::new("/unused"), "{", None);
             assert!(result.is_err());
+        }
+    }
+
+    mod real_git_db_ingress {
+        use std::cell::Cell;
+        use std::fs;
+        use std::path::{Path, PathBuf};
+        use std::process::Command;
+
+        use super::*;
+        use crate::services::agent_trace_storage::{
+            resolve_agent_trace_storage_at_state_root, AgentTraceStorageContext,
+        };
+        use crate::services::checkout::resolve_git_dir;
+        use crate::services::mutation_trace::store::decode_revision;
+
+        fn git(dir: &Path, args: &[&str]) -> String {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git should spawn");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).expect("git output should be UTF-8")
+        }
+
+        struct IngressRepo {
+            _temp: tempfile::TempDir,
+            root: PathBuf,
+            state_root: PathBuf,
+        }
+
+        impl IngressRepo {
+            fn new(label: &str) -> Self {
+                let temp = tempfile::Builder::new()
+                    .prefix(&format!("sce-mutation-scope-ingress-{label}-"))
+                    .tempdir()
+                    .expect("temp dir should be created");
+                let root = temp.path().join("repo");
+                fs::create_dir_all(&root).expect("repo dir should be created");
+                git(&root, &["init", "-q"]);
+                git(&root, &["config", "user.email", "test@example.invalid"]);
+                git(&root, &["config", "user.name", "SCE Test"]);
+                git(
+                    &root,
+                    &["remote", "add", "origin", "git@github.com:acme/widgets.git"],
+                );
+                fs::write(root.join("file.txt"), "one\n").expect("seed file should write");
+                git(&root, &["add", "-A"]);
+                git(&root, &["commit", "-qm", "base"]);
+
+                let state_root = temp.path().join("state");
+                fs::create_dir_all(&state_root).expect("state root should be created");
+                resolve_agent_trace_storage_at_state_root(
+                    &AgentTraceStorageContext {
+                        repository_root: &root,
+                        explicit_repository_id: None,
+                        repository_remote: "origin",
+                    },
+                    &state_root,
+                )
+                .expect("state-root storage should initialize the repository DB");
+
+                Self {
+                    _temp: temp,
+                    root,
+                    state_root,
+                }
+            }
+
+            fn drive(&self, payload: &str) -> Result<String> {
+                run_mutation_scope_from_payload_at_state_root(
+                    &self.root,
+                    &self.state_root,
+                    payload,
+                    None,
+                )
+            }
+
+            fn db(&self) -> RepositoryAgentTraceDb {
+                crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
+                    &self.root,
+                    &self.state_root,
+                    "mutation-scope ingress test assertions",
+                )
+                .expect("assertion DB should open")
+            }
+
+            fn working_tree(&self) -> String {
+                git(&self.root, &["add", "-A"]);
+                git(&self.root, &["write-tree"]).trim().to_owned()
+            }
+
+            fn marker_path(&self) -> PathBuf {
+                resolve_git_dir(&self.root)
+                    .expect("git dir should resolve")
+                    .join("sce")
+                    .join("mutation-cursor-tainted")
+            }
+        }
+
+        fn assert_raw_agent_trace_tables_untouched(db: &RepositoryAgentTraceDb) {
+            assert_eq!(count(db, "diff_traces"), 0);
+            assert_eq!(count(db, "post_commit_patch_intersections"), 0);
+            assert_eq!(count(db, "agent_traces"), 0);
+        }
+
+        fn count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
+            db.query_map(&format!("SELECT COUNT(*) FROM {table}"), (), |row| {
+                row.get::<i64>(0).map_err(anyhow::Error::from)
+            })
+            .expect("count query should succeed")
+            .into_iter()
+            .next()
+            .expect("a count row should exist")
+        }
+
+        fn worktree_revision(db: &RepositoryAgentTraceDb) -> u64 {
+            db.query_map("SELECT revision FROM mutation_trace_worktrees", (), |row| {
+                let blob: Vec<u8> = row.get(0).map_err(anyhow::Error::from)?;
+                decode_revision(&blob)
+            })
+            .expect("worktree revision query should succeed")
+            .into_iter()
+            .next()
+            .expect("a worktree row should exist")
+        }
+
+        fn cursor_tree(db: &RepositoryAgentTraceDb) -> String {
+            db.query_map(
+                "SELECT cursor_tree FROM mutation_trace_worktrees",
+                (),
+                |row| row.get::<String>(0).map_err(anyhow::Error::from),
+            )
+            .expect("cursor_tree query should succeed")
+            .into_iter()
+            .next()
+            .expect("a worktree row should exist")
+        }
+
+        fn needs_rebaseline(db: &RepositoryAgentTraceDb) -> bool {
+            db.query_map(
+                "SELECT needs_rebaseline FROM mutation_trace_worktrees",
+                (),
+                |row| row.get::<i64>(0).map_err(anyhow::Error::from),
+            )
+            .expect("needs_rebaseline query should succeed")
+            .into_iter()
+            .next()
+            .expect("a worktree row should exist")
+                != 0
+        }
+
+        fn processed_events(db: &RepositoryAgentTraceDb) -> Vec<(String, String)> {
+            db.query_map(
+                "SELECT scope_id, event_id FROM mutation_trace_processed_events \
+                 ORDER BY scope_id, event_id",
+                (),
+                |row| {
+                    let scope_id = row.get::<String>(0).map_err(anyhow::Error::from)?;
+                    let event_id = row.get::<String>(1).map_err(anyhow::Error::from)?;
+                    Ok((scope_id, event_id))
+                },
+            )
+            .expect("processed-events query should succeed")
+        }
+
+        fn scope_status(db: &RepositoryAgentTraceDb, scope_id: &str) -> Option<(String, String)> {
+            db.query_map(
+                "SELECT actor_kind, status FROM mutation_trace_scopes WHERE scope_id = ?1",
+                (scope_id,),
+                |row| {
+                    let actor_kind = row.get::<String>(0).map_err(anyhow::Error::from)?;
+                    let status = row.get::<String>(1).map_err(anyhow::Error::from)?;
+                    Ok((actor_kind, status))
+                },
+            )
+            .expect("scope query should succeed")
+            .into_iter()
+            .next()
+        }
+
+        fn mutation_events(db: &RepositoryAgentTraceDb) -> Vec<(String, Option<String>, String)> {
+            db.query_map(
+                "SELECT attribution_kind, attribution_scope_id, boundary_kind \
+                 FROM mutation_trace_events ORDER BY revision",
+                (),
+                |row| {
+                    let attribution_kind = row.get::<String>(0).map_err(anyhow::Error::from)?;
+                    let attribution_scope_id =
+                        row.get::<Option<String>>(1).map_err(anyhow::Error::from)?;
+                    let boundary_kind = row.get::<String>(2).map_err(anyhow::Error::from)?;
+                    Ok((attribution_kind, attribution_scope_id, boundary_kind))
+                },
+            )
+            .expect("mutation-events query should succeed")
+        }
+
+        const START_A_E1: &str =
+            r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"claude_code"}"#;
+        const ADVANCE_A_E2: &str =
+            r#"{"operation":"advance","scope_id":"A","event_id":"e2","actor_kind":"claude_code"}"#;
+        const CLOSE_A_E3: &str =
+            r#"{"operation":"close","scope_id":"A","event_id":"e3","actor_kind":"claude_code"}"#;
+        const FLUSH: &str = r#"{"operation":"flush"}"#;
+        const ABANDON_A: &str = r#"{"operation":"abandon","scope_id":"A"}"#;
+
+        #[test]
+        #[allow(clippy::too_many_lines)]
+        fn test1_observed_start_advance_close_lifecycle_persists_durable_rows() {
+            let repo = IngressRepo::new("observed-lifecycle");
+
+            assert_eq!(repo.drive(START_A_E1).expect("start should succeed"), "");
+            fs::write(repo.root.join("file.txt"), "one\ntwo\n")
+                .expect("the scoped edit should write");
+            assert_eq!(
+                repo.drive(ADVANCE_A_E2).expect("advance should succeed"),
+                ""
+            );
+            assert_eq!(repo.drive(CLOSE_A_E3).expect("close should succeed"), "");
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, "A").map(|(_, status)| status),
+                Some("closed".to_string())
+            );
+            assert_eq!(
+                processed_events(&db),
+                vec![
+                    ("A".to_string(), "e1".to_string()),
+                    ("A".to_string(), "e2".to_string()),
+                    ("A".to_string(), "e3".to_string()),
+                ]
+            );
+            assert_eq!(
+                mutation_events(&db),
+                vec![(
+                    "ai_exclusive".to_string(),
+                    Some("A".to_string()),
+                    "advance".to_string(),
+                )]
+            );
+            assert_eq!(cursor_tree(&db), repo.working_tree());
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test2_replayed_advance_is_fully_idempotent() {
+            let repo = IngressRepo::new("replay-idempotent");
+
+            repo.drive(START_A_E1).expect("start should succeed");
+            fs::write(repo.root.join("file.txt"), "one\ntwo\n")
+                .expect("the scoped edit should write");
+            repo.drive(ADVANCE_A_E2)
+                .expect("the first advance should succeed");
+
+            let (revision_before, events_before, processed_before) = {
+                let db = repo.db();
+                (
+                    worktree_revision(&db),
+                    count(&db, "mutation_trace_events"),
+                    count(&db, "mutation_trace_processed_events"),
+                )
+            };
+
+            assert_eq!(
+                repo.drive(ADVANCE_A_E2)
+                    .expect("the replayed advance should succeed"),
+                ""
+            );
+
+            let db = repo.db();
+            assert_eq!(worktree_revision(&db), revision_before);
+            assert_eq!(count(&db, "mutation_trace_events"), events_before);
+            assert_eq!(
+                count(&db, "mutation_trace_processed_events"),
+                processed_before
+            );
+            assert_eq!(
+                processed_events(&db)
+                    .into_iter()
+                    .filter(|(scope_id, event_id)| scope_id == "A" && event_id == "e2")
+                    .count(),
+                1
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        #[allow(clippy::too_many_lines)]
+        fn test3_conflicting_actor_kind_commits_no_second_boundary() {
+            let repo = IngressRepo::new("actor-conflict");
+
+            repo.drive(START_A_E1).expect("start should succeed");
+
+            let (revision_before, processed_before, scope_before, events_before) = {
+                let db = repo.db();
+                (
+                    worktree_revision(&db),
+                    processed_events(&db),
+                    scope_status(&db, "A"),
+                    count(&db, "mutation_trace_events"),
+                )
+            };
+
+            let error = repo
+                .drive(
+                    r#"{"operation":"advance","scope_id":"A","event_id":"e2","actor_kind":"codex"}"#,
+                )
+                .expect_err(
+                    "a conflicting actor_kind must fail the ingress, not commit a boundary",
+                );
+
+            let rendered = format!("{error:#}");
+            assert!(
+                rendered.contains("is already registered to actor"),
+                "the ingress error must carry the scope/actor identity mismatch diagnostic, \
+                 got: {rendered}"
+            );
+
+            let db = repo.db();
+            assert_eq!(worktree_revision(&db), revision_before);
+            assert_eq!(processed_events(&db), processed_before);
+            assert!(!processed_events(&db)
+                .into_iter()
+                .any(|(scope_id, event_id)| scope_id == "A" && event_id == "e2"));
+            assert_eq!(scope_status(&db, "A"), scope_before);
+            assert_eq!(
+                scope_status(&db, "A").map(|(actor_kind, _)| actor_kind),
+                Some("claude_code".to_string())
+            );
+            assert_eq!(count(&db, "mutation_trace_events"), events_before);
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        #[allow(clippy::too_many_lines)]
+        fn test4_abandonment_keeps_no_snapshot_semantics_for_an_unobserved_edit() {
+            let repo = IngressRepo::new("abandon-unobserved-edit");
+
+            repo.drive(START_A_E1).expect("start should succeed");
+
+            let (revision_after_start, cursor_after_start) = {
+                let db = repo.db();
+                (worktree_revision(&db), cursor_tree(&db))
+            };
+
+            fs::write(repo.root.join("file.txt"), "one\nunobserved\n")
+                .expect("the unobserved edit should write");
+            let edited_tree = repo.working_tree();
+            assert_ne!(
+                edited_tree, cursor_after_start,
+                "the unobserved edit must move the Git tree"
+            );
+
+            assert_eq!(repo.drive(ABANDON_A).expect("abandon should succeed"), "");
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, "A").map(|(_, status)| status),
+                Some("abandoned".to_string())
+            );
+            assert_eq!(worktree_revision(&db), revision_after_start + 1);
+            assert!(needs_rebaseline(&db));
+            assert_eq!(cursor_tree(&db), cursor_after_start);
+            assert_ne!(cursor_tree(&db), edited_tree);
+            assert_eq!(count(&db, "mutation_trace_events"), 0);
+            assert_eq!(
+                processed_events(&db),
+                vec![("A".to_string(), "e1".to_string())]
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        #[allow(clippy::too_many_lines)]
+        fn test5_adversarial_flush_drives_real_observed_flush_behavior() {
+            let repo = IngressRepo::new("adversarial-flush");
+
+            assert_eq!(
+                repo.drive(FLUSH)
+                    .expect("the baseline flush should succeed"),
+                ""
+            );
+            let revision_after_baseline = {
+                let db = repo.db();
+                worktree_revision(&db)
+            };
+
+            fs::write(repo.root.join("file.txt"), "one\nunscoped\n")
+                .expect("the unscoped edit should write");
+            let edited_tree = repo.working_tree();
+
+            assert_eq!(repo.drive(FLUSH).expect("the flush should succeed"), "");
+
+            let db = repo.db();
+            assert_eq!(cursor_tree(&db), edited_tree);
+            assert_eq!(worktree_revision(&db), revision_after_baseline + 1);
+            assert_eq!(
+                mutation_events(&db),
+                vec![("ineligible_unscoped".to_string(), None, "flush".to_string())]
+            );
+            assert_eq!(count(&db, "mutation_trace_scopes"), 0);
+            assert_eq!(count(&db, "mutation_trace_processed_events"), 0);
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        #[allow(clippy::too_many_lines)]
+        fn test6_marker_clear_after_commit_is_durable_success_through_the_ingress() {
+            let repo = IngressRepo::new("marker-clear-after-commit");
+
+            repo.drive(START_A_E1).expect("start should succeed");
+            fs::write(repo.root.join("file.txt"), "one\nattributable\n")
+                .expect("the scoped edit should write");
+
+            let marker = repo.marker_path();
+            let calls = Cell::new(0_u32);
+            let resolver =
+                |root: &Path, context_message: &'static str| -> Result<RepositoryAgentTraceDb> {
+                    calls.set(calls.get() + 1);
+                    fs::remove_file(&marker)
+                        .expect("the armed marker file should be present mid-invocation");
+                    fs::create_dir_all(marker.join("nested"))
+                        .expect("planting a non-empty directory at the marker path should succeed");
+                    crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
+                        root,
+                        &repo.state_root,
+                        context_message,
+                    )
+                };
+
+            let result =
+                run_mutation_scope_from_payload_with(&repo.root, ADVANCE_A_E2, None, resolver);
+
+            assert_eq!(
+                result.expect("a post-commit marker-clear failure is durable success"),
+                ""
+            );
+            assert_eq!(
+                calls.get(),
+                1,
+                "the runtime entrypoint must run exactly once, with no retried transition"
+            );
+
+            let db = repo.db();
+            assert_eq!(
+                mutation_events(&db),
+                vec![(
+                    "ai_exclusive".to_string(),
+                    Some("A".to_string()),
+                    "advance".to_string(),
+                )]
+            );
+            assert_eq!(
+                processed_events(&db)
+                    .into_iter()
+                    .filter(|(scope_id, event_id)| scope_id == "A" && event_id == "e2")
+                    .count(),
+                1
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        #[allow(clippy::too_many_lines)]
+        fn test7_marker_clear_after_abandon_is_durable_success_through_the_ingress() {
+            let repo = IngressRepo::new("marker-clear-after-abandon");
+
+            repo.drive(START_A_E1).expect("start should succeed");
+            let revision_after_start = {
+                let db = repo.db();
+                worktree_revision(&db)
+            };
+
+            fs::write(repo.root.join("file.txt"), "one\nunobserved\n")
+                .expect("the unobserved edit should write");
+
+            let marker = repo.marker_path();
+            let calls = Cell::new(0_u32);
+            let resolver =
+                |root: &Path, context_message: &'static str| -> Result<RepositoryAgentTraceDb> {
+                    calls.set(calls.get() + 1);
+                    fs::remove_file(&marker)
+                        .expect("the armed marker file should be present mid-invocation");
+                    fs::create_dir_all(marker.join("nested"))
+                        .expect("planting a non-empty directory at the marker path should succeed");
+                    crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
+                        root,
+                        &repo.state_root,
+                        context_message,
+                    )
+                };
+
+            let result =
+                run_mutation_scope_from_payload_with(&repo.root, ABANDON_A, None, resolver);
+
+            assert_eq!(
+                result.expect("a post-completion marker-clear failure is durable success"),
+                ""
+            );
+            assert_eq!(calls.get(), 1, "abandon_scope must run exactly once");
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, "A").map(|(_, status)| status),
+                Some("abandoned".to_string())
+            );
+            assert_eq!(worktree_revision(&db), revision_after_start + 1);
+            assert!(needs_rebaseline(&db));
+            assert_eq!(count(&db, "mutation_trace_events"), 0);
+
+            assert_raw_agent_trace_tables_untouched(&db);
         }
     }
 }
