@@ -211,10 +211,14 @@ that decision after context synchronization.
 Before determining terminal status for a `complete` result, verify that the
 handoff contains the resolved plan, task identity, baseline-relative changed
 files, implementation summary, verification evidence, done-check evidence, plan
-update, and context-impact classification listed above. The mandatory five-root-
-file context pass remains required for every completed task, regardless of the
-reported context-impact classification, because it is cheap, deterministic, and
-load-bearing for context accuracy; `context_impact` must not be used to waive it.
+update, and context-impact classification listed above.
+
+`context_impact` scopes task context synchronization. The synchronization phase
+uses the classification and affected areas to decide what context to inspect as
+well as what it may edit. It may widen or narrow that scope only when direct
+implementation evidence clearly contradicts the reported classification; it must
+not require a repository-wide or five-root-file pass merely to prove the reported
+impact.
 
 ## 2.9 Return internal state
 
