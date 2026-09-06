@@ -94,46 +94,42 @@ Start with the execution result:
 - Implementation summary.
 - Done-check evidence.
 
-Then inspect existing repository context in this order when present:
+Use the reported context impact to scope discovery as well as editing:
 
-1. `context/context-map.md`
-2. Context files for the affected domain or subsystem
-3. `context/overview.md`
-4. `context/architecture.md`
-5. `context/glossary.md`
-6. `context/patterns.md`
-7. Operational, product, or decision records directly related to the change
+- `none`: Inspect the implementation evidence only. Do not open unrelated context
+  merely to prove the absence of impact. Return `no_context_change` when the
+  classification is consistent with the completed change.
+- `local`: Inspect only the nearest authoritative context for the affected feature,
+  component, or subsystem.
+- `domain`: Inspect authoritative context for the affected domain or subsystem.
+  Inspect `context/context-map.md` only when discoverability, links, summaries, or
+  ownership of context changed.
+- `root`: Inspect the affected domain context plus only the root files implicated
+  by the completed change.
 
-Use the context map and existing links to locate authoritative files.
+Use these root signals when `root` context may be affected:
 
-Do not scan or rewrite the entire `context/` tree by default.
+- Cross-cutting repository capability or externally observable repository-wide
+  behavior -> `context/overview.md`.
+- Architecture, ownership, dependency direction, or system boundary ->
+  `context/architecture.md`.
+- Canonical domain terminology -> `context/glossary.md`.
+- Repository-wide implementation or workflow convention -> `context/patterns.md`.
+- Context topology, indexing, file movement, or discoverability ->
+  `context/context-map.md`.
 
-Do not create a new context file when an existing authoritative file can be
+Do not read a root file merely because it exists. Do not scan or rewrite the
+entire `context/` tree by default.
+
+Use existing context links to locate authoritative files when they are already in
+scope. Do not create a new context file when an existing authoritative file can be
 updated coherently.
 
-### The mandatory root pass
-
-Every invocation verifies these five files against code truth, whatever the
-reported classification is:
-
-- `context/overview.md`
-- `context/architecture.md`
-- `context/glossary.md`
-- `context/patterns.md`
-- `context/context-map.md`
-
-Verifying is not editing. A classification that warrants no root edit still
-requires reading each of these and confirming it is not contradicted by the
-completed implementation. A file that is absent is a gap; record it in the report
-rather than creating it to satisfy the pass.
-
-Report each of the five as verified or edited. Never declare synchronization done
-while one of them is unchecked.
+If direct implementation evidence clearly contradicts the reported impact, widen
+or narrow the verified classification only as far as the evidence requires and
+explain the change in the report.
 
 ## 3.4 Determine whether durable context changed
-
-Use the reported context impact as a strong hint, then verify it against the
-implementation and existing context.
 
 Durable context includes non-obvious repository knowledge such as:
 
@@ -154,24 +150,22 @@ Do not document:
 - Speculation or future work not established by the completed implementation.
 - Generic engineering practices.
 
-Interpret impact classifications as follows. Each governs which files are
-*edited*; none of them waives the mandatory root pass.
+Interpret impact classifications as follows:
 
-- `none`: Make no edits beyond any correction the root pass turns up.
+- `none`: No durable context edit is warranted when the classification is
+  consistent with the completed implementation.
 - `local`: Update the nearest existing authoritative context only when the new
-  behavior is not reliably discoverable from code.
-- `domain`: Update affected domain context and the context map when its links or
-  summaries changed.
-- `root`: Update the relevant root context and any affected domain context.
+  behavior is durable, non-obvious, and not reliably discoverable from code.
+- `domain`: Update affected domain context; update the context map only when its
+  links, summaries, or ownership changed.
+- `root`: Update affected domain context and only the root files implicated by
+  the root signals above.
 
 A change is `root` when it introduces cross-cutting behavior, repository-wide
 policy or contracts, an architecture or ownership boundary, or a change to
 canonical terminology. A change confined to one feature or domain, with no
 repository-wide behavior, architecture, or terminology impact, is `domain` or
-`local`: capture its detail in domain files and leave the root files unedited.
-
-If the reported classification is inconsistent with the actual change, use the
-verified classification and explain the difference in the report.
+`local`.
 
 ## 3.5 Record qualifying architecture decisions
 
@@ -192,9 +186,10 @@ Routine implementation details, local refactors, naming and formatting choices,
 temporary experiments, and easily reversible choices do not qualify. Do not
 invoke a decision skill for them.
 
-Use the discovered context, existing decision records, and this evidence:
-
-- execution and done-check evidence.
+Use the completed task's execution and done-check evidence as the primary signal.
+Inspect existing decision records only when that evidence indicates a qualifying
+system-wide decision or a directly related ADR is already known from in-scope
+context.
 
 Identify each qualifying decision, then handle qualifying decisions in
 deterministic order:
@@ -203,7 +198,8 @@ deterministic order:
    same decision.
 2. Otherwise invoke `sce-decision` once with exactly one structured decision
    request containing the decision, qualifying evidence, plan and task
-   references, related context and ADR paths, and any user-requested status.
+   references, related in-scope context and ADR paths, and any user-requested
+   status.
 3. On `written`, retain the returned `adr_path` as synchronization evidence and
    make it available for current-state context links before synchronization
    completes. Reuse is valid evidence; do not create a duplicate ADR.
@@ -236,26 +232,14 @@ Create a new context file only when:
 - No existing file owns it coherently.
 - The new file has a clear place in the context map.
 
-### Feature existence
+Do not create context merely because the task implemented a feature. A feature
+needs a durable canonical description only when the completed implementation
+establishes non-obvious behavior, a contract, boundary, invariant, operational
+fact, or other knowledge future work would not reliably recover from code.
 
-Every feature the completed task implemented must have at least one durable
-canonical description discoverable from `context/`, in a domain file under
-`context/{domain}/` or in `context/overview.md` for a cross-cutting feature.
-
-When the task implemented a feature no context file describes, add that
-description. A feature that fits no existing domain file gets a new focused file;
-do not defer it to a later task. Prefer a small, precise domain file over
-overloading `overview.md` with detail.
-
-This is the one case where documentation is warranted by the change itself rather
-than by a gap in durable knowledge. It is not license to narrate the diff:
-describe what the feature is and how it behaves, not what was edited.
-
-### Glossary
-
-Add a `context/glossary.md` entry for any domain language the task introduced.
-New terminology is durable knowledge whatever the classification is: a `domain`
-change that names a new concept still earns its glossary entry.
+Add or update `context/glossary.md` only when the task introduced or changed
+canonical domain language that future work needs to share. New identifiers or
+implementation-local names do not qualify by themselves.
 
 ### File hygiene
 
@@ -276,22 +260,21 @@ concise pointer behind, and link the new file from `context/context-map.md`.
 
 After edits, verify:
 
+- Every context file selected by the verified impact scope was checked against the
+  completed implementation.
 - Every changed context file accurately reflects the completed implementation.
 - No edited statement contradicts the code, plan, or execution evidence.
 - Every qualifying decision has one written or reused ADR path in the report, and
   the report states when no decision qualified.
-- Every file in the mandatory root pass was read and confirmed against code
-  truth, whether or not it was edited.
-- Each feature implemented by the task has a durable canonical description
-  reachable from `context/`.
 - Every changed file is at or below 250 lines, covers one topic, and links other
   context files by relative path.
 - Diagrams are present where structure, boundaries, or flows are complex.
 - Links and referenced paths resolve when practical to check.
 - New context files are reachable from the context map or another authoritative
   index.
-- Root context remains concise and delegates details to domain files.
-- Unrelated context was not changed.
+- No context outside the verified scope was modified.
+- Any widening or narrowing of the reported impact is explained by direct
+  implementation evidence.
 
 Use focused documentation, link, or formatting checks when available.
 
@@ -309,9 +292,10 @@ Set exactly one report status:
 - `no_context_change`
 - `blocked`
 
-`synced` means context files were updated and verified. `no_context_change` means
-existing context was checked and no edit was warranted. `blocked` means context
-could not be synchronized safely.
+`synced` means scoped context files were updated and verified.
+`no_context_change` means the completed task was checked at the scope implied by
+its verified impact and no edit was warranted. `blocked` means context could not
+be synchronized safely.
 
 A `blocked` report always writes the plan path and task ID/title as identity,
 plus a `Context synchronization blocker` section (blocker, required action,
@@ -339,8 +323,9 @@ Do not:
 - Mark the plan validated, closed, or archived.
 - Create a Git commit or push changes.
 - Create the context root. `sce setup --bootstrap-context` owns that.
-- Narrate changed files as documentation. Feature existence is the only reason to
-  document a change that introduced no other durable knowledge.
+- Narrate changed files as documentation.
+- Turn task synchronization into a whole-repository context audit; whole-context
+  reconciliation belongs to the explicit audit workflow.
 - Invoke any sibling SCE skill, sibling SCE package, or SCE workflow command
   except `sce-decision`, or invoke `sce-decision` outside the decision gate in
   successful context synchronization.
