@@ -1094,7 +1094,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `context/cli` files is intentionally deferred to T09 per the plan's own
     task boundary.
 
-- [ ] T05: `Expose the in-process generic-ingress seam` (status:todo)
+- [x] T05: `Expose the in-process generic-ingress seam` (status:done)
   - Task ID: T05
   - Scope: In — make the minimal crate-visible function on
     `cli/src/services/hooks/mutation_scope.rs` that runs a normalized JSON
@@ -1109,7 +1109,43 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `mutation_scope` command path is byte-for-byte unchanged in behavior, and
     `services::hooks::mutation_scope` tests still pass.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::mutation_scope`; `git diff` shows only a visibility/wrapper change.
-  - Context synchronization: pending
+  - Completed: 2026-09-07
+  - Files changed:
+    - `cli/src/services/hooks/mutation_scope.rs` (visibility change only:
+      `fn run_mutation_scope_from_payload` -> `pub(crate) fn
+      run_mutation_scope_from_payload`, signature and body unchanged)
+  - Result: Made the existing private `run_mutation_scope_from_payload(repository_root,
+    stdin_payload, logger)` `pub(crate)`, reused verbatim per the plan's own
+    Assumptions section — no thin wrapper was needed since the existing
+    function already has the documented signature. `run_mutation_scope_subcommand`
+    (the public CLI entry point) still calls it identically, so the existing
+    `sce hooks mutation-scope` command path is byte-for-byte unchanged in
+    behavior. The seam is now callable from any sibling `hooks` module
+    (e.g. `claude_mutation_scope`, both declared `pub mod` under
+    `services::hooks`) without a second `RuntimeBoundary` construction path or
+    an `sce` subprocess. No new payload operation, no other behavior change.
+  - Verify: `services::hooks::mutation_scope` — 36 passed, 0 failed;
+    `clippy --all-targets -- -D warnings` — clean; `fmt -- --check` — clean;
+    `git diff` — exactly one file, one line changed (the visibility keyword),
+    confirming no wrapper or behavior drift.
+  - Context impact: None beyond this plan. The changed function is
+    `pub(crate)` (crate-internal visibility only, not a public CLI surface,
+    settings, or schema change) and is not yet called from anywhere (T06 wires
+    the first caller), so no `context/cli|sce` file needed an update for this
+    task. `context/cli/mutation-scope-hook-ingress.md` already documents this
+    seam as planned/upcoming (D23); T09 will update it to reflect the seam as
+    shipped, and to name its first consumer, once T06 wires the call.
+  - Context synchronization: synced — root pass confirmed
+    `context/{overview,architecture,glossary,patterns,context-map}.md` all
+    still correctly state that no concrete Claude Code (or other harness)
+    lifecycle adapter is wired to the mutation-scope ingress yet, which T05
+    leaves true (the new `pub(crate)` visibility has no caller). No feature,
+    public interface, or observable behavior was introduced — the CLI's
+    `sce hooks mutation-scope` command path is byte-for-byte unchanged. No
+    decision qualified for an ADR (a private-to-crate visibility widening with
+    no behavior change is not a system-wide boundary or interface decision).
+    Documentation of this seam as consumed is intentionally deferred to T09
+    per the plan's own task boundary, once T06 adds the first caller.
 
 - [ ] T06: `Claude adapter driver + CLI command` (status:todo)
   - Task ID: T06
