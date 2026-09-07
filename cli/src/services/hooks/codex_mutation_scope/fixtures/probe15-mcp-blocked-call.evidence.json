@@ -1,0 +1,21 @@
+{
+  "_comment": "SYNTHESISED capture metadata, NOT a raw hook payload. Probe C-block. A second PreToolUse hook returns hookSpecificOutput.permissionDecision:deny for an MCP tool call.",
+  "codex_version": "codex-cli 0.153.4",
+  "model": "gpt-5.6-sol",
+  "tool": "mcp__probe__mutate_success",
+  "tool_use_id": "exec-58634f15-7c81-4069-9bda-c036cf871be9",
+  "block_response": "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"blocked by MCP probe\"}}",
+  "event_ordering": [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse(mcp__probe__mutate_success)  14:44:11.672Z  <- BLOCKED",
+    "Stop  14:44:16.857Z",
+    "SessionEnd  14:44:16.889Z"
+  ],
+  "post_tool_use_fired": false,
+  "mcp_server_log": "(empty - tools/call was never issued; the MCP server received only initialize + tools/list)",
+  "git_status_after": ["?? .mcp-probe-server.log"],
+  "mutation_occurred": false,
+  "finding": "A hook-blocked MCP PreToolUse behaves exactly like a hook-blocked built-in tool (probes 3/4): PreToolUse only, NO PostToolUse, NO tool execution, NO mutation. A D8 fail-closed deny on a mutation-capable MCP PreToolUse therefore leaves no scope needing a terminal action - identical to the built-in case.",
+  "disposition": "PROVEN (live)."
+}

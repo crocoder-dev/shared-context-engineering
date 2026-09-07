@@ -1,0 +1,25 @@
+{
+  "_comment": "SYNTHESISED capture metadata, NOT a raw hook payload. Probe C - the direct D10a probe. Failed mutation-capable MCP tool A followed by mutation-capable MCP tool B in the SAME turn, with no turn end between them.",
+  "codex_version": "codex-cli 0.153.4",
+  "model": "gpt-5.6-sol",
+  "A": { "tool": "mcp__probe__mutate_then_error", "tool_use_id": "exec-27777ab1-ea7f-429f-a744-d7f72ee8c294", "result": "is_error:true", "mutation": "mcp_c1.txt (git-visible)" },
+  "B": { "tool": "mcp__probe__mutate_success",    "tool_use_id": "exec-1643344b-f335-4506-ba06-a2326977cba2", "result": "is_error:false", "mutation": "mcp_c2.txt (git-visible)" },
+  "event_ordering": [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse(A mcp__probe__mutate_then_error)  14:43:53.208Z",
+    "PreToolUse(B mcp__probe__mutate_success)     14:43:53.232Z",
+    "PostToolUse(B mcp__probe__mutate_success)    14:43:53.254Z",
+    "Stop  14:43:55.678Z",
+    "SessionEnd  14:43:55.709Z"
+  ],
+  "events_between_A_failure_and_PreToolUse_B": "NONE. No PostToolUse(A), no Interrupt, no Stop, no SubagentStop, no SessionEnd, no PermissionRequest, no compaction event. PreToolUse(B) is the very next hook delivery after PreToolUse(A).",
+  "A_terminal_hook": "never delivered (A's tool_use_id exec-27777ab1 appears in exactly one hook event, its PreToolUse).",
+  "git_status_after": ["?? mcp_c1.txt", "?? mcp_c2.txt", "?? .mcp-probe-server.log"],
+  "mcp_server_log": [
+    "14:43:53.220 tools/call mutate_then_error {\"filename\":\"mcp_c1.txt\"} -> isError=True",
+    "14:43:53.244 tools/call mutate_success {\"filename\":\"mcp_c2.txt\"} -> isError=False"
+  ],
+  "d10a_finding": "At PreToolUse(B), adapter bookkeeping would still hold A as active/pending_start with recovery_pending=false and NOTHING has armed the D13 barrier. No positive stale/terminal evidence for A exists. Combined with probe 16/17 (parallel MCP execution IS possible), PreToolUse(B) cannot prove A stale. This is D10a Case C for MCP.",
+  "disposition": "PROVEN (live) - no intermediate cleanup signal; successor PreToolUse does not prove predecessor stale."
+}
