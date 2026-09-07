@@ -191,7 +191,7 @@ pub(crate) fn run_mutation_scope_subcommand(
     run_mutation_scope_from_payload(repository_root, &stdin_payload, logger)
 }
 
-fn run_mutation_scope_from_payload(
+pub(crate) fn run_mutation_scope_from_payload(
     repository_root: &Path,
     stdin_payload: &str,
     logger: Option<&dyn Logger>,
