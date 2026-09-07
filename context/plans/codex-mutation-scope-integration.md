@@ -97,6 +97,15 @@ serially within a turn. `AiContended` can still arise from a Codex scope
 overlapping another harness's scope on the same worktree regardless of T01's
 finding; see D14.
 
+**T01 disposition (codex-cli 0.153.4): ASSUMPTION — PROBE (leaning serial).**
+Codex executed every mutation-capable tool strictly serially in all 11 probes
+(`PreToolUse → PostToolUse → PreToolUse → …`, never interleaved), including
+across the parent/subagent boundary and when asked to parallelise. Codex-alone
+`AiContended` is treated as not reachable for 0.153.4; the concurrency
+regression must cross harnesses (D14). The adapter still never collapses two
+executions into one `ScopeId`. Evidence: `fixtures/probe01…`, `probe02…`,
+`probe08-subagent-delegation.*` + `fixtures/NOTES.md`.
+
 ### D2 — Codex tool classification — T01-GATED
 
 The adapter classifies the raw Codex `tool_name` in Rust into:
@@ -116,6 +125,21 @@ T01 must enumerate Codex's actual tool-name vocabulary (`tool_name` values on
 `PreToolUse`/`PostToolUse`, MCP tool naming, delegation tool name). The exact
 membership of each list is frozen by T01 and recorded here.
 
+**T01 disposition (codex-cli 0.153.4): PROVEN for the `codex exec` surface.**
+- **Mutation-capable:** `apply_patch`, `Bash` (the shell tool — it also performs
+  reads / listing / search via shell commands, so it is always treated
+  mutation-capable; a read-only shell command merely creates a harmless scope).
+  MCP tools and any unknown `tool_name` → conservatively mutation-capable
+  (from upstream; no MCP server was configured live).
+- **Read-only (never a scope):** none — this Codex surface has **no dedicated
+  built-in read-only tool names**; reads go through `Bash`.
+- **Delegation (never a scope):** `collaborationspawn_agent`,
+  `collaborationwait_agent` (a `collaboration` namespace prefix, no separator).
+  The delegated agent's own tool calls carry its `agent_id` and establish their
+  own scopes.
+Evidence: `fixtures/probe05-tool-vocabulary.*`, `probe08-subagent-delegation.*`,
+`fixtures/NOTES.md`.
+
 ### D3 — Codex execution identity — T01-GATED
 
 The adapter needs the **smallest stable identity for one Codex tool execution**.
@@ -133,6 +157,23 @@ present on `PostToolUse` (and any terminal/failure event), (c) whether the same
 execution identity appears in both the pre and post events for one tool call,
 (d) whether a raw Codex tool identifier can recur after that execution is
 terminal. T02 then freezes the execution key.
+
+**T01 disposition (codex-cli 0.153.4): PROVEN.** Execution key =
+`(session_id, agent_id?, tool_use_id)`.
+- `tool_use_id` is present on **both** `PreToolUse` and `PostToolUse` and is
+  identical for one call (`exec-<uuid>` for shell / `apply_patch`,
+  `call_<id>` for the delegation tools). Not observed to recur (UUID-based); the
+  D4 checkout-local `attempt_seq` guard is kept regardless.
+- `session_id` is stable for a whole session including subagents; `turn_id`
+  differs per turn and per subagent.
+- `agent_id` (a UUID) is present **only on subagent tool/lifecycle events** and
+  distinguishes a delegated agent from the main thread (absent = main thread).
+  Codex **does** expose a delegated-agent identity — use `agent_id`; do not
+  invent one where it is absent. `agent_type` ("default") is diagnostic only.
+Evidence: `fixtures/probe01…`, `probe08-subagent-delegation.*`, and the
+`pre-tool-use` / `post-tool-use` / `subagent-stop` generated schemas at
+`openai/codex` `rust-v0.153.4` (`agent_id`/`agent_type` present but not in
+`required`).
 
 ### D4 — ScopeId / EventId derivation — depends on D3
 
@@ -232,6 +273,20 @@ failure returns the block.
 
 A read-only or delegation `PreToolUse` returns the neutral response, no scope.
 
+**T01 disposition (codex-cli 0.153.4): PROVEN.** **Both** denial shapes block
+the tool on 0.153.4 and both appear in the generated
+`pre-tool-use.command.output.schema.json` at `openai/codex` `rust-v0.153.4`:
+top-level `{"decision":"block","reason":"…"}` (`decision` enum `approve|block`),
+**and**
+`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"…"}}`
+(`permissionDecision` enum `allow|deny|ask`). T04 should emit the
+`hookSpecificOutput` shape, matching the existing `sce hooks codex`
+`PreToolUse(Bash)` policy arm. A blocked tool fires `PreToolUse` only —
+**no `PostToolUse`** — so a fail-closed denial leaves no scope needing a
+terminal action. Evidence:
+`fixtures/probe03-pre-tool-use-hook-decision-block.*`,
+`fixtures/probe04-pre-tool-use-hook-hookspecificoutput-deny.*`.
+
 ### D9 — Terminal boundary on success — T01-GATED
 
 For a successful mutation-capable tool with an `active` tracked attempt, the
@@ -242,6 +297,12 @@ terminal signal for a successful mutation-capable execution (`PostToolUse` for
 that tool, carrying the D3 identity that ties it to the `PreToolUse`). The
 attempt is removed from adapter state only after durable `Close` success;
 duplicate delivery after cleanup is a safe no-op.
+
+**T01 disposition (codex-cli 0.153.4): PROVEN.** `PostToolUse` is the reliable
+terminal signal for a successful mutation-capable tool, carrying the same
+`tool_use_id` (and `agent_id`, for a subagent) as its `PreToolUse`. Evidence:
+`fixtures/probe01-apply-patch-and-shell-success.*`,
+`fixtures/probe08-subagent-delegation.agent-apply-patch.*`.
 
 ### D10 — Failed-tool terminal observation — T01-GATED, likely no reliable signal
 
@@ -263,6 +324,24 @@ If — and only if — T01 proves Codex emits a reliable final observation for a
 failed mutation-capable tool (a `PostToolUse` with a failure-indicating
 `tool_response`, or another event carrying the D3 identity), D10 becomes a
 `Close` mapping like D9. T01 records which.
+
+**T01 disposition (codex-cli 0.153.4): PROVEN — D10 becomes a `Close` mapping
+like D9, and is cleaner than feared.**
+- A **shell (`Bash`)** tool that wrote a file then exited non-zero **does** fire
+  `PostToolUse` (same `tool_use_id`), so a partial mutation from a failed shell
+  command is bounded by a terminal hook → map to `close` exactly like D9.
+- An **`apply_patch`** that fails verification fires **no** `PostToolUse`, but
+  Codex verifies the patch before touching the working tree, so a failed
+  `apply_patch` writes nothing — there is no partial-mutation-without-terminal
+  case for it.
+- Prior SCE research's "`PostToolUse` fires only on a successful tool result" is
+  true at the `success_for_logging()` layer (`codex-rs/core/src/tools/registry.rs`
+  ~line 674 at `rust-v0.153.4`), but an executed shell command with a non-zero
+  exit still counts as a successful tool result.
+The adapter needs **no Close-on-failure path**. Evidence:
+`fixtures/probe02-shell-partial-write-then-nonzero-exit.*` (PostToolUse fires),
+`fixtures/probe06-apply-patch-verification-failure-no-post.*` (no PostToolUse,
+no write).
 
 ### D10a — Failed-tool -> successor-tool in the same turn — T01-GATED
 
@@ -332,6 +411,28 @@ T01 must define "same lane" using only identity/concurrency facts it actually
 established. T02 freezes the lane key and the successor-barrier design (if
 Case B); T04 implements it; T06 proves it.
 
+**T01 disposition (codex-cli 0.153.4): PROVEN — Case A. The dangerous scenario
+does not arise on 0.153.4, and no successor-barrier logic ships.**
+- A failed **shell** tool always emits `PostToolUse` (terminal) before the next
+  `PreToolUse` — Codex runs mutation-capable tools strictly serially (D1), so
+  predecessor A is already terminal in bookkeeping when successor B's
+  `PreToolUse` arrives.
+- A failed **`apply_patch`** never mutates the working tree (atomic
+  verification), so there is nothing to strand.
+- A **hook-blocked** tool never executes (`PreToolUse` only, no `PostToolUse`) —
+  no scope was established (D8 fail-closed happens before `start`).
+- The only "partial mutation, no `PostToolUse`" case is **whole-turn
+  interruption** (SIGINT), which emits `Interrupt` and then `SessionEnd` and
+  ends the turn — there is no in-turn successor `PreToolUse` to race.
+T02 records the D10a lane key as **N/A (Case A)**; T04 ships no successor
+barrier; the D13 successor-Start invariant is still upheld trivially because a
+terminal `PostToolUse` (or `Interrupt`/`SessionEnd`) always precedes the
+successor. Evidence:
+`fixtures/probe02-shell-partial-write-then-nonzero-exit.*`,
+`fixtures/probe06-apply-patch-verification-failure-no-post.*`,
+`fixtures/probe07-sigint-during-shell.*`,
+`fixtures/probe11-interrupt-event-on-sigint.*`.
+
 ### D11 — Uncertain-boundary abandonment rules
 
 Carried verbatim from the Claude adapter (D11/D12 there), because they are
@@ -374,6 +475,26 @@ The failed-tool -> successor-tool sequence (D10a) is the one case where the
 "next lifecycle signal" backstop is too late; its resolution (an intermediate
 signal, a proven serial-lane successor barrier, or unsupported) is owned by
 D10a, not this table.
+
+**T01 disposition (codex-cli 0.153.4): PROVEN.**
+
+| Signal | Fires | Identity | Adapter use |
+| --- | --- | --- | --- |
+| `SessionEnd` | clean exit **and** SIGINT | `session_id`, `cwd` (no `turn_id`/`agent_id`) | **load-bearing backstop** — whole-session sweep of every outstanding attempt |
+| `Stop` | clean main-turn end only (not interruption) | `session_id`, `turn_id` | main-turn sweep (`agent_id` absent) |
+| `Interrupt` | SIGINT, **before** `SessionEnd` | `session_id`, `turn_id` | earlier session/turn-scoped sweep — **newly discovered; not in the plan's original list** |
+| `SubagentStop` | delegated agent ends | `agent_id`, `agent_type` | sweep attempts owned by that `agent_id` |
+| `PermissionRequest` (deny) | interactive approval flows only; not reachable from `codex exec` | — | `DOCUMENTED — NON-LOAD-BEARING`; `SessionEnd` backstop covers it |
+| `PreCompact` / `PostCompact` | not observed | — | `DOCUMENTED — NON-LOAD-BEARING` (diagnostic only) |
+
+`SessionEnd` is the single load-bearing backstop (the Codex analogue of the
+Claude adapter's `SessionEnd`). Evidence:
+`fixtures/probe01-…​.stop.json` / `.session_end.json`,
+`fixtures/probe07-sigint-during-shell.session_end.json`,
+`fixtures/probe11-interrupt-event-on-sigint.{interrupt,session_end}.json`,
+`fixtures/probe08-subagent-delegation.subagent_stop.json`, and the generated
+`session-end` / `stop` / `interrupt` / `subagent-stop` / `permission-request`
+schemas at `openai/codex` `rust-v0.153.4`.
 
 ### D13 — recovery_pending barrier and quiescent Flush
 
@@ -426,6 +547,17 @@ accepts, derives, stores, or constructs a `WorktreeId`, and passes no
 `worktree_id` key to the seam. There is no Codex `WorktreeRemove` equivalent;
 worktree-scoped cleanup relies on the D12 session/agent signals.
 
+**T01 disposition (codex-cli 0.153.4): PROVEN.** Every hook payload's `cwd` was
+the `codex exec -C` directory. Running against a linked `git worktree` reported
+the worktree path in `cwd`, and the write landed inside the worktree, not the
+main checkout; `checkout::resolve_git_dir(cwd)` resolves the worktree-specific
+`.git/worktrees/<name>` directory. Codex exposes **no** worktree-lifecycle event
+(the 12 event names are `PreToolUse`, `PermissionRequest`, `PostToolUse`,
+`PreCompact`, `PostCompact`, `SessionStart`, `SessionEnd`, `UserPromptSubmit`,
+`SubagentStart`, `SubagentStop`, `Stop`, `Interrupt` — no `WorktreeRemove`).
+Evidence: `fixtures/probe10-linked-worktree-cwd.*`, and every other probe's
+`cwd`.
+
 ### D16 — Background / detached shell is a correctness boundary — T01-GATED
 
 T01 must separate **Codex-managed background execution** (if Codex exposes a
@@ -447,6 +579,23 @@ adapter's D20 confirmed this is real and Git-observable).
 
 Do not claim support for any execution pattern unless T01 demonstrates its
 lifecycle actually bounds the mutations.
+
+**T01 disposition (codex-cli 0.153.4): PROVEN (self-detaching descendant);
+no Codex-managed background execution in this surface.**
+- The default `codex exec` shell tool has **no `run_in_background` parameter**
+  (params: `command`, `workdir`, `timeout_ms`, `with_escalated_permissions`,
+  `justification`). There is no explicit Codex-managed background execution to
+  deny in `PreToolUse` for this surface, so the adapter ships **no
+  background-execution classifier / deny** (unlike the Claude adapter's
+  `run_in_background = true` deny). If a future Codex surface adds one, revisit.
+- A foreground shell command that `setsid`-detaches a descendant **does** leave a
+  Git-observable mutation landing ~4s after `PostToolUse`
+  (`fixtures/probe09-self-detaching-descendant.{pre_tool_use,post_tool_use,evidence}.json`)
+  — same class as the Claude adapter's D20. Recorded as an explicit unsupported
+  boundary; the adapter adds no PID supervision, process-group tracking,
+  shell-command static analysis, or staleness polling, and does not treat
+  `PostToolUse` as proof every descendant stopped mutating. Not generalised to
+  `nohup` / double-fork / daemonize, which this probe did not exercise.
 
 ### D17 — Command architecture: separate hidden command (recommended) — decided in T02
 
@@ -481,6 +630,20 @@ never-silently-drop on terminal boundaries). Two viable architectures:
 T02 makes the final call against T01 findings and the code, defaulting to (1),
 and records the decision here. Every subsequent task's wording assumes (1); if
 T02 chooses (2), T02 revises D17, D8's routing, and T04/T05 scope accordingly.
+
+**T01 inputs (codex-cli 0.153.4):** the mutation-scope adapter needs
+registrations for at least `PreToolUse`, `PostToolUse`, `Stop`, `SessionEnd`,
+`SubagentStop` (optionally `Interrupt` as an earlier interruption sweep). The
+existing `sce hooks codex` dispatcher funnels 4 events (`UserPromptSubmit`,
+`Stop`, `PreToolUse` matcher `Bash`, `PostToolUse` matcher `apply_patch`) and is
+fail-open; the mutation-scope adapter is fail-closed on `PreToolUse` and
+never-silently-drop on terminal boundaries. `PreToolUse` and `Stop` would be
+double-registered (once per command). Live probes confirmed Codex runs each
+registered handler as its own process and that two `PreToolUse` handlers in one
+group both execute (dump + block). A **separate hidden
+`sce hooks codex-mutation-scope` command** (option 1) remains the recommended
+default; nothing in T01 argues against it. Evidence: `fixtures/NOTES.md`,
+`.codex/hooks.json` two-handler `PreToolUse` group used across probes 3–11.
 
 ### D18 — Adapter depends on hooks::mutation_scope only
 
@@ -571,6 +734,22 @@ set — candidates `SessionEnd`, `SubagentStop`, `PermissionRequest`, an unmatch
 `PreToolUse` group, etc.) must be added with the **exact upstream Codex key
 label**, verified against `openai/codex` source (T01/T05), not by lowercasing the
 event name. Each newly registered event gets a `hook_event_key_label` test.
+
+**T01 disposition (codex-cli 0.153.4): PROVEN.** The upstream label map is
+`codex-rs/hooks/src/lib.rs` lines 96–108 at tag `rust-v0.153.4`
+(commit `3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`):
+`PreToolUse→pre_tool_use`, `PermissionRequest→permission_request`,
+`PostToolUse→post_tool_use`, `PreCompact→pre_compact`,
+`PostCompact→post_compact`, `SessionStart→session_start`,
+`SessionEnd→session_end`, `UserPromptSubmit→user_prompt_submit`,
+`SubagentStart→subagent_start`, `SubagentStop→subagent_stop`, `Stop→stop`,
+`Interrupt→interrupt`. **Codex 0.153.4 has 12 hook events, not the 11 this plan
+lists — it also has `Interrupt`** (fires on SIGINT before `SessionEnd`). T05
+must add a `hook_event_key_label` entry + test for every newly-registered
+mutation-scope event, citing this source file. The `$CODEX_HOME/config.toml`
+`[hooks.state]` keys observed live use exactly these labels
+(`…:pre_tool_use:0:0`, `…:post_tool_use:0:0`, `…:stop:0:0`,
+`…:user_prompt_submit:0:0`).
 
 ## Acceptance criteria
 
@@ -965,8 +1144,59 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Freeze the real Codex hook and lifecycle contract` (status:todo)
+- [x] T01: `Freeze the real Codex hook and lifecycle contract` (status:done)
   - Task ID: T01
+  - Completed: 2026-09-07
+  - Files changed:
+    - `cli/src/services/hooks/codex_mutation_scope/fixtures/` (new — 35 raw
+      byte-for-byte Codex hook-event captures across 11 probes + one
+      `probe09-*.evidence.json` capture-metadata file + `NOTES.md`)
+    - `flake.nix` (add `./cli/src/services/hooks/codex_mutation_scope/fixtures`
+      to `workspaceSrc` so the fixtures reach the build sandbox, mirroring the
+      Claude adapter's T01 line)
+    - `context/plans/codex-mutation-scope-integration.md` (T01 dispositions
+      written into D1, D2, D3, D8, D9, D10, D10a, D12, D15, D16, D17-inputs,
+      D22; T01 outcome added to Open questions; this task record)
+  - Result: Froze the Codex hook/lifecycle contract for **codex-cli 0.153.4**
+    (model `gpt-5.6-sol`), cross-checked against upstream `openai/codex` tag
+    `rust-v0.153.4` (commit `3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`) —
+    generated hook JSON schemas, `codex-rs/hooks/src/{schema.rs,lib.rs}`,
+    `codex-rs/core/src/{tools/registry.rs,hook_runtime.rs}`. All 11 live probes
+    captured (normal apply_patch + shell success, shell partial-write-then-fail,
+    two `PreToolUse`-hook denial shapes, tool vocabulary, apply_patch
+    verification failure, SIGINT with/without an `Interrupt` hook, subagent
+    delegation, self-detaching descendant with Git-observability evidence,
+    linked-worktree cwd). Key findings: **D10a is Case A** (a failed shell tool
+    still fires `PostToolUse`; a failed `apply_patch` writes nothing;
+    interruption ends the turn — no successor-barrier logic ships);
+    **`SessionEnd` is the load-bearing cleanup backstop**, `Interrupt` is a
+    newly-discovered earlier interruption signal (**Codex has 12 hook events,
+    not 11**); **both** `{"decision":"block"}` and
+    `hookSpecificOutput.permissionDecision:"deny"` block a tool; Codex runs
+    mutation-capable tools **strictly serially** (Codex-alone `AiContended`
+    unreachable); Codex **does** expose a delegated-agent identity (`agent_id`,
+    subagent events only); raw hook `cwd` is authoritative including for linked
+    worktrees; the default `codex exec` shell tool has **no `run_in_background`
+    parameter** (no background-execution deny needed) but a self-detaching
+    descendant is an unsupported boundary as for Claude. No probe showed Codex
+    cannot be represented by the current mutation-scope contract — the plan
+    proceeds to T02.
+  - Verify:
+    - `nix run .#pkl-check-generated` — **passed** ("Ephemeral Pkl generation
+      passed: 141 files, inventory sha256
+      dcbd28041c3587156510bdb3a6c76e5a9ec4851c140b4c50785c764d95ebfd5c").
+    - `nix flake check` — **passed** ("all checks passed!"; incompatible
+      non-Linux systems omitted as usual).
+    - Fixtures committed under
+      `cli/src/services/hooks/codex_mutation_scope/fixtures/` and referenced
+      from this plan; `NOTES.md` lists the manifest and per-probe disposition;
+      all 36 JSON fixture files parse; CLI build input list updated (`flake.nix`).
+  - Context impact: domain — a new adapter-domain fixture corpus + frozen Codex
+    hook-contract facts now exist; no code, no user-visible behavior, no public
+    interface yet. Durable Codex-adapter context (`context/cli/
+    codex-mutation-scope-integration.md`) is authored by T07 once behavior
+    ships; T01's facts live in the plan's Design section and the fixtures
+    `NOTES.md` until then.
   - Scope: In — capture raw Codex hook-event fixtures from the Codex version SCE
     chooses to support, commit them under
     `cli/src/services/hooks/codex_mutation_scope/fixtures/` (one file per probe,
@@ -1050,11 +1280,11 @@ Persist this field in every plan; this is durable plan state, not chat state:
     included) shows Codex cannot be represented by the current mutation-scope
     contract, that is recorded in Open questions and the plan stops for
     re-planning rather than proceeding to T02.
-  - Verify: fixtures committed and referenced from this plan; `NOTES.md` lists
-    the manifest and per-probe disposition; `nix run .#pkl-check-generated` and
-    `nix flake check` still pass (fixtures are inert data — confirm the CLI
-    build input list includes the new fixtures directory, as #263's T01 needed
-    for Claude).
+  - Verify (planned): fixtures committed and referenced from this plan;
+    `NOTES.md` lists the manifest and per-probe disposition;
+    `nix run .#pkl-check-generated` and `nix flake check` still pass (fixtures
+    are inert data — confirm the CLI build input list includes the new fixtures
+    directory, as #263's T01 needed for Claude).
   - Context synchronization: pending
 
 - [ ] T02: `Command architecture, Codex event model, classification, and identity` (status:todo)
@@ -1340,6 +1570,33 @@ the second of four planned producers. The generic ingress and runtime were
 built specifically so this adapter would be additive. There is no smaller
 version worth naming — an adapter that does not establish `Start` before the
 tool runs, or does not fail closed, is not a correct adapter.
+
+**T01 outcome (codex-cli 0.153.4, upstream `openai/codex` `rust-v0.153.4` /
+`3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`): Codex is representable by the
+current mutation-scope contract — the plan proceeds to T02.** Every empirical
+risk below is resolved by a captured fixture or an upstream schema citation
+(see the Design section dispositions and
+`cli/src/services/hooks/codex_mutation_scope/fixtures/NOTES.md`). Headline
+resolutions:
+
+- **D10a is Case A / a non-issue on 0.153.4.** A failed shell tool still fires
+  `PostToolUse`; a failed `apply_patch` writes nothing; interruption ends the
+  turn. No serial-lane successor barrier ships.
+- **`SessionEnd` is the load-bearing cleanup backstop** (fires on clean exit and
+  on SIGINT); `Interrupt` is an additional earlier interruption signal the plan
+  did not know about (Codex has **12** hook events, not 11).
+- **The fail-closed `PreToolUse` response**: both `{"decision":"block"}` and
+  `hookSpecificOutput.permissionDecision:"deny"` block the tool; T04 emits the
+  `hookSpecificOutput` shape.
+- **Codex runs mutation-capable tools strictly serially** → Codex-alone
+  `AiContended` is not reachable; the AC10 regression crosses harnesses.
+- **Codex exposes a delegated-agent identity** (`agent_id`, on subagent events
+  only) — the plan uses it and does not invent one.
+- **Command architecture**: T01 found nothing against the recommended separate
+  hidden `sce hooks codex-mutation-scope` command; T02 still decides.
+- **Existing-hook trust identity**: the upstream label map is
+  `codex-rs/hooks/src/lib.rs` 96–108; a position-stable additive merge is a T05
+  implementation constraint, not an unknown.
 
 The real risks are empirical, not architectural, and every one is deliberately
 deferred to T01 evidence rather than guessed here:
