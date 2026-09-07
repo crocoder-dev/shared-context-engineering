@@ -56,10 +56,11 @@ pub(crate) fn is_missing_git_remote_error(error: &anyhow::Error) -> bool {
 }
 
 /// Canonical JSON payload for a newly bootstrapped repo-local `.sce/config.json`.
-/// Contains only the `$schema` declaration pointing to the SCE config JSON Schema.
+/// Declares the SCE config JSON Schema and explicitly opts new repositories into
+/// Agent Trace post-commit synchronization.
 fn repo_local_config_bootstrap_payload() -> String {
     format!(
-        "{{\n  \"$schema\": \"{}\"\n}}\n",
+        "{{\n  \"$schema\": \"{}\",\n  \"agent_trace\": {{\n    \"auto_sync\": true\n  }}\n}}\n",
         crate::services::agent_trace::sce_config_schema_url()
     )
 }
@@ -488,7 +489,8 @@ pub fn ensure_git_remote(repository_root: &Path, remote_name: &str) -> Result<()
 /// Bootstraps the repo-local `.sce/config.json` file if it does not already exist.
 ///
 /// Creates the `.sce/` parent directory as needed, then writes the canonical
-/// schema-only JSON payload. If the file already exists, it is left untouched.
+/// schema and Agent Trace bootstrap JSON payload. If the file already exists, it
+/// is left untouched.
 pub fn bootstrap_repo_local_config(repository_root: &Path) -> Result<()> {
     let repo_paths = RepoPaths::new(repository_root);
     let config_file = repo_paths.sce_config_file();
@@ -1948,7 +1950,7 @@ mod tests {
         assert_eq!(
             payload,
             format!(
-                "{{\n  \"$schema\": \"https://sce.crocoder.dev/v{}/config.json\"\n}}\n",
+                "{{\n  \"$schema\": \"https://sce.crocoder.dev/v{}/config.json\",\n  \"agent_trace\": {{\n    \"auto_sync\": true\n  }}\n}}\n",
                 env!("CARGO_PKG_VERSION")
             )
         );

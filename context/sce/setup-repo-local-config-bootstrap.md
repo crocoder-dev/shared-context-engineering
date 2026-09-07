@@ -7,7 +7,7 @@ Task `setup-repo-gate-and-local-config-bootstrap` T02, `turso-local-db-sync` T04
 ## Behavior
 
 - Any successful `sce setup` run in a git-backed repository creates `.sce/config.json` when the file is absent.
-- The bootstrap writes the canonical schema-only JSON payload: `{"$schema": "https://sce.crocoder.dev/v<version>/config.json"}` (where `<version>` is the CLI release version, with a trailing newline).
+- The bootstrap writes the canonical JSON payload with the versioned schema declaration and explicit Agent Trace opt-in: `{"$schema": "https://sce.crocoder.dev/v<version>/config.json", "agent_trace": {"auto_sync": true}}` (where `<version>` is the CLI release version, with a trailing newline).
 - If `.sce/config.json` already exists, the bootstrap step returns `Ok(())` immediately and leaves the file untouched — no merge, no reformat, no overwrite.
 - The parent `.sce/` directory is created via `fs::create_dir_all` if missing.
 - The setup flow also bootstraps the canonical local DB through `LocalDbLifecycle::setup` and the Agent Trace DB through `AgentTraceDbLifecycle::setup`; both use the shared `TursoDb<M: DbSpec>` adapter.
@@ -62,6 +62,6 @@ The same write also records the run's resolved optional-workflow selection under
 - Default-discovered invalid repo-local config is degradable and never rewritten; explicit `--config` / `SCE_CONFIG_FILE` selections remain fatal, while absent local config remains create-if-missing.
 - Context baseline bootstrap is independent of config/DB/hooks install and runs before those steps on normal setup paths.
 - Local bootstrap (repo config + local DB init) is independent of config install and hook install; it runs before both after context baseline bootstrap.
-- The bootstrap payload matches the `$schema` declaration accepted by startup config loading and the Pkl-authored JSON Schema embedded from Cargo `OUT_DIR`.
+- The bootstrap payload matches the `$schema` declaration accepted by startup config loading and the Pkl-authored JSON Schema embedded from Cargo `OUT_DIR`; its explicit `agent_trace.auto_sync: true` is distinct from the runtime resolver's `false` fallback for omitted values.
 
 See also [the degraded discovered-config boundary decision](../decisions/2026-09-04-setup-storage-degrade-invalid-discovered-config.md) and the superseded [fail-closed boundary decision](../decisions/2026-08-26-setup-storage-fail-closed-on-invalid-config.md).
