@@ -1,0 +1,128 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"<WORK>/probe-repo/.codex/hooks/dump.sh\" \"<WORK>/cap/_live\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"<WORK>/probe-repo/.codex/hooks/block.sh\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"<WORK>/probe-repo/.codex/hooks/dump.sh\" \"<WORK>/cap/_live\""
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"<WORK>/probe-repo/.codex/hooks/dump.sh\" \"<WORK>/cap/_live\""
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"<WORK>/probe-repo/.codex/hooks/dump.sh\" \"<WORK>/cap/_live\""
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"<WORK>/probe-repo/.codex/hooks/dump.sh\" \"<WORK>/cap/_live\""
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"<WORK>/probe-repo/.codex/hooks/dump.sh\" \"<WORK>/cap/_live\""
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"<WORK>/probe-repo/.codex/hooks/dump.sh\" \"<WORK>/cap/_live\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"<WORK>/probe-repo/.codex/hooks/dump.sh\" \"<WORK>/cap/_live\""
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"<WORK>/probe-repo/.codex/hooks/dump.sh\" \"<WORK>/cap/_live\""
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"<WORK>/probe-repo/.codex/hooks/dump.sh\" \"<WORK>/cap/_live\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"<WORK>/probe-repo/.codex/hooks/dump.sh\" \"<WORK>/cap/_live\""
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"<WORK>/probe-repo/.codex/hooks/dump.sh\" \"<WORK>/cap/_live\""
+          }
+        ]
+      }
+    ]
+  }
+}
