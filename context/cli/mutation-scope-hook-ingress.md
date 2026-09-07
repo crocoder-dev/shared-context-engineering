@@ -211,13 +211,15 @@ serde derives for this command; the hook transport enum
 
 A generic SCE ingress existing is **not** concrete harness integration existing.
 A first Claude Code adapter driver now exists
-(`cli/src/services/hooks/claude_mutation_scope/`), and it reaches the runtime
-through its own `pub(crate)` in-process seam on `mutation_scope.rs`
-(`run_mutation_scope_from_payload`) rather than by re-invoking this CLI
-command. `sce setup` now registers its hooks
-(`config/pkl/renderers/claude-content.pkl`), so a real Claude Code session
-reaches it. Still out of scope for this seam itself, and left as future work
-for every non-Claude harness:
+(`cli/src/services/hooks/claude_mutation_scope/`, hidden command
+`sce hooks claude-mutation-scope`), reaching the runtime through this seam's own
+`pub(crate)` in-process entrypoint (`run_mutation_scope_from_payload`) rather
+than by re-invoking this CLI command, and `sce setup` registers its hooks
+(`config/pkl/renderers/claude-content.pkl`) so a real Claude Code session
+reaches it. Its full contract is in
+[`claude-mutation-scope-integration.md`](claude-mutation-scope-integration.md).
+Still out of scope for this seam itself, and left as future work for every
+non-Claude harness:
 
 - Codex hook mapping, OpenCode plugin, Pi extension;
 - `SubagentStart` / `SubagentStop` / `PostToolUse` / tool-call translation for
@@ -238,6 +240,7 @@ for the lifecycle obligations every such adapter must uphold.
 ## Related context
 
 - [Mutation-scope runtime: the harness-adapter contract](mutation-scope-runtime.md)
+- [Claude mutation-scope integration: the first concrete harness adapter](claude-mutation-scope-integration.md)
 - [Mutation-trace runtime coordinator](mutation-trace-runtime-coordinator.md)
 - [Mutation-trace scope abandonment](mutation-trace-scope-abandonment.md)
 - [Mutation-trace protected worktree](mutation-trace-protected-worktree.md)
