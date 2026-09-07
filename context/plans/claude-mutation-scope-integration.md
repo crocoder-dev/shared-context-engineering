@@ -1147,7 +1147,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     Documentation of this seam as consumed is intentionally deferred to T09
     per the plan's own task boundary, once T06 adds the first caller.
 
-- [ ] T06: `Claude adapter driver + CLI command` (status:todo)
+- [x] T06: `Claude adapter driver + CLI command` (status:done)
   - Task ID: T06
   - Scope: In — `cli_schema::HooksSubcommand::ClaudeMutationScope` (hidden),
     `convert_hooks_subcommand_request` arm,
@@ -1175,7 +1175,238 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `recovery_pending` (D12), and the recovery barrier (D19). AC1 routing test
     passes.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::claude_mutation_scope`; `sce hooks claude-mutation-scope </dev/null` shows the strict-parser error; `sce hooks --help` omits it.
-  - Context synchronization: pending
+  - Completed: 2026-09-07
+  - Files changed:
+    - `cli/src/cli_schema.rs` (add hidden `HooksSubcommand::ClaudeMutationScope`
+      variant)
+    - `cli/src/services/parse/command_runtime.rs` (add
+      `convert_hooks_subcommand_request` arm; add
+      `claude_mutation_scope_hook_parses_to_hook_subcommand` and
+      `claude_mutation_scope_hook_is_hidden_from_hooks_help` routing tests)
+    - `cli/src/services/hooks/mod.rs` (add `HookSubcommand::ClaudeMutationScope`
+      variant, unwrapped/propagating dispatch arm in
+      `run_hooks_subcommand_in_repo`, `hook_runtime_invocation_name` arm)
+    - `cli/src/services/hooks/claude_mutation_scope/mod.rs` (the adapter driver:
+      event dispatch, `PreToolUse` write-ahead/fail-closed/D19-barrier handling,
+      terminal/cleanup handlers, JSON payload builders, 27 new focused unit
+      tests under a nested `driver` module; PR #263 follow-up: `repository_root`
+      threaded alongside `git_dir` at every call site, fail-closed logging, 9
+      more `driver` tests)
+    - `cli/src/services/hooks/claude_mutation_scope/state.rs` (add the two D19
+      recovery-bookkeeping helpers the driver needs beyond T03's original four;
+      3 new unit tests; PR #263 follow-up: `retire_attempt_for_recovery`
+      replaced with `mark_recovery_pending`, a strict subset that arms the
+      barrier without touching `attempts`; 2 more unit tests)
+  - Result: Wired `sce hooks claude-mutation-scope` end to end — hidden CLI
+    routing (`cli_schema` -> `command_runtime` -> `HookSubcommand` -> unwrapped
+    dispatch, mirroring the existing non-fail-open `MutationScope` arm) and the
+    adapter driver itself in `claude_mutation_scope/mod.rs`. The driver reaches
+    the runtime only through the single T05 seam call
+    (`super::mutation_scope::run_mutation_scope_from_payload`), by constructing
+    the generic ingress's own JSON wire payload (`start`/`close`/`abandon`/
+    `flush`) as a string — never by naming `mutation_trace::{runtime,protocol,
+    store}` or constructing a `RuntimeBoundary` (D23/AC18, confirmed by the
+    plan's own grep). Both the Git-directory resolver and the ingress seam are
+    injected as `&dyn Fn` parameters so every mapping is unit-testable without a
+    real Git repository or Agent Trace DB.
+
+    Event mapping: `PreToolUse` classifies the tool (D2) and, for a
+    mutation-capable tool, runs the D20 explicit-background-shell check, then
+    the D19 recovery barrier, then the D7 write-ahead sequence
+    (`allocate_attempt` durably persists `pending_start` before the seam
+    `Start` call; `mark_active` follows a successful `Start`). Every failure in
+    that mutation-capable path — state-allocation failure, seam `Start`
+    failure, an unresolvable `cwd`, or a barrier denial — converts to the exact
+    D8 `permissionDecision: "deny"` JSON (`Ok`, never a propagated `Err`); this
+    is the only path in the adapter that intentionally turns a failure into a
+    successful hook return, matching Claude's fail-open-on-process-error
+    behavior for ordinary hook failures. `PostToolUse`/`PostToolUseFailure`
+    both close the scope (D9/D10): no live attempt is a safe no-op (D9), a
+    `pending_start` attempt is abandoned rather than late-started (D11), and a
+    `Close` seam failure is retired through `abandon` rather than a replayed
+    `Close` (D12). `PermissionDenied` abandons a live attempt (D13).
+    `Stop`/`StopFailure`/`UserPromptSubmit` abandon only stale main-thread
+    attempts (`agent_id` absent) for the session (D14/D15/D16); `SubagentStop`
+    abandons only the matching `agent_id`'s attempts (D17); `SessionEnd`
+    abandons every attempt for the session regardless of `agent_id` (D18);
+    `WorktreeRemove` resolves its Git directory from the event's own
+    `worktree_path`, never the process cwd, and retires every outstanding
+    attempt there (D22). `SessionStart`/`SubagentStart` establish no scope
+    (AC3). Every abandonment shares one `abandon_attempt` helper: it calls the
+    seam `abandon` operation with the adapter-state lock released (D6 — no
+    `adapter lock -> WorktreeLock` order is ever possible), then retires the
+    attempt and arms the new D19 `recovery_pending` barrier via
+    `state::retire_attempt_for_recovery` (added this task). The barrier itself
+    (`apply_recovery_barrier`) denies a new mutation-capable `PreToolUse`
+    outright while `recovery_pending` and outstanding attempts remain; once
+    quiescent, it runs one `flush` through the seam and clears the barrier via
+    the new `state::clear_recovery_pending` only on durable success, staying
+    fail-closed on a failed flush.
+
+    Per D21, every git-directory resolution is driven by a field read out of
+    the parsed event (`cwd`, or `worktree_path` for `WorktreeRemove`) — never
+    by the `sce` process's own current directory — so
+    `run_claude_mutation_scope_subcommand` takes no `repository_root`
+    parameter at all (a deliberate deviation from the positional shape of
+    sibling `HookSubcommand` dispatch arms, which do thread a
+    process-`current_dir`-derived `repository_root` through; accepting and
+    then ignoring that parameter here would misstate what the adapter actually
+    uses). `HooksSubcommand::ClaudeMutationScope` is hidden via
+    `#[command(hide = true)]` on the clap variant (no prior precedent for a
+    hidden variant nested inside a subcommand enum in this codebase; this is
+    the smallest correct application of clap's existing mechanism). 27 new
+    focused unit tests (nested `driver` module, reusing the existing
+    `pre_tool_use_json` test helper) cover every event-to-operation mapping,
+    the exact AC8 deny JSON (including the D20/AC21 background-shell text),
+    AC7's write-ahead ordering (asserting the persisted phase from inside the
+    injected seam call, before `Start` returns), AC4's duplicate-delivery
+    EventId reuse, D11/D12's abandon-not-replay behavior, and all three D19
+    barrier branches (deny-while-outstanding, flush-then-proceed,
+    flush-failure-stays-closed). No generated-settings, `config_merge.rs`, or
+    real Git/DB test was added (T07/T08's scope).
+
+    **PR #263 follow-up (2026-09-07):** review found two correctness blockers
+    and one observability gap in the original implementation, all fixed
+    without touching T07/T08 scope, process supervision, protocol/Quint/schema,
+    or the attribution algorithm:
+
+    - **`cwd` vs `git_dir` conflation (D7/D21).** The original code resolved
+      `git_dir` from the raw Claude `cwd` and then passed that same `git_dir`
+      to the generic mutation-scope seam as its `repository_root` — silently
+      substituting Git metadata-directory identity for checkout identity,
+      exactly the confusion D21 exists to prevent (materially wrong for a
+      linked worktree, where `cwd` and `git_dir` diverge). Every dispatch arm
+      (`Start`/`Close`/`Abandon`/`Flush`/`PermissionDenied`/lifecycle
+      cleanup/the recovery-barrier flush/`WorktreeRemove`) now threads both a
+      `git_dir: &Path` (adapter bookkeeping only — `state::*` calls) and a
+      `repository_root: &Path` (always the raw event `cwd`, or `worktree_path`
+      for `WorktreeRemove` — the only value ever passed to
+      `mutation_scope::run_mutation_scope_from_payload`) as two explicit,
+      independently constructed parameters; neither is ever substituted for
+      the other, and the adapter still never derives or constructs a
+      `WorktreeId`.
+    - **`recovery_pending` not armed on abandonment failure (D12/D19).** The
+      original `abandon_attempt` called the seam `abandon` operation and only
+      set `recovery_pending = true` as a side effect of the removal helper
+      that ran *after* a successful call — so a failed abandonment (e.g. a
+      second, also-failing `Close` retry) left `recovery_pending = false`,
+      silently violating the invariant that any uncertain terminal path must
+      fail closed. `state::retire_attempt_for_recovery` (a single
+      remove-and-arm helper) was replaced with `state::mark_recovery_pending`
+      (arms the barrier only, touching no attempt) called unconditionally
+      *before* the seam `abandon` call; `state::remove_attempt` (already
+      existing, unchanged) now runs only after a successful abandon. A failed
+      abandon therefore leaves `recovery_pending = true` and the attempt still
+      tracked, so the next mutation-capable `PreToolUse` is correctly denied
+      by the barrier and issues no new `Start`. The adapter-state lock is
+      still never held across a seam invocation (D6): `mark_recovery_pending`
+      acquires and releases its own lock before the seam call, and
+      `remove_attempt` acquires its own lock after.
+    - **Fail-closed `PreToolUse` failures logged nowhere (D8).** `resolve_git_dir`,
+      `establish_start`, and every `apply_recovery_barrier` failure branch
+      (`read_state`, the `flush` seam call, `clear_recovery_pending`) silently
+      discarded their `anyhow::Error` before returning the stable deny JSON.
+      One helper, `log_pre_tool_use_fail_closed(logger, context, error)`, now
+      logs the detailed error via the existing `Logger::warn` interface
+      (event `sce.hooks.claude_mutation_scope.pre_tool_use_fail_closed`,
+      `context` naming the failing step) at every such branch before
+      returning; Claude's own deny reason is untouched (still exactly
+      `FAIL_CLOSED_DENY_REASON` or, for explicit background shells,
+      `EXPLICIT_BACKGROUND_SHELL_DENY_REASON`) and never carries the internal
+      error text.
+
+    9 new `driver` tests were added directly proving the two invariants: four
+    prove the ingress seam always receives the raw `cwd` (never `git_dir`) for
+    `Start`/`Close`/`Abandon`/`Flush`, using deliberately distinct
+    linked-worktree-style paths; two prove failed-abandonment behavior (a
+    failed `Close` + failed `Abandon` propagates an error, leaves the attempt
+    tracked and `recovery_pending = true`, and the next `PreToolUse` is denied
+    with the seam never called again; a failed lifecycle-cleanup abandonment
+    behaves identically); three prove fail-closed logging (resolver failure,
+    `Start` failure, and recovery-barrier `flush` failure each log the
+    detailed error via a `RecordingLogger` while the returned JSON stays the
+    exact stable deny reason with no leaked detail and no `allow`). The
+    existing AC7 write-ahead test was also corrected: it previously read state
+    from the seam's own `root` parameter, which only worked because of the
+    `git_dir`/`repository_root` bug being fixed here — it now reads state from
+    the captured `git_dir` directly and separately asserts the seam received
+    the raw `cwd`.
+  - Verify: `services::hooks::claude_mutation_scope` — 90 passed, 0 failed (54
+    existing + 5 `state` tests + 31 `driver` tests, net +9 over the original
+    T06 landing after this follow-up); full `services::hooks::` — unaffected
+    siblings still pass (`mutation_scope` 36/36); `services::parse::` — 13
+    passed, 0 failed; full `cli/Cargo.toml` test suite — 1130 passed, 0 failed;
+    `clippy --all-targets -- -D warnings` — clean; `fmt -- --check` — clean;
+    AC18 dependency-boundary
+    grep (`rg -n --type rust '^\s*use\s+crate::services::mutation_trace::
+    (runtime|protocol|store)|::(RepositoryAgentTraceDb|WorktreeId|
+    GitSnapshotService)\b' cli/src/services/hooks/claude_mutation_scope/`) — no
+    matches, and manually confirmed exactly one `use`/path reaching
+    `crate::services::hooks::mutation_scope`
+    (`super::mutation_scope::run_mutation_scope_from_payload` in `mod.rs`).
+    `git diff --stat` against the pre-follow-up commit confirms only
+    `claude_mutation_scope/mod.rs` and `claude_mutation_scope/state.rs`
+    changed — no T07/T08 file, no `spec/mutation_cursor.qnt`, no
+    `protocol.rs`, no migration, no schema file.
+    Live binary check (`cargo build`): `sce hooks claude-mutation-scope
+    </dev/null` exits non-zero with `Invalid Claude hook event payload from
+    STDIN: expected a JSON object, got an empty payload.` (the strict parser's
+    error, not "unknown subcommand"); `sce hooks --help` lists `mutation-scope`
+    but omits `claude-mutation-scope`; `sce --help` (top level) has no mention
+    of it either. `git diff --stat` against the T05 baseline confirms exactly
+    the five files listed above changed, with no touch to
+    `spec/mutation_cursor.qnt`, `cli/src/services/mutation_trace/protocol.rs`,
+    `cli/migrations/agent-trace-repository/`, or
+    `config/schema/agent-trace.schema.json` (AC23 unaffected).
+  - Context impact: Adds a new hidden CLI surface
+    (`sce hooks claude-mutation-scope`) and the first concrete Claude adapter
+    driver, both currently undocumented in `context/cli|sce`.
+    `context/cli/mutation-scope-hook-ingress.md` and
+    `context/cli/mutation-scope-runtime.md` both still say "no concrete harness
+    adapter is wired yet," which this task makes stale; per the plan's own
+    Context sync list and the T09 task boundary ("describing behavior not
+    actually shipped by T02-T08" is T09's Out-of-scope, meaning it documents
+    only after implementation lands), documenting the shipped adapter,
+    authoring `context/cli/claude-mutation-scope-integration.md`, and updating
+    the routing/cross-reference files is T09's explicit responsibility, not
+    this task's. This task's own root-context pass (below) confirms no root
+    file (`context/{overview,architecture,glossary,patterns,context-map}.md`)
+    makes a claim this change contradicts on its own — but the two
+    domain-context files above do need T09's update before the plan can be
+    considered synced.
+  - Context synchronization: synced — root pass confirmed
+    `context/{overview,architecture,glossary,patterns}.md` contain no mention
+    of mutation-scope/Claude-adapter content and are unaffected;
+    `context/context-map.md` needed four in-line corrections (same-line
+    substring edits, no line-count change). Two domain files
+    (`context/cli/mutation-scope-hook-ingress.md`,
+    `context/cli/mutation-scope-runtime.md`) and one domain file
+    (`context/sce/agent-trace-hooks-command-routing.md`) were corrected: each
+    previously stated categorically that no concrete Claude Code adapter was
+    wired, which this task makes false — corrected to note a first,
+    not-yet-user-reachable Claude Code adapter driver now exists and consumes
+    the seam in-process, while `sce setup` still does not register its hooks
+    (Codex/OpenCode/Pi remain genuinely unwired). The routing file also
+    gained the new `sce hooks claude-mutation-scope` command-surface entry
+    (Feature existence: this hidden CLI route now canonically exists in
+    `context/sce/agent-trace-hooks-command-routing.md`). No new domain
+    terminology was introduced beyond what T01-T05 already established, so no
+    glossary entry was needed. No decision qualified for an ADR: hiding a
+    clap subcommand nested in a subcommand enum is a routine application of
+    an existing mechanism, not a system-wide boundary/interface/data-model/
+    compatibility/security/deployment/dependency decision — D1-D23 already
+    cover this feature's actual architectural decisions and were recorded in
+    this plan's own Design section before T06 ran. The full dedicated
+    adapter-contract file (`context/cli/claude-mutation-scope-integration.md`)
+    remains T09's job per this plan's own Context sync list and T01/T02/T03/
+    T05's identical precedent, since T07 (generated-settings registration)
+    and T08 (real Git/DB regressions) haven't shipped yet and a partial file
+    today would just be substantially rewritten. Known hygiene note:
+    `context/cli/mutation-scope-runtime.md` was already 255 lines (5 over the
+    250-line budget) before this task; the correction plus an offsetting trim
+    left it at 258 (net +3) — T09's planned full rewrite of this exact file
+    is the right place to resolve that debt properly (e.g. by splitting
+    detail into a focused sub-file) rather than a rushed per-task shrink.
 
 - [ ] T07: `Generated Claude integration, setup merge, and doctor` (status:todo)
   - Task ID: T07
