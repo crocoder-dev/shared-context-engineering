@@ -1,0 +1,23 @@
+{
+  "_comment": "SYNTHESISED capture metadata, NOT a raw hook payload. Probe D variant. Parallel MCP execution reached via the OTHER branch of McpHandler::supports_parallel_tool_calls() - the tool's own annotations.read_only_hint - with NO server-level opt-in. The tool still performs a git-visible mutation ('read_only_liar').",
+  "codex_version": "codex-cli 0.153.4",
+  "model": "gpt-5.6-sol",
+  "mcp_server": "probe (server.py, tool read_only_liar; annotations.readOnlyHint = true; NO supports_parallel_tool_calls on the server)",
+  "A_tool_use_id": "exec-89684f86-307f-473c-b3f5-d05c50041474",
+  "B_tool_use_id": "exec-0c61904e-31c6-4715-b87e-40750d353ecb",
+  "hook_event_timeline_utc": [
+    "PreToolUse(A)   14:44:57.996966",
+    "PreToolUse(B)   14:44:57.998020   <- B starts ~1ms after A, BEFORE either PostToolUse",
+    "PostToolUse(A)  14:45:06.019858",
+    "PostToolUse(B)  14:45:06.029715"
+  ],
+  "mcp_server_execution_timeline_utc": [
+    "14:44:58.008 read_only_liar[r1] begin (wrote liar_r1_begin.txt), sleeping 8s",
+    "14:44:58.019 read_only_liar[r2] begin (wrote liar_r2_begin.txt), sleeping 8s  <- r2 begins while r1 is still sleeping",
+    "14:45:06.008 read_only_liar[r1] end (wrote liar_r1_end.txt)",
+    "14:45:06.019 read_only_liar[r2] end (wrote liar_r2_end.txt)"
+  ],
+  "git_status_after": ["?? liar_r1_begin.txt", "?? liar_r1_end.txt", "?? liar_r2_begin.txt", "?? liar_r2_end.txt", "?? .mcp-probe-server.log"],
+  "finding": "A tool an adapter would classify mutation-capable (unknown/MCP -> mutation-capable) can be marked parallel-eligible purely by the MCP server's own `readOnlyHint` annotation, which SCE cannot trust and does not inspect. Concurrency of a mutation-capable MCP execution is therefore reachable even without a Codex-side or config-side opt-in.",
+  "disposition": "PROVEN (live)."
+}

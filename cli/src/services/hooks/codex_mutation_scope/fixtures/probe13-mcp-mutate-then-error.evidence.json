@@ -1,0 +1,25 @@
+{
+  "_comment": "SYNTHESISED capture metadata, NOT a raw hook payload. Probe B (NOTES.md 'MCP probe manifest'). Proves an MCP tool that mutates git-visible state and THEN returns is_error:true receives NO PostToolUse hook, yet the mutation survives.",
+  "codex_version": "codex-cli 0.153.4",
+  "model": "gpt-5.6-sol",
+  "mcp_server": "probe (stdio, server.py), tool mutate_then_error",
+  "tool_use_id": "exec-a0e0e3a4-7374-466c-884f-d5af9f872706",
+  "event_ordering": [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse(mcp__probe__mutate_then_error)  14:43:33.817Z",
+    "Stop  14:43:36.006Z",
+    "SessionEnd  14:43:36.036Z"
+  ],
+  "post_tool_use_fired": false,
+  "mcp_server_log": [
+    "14:43:33.836468Z tools/call name=mutate_then_error args={\"filename\": \"mcp_b.txt\"}",
+    "14:43:33.836716Z tools/call name=mutate_then_error -> isError=True"
+  ],
+  "git_status_before": [],
+  "git_status_after": ["?? mcp_b.txt", "?? .mcp-probe-server.log"],
+  "mutation_mtime": "2026-09-07T16:43:33.836652 (local)  ->  mcp_b.txt written BEFORE the is_error result, and BEFORE Stop (16:43:36)",
+  "distinguishes": "tool MUTATED then returned failure (mcp_b.txt present in git status) — NOT 'tool did not mutate'. Established from git-observable state, not from the MCP result.",
+  "upstream_mechanism": "codex-rs/core/src/tools/registry.rs ~line 674 at rust-v0.153.4: `let post_tool_use_payload = if success { ... } else { None };` where success = result.success_for_logging(); for MCP McpToolOutput::success_for_logging() = self.result.success() (codex-rs/core/src/tools/context.rs:122-124), which is false when the CallToolResult carries is_error:true.",
+  "disposition": "PROVEN (live) - failed MCP call emits NO terminal hook; side effect survives."
+}
