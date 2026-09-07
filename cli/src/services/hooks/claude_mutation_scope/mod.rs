@@ -368,6 +368,30 @@ pub(crate) fn run_claude_mutation_scope_from_payload(
     )
 }
 
+#[cfg(test)]
+fn run_claude_mutation_scope_from_payload_at_state_root(
+    state_root: &Path,
+    stdin_payload: &str,
+    logger: Option<&dyn Logger>,
+) -> Result<String> {
+    let resolve_git_dir_fn = |cwd: &str| checkout::resolve_git_dir(Path::new(cwd));
+    let seam_fn = |repository_root: &Path, payload: &str, logger: Option<&dyn Logger>| {
+        super::mutation_scope::run_mutation_scope_from_payload_at_state_root(
+            repository_root,
+            state_root,
+            payload,
+            logger,
+        )
+    };
+
+    run_claude_mutation_scope_from_payload_with(
+        stdin_payload,
+        logger,
+        &resolve_git_dir_fn,
+        &seam_fn,
+    )
+}
+
 fn run_claude_mutation_scope_from_payload_with(
     stdin_payload: &str,
     logger: Option<&dyn Logger>,
@@ -2627,6 +2651,1375 @@ mod tests {
         fn malformed_payload_propagates_as_a_real_error_not_fail_open() {
             let error = run_claude_mutation_scope_from_payload("not json", None).unwrap_err();
             assert!(error.to_string().contains("valid JSON"));
+        }
+    }
+
+    mod production_regressions {
+        use std::fs;
+        use std::path::{Path, PathBuf};
+        use std::process::Command;
+
+        use super::*;
+        use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
+        use crate::services::agent_trace_storage::{
+            resolve_agent_trace_storage_at_state_root, AgentTraceStorageContext,
+        };
+        use crate::services::checkout::{get_or_create_checkout_id, resolve_git_dir};
+        use crate::services::mutation_trace::store::decode_revision;
+
+        fn git(dir: &Path, args: &[&str]) -> String {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git should spawn");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).expect("git output should be UTF-8")
+        }
+
+        struct ClaudeRepo {
+            temp: tempfile::TempDir,
+            root: PathBuf,
+            state_root: PathBuf,
+        }
+
+        impl ClaudeRepo {
+            fn new(label: &str) -> Self {
+                let temp = tempfile::Builder::new()
+                    .prefix(&format!("sce-claude-mutation-scope-regression-{label}-"))
+                    .tempdir()
+                    .expect("temp dir should be created");
+                let root = temp.path().join("repo");
+                fs::create_dir_all(&root).expect("repo dir should be created");
+                git(&root, &["init", "-q"]);
+                git(&root, &["config", "user.email", "test@example.invalid"]);
+                git(&root, &["config", "user.name", "SCE Test"]);
+                git(
+                    &root,
+                    &["remote", "add", "origin", "git@github.com:acme/widgets.git"],
+                );
+                fs::write(root.join("file.txt"), "one\n").expect("seed file should write");
+                git(&root, &["add", "-A"]);
+                git(&root, &["commit", "-qm", "base"]);
+
+                let state_root = temp.path().join("state");
+                fs::create_dir_all(&state_root).expect("state root should be created");
+                resolve_agent_trace_storage_at_state_root(
+                    &AgentTraceStorageContext {
+                        repository_root: &root,
+                        explicit_repository_id: None,
+                        repository_remote: "origin",
+                    },
+                    &state_root,
+                )
+                .expect("state-root storage should initialize the repository DB");
+
+                Self {
+                    temp,
+                    root,
+                    state_root,
+                }
+            }
+
+            fn drive(&self, payload: &str) -> Result<String> {
+                run_claude_mutation_scope_from_payload_at_state_root(
+                    &self.state_root,
+                    payload,
+                    None,
+                )
+            }
+
+            fn drive_generic(&self, payload: &str) -> Result<String> {
+                crate::services::hooks::mutation_scope::run_mutation_scope_from_payload_at_state_root(
+                    &self.root,
+                    &self.state_root,
+                    payload,
+                    None,
+                )
+            }
+
+            fn drive_flush(&self) -> Result<String> {
+                self.drive_generic(&flush_payload())
+            }
+
+            fn db(&self) -> RepositoryAgentTraceDb {
+                crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
+                    &self.root,
+                    &self.state_root,
+                    "claude mutation-scope regression test assertions",
+                )
+                .expect("assertion DB should open")
+            }
+
+            fn cwd(&self) -> String {
+                self.root.to_string_lossy().into_owned()
+            }
+
+            fn cwd_at(root: &Path) -> String {
+                root.to_string_lossy().into_owned()
+            }
+
+            fn working_tree_at(root: &Path) -> String {
+                git(root, &["add", "-A"]);
+                git(root, &["write-tree"]).trim().to_owned()
+            }
+
+            fn working_tree(&self) -> String {
+                Self::working_tree_at(&self.root)
+            }
+
+            fn git_dir_at(root: &Path) -> PathBuf {
+                resolve_git_dir(root).expect("git dir should resolve")
+            }
+
+            fn git_dir(&self) -> PathBuf {
+                Self::git_dir_at(&self.root)
+            }
+
+            fn adapter_state_at(root: &Path) -> state::AdapterState {
+                state::read_state(&Self::git_dir_at(root))
+                    .expect("adapter state should be readable")
+            }
+
+            fn adapter_state(&self) -> state::AdapterState {
+                Self::adapter_state_at(&self.root)
+            }
+
+            fn worktree_id_at(root: &Path) -> String {
+                get_or_create_checkout_id(&Self::git_dir_at(root))
+                    .expect("checkout id should resolve")
+            }
+
+            fn worktree_id(&self) -> String {
+                Self::worktree_id_at(&self.root)
+            }
+
+            fn add_worktree(&self, name: &str) -> PathBuf {
+                let worktree_path = self.temp.path().join(name);
+                git(
+                    &self.root,
+                    &[
+                        "worktree",
+                        "add",
+                        "-q",
+                        worktree_path.to_str().expect("utf-8 worktree path"),
+                    ],
+                );
+                worktree_path
+            }
+        }
+
+        fn count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
+            db.query_map(&format!("SELECT COUNT(*) FROM {table}"), (), |row| {
+                row.get::<i64>(0).map_err(anyhow::Error::from)
+            })
+            .expect("count query should succeed")
+            .into_iter()
+            .next()
+            .expect("a count row should exist")
+        }
+
+        fn assert_raw_agent_trace_tables_untouched(db: &RepositoryAgentTraceDb) {
+            assert_eq!(count(db, "diff_traces"), 0);
+            assert_eq!(count(db, "post_commit_patch_intersections"), 0);
+            assert_eq!(count(db, "agent_traces"), 0);
+        }
+
+        fn worktree_row(
+            db: &RepositoryAgentTraceDb,
+            worktree_id: &str,
+        ) -> Option<(u64, String, bool)> {
+            db.query_map(
+                "SELECT revision, cursor_tree, needs_rebaseline FROM mutation_trace_worktrees \
+                 WHERE worktree_id = ?1",
+                (worktree_id,),
+                |row| {
+                    let blob: Vec<u8> = row.get(0).map_err(anyhow::Error::from)?;
+                    let revision = decode_revision(&blob)?;
+                    let cursor_tree = row.get::<String>(1).map_err(anyhow::Error::from)?;
+                    let needs_rebaseline = row.get::<i64>(2).map_err(anyhow::Error::from)? != 0;
+                    Ok((revision, cursor_tree, needs_rebaseline))
+                },
+            )
+            .expect("worktree-row query should succeed")
+            .into_iter()
+            .next()
+        }
+
+        fn processed_events(db: &RepositoryAgentTraceDb) -> Vec<(String, String)> {
+            db.query_map(
+                "SELECT scope_id, event_id FROM mutation_trace_processed_events \
+                 ORDER BY scope_id, event_id",
+                (),
+                |row| {
+                    let scope_id = row.get::<String>(0).map_err(anyhow::Error::from)?;
+                    let event_id = row.get::<String>(1).map_err(anyhow::Error::from)?;
+                    Ok((scope_id, event_id))
+                },
+            )
+            .expect("processed-events query should succeed")
+        }
+
+        fn scope_status(db: &RepositoryAgentTraceDb, scope_id: &str) -> Option<(String, String)> {
+            db.query_map(
+                "SELECT actor_kind, status FROM mutation_trace_scopes WHERE scope_id = ?1",
+                (scope_id,),
+                |row| {
+                    let actor_kind = row.get::<String>(0).map_err(anyhow::Error::from)?;
+                    let status = row.get::<String>(1).map_err(anyhow::Error::from)?;
+                    Ok((actor_kind, status))
+                },
+            )
+            .expect("scope query should succeed")
+            .into_iter()
+            .next()
+        }
+
+        fn mutation_events_for(
+            db: &RepositoryAgentTraceDb,
+            worktree_id: &str,
+        ) -> Vec<(String, Option<String>, String)> {
+            db.query_map(
+                "SELECT attribution_kind, attribution_scope_id, boundary_kind \
+                 FROM mutation_trace_events WHERE worktree_id = ?1 ORDER BY revision",
+                (worktree_id,),
+                |row| {
+                    let attribution_kind = row.get::<String>(0).map_err(anyhow::Error::from)?;
+                    let attribution_scope_id =
+                        row.get::<Option<String>>(1).map_err(anyhow::Error::from)?;
+                    let boundary_kind = row.get::<String>(2).map_err(anyhow::Error::from)?;
+                    Ok((attribution_kind, attribution_scope_id, boundary_kind))
+                },
+            )
+            .expect("mutation-events query should succeed")
+        }
+
+        fn tool_identity_json(
+            event_name: &str,
+            cwd: &str,
+            session_id: &str,
+            tool_name: &str,
+            tool_use_id: &str,
+            agent_id: Option<&str>,
+        ) -> String {
+            let mut object = serde_json::Map::new();
+            object.insert(
+                HOOK_EVENT_NAME_FIELD.to_string(),
+                Value::String(event_name.to_string()),
+            );
+            object.insert(
+                SESSION_ID_FIELD.to_string(),
+                Value::String(session_id.to_string()),
+            );
+            object.insert(CWD_FIELD.to_string(), Value::String(cwd.to_string()));
+            object.insert(
+                TOOL_NAME_FIELD.to_string(),
+                Value::String(tool_name.to_string()),
+            );
+            object.insert(
+                TOOL_USE_ID_FIELD.to_string(),
+                Value::String(tool_use_id.to_string()),
+            );
+            if let Some(agent_id) = agent_id {
+                object.insert(
+                    AGENT_ID_FIELD.to_string(),
+                    Value::String(agent_id.to_string()),
+                );
+            }
+            Value::Object(object).to_string()
+        }
+
+        fn pre_tool_use_for(
+            cwd: &str,
+            session_id: &str,
+            tool_name: &str,
+            tool_use_id: &str,
+            agent_id: Option<&str>,
+        ) -> String {
+            tool_identity_json(
+                HOOK_EVENT_PRE_TOOL_USE,
+                cwd,
+                session_id,
+                tool_name,
+                tool_use_id,
+                agent_id,
+            )
+        }
+
+        fn background_pre_tool_use_for(
+            cwd: &str,
+            session_id: &str,
+            tool_use_id: &str,
+            agent_id: Option<&str>,
+        ) -> String {
+            let mut object: serde_json::Map<String, Value> = serde_json::from_str(
+                &pre_tool_use_for(cwd, session_id, "Bash", tool_use_id, agent_id),
+            )
+            .expect("base PreToolUse payload should parse");
+            object.insert(
+                TOOL_INPUT_FIELD.to_string(),
+                json!({ "run_in_background": true }),
+            );
+            Value::Object(object).to_string()
+        }
+
+        fn post_tool_use_for(
+            cwd: &str,
+            session_id: &str,
+            tool_name: &str,
+            tool_use_id: &str,
+            agent_id: Option<&str>,
+        ) -> String {
+            tool_identity_json(
+                HOOK_EVENT_POST_TOOL_USE,
+                cwd,
+                session_id,
+                tool_name,
+                tool_use_id,
+                agent_id,
+            )
+        }
+
+        fn post_tool_use_failure_for(
+            cwd: &str,
+            session_id: &str,
+            tool_name: &str,
+            tool_use_id: &str,
+            agent_id: Option<&str>,
+        ) -> String {
+            tool_identity_json(
+                HOOK_EVENT_POST_TOOL_USE_FAILURE,
+                cwd,
+                session_id,
+                tool_name,
+                tool_use_id,
+                agent_id,
+            )
+        }
+
+        fn permission_denied_for(
+            cwd: &str,
+            session_id: &str,
+            tool_name: &str,
+            tool_use_id: &str,
+            agent_id: Option<&str>,
+        ) -> String {
+            tool_identity_json(
+                HOOK_EVENT_PERMISSION_DENIED,
+                cwd,
+                session_id,
+                tool_name,
+                tool_use_id,
+                agent_id,
+            )
+        }
+
+        fn session_json(event_name: &str, cwd: &str, session_id: &str) -> String {
+            let mut object = serde_json::Map::new();
+            object.insert(
+                HOOK_EVENT_NAME_FIELD.to_string(),
+                Value::String(event_name.to_string()),
+            );
+            object.insert(
+                SESSION_ID_FIELD.to_string(),
+                Value::String(session_id.to_string()),
+            );
+            object.insert(CWD_FIELD.to_string(), Value::String(cwd.to_string()));
+            Value::Object(object).to_string()
+        }
+
+        fn agent_json(event_name: &str, cwd: &str, session_id: &str, agent_id: &str) -> String {
+            let mut object = serde_json::Map::new();
+            object.insert(
+                HOOK_EVENT_NAME_FIELD.to_string(),
+                Value::String(event_name.to_string()),
+            );
+            object.insert(
+                SESSION_ID_FIELD.to_string(),
+                Value::String(session_id.to_string()),
+            );
+            object.insert(CWD_FIELD.to_string(), Value::String(cwd.to_string()));
+            object.insert(
+                AGENT_ID_FIELD.to_string(),
+                Value::String(agent_id.to_string()),
+            );
+            Value::Object(object).to_string()
+        }
+
+        fn worktree_remove_json(session_id: &str, worktree_path: &str) -> String {
+            let mut object = serde_json::Map::new();
+            object.insert(
+                HOOK_EVENT_NAME_FIELD.to_string(),
+                Value::String(HOOK_EVENT_WORKTREE_REMOVE.to_string()),
+            );
+            object.insert(
+                SESSION_ID_FIELD.to_string(),
+                Value::String(session_id.to_string()),
+            );
+            object.insert(
+                WORKTREE_PATH_FIELD.to_string(),
+                Value::String(worktree_path.to_string()),
+            );
+            Value::Object(object).to_string()
+        }
+
+        #[test]
+        fn test1_foreground_write_closes_ai_exclusive() {
+            let repo = ClaudeRepo::new("test1-foreground-write");
+            let cwd = repo.cwd();
+
+            assert_eq!(
+                repo.drive(&pre_tool_use_for(
+                    &cwd,
+                    "session-1",
+                    "Write",
+                    "toolu_1",
+                    None
+                ))
+                .expect("PreToolUse should succeed"),
+                ""
+            );
+            let scope_id = repo.adapter_state().attempts[0].scope_id.clone();
+
+            fs::write(repo.root.join("file.txt"), "one\ntwo\n")
+                .expect("the tool's own edit should write");
+
+            assert_eq!(
+                repo.drive(&post_tool_use_for(
+                    &cwd,
+                    "session-1",
+                    "Write",
+                    "toolu_1",
+                    None
+                ))
+                .expect("PostToolUse should succeed"),
+                ""
+            );
+
+            assert!(
+                repo.adapter_state().attempts.is_empty(),
+                "the closed attempt must be removed from adapter bookkeeping"
+            );
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, &scope_id),
+                Some(("claude_code".to_string(), "closed".to_string()))
+            );
+            let worktree_id = repo.worktree_id();
+            assert_eq!(
+                mutation_events_for(&db, &worktree_id),
+                vec![(
+                    "ai_exclusive".to_string(),
+                    Some(scope_id.clone()),
+                    "close".to_string(),
+                )]
+            );
+            assert_eq!(
+                worktree_row(&db, &worktree_id).map(|(_, cursor_tree, _)| cursor_tree),
+                Some(repo.working_tree())
+            );
+            assert_eq!(
+                processed_events(&db),
+                vec![
+                    (scope_id.clone(), claude_scope_close_event_id(&scope_id)),
+                    (scope_id.clone(), claude_scope_start_event_id(&scope_id)),
+                ],
+                "rows are ordered by (scope_id, event_id), and 'close' sorts before 'start'"
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test2_failed_bash_partial_write_still_closes_ai_exclusive() {
+            let repo = ClaudeRepo::new("test2-failed-bash");
+            let cwd = repo.cwd();
+
+            repo.drive(&pre_tool_use_for(
+                &cwd,
+                "session-1",
+                "Bash",
+                "toolu_1",
+                None,
+            ))
+            .expect("PreToolUse should succeed");
+            let scope_id = repo.adapter_state().attempts[0].scope_id.clone();
+
+            fs::write(repo.root.join("file.txt"), "one\npartial\n")
+                .expect("the failed tool's partial edit should write");
+
+            assert_eq!(
+                repo.drive(&post_tool_use_failure_for(
+                    &cwd,
+                    "session-1",
+                    "Bash",
+                    "toolu_1",
+                    None
+                ))
+                .expect("PostToolUseFailure should succeed"),
+                ""
+            );
+
+            assert!(repo.adapter_state().attempts.is_empty());
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, &scope_id),
+                Some(("claude_code".to_string(), "closed".to_string()))
+            );
+            let worktree_id = repo.worktree_id();
+            assert_eq!(
+                mutation_events_for(&db, &worktree_id),
+                vec![(
+                    "ai_exclusive".to_string(),
+                    Some(scope_id.clone()),
+                    "close".to_string(),
+                )]
+            );
+            assert_eq!(
+                worktree_row(&db, &worktree_id).map(|(_, cursor_tree, _)| cursor_tree),
+                Some(repo.working_tree())
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test4_duplicate_pre_and_post_replay_has_no_duplicate_transition() {
+            let repo = ClaudeRepo::new("test4-duplicate-replay");
+            let cwd = repo.cwd();
+            let pre = pre_tool_use_for(&cwd, "session-1", "Write", "toolu_1", None);
+
+            repo.drive(&pre).expect("first PreToolUse should succeed");
+            assert_eq!(
+                repo.drive(&pre)
+                    .expect("duplicate PreToolUse should be idempotent"),
+                ""
+            );
+            assert_eq!(
+                repo.adapter_state().attempts.len(),
+                1,
+                "AC4: duplicate PreToolUse delivery must reuse the same attempt"
+            );
+            let scope_id = repo.adapter_state().attempts[0].scope_id.clone();
+
+            fs::write(repo.root.join("file.txt"), "one\ntwo\n").expect("the edit should write");
+
+            let post = post_tool_use_for(&cwd, "session-1", "Write", "toolu_1", None);
+            repo.drive(&post).expect("first PostToolUse should succeed");
+
+            let db = repo.db();
+            let (revision_before, events_before, processed_before) = (
+                worktree_row(&db, &repo.worktree_id())
+                    .map(|(revision, _, _)| revision)
+                    .expect("a worktree row should exist"),
+                count(&db, "mutation_trace_events"),
+                count(&db, "mutation_trace_processed_events"),
+            );
+
+            assert_eq!(
+                repo.drive(&post)
+                    .expect("duplicate PostToolUse delivery must be a safe no-op"),
+                ""
+            );
+
+            let db = repo.db();
+            assert_eq!(
+                worktree_row(&db, &repo.worktree_id()).map(|(revision, _, _)| revision),
+                Some(revision_before)
+            );
+            assert_eq!(count(&db, "mutation_trace_events"), events_before);
+            assert_eq!(
+                count(&db, "mutation_trace_processed_events"),
+                processed_before
+            );
+            assert_eq!(
+                processed_events(&db)
+                    .into_iter()
+                    .filter(|(scope, event)| scope == &scope_id
+                        && event == &claude_scope_close_event_id(&scope_id))
+                    .count(),
+                1
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test5_auto_permission_denied_abandons_and_requires_rebaseline() {
+            let repo = ClaudeRepo::new("test5-permission-denied");
+            let cwd = repo.cwd();
+
+            repo.drive(&pre_tool_use_for(
+                &cwd,
+                "session-1",
+                "Write",
+                "toolu_1",
+                None,
+            ))
+            .expect("PreToolUse should succeed");
+            let scope_id = repo.adapter_state().attempts[0].scope_id.clone();
+
+            assert_eq!(
+                repo.drive(&permission_denied_for(
+                    &cwd,
+                    "session-1",
+                    "Write",
+                    "toolu_1",
+                    None
+                ))
+                .expect("PermissionDenied should succeed"),
+                ""
+            );
+
+            assert!(
+                repo.adapter_state().attempts.is_empty(),
+                "the denied attempt must be retired from adapter bookkeeping"
+            );
+            assert!(
+                repo.adapter_state().recovery_pending,
+                "D19: abandonment must arm the recovery barrier"
+            );
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, &scope_id),
+                Some(("claude_code".to_string(), "abandoned".to_string()))
+            );
+            let worktree_id = repo.worktree_id();
+            assert!(
+                worktree_row(&db, &worktree_id)
+                    .is_some_and(|(_, _, needs_rebaseline)| needs_rebaseline),
+                "AC12: a denied execution must leave the worktree needing rebaseline"
+            );
+            assert_eq!(count(&db, "mutation_trace_events"), 0);
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test3_two_parallel_subagent_tools_produce_ai_contended() {
+            let repo = ClaudeRepo::new("test3-parallel-subagents");
+            let cwd = repo.cwd();
+
+            repo.drive(&pre_tool_use_for(
+                &cwd,
+                "session-1",
+                "Write",
+                "toolu_a",
+                Some("agent-a"),
+            ))
+            .expect("agent-a PreToolUse should succeed");
+            repo.drive(&pre_tool_use_for(
+                &cwd,
+                "session-1",
+                "Write",
+                "toolu_b",
+                Some("agent-b"),
+            ))
+            .expect("agent-b PreToolUse should succeed");
+            assert_eq!(repo.adapter_state().attempts.len(), 2);
+
+            fs::write(repo.root.join("file.txt"), "one\ncontended\n")
+                .expect("the racing edit should write");
+
+            repo.drive(&post_tool_use_for(
+                &cwd,
+                "session-1",
+                "Write",
+                "toolu_a",
+                Some("agent-a"),
+            ))
+            .expect("agent-a PostToolUse (closing while agent-b is still active) should succeed");
+            repo.drive(&post_tool_use_for(
+                &cwd,
+                "session-1",
+                "Write",
+                "toolu_b",
+                Some("agent-b"),
+            ))
+            .expect("agent-b PostToolUse should succeed");
+
+            assert!(repo.adapter_state().attempts.is_empty());
+
+            let db = repo.db();
+            let worktree_id = repo.worktree_id();
+            assert_eq!(
+                mutation_events_for(&db, &worktree_id),
+                vec![("ai_contended".to_string(), None, "close".to_string())],
+                "AC11: a tree transition observed while two scopes are live must be AiContended"
+            );
+            assert_eq!(
+                worktree_row(&db, &worktree_id).map(|(_, cursor_tree, _)| cursor_tree),
+                Some(repo.working_tree())
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test6_other_hook_denial_is_retired_by_stop_cleanup() {
+            let repo = ClaudeRepo::new("test6-stop-cleanup");
+            let cwd = repo.cwd();
+
+            repo.drive(&pre_tool_use_for(
+                &cwd,
+                "session-1",
+                "Bash",
+                "toolu_1",
+                None,
+            ))
+            .expect("PreToolUse should succeed");
+            let scope_id = repo.adapter_state().attempts[0].scope_id.clone();
+
+            assert_eq!(
+                repo.drive(&session_json(HOOK_EVENT_STOP, &cwd, "session-1"))
+                    .expect("Stop should succeed"),
+                ""
+            );
+
+            assert!(
+                repo.adapter_state().attempts.is_empty(),
+                "AC13: Stop must retire the stale main-thread attempt"
+            );
+            assert!(repo.adapter_state().recovery_pending);
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, &scope_id),
+                Some(("claude_code".to_string(), "abandoned".to_string()))
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test7_interrupted_main_turn_is_retired_by_next_user_prompt_submit() {
+            let repo = ClaudeRepo::new("test7-user-prompt-submit-cleanup");
+            let cwd = repo.cwd();
+
+            repo.drive(&pre_tool_use_for(
+                &cwd,
+                "session-1",
+                "Write",
+                "toolu_1",
+                None,
+            ))
+            .expect("PreToolUse should succeed");
+            let scope_id = repo.adapter_state().attempts[0].scope_id.clone();
+
+            fs::write(repo.root.join("file.txt"), "one\ninterrupted\n")
+                .expect("the interrupted edit should write");
+
+            assert_eq!(
+                repo.drive(&session_json(
+                    HOOK_EVENT_USER_PROMPT_SUBMIT,
+                    &cwd,
+                    "session-1"
+                ))
+                .expect("UserPromptSubmit should succeed"),
+                ""
+            );
+
+            assert!(
+                repo.adapter_state().attempts.is_empty(),
+                "AC14: UserPromptSubmit must retire the stale main-thread attempt \
+                 before another mutation-capable tool can start"
+            );
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, &scope_id),
+                Some(("claude_code".to_string(), "abandoned".to_string()))
+            );
+            let worktree_id = repo.worktree_id();
+            assert!(worktree_row(&db, &worktree_id)
+                .is_some_and(|(_, _, needs_rebaseline)| needs_rebaseline));
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test8_resumed_subagent_tool_use_id_gets_a_fresh_scope_id() {
+            let repo = ClaudeRepo::new("test8-resumed-subagent");
+            let cwd = repo.cwd();
+
+            repo.drive(&pre_tool_use_for(
+                &cwd,
+                "session-1",
+                "Write",
+                "toolu_resumed",
+                Some("agent-a"),
+            ))
+            .expect("first PreToolUse should succeed");
+            let first_scope_id = repo.adapter_state().attempts[0].scope_id.clone();
+
+            fs::write(repo.root.join("file.txt"), "one\nfirst\n").expect("first edit should write");
+            repo.drive(&post_tool_use_for(
+                &cwd,
+                "session-1",
+                "Write",
+                "toolu_resumed",
+                Some("agent-a"),
+            ))
+            .expect("first PostToolUse should succeed");
+            assert!(repo.adapter_state().attempts.is_empty());
+
+            repo.drive(&pre_tool_use_for(
+                &cwd,
+                "session-1",
+                "Write",
+                "toolu_resumed",
+                Some("agent-a"),
+            ))
+            .expect("resumed PreToolUse should succeed");
+            let second_scope_id = repo.adapter_state().attempts[0].scope_id.clone();
+
+            assert_ne!(
+                first_scope_id, second_scope_id,
+                "AC15: a resumed subagent's new tool attempt must receive a fresh ScopeId"
+            );
+
+            fs::write(repo.root.join("file.txt"), "one\nfirst\nsecond\n")
+                .expect("second edit should write");
+            repo.drive(&post_tool_use_for(
+                &cwd,
+                "session-1",
+                "Write",
+                "toolu_resumed",
+                Some("agent-a"),
+            ))
+            .expect("second PostToolUse should succeed");
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, &first_scope_id).map(|(_, status)| status),
+                Some("closed".to_string())
+            );
+            assert_eq!(
+                scope_status(&db, &second_scope_id).map(|(_, status)| status),
+                Some("closed".to_string())
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test9_main_and_subagent_concurrent_mutation_is_ai_contended() {
+            let repo = ClaudeRepo::new("test9-main-plus-subagent");
+            let cwd = repo.cwd();
+
+            repo.drive(&pre_tool_use_for(
+                &cwd,
+                "session-1",
+                "Write",
+                "toolu_main",
+                None,
+            ))
+            .expect("main-thread PreToolUse should succeed");
+            repo.drive(&pre_tool_use_for(
+                &cwd,
+                "session-1",
+                "Write",
+                "toolu_sub",
+                Some("agent-a"),
+            ))
+            .expect("subagent PreToolUse should succeed");
+            assert_eq!(repo.adapter_state().attempts.len(), 2);
+
+            fs::write(repo.root.join("file.txt"), "one\nboth-writing\n")
+                .expect("the racing edit should write");
+
+            repo.drive(&post_tool_use_for(
+                &cwd,
+                "session-1",
+                "Write",
+                "toolu_main",
+                None,
+            ))
+            .expect("main-thread PostToolUse should succeed");
+            repo.drive(&post_tool_use_for(
+                &cwd,
+                "session-1",
+                "Write",
+                "toolu_sub",
+                Some("agent-a"),
+            ))
+            .expect("subagent PostToolUse should succeed");
+
+            let db = repo.db();
+            let worktree_id = repo.worktree_id();
+            assert_eq!(
+                mutation_events_for(&db, &worktree_id),
+                vec![("ai_contended".to_string(), None, "close".to_string())],
+                "AC11: main + subagent concurrent mutation must be AiContended"
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test10_isolated_subagent_worktree_advances_only_its_own_cursor() {
+            let repo = ClaudeRepo::new("test10-isolated-worktree");
+            let worktree_path = repo.add_worktree("subagent-worktree");
+            let worktree_cwd = ClaudeRepo::cwd_at(&worktree_path);
+
+            let main_worktree_id = repo.worktree_id();
+            let sub_worktree_id = ClaudeRepo::worktree_id_at(&worktree_path);
+            assert_ne!(
+                main_worktree_id, sub_worktree_id,
+                "a linked worktree must resolve to a distinct WorktreeId"
+            );
+
+            repo.drive_flush()
+                .expect("main-checkout baseline flush should succeed");
+            let main_cursor_before = worktree_row(&repo.db(), &main_worktree_id)
+                .map(|(_, cursor_tree, _)| cursor_tree)
+                .expect("main checkout should have a baseline worktree row");
+
+            repo.drive(&pre_tool_use_for(
+                &worktree_cwd,
+                "session-1",
+                "Write",
+                "toolu_sub",
+                Some("agent-a"),
+            ))
+            .expect("subagent PreToolUse in the isolated worktree should succeed");
+            fs::write(worktree_path.join("file.txt"), "one\nisolated\n")
+                .expect("the isolated worktree's own edit should write");
+            repo.drive(&post_tool_use_for(
+                &worktree_cwd,
+                "session-1",
+                "Write",
+                "toolu_sub",
+                Some("agent-a"),
+            ))
+            .expect("subagent PostToolUse in the isolated worktree should succeed");
+
+            let db = repo.db();
+            assert_eq!(
+                worktree_row(&db, &main_worktree_id).map(|(_, cursor_tree, _)| cursor_tree),
+                Some(main_cursor_before),
+                "AC17: the main checkout's mutation cursor must be unchanged"
+            );
+            let sub_row = worktree_row(&db, &sub_worktree_id).expect("subagent worktree row");
+            assert_eq!(
+                sub_row.1,
+                ClaudeRepo::working_tree_at(&worktree_path),
+                "AC16/AC17: the isolated worktree's own cursor must advance"
+            );
+            assert_eq!(
+                mutation_events_for(&db, &sub_worktree_id)
+                    .into_iter()
+                    .map(|(attribution, _, boundary)| (attribution, boundary))
+                    .collect::<Vec<_>>(),
+                vec![("ai_exclusive".to_string(), "close".to_string())]
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test11_worktree_remove_cleans_only_that_worktrees_outstanding_attempt() {
+            let repo = ClaudeRepo::new("test11-worktree-remove");
+            let worktree_path = repo.add_worktree("removed-worktree");
+            let worktree_cwd = ClaudeRepo::cwd_at(&worktree_path);
+            let main_cwd = repo.cwd();
+
+            repo.drive(&pre_tool_use_for(
+                &main_cwd,
+                "session-1",
+                "Write",
+                "toolu_main",
+                None,
+            ))
+            .expect("main-thread PreToolUse should succeed");
+            repo.drive(&pre_tool_use_for(
+                &worktree_cwd,
+                "session-1",
+                "Write",
+                "toolu_sub",
+                Some("agent-a"),
+            ))
+            .expect("subagent PreToolUse in the isolated worktree should succeed");
+
+            assert_eq!(ClaudeRepo::adapter_state_at(&repo.root).attempts.len(), 1);
+            assert_eq!(
+                ClaudeRepo::adapter_state_at(&worktree_path).attempts.len(),
+                1
+            );
+
+            assert_eq!(
+                repo.drive(&worktree_remove_json("session-1", &worktree_cwd))
+                    .expect("WorktreeRemove should succeed"),
+                ""
+            );
+
+            assert!(
+                ClaudeRepo::adapter_state_at(&worktree_path)
+                    .attempts
+                    .is_empty(),
+                "AC13/D22: WorktreeRemove must retire the outstanding attempt for that worktree"
+            );
+            assert_eq!(
+                ClaudeRepo::adapter_state_at(&repo.root).attempts.len(),
+                1,
+                "WorktreeRemove for one worktree must not touch the main checkout's attempts"
+            );
+
+            assert_raw_agent_trace_tables_untouched(&repo.db());
+        }
+
+        #[test]
+        fn test12_pending_start_crash_before_start_is_recovered_conservatively() {
+            let repo = ClaudeRepo::new("test12-pending-start-crash");
+            let cwd = repo.cwd();
+            let git_dir = repo.git_dir();
+
+            let key = AttemptKey {
+                session_id: "session-1".to_string(),
+                agent_id: None,
+                tool_use_id: "toolu_crashed".to_string(),
+            };
+            let allocated = state::allocate_attempt(&git_dir, &key, "Write")
+                .expect("allocation should succeed");
+            assert_eq!(allocated.attempt.phase, state::AttemptPhase::PendingStart);
+
+            assert_eq!(
+                repo.drive(&post_tool_use_for(
+                    &cwd,
+                    "session-1",
+                    "Write",
+                    "toolu_crashed",
+                    None
+                ))
+                .expect("D11: PostToolUse on a pending_start attempt must abandon, not late-start"),
+                ""
+            );
+
+            assert!(
+                repo.adapter_state().attempts.is_empty(),
+                "the never-started attempt must be retired"
+            );
+            assert!(repo.adapter_state().recovery_pending);
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, &allocated.attempt.scope_id),
+                None,
+                "a Start that never committed must never appear as a real scope"
+            );
+            assert_eq!(count(&db, "mutation_trace_events"), 0);
+
+            repo.drive(&pre_tool_use_for(
+                &cwd,
+                "session-1",
+                "Write",
+                "toolu_fresh",
+                None,
+            ))
+            .expect("the next PreToolUse should proceed after the quiescent flush");
+            assert!(!repo.adapter_state().recovery_pending);
+            assert_eq!(repo.adapter_state().attempts.len(), 1);
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test13_start_committed_before_state_settlement_is_recovered_by_abandonment() {
+            let repo = ClaudeRepo::new("test13-start-committed-crash");
+            let cwd = repo.cwd();
+            let git_dir = repo.git_dir();
+
+            let key = AttemptKey {
+                session_id: "session-1".to_string(),
+                agent_id: None,
+                tool_use_id: "toolu_crashed".to_string(),
+            };
+            let allocated = state::allocate_attempt(&git_dir, &key, "Write")
+                .expect("allocation should succeed");
+            let scope_id = allocated.attempt.scope_id.clone();
+
+            repo.drive_generic(&scope_boundary_payload(
+                "start",
+                &scope_id,
+                &claude_scope_start_event_id(&scope_id),
+            ))
+            .expect("the runtime Start should commit durably");
+            assert_eq!(
+                state::read_state(&git_dir).unwrap().attempts[0].phase,
+                state::AttemptPhase::PendingStart
+            );
+
+            assert_eq!(
+                repo.drive(&post_tool_use_for(
+                    &cwd,
+                    "session-1",
+                    "Write",
+                    "toolu_crashed",
+                    None
+                ))
+                .expect("D11: a pending_start attempt with a committed Start must be abandoned"),
+                ""
+            );
+
+            assert!(repo.adapter_state().attempts.is_empty());
+            assert!(repo.adapter_state().recovery_pending);
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, &scope_id),
+                Some(("claude_code".to_string(), "abandoned".to_string())),
+                "the runtime's own committed Start must settle as a real abandonment"
+            );
+            let worktree_id = repo.worktree_id();
+            assert!(worktree_row(&db, &worktree_id)
+                .is_some_and(|(_, _, needs_rebaseline)| needs_rebaseline));
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test14_terminal_runtime_success_before_state_cleanup_is_replay_safe() {
+            let repo = ClaudeRepo::new("test14-close-committed-crash");
+            let cwd = repo.cwd();
+            let git_dir = repo.git_dir();
+
+            repo.drive(&pre_tool_use_for(
+                &cwd,
+                "session-1",
+                "Write",
+                "toolu_1",
+                None,
+            ))
+            .expect("PreToolUse should succeed");
+            let scope_id = repo.adapter_state().attempts[0].scope_id.clone();
+            fs::write(repo.root.join("file.txt"), "one\ntwo\n").expect("the edit should write");
+
+            repo.drive_generic(&scope_boundary_payload(
+                "close",
+                &scope_id,
+                &claude_scope_close_event_id(&scope_id),
+            ))
+            .expect("the runtime Close should commit durably");
+            assert_eq!(state::read_state(&git_dir).unwrap().attempts.len(), 1);
+
+            let db = repo.db();
+            let (revision_before, events_before) = (
+                worktree_row(&db, &repo.worktree_id())
+                    .map(|(revision, _, _)| revision)
+                    .expect("a worktree row should exist"),
+                count(&db, "mutation_trace_events"),
+            );
+
+            assert_eq!(
+                repo.drive(&post_tool_use_for(
+                    &cwd,
+                    "session-1",
+                    "Write",
+                    "toolu_1",
+                    None
+                ))
+                .expect("a replayed Close against an already-durable commit must be safe"),
+                ""
+            );
+
+            assert!(
+                repo.adapter_state().attempts.is_empty(),
+                "the stale bookkeeping must finally be cleared"
+            );
+
+            let db = repo.db();
+            assert_eq!(
+                worktree_row(&db, &repo.worktree_id()).map(|(revision, _, _)| revision),
+                Some(revision_before),
+                "a durably completed Close must never be re-applied as a second transition"
+            );
+            assert_eq!(count(&db, "mutation_trace_events"), events_before);
+            assert_eq!(
+                scope_status(&db, &scope_id).map(|(_, status)| status),
+                Some("closed".to_string())
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test15_explicit_background_bash_is_denied_with_no_scope() {
+            let repo = ClaudeRepo::new("test15-explicit-background-bash");
+            let cwd = repo.cwd();
+
+            let output = repo
+                .drive(&background_pre_tool_use_for(
+                    &cwd,
+                    "session-1",
+                    "toolu_1",
+                    None,
+                ))
+                .expect("an explicit background shell must still return Ok with a deny payload");
+
+            assert_eq!(
+                output,
+                pre_tool_use_deny_json(EXPLICIT_BACKGROUND_SHELL_DENY_REASON)
+            );
+            assert!(
+                repo.adapter_state().attempts.is_empty(),
+                "AC21: an explicit background shell must create no scope"
+            );
+
+            let db = repo.db();
+            assert_eq!(count(&db, "mutation_trace_scopes"), 0);
+            assert_eq!(count(&db, "mutation_trace_events"), 0);
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test16_regression_matrix_leaves_raw_agent_trace_tables_untouched() {
+            let repo = ClaudeRepo::new("test16-raw-tables-untouched");
+            let cwd = repo.cwd();
+
+            let before = {
+                let db = repo.db();
+                (
+                    count(&db, "diff_traces"),
+                    count(&db, "post_commit_patch_intersections"),
+                    count(&db, "agent_traces"),
+                )
+            };
+            assert_eq!(before, (0, 0, 0));
+
+            repo.drive(&pre_tool_use_for(
+                &cwd,
+                "session-1",
+                "Write",
+                "toolu_1",
+                None,
+            ))
+            .expect("PreToolUse should succeed");
+            fs::write(repo.root.join("file.txt"), "one\ntwo\n").expect("the edit should write");
+            repo.drive(&post_tool_use_for(
+                &cwd,
+                "session-1",
+                "Write",
+                "toolu_1",
+                None,
+            ))
+            .expect("PostToolUse should succeed");
+            repo.drive(&pre_tool_use_for(
+                &cwd,
+                "session-1",
+                "Write",
+                "toolu_2",
+                None,
+            ))
+            .expect("second PreToolUse should succeed");
+            repo.drive(&permission_denied_for(
+                &cwd,
+                "session-1",
+                "Write",
+                "toolu_2",
+                None,
+            ))
+            .expect("PermissionDenied should succeed");
+
+            let db = repo.db();
+            let after = (
+                count(&db, "diff_traces"),
+                count(&db, "post_commit_patch_intersections"),
+                count(&db, "agent_traces"),
+            );
+            assert_eq!(
+                after,
+                (0, 0, 0),
+                "AC20: Claude mutation-scope-only regressions must leave the raw \
+                 Agent Trace tables unchanged"
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test17_detached_descendant_write_after_post_tool_use_is_not_folded_into_the_closed_scope(
+        ) {
+            let repo = ClaudeRepo::new("test17-detached-descendant");
+            let cwd = repo.cwd();
+
+            repo.drive(&pre_tool_use_for(
+                &cwd,
+                "session-1",
+                "Bash",
+                "toolu_1",
+                None,
+            ))
+            .expect("PreToolUse should succeed");
+            let scope_id = repo.adapter_state().attempts[0].scope_id.clone();
+
+            fs::write(repo.root.join("file.txt"), "one\nforeground-output\n")
+                .expect("the tool's own foreground write should write");
+            let tree_at_close = repo.working_tree();
+
+            repo.drive(&post_tool_use_for(
+                &cwd,
+                "session-1",
+                "Bash",
+                "toolu_1",
+                None,
+            ))
+            .expect("PostToolUse should succeed");
+
+            let db = repo.db();
+            let worktree_id = repo.worktree_id();
+            assert_eq!(
+                scope_status(&db, &scope_id).map(|(_, status)| status),
+                Some("closed".to_string())
+            );
+            assert_eq!(
+                worktree_row(&db, &worktree_id).map(|(_, cursor_tree, _)| cursor_tree),
+                Some(tree_at_close.clone()),
+                "the scope must close at the tool's own observed tree"
+            );
+
+            fs::write(
+                repo.root.join("file.txt"),
+                "one\nforeground-output\ndetached-descendant\n",
+            )
+            .expect("the detached descendant's later write should write");
+            let tree_after_descendant = repo.working_tree();
+            assert_ne!(tree_after_descendant, tree_at_close);
+
+            let events_before_flush = mutation_events_for(&db, &worktree_id);
+
+            repo.drive_flush()
+                .expect("a later recovery/diagnostic flush should succeed");
+
+            let db = repo.db();
+            let events_after_flush = mutation_events_for(&db, &worktree_id);
+            assert_eq!(
+                events_after_flush.len(),
+                events_before_flush.len() + 1,
+                "the detached descendant's mutation must surface as its own event"
+            );
+            let (attribution_kind, attribution_scope_id, _) = events_after_flush
+                .last()
+                .expect("a flush event should exist");
+            assert_ne!(
+                attribution_scope_id.as_deref(),
+                Some(scope_id.as_str()),
+                "the detached descendant's mutation must never be attributed to the \
+                 already-closed tool scope"
+            );
+            assert_eq!(attribution_kind, "ineligible_unscoped");
+            assert_eq!(
+                worktree_row(&db, &worktree_id).map(|(_, cursor_tree, _)| cursor_tree),
+                Some(tree_after_descendant)
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
         }
     }
 }
