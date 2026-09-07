@@ -44,6 +44,14 @@ settings = new common.RenderedTextFile {
             "command": "\(sceHookCommand("sce policy bash"))"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(sceHookCommand("sce hooks claude-mutation-scope"))"
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -63,6 +71,34 @@ settings = new common.RenderedTextFile {
             "command": "\(sceHookCommand("sce hooks conversation-trace"))"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(sceHookCommand("sce hooks claude-mutation-scope"))"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(sceHookCommand("sce hooks claude-mutation-scope"))"
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(sceHookCommand("sce hooks claude-mutation-scope"))"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -73,6 +109,14 @@ settings = new common.RenderedTextFile {
             "command": "\(sceHookCommand("sce hooks conversation-trace"))"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(sceHookCommand("sce hooks claude-mutation-scope"))"
+          }
+        ]
       }
     ],
     "Stop": [
@@ -81,6 +125,54 @@ settings = new common.RenderedTextFile {
           {
             "type": "command",
             "command": "\(sceHookCommand("sce hooks conversation-trace"))"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(sceHookCommand("sce hooks claude-mutation-scope"))"
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(sceHookCommand("sce hooks claude-mutation-scope"))"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(sceHookCommand("sce hooks claude-mutation-scope"))"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(sceHookCommand("sce hooks claude-mutation-scope"))"
+          }
+        ]
+      }
+    ],
+    "WorktreeRemove": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(sceHookCommand("sce hooks claude-mutation-scope"))"
           }
         ]
       }

@@ -250,9 +250,10 @@ A generic ingress existing is not full harness integration existing. A first
 Claude Code adapter driver (`cli/src/services/hooks/claude_mutation_scope/`,
 hidden CLI command `sce hooks claude-mutation-scope`) now maps Claude's hook
 events onto this contract via the `pub(crate)` in-process seam
-`mutation_scope::run_mutation_scope_from_payload`, but `sce setup` does not
-yet register its hooks, so no real Claude Code session reaches it. Codex,
-OpenCode, and Pi have no adapter at all. Each still owns its own `ScopeId` /
-`EventId` derivation and stale-process detection this contract requires;
-repository-scoped unowned-checkout cleanup is likewise still open. The Claude
-adapter's dedicated contract file lands once the full adapter ships.
+`mutation_scope::run_mutation_scope_from_payload`, and `sce setup` now
+registers its hooks (`config/pkl/renderers/claude-content.pkl`), so a real
+Claude Code session reaches it. Codex, OpenCode, and Pi have no adapter at
+all. Each still owns its own `ScopeId` / `EventId` derivation and
+stale-process detection this contract requires; repository-scoped
+unowned-checkout cleanup is likewise still open. The Claude adapter's
+dedicated contract file lands once the full adapter ships.
