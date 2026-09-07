@@ -4,7 +4,7 @@
 
 This contract documents the implemented `sce config` command behavior, runtime resolver, renderer, and canonical Pkl-authored `sce/config.json` schema. The schema is emitted to payload-relative `config/schema/sce-config.schema.json` under Cargo `OUT_DIR` or packaging fallbacks and embedded by `cli/src/services/config/schema.rs` as `SCE_CONFIG_SCHEMA_JSON`; no generated schema is committed.
 
-The current implementation resolves flat logging keys and Agent Trace runtime keys with deterministic precedence and source metadata, exposes resolved-value inspection through `sce config show`, and keeps `sce config validate` focused on validation status plus errors/warnings. File logging is explicitly controlled by the config-file/default `log_to_file` boolean, which defaults to `true`; `log_to_file` and `log_dir` resolve independently, with omitted `log_dir` falling back to the default location. Threshold, format, directory, and `log_file_retention_limit` values are consumed by runtime logging; the concrete logger uses the retention value for primary and v2 creation-triggered cleanup. The default-enabled `agent_trace.auto_sync` value is consumed by the post-commit trigger boundary and by doctor readiness reporting, and can be disabled explicitly.
+The current implementation resolves flat logging keys and Agent Trace runtime keys with deterministic precedence and source metadata, exposes resolved-value inspection through `sce config show`, and keeps `sce config validate` focused on validation status plus errors/warnings. File logging is explicitly controlled by the config-file/default `log_to_file` boolean, which defaults to `true`; `log_to_file` and `log_dir` resolve independently, with omitted `log_dir` falling back to the default location. Threshold, format, directory, and `log_file_retention_limit` values are consumed by runtime logging; the concrete logger uses the retention value for primary and v2 creation-triggered cleanup. The config-file-only `agent_trace.auto_sync` value is consumed by the post-commit trigger boundary and by doctor readiness reporting: omitted values resolve to `false`, while `sce setup` writes an explicit `true` for a newly created repo-local config and explicit `false` remains the opt-out.
 
 ## Command surface
 
@@ -29,7 +29,7 @@ Agent Trace repository identity keys are also config-file only with per-key `glo
 
 - `agent_trace.repository_id` — optional explicit repository identity; resolves as an optional value with no default.
 - `agent_trace.repository_remote` — Git remote name used to derive repository identity; defaults to `origin` (`DEFAULT_AGENT_TRACE_REPOSITORY_REMOTE` in `cli/src/services/config/resolver.rs`) when no config file sets it.
-- `agent_trace.auto_sync` — boolean for the post-commit Agent Trace synchronization trigger; config-file only, with no flag or environment layer, and defaults to `true` (set `false` to opt out).
+- `agent_trace.auto_sync` — boolean for the post-commit Agent Trace synchronization trigger; config-file only, with no flag or environment layer. Omitted values resolve to `false`; a newly created repo-local config from `sce setup` explicitly writes `true`, and `false` remains the opt-out.
 
 Resolved observability values that currently have no CLI flag layer follow the same lower-precedence chain without a flag step:
 
@@ -95,7 +95,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `agent_trace` must be an object when present and currently allows `repository_id`, `repository_remote`, and `auto_sync`.
 - `agent_trace.repository_id` must be a non-empty string when present.
 - `agent_trace.repository_remote` must be a non-empty string when present; omitted values resolve to `origin`.
-- `agent_trace.auto_sync` must be a boolean when present; omitted values resolve to `true`.
+- `agent_trace.auto_sync` must be a boolean when present; omitted values resolve to `false`. A newly created repo-local config from `sce setup` contains an explicit `true` value.
 
 - `integrations` must be an object when present and currently allows `target` and `optional_workflows`; either key alone yields a parsed `IntegrationsConfig` with the other defaulting to empty.
 - `integrations.target` must be an array of unique canonical target IDs when present.
