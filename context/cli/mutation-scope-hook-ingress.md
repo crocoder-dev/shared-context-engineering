@@ -211,12 +211,13 @@ serde derives for this command; the hook transport enum
 
 A generic SCE ingress existing is **not** concrete harness integration existing.
 A first Claude Code adapter driver now exists
-(`cli/src/services/hooks/claude_mutation_scope/`), but it reaches the runtime
+(`cli/src/services/hooks/claude_mutation_scope/`), and it reaches the runtime
 through its own `pub(crate)` in-process seam on `mutation_scope.rs`
 (`run_mutation_scope_from_payload`) rather than by re-invoking this CLI
-command, and it is not yet reachable by a real Claude Code session (`sce
-setup` does not register its hooks yet — future work). Still out of scope for
-this seam itself, and left as future work for every non-Claude harness:
+command. `sce setup` now registers its hooks
+(`config/pkl/renderers/claude-content.pkl`), so a real Claude Code session
+reaches it. Still out of scope for this seam itself, and left as future work
+for every non-Claude harness:
 
 - Codex hook mapping, OpenCode plugin, Pi extension;
 - `SubagentStart` / `SubagentStop` / `PostToolUse` / tool-call translation for
@@ -225,7 +226,8 @@ this seam itself, and left as future work for every non-Claude harness:
 - PID tracking, process supervisors, staleness detection, automatic scope
   abandonment;
 - harness settings generation or `sce setup` integration for any of these
-  hooks (Claude's own registration is also still pending).
+  hooks (Claude's own registration now ships; Codex/OpenCode/Pi remain
+  unregistered).
 
 Each adapter still owns its own `ScopeId` / `EventId` / `actor_kind`
 derivation and its own stale-process detection, and targets this ingress (or,
