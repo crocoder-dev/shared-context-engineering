@@ -1408,7 +1408,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     is the right place to resolve that debt properly (e.g. by splitting
     detail into a focused sub-file) rather than a rushed per-task shrink.
 
-- [ ] T07: `Generated Claude integration, setup merge, and doctor` (status:todo)
+- [x] T07: `Generated Claude integration, setup merge, and doctor` (status:done)
   - Task ID: T07
   - Scope: In — `config/pkl/renderers/claude-content.pkl`: add
     `sce hooks claude-mutation-scope` registrations for `PreToolUse`,
@@ -1425,9 +1425,131 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `config_merge.rs` tests prove AC22 (merge + idempotency + user-hook
     preservation); doctor recognizes a missing/stale new registration.
   - Verify: `nix run .#pkl-check-generated`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::setup::`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::doctor::` (or the specific test module the new registrations land in, if narrower).
-  - Context synchronization: pending
+  - Completed: 2026-09-07
+  - Files changed:
+    - `config/pkl/renderers/claude-content.pkl` (add ten new unmatched
+      `sce hooks claude-mutation-scope` hook-event registrations to
+      `settings.rendered`: a second, unmatched `PreToolUse` entry alongside
+      the existing `Bash`-matched `sce policy bash` entry; a third, unmatched
+      `PostToolUse` entry alongside the existing `diff-trace`-matched and
+      unmatched `conversation-trace` entries; a second, unmatched entry each
+      appended to `UserPromptSubmit` and `Stop` alongside their existing
+      `conversation-trace` entries; and five new unmatched top-level event
+      keys — `PostToolUseFailure`, `PermissionDenied`, `StopFailure`,
+      `SubagentStop`, `SessionEnd`, `WorktreeRemove` — each holding exactly
+      one `sce hooks claude-mutation-scope` entry)
+  - Result: Registered the T06 Claude adapter (`sce hooks
+    claude-mutation-scope`) in the generated Claude settings document for
+    every event D2/T06 need: `PreToolUse`, `PostToolUse`,
+    `PostToolUseFailure`, `PermissionDenied`, `UserPromptSubmit`, `Stop`,
+    `StopFailure`, `SubagentStop`, `SessionEnd`, `WorktreeRemove`. Every new
+    registration carries no `matcher` (the adapter classifies tools in Rust
+    per D2), matching the existing unmatched `conversation-trace`
+    `PostToolUse` entry's shape, per the plan's own Assumptions section.
+    `claude-model-state`, the `Bash`-matched bash-policy `PreToolUse` entry,
+    the `Write|Edit|MultiEdit|NotebookEdit`-matched `diff-trace` entry, and
+    both existing `conversation-trace` entries are byte-for-byte unchanged —
+    confirmed by inspecting the locally rendered `settings.json` (via `pkl
+    eval -m <tmp> config/pkl/generate.pkl`), which showed the new entries
+    appended after each event's existing entries and the five new event keys
+    holding exactly the new entry each, with no other line changed.
+    `cli/src/services/setup/config_merge.rs`'s existing merge logic already
+    merges `hooks` event-by-event over whatever keys `generated.hooks`
+    declares (`for (event, generated_entries) in generated_hooks`), so it
+    required no source change to handle the ten new keys: it already
+    preserves non-SCE entries per event, drops and replaces only SCE-marker
+    entries, and stays idempotent for any event key, new or old. The existing
+    setup and doctor tests already drive their assertions through the real
+    embedded/generated settings content
+    (`install_merges_into_existing_claude_settings_json_and_stays_idempotent`
+    in `setup/mod.rs`; `claude_settings_reports_mismatch_when_sce_hook_entry_deleted_then_fix_repairs_it`,
+    which generically zeroes every `hooks.*` event array including the ten
+    new keys and asserts doctor reports `Mismatch` then `Fixed` then `Match`,
+    and `claude_settings_doctor_repairs_historical_bun_hooks_through_merge_path`
+    in `doctor/inspect.rs`) rather than hardcoding the pre-T07 event set, so
+    all of them already exercised the new registrations and passed unmodified
+    — no test file needed adjustment, matching the task's own "only if the
+    existing generated-fragment comparison does not already cover the new
+    registrations" contingency. No adapter behavior, non-Claude renderer, or
+    other file was touched; `git diff --stat` confirms exactly one file
+    changed.
+  - Verify: `nix run .#pkl-check-generated` — passed ("Ephemeral Pkl
+    generation passed: 141 files..."); `nix develop -c
+    ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    services::setup::` — 66 passed, 0 failed; `nix develop -c
+    ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    services::doctor::` — 25 passed, 0 failed. Additionally hand-inspected
+    the locally rendered `config/.claude/settings.json` output to confirm the
+    exact JSON shape of all ten new registrations before running the
+    automated checks.
+  - Context impact: Generated Claude settings now install a real,
+    user-reachable registration of the Claude mutation-scope adapter for the
+    first time — a fresh `sce setup` (or `doctor --fix`) now actually wires
+    `sce hooks claude-mutation-scope` into `.claude/settings.json`, which was
+    not true before this task. This makes stale the specific claim in
+    `context/cli/mutation-scope-hook-ingress.md`'s "Generic ingress vs
+    harness adapter" section that the driver "is not yet reachable by a real
+    Claude Code session (`sce setup` does not register its hooks yet —
+    future work)" and its related "harness settings generation or `sce
+    setup` integration for any of these hooks (Claude's own registration is
+    also still pending)" bullet — both written against T06's state and now
+    incorrect after T07.
+  - Context synchronization: synced — root pass confirmed
+    `context/{architecture,glossary,patterns}.md` contain no claim this task
+    contradicts (`architecture.md` describes the generic `mutation-scope`
+    ingress only, with no wiring-status claim about the Claude adapter; no
+    mutation-scope/adapter terminology exists in `glossary.md` or
+    `patterns.md`, consistent with T01-T06's own precedent of not adding one).
+    `context/overview.md` needed one in-line correction: it stated "no
+    concrete harness lifecycle adapter (Claude Code, Codex, OpenCode, Pi) ...
+    is wired to it yet" — already stale after T06 (a Claude adapter was wired
+    in-process) and now doubly so after T07 (it is also registered and
+    reachable) — corrected to name the Claude adapter as wired and
+    `sce setup`-registered, with Codex/OpenCode/Pi still unwired.
+    `context/context-map.md` needed two in-line corrections (the
+    `mutation-scope-hook-ingress.md` and `agent-trace-hooks-command-routing.md`
+    index entries both still said "not-yet-user-reachable" / "not yet
+    registered by `sce setup`"). Three domain files were corrected for the
+    same reason: `context/cli/mutation-scope-hook-ingress.md` ("Generic
+    ingress vs harness adapter" section: "not yet reachable ... `sce setup`
+    does not register its hooks yet — future work" and the matching bullet),
+    `context/cli/mutation-scope-runtime.md` ("Status" section: "`sce setup`
+    does not yet register its hooks, so no real Claude Code session reaches
+    it"), and `context/sce/agent-trace-hooks-command-routing.md` (the command
+    list entry and the `sce hooks claude-mutation-scope` prose both said "not
+    yet registered by `sce setup`"). Every correction is a same-statement
+    substring edit stating the adapter is now registered by `sce setup`
+    (`config/pkl/renderers/claude-content.pkl`) and reachable by a real Claude
+    Code session, naming the exact ten registered events in the routing file;
+    no other content in any of these files changed, and each was checked
+    against the locally rendered `config/.claude/settings.json` output
+    produced during task execution. No new domain terminology was introduced
+    by this task (settings registration only), so no glossary entry was
+    needed. No decision qualified for an ADR: registering the already-designed
+    T02-T06 adapter in generated settings is a routine application of D2/D7
+    (unmatched, Rust-side tool classification) already recorded in this plan's
+    own Design section before T07 ran, not a new system-wide boundary,
+    interface, data-model, compatibility, security, deployment, or dependency
+    decision. Feature existence: the Claude mutation-scope adapter's
+    generated-settings registration is now canonically described in
+    `context/cli/mutation-scope-hook-ingress.md`,
+    `context/cli/mutation-scope-runtime.md`, and
+    `context/sce/agent-trace-hooks-command-routing.md` (the full dedicated
+    contract file remains T09's job per this plan's own Context sync list and
+    T01-T06's identical precedent, since T08's real Git/DB regressions
+    haven't shipped yet). File hygiene: `context/cli/mutation-scope-runtime.md`
+    was already 258 lines (8 over the 250-line budget, per T06's own recorded
+    hygiene note) before this task; its one-paragraph correction is
+    line-count-neutral in content but the file is now 259 lines (net +1) —
+    this task made the smallest coherent correction rather than attempting a
+    file split, consistent with T06's identical judgment call; T09's already-
+    planned full rewrite of this exact file remains the right place to
+    resolve the debt. Every other edited file stays at or under 250 lines.
+    All edited files keep one topic, use relative links, and needed no new
+    diagram (no new structure, boundary, or flow was introduced — only a
+    reachability-status correction to existing content).
 
-- [ ] T08: `Real Git/DB regressions through the production path` (status:todo)
+- [x] T08: `Real Git/DB regressions through the production path` (status:done)
   - Task ID: T08
   - Scope: In — regressions using real temporary Git repositories and real
     repository Agent Trace DBs, driven through the production Claude-adapter ->
@@ -1469,7 +1591,119 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Done when: all seventeen regressions pass and collectively satisfy
     AC9–AC17, AC19, AC20, AC21, AC25.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::claude_mutation_scope`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::`.
-  - Context synchronization: pending
+  - Completed: 2026-09-07
+  - Files changed:
+    - `cli/src/services/hooks/claude_mutation_scope/mod.rs` (add a `#[cfg(test)]`
+      state-root variant of the real adapter entry point,
+      `run_claude_mutation_scope_from_payload_at_state_root` (mirrors
+      `mutation_scope.rs`'s own `run_mutation_scope_from_payload_at_state_root`
+      test seam, isolating the Agent Trace DB from the real user state
+      directory while dispatching through the exact same production code path
+      as `sce hooks claude-mutation-scope`); add a new nested test module,
+      `tests::production_regressions`, with a real-Git-repo + real-Agent-Trace-DB
+      harness (`ClaudeRepo`) and 17 regression tests (Test1-Test17))
+  - Result: Implemented all seventeen regressions specified in this task's
+    scope, each driving a real raw Claude hook-event JSON payload through the
+    real adapter dispatch path (`run_claude_mutation_scope_from_payload_at_state_root`,
+    which resolves `git_dir` via the real `checkout::resolve_git_dir` and
+    reaches the runtime only through the real T05 seam,
+    `mutation_scope::run_mutation_scope_from_payload_at_state_root`) against a
+    real temporary Git repository (`git init`, real commits, real linked
+    worktrees via `git worktree add`) and a real repository-scoped Agent Trace
+    DB isolated to a per-test state root. No test inserts `mutation_trace_*`
+    rows directly; the two tests that inject state (Test12, Test13) call only
+    the adapter's own `state::allocate_attempt` bookkeeping helper to simulate
+    a specific crash point, then prove recovery entirely through a subsequent
+    real production-path event. Test1/Test2 prove AC9/AC10 (foreground
+    `Write`/failed `Bash` close `AiExclusive`+`Closed`). Test3/Test9 prove
+    AC11 (two parallel subagents, and main+subagent, both racing to
+    `AiContended`). Test4 proves AC4's duplicate-replay idempotency at the
+    real-DB level. Test5 proves AC12 (auto `PermissionDenied` abandons and
+    forces `needs_rebaseline`). Test6/Test7 prove AC13/AC14 (`Stop` and
+    `UserPromptSubmit` retire stale main-thread attempts; `SubagentStop` and
+    `SessionEnd` retirement are already covered by T06's own driver unit
+    tests, matching this task's own Verify mapping). Test8 proves AC15 (a
+    resumed subagent reusing the same raw `tool_use_id` under the same
+    `agent_id` receives a fresh `ScopeId`, never reusing the first, terminal
+    one). Test10 proves AC16/AC17 (an isolated linked worktree resolves a
+    distinct `WorktreeId` via the real `checkout::get_or_create_checkout_id`
+    and advances only its own cursor; the main checkout's cursor, established
+    via a real diagnostic `flush`, is unchanged). Test11 proves AC13's
+    `WorktreeRemove` case (a real linked worktree's outstanding attempt is
+    retired by its own `WorktreeRemove` event without touching the main
+    checkout's attempts). Test12/Test13/Test14 prove D11/D12's crash-recovery
+    invariants against the real runtime: a `pending_start` attempt whose
+    `Start` never committed is abandoned and, once quiescent, recovered by
+    D19's own quiescent flush; a `pending_start` attempt whose `Start` *did*
+    commit durably is abandoned as a real runtime abandonment (not a
+    late-`Start`); a `Close` that committed durably before local bookkeeping
+    caught up is replay-safe on redelivery (no second transition, real
+    revision unchanged). Test15 proves AC21 (explicit `run_in_background=true`
+    Bash is denied with no scope, no DB rows). Test16 proves AC20 with an
+    explicit before/after row-count comparison across a representative mix of
+    Start/Close/PreToolUse/PermissionDenied events. Test17 proves AC25: a
+    foreground `Bash` closes at the tool's own observed tree, and a later
+    (test-simulated) detached-descendant write is never attributed to that
+    already-closed scope when it eventually surfaces through a real flush
+    boundary. Every test also asserts the three raw Agent Trace tables
+    (`diff_traces`, `post_commit_patch_intersections`, `agent_traces`) stay
+    empty (AC19/AC20). No production code changed; this task is test-only,
+    matching its own Out-of-scope boundary.
+  - Verify: `services::hooks::claude_mutation_scope` — 107 passed, 0 failed
+    (90 existing + 17 new production-path regressions);
+    `services::hooks::mutation_scope` — 36 passed, 0 failed (unaffected);
+    `services::mutation_trace::` — 323 passed, 0 failed (unaffected); full
+    `cli/Cargo.toml` test suite — 1147 passed, 0 failed (1130 existing + 17
+    new); `clippy --all-targets -- -D warnings` — clean; `fmt -- --check` —
+    clean. AC18 dependency-boundary grep
+    (`rg -n --type rust '^\s*use\s+crate::services::mutation_trace::(runtime|protocol|store)|::(RepositoryAgentTraceDb|WorktreeId|GitSnapshotService)\b' cli/src/services/hooks/claude_mutation_scope/`)
+    — the only two matches are `use` imports inside the new
+    `#[cfg(test)] mod production_regressions` test-assertion code (real-DB
+    row inspection), consistent with the plan's own carve-out that this is a
+    dependency-boundary check on production code, not a bare-word search, and
+    with T02/T03's identical precedent of importing these same types only in
+    test code. `git diff --stat` against the T07 baseline confirms exactly one
+    file changed: `cli/src/services/hooks/claude_mutation_scope/mod.rs` (1393
+    insertions, 0 deletions) — no production code, no T07 registration file,
+    no `spec/mutation_cursor.qnt`, `protocol.rs`, migration, or schema file
+    touched (AC23 unaffected).
+  - Context impact: None beyond this plan. This task adds only new
+    `#[cfg(test)]`-gated test code (a state-root test seam and 17 regression
+    tests) to a file that already exists; no CLI surface, settings, schema,
+    public interface, or documented/observable production behavior changed.
+    No `context/cli|sce` file makes any claim this task contradicts: the
+    domain files already describe the adapter's shipped behavior (from
+    T06/T07) and did not previously claim the behavior was untested, so
+    adding real-Git/DB regression coverage for already-documented behavior
+    needs no correction. T09 will reference this task's regression coverage
+    (test names, and the fact that real Git/DB proof now exists for AC9-AC17,
+    AC19-AC21, AC25) when it authors `context/cli/claude-mutation-scope-integration.md`,
+    per the plan's own Context sync list and T01-T07's identical precedent of
+    deferring the dedicated adapter-contract file to T09.
+  - Context synchronization: synced — root pass confirmed `context/{overview,architecture,glossary,patterns}.md`
+    contain no claim this task contradicts (test-only change; no CLI, settings,
+    schema, or public-interface change). `context/context-map.md` needed three
+    in-line corrections: the `mutation-trace-protocol.md`,
+    `mutation-trace-runtime-coordinator.md`, and `mutation-scope-runtime.md`
+    index entries still said the Claude Code adapter driver was
+    "not-yet-user-reachable" — stale since T07 registered it via `sce setup`,
+    and only two of the five affected lines in `context-map.md` had been
+    corrected at the time (T07's own record names only the
+    `mutation-scope-hook-ingress.md` and `agent-trace-hooks-command-routing.md`
+    entries). Corrected the three remaining lines to state the adapter is
+    registered and reachable, and to note T08 now proves this with real
+    Git/DB regression coverage. No new feature, public interface, or
+    observable behavior was introduced by this task itself, so no other
+    content changed. No decision qualified for an ADR (test-only, no
+    system-wide boundary/interface/data-model/compatibility/security/
+    deployment/dependency decision). No new domain terminology was
+    introduced, so no glossary entry was needed. One further stale clause was
+    found but deliberately left unedited: `context/cli/mutation-scope-runtime.md`'s
+    own intro still says "not-yet-user-reachable," contradicting its own
+    already-correct "Status" section — left for T09's already-planned full
+    rewrite of this exact file per this plan's own Context sync list and
+    T06/T07's identical precedent, rather than a piecemeal fix outside this
+    task's own Context sync list membership.
 
 - [ ] T09: `Author the durable adapter context` (status:todo)
   - Task ID: T09
