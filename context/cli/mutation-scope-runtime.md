@@ -7,10 +7,10 @@ uphold when it drives that surface.
 Built by the `mutation-scope-runtime-integration` plan
 (`context/plans/mutation-scope-runtime-integration.md`). The generic
 `sce hooks mutation-scope` CLI ingress
-([`mutation-scope-hook-ingress.md`](mutation-scope-hook-ingress.md)) now drives
-this seam, but **no concrete harness adapter (Codex, Claude Code, OpenCode, Pi)
-is wired to it yet.** This file is the contract a future harness adapter is
-written against, not shipped adapter behavior. See the Status section below.
+([`mutation-scope-hook-ingress.md`](mutation-scope-hook-ingress.md)) and a
+first, not-yet-user-reachable Claude Code adapter driver (Codex/OpenCode/Pi:
+none yet — see Status) both drive this seam. This file is the contract every
+harness adapter is written against, not shipped-adapter behavior.
 
 The mechanics behind each entrypoint live in their own domain files:
 [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md)
@@ -53,14 +53,13 @@ reachable from `git_snapshot`, `external_taint`, `worktree_lock`,
 `runtime`, as does `reconcile_worktree`. An adapter drives the runtime only
 through the two entrypoints; it never assembles the safety prefix itself.
 
-The re-exports remain the intentional crate-visible runtime seam. The generic
-`sce hooks mutation-scope` hook ingress now consumes that seam, while the runtime
-submodules and the safety-prefix implementation stay private and no concrete
-harness adapter calls a runtime internal directly. Both seam re-export statements
-still carry `#[allow(unused_imports)]` in `runtime/mod.rs`: the ingress matches
-most of the surface but not the two names that only complete it
-(`ExternalTaintOperation`, `AbandonRecoveryReason`), which
-`clippy --all-targets -- -D warnings` would otherwise flag.
+The re-exports remain the intentional crate-visible runtime seam; the generic
+`sce hooks mutation-scope` ingress consumes it while the runtime submodules and
+safety-prefix implementation stay private. Both re-export statements still
+carry `#[allow(unused_imports)]` in `runtime/mod.rs`, since no consumer yet
+names the two completing types (`ExternalTaintOperation`,
+`AbandonRecoveryReason`), which `clippy --all-targets -- -D warnings` would
+otherwise flag.
 
 ## What a mutation scope is
 
@@ -247,9 +246,13 @@ rather than failing open. Full transport/normalization contract in
 [`mutation-scope-hook-ingress.md`](mutation-scope-hook-ingress.md); routing in
 [agent-trace hooks command routing](../sce/agent-trace-hooks-command-routing.md).
 
-A generic SCE ingress existing is not concrete harness integration existing. No
-Claude Code, Codex, OpenCode, or Pi lifecycle adapter is wired yet — none of
-those harnesses emits mutation-scope events, and each still owns its own
-`ScopeId` / `EventId` derivation and stale-process detection as this contract
-requires. Repository-scoped cleanup of unowned checkout identities is likewise
-still open.
+A generic ingress existing is not full harness integration existing. A first
+Claude Code adapter driver (`cli/src/services/hooks/claude_mutation_scope/`,
+hidden CLI command `sce hooks claude-mutation-scope`) now maps Claude's hook
+events onto this contract via the `pub(crate)` in-process seam
+`mutation_scope::run_mutation_scope_from_payload`, but `sce setup` does not
+yet register its hooks, so no real Claude Code session reaches it. Codex,
+OpenCode, and Pi have no adapter at all. Each still owns its own `ScopeId` /
+`EventId` derivation and stale-process detection this contract requires;
+repository-scoped unowned-checkout cleanup is likewise still open. The Claude
+adapter's dedicated contract file lands once the full adapter ships.

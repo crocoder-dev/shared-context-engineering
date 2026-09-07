@@ -507,6 +507,9 @@ fn convert_hooks_subcommand_request(
         cli_schema::HooksSubcommand::MutationScope => {
             Ok(services::hooks::HookSubcommand::MutationScope)
         }
+        cli_schema::HooksSubcommand::ClaudeMutationScope => {
+            Ok(services::hooks::HookSubcommand::ClaudeMutationScope)
+        }
     }
 }
 
@@ -598,6 +601,35 @@ mod tests {
         assert_eq!(
             command.subcommand,
             services::hooks::HookSubcommand::MutationScope
+        );
+    }
+
+    #[test]
+    fn claude_mutation_scope_hook_parses_to_hook_subcommand() {
+        let command = parse(&["sce", "hooks", "claude-mutation-scope"]);
+
+        let RuntimeCommand::Hooks(command) = command else {
+            panic!("expected hooks command");
+        };
+
+        assert_eq!(
+            command.subcommand,
+            services::hooks::HookSubcommand::ClaudeMutationScope
+        );
+    }
+
+    #[test]
+    fn claude_mutation_scope_hook_is_hidden_from_hooks_help() {
+        let help =
+            cli_schema::render_help_for_path(&["hooks"]).expect("hooks help should be renderable");
+
+        assert!(
+            !help.contains("claude-mutation-scope"),
+            "AC1: claude-mutation-scope must not be listed in `sce hooks --help`, got: {help}"
+        );
+        assert!(
+            help.contains("mutation-scope"),
+            "sanity check: the still-visible mutation-scope command should remain listed, got: {help}"
         );
     }
 
