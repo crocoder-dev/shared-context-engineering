@@ -410,80 +410,80 @@ How this plan is proven complete. Each criterion is observable and names the
 check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation.
 
-- [ ] AC1: `sce hooks claude-mutation-scope` exists, is hidden from top-level
+- [x] AC1: `sce hooks claude-mutation-scope` exists, is hidden from top-level
   help, and routes through the normal hook command stack
   (`HooksSubcommand::ClaudeMutationScope` -> `convert_hooks_subcommand_request`
   -> `HookSubcommand::ClaudeMutationScope` -> `run_hooks_subcommand_in_repo`).
   - Validate: `sce hooks claude-mutation-scope </dev/null` exits with the strict
     parser's error (not "unknown subcommand"); `sce --help` and `sce hooks
     --help` do not list it; routing test in `command_runtime.rs`.
-- [ ] AC2: The raw Claude event parser validates required fields
+- [x] AC2: The raw Claude event parser validates required fields
   (`session_id`, `cwd`, `tool_name`, `tool_use_id` for tracked `PreToolUse`) and
   rejects malformed or wrong-type payloads without fabricating identities;
   `prompt_id` is optional and correctness never depends on it.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::claude_mutation_scope` parser
     unit tests.
-- [ ] AC3: No `Start` boundary is emitted for `SessionStart`, `UserPromptSubmit`,
+- [x] AC3: No `Start` boundary is emitted for `SessionStart`, `UserPromptSubmit`,
   or `SubagentStart` merely because that lifecycle event occurred. Only an
   independently mutation-capable tool execution attempt establishes a scope.
   - Validate: adapter mapping unit tests; T08 Test-series assertions on
     processed-event keys.
-- [ ] AC4: Duplicate delivery of the same live `PreToolUse` reuses the same
+- [x] AC4: Duplicate delivery of the same live `PreToolUse` reuses the same
   `attempt_seq`, `ScopeId`, and `Start` `EventId`.
   - Validate: state + adapter unit tests; T08 Test4 (duplicate `Pre`/`Post`
     replay).
-- [ ] AC5: A later execution attempt of the same Claude `tool_use_id`, after the
+- [x] AC5: A later execution attempt of the same Claude `tool_use_id`, after the
   previous attempt became terminal, receives a new `attempt_seq` and a new
   `ScopeId`; a terminal `ScopeId` is never reused.
   - Validate: T03 state unit tests (terminal attempt followed by a fresh
     `attempt_seq`/`ScopeId` allocation).
-- [ ] AC6: Otherwise-identical tool IDs under main (`agent_id` absent),
+- [x] AC6: Otherwise-identical tool IDs under main (`agent_id` absent),
   `agent_id=A`, and `agent_id=B` produce three distinct `ScopeId`s.
   - Validate: ScopeId-formatter unit tests.
-- [ ] AC7: A tracked mutation-capable `PreToolUse` reaches durable
+- [x] AC7: A tracked mutation-capable `PreToolUse` reaches durable
   generic-ingress `Start` before the hook returns success to Claude
   (write-ahead `pending_start` -> ingress `Start` -> `active`).
   - Validate: T06 adapter ordering unit test with injected ingress; optionally
     also T08 Test1 as production-path confirmation.
-- [ ] AC8: Any failure to establish required adapter state or `Start` during a
+- [x] AC8: Any failure to establish required adapter state or `Start` during a
   mutation-capable `PreToolUse` returns a Claude `permissionDecision: "deny"`
   object, never a plain non-zero exit and never `allow`.
   - Validate: adapter failure-classification unit tests asserting the exact
     `hookSpecificOutput` JSON.
-- [ ] AC9: `PreToolUse` -> real filesystem mutation -> `PostToolUse` produces
+- [x] AC9: `PreToolUse` -> real filesystem mutation -> `PostToolUse` produces
   exactly one eligible tool interval and one terminal (`Closed`) scope with
   attribution `AiExclusive`.
   - Validate: T08 Test1 (real Git repo + real Agent Trace DB).
-- [ ] AC10: `PreToolUse` -> partial filesystem mutation -> `PostToolUseFailure`
+- [x] AC10: `PreToolUse` -> partial filesystem mutation -> `PostToolUseFailure`
   also observes the mutation and closes the scope (`AiExclusive` + `Closed`).
   - Validate: T08 Test2.
-- [ ] AC11: Two simultaneously tracked tools create two active scopes; a tree
+- [x] AC11: Two simultaneously tracked tools create two active scopes; a tree
   transition observed while both are live is attributed `AiContended`.
   - Validate: T08 Test3 and Test9 (main + subagent).
-- [ ] AC12: `PreToolUse` followed by `PermissionDenied` creates no mutation event
+- [x] AC12: `PreToolUse` followed by `PermissionDenied` creates no mutation event
   for the denied execution and leaves the worktree `needs_rebaseline`.
   - Validate: T08 Test5.
-- [ ] AC13: A `PreToolUse` with no `PostToolUse`/`PostToolUseFailure` is retired
+- [x] AC13: A `PreToolUse` with no `PostToolUse`/`PostToolUseFailure` is retired
   by one of the positive stale signals (`Stop`, `StopFailure`,
   main-thread `UserPromptSubmit`, matching-agent `SubagentStop`, `SessionEnd`,
   `WorktreeRemove`) via `abandon_scope`.
   - Validate: T08 Test6, Test7, Test11; T06 adapter cleanup unit tests.
-- [ ] AC14: `PreToolUse` -> partial change/interruption -> no `Stop` -> next
+- [x] AC14: `PreToolUse` -> partial change/interruption -> no `Stop` -> next
   main-thread `UserPromptSubmit` abandons the stale main attempt before another
   mutation-capable tool can start.
   - Validate: T08 Test7.
-- [ ] AC15: A resumed subagent may carry the same Claude `agent_id`, but a new
+- [x] AC15: A resumed subagent may carry the same Claude `agent_id`, but a new
   tool attempt receives a fresh tool `ScopeId`; no terminal mutation `ScopeId`
   is reused.
   - Validate: T06 adapter identity unit tests; T08 Test8.
-- [ ] AC16: A hook process launched from checkout A with raw payload
+- [x] AC16: A hook process launched from checkout A with raw payload
   `cwd = checkout B` drives mutation state for checkout B.
   - Validate: T08 Test10 (isolated-worktree cwd) asserting the correct
     `WorktreeId`/cursor is advanced.
-- [ ] AC17: Mutations from an `isolation: worktree` subagent change only that
+- [x] AC17: Mutations from an `isolation: worktree` subagent change only that
   worktree's mutation cursor; the main checkout's cursor is unchanged.
   - Validate: T08 Test10.
-- [ ] AC18: The dependency direction is exactly
+- [x] AC18: The dependency direction is exactly
   `claude_mutation_scope -> hooks::mutation_scope -> mutation_trace::runtime`.
   Production Claude-adapter code (everything in
   `cli/src/services/hooks/claude_mutation_scope/` outside `#[cfg(test)]` blocks)
@@ -504,34 +504,34 @@ performs final validation.
     This is a dependency-boundary check, not a text search for the bare words
     `coordinate` / `abandon_scope` / `WorktreeId`, which may legitimately appear
     in comments, diagnostics, or test code that fabricates outcomes.
-- [ ] AC19: Claude adapter state lives only below `<git-dir>/sce/` and writes no
+- [x] AC19: Claude adapter state lives only below `<git-dir>/sce/` and writes no
   Agent Trace or mutation database table directly.
   - Validate: state-module inspection; T08 Test16.
-- [ ] AC20: Claude mutation-scope-only regressions leave `diff_traces`,
+- [x] AC20: Claude mutation-scope-only regressions leave `diff_traces`,
   `post_commit_patch_intersections`, and `agent_traces` unchanged.
   - Validate: T08 Test16 (row-count assertions before/after).
-- [ ] AC21: Explicit background `Bash`/`PowerShell`
+- [x] AC21: Explicit background `Bash`/`PowerShell`
   (`run_in_background = true`) is denied in `PreToolUse` with the documented
   reason and creates no mutation scope.
   - Validate: T06 adapter classification unit test; T08 Test15.
-- [ ] AC22: Generated Claude settings still include and correctly merge
+- [x] AC22: Generated Claude settings still include and correctly merge
   `claude-model-state`, the bash policy hook, `diff-trace`, and
   `conversation-trace` alongside the new mutation adapter; user-owned Claude
   hooks are preserved; repeated `sce setup` is idempotent.
   - Validate: `config_merge.rs` tests; `nix run .#pkl-check-generated`.
-- [ ] AC23: The diff against the `#261` base
+- [x] AC23: The diff against the `#261` base
   (`origin/mutation-scope-ingress`) is empty for `spec/mutation_cursor.qnt`,
   `cli/src/services/mutation_trace/protocol.rs`,
   `cli/migrations/agent-trace-repository/`, and
   `config/schema/agent-trace.schema.json`.
   - Validate: `git diff origin/mutation-scope-ingress -- <those paths>` is empty.
-- [ ] AC24: Durable context clearly separates generic mutation-scope ingress,
+- [x] AC24: Durable context clearly separates generic mutation-scope ingress,
   the Claude mutation adapter, and the mutation runtime, and records tool-attempt
   scope semantics, identity derivation, cleanup signals, worktree-cwd ownership,
   fail-closed `PreToolUse`, and the background-shell limitation.
   - Validate: inspection of `context/cli/claude-mutation-scope-integration.md`
     and the updated cross-reference files.
-- [ ] AC25: A foreground Bash/PowerShell tool call (`run_in_background = false`)
+- [x] AC25: A foreground Bash/PowerShell tool call (`run_in_background = false`)
   that starts a detached, self-backgrounding descendant process which mutates
   the repository after `PostToolUse` returns is not silently attributed as if
   the mutation happened inside that tool's own observed scope; the adapter
@@ -1705,7 +1705,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     T06/T07's identical precedent, rather than a piecemeal fix outside this
     task's own Context sync list membership.
 
-- [ ] T09: `Author the durable adapter context` (status:todo)
+- [x] T09: `Author the durable adapter context` (status:done)
   - Task ID: T09
   - Scope: In — create `context/cli/claude-mutation-scope-integration.md` owning
     the tool-attempt scope model, tool classification, `ScopeId`/`EventId`
@@ -1732,7 +1732,124 @@ Persist this field in every plan; this is durable plan state, not chat state:
     check but the map/overview must stay internally consistent).
   - Verify: inspection against AC24/AC25; `grep` shows the new route documented
     in the routing file and the new file linked from `context/context-map.md`.
-  - Context synchronization: pending
+  - Completed: 2026-09-07
+  - Files changed:
+    - `context/cli/claude-mutation-scope-integration.md` (new — 250-line
+      dedicated adapter contract: scope model + `classify_tool` table +
+      `is_explicit_background_shell`; `(session_id, agent_id?, tool_use_id)`
+      key, `cc-tool-v1|n=..|s=..|a=..|t=..` `ScopeId` and `<scope>|start` /
+      `<scope>|close` `EventId` derivation; `<git-dir>/sce/claude-mutation-scope-state.json`
+      bookkeeping + separate lock never held across the seam; `PreToolUse`
+      write-ahead `pending_start` -> seam `start` -> `active` with the exact
+      fail-closed `permissionDecision: "deny"` JSON and
+      `sce.hooks.claude_mutation_scope.pre_tool_use_fail_closed` logging;
+      `PostToolUse`/`PostToolUseFailure` -> `close` with D11 abandon-not-late-start
+      and D12 abandon-not-replay; the abandonment cleanup-signal table
+      (`PermissionDenied`/`Stop`/`StopFailure`/`UserPromptSubmit`/`SubagentStop`/
+      `SessionEnd`/best-effort `WorktreeRemove`); the `recovery_pending` barrier;
+      raw-`cwd`-authoritative worktree ownership; the `run_in_background=true`
+      denial and the D20 self-detaching-descendant unsupported boundary with
+      T04's Git-observable evidence; the ten unmatched `sce setup` registrations;
+      and the `claude_mutation_scope -> hooks::mutation_scope ->
+      mutation_trace::runtime` dependency boundary via the single T05 seam import)
+    - `context/cli/mutation-scope-hook-ingress.md` (the "Generic ingress vs
+      harness adapter" section and Related-context list now point to the new
+      file for the adapter's full contract instead of only describing it inline;
+      244 -> 247 lines)
+    - `context/cli/mutation-scope-runtime.md` (intro and Status section: the
+      "not-yet-user-reachable" / "dedicated contract file lands once the full
+      adapter ships" wording replaced with "shipped Claude Code adapter … its
+      full contract is in `claude-mutation-scope-integration.md`"; net
+      line-count-neutral at 259, pre-existing over-budget debt untouched per
+      T06/T07/T08's recorded deferral)
+    - `context/sce/agent-trace-hooks-command-routing.md` (the
+      `sce hooks claude-mutation-scope` route entry's "full contract … lands in
+      a dedicated file once real-repository regressions ship" replaced with a
+      direct link to the now-existing file; Related-context list gains the link)
+    - `context/sce/claude-raw-hook-capture.md` (new "Current state" bullet
+      recording the ten unmatched `sce hooks claude-mutation-scope` generated
+      `.claude/settings.json` registrations as additive entries that still do
+      not restore raw event capture, linking the new file)
+    - `context/context-map.md` (new `context/cli/claude-mutation-scope-integration.md`
+      feature/domain entry; the `agent-trace-hooks-command-routing.md` index
+      line's deferral now names both `mutation-scope-hook-ingress.md` and the
+      new file)
+    - `context/overview.md` (the Claude-adapter sentence in the mutation-trace
+      paragraph expanded to name the write-ahead fail-closed `Start`, `Close`,
+      cleanup matrix, `recovery_pending` barrier, and background-shell
+      unsupported posture, pointing to the new file; the paragraph's trailing
+      "See also" list gains the link)
+    - `context/architecture.md` (the `cli/src/services/hooks/mod.rs` bullet now
+      lists the `claude-mutation-scope` adapter alongside the `mutation-scope`
+      ingress, with its STDIN shape, tool-classification/identity derivation,
+      the shared in-process seam, `sce setup` registration, and the new file)
+  - Result: Authored `context/cli/claude-mutation-scope-integration.md` as the
+    durable contract for the shipped Claude Code mutation-scope adapter (T02-T08),
+    covering every topic AC24 enumerates — the tool-attempt scope model, D2 tool
+    classification, D4 `ScopeId`/`EventId` derivation, D5/D6 adapter state, D7
+    write-ahead `Start`, D8 fail-closed `PreToolUse`, D9/D10 terminal `Close`
+    and failed-tool behavior, D11/D12 uncertain-boundary abandonment, the
+    D13-D18/D22 cleanup signals, D19 recovery barrier, D3/D17 subagent identity,
+    D21 raw-`cwd` worktree ownership, the D20 background-shell limitation (both
+    `run_in_background=true` denial and the self-detaching-descendant boundary,
+    with T04's reconciled Git-observable finding), and the D23 dependency
+    boundary. The seven cross-reference files were updated to point at it and
+    drop the "lands once the full adapter ships" / "not-yet-user-reachable"
+    placeholders written against earlier task states. No code, test, settings,
+    schema, or non-context file changed (`git status` confirms exactly the eight
+    files listed above). The new file lands at exactly 250 lines (the file
+    hygiene budget); `mutation-scope-runtime.md` stays at its pre-existing 259
+    (over-budget debt T06/T07/T08 explicitly deferred and that a full split —
+    outside this task's "update to reference the shipped adapter" scope — would
+    resolve); every other edited file stays at or under 250.
+  - Verify: AC24 — the new file separates generic ingress
+    (`mutation-scope-hook-ingress.md`), the Claude adapter
+    (`claude-mutation-scope-integration.md`), and the runtime contract
+    (`mutation-scope-runtime.md`), and records tool-attempt scope semantics,
+    identity derivation, cleanup signals, worktree-cwd ownership, fail-closed
+    `PreToolUse`, and the background-shell limitation (each its own section).
+    AC25 — the "Background shell is unsupported" section documents the
+    self-detaching-descendant case as an explicit unsupported boundary (D20)
+    citing T04's captured `probe17-*` fixtures and `NOTES.md` addendum, adding
+    no detection or supervision. `grep` confirms the route is documented in
+    `context/sce/agent-trace-hooks-command-routing.md`
+    (`[../cli/claude-mutation-scope-integration.md]` on the
+    `sce hooks claude-mutation-scope` line) and the new file is linked from
+    `context/context-map.md` (dedicated entry at the mutation-scope cluster).
+    All seven cross-reference files link the new file; all outbound links from
+    the new file resolve (the two `#…` targets are in-document section
+    anchors). `nix flake check` is not applicable — this task changed only
+    `context/**` Markdown, which no flake check inspects; internal consistency
+    was verified by the link and stale-phrase scans instead.
+  - Context impact: Adds one new durable domain file
+    (`context/cli/claude-mutation-scope-integration.md`) and updates seven
+    existing context files that previously deferred or under-described the
+    now-shipped Claude adapter. This is the plan's own Context sync list
+    being executed as a task; the root-context pass in the synchronization
+    phase still applies. No code or executable configuration changed, so there
+    is no behavior for other context to have outrun — this task brings context
+    up to the behavior T02-T08 already shipped.
+  - Context synchronization: synced — this task's deliverable *was* the plan's
+    Context sync list, so the new `context/cli/claude-mutation-scope-integration.md`
+    plus the seven cross-reference edits are the synchronization. The mandatory
+    root pass confirmed `context/overview.md` and `context/architecture.md` (both
+    edited) accurately describe the shipped adapter, `context/context-map.md`
+    (edited) carries the new entry and corrected deferral line, and
+    `context/glossary.md` / `context/patterns.md` contain no
+    mutation-scope/adapter terminology and are not contradicted (consistent with
+    T01-T08's deliberate precedent of keeping this domain's language in its
+    domain files). No decision qualified for an ADR: T09 authors the durable
+    description of the D1-D23 decisions already recorded in this plan's Design
+    section and already assessed non-ADR-qualifying by T06/T07, establishing no
+    new system-wide constraint. Feature existence: the shipped Claude
+    mutation-scope adapter now has its canonical description at
+    `context/cli/claude-mutation-scope-integration.md`, linked from
+    `context/context-map.md` and six other context files. File hygiene: the new
+    file is exactly 250 lines and every other edited context file is at or
+    under 250 except `context/cli/mutation-scope-runtime.md` at 259 —
+    pre-existing over-budget debt T06/T07/T08 each recorded and deferred, left
+    net line-count-neutral by this task rather than expanded, since a full
+    split is outside T09's "update to reference the shipped adapter" scope.
 
 ## Open questions
 
@@ -1770,3 +1887,65 @@ Persist this field in every plan; this is durable plan state, not chat state:
   leave subagent identity, `isolation: worktree`, and the full cleanup matrix to
   a stacked follow-up? The current slicing is coherent, but T06 is large and its
   correctness rests entirely on T01's findings.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-09-07
+
+### Commands run
+
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::claude_mutation_scope` -> exit 0 (107 tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::mutation_scope` -> exit 0 (36 tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::` -> exit 0 (331 tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::` -> exit 0 (323 tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` -> exit 0 (1147 tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` -> exit 0 (clean)
+- `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` -> exit 0 (clean)
+- `nix run .#pkl-check-generated` -> exit 0 (141 generated files passed parity check)
+- `nix flake check` -> exit 0 (all checks passed)
+- `git diff origin/mutation-scope-ingress -- spec/mutation_cursor.qnt cli/src/services/mutation_trace/protocol.rs cli/migrations/agent-trace-repository/ config/schema/agent-trace.schema.json` -> exit 0 (empty)
+- `PATH="$PWD/cli/target/debug:$PATH" sce hooks claude-mutation-scope </dev/null` -> exit 4 (strict parser error; route exists)
+- Current-binary `sce --help` and `sce hooks --help` inspection -> passed (hidden route omitted)
+- AC24/AC25 documentation and fixture inspection -> passed
+
+### Success-criteria verification
+
+- [x] AC1: Hidden `claude-mutation-scope` route exists and follows the normal hook stack — current binary returned the strict empty-payload parser error; routing tests passed; both help surfaces omit the route.
+- [x] AC2: Required Claude identity fields and types are strict — focused adapter suite passed parser rejection and optional-field tests.
+- [x] AC3: Lifecycle/delegation events do not create scopes — adapter tests and production regression assertions passed.
+- [x] AC4: Duplicate live attempts reuse identity and event IDs — state/driver tests and production Test4 passed.
+- [x] AC5: Terminal attempts receive fresh IDs — state tests and production Test8 passed.
+- [x] AC6: Main, agent A, and agent B IDs are distinct — formatter tests passed.
+- [x] AC7: Start is write-ahead durable — driver ordering test passed.
+- [x] AC8: PreToolUse failures deny with the exact Claude response — failure-classification and logging tests passed.
+- [x] AC9: Successful foreground mutation closes as `AiExclusive` — production Test1 passed.
+- [x] AC10: Failed partial mutation closes as `AiExclusive` — production Test2 passed.
+- [x] AC11: Concurrent scopes yield `AiContended` — production Tests3 and 9 passed.
+- [x] AC12: Permission denial abandons and requires rebaseline — production Test5 passed.
+- [x] AC13: Positive stale signals retire attempts — cleanup tests and production Tests6 and 11 passed.
+- [x] AC14: Main prompt interruption cleanup runs before the next mutation — production Test7 passed.
+- [x] AC15: Resumed subagent attempts get fresh scope IDs — production Test8 passed.
+- [x] AC16: Raw event cwd selects the correct checkout — production Test10 passed.
+- [x] AC17: Isolated subagent cursor is independent — production Test10 passed.
+- [x] AC18: Production dependency direction is preserved — source inspection found no forbidden production references and one mutation-scope seam; remaining matches are test-only assertions.
+- [x] AC19: Adapter state is confined below `<git-dir>/sce/` and does not write trace tables — state/path and production regression checks passed.
+- [x] AC20: Raw Agent Trace tables remain unchanged — production Test16 passed.
+- [x] AC21: Explicit background Bash/PowerShell is denied without a scope — classifier/driver tests and production Test15 passed.
+- [x] AC22: Claude settings merge, preservation, idempotency, and doctor behavior remain correct — setup/doctor tests, generated inspection, and Pkl parity passed.
+- [x] AC23: Protected paths have no diff from `origin/mutation-scope-ingress` — targeted diff was empty.
+- [x] AC24: Durable context separates ingress, adapter, and runtime contracts and documents the required semantics — focused documentation inspection passed.
+- [x] AC25: Self-detaching descendant limitation is documented and regression-covered — T04 fixtures/notes and production Test17 passed.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- `StopFailure` and `WorktreeRemove` were not observed live on Claude Code 2.1.258; their best-effort handlers remain non-load-bearing with lifecycle fallbacks.
+- Self-detaching descendant processes remain an explicitly unsupported attribution boundary.
+
+### Notes
+
+The installed `sce` on the ambient PATH was an older binary; the route check was repeated with the checkout-built binary first on PATH. No repository changes were present after validation apart from this report and the acceptance-checkbox updates.
