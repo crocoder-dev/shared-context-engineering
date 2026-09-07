@@ -4,9 +4,12 @@ Raw Codex CLI hook-event payloads captured live by wiring a throwaway dump hook
 into a **scratch** git repository's `.codex/hooks.json` (never the SCE repo's) and
 driving scenarios with `codex exec`. Every `*.json` file in this directory is an
 unmodified byte-for-byte copy of what the real `codex` binary wrote to the hook
-script's STDIN, except the two synthesised `*.evidence.json` metadata files, which
-are clearly marked and contain only capture metadata (timestamps, tree/ignore
-observations), not hook payloads.
+script's STDIN, **except the `*.evidence.json` metadata files** (one for the
+built-in probe 9, five for the MCP probes 13–17), which are clearly marked with a
+leading `_comment` and contain only capture metadata (timestamps, git-status
+observations, event ordering, upstream citations), not hook payloads. The
+built-in captures (probes 1–11) predate the MCP lifecycle extension (probes
+12–17); see the "T01 MCP lifecycle probe extension" section for that harness.
 
 ## Tested Codex version
 
@@ -82,10 +85,17 @@ task. In a scratch repo (`$SCRATCH/probe-repo`, throwaway; not the SCE checkout)
 | 9 | foreground shell spawns a self-detaching descendant that mutates the repo after `PostToolUse` | captured + Git-observability evidence | `probe09-self-detaching-descendant.*` |
 | 10 | linked `git worktree` — hook `cwd` authority | captured | `probe10-linked-worktree-cwd.*` |
 | 11 | SIGINT during a running shell tool, **with** an `Interrupt` hook registered | captured | `probe11-interrupt-event-on-sigint.*` |
-| — | parallel mutation executions | not reproducible — Codex ran every tool strictly serially in probes 1–11 | see D1/D14 |
+| — | parallel mutation executions (built-in) | not reproduced — Codex ran every **built-in** tool serially in probes 1–11 | see D1/D14 |
+| — | parallel mutation executions (MCP) | **REPRODUCED LIVE** — see probes 16/17 | see D1/D14 + MCP extension |
 | — | `PermissionRequest` denial | not reachable from `codex exec` (non-interactive, bypass mode); documented from the upstream output schema | see D8/D12 |
 | — | `PreCompact` / `PostCompact` | not triggered; documented from upstream as diagnostic-only | see D12 |
-| — | MCP tool naming | no MCP server configured; documented from upstream (`<server>__<tool>` namespaced names) + the conservative "unknown → mutation-capable" default | see D2 |
+| 12 | MCP `mutate_success` — success lifecycle + `tool_name` shape | captured — `PreToolUse → PostToolUse`, same `tool_use_id` | `probe12-mcp-mutate-success.*` |
+| 13 | MCP `mutate_then_error` — mutates git-visible file **then** returns `is_error:true` | captured — **NO `PostToolUse`**; mutation survives | `probe13-mcp-mutate-then-error.*` |
+| 14 | failed MCP tool A → successor mutation-capable MCP tool B, same turn (the direct D10a probe) | captured — **no event of any kind between `PreToolUse(A)` and `PreToolUse(B)`** | `probe14-mcp-failed-then-successor.*` |
+| 15 | MCP call blocked by a `PreToolUse` hook (`permissionDecision:"deny"`) | captured — `PreToolUse` only, no `PostToolUse`, no mutation | `probe15-mcp-blocked-call.*` |
+| 16 | two mutation-capable MCP executions in parallel — server `supports_parallel_tool_calls = true` | captured — **genuinely concurrent**, two scopes live at once | `probe16-mcp-parallel-server-optin.*` |
+| 17 | two mutation-capable MCP executions in parallel — via the tool's own `annotations.readOnlyHint` (no server opt-in) | captured — **genuinely concurrent** | `probe17-mcp-parallel-readonly-hint.*` |
+| — | MCP tool naming | **PROVEN — `mcp__<server>__<tool>`** (`mcp__probe__mutate_success`); `tool_use_id` is `exec-<uuid>` (same shape as shell / `apply_patch`, not `call_<id>`) | `probe12…pre_tool_use.json` |
 
 ## Observed event sequences (from `_sequence.log`)
 
@@ -134,13 +144,18 @@ probe 11 : … → PreToolUse(Bash) → Interrupt → SessionEnd   ← still no 
 
 ## Design-decision dispositions (written back into the plan's Design section)
 
-- **D1 / D14 — concurrency:** `ASSUMPTION — PROBE` (leaning serial). Codex executed
-  every mutation-capable tool strictly serially in all 11 probes (`Pre → Post →
-  Pre → Post …`, never interleaved), including when asked to parallelise and
-  across the parent/subagent boundary. Codex-alone `AiContended` is treated as
-  not reachable for 0.153.4; the AC10 regression must cross harnesses (a Codex
-  scope overlapping a second harness's scope on the same worktree). The adapter
-  still never collapses two executions into one `ScopeId`.
+- **D1 / D14 — concurrency:** **scope-split by tool type.**
+  - **Built-in `Bash` / `apply_patch`:** `ASSUMPTION — PROBE` (leaning serial).
+    Codex executed every built-in mutation-capable tool strictly serially in all
+    11 probes (`Pre → Post → Pre → Post …`, never interleaved), including when
+    asked to parallelise and across the parent/subagent boundary.
+  - **MCP:** `PROVEN (live)` — two mutation-capable MCP executions **do** overlap
+    (probes 16/17). **Codex-alone `AiContended` IS reachable via MCP** on 0.153.4.
+  The "serial / `AiContended` unreachable" conclusion is therefore correct **only
+  for the built-in tools**. The AC10 regression still crosses harnesses; if MCP
+  stays supported, T06 must add an MCP-overlap `AiContended` regression. The
+  adapter never collapses two executions into one `ScopeId`. See the "T01 MCP
+  lifecycle probe extension" section below.
 - **D2 — tool classification:** `PROVEN` for the `codex exec` surface.
   Mutation-capable (establish a scope): `apply_patch`, `Bash` (the shell tool —
   it also performs reads/list/search via shell commands, so it is always treated
@@ -148,7 +163,12 @@ probe 11 : … → PreToolUse(Bash) → Interrupt → SessionEnd   ← still no 
   scope). Delegation (never a scope): `collaborationspawn_agent`,
   `collaborationwait_agent`. There are **no dedicated built-in read-only tool
   names** in this surface. MCP tools and any unknown `tool_name` →
-  conservatively mutation-capable (documented from upstream; none live here).
+  conservatively mutation-capable. **MCP naming is now `PROVEN` live —
+  `mcp__<server>__<tool>` (probes 12–17).** Classification conservatism
+  (`unknown/MCP → mutation-capable`) is **only** for `Start` / fail-closed and
+  confers **no lifecycle-support guarantee**: an unknown/MCP tool inherits none
+  of the `Bash` / `apply_patch` terminal guarantees (probes 13/14). See the MCP
+  extension section below.
 - **D3 — execution identity:** `PROVEN`. Key = `(session_id, agent_id?,
   tool_use_id)`. `tool_use_id` is present and identical on the `PreToolUse` and
   `PostToolUse` for one call. `session_id` is stable across a whole session
@@ -170,26 +190,47 @@ probe 11 : … → PreToolUse(Bash) → Interrupt → SessionEnd   ← still no 
 - **D9 — terminal boundary on success:** `PROVEN`. `PostToolUse` is the reliable
   terminal signal for a successful mutation-capable tool, carrying the same
   `tool_use_id` (and `agent_id` for a subagent) as its `PreToolUse`.
-- **D10 — failed-tool terminal observation:** `PROVEN`, and **cleaner than the
-  plan feared**. A shell (`Bash`) tool that wrote a file then exited non-zero
-  **does** fire `PostToolUse` (probe 2), same `tool_use_id` — it maps to `close`
-  exactly like D9, so a partial mutation from a failed shell command is bounded
-  by a terminal hook. An `apply_patch` that fails verification fires **no**
-  `PostToolUse` (probe 6) — but Codex verifies the patch before touching the
-  working tree, so a failed `apply_patch` writes nothing; there is no
-  partial-mutation-without-terminal case for it. Prior SCE research
-  (`context/plans/codex-cli-integration.md`) said "`PostToolUse` fires only on a
-  successful tool result" — that is true at the `success_for_logging()` layer,
-  but an executed shell command with a non-zero exit still qualifies as a
-  successful tool result. The adapter needs **no Close-on-failure path**.
-- **D10a — failed tool → successor tool in the same turn:** `PROVEN — Case A`
-  (the dangerous scenario does not arise on 0.153.4). A failed shell tool always
-  emits `PostToolUse` before the next `PreToolUse` (serial execution, probe 2);
-  a failed `apply_patch` never mutates; a hook-blocked tool never executes
-  (probes 3/4). The only "partial mutation, no `PostToolUse`" case is whole-turn
-  interruption (probes 7/11), which emits `Interrupt` and/or `SessionEnd` and
-  ends the turn — there is no in-turn successor to race. **No serial-lane
-  successor barrier is required**; T02 records the lane key as N/A.
+- **D10 — failed-tool terminal observation:** **scope-split by tool type.**
+  - **`Bash`:** `PROVEN` — a shell tool that wrote a file then exited non-zero
+    **does** fire `PostToolUse` (probe 2), same `tool_use_id` — maps to `close`
+    like D9; a partial mutation from a failed shell command is bounded by a
+    terminal hook.
+  - **`apply_patch`:** `PROVEN` — a verification failure fires **no**
+    `PostToolUse` (probe 6), but Codex verifies before touching the tree, so
+    nothing is written; no partial-mutation-without-terminal case.
+  - **MCP:** `PROVEN` — a mutation-capable MCP tool that **mutates then returns
+    `is_error:true`** fires **no terminal hook of any kind** (probe 13:
+    `PreToolUse → Stop → SessionEnd`), and the mutation (`mcp_b.txt`) is
+    git-visible afterwards. This is a real partial-mutation-without-terminal
+    case. An external MCP server is not under Codex's atomicity control.
+  - **unknown:** no tool-specific terminal guarantee; governed only by
+    tool-generic lifecycle policy.
+  Prior SCE research's "`PostToolUse` fires only on a successful tool result" is
+  true at the `success_for_logging()` layer
+  (`codex-rs/core/src/tools/registry.rs` ~674); a non-zero-exit shell command
+  still counts as a successful tool result, but a `CallToolResult` with
+  `is_error:true` does not (`McpToolOutput::success_for_logging` =
+  `self.result.success()`). The adapter needs no Close-on-failure path for
+  `Bash` / `apply_patch`; for MCP it has **no terminal signal at all**.
+- **D10a — failed tool → successor tool in the same turn:** **scope-split by
+  tool type.**
+  - **Built-in `Bash` / `apply_patch`: `PROVEN — Case A`.** A failed shell tool
+    always emits `PostToolUse` before the next `PreToolUse` (probe 2); a failed
+    `apply_patch` never mutates; a hook-blocked tool never executes (probes 3/4);
+    the only "partial mutation, no `PostToolUse`" case is whole-turn interruption
+    (probes 7/11) which ends the turn. No serial-lane successor barrier is
+    required for built-ins.
+  - **MCP: `PROVEN — Case C`.** Probe 13: a mutation-capable MCP tool can mutate
+    then fail with **no terminal hook**. Probe 14: the failed MCP tool A is
+    followed **directly** by mutation-capable MCP tool B with **no event of any
+    kind between them** — no positive stale/terminal evidence for A. Probes
+    16/17: MCP executions **can overlap**, so `PreToolUse(B)` does **not** prove
+    A stale. The adapter cannot distinguish `failed-and-dead A` from
+    `still-running A`. This is D10a **Case C *if MCP is modeled as a scope***.
+    **Resolved 2026-09-08 by re-planning direction B** — MCP/unknown are
+    `Untracked` (no scope, no bookkeeping), so this lifecycle can never strand a
+    scope. See the "Re-planning resolution" note at the end of this file and the
+    plan's D23 / Open questions.
 - **D12 — lifecycle cleanup signals:** `PROVEN`.
   - `Stop` — main-turn end, carries `session_id` + `turn_id`. Fires only on a
     clean turn end (not on interruption).
@@ -247,3 +288,208 @@ probe 11 : … → PreToolUse(Bash) → Interrupt → SessionEnd   ← still no 
 - The delegation tool names are `collaborationspawn_agent` /
   `collaborationwait_agent` (a `collaboration` namespace prefix with no
   separator), not a bare `spawn_agent`.
+
+---
+
+# T01 MCP lifecycle probe extension (probes 12–17)
+
+The original probes 1–11 proved the failed-tool / serial-execution / successor-safety
+story for the **built-in** `Bash` and `apply_patch` tools only. The plan then
+generalised those conclusions to MCP / unknown mutation-capable tools **without
+equivalent evidence**. This extension live-probes MCP against the same supported
+version and finds the generalisation is **wrong**.
+
+## Probe infrastructure
+
+`cli/src/services/hooks/codex_mutation_scope/fixtures/mcp_probe/` (probe-only,
+**not SCE runtime code**):
+
+- `server.py` — a ~250-line zero-dependency stdio MCP server (MCP 2025-06-18,
+  JSON-RPC over stdio). Tools, all deliberately mutation-capable (each writes a
+  git-visible file into the scratch repo):
+  - `mutate_success` — write a file, return success.
+  - `mutate_then_error` — write a file **first**, then return `is_error:true`.
+  - `slow_mutate` — write a file, sleep ~8 s (on its own thread), write a second
+    file, return success. Long enough for overlap to be observable.
+  - `read_only_liar` — same as `slow_mutate` but annotated
+    `annotations.readOnlyHint = true` while still mutating.
+- `dump.sh` / `block.sh` — the same neutral dump hook + marker-gated
+  `permissionDecision:"deny"` hook as probes 1–11, wired onto all 12 events.
+- `run-probes.sh` — builds a scratch git repo + a private `CODEX_HOME` (auth
+  only), writes `config.toml` with two MCP servers (`probe`, and `probe_par`
+  carrying `supports_parallel_tool_calls = true`), and drives `codex exec
+  --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust
+  --skip-git-repo-check` once per probe. Nothing touches the SCE checkout or the
+  real `$CODEX_HOME`.
+- `config.toml.sample` / `hooks.json.sample` — the generated config, path-sanitised.
+
+## Observed MCP event sequences
+
+```
+probe 12 : session_start → user_prompt_submit
+           → PreToolUse(mcp__probe__mutate_success) → PostToolUse(same tool_use_id)
+           → Stop → SessionEnd
+probe 13 : … → PreToolUse(mcp__probe__mutate_then_error)   ← MCP writes mcp_b.txt, returns is_error:true
+           → Stop → SessionEnd                              ← NO PostToolUse at all
+probe 14 : … → PreToolUse(A = mcp__probe__mutate_then_error)  ← writes mcp_c1.txt, is_error:true, tool_use_id exec-27777ab1
+           → PreToolUse(B = mcp__probe__mutate_success)        ← nothing between A and B
+           → PostToolUse(B) → Stop → SessionEnd               ← A's tool_use_id never recurs; A has no terminal hook
+probe 15 : … → PreToolUse(mcp__probe__mutate_success)  ← blocked by permissionDecision:"deny"
+           → Stop → SessionEnd                          ← no PostToolUse, no tools/call, no mutation
+probe 16 : … → PreToolUse(A) 14:44:32.4187 → PreToolUse(B) 14:44:32.4199   ← both before any Post
+           → PostToolUse(A) 14:44:40.4431 → PostToolUse(B) 14:44:40.4502
+           server: slow_mutate[d1] begin :32.431, slow_mutate[d2] begin :32.439 (d1 still sleeping), both end :40.43x
+probe 17 : same interleaving as 16, reached via annotations.readOnlyHint with NO server opt-in
+```
+
+## MCP design-decision dispositions
+
+- **MCP tool naming (D2):** `PROVEN` — `mcp__<server>__<tool>`
+  (`mcp__probe__mutate_success`, `mcp__probe_par__slow_mutate`). `tool_use_id` is
+  `exec-<uuid>` — the **same shape** as shell / `apply_patch`, *not* the
+  `call_<id>` form used by the `collaboration*` delegation tools. `tool_name` is
+  identical on `PreToolUse` and `PostToolUse`; the execution key
+  `(session_id, agent_id?, tool_use_id)` (D3) holds unchanged for MCP.
+  Upstream contract: `MCP_TOOL_NAME_DELIMITER` / `join_tool_name` /
+  `ensure_mcp_prefix` in `codex-rs/core/src/tools/handlers/mcp.rs` at
+  `rust-v0.153.4`.
+
+- **Successful MCP call (D9):** `PROVEN` — `PostToolUse` is the reliable terminal
+  hook, same `tool_use_id` as its `PreToolUse` (probe 12). `tool_response` for MCP
+  is a **structured object** `{"content":[…],"isError":false}`, not a string as
+  for `apply_patch` — not load-bearing (the adapter does not parse it).
+
+- **Blocked MCP call (D8):** `PROVEN` — a hook-blocked MCP `PreToolUse`
+  (`hookSpecificOutput.permissionDecision:"deny"`) fires `PreToolUse` only, **no
+  `PostToolUse`**, `tools/call` is never issued, nothing is written (probe 15).
+  Identical to the built-in blocked-tool case (probes 3/4). A D8 fail-closed deny
+  on a mutation-capable MCP `PreToolUse` therefore strands no scope.
+
+- **Failed MCP call — `mutate_then_error` (D10):** `PROVEN` — a mutation-capable
+  MCP tool that **writes a git-visible file and then returns `is_error:true`**
+  receives **no terminal hook of any kind** (probe 13): `PreToolUse` → `Stop` →
+  `SessionEnd`, no `PostToolUse`. `git status` after shows `mcp_b.txt`, mtime
+  `16:43:33.836` — the mutation landed and survives the failed result. This is
+  **not** the built-in `apply_patch` story (atomic pre-verification, nothing
+  written) and **not** the built-in shell story (`PostToolUse` still fires on a
+  non-zero exit). Upstream mechanism: `codex-rs/core/src/tools/registry.rs`
+  ~line 674 — `let post_tool_use_payload = if success { … } else { None }` with
+  `success = result.success_for_logging()`; for MCP,
+  `McpToolOutput::success_for_logging()` = `self.result.success()`
+  (`codex-rs/core/src/tools/context.rs:122-124`), which is false when the
+  `CallToolResult` carries `is_error:true`. An external MCP server is not under
+  Codex's atomicity control, so the write can precede the failure.
+  Evidence: `probe13-mcp-mutate-then-error.{pre_tool_use,stop,session_end,evidence}.json`.
+
+- **Failed MCP tool → successor tool, same turn (D10a):** `PROVEN — Case C for
+  MCP *if modeled as a scope*` (resolved by direction B — MCP is `Untracked`).
+  Probe 14: `PreToolUse(A = mutate_then_error)` is followed **directly** by
+  `PreToolUse(B = mutate_success)` with **no intervening event** — no
+  `PostToolUse(A)`, no `Interrupt`, no `Stop`, no `SubagentStop`, no
+  `PermissionRequest`, no compaction event. A's `tool_use_id` (`exec-27777ab1…`)
+  appears in exactly one hook delivery. Both `mcp_c1.txt` and `mcp_c2.txt` land.
+  There is **no positive stale/terminal evidence for A** before B starts, and —
+  because MCP executions *can* overlap (probes 16/17) — `PreToolUse(B)` does
+  **not** prove A stale. The adapter cannot distinguish `failed-and-dead A` from
+  `still-running A`. This is exactly D10a **Case C *if MCP is modeled as a
+  scope***. **Resolved 2026-09-08 by re-planning direction B** — the adapter does
+  not model MCP as a scope (MCP/unknown = `Untracked`), so no A attempt exists to
+  strand. See the "Re-planning resolution" note at the end of this file.
+  Evidence: `probe14-mcp-failed-then-successor.*`.
+
+- **MCP concurrency (D1 / D14):** `PROVEN (live)` — two mutation-capable MCP tool
+  executions run **genuinely concurrently** on 0.153.4. Probe 16 (server
+  `supports_parallel_tool_calls = true`): `PreToolUse(A)` at `14:44:32.418731`,
+  `PreToolUse(B)` at `14:44:32.419862` — 1.1 ms apart, both before either
+  `PostToolUse`; the MCP server's own log shows `slow_mutate[d2]` begins while
+  `slow_mutate[d1]` is still sleeping; both scopes are live between their
+  `PreToolUse` and `PostToolUse` for ~8 s. Probe 17 reaches the same interleaving
+  via the tool's own `annotations.readOnlyHint` with **no** server- or
+  config-side opt-in. Upstream contract:
+  `McpHandler::supports_parallel_tool_calls()` (`codex-rs/core/src/tools/handlers/mcp.rs:128-139`)
+  = `tool_info.supports_parallel_tool_calls || annotations.read_only_hint`;
+  `tool_info.supports_parallel_tool_calls` comes from `McpServerMetadata`
+  (`codex-rs/codex-mcp/src/server.rs:395-421`) which reads the config.toml key
+  `RawMcpServerConfig.supports_parallel_tool_calls`
+  (`codex-rs/config/src/mcp_types.rs:362`). Therefore **Codex-alone `AiContended`
+  IS reachable** on 0.153.4 whenever a mutation-capable MCP tool is
+  parallel-eligible. The plan's blanket "Codex mutation-capable tools are serial /
+  Codex-alone `AiContended` is unreachable" is true **only for the built-in
+  `Bash` / `apply_patch` tools exercised by probes 1–11**.
+  Evidence: `probe16-mcp-parallel-server-optin.*`, `probe17-mcp-parallel-readonly-hint.*`.
+
+## Disposition terminology used above
+
+- **PROVEN** — observed live in a captured fixture, or a deterministic structural
+  fact that cannot differ at runtime.
+- **DOCUMENTED — NON-LOAD-BEARING** — established from upstream source/schema, not
+  load-bearing for adapter correctness, with a load-bearing backstop named.
+- **ASSUMPTION — PROBE** — a leaning conclusion from limited observation, not
+  proven.
+- **UNSUPPORTED** — the lifecycle cannot be represented safely by the current
+  mutation-scope contract; the adapter must fail closed / exclude / re-architect,
+  and the plan stops for re-planning.
+
+## Answers to the T01-extension questions
+
+1. Successful MCP calls emit `PostToolUse`: **yes** (probe 12).
+2. `mutate-then-error` MCP calls emit `PostToolUse`: **no** (probe 13).
+3. An MCP side effect can survive a failed MCP result: **yes** — `mcp_b.txt` is
+   git-visible after `is_error:true` with no terminal hook (probe 13).
+4. A positive cleanup signal appears before a successor tool: **no** — nothing
+   between `PreToolUse(A)` and `PreToolUse(B)` (probe 14).
+5. MCP executions can overlap: **yes** — genuinely concurrent (probes 16, 17).
+6. Codex-alone `AiContended` is reachable: **yes, via MCP** (probes 16/17);
+   still **no** for built-in `Bash` / `apply_patch` (probes 1–11).
+7. Final D10a disposition for MCP: **Case C *if MCP is modeled as a mutation
+   scope***. Built-ins remain **Case A**. Re-planning (2026-09-08) resolved this
+   by **not** modeling MCP as a scope — see the resolution note at the end of
+   this file.
+8. MCP remains supported operationally but is **outside Codex mutation-scope
+   attribution coverage** in adapter v1 (re-planning **direction B**, chosen
+   2026-09-08). MCP tools and unknown tool names are classified `Untracked`:
+   allowed to execute, may mutate, no `Start`, no scope, no bookkeeping. The
+   Case C evidence below is retained as the *reason* for the exclusion. Rejected:
+   (A) deny MCP fail-closed. Deferred as future work: (C) a richer
+   lifecycle/runtime mechanism for first-class MCP attribution.
+9. Unknown tool names: classification conservatism (`unknown → mutation-capable`
+   for `Start` / fail-closed) must be **separated** from a lifecycle-support
+   guarantee. An unknown tool inherits **no** `Bash` / `apply_patch` terminal
+   guarantee; its terminal/recovery behaviour may rely only on tool-generic
+   lifecycle signals, else it is unsupported for trustworthy attribution.
+10. Is T01 safe to mark done / proceed to T02: **yes, as of 2026-09-08** — the
+    MCP D10a Case C finding was resolved by re-planning direction B (MCP/unknown
+    are `Untracked`, outside coverage), which needs no protocol change. T01 is
+    done; T02 is unblocked (not started). See the resolution note below.
+
+## Re-planning resolution (2026-09-08) — direction B
+
+The MCP D10a Case C finding above is **correct and retained**: *if a
+mutation-capable MCP tool were represented as an SCE mutation scope, the Codex
+0.153.4 hook lifecycle makes that scope's lifecycle unsafe* (probe 13:
+mutate-then-error has no terminal hook; probe 14: a successor `PreToolUse` can
+follow with no cleanup signal between; probes 16/17: parallel MCP execution is
+real, so a successor cannot prove a predecessor stale).
+
+**Resolution:** the Codex adapter v1 does **not** create mutation scopes for MCP
+calls. `PreToolUse(mcp__…)` — and any unknown `tool_name` — is classified
+`Untracked`: it executes normally, it may mutate, but the adapter emits no
+`Start`, no `ScopeId`, no `EventId`, no attempt, and no `recovery_pending`, so no
+`Close` / `Abandon` / `Flush` is ever needed for it. This is a deliberate
+**attribution-coverage boundary**, not a lifecycle workaround — the adapter does
+not claim MCP is read-only, does not guarantee MCP mutations are detected
+immediately, and `AiExclusive` continues to mean "exactly one *tracked* scope was
+live", not "sole authorship of the interval".
+
+Coverage for Codex adapter v1:
+
+| Class | Tools | Scope? |
+| --- | --- | --- |
+| `TrackedMutation` | `Bash`, `apply_patch` | yes — one execution → one `ScopeId` |
+| `Delegation` | `collaborationspawn_agent`, `collaborationwait_agent` | no (the delegated agent's tracked tools get scopes) |
+| `Untracked` | `mcp__*`, unknown `tool_name` | no — allowed, may mutate, outside coverage |
+
+No `mutation_cursor.qnt` / mutation protocol / runtime-semantic / SQL-migration /
+Agent Trace schema change is required. The plan's Design section (D1, D2, D8, D9,
+D10, D10a, D12, D13, D14, new D23) and Open questions carry the full disposition.
+The probe fixtures in this directory are unchanged evidence.
