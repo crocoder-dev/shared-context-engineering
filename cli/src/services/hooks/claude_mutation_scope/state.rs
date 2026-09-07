@@ -332,6 +332,24 @@ pub(crate) fn remove_attempt(git_dir: &Path, scope_id: &str) -> Result<()> {
     write_state_durably(git_dir, &state)
 }
 
+pub(crate) fn mark_recovery_pending(git_dir: &Path) -> Result<()> {
+    let _lock = AdapterStateLock::acquire(git_dir, DEFAULT_LOCK_TIMEOUT)
+        .map_err(|err| anyhow!("Failed to acquire adapter-state lock: {err}"))?;
+
+    let mut state = read_state(git_dir)?;
+    state.recovery_pending = true;
+    write_state_durably(git_dir, &state)
+}
+
+pub(crate) fn clear_recovery_pending(git_dir: &Path) -> Result<()> {
+    let _lock = AdapterStateLock::acquire(git_dir, DEFAULT_LOCK_TIMEOUT)
+        .map_err(|err| anyhow!("Failed to acquire adapter-state lock: {err}"))?;
+
+    let mut state = read_state(git_dir)?;
+    state.recovery_pending = false;
+    write_state_durably(git_dir, &state)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -680,6 +698,55 @@ mod tests {
             .join()
             .expect("second acquirer thread should not panic")
             .is_ok());
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn mark_recovery_pending_arms_the_barrier_without_touching_attempts() {
+        let git_dir = unique_test_git_dir("mark-recovery-pending");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+        let allocated = allocate_attempt(&git_dir, &key("session-1", None, "toolu_1"), "Write")
+            .expect("allocation should succeed");
+
+        mark_recovery_pending(&git_dir).expect("marking recovery pending should succeed");
+
+        let state = read_state(&git_dir).expect("state should be readable");
+        assert!(state.recovery_pending, "D19: the barrier must be armed");
+        assert_eq!(
+            state.attempts.len(),
+            1,
+            "marking recovery pending must not remove or otherwise touch tracked attempts"
+        );
+        assert_eq!(state.attempts[0].scope_id, allocated.attempt.scope_id);
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn mark_recovery_pending_is_idempotent() {
+        let git_dir = unique_test_git_dir("mark-recovery-pending-idempotent");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+
+        mark_recovery_pending(&git_dir).expect("first marking should succeed");
+        mark_recovery_pending(&git_dir).expect("second marking should succeed");
+
+        let state = read_state(&git_dir).expect("state should be readable");
+        assert!(state.recovery_pending);
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn clear_recovery_pending_resets_the_barrier() {
+        let git_dir = unique_test_git_dir("clear-recovery-pending");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+        mark_recovery_pending(&git_dir).expect("marking recovery pending should succeed");
+
+        clear_recovery_pending(&git_dir).expect("clearing the barrier should succeed");
+
+        let state = read_state(&git_dir).expect("state should be readable");
+        assert!(!state.recovery_pending);
 
         remove_test_git_dir(&git_dir);
     }

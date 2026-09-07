@@ -210,20 +210,28 @@ serde derives for this command; the hook transport enum
 ## Generic ingress vs harness adapter
 
 A generic SCE ingress existing is **not** concrete harness integration existing.
-Out of scope for this seam, and left as future work:
+A first Claude Code adapter driver now exists
+(`cli/src/services/hooks/claude_mutation_scope/`), but it reaches the runtime
+through its own `pub(crate)` in-process seam on `mutation_scope.rs`
+(`run_mutation_scope_from_payload`) rather than by re-invoking this CLI
+command, and it is not yet reachable by a real Claude Code session (`sce
+setup` does not register its hooks yet — future work). Still out of scope for
+this seam itself, and left as future work for every non-Claude harness:
 
-- any concrete harness mapping — Claude Code hooks, Codex hook mapping, OpenCode
-  plugin, Pi extension;
-- `SubagentStart` / `SubagentStop` / `PostToolUse` / tool-call translation;
-- `session → ScopeId` or `tool-call → EventId` derivation;
+- Codex hook mapping, OpenCode plugin, Pi extension;
+- `SubagentStart` / `SubagentStop` / `PostToolUse` / tool-call translation for
+  those harnesses;
+- `session → ScopeId` or `tool-call → EventId` derivation for those harnesses;
 - PID tracking, process supervisors, staleness detection, automatic scope
   abandonment;
-- harness settings generation or `sce setup` integration for the new hook.
+- harness settings generation or `sce setup` integration for any of these
+  hooks (Claude's own registration is also still pending).
 
-Each future adapter still owns its own `ScopeId` / `EventId` / `actor_kind`
-derivation and its own stale-process detection, and targets this ingress as its
-transport. See [`mutation-scope-runtime.md`](mutation-scope-runtime.md) for the
-lifecycle obligations every such adapter must uphold.
+Each adapter still owns its own `ScopeId` / `EventId` / `actor_kind`
+derivation and its own stale-process detection, and targets this ingress (or,
+for an in-process consumer like the Claude driver, the same seam directly) as
+its transport. See [`mutation-scope-runtime.md`](mutation-scope-runtime.md)
+for the lifecycle obligations every such adapter must uphold.
 
 ## Related context
 
