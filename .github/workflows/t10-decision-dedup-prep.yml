@@ -1,0 +1,38 @@
+name: T10 decision dedup preparation
+
+on:
+  push:
+    branches:
+      - prep/t10-decision-dedup-final
+    paths:
+      - .github/workflows/t10-decision-dedup-prep.yml
+      - .sce-t10-decision-dedup.py
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout preparation branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Enable Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Run T10 transformation and verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .sce-t10-decision-dedup.py /tmp/sce-t10-decision-dedup.py
+          nix develop -c python3 /tmp/sce-t10-decision-dedup.py
