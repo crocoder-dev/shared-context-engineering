@@ -1,11 +1,11 @@
-name: Prepare commit bypass deduplication
+name: Prepare validation report deduplication
 
 on:
   push:
     branches:
       - codex/compress-workflow-execution-preamble
     paths:
-      - .sce-commit-bypass-dedup.py
+      - .sce-validation-report-dedup.py
       - .github/workflows/sce-approval-dedup-preparation.yml
 
 permissions:
@@ -25,7 +25,7 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
 
-      - name: Apply, verify, commit, and push commit bypass deduplication
+      - name: Apply, verify, commit, and push validation report deduplication
         run: |
-          cp .sce-commit-bypass-dedup.py /tmp/sce-commit-bypass-dedup.py
-          nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 /tmp/sce-commit-bypass-dedup.py
+          cp .sce-validation-report-dedup.py /tmp/sce-validation-report-dedup.py
+          nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 /tmp/sce-validation-report-dedup.py
