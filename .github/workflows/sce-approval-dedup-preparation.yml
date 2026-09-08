@@ -14,7 +14,7 @@ on:
       - .sce-decision-dedup-fix-ownership.py
       - .sce-decision-dedup-fix-task-reference.py
       - .sce-decision-dedup-fix-ownership-minimal.py
-      - .sce-decision-dedup-debug-pi.py
+      - .sce-decision-dedup-debug-assertion.py
       - .github/workflows/sce-approval-dedup-preparation.yml
 
 permissions:
@@ -45,5 +45,5 @@ jobs:
           python3 .sce-decision-dedup-fix-ownership.py
           python3 .sce-decision-dedup-fix-task-reference.py
           python3 .sce-decision-dedup-fix-ownership-minimal.py
-          python3 .sce-decision-dedup-debug-pi.py
+          python3 .sce-decision-dedup-debug-assertion.py
           nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 /tmp/sce-decision-dedup.py
