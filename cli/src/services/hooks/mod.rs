@@ -38,6 +38,7 @@ use crate::services::structured_patch::{
     ClaudeStructuredPatchDerivationResult, PatchBuildResult,
 };
 use crate::services::sync::auto_sync;
+pub mod claude_bridge_session;
 pub mod claude_model_state;
 pub mod claude_transcript;
 pub mod codex;
@@ -3069,6 +3070,114 @@ mod tests {
 
         drop(db);
         fs::remove_file(transcript_path).expect("transcript fixture should be removed");
+        fs::remove_dir_all(repo_root).expect("test repository should be removed");
+        fs::remove_dir_all(state_root).expect("test state should be removed");
+    }
+
+    #[test]
+    fn claude_model_attribution_bridge_inheritance_seeds_state_and_diff_trace() {
+        let repo_root = init_attribution_git_repo("bridge-inheritance");
+        let state_root = unique_attribution_db_path("bridge-inheritance-state")
+            .parent()
+            .expect("test state should have a parent")
+            .to_path_buf();
+        let storage = resolve_agent_trace_storage_at_state_root(
+            &AgentTraceStorageContext {
+                repository_root: &repo_root,
+                explicit_repository_id: None,
+                repository_remote: "origin",
+            },
+            &state_root,
+        )
+        .expect("setup path should initialize the test repository DB");
+        drop(storage);
+
+        let sibling_transcript = state_root.join("session-old.jsonl");
+        let current_transcript = state_root.join("session-current.jsonl");
+        fs::write(
+            &sibling_transcript,
+            concat!(
+                r#"{"type":"file-history-snapshot"}"#,
+                "\n",
+                r#"{"type":"bridge-session","sessionId":"session-old","bridgeSessionId":"cse_shared"}"#,
+                "\n",
+            ),
+        )
+        .expect("sibling transcript fixture should be written");
+        fs::write(
+            &current_transcript,
+            concat!(
+                r#"{"type":"file-history-snapshot"}"#,
+                "\n",
+                r#"{"type":"bridge-session","sessionId":"session-current","bridgeSessionId":"cse_shared"}"#,
+                "\n",
+            ),
+        )
+        .expect("current transcript fixture should be written");
+
+        let db = open_agent_trace_db_for_hook_runtime_at_state_root(
+            &repo_root,
+            &state_root,
+            "test DB should open before bridge inheritance",
+        )
+        .expect("test DB should open before bridge inheritance");
+        db.upsert_claude_model_state(ClaudeModelStateObservation {
+            session_id: String::from("cc_session-old"),
+            agent_id: String::new(),
+            model_id: String::from("claude/inherited-model"),
+            observation_kind: ObservationKind::SessionStart,
+            source: String::from("startup"),
+            observed_at_ms: 5,
+        })
+        .expect("sibling state should be seeded");
+        drop(db);
+
+        let session_start = json!({
+            "hook_event_name": "SessionStart",
+            "session_id": "session-current",
+            "source": "clear",
+            "transcript_path": current_transcript,
+        });
+        assert_eq!(
+            claude_model_state::run_claude_model_state_from_payload_at_state_root(
+                &repo_root,
+                &state_root,
+                &session_start.to_string(),
+                None,
+                || Ok(10),
+            ),
+            ""
+        );
+
+        let db = open_agent_trace_db_for_hook_runtime_at_state_root(
+            &repo_root,
+            &state_root,
+            "test DB should open after bridge inheritance",
+        )
+        .expect("test DB should open after bridge inheritance");
+        let inherited = db
+            .claude_model_state_by_session_and_agent("cc_session-current", "")
+            .expect("inherited state lookup should succeed")
+            .expect("current session should inherit sibling state");
+        assert_eq!(inherited.model_id, "claude/inherited-model");
+        assert_eq!(inherited.source, "bridge_inherited");
+        assert_eq!(inherited.observation_kind, ObservationKind::SessionStart);
+        assert_eq!(inherited.observed_at_ms, 10);
+
+        let diff_event = model_less_claude_diff_event("session-current", "tool-inherited", None);
+        persist_diff_trace_payload_to_agent_trace_db_with_db(
+            &db,
+            &parsed_claude_diff_trace(&diff_event),
+        )
+        .expect("inherited state should attribute the diff trace");
+        assert_eq!(
+            persisted_model_ids(&db),
+            vec![Some(String::from("claude/inherited-model"))]
+        );
+
+        drop(db);
+        fs::remove_file(sibling_transcript).expect("sibling transcript should be removed");
+        fs::remove_file(current_transcript).expect("current transcript should be removed");
         fs::remove_dir_all(repo_root).expect("test repository should be removed");
         fs::remove_dir_all(state_root).expect("test state should be removed");
     }

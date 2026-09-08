@@ -1,0 +1,247 @@
+use std::fs::{self, File};
+use std::io::{self, BufRead, BufReader};
+use std::path::Path;
+use std::time::SystemTime;
+
+use serde_json::Value;
+
+const MAX_LEADING_RECORDS: usize = 16;
+const BRIDGE_SESSION_RECORD_TYPE: &str = "bridge-session";
+
+/// Extract Claude's bridge-session identifier from the leading JSONL records.
+///
+/// Transcript access and parsing are fail-open. Only a bounded number of
+/// records are read so discovery never scans a complete transcript.
+pub fn extract_claude_bridge_session_id(transcript_path: &Path) -> Option<String> {
+    extract_claude_bridge_session_id_from_reader(File::open(transcript_path).map(BufReader::new))
+}
+
+/// Find the most recently modified sibling transcript sharing a bridge-session
+/// identifier and return its session ID from the filename stem.
+///
+/// Directory access, metadata, transcript reads, and JSON parsing are all
+/// fail-open. The source transcript itself is excluded from the candidates.
+pub fn find_claude_bridge_sibling_session_id(
+    transcript_path: &Path,
+    bridge_session_id: &str,
+) -> Option<String> {
+    let bridge_session_id = bridge_session_id.trim();
+    if bridge_session_id.is_empty() {
+        return None;
+    }
+
+    let directory = transcript_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let source_file_name = transcript_path.file_name();
+    let mut newest_match: Option<(SystemTime, String)> = None;
+
+    for entry in fs::read_dir(directory).ok()?.flatten() {
+        let candidate_path = entry.path();
+        if candidate_path.file_name() == source_file_name
+            || candidate_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                != Some("jsonl")
+        {
+            continue;
+        }
+
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+
+        let Some(candidate_session_id) = candidate_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(str::trim)
+            .filter(|session_id| !session_id.is_empty())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+
+        if extract_claude_bridge_session_id(&candidate_path).as_deref() != Some(bridge_session_id) {
+            continue;
+        }
+
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        let should_replace = match &newest_match {
+            None => true,
+            Some((newest_modified, newest_session_id)) => {
+                modified > *newest_modified
+                    || (modified == *newest_modified && candidate_session_id > *newest_session_id)
+            }
+        };
+        if should_replace {
+            newest_match = Some((modified, candidate_session_id));
+        }
+    }
+
+    newest_match.map(|(_, session_id)| session_id)
+}
+
+fn extract_claude_bridge_session_id_from_reader<R: BufRead>(
+    reader: io::Result<R>,
+) -> Option<String> {
+    let reader = reader.ok()?;
+
+    for line in reader.lines().take(MAX_LEADING_RECORDS) {
+        let line = line.ok()?;
+        let Ok(parsed) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+
+        let Some(record) = parsed.as_object() else {
+            continue;
+        };
+        if record.get("type").and_then(Value::as_str) != Some(BRIDGE_SESSION_RECORD_TYPE) {
+            continue;
+        }
+
+        if let Some(bridge_session_id) = record
+            .get("bridgeSessionId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Some(bridge_session_id.to_string());
+        }
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        io::Cursor,
+        path::{Path, PathBuf},
+        thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
+
+    use super::*;
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after Unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("sce-claude-bridge-{label}-{suffix}"));
+        fs::create_dir_all(&path).expect("temporary directory should be created");
+        path
+    }
+
+    fn transcript(bridge_session_id: &str, session_id: &str) -> String {
+        format!(
+            concat!(
+                "{{\"type\":\"file-history-snapshot\",\"messageId\":\"msg-1\"}}\n",
+                "{{\"type\":\"bridge-session\",\"sessionId\":\"{session_id}\",",
+                "\"bridgeSessionId\":\"{bridge_session_id}\"}}\n",
+                "{{\"type\":\"user\",\"sessionId\":\"{session_id}\"}}\n"
+            ),
+            bridge_session_id = bridge_session_id,
+            session_id = session_id,
+        )
+    }
+
+    #[test]
+    fn extracts_bridge_session_id_from_real_shaped_leading_records() {
+        let content = transcript("cse_bridge-123", "session-new");
+
+        assert_eq!(
+            extract_claude_bridge_session_id_from_reader(Ok(Cursor::new(content))),
+            Some(String::from("cse_bridge-123"))
+        );
+    }
+
+    #[test]
+    fn bridge_extraction_fails_open_for_missing_unreadable_or_malformed_records() {
+        let directory = unique_temp_dir("unreadable");
+        let malformed = concat!(
+            r#"{"type":"bridge-session","sessionId":"session-1","bridgeSessionId":42}"#,
+            "\n"
+        );
+
+        assert_eq!(
+            extract_claude_bridge_session_id(Path::new("/does/not/exist.jsonl")),
+            None
+        );
+        assert_eq!(
+            extract_claude_bridge_session_id_from_reader(Ok(Cursor::new(malformed))),
+            None
+        );
+        assert_eq!(extract_claude_bridge_session_id(&directory), None);
+
+        fs::remove_dir_all(directory).expect("temporary directory should be removed");
+    }
+
+    #[test]
+    fn bridge_extraction_does_not_scan_beyond_the_leading_record_bound() {
+        let mut content = String::new();
+        for _ in 0..MAX_LEADING_RECORDS {
+            content.push_str("{\"type\":\"user\"}\n");
+        }
+        content.push_str(&transcript("cse_too-late", "session-late"));
+
+        assert_eq!(
+            extract_claude_bridge_session_id_from_reader(Ok(Cursor::new(content))),
+            None
+        );
+    }
+
+    #[test]
+    fn finds_the_most_recent_matching_sibling_and_excludes_the_source() {
+        let directory = unique_temp_dir("siblings");
+        let source = directory.join("session-current.jsonl");
+        let older = directory.join("session-older.jsonl");
+        let newer = directory.join("session-newer.jsonl");
+        let unrelated = directory.join("session-unrelated.jsonl");
+
+        fs::write(&older, transcript("cse_shared", "session-older"))
+            .expect("older transcript should be written");
+        thread::sleep(Duration::from_millis(20));
+        fs::write(&newer, transcript("cse_shared", "session-newer"))
+            .expect("newer transcript should be written");
+        thread::sleep(Duration::from_millis(20));
+        fs::write(&source, transcript("cse_shared", "session-current"))
+            .expect("source transcript should be written");
+        fs::write(&unrelated, transcript("cse_other", "session-unrelated"))
+            .expect("unrelated transcript should be written");
+
+        assert_eq!(
+            find_claude_bridge_sibling_session_id(&source, "cse_shared"),
+            Some(String::from("session-newer"))
+        );
+        assert_eq!(
+            find_claude_bridge_sibling_session_id(&source, "cse_missing"),
+            None
+        );
+
+        fs::remove_dir_all(directory).expect("temporary directory should be removed");
+    }
+
+    #[test]
+    fn sibling_discovery_fails_open_for_invalid_source_and_empty_bridge_id() {
+        let directory = unique_temp_dir("invalid");
+        let source = directory.join("session-current.jsonl");
+        fs::write(&source, transcript("cse_shared", "session-current"))
+            .expect("source transcript should be written");
+
+        assert_eq!(find_claude_bridge_sibling_session_id(&source, "   "), None);
+        assert_eq!(
+            find_claude_bridge_sibling_session_id(&directory.join("missing.jsonl"), "cse_shared"),
+            Some(String::from("session-current"))
+        );
+
+        fs::remove_dir_all(directory).expect("temporary directory should be removed");
+    }
+}
