@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+mod boundary_lock;
+mod os_lock;
 pub(crate) mod state;
 
 use std::path::{Path, PathBuf};
@@ -9,6 +11,8 @@ use serde_json::{json, Map, Value};
 
 use crate::services::checkout;
 use crate::services::observability::traits::Logger;
+
+use boundary_lock::{AdapterBoundaryLock, DEFAULT_BOUNDARY_LOCK_TIMEOUT};
 
 const HOOK_EVENT_NAME_FIELD: &str = "hook_event_name";
 const SESSION_ID_FIELD: &str = "session_id";
@@ -350,28 +354,34 @@ fn dispatch_codex_hook_event(
         CodexHookEvent::PostToolUse(identity) => {
             let git_dir = resolve_git_dir(&identity.cwd)?;
             let repository_root = Path::new(&identity.cwd);
-            handle_close(
-                &git_dir,
-                repository_root,
-                &identity.attempt_key(),
-                logger,
-                seam,
-            )
+            with_boundary_lock(&git_dir, || {
+                handle_close(
+                    &git_dir,
+                    repository_root,
+                    &identity.attempt_key(),
+                    logger,
+                    seam,
+                )
+            })
         }
         CodexHookEvent::Stop(turn) => {
             let git_dir = resolve_git_dir(&turn.cwd)?;
             let repository_root = Path::new(&turn.cwd);
             let session_id = turn.session_id.clone();
-            cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |attempt| {
-                attempt.session_id == session_id && attempt.agent_id.is_none()
+            with_boundary_lock(&git_dir, || {
+                cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |attempt| {
+                    attempt.session_id == session_id && attempt.agent_id.is_none()
+                })
             })
         }
         CodexHookEvent::Interrupt(turn) => {
             let git_dir = resolve_git_dir(&turn.cwd)?;
             let repository_root = Path::new(&turn.cwd);
             let session_id = turn.session_id.clone();
-            cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |attempt| {
-                attempt.session_id == session_id
+            with_boundary_lock(&git_dir, || {
+                cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |attempt| {
+                    attempt.session_id == session_id
+                })
             })
         }
         CodexHookEvent::SubagentStop(agent) => {
@@ -379,19 +389,30 @@ fn dispatch_codex_hook_event(
             let repository_root = Path::new(&agent.cwd);
             let session_id = agent.session_id.clone();
             let agent_id = agent.agent_id.clone();
-            cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |attempt| {
-                attempt.session_id == session_id && attempt.agent_id.as_deref() == Some(&agent_id)
+            with_boundary_lock(&git_dir, || {
+                cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |attempt| {
+                    attempt.session_id == session_id
+                        && attempt.agent_id.as_deref() == Some(&agent_id)
+                })
             })
         }
         CodexHookEvent::SessionEnd(session) => {
             let git_dir = resolve_git_dir(&session.cwd)?;
             let repository_root = Path::new(&session.cwd);
             let session_id = session.session_id.clone();
-            cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |attempt| {
-                attempt.session_id == session_id
+            with_boundary_lock(&git_dir, || {
+                cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |attempt| {
+                    attempt.session_id == session_id
+                })
             })
         }
     }
+}
+
+fn with_boundary_lock<T>(git_dir: &Path, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+    let _boundary = AdapterBoundaryLock::acquire(git_dir, DEFAULT_BOUNDARY_LOCK_TIMEOUT)
+        .map_err(|error| anyhow!("Failed to acquire adapter boundary lock: {error}"))?;
+    operation()
 }
 
 fn handle_pre_tool_use(
@@ -419,29 +440,38 @@ fn handle_pre_tool_use(
     };
 
     let key = identity.attempt_key();
-    match admit_or_recover(
-        &git_dir,
-        repository_root,
-        &key,
-        &identity.tool_name,
-        logger,
-        seam,
-    ) {
-        Ok(Admission::Admitted(allocated)) => {
-            match establish_start(&git_dir, repository_root, &allocated, logger, seam) {
-                Ok(()) => String::new(),
-                Err(error) => {
-                    log_pre_tool_use_fail_closed(logger, "establish_start", &error);
-                    pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON)
-                }
+    let outcome = with_boundary_lock(&git_dir, || {
+        state::normalize_recovery_after_boundary_lock_acquired(&git_dir)?;
+
+        match admit_or_recover(
+            &git_dir,
+            repository_root,
+            &key,
+            &identity.tool_name,
+            logger,
+            seam,
+        )? {
+            Admission::Admitted(allocated) => {
+                establish_start(&git_dir, repository_root, &allocated, logger, seam)?;
+                Ok(PreToolUseOutcome::Continue)
             }
+            Admission::Denied => Ok(PreToolUseOutcome::Deny),
         }
-        Ok(Admission::Denied) => pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON),
+    });
+
+    match outcome {
+        Ok(PreToolUseOutcome::Continue) => String::new(),
+        Ok(PreToolUseOutcome::Deny) => pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON),
         Err(error) => {
-            log_pre_tool_use_fail_closed(logger, "admit_tracked_attempt", &error);
+            log_pre_tool_use_fail_closed(logger, "codex_mutation_scope_pre_tool_use", &error);
             pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON)
         }
     }
+}
+
+enum PreToolUseOutcome {
+    Continue,
+    Deny,
 }
 
 enum Admission {
@@ -501,6 +531,11 @@ fn establish_start(
     seam: IngressSeam,
 ) -> Result<()> {
     let scope_id = &allocated.attempt.scope_id;
+
+    if allocated.reused && allocated.attempt.phase == state::AttemptPhase::Active {
+        return Ok(());
+    }
+
     let start_payload =
         scope_boundary_payload("start", scope_id, &codex_scope_start_event_id(scope_id));
 
@@ -2052,9 +2087,46 @@ mod tests {
             assert!(error.to_string().contains("unsupported hook_event_name"));
         }
 
+        fn spawn_pre_tool_use(
+            git_dir: &Path,
+            tool_use_id: &'static str,
+            seam: impl Fn(&Path, &str, Option<&dyn Logger>) -> Result<String> + Send + 'static,
+        ) -> (thread::JoinHandle<String>, mpsc::Receiver<()>) {
+            let (done_tx, done_rx) = mpsc::channel();
+            let resolver = fixed_resolver(git_dir.to_path_buf());
+            let handle = thread::spawn(move || {
+                let output = run_codex_mutation_scope_from_payload_with(
+                    &pre_tool_use_json(&[(
+                        TOOL_USE_ID_FIELD,
+                        Value::String(tool_use_id.to_string()),
+                    )]),
+                    None,
+                    &resolver,
+                    &seam,
+                )
+                .expect("PreToolUse should return Ok");
+                let _ = done_tx.send(());
+                output
+            });
+            (handle, done_rx)
+        }
+
+        fn assert_still_blocked(done_rx: &mpsc::Receiver<()>, context: &str) {
+            assert!(
+                done_rx.recv_timeout(Duration::from_millis(250)).is_err(),
+                "{context}: the operation must still be blocked on the boundary lock",
+            );
+        }
+
+        fn first_index_of(recorded: &[String], operation: &str) -> Option<usize> {
+            recorded
+                .iter()
+                .position(|payload| payload.contains(&format!(r#""operation":"{operation}""#)))
+        }
+
         #[test]
-        fn test_a_recovery_armed_mid_abandon_blocks_a_concurrent_tracked_pre_tool_use() {
-            let git_dir = unique_test_git_dir("race-admission-vs-recovery");
+        fn test_h_cleanup_owning_the_boundary_lock_blocks_admission_until_recovery_is_processed() {
+            let git_dir = unique_test_git_dir("test-h-cleanup-owns-boundary");
             std::fs::create_dir_all(&git_dir).expect("git dir should be created");
             seed_attempt(
                 &git_dir,
@@ -2064,11 +2136,10 @@ mod tests {
                 state::AttemptPhase::Active,
             );
 
-            let calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-            let (abandon_seam, gate) = gated_seam("abandon", Arc::clone(&calls));
+            let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let (abandon_seam, gate) = gated_seam("abandon", Arc::clone(&recorded));
 
             let sweeper = {
-                let git_dir = git_dir.clone();
                 let resolver = fixed_resolver(git_dir.clone());
                 thread::spawn(move || {
                     run_codex_mutation_scope_from_payload_with(
@@ -2082,65 +2153,147 @@ mod tests {
             };
 
             gate.wait_until_entered();
-
             assert_eq!(
                 read_state(&git_dir).recovery,
                 state::RecoveryState::Pending { generation: 1 },
-                "arm_recovery must run before the abandon seam call",
+                "cleanup arms recovery while it owns the boundary lock",
             );
 
-            let resolver = fixed_resolver(git_dir.clone());
-            let output = run_codex_mutation_scope_from_payload_with(
-                &pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String("exec-b".to_string()))]),
-                None,
-                &resolver,
-                &unreachable_seam,
-            )
-            .expect("the concurrent tracked PreToolUse must return a deny payload");
-            assert_eq!(
-                output,
-                pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON),
-                "Test A: B must be denied and must never reach the Start seam",
+            let (b_handle, b_done) =
+                spawn_pre_tool_use(&git_dir, "exec-b", recording_seam(Arc::clone(&recorded)));
+            assert_still_blocked(&b_done, "Test H");
+            assert!(
+                first_index_of(&recorded.lock().unwrap(), "start").is_none(),
+                "Test H: B must not reach Start while cleanup owns the boundary lock",
             );
 
             gate.release();
             sweeper.join().expect("sweeper thread should not panic");
 
-            let recorded = calls.lock().expect("calls mutex").clone();
-            assert!(
-                recorded
-                    .iter()
-                    .all(|payload| !payload.contains(r#""operation":"start""#)),
-                "Test A: no start payload for B may reach the seam, got {recorded:?}",
+            let b_output = b_handle.join().expect("B thread should not panic");
+            assert_eq!(
+                b_output, "",
+                "Test H: once recovery is processed B proceeds"
             );
-            assert!(read_state(&git_dir).attempts.is_empty());
+
+            let recorded = recorded.lock().unwrap().clone();
+            let abandon_at =
+                first_index_of(&recorded, "abandon").expect("cleanup abandoned exec-a");
+            let flush_at = first_index_of(&recorded, "flush").expect("B drove the quiescent flush");
+            let start_at = first_index_of(&recorded, "start").expect("B reached Start");
+            assert!(
+                abandon_at < flush_at && flush_at < start_at,
+                "Test H: the serialized order must be abandon -> flush -> start, got {recorded:?}",
+            );
+
+            let final_state = read_state(&git_dir);
+            assert!(final_state.recovery.is_clear());
+            assert_eq!(final_state.attempts.len(), 1);
+            assert_eq!(final_state.attempts[0].tool_use_id, "exec-b");
+            assert_eq!(final_state.attempts[0].phase, state::AttemptPhase::Active);
 
             remove_test_git_dir(&git_dir);
         }
 
         #[test]
-        fn test_b_two_quiescent_recovery_callers_emit_exactly_one_flush() {
-            let git_dir = unique_test_git_dir("race-two-quiescent-flush");
+        fn test_g_admission_completed_recovery_cannot_arm_before_start() {
+            let git_dir = unique_test_git_dir("test-g-admit-before-start");
             std::fs::create_dir_all(&git_dir).expect("git dir should be created");
-            let generation = state::arm_recovery(&git_dir).expect("arming recovery should succeed");
 
-            let flush_calls = Arc::new(AtomicUsize::new(0));
-            let calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-            let (owner_seam, gate) = gated_seam("flush", Arc::clone(&calls));
+            let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let (start_seam, gate) = gated_seam("start", Arc::clone(&recorded));
+
+            let p1 = {
+                let resolver = fixed_resolver(git_dir.clone());
+                thread::spawn(move || {
+                    run_codex_mutation_scope_from_payload_with(
+                        &pre_tool_use_json(&[(
+                            TOOL_USE_ID_FIELD,
+                            Value::String("exec-b".to_string()),
+                        )]),
+                        None,
+                        &resolver,
+                        &start_seam,
+                    )
+                    .expect("P1 PreToolUse should return Ok")
+                })
+            };
+
+            gate.wait_until_entered();
+            let mid = read_state(&git_dir);
+            assert_eq!(mid.attempts.len(), 1);
+            assert_eq!(mid.attempts[0].phase, state::AttemptPhase::PendingStart);
+            assert!(
+                mid.recovery.is_clear(),
+                "recovery must still be Clear while P1 holds the boundary lock pre-Start",
+            );
+
+            let (p2_handle, p2_done) = spawn_pre_tool_use(
+                &git_dir,
+                "exec-cleanup-trigger",
+                recording_seam(Arc::clone(&recorded)),
+            );
+
+            let sweeper = {
+                let resolver = fixed_resolver(git_dir.clone());
+                let recorded = Arc::clone(&recorded);
+                thread::spawn(move || {
+                    let seam = recording_seam(recorded);
+                    run_codex_mutation_scope_from_payload_with(
+                        &session_end_payload("session-1"),
+                        None,
+                        &resolver,
+                        &seam,
+                    )
+                    .expect("SessionEnd cleanup should return Ok")
+                })
+            };
+
+            assert_still_blocked(&p2_done, "Test G");
+            assert!(
+                read_state(&git_dir).recovery.is_clear(),
+                "Test G: no concurrent process may arm recovery between admit(B) and Start(B)",
+            );
+
+            gate.release();
+            assert_eq!(p1.join().expect("P1 should not panic"), "");
+            sweeper.join().expect("sweeper should not panic");
+            p2_handle.join().expect("P2 should not panic");
+
+            let recorded = recorded.lock().unwrap().clone();
+            let start_at = first_index_of(&recorded, "start").expect("P1 drove Start(B)");
+            if let Some(abandon_at) = first_index_of(&recorded, "abandon") {
+                assert!(
+                    start_at < abandon_at,
+                    "Test G: Start(B) must be serialized before any later abandon, got {recorded:?}",
+                );
+            }
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn test_j_a_live_flush_owner_is_never_reclaimed_by_a_blocked_process() {
+            let git_dir = unique_test_git_dir("test-j-live-flush-owner");
+            std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+            state::arm_recovery(&git_dir).expect("arm recovery");
+
+            let flush_count = Arc::new(AtomicUsize::new(0));
+            let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let (owner_gated, gate) = gated_seam("flush", Arc::clone(&recorded));
 
             let owner = {
-                let git_dir = git_dir.clone();
                 let resolver = fixed_resolver(git_dir.clone());
-                let flush_calls = Arc::clone(&flush_calls);
+                let flush_count = Arc::clone(&flush_count);
                 thread::spawn(move || {
                     let seam = move |root: &Path,
                                      payload: &str,
                                      logger: Option<&dyn Logger>|
                           -> Result<String> {
                         if payload.contains(r#""operation":"flush""#) {
-                            flush_calls.fetch_add(1, Ordering::SeqCst);
+                            flush_count.fetch_add(1, Ordering::SeqCst);
                         }
-                        owner_seam(root, payload, logger)
+                        owner_gated(root, payload, logger)
                     };
                     run_codex_mutation_scope_from_payload_with(
                         &pre_tool_use_json(&[(
@@ -2156,49 +2309,234 @@ mod tests {
             };
 
             gate.wait_until_entered();
-
-            let resolver = fixed_resolver(git_dir.clone());
-            let contender_flushes = Arc::new(AtomicUsize::new(0));
-            let contender_flushes_seam = Arc::clone(&contender_flushes);
-            let contender_seam = move |_root: &Path,
-                                       payload: &str,
-                                       _logger: Option<&dyn Logger>|
-                  -> Result<String> {
-                if payload.contains(r#""operation":"flush""#) {
-                    contender_flushes_seam.fetch_add(1, Ordering::SeqCst);
-                }
-                Ok(String::new())
-            };
-            let contender_output = run_codex_mutation_scope_from_payload_with(
-                &pre_tool_use_json(&[(
-                    TOOL_USE_ID_FIELD,
-                    Value::String("exec-contender".to_string()),
-                )]),
-                None,
-                &resolver,
-                &contender_seam,
-            )
-            .expect("contender PreToolUse should return Ok");
             assert_eq!(
-                contender_output,
-                pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON),
-                "Test B: the contender must stay fail-closed while the owner flushes",
+                read_state(&git_dir).recovery,
+                state::RecoveryState::Flushing { generation: 1 },
             );
+
+            let flush_count_p2 = Arc::clone(&flush_count);
+            let (p2_handle, p2_done) =
+                spawn_pre_tool_use(&git_dir, "exec-2", move |_r, payload, _l| {
+                    if payload.contains(r#""operation":"flush""#) {
+                        flush_count_p2.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Ok(String::new())
+                });
+
+            assert_still_blocked(&p2_done, "Test J");
             assert_eq!(
-                contender_flushes.load(Ordering::SeqCst),
-                0,
-                "Test B: only the owner may run the flush for generation {generation}",
+                read_state(&git_dir).recovery,
+                state::RecoveryState::Flushing { generation: 1 },
+                "Test J: a blocked process must not reclaim the live owner's Flushing(g)",
             );
 
             gate.release();
-            owner.join().expect("owner thread should not panic");
+            assert_eq!(owner.join().expect("owner should not panic"), "");
+            assert_eq!(p2_handle.join().expect("P2 should not panic"), "");
 
             assert_eq!(
-                flush_calls.load(Ordering::SeqCst),
+                flush_count.load(Ordering::SeqCst),
                 1,
-                "Test B: exactly one Flush is emitted for the recovery generation",
+                "Test J: exactly one Flush ran — the live owner's, never a reclaim",
             );
+            let final_state = read_state(&git_dir);
+            assert!(final_state.recovery.is_clear());
+            assert_eq!(final_state.attempts.len(), 2);
+            assert!(final_state
+                .attempts
+                .iter()
+                .all(|a| a.phase == state::AttemptPhase::Active));
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        fn seed_orphaned_flushing(git_dir: &Path) -> u64 {
+            let generation = state::arm_recovery(git_dir).expect("arm recovery to seed");
+            match state::admit_tracked_attempt(git_dir, &key("seed", None, "seed"), "Bash")
+                .expect("seeding admit should not error")
+            {
+                state::AdmitDecision::FlushClaimed {
+                    generation: claimed,
+                } => {
+                    assert_eq!(claimed, generation);
+                }
+                other => panic!("expected FlushClaimed while seeding, got {other:?}"),
+            }
+            assert_eq!(
+                read_state(git_dir).recovery,
+                state::RecoveryState::Flushing { generation },
+                "seed left durable Flushing(g) with no live boundary-lock owner",
+            );
+            generation
+        }
+
+        #[test]
+        fn test_i_orphaned_flushing_is_reclaimed_and_flush_is_retried_once() {
+            let git_dir = unique_test_git_dir("test-i-orphaned-flushing");
+            std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+            let generation = seed_orphaned_flushing(&git_dir);
+            let next_generation_before = read_state(&git_dir).next_recovery_generation;
+
+            let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let resolver = fixed_resolver(git_dir.clone());
+            let output = drive(
+                &pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String("exec-x".to_string()))]),
+                &resolver,
+                &recording_seam(Arc::clone(&recorded)),
+            );
+            assert_eq!(output, "");
+
+            let ops = recorded.lock().unwrap().clone();
+            assert_eq!(
+                ops.iter()
+                    .filter(|p| p.contains(r#""operation":"flush""#))
+                    .count(),
+                1,
+                "Test I: exactly one retry Flush for the reclaimed generation, got {ops:?}",
+            );
+            assert!(
+                first_index_of(&ops, "flush").unwrap() < first_index_of(&ops, "start").unwrap()
+            );
+
+            let final_state = read_state(&git_dir);
+            assert!(
+                final_state.recovery.is_clear(),
+                "Test I: no permanent RecoveryBlocked"
+            );
+            assert_eq!(
+                final_state.next_recovery_generation, next_generation_before,
+                "Test I: reclaiming Flushing(g) preserves the generation, never bumps it",
+            );
+            assert_eq!(final_state.attempts.len(), 1);
+            assert_eq!(final_state.attempts[0].tool_use_id, "exec-x");
+            assert_eq!(final_state.attempts[0].phase, state::AttemptPhase::Active);
+            let _ = generation;
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn test_k_crash_after_durable_flush_before_completion_write_converges() {
+            let git_dir = unique_test_git_dir("test-k-crash-after-flush");
+            std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+            seed_orphaned_flushing(&git_dir);
+
+            let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let resolver = fixed_resolver(git_dir.clone());
+
+            let first = drive(
+                &pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String("exec-1".to_string()))]),
+                &resolver,
+                &recording_seam(Arc::clone(&recorded)),
+            );
+            assert_eq!(first, "");
             assert!(read_state(&git_dir).recovery.is_clear());
+
+            let second = drive(
+                &pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String("exec-2".to_string()))]),
+                &resolver,
+                &recording_seam(Arc::clone(&recorded)),
+            );
+            assert_eq!(second, "");
+
+            let ops = recorded.lock().unwrap().clone();
+            assert_eq!(
+                ops.iter()
+                    .filter(|p| p.contains(r#""operation":"flush""#))
+                    .count(),
+                1,
+                "Test K: the recovery retry Flush runs exactly once across convergence, got {ops:?}",
+            );
+            let final_state = read_state(&git_dir);
+            assert!(final_state.recovery.is_clear());
+            assert_eq!(final_state.attempts.len(), 2);
+            assert!(final_state
+                .attempts
+                .iter()
+                .all(|a| a.phase == state::AttemptPhase::Active));
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn test_l_duplicate_active_delivery_drives_no_second_start() {
+            let git_dir = unique_test_git_dir("test-l-duplicate-active");
+            std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+            let resolver = fixed_resolver(git_dir.clone());
+            let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+            let first = drive(
+                &pre_tool_use_json(&[]),
+                &resolver,
+                &recording_seam(Arc::clone(&recorded)),
+            );
+            assert_eq!(first, "");
+            let scope_id = read_state(&git_dir).attempts[0].scope_id.clone();
+            assert_eq!(
+                read_state(&git_dir).attempts[0].phase,
+                state::AttemptPhase::Active
+            );
+
+            let duplicate = drive(
+                &pre_tool_use_json(&[]),
+                &resolver,
+                &recording_seam(Arc::clone(&recorded)),
+            );
+            assert_eq!(duplicate, "");
+
+            let ops = recorded.lock().unwrap().clone();
+            assert_eq!(
+                ops.iter()
+                    .filter(|p| p.contains(r#""operation":"start""#))
+                    .count(),
+                1,
+                "Test L: duplicate delivery of an Active execution drives no second Start, got {ops:?}",
+            );
+            let attempts = read_state(&git_dir).attempts;
+            assert_eq!(attempts.len(), 1);
+            assert_eq!(attempts[0].scope_id, scope_id);
+            assert_eq!(read_state(&git_dir).next_attempt_seq, 2);
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn test_m_untracked_tools_never_touch_the_boundary_lock() {
+            let git_dir = unique_test_git_dir("test-m-untracked-no-boundary");
+            let resolver = fixed_resolver(git_dir.clone());
+
+            for tool in [
+                "mcp__probe__mutate_success",
+                "some_future_codex_tool",
+                "collaborationspawn_agent",
+                "collaborationwait_agent",
+            ] {
+                let payload =
+                    pre_tool_use_json(&[(TOOL_NAME_FIELD, Value::String(tool.to_string()))]);
+                assert_eq!(
+                    run_codex_mutation_scope_from_payload_with(
+                        &payload,
+                        None,
+                        &panicking_resolver,
+                        &unreachable_seam,
+                    )
+                    .expect("an untracked PreToolUse is neutral"),
+                    "",
+                );
+                assert_eq!(drive(&payload, &resolver, &unreachable_seam), "");
+            }
+
+            assert!(
+                !crate::services::hooks::codex_mutation_scope::boundary_lock::boundary_lock_path(
+                    &git_dir
+                )
+                .exists(),
+                "Test M: no untracked tool may create the adapter boundary lock",
+            );
+            assert!(
+                !state::adapter_state_dir(&git_dir).exists(),
+                "Test M: an untracked tool resolves no git dir and touches no adapter state",
+            );
 
             remove_test_git_dir(&git_dir);
         }

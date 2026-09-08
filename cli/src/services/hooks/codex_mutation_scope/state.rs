@@ -1,18 +1,19 @@
-use std::fs::{File, OpenOptions, TryLockError};
+use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
+use super::os_lock::{AdvisoryLockError, OsAdvisoryLock};
 use super::{format_codex_scope_id, AttemptKey};
 
 const SCE_STATE_DIR: &str = "sce";
 const ADAPTER_STATE_FILE: &str = "codex-mutation-scope-state.json";
 const ADAPTER_STATE_LOCK_FILE: &str = "codex-mutation-scope-state.lock";
+const STATE_LOCK_WHAT: &str = "adapter-state";
 
-const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
 const ADAPTER_STATE_VERSION: u32 = 2;
@@ -109,99 +110,31 @@ pub(crate) enum RecoveryFlushCompletion {
     Superseded,
 }
 
-fn state_dir(git_dir: &Path) -> PathBuf {
+pub(crate) fn adapter_state_dir(git_dir: &Path) -> PathBuf {
     git_dir.join(SCE_STATE_DIR)
 }
 
 fn state_path(git_dir: &Path) -> PathBuf {
-    state_dir(git_dir).join(ADAPTER_STATE_FILE)
+    adapter_state_dir(git_dir).join(ADAPTER_STATE_FILE)
 }
 
 fn lock_path(git_dir: &Path) -> PathBuf {
-    state_dir(git_dir).join(ADAPTER_STATE_LOCK_FILE)
+    adapter_state_dir(git_dir).join(ADAPTER_STATE_LOCK_FILE)
 }
 
 struct AdapterStateLock {
-    file: File,
+    _inner: OsAdvisoryLock,
 }
-
-#[derive(Debug)]
-pub(crate) enum AdapterStateLockError {
-    TimedOut { path: PathBuf, timeout: Duration },
-    Io(anyhow::Error),
-}
-
-impl std::fmt::Display for AdapterStateLockError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AdapterStateLockError::TimedOut { path, timeout } => write!(
-                f,
-                "Timed out after {timeout:?} waiting for adapter-state lock '{}'",
-                path.display()
-            ),
-            AdapterStateLockError::Io(source) => write!(f, "{source}"),
-        }
-    }
-}
-
-impl std::error::Error for AdapterStateLockError {}
 
 impl AdapterStateLock {
-    fn acquire(
-        git_dir: &Path,
-        timeout: Duration,
-    ) -> Result<AdapterStateLock, AdapterStateLockError> {
-        let dir = state_dir(git_dir);
-        std::fs::create_dir_all(&dir)
-            .with_context(|| {
-                format!(
-                    "Failed to create adapter state directory '{}'",
-                    dir.display()
-                )
-            })
-            .map_err(AdapterStateLockError::Io)?;
-
-        let path = lock_path(git_dir);
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .with_context(|| {
-                format!(
-                    "Failed to open adapter-state lock file '{}'",
-                    path.display()
-                )
-            })
-            .map_err(AdapterStateLockError::Io)?;
-
-        let deadline = Instant::now() + timeout;
-        loop {
-            match file.try_lock() {
-                Ok(()) => return Ok(AdapterStateLock { file }),
-                Err(TryLockError::WouldBlock) => {
-                    let now = Instant::now();
-                    if now >= deadline {
-                        return Err(AdapterStateLockError::TimedOut { path, timeout });
-                    }
-                    std::thread::sleep(LOCK_POLL_INTERVAL.min(deadline - now));
-                }
-                Err(TryLockError::Error(source)) => {
-                    return Err(AdapterStateLockError::Io(
-                        anyhow::Error::new(source).context(format!(
-                            "Failed to acquire adapter-state lock '{}'",
-                            path.display()
-                        )),
-                    ));
-                }
-            }
-        }
-    }
-}
-
-impl Drop for AdapterStateLock {
-    fn drop(&mut self) {
-        let _ = self.file.unlock();
+    fn acquire(git_dir: &Path, timeout: Duration) -> Result<AdapterStateLock, AdvisoryLockError> {
+        let inner = OsAdvisoryLock::acquire(
+            &adapter_state_dir(git_dir),
+            lock_path(git_dir),
+            timeout,
+            STATE_LOCK_WHAT,
+        )?;
+        Ok(AdapterStateLock { _inner: inner })
     }
 }
 
@@ -242,7 +175,7 @@ fn write_state_durably_inner<F>(
 where
     F: FnOnce(&Path, &Path) -> Result<()>,
 {
-    let dir = state_dir(git_dir);
+    let dir = adapter_state_dir(git_dir);
     std::fs::create_dir_all(&dir).with_context(|| {
         format!(
             "Failed to create adapter state directory '{}'",
@@ -404,6 +337,17 @@ pub(crate) fn remove_attempt(git_dir: &Path, scope_id: &str) -> Result<()> {
         return Ok(());
     }
     write_state_durably(git_dir, &state)
+}
+
+pub(crate) fn normalize_recovery_after_boundary_lock_acquired(git_dir: &Path) -> Result<()> {
+    let _lock = acquire_lock(git_dir)?;
+    let mut state = read_state(git_dir)?;
+
+    if let RecoveryState::Flushing { generation } = state.recovery {
+        state.recovery = RecoveryState::Pending { generation };
+        write_state_durably(git_dir, &state)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn arm_recovery(git_dir: &Path) -> Result<u64> {
@@ -934,6 +878,50 @@ mod tests {
     }
 
     #[test]
+    fn normalize_after_boundary_lock_reclaims_orphaned_flushing_to_pending_same_generation() {
+        let git_dir = unique_test_git_dir("normalize-orphaned-flushing");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+
+        arm_recovery(&git_dir).expect("arm g1");
+        admit(&git_dir, &key("session-1", None, "exec-new"), "Bash");
+        assert_eq!(
+            read_state(&git_dir).expect("state readable").recovery,
+            RecoveryState::Flushing { generation: 1 },
+        );
+        let next_generation_before = read_state(&git_dir)
+            .expect("state readable")
+            .next_recovery_generation;
+
+        normalize_recovery_after_boundary_lock_acquired(&git_dir)
+            .expect("normalize should succeed");
+
+        let state = read_state(&git_dir).expect("state readable");
+        assert_eq!(state.recovery, RecoveryState::Pending { generation: 1 });
+        assert_eq!(state.next_recovery_generation, next_generation_before);
+    }
+
+    #[test]
+    fn normalize_after_boundary_lock_is_a_no_op_for_clear_or_pending() {
+        let git_dir = unique_test_git_dir("normalize-noop");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+
+        normalize_recovery_after_boundary_lock_acquired(&git_dir).expect("normalize on clear");
+        assert!(read_state(&git_dir)
+            .expect("state readable")
+            .recovery
+            .is_clear());
+
+        arm_recovery(&git_dir).expect("arm");
+        normalize_recovery_after_boundary_lock_acquired(&git_dir).expect("normalize on pending");
+        assert_eq!(
+            read_state(&git_dir).expect("state readable").recovery,
+            RecoveryState::Pending { generation: 1 },
+        );
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
     fn relinquish_recovery_flush_returns_a_claimed_generation_to_pending() {
         let git_dir = unique_test_git_dir("relinquish-to-pending");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
@@ -1075,7 +1063,7 @@ mod tests {
     #[test]
     fn malformed_state_file_is_rejected_without_fabricating_bookkeeping() {
         let git_dir = unique_test_git_dir("malformed-json");
-        let dir = state_dir(&git_dir);
+        let dir = adapter_state_dir(&git_dir);
         std::fs::create_dir_all(&dir).expect("state dir should be created");
         std::fs::write(state_path(&git_dir), b"not json")
             .expect("malformed file should be written");
@@ -1104,7 +1092,7 @@ mod tests {
             }),
         ] {
             let git_dir = unique_test_git_dir("unsupported-version");
-            let dir = state_dir(&git_dir);
+            let dir = adapter_state_dir(&git_dir);
             std::fs::create_dir_all(&dir).expect("state dir should be created");
             std::fs::write(state_path(&git_dir), payload.to_string())
                 .expect("state file should be written");
@@ -1122,7 +1110,7 @@ mod tests {
     #[test]
     fn interruption_before_rename_leaves_the_canonical_path_unaffected() {
         let git_dir = unique_test_git_dir("interrupted-before-rename");
-        let dir = state_dir(&git_dir);
+        let dir = adapter_state_dir(&git_dir);
         std::fs::create_dir_all(&dir).expect("state dir should be created");
 
         let state = AdapterState {
@@ -1148,7 +1136,7 @@ mod tests {
     #[test]
     fn a_leftover_lock_file_with_no_active_os_lock_does_not_block_a_new_acquirer() {
         let git_dir = unique_test_git_dir("leftover-lock-file");
-        let dir = state_dir(&git_dir);
+        let dir = adapter_state_dir(&git_dir);
         std::fs::create_dir_all(&dir).expect("state dir should be created");
         std::fs::write(lock_path(&git_dir), b"leftover")
             .expect("leftover lock file should be writable");
