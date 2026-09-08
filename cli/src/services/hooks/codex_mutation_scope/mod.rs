@@ -525,13 +525,17 @@ fn handle_pre_tool_use(
     };
 
     let key = identity.attempt_key();
+    let turn_id = identity.turn_id.as_str();
     let outcome = with_boundary_lock(&git_dir, || {
         state::normalize_recovery_after_boundary_lock_acquired(&git_dir)?;
+
+        sweep_stale_lane_predecessors(&git_dir, repository_root, &key, turn_id, logger, seam)?;
 
         match admit_or_recover(
             &git_dir,
             repository_root,
             &key,
+            turn_id,
             &identity.tool_name,
             logger,
             seam,
@@ -587,24 +591,50 @@ enum Admission {
     Denied,
 }
 
+fn sweep_stale_lane_predecessors(
+    git_dir: &Path,
+    repository_root: &Path,
+    key: &AttemptKey,
+    turn_id: &str,
+    logger: Option<&dyn Logger>,
+    seam: IngressSeam,
+) -> Result<()> {
+    loop {
+        let current = state::read_state(git_dir)?;
+        let Some(stale) = current
+            .attempts
+            .iter()
+            .find(|attempt| {
+                attempt.in_builtin_lane(&key.session_id, turn_id)
+                    && !attempt_matches_key(attempt, key)
+            })
+            .cloned()
+        else {
+            return Ok(());
+        };
+        abandon_attempt(git_dir, repository_root, &stale, logger, seam)?;
+    }
+}
+
 fn admit_or_recover(
     git_dir: &Path,
     repository_root: &Path,
     key: &AttemptKey,
+    turn_id: &str,
     tool_name: &str,
     logger: Option<&dyn Logger>,
     seam: IngressSeam,
 ) -> Result<Admission> {
-    match state::admit_tracked_attempt(git_dir, key, tool_name)? {
+    match state::admit_tracked_attempt(git_dir, key, turn_id, tool_name)? {
         state::AdmitDecision::Admitted(allocated) => Ok(Admission::Admitted(allocated)),
-        state::AdmitDecision::RecoveryBlocked | state::AdmitDecision::UncertainAttemptBlocked => {
-            Ok(Admission::Denied)
-        }
+        state::AdmitDecision::RecoveryBlocked
+        | state::AdmitDecision::UncertainAttemptBlocked
+        | state::AdmitDecision::StalePredecessorBlocked => Ok(Admission::Denied),
         state::AdmitDecision::FlushClaimed { generation } => {
             match seam(repository_root, &flush_payload(), logger) {
                 Ok(_) => match state::complete_recovery_flush(git_dir, generation)? {
                     state::RecoveryFlushCompletion::Cleared => {
-                        readmit_after_flush(git_dir, key, tool_name)
+                        readmit_after_flush(git_dir, key, turn_id, tool_name)
                     }
                     state::RecoveryFlushCompletion::Superseded => Ok(Admission::Denied),
                 },
@@ -618,16 +648,21 @@ fn admit_or_recover(
     }
 }
 
-fn readmit_after_flush(git_dir: &Path, key: &AttemptKey, tool_name: &str) -> Result<Admission> {
-    match state::admit_tracked_attempt(git_dir, key, tool_name)? {
+fn readmit_after_flush(
+    git_dir: &Path,
+    key: &AttemptKey,
+    turn_id: &str,
+    tool_name: &str,
+) -> Result<Admission> {
+    match state::admit_tracked_attempt(git_dir, key, turn_id, tool_name)? {
         state::AdmitDecision::Admitted(allocated) => Ok(Admission::Admitted(allocated)),
         state::AdmitDecision::FlushClaimed { generation } => {
             state::relinquish_recovery_flush(git_dir, generation)?;
             Ok(Admission::Denied)
         }
-        state::AdmitDecision::RecoveryBlocked | state::AdmitDecision::UncertainAttemptBlocked => {
-            Ok(Admission::Denied)
-        }
+        state::AdmitDecision::RecoveryBlocked
+        | state::AdmitDecision::UncertainAttemptBlocked
+        | state::AdmitDecision::StalePredecessorBlocked => Ok(Admission::Denied),
     }
 }
 
@@ -1453,9 +1488,29 @@ mod tests {
             state::read_state(git_dir).expect("adapter state should be readable")
         }
 
+        const DRIVER_TURN: &str = "turn-1";
+
         fn seed_attempt(
             git_dir: &Path,
             session_id: &str,
+            agent_id: Option<&str>,
+            tool_use_id: &str,
+            phase: state::AttemptPhase,
+        ) -> state::AdapterAttempt {
+            seed_attempt_in_turn(
+                git_dir,
+                session_id,
+                DRIVER_TURN,
+                agent_id,
+                tool_use_id,
+                phase,
+            )
+        }
+
+        fn seed_attempt_in_turn(
+            git_dir: &Path,
+            session_id: &str,
+            turn_id: &str,
             agent_id: Option<&str>,
             tool_use_id: &str,
             phase: state::AttemptPhase,
@@ -1467,6 +1522,7 @@ mod tests {
                     agent_id: agent_id.map(str::to_string),
                     tool_use_id: tool_use_id.to_string(),
                 },
+                turn_id,
                 "Bash",
                 phase,
             )
@@ -1634,10 +1690,13 @@ mod tests {
                 state::AttemptPhase::PendingStart
             );
 
-            let successor = pre_tool_use_json(&[(
-                TOOL_USE_ID_FIELD,
-                Value::String("exec-successor".to_string()),
-            )]);
+            let successor = pre_tool_use_json(&[
+                (
+                    TOOL_USE_ID_FIELD,
+                    Value::String("exec-successor".to_string()),
+                ),
+                (TURN_ID_FIELD, Value::String("turn-2".to_string())),
+            ]);
             assert_eq!(
                 run_codex_mutation_scope_from_payload_with(
                     &successor,
@@ -1647,7 +1706,7 @@ mod tests {
                 )
                 .expect("successor must return Ok with a deny payload"),
                 pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON),
-                "I5: an unresolved PendingStart must block a successor Start",
+                "I5: an unresolved PendingStart in another lane must block a successor Start",
             );
 
             remove_test_git_dir(&git_dir);
@@ -1968,9 +2027,10 @@ mod tests {
         fn recovery_barrier_denies_new_tracked_pre_tool_use_while_attempts_remain_ac12() {
             let git_dir = unique_test_git_dir("barrier-attempts-remain");
             let resolver = fixed_resolver(git_dir.clone());
-            seed_attempt(
+            seed_attempt_in_turn(
                 &git_dir,
                 "session-1",
+                "turn-other",
                 None,
                 "exec-live",
                 state::AttemptPhase::Active,
@@ -2226,14 +2286,23 @@ mod tests {
             tool_use_id: &'static str,
             seam: impl Fn(&Path, &str, Option<&dyn Logger>) -> Result<String> + Send + 'static,
         ) -> (thread::JoinHandle<String>, mpsc::Receiver<()>) {
+            spawn_pre_tool_use_in_turn(git_dir, tool_use_id, DRIVER_TURN, seam)
+        }
+
+        fn spawn_pre_tool_use_in_turn(
+            git_dir: &Path,
+            tool_use_id: &'static str,
+            turn_id: &'static str,
+            seam: impl Fn(&Path, &str, Option<&dyn Logger>) -> Result<String> + Send + 'static,
+        ) -> (thread::JoinHandle<String>, mpsc::Receiver<()>) {
             let (done_tx, done_rx) = mpsc::channel();
             let resolver = fixed_resolver(git_dir.to_path_buf());
             let handle = thread::spawn(move || {
                 let output = run_codex_mutation_scope_from_payload_with(
-                    &pre_tool_use_json(&[(
-                        TOOL_USE_ID_FIELD,
-                        Value::String(tool_use_id.to_string()),
-                    )]),
+                    &pre_tool_use_json(&[
+                        (TOOL_USE_ID_FIELD, Value::String(tool_use_id.to_string())),
+                        (TURN_ID_FIELD, Value::String(turn_id.to_string())),
+                    ]),
                     None,
                     &resolver,
                     &seam,
@@ -2450,7 +2519,7 @@ mod tests {
 
             let flush_count_p2 = Arc::clone(&flush_count);
             let (p2_handle, p2_done) =
-                spawn_pre_tool_use(&git_dir, "exec-2", move |_r, payload, _l| {
+                spawn_pre_tool_use_in_turn(&git_dir, "exec-2", "turn-2", move |_r, payload, _l| {
                     if payload.contains(r#""operation":"flush""#) {
                         flush_count_p2.fetch_add(1, Ordering::SeqCst);
                     }
@@ -2486,8 +2555,13 @@ mod tests {
 
         fn seed_orphaned_flushing(git_dir: &Path) -> u64 {
             let generation = state::arm_recovery(git_dir).expect("arm recovery to seed");
-            match state::admit_tracked_attempt(git_dir, &key("seed", None, "seed"), "Bash")
-                .expect("seeding admit should not error")
+            match state::admit_tracked_attempt(
+                git_dir,
+                &key("seed", None, "seed"),
+                "seed-turn",
+                "Bash",
+            )
+            .expect("seeding admit should not error")
             {
                 state::AdmitDecision::FlushClaimed {
                     generation: claimed,
@@ -2567,7 +2641,10 @@ mod tests {
             assert!(read_state(&git_dir).recovery.is_clear());
 
             let second = drive(
-                &pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String("exec-2".to_string()))]),
+                &pre_tool_use_json(&[
+                    (TOOL_USE_ID_FIELD, Value::String("exec-2".to_string())),
+                    (TURN_ID_FIELD, Value::String("turn-2".to_string())),
+                ]),
                 &resolver,
                 &recording_seam(Arc::clone(&recorded)),
             );
@@ -2858,8 +2935,10 @@ mod tests {
             );
             assert!(after_start.recovery.is_clear());
 
-            let successor =
-                pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String("exec-b".to_string()))]);
+            let successor = pre_tool_use_json(&[
+                (TOOL_USE_ID_FIELD, Value::String("exec-b".to_string())),
+                (TURN_ID_FIELD, Value::String("turn-2".to_string())),
+            ]);
             assert_eq!(
                 run_codex_mutation_scope_from_payload_with(
                     &successor,
@@ -2869,7 +2948,7 @@ mod tests {
                 )
                 .expect("successor returns a deny payload"),
                 pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON),
-                "Test D: an uncertain PendingStart blocks a successor Start",
+                "Test D: an uncertain PendingStart in another lane blocks a successor Start",
             );
 
             drive(&session_end_payload("session-1"), &resolver, &ok_seam);
@@ -3107,6 +3186,354 @@ mod tests {
             );
 
             remove_test_git_dir(&repo);
+        }
+
+        fn operations(recorded: &[String]) -> Vec<String> {
+            recorded
+                .iter()
+                .filter_map(|payload| {
+                    for op in ["start", "close", "abandon", "flush"] {
+                        if payload.contains(&format!(r#""operation":"{op}""#)) {
+                            return Some(op.to_string());
+                        }
+                    }
+                    None
+                })
+                .collect()
+        }
+
+        fn pre(tool_use_id: &str, tool_name: &str, overrides: &[(&str, Value)]) -> String {
+            let mut merged: Vec<(&str, Value)> = vec![
+                (TOOL_USE_ID_FIELD, Value::String(tool_use_id.to_string())),
+                (TOOL_NAME_FIELD, Value::String(tool_name.to_string())),
+            ];
+            if tool_name != CODEX_TRACKED_TOOL_BASH {
+                merged.push((TOOL_INPUT_FIELD, Value::Null));
+            }
+            merged.extend(
+                overrides
+                    .iter()
+                    .map(|(field, value)| (*field, value.clone())),
+            );
+            pre_tool_use_json(&merged)
+        }
+
+        fn assert_zombie_then_successor_sweep(
+            a_tool: &str,
+            b_tool: &str,
+            b_overrides: &[(&str, Value)],
+        ) {
+            let git_dir = unique_test_git_dir(&format!("zombie-successor-{a_tool}-{b_tool}"));
+            let resolver = fixed_resolver(git_dir.clone());
+            let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+            let started = drive(
+                &pre("exec-a", a_tool, &[]),
+                &resolver,
+                &recording_seam(Arc::clone(&recorded)),
+            );
+            assert_eq!(started, "");
+            assert_eq!(
+                read_state(&git_dir).attempts[0].phase,
+                state::AttemptPhase::Active,
+            );
+
+            let successor = drive(
+                &pre("exec-b", b_tool, b_overrides),
+                &resolver,
+                &recording_seam(Arc::clone(&recorded)),
+            );
+            assert_eq!(successor, "");
+
+            let ops = operations(&recorded.lock().unwrap());
+            assert_eq!(
+                ops,
+                vec![
+                    "start".to_string(),
+                    "abandon".to_string(),
+                    "flush".to_string(),
+                    "start".to_string(),
+                ],
+                "successor sequence must be Start(A) -> Abandon(A) -> Flush -> Start(B), never Start(A) -> Start(B) -> Abandon(A)",
+            );
+
+            let final_state = read_state(&git_dir);
+            assert_eq!(final_state.attempts.len(), 1);
+            assert_eq!(final_state.attempts[0].tool_use_id, "exec-b");
+            assert_eq!(final_state.attempts[0].phase, state::AttemptPhase::Active);
+            assert!(final_state.recovery.is_clear());
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn regression1_arbitrary_blocker_zombie_then_tracked_successor() {
+            assert_zombie_then_successor_sweep("Bash", "Bash", &[]);
+        }
+
+        #[test]
+        fn regression2_apply_patch_successor_variants() {
+            assert_zombie_then_successor_sweep("Bash", "apply_patch", &[]);
+            assert_zombie_then_successor_sweep("apply_patch", "Bash", &[]);
+            assert_zombie_then_successor_sweep("apply_patch", "apply_patch", &[]);
+        }
+
+        #[test]
+        fn regression3_parent_then_subagent_same_lane_is_swept() {
+            assert_zombie_then_successor_sweep(
+                "Bash",
+                "Bash",
+                &[(AGENT_ID_FIELD, Value::String("agent-1".to_string()))],
+            );
+        }
+
+        #[test]
+        fn regression3_subagent_then_parent_same_lane_is_swept() {
+            let git_dir = unique_test_git_dir("subagent-then-parent");
+            let resolver = fixed_resolver(git_dir.clone());
+            let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+            drive(
+                &pre(
+                    "exec-a",
+                    "Bash",
+                    &[(AGENT_ID_FIELD, Value::String("agent-1".to_string()))],
+                ),
+                &resolver,
+                &recording_seam(Arc::clone(&recorded)),
+            );
+            drive(
+                &pre("exec-b", "Bash", &[]),
+                &resolver,
+                &recording_seam(Arc::clone(&recorded)),
+            );
+
+            assert_eq!(
+                operations(&recorded.lock().unwrap()),
+                vec![
+                    "start".to_string(),
+                    "abandon".to_string(),
+                    "flush".to_string(),
+                    "start".to_string(),
+                ],
+            );
+            let final_state = read_state(&git_dir);
+            assert_eq!(final_state.attempts.len(), 1);
+            assert_eq!(final_state.attempts[0].tool_use_id, "exec-b");
+            assert!(final_state.attempts[0].agent_id.is_none());
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn regression4_different_session_is_not_swept() {
+            let git_dir = unique_test_git_dir("different-session-not-swept");
+            let resolver = fixed_resolver(git_dir.clone());
+            seed_attempt_in_turn(
+                &git_dir,
+                "session-1",
+                "turn-1",
+                None,
+                "exec-a",
+                state::AttemptPhase::Active,
+            );
+            let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+            let output = drive(
+                &pre(
+                    "exec-b",
+                    "Bash",
+                    &[(SESSION_ID_FIELD, Value::String("session-2".to_string()))],
+                ),
+                &resolver,
+                &recording_seam(Arc::clone(&recorded)),
+            );
+            assert_eq!(output, "");
+
+            assert_eq!(
+                operations(&recorded.lock().unwrap()),
+                vec!["start".to_string()]
+            );
+            let final_state = read_state(&git_dir);
+            assert_eq!(final_state.attempts.len(), 2);
+            assert!(final_state
+                .attempts
+                .iter()
+                .any(|attempt| attempt.tool_use_id == "exec-a"));
+            assert!(final_state.recovery.is_clear());
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn regression5_different_turn_is_not_swept_by_case_b_inference() {
+            let git_dir = unique_test_git_dir("different-turn-not-swept");
+            let resolver = fixed_resolver(git_dir.clone());
+            seed_attempt_in_turn(
+                &git_dir,
+                "session-1",
+                "turn-1",
+                None,
+                "exec-a",
+                state::AttemptPhase::Active,
+            );
+            let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+            let output = drive(
+                &pre(
+                    "exec-b",
+                    "Bash",
+                    &[(TURN_ID_FIELD, Value::String("turn-2".to_string()))],
+                ),
+                &resolver,
+                &recording_seam(Arc::clone(&recorded)),
+            );
+            assert_eq!(output, "");
+
+            assert_eq!(
+                operations(&recorded.lock().unwrap()),
+                vec!["start".to_string()]
+            );
+            let final_state = read_state(&git_dir);
+            assert_eq!(final_state.attempts.len(), 2);
+            assert!(final_state
+                .attempts
+                .iter()
+                .any(|attempt| attempt.tool_use_id == "exec-a"));
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn regression6_duplicate_same_attempt_key_is_not_swept() {
+            let git_dir = unique_test_git_dir("duplicate-not-swept");
+            let resolver = fixed_resolver(git_dir.clone());
+            let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+            drive(
+                &pre("exec-a", "Bash", &[]),
+                &resolver,
+                &recording_seam(Arc::clone(&recorded)),
+            );
+            let scope_id = read_state(&git_dir).attempts[0].scope_id.clone();
+            let next_seq = read_state(&git_dir).next_attempt_seq;
+
+            drive(
+                &pre("exec-a", "Bash", &[]),
+                &resolver,
+                &recording_seam(Arc::clone(&recorded)),
+            );
+
+            assert_eq!(
+                operations(&recorded.lock().unwrap()),
+                vec!["start".to_string()]
+            );
+            let final_state = read_state(&git_dir);
+            assert_eq!(final_state.attempts.len(), 1);
+            assert_eq!(final_state.attempts[0].scope_id, scope_id);
+            assert_eq!(final_state.next_attempt_seq, next_seq);
+            assert!(final_state.recovery.is_clear());
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn regression7_pending_start_predecessor_is_swept() {
+            let git_dir = unique_test_git_dir("pending-start-predecessor-swept");
+            let resolver = fixed_resolver(git_dir.clone());
+            seed_attempt_in_turn(
+                &git_dir,
+                "session-1",
+                "turn-1",
+                None,
+                "exec-a",
+                state::AttemptPhase::PendingStart,
+            );
+            let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+            let output = drive(
+                &pre("exec-b", "Bash", &[]),
+                &resolver,
+                &recording_seam(Arc::clone(&recorded)),
+            );
+            assert_eq!(output, "");
+
+            assert_eq!(
+                operations(&recorded.lock().unwrap()),
+                vec![
+                    "abandon".to_string(),
+                    "flush".to_string(),
+                    "start".to_string(),
+                ],
+            );
+            let final_state = read_state(&git_dir);
+            assert_eq!(final_state.attempts.len(), 1);
+            assert_eq!(final_state.attempts[0].tool_use_id, "exec-b");
+            assert!(final_state.recovery.is_clear());
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn regression8_abandon_failure_during_sweep_is_fail_closed() {
+            let git_dir = unique_test_git_dir("sweep-abandon-failure");
+            let resolver = fixed_resolver(git_dir.clone());
+            seed_attempt_in_turn(
+                &git_dir,
+                "session-1",
+                "turn-1",
+                None,
+                "exec-a",
+                state::AttemptPhase::Active,
+            );
+
+            let output = run_codex_mutation_scope_from_payload_with(
+                &pre("exec-b", "Bash", &[]),
+                None,
+                &resolver,
+                &seam_failing_on("abandon"),
+            )
+            .expect("a failed sweep abandon still returns Ok with a deny payload");
+            assert_eq!(output, pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON));
+
+            let final_state = read_state(&git_dir);
+            assert_eq!(final_state.attempts.len(), 1);
+            assert_eq!(final_state.attempts[0].tool_use_id, "exec-a");
+            assert!(!final_state.recovery.is_clear());
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn regression9_flush_failure_after_sweep_is_fail_closed() {
+            let git_dir = unique_test_git_dir("sweep-flush-failure");
+            let resolver = fixed_resolver(git_dir.clone());
+            seed_attempt_in_turn(
+                &git_dir,
+                "session-1",
+                "turn-1",
+                None,
+                "exec-a",
+                state::AttemptPhase::Active,
+            );
+
+            let output = run_codex_mutation_scope_from_payload_with(
+                &pre("exec-b", "Bash", &[]),
+                None,
+                &resolver,
+                &seam_failing_on("flush"),
+            )
+            .expect("a failed post-sweep flush still returns Ok with a deny payload");
+            assert_eq!(output, pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON));
+
+            let final_state = read_state(&git_dir);
+            assert!(final_state
+                .attempts
+                .iter()
+                .all(|attempt| attempt.tool_use_id != "exec-b"));
+            assert!(!final_state.recovery.is_clear());
+
+            remove_test_git_dir(&git_dir);
         }
     }
 }
