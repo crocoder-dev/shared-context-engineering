@@ -717,11 +717,21 @@ not arise, and no successor-barrier logic ships for built-ins.
 - A failed **`apply_patch`** never mutates the working tree (atomic
   verification), so there is nothing to strand.
 - A **hook-blocked** tool never executes (`PreToolUse` only, no `PostToolUse`) —
-  no scope was established (D8 fail-closed happens before `start`).
+  no scope was established when the SCE Bash policy or the SCE mutation-scope
+  preflight is the source of the block (D8 fail-closed / the PR #268 Bash-policy
+  preflight both happen before `start`).
 - The only built-in "partial mutation, no `PostToolUse`" case is **whole-turn
   interruption** (SIGINT), which emits `Interrupt` then `SessionEnd` and ends the
   turn — there is no in-turn successor `PreToolUse` to race.
 Evidence: `fixtures/probe02-*`, `probe06-*`, `probe07-*`, `probe11-*`.
+
+**Known exception (PR #268, tracked as a remaining lifecycle issue in the T04
+follow-up notes):** an *arbitrary user-owned / third-party* concurrent
+`PreToolUse(Bash)` hook that denies while the SCE Bash policy allows leaves an
+`Active` scope with no `PostToolUse` — the "predecessor already terminal in
+bookkeeping" assumption above does not hold for a non-SCE block. Turn-boundary
+cleanup (D12) plus the D13 barrier bound the damage to a single turn; the clean
+fix is the Case-B lane-scoped successor sweep for built-ins, deferred.
 
 **MCP: the T01 finding is correct and stands — `MCP is D10a Case C *if modeled
 as a scope*`.** The T01 MCP extension establishes all three conditions of Case C
@@ -2571,6 +2581,83 @@ Persist this field in every plan; this is durable plan state, not chat state:
       for OS-lock acquisition failure, never to infer lifecycle completion. Changes
       confined to `codex_mutation_scope/{mod,state,os_lock,boundary_lock}.rs` and
       this plan.
+  - Third concurrency follow-up (2026-09-08 — SCE-owned Bash-policy race, PR #268):
+    Codex executes matching `PreToolUse` handlers concurrently. The generated
+    `PreToolUse(Bash)` therefore runs the existing `sce hooks codex` Bash-policy
+    handler concurrently with the mutation-scope handler. The initial integration
+    could establish `Start` before the policy handler denied the `Bash` call,
+    leaving an `Active` mutation scope for a tool Codex never executed; a
+    successor tracked execution could then create another scope before
+    `Stop` / `SessionEnd`, producing false overlap or attribution. Registration
+    order does not help — matching local handlers run concurrently.
+    The mutation-scope `Bash` `PreToolUse` path now performs the same SCE
+    Bash-policy preflight itself before any adapter admission or `Start`. A
+    blocked policy returns the existing Codex-native policy denial
+    (`permissionDecision:"deny"` with the policy id + message) with no
+    mutation-scope state — no `PendingStart`, `Start`, `Active`, recovery,
+    `Abandon`, or `Flush`, and the git dir is never resolved and the boundary
+    lock never taken. Policy-evaluation failures and a malformed
+    `tool_input.command` fail closed with the generic mutation-scope deny and a
+    `sce.hooks.codex_mutation_scope.pre_tool_use_fail_closed` warning. The
+    policy is evaluated twice for `Bash` (`sce hooks codex` handler + this
+    preflight); acceptable because the evaluation is a read-only deterministic
+    decision over the same repository config and command. `apply_patch` is
+    unchanged (no Bash `tool_input.command` dependency). The existing
+    `sce hooks codex` Bash-policy registration and its generated command / Codex
+    trust identity are unchanged; `.codex/hooks.json` and
+    `config/pkl/renderers/codex-content.pkl` have no diff.
+    The shared Bash-policy evaluation lives in
+    `cli/src/services/hooks/codex/bash_policy.rs` as `evaluate_codex_bash_policy`
+    (→ `CodexBashPolicyDecision::{Allowed, Blocked(String)}`, `Blocked` carrying
+    the rendered Codex-native deny) over the unchanged
+    `crate::services::bash_policy::evaluate_bash_command_policy` +
+    `config::resolve_bash_policy_runtime_config`; command extraction is the
+    shared `bash_command_from_tool_input`. Both `sce hooks codex` and the
+    mutation-scope preflight call these, so they make the same decision for the
+    same repository + command (frozen by a parity test).
+    Regressions added (`codex_mutation_scope` driver + `codex::bash_policy`):
+    policy-blocked `Bash` creates no scope and touches neither resolver nor
+    seam; policy-allowed `Bash` still follows the write-ahead `Start` path;
+    policy-evaluation failure is fail-closed with no scope and a diagnostic log;
+    `apply_patch` never evaluates Bash policy (panicking evaluator);
+    malformed `tool_input` is fail-closed before the evaluator runs; a
+    production-shaped regression drives the real `evaluate_codex_bash_policy`
+    against a repo `.sce/config.json` that denies `rm` and asserts the
+    Codex-native policy deny with no `Start`; and a handler/preflight parity
+    test over one repo config + command.
+    Re-validated: `services::hooks::codex::` — **passed** (236, 1 ignored);
+    `services::hooks::codex_mutation_scope` — **passed**; `services::hooks::` —
+    **passed** (438, 1 ignored); `services::codex_hook_config` — **passed** (36);
+    `services::config::` — **passed** (31); `clippy --all-targets -- -D warnings`
+    — **clean**; `cargo fmt -- --check` — **clean**. No `spec/mutation_cursor.qnt`
+    / `mutation_trace/protocol.rs` / `mutation_trace/runtime/` /
+    `mutation_trace/store.rs` / `cli/migrations/agent-trace-repository/` /
+    `agent-trace.schema.json` / MCP-semantics / generated-config change. Changes
+    confined to `cli/src/services/hooks/codex/{mod,bash_policy}.rs`,
+    `cli/src/services/hooks/codex_mutation_scope/mod.rs`, and this plan.
+    Arbitrary user-owned concurrent `PreToolUse(Bash)` denial — analysis result:
+    **not covered by this fix; a separate follow-up is required.** This fix
+    removes only the SCE-owned race (SCE policy deny vs SCE mutation-scope
+    `Start`). If a third-party / user-owned `PreToolUse(Bash)` hook denies while
+    the SCE Bash policy allows, SCE still establishes `Active(A)` and Codex still
+    blocks the tool with no `PostToolUse(A)`. The mutation-scope hook cannot see
+    the aggregate Codex decision — matching local handlers run concurrently and
+    Codex does not report other hooks' verdicts. Existing turn-boundary cleanup
+    (D12: `Stop` / `Interrupt` / `SessionEnd` → `abandon` A → recovery armed →
+    quiescent `flush` on the next tracked `PreToolUse`) and the D13 recovery
+    barrier **bound the exposure to a single turn and prevent cross-turn
+    contamination** — the zombie `Active` is abandoned and flushed at the turn
+    boundary. The residual gap: within that turn, a successor tracked
+    `PreToolUse(B)` starts alongside the zombie `Active(A)` (no successor sweep
+    ships for built-ins — D10a Case A assumed the predecessor is already terminal
+    in bookkeeping when the successor arrives, which an arbitrary concurrent
+    blocker hook violates). A tree transition observed in that window can be
+    falsely attributed to A or flagged `AiContended`. The clean fix is the D10a
+    Case-B lane-scoped successor sweep for built-ins (T01 proved built-ins run
+    serially, so `PreToolUse(B)` is valid evidence A is stale) — deferred here as
+    out of scope for the SCE-owned race. **This does not block T06 for the
+    SCE-owned scope**, but T06/T07 must decide whether to ship the built-in
+    successor sweep. Recorded as a remaining lifecycle issue; not hidden.
   - Context impact: domain — a new adapter-domain driver plus a new hidden CLI
     route. User-visible surface: one hidden `sce hooks codex-mutation-scope`
     subcommand (hidden from `sce --help` / `sce hooks --help`); no visible-help

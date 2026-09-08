@@ -10,6 +10,9 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Map, Value};
 
 use crate::services::checkout;
+use crate::services::hooks::codex::bash_policy::{
+    bash_command_from_tool_input, evaluate_codex_bash_policy, CodexBashPolicyDecision,
+};
 use crate::services::observability::traits::Logger;
 
 use boundary_lock::{AdapterBoundaryLock, DEFAULT_BOUNDARY_LOCK_TIMEOUT};
@@ -22,6 +25,9 @@ const AGENT_ID_FIELD: &str = "agent_id";
 const AGENT_TYPE_FIELD: &str = "agent_type";
 const TOOL_NAME_FIELD: &str = "tool_name";
 const TOOL_USE_ID_FIELD: &str = "tool_use_id";
+const TOOL_INPUT_FIELD: &str = "tool_input";
+
+const CODEX_TRACKED_TOOL_BASH: &str = "Bash";
 
 const HOOK_EVENT_PRE_TOOL_USE: &str = "PreToolUse";
 const HOOK_EVENT_POST_TOOL_USE: &str = "PostToolUse";
@@ -68,6 +74,7 @@ impl CodexToolIdentity {
 pub(crate) struct CodexToolExecution {
     pub identity: CodexToolIdentity,
     pub agent_type: Option<String>,
+    pub tool_input: Option<Value>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -191,6 +198,7 @@ fn parse_pre_tool_use(object: &Map<String, Value>) -> Result<CodexToolExecution>
     Ok(CodexToolExecution {
         identity: parse_tool_identity(object)?,
         agent_type: optional_non_blank_str(object, AGENT_TYPE_FIELD)?,
+        tool_input: object.get(TOOL_INPUT_FIELD).cloned(),
     })
 }
 
@@ -273,6 +281,8 @@ type GitDirResolver<'a> = &'a dyn Fn(&str) -> Result<PathBuf>;
 
 type IngressSeam<'a> = &'a dyn Fn(&Path, &str, Option<&dyn Logger>) -> Result<String>;
 
+type BashPolicyEvaluator<'a> = &'a dyn Fn(&Path, &str) -> Result<CodexBashPolicyDecision>;
+
 const ACTOR_KIND_CODEX: &str = "codex";
 
 const FAIL_CLOSED_DENY_REASON: &str =
@@ -305,8 +315,17 @@ pub(crate) fn run_codex_mutation_scope_from_payload(
     let seam_fn = |repository_root: &Path, payload: &str, logger: Option<&dyn Logger>| {
         super::mutation_scope::run_mutation_scope_from_payload(repository_root, payload, logger)
     };
+    let bash_policy_fn = |repository_root: &Path, command: &str| {
+        evaluate_codex_bash_policy(repository_root, command)
+    };
 
-    run_codex_mutation_scope_from_payload_with(stdin_payload, logger, &resolve_git_dir_fn, &seam_fn)
+    run_codex_mutation_scope_from_payload_with_seams(
+        stdin_payload,
+        logger,
+        &resolve_git_dir_fn,
+        &seam_fn,
+        &bash_policy_fn,
+    )
 }
 
 #[cfg(test)]
@@ -324,18 +343,62 @@ fn run_codex_mutation_scope_from_payload_at_state_root(
             logger,
         )
     };
+    let bash_policy_fn = |repository_root: &Path, command: &str| {
+        evaluate_codex_bash_policy(repository_root, command)
+    };
 
-    run_codex_mutation_scope_from_payload_with(stdin_payload, logger, &resolve_git_dir_fn, &seam_fn)
+    run_codex_mutation_scope_from_payload_with_seams(
+        stdin_payload,
+        logger,
+        &resolve_git_dir_fn,
+        &seam_fn,
+        &bash_policy_fn,
+    )
 }
 
+#[cfg(test)]
 fn run_codex_mutation_scope_from_payload_with(
     stdin_payload: &str,
     logger: Option<&dyn Logger>,
     resolve_git_dir: GitDirResolver,
     seam: IngressSeam,
 ) -> Result<String> {
+    let allow_all = |_repository_root: &Path, _command: &str| Ok(CodexBashPolicyDecision::Allowed);
+    run_codex_mutation_scope_from_payload_with_seams(
+        stdin_payload,
+        logger,
+        resolve_git_dir,
+        seam,
+        &allow_all,
+    )
+}
+
+#[cfg(test)]
+fn run_codex_mutation_scope_from_payload_with_bash_policy(
+    stdin_payload: &str,
+    logger: Option<&dyn Logger>,
+    resolve_git_dir: GitDirResolver,
+    seam: IngressSeam,
+    evaluate_bash_policy: BashPolicyEvaluator,
+) -> Result<String> {
+    run_codex_mutation_scope_from_payload_with_seams(
+        stdin_payload,
+        logger,
+        resolve_git_dir,
+        seam,
+        evaluate_bash_policy,
+    )
+}
+
+fn run_codex_mutation_scope_from_payload_with_seams(
+    stdin_payload: &str,
+    logger: Option<&dyn Logger>,
+    resolve_git_dir: GitDirResolver,
+    seam: IngressSeam,
+    evaluate_bash_policy: BashPolicyEvaluator,
+) -> Result<String> {
     let event = parse_codex_hook_event(stdin_payload)?;
-    dispatch_codex_hook_event(event, logger, resolve_git_dir, seam)
+    dispatch_codex_hook_event(event, logger, resolve_git_dir, seam, evaluate_bash_policy)
 }
 
 fn dispatch_codex_hook_event(
@@ -343,6 +406,7 @@ fn dispatch_codex_hook_event(
     logger: Option<&dyn Logger>,
     resolve_git_dir: GitDirResolver,
     seam: IngressSeam,
+    evaluate_bash_policy: BashPolicyEvaluator,
 ) -> Result<String> {
     match event {
         CodexHookEvent::PreToolUse(execution) => Ok(handle_pre_tool_use(
@@ -350,6 +414,7 @@ fn dispatch_codex_hook_event(
             logger,
             resolve_git_dir,
             seam,
+            evaluate_bash_policy,
         )),
         CodexHookEvent::PostToolUse(identity) => {
             if !matches!(
@@ -427,6 +492,7 @@ fn handle_pre_tool_use(
     logger: Option<&dyn Logger>,
     resolve_git_dir: GitDirResolver,
     seam: IngressSeam,
+    evaluate_bash_policy: BashPolicyEvaluator,
 ) -> String {
     let identity = &execution.identity;
 
@@ -438,6 +504,18 @@ fn handle_pre_tool_use(
     }
 
     let repository_root = Path::new(&identity.cwd);
+
+    if identity.tool_name == CODEX_TRACKED_TOOL_BASH {
+        match codex_bash_policy_preflight(repository_root, execution, evaluate_bash_policy) {
+            BashPolicyPreflight::Allowed => {}
+            BashPolicyPreflight::Blocked(response) => return response,
+            BashPolicyPreflight::EvaluationFailed(error) => {
+                log_pre_tool_use_fail_closed(logger, "bash_policy_preflight", &error);
+                return pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON);
+            }
+        }
+    }
+
     let git_dir = match resolve_git_dir(&identity.cwd) {
         Ok(git_dir) => git_dir,
         Err(error) => {
@@ -479,6 +557,29 @@ fn handle_pre_tool_use(
 enum PreToolUseOutcome {
     Continue,
     Deny,
+}
+
+enum BashPolicyPreflight {
+    Allowed,
+    Blocked(String),
+    EvaluationFailed(anyhow::Error),
+}
+
+fn codex_bash_policy_preflight(
+    repository_root: &Path,
+    execution: &CodexToolExecution,
+    evaluate_bash_policy: BashPolicyEvaluator,
+) -> BashPolicyPreflight {
+    let command = match bash_command_from_tool_input(execution.tool_input.as_ref()) {
+        Ok(command) => command,
+        Err(error) => return BashPolicyPreflight::EvaluationFailed(error),
+    };
+
+    match evaluate_bash_policy(repository_root, command) {
+        Ok(CodexBashPolicyDecision::Allowed) => BashPolicyPreflight::Allowed,
+        Ok(CodexBashPolicyDecision::Blocked(response)) => BashPolicyPreflight::Blocked(response),
+        Err(error) => BashPolicyPreflight::EvaluationFailed(error),
+    }
 }
 
 enum Admission {
@@ -732,6 +833,7 @@ mod tests {
             TOOL_USE_ID_FIELD.to_string(),
             Value::String("exec-1".to_string()),
         );
+        object.insert(TOOL_INPUT_FIELD.to_string(), json!({"command": "true"}));
         for (field, value) in overrides {
             object.insert((*field).to_string(), value.clone());
         }
@@ -1148,6 +1250,34 @@ mod tests {
             _logger: Option<&dyn Logger>,
         ) -> Result<String> {
             panic!("the ingress seam must not be called for this payload: {payload}");
+        }
+
+        const BLOCKED_BASH_POLICY_RESPONSE: &str = concat!(
+            r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","#,
+            r#""permissionDecision":"deny","#,
+            r#""permissionDecisionReason":"Blocked by SCE bash-tool policy 'no-danger': danger is not allowed"}}"#,
+        );
+
+        #[allow(clippy::unnecessary_wraps)]
+        fn blocking_bash_policy(_root: &Path, _command: &str) -> Result<CodexBashPolicyDecision> {
+            Ok(CodexBashPolicyDecision::Blocked(
+                BLOCKED_BASH_POLICY_RESPONSE.to_string(),
+            ))
+        }
+
+        #[allow(clippy::unnecessary_wraps)]
+        fn allow_bash_policy(_root: &Path, _command: &str) -> Result<CodexBashPolicyDecision> {
+            Ok(CodexBashPolicyDecision::Allowed)
+        }
+
+        fn failing_bash_policy(_root: &Path, _command: &str) -> Result<CodexBashPolicyDecision> {
+            Err(anyhow!(
+                "repository Bash policy configuration is invalid and could not be evaluated"
+            ))
+        }
+
+        fn unreachable_bash_policy(_root: &Path, command: &str) -> Result<CodexBashPolicyDecision> {
+            panic!("the Bash policy preflight must not run for this event (command: {command})");
         }
 
         fn seam_failing_on(
@@ -2763,6 +2893,220 @@ mod tests {
             assert_eq!(final_state.attempts[0].tool_use_id, "exec-b");
 
             remove_test_git_dir(&git_dir);
+        }
+
+        fn boundary_lock_exists(git_dir: &Path) -> bool {
+            crate::services::hooks::codex_mutation_scope::boundary_lock::boundary_lock_path(git_dir)
+                .exists()
+        }
+
+        #[test]
+        fn policy_blocked_bash_pre_tool_use_creates_no_mutation_scope_state() {
+            let git_dir = unique_test_git_dir("policy-blocked-no-scope");
+
+            let output = run_codex_mutation_scope_from_payload_with_bash_policy(
+                &pre_tool_use_json(&[(TOOL_INPUT_FIELD, json!({"command": "danger --now"}))]),
+                None,
+                &panicking_resolver,
+                &unreachable_seam,
+                &blocking_bash_policy,
+            )
+            .expect("a policy-blocked Bash PreToolUse still returns Ok");
+
+            assert_eq!(
+                output, BLOCKED_BASH_POLICY_RESPONSE,
+                "a policy block returns the Codex-native policy denial verbatim, \
+                 never the generic mutation-scope deny",
+            );
+            assert!(!output.contains(FAIL_CLOSED_DENY_REASON));
+            assert!(
+                !state::adapter_state_dir(&git_dir).exists(),
+                "a policy block must leave no adapter state: no PendingStart, Active, \
+                 Start, Abandon, Flush, or recovery",
+            );
+            assert!(
+                !boundary_lock_exists(&git_dir),
+                "a policy block must not even acquire the boundary lock",
+            );
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn policy_allowed_bash_pre_tool_use_follows_the_normal_write_ahead_start_path() {
+            let git_dir = unique_test_git_dir("policy-allowed-start");
+            let resolver = fixed_resolver(git_dir.clone());
+            let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+            let output = run_codex_mutation_scope_from_payload_with_bash_policy(
+                &pre_tool_use_json(&[]),
+                None,
+                &resolver,
+                &recording_seam(Arc::clone(&recorded)),
+                &allow_bash_policy,
+            )
+            .expect("an allowed Bash PreToolUse returns Ok");
+            assert_eq!(output, "");
+
+            let ops = recorded.lock().unwrap().clone();
+            assert_eq!(
+                ops.iter()
+                    .filter(|payload| payload.contains(r#""operation":"start""#))
+                    .count(),
+                1,
+                "an allowed Bash still drives exactly one write-ahead Start, got {ops:?}",
+            );
+            let attempts = read_state(&git_dir).attempts;
+            assert_eq!(attempts.len(), 1);
+            assert_eq!(attempts[0].phase, state::AttemptPhase::Active);
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn policy_evaluation_failure_is_fail_closed_with_no_mutation_scope_state() {
+            let git_dir = unique_test_git_dir("policy-eval-failure");
+            let logger = RecordingLogger::default();
+
+            let output = run_codex_mutation_scope_from_payload_with_bash_policy(
+                &pre_tool_use_json(&[]),
+                Some(&logger),
+                &panicking_resolver,
+                &unreachable_seam,
+                &failing_bash_policy,
+            )
+            .expect("a Bash policy evaluation failure still returns Ok");
+
+            assert_eq!(
+                output,
+                pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON),
+                "a policy evaluation failure fails closed with the generic mutation-scope deny",
+            );
+            let warnings = logger.warnings();
+            assert_eq!(warnings.len(), 1);
+            assert_eq!(warnings[0].0, PRE_TOOL_USE_FAIL_CLOSED_EVENT);
+            assert!(warnings[0].1.contains("could not be evaluated"));
+            assert!(
+                !state::adapter_state_dir(&git_dir).exists(),
+                "a fail-closed policy evaluation must leave no adapter state",
+            );
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn apply_patch_pre_tool_use_never_evaluates_bash_policy() {
+            let git_dir = unique_test_git_dir("apply-patch-no-policy");
+            let resolver = fixed_resolver(git_dir.clone());
+
+            let output = run_codex_mutation_scope_from_payload_with_bash_policy(
+                &pre_tool_use_json(&[
+                    (TOOL_NAME_FIELD, Value::String("apply_patch".to_string())),
+                    (TOOL_INPUT_FIELD, Value::Null),
+                ]),
+                None,
+                &resolver,
+                &ok_seam,
+                &unreachable_bash_policy,
+            )
+            .expect("an apply_patch PreToolUse returns Ok");
+            assert_eq!(output, "");
+
+            let attempts = read_state(&git_dir).attempts;
+            assert_eq!(attempts.len(), 1, "apply_patch still establishes a scope");
+            assert_eq!(attempts[0].phase, state::AttemptPhase::Active);
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn malformed_bash_tool_input_is_fail_closed_before_the_policy_evaluator_runs() {
+            let git_dir = unique_test_git_dir("malformed-bash-tool-input");
+            let logger = RecordingLogger::default();
+
+            let output = run_codex_mutation_scope_from_payload_with_bash_policy(
+                &pre_tool_use_json(&[(TOOL_INPUT_FIELD, json!({"not_command": "x"}))]),
+                Some(&logger),
+                &panicking_resolver,
+                &unreachable_seam,
+                &unreachable_bash_policy,
+            )
+            .expect("a malformed Bash tool_input still returns Ok");
+
+            assert_eq!(output, pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON));
+            let warnings = logger.warnings();
+            assert_eq!(warnings.len(), 1);
+            assert_eq!(warnings[0].0, PRE_TOOL_USE_FAIL_CLOSED_EVENT);
+            assert!(
+                warnings[0].1.contains("tool_input.command"),
+                "extraction reuses the shared bash_command_from_tool_input semantics",
+            );
+            assert!(!state::adapter_state_dir(&git_dir).exists());
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn production_bash_policy_evaluator_blocks_a_repo_denied_command_before_any_start() {
+            let repo = unique_test_git_dir("prod-policy-regression");
+            std::fs::create_dir_all(repo.join(".sce")).expect("create .sce dir");
+            std::fs::write(
+                repo.join(".sce").join("config.json"),
+                concat!(
+                    r#"{"policies":{"bash":{"custom":[{"id":"no-rm","#,
+                    r#""match":{"argv_prefix":["rm"]},"#,
+                    r#""message":"rm is blocked in this repository"}]}}}"#,
+                ),
+            )
+            .expect("write repo bash policy config");
+
+            let real_evaluator =
+                |root: &Path, command: &str| evaluate_codex_bash_policy(root, command);
+
+            let blocked = run_codex_mutation_scope_from_payload_with_bash_policy(
+                &pre_tool_use_json(&[
+                    (
+                        CWD_FIELD,
+                        Value::String(repo.to_string_lossy().into_owned()),
+                    ),
+                    (TOOL_INPUT_FIELD, json!({"command": "rm -rf build"})),
+                ]),
+                None,
+                &panicking_resolver,
+                &unreachable_seam,
+                &real_evaluator,
+            )
+            .expect("a repo-denied Bash command still returns Ok");
+
+            assert!(blocked.contains(r#""permissionDecision":"deny""#));
+            assert!(blocked.contains("no-rm"));
+            assert!(blocked.contains("rm is blocked in this repository"));
+            assert!(
+                !blocked.contains(FAIL_CLOSED_DENY_REASON),
+                "a real policy block keeps the policy-specific UX, not the generic deny",
+            );
+
+            let allowed = run_codex_mutation_scope_from_payload_with_bash_policy(
+                &pre_tool_use_json(&[
+                    (
+                        CWD_FIELD,
+                        Value::String(repo.to_string_lossy().into_owned()),
+                    ),
+                    (TOOL_INPUT_FIELD, json!({"command": "echo ok > ok.txt"})),
+                    (TOOL_USE_ID_FIELD, Value::String("exec-allowed".to_string())),
+                ]),
+                None,
+                &fixed_resolver(repo.join(".git")),
+                &ok_seam,
+                &real_evaluator,
+            )
+            .expect("an allowed Bash command still returns Ok");
+            assert_eq!(
+                allowed, "",
+                "the same repo config lets a non-denied command through to the normal path",
+            );
+
+            remove_test_git_dir(&repo);
         }
     }
 }

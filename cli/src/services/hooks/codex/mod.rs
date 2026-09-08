@@ -9,7 +9,7 @@ use crate::services::observability::traits::Logger;
 use super::read_hook_stdin;
 
 mod apply_patch;
-mod bash_policy;
+pub(crate) mod bash_policy;
 mod stop;
 mod user_prompt_submit;
 
