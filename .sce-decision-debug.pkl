@@ -1,0 +1,27 @@
+import "config/pkl/renderers/opencode-content.pkl" as opencode
+import "config/pkl/renderers/claude-content.pkl" as claude
+import "config/pkl/renderers/pi-content.pkl" as pi
+import "config/pkl/renderers/codex-content.pkl" as codex
+
+local probe = (documents: Mapping) ->
+  let (skill = documents["sce-decision/SKILL.md"].text)
+    let (template = documents["sce-decision/references/adr-template.md"].text)
+      let (sync = documents["sce-next-task/references/context-sync.md"].text)
+        new Mapping {
+          ["syncOwner"] = sync.contains("sole owner of decision qualification")
+          ["qualificationHandoff"] = skill.contains("## Qualification handoff")
+          ["callerAuthority"] = skill.contains("Treat the caller's gate result as authoritative")
+          ["templateOwnerPointer"] = skill.contains("sole authority for\nthe persisted ADR schema and section semantics")
+          ["oldDecisionGateAbsent"] = !skill.contains("## Decision gate")
+          ["oldContextRetellingAbsent"] = !skill.contains("**Context** states")
+          ["oldDecisionRetellingAbsent"] = !skill.contains("**Decision** states")
+          ["validatedStatusPlaceholder"] = template.contains("Status: {validated decision status}")
+          ["oldStatusEnumAbsent"] = !template.contains("Proposed|Accepted|Rejected|Deprecated|Superseded")
+        }
+
+results = new Mapping {
+  ["opencode"] = probe.apply(opencode.skillDocuments)
+  ["claude"] = probe.apply(claude.skillDocuments)
+  ["pi"] = probe.apply(pi.skillDocuments)
+  ["codex"] = probe.apply(codex.skillDocuments)
+}
