@@ -59,6 +59,12 @@ local codexSceHookCommand = "root=\\\"$(git rev-parse --show-toplevel 2>/dev/nul
 
 local codexMutationScopeHookCommand = "root=\\\"$(git rev-parse --show-toplevel 2>/dev/null)\\\" || exit 0; exec bash \\\"$root/\(codexSceHookScriptPath)\\\" sce hooks codex-mutation-scope"
 
+local codexPreToolUseFailClosedDenyJson = "{\\\"hookSpecificOutput\\\":{\\\"hookEventName\\\":\\\"PreToolUse\\\",\\\"permissionDecision\\\":\\\"deny\\\",\\\"permissionDecisionReason\\\":\\\"SCE could not establish mutation attribution for this tool execution.\\\"}}"
+
+local codexMutationScopePreToolUseCommand = "sce_deny(){ printf '%s' '\(codexPreToolUseFailClosedDenyJson)'; exit 0; }; root=\\\"$(git rev-parse --show-toplevel 2>/dev/null)\\\" || sce_deny; test -r \\\"$root/\(codexSceHookScriptPath)\\\" || sce_deny; SCE_CODEX_PRE_TOOL_USE_FAIL_CLOSED=1 exec bash \\\"$root/\(codexSceHookScriptPath)\\\" sce hooks codex-mutation-scope"
+
+local codexMutationScopeToolMatcher = "^(Bash|apply_patch)$"
+
 hooksJson = new common.RenderedTextFile {
   slug = "hooks"
   rendered = """
@@ -103,10 +109,11 @@ hooksJson = new common.RenderedTextFile {
         ]
       },
       {
+        "matcher": "\(codexMutationScopeToolMatcher)",
         "hooks": [
           {
             "type": "command",
-            "command": "\(codexMutationScopeHookCommand)"
+            "command": "\(codexMutationScopePreToolUseCommand)"
           }
         ]
       }
@@ -122,6 +129,7 @@ hooksJson = new common.RenderedTextFile {
         ]
       },
       {
+        "matcher": "\(codexMutationScopeToolMatcher)",
         "hooks": [
           {
             "type": "command",
@@ -170,6 +178,25 @@ sceHookScript = new common.RenderedTextFile {
   rendered = """
 #!/usr/bin/env bash
 set -euo pipefail
+
+sce_pre_tool_use_deny() {
+  printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"SCE could not establish mutation attribution for this tool execution."}}'
+}
+
+if [ "${SCE_CODEX_PRE_TOOL_USE_FAIL_CLOSED:-0}" = "1" ]; then
+  if ! command -v sce >/dev/null 2>&1; then
+    echo "\(missingSceInstallMessage)" >&2
+    sce_pre_tool_use_deny
+    exit 0
+  fi
+  if ! adapter_output="$("$@")"; then
+    echo "SCE mutation-scope adapter failed; denying the tracked tool to preserve fail-closed PreToolUse." >&2
+    sce_pre_tool_use_deny
+    exit 0
+  fi
+  printf '%s' "$adapter_output"
+  exit 0
+fi
 
 if ! command -v sce >/dev/null 2>&1; then
   echo "\(missingSceInstallMessage)" >&2
