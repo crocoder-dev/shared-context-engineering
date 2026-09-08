@@ -14,8 +14,8 @@ submodule is declared privately in `runtime/mod.rs`, which re-exports
 in [`mutation-scope-runtime.md`](mutation-scope-runtime.md). `coordinate()` and
 `abandon_scope()` are now driven by the generic `sce hooks mutation-scope` CLI
 ingress. `reconcile_worktree` stays `runtime`-internal and unwired, and the
-mutation runtime does not itself insert into `diff_traces`. No concrete Claude
-Code, Codex, OpenCode, or Pi lifecycle adapter is wired to the seam yet.
+mutation runtime does not itself insert into `diff_traces`. Concrete Claude Code
+and Codex adapters are wired to the seam; OpenCode and Pi remain future work.
 
 `runtime` depends on `protocol`/`store`/`types` and on `services::checkout`,
 never the reverse — this is a structural module boundary, not merely a
@@ -165,23 +165,15 @@ On-disk layout so far:
 
 ## Testing boundary
 
-`WorktreeLock`'s inline `#[cfg(test)] mod tests` in `worktree_lock.rs` covers
-contention (a second acquirer blocks until the first releases), independence
-across distinct worktree paths, timing out with a distinct matchable error
-while the lock is still held, and a leftover lock file with no active OS lock
-never blocking a fresh acquirer — each test uses a unique
-`std::env::temp_dir()` path, following the same filesystem-touching
-inline-unit-test precedent as `cli/src/services/checkout/mod.rs` (see
-[`../patterns.md`](../patterns.md)).
+`WorktreeLock` tests cover contention, independent worktree paths, bounded
+timeout errors, and leftover lock files without active OS ownership, using the
+filesystem-touching inline-test precedent from `checkout`.
 
-`ProtectedWorktree`'s and `scope_runtime`'s inline tests use RAII
-`tempfile::TempDir` fixtures over real `git init` repositories; coverage in
-[`mutation-trace-protected-worktree.md`](mutation-trace-protected-worktree.md#testing-boundary)
-and [`mutation-trace-scope-abandonment.md`](mutation-trace-scope-abandonment.md#testing-boundary).
+`ProtectedWorktree` and `scope_runtime` tests use RAII `TempDir` fixtures over
+real `git init` repositories; their detailed contracts remain in their domain
+documents.
 
-`GitSnapshotService`'s inline `#[cfg(test)] mod tests` in `git_snapshot.rs` uses
-the same precedent, extended to real per-test `git init` repositories; coverage
-in [`mutation-trace-snapshot-service.md`](mutation-trace-snapshot-service.md).
+`GitSnapshotService` tests use the same real-repository precedent.
 
 `coordinator.rs`'s inline `#[cfg(test)] mod tests` exercises the internal
 pipeline against a real temp-file `RepositoryAgentTraceDb`, using a fake,
@@ -191,7 +183,8 @@ observation establishes a baseline with no evidence; an edit observed between
 `Start` and `Advance` commits exactly one `AiExclusive` event; replaying an
 identical `(scope, event)` boundary is a no-op, not a duplicate; `Close`
 attributes to the scope it is about to close; two live scopes yield
-`AiContended` regardless of matching or differing `ActorKind`; a CAS conflict
+`AiContended` when no unconfirmed live Codex scope remains at the boundary,
+regardless of matching or differing `ActorKind`; a CAS conflict
 reloads and recomputes without a second capture or pin; `needs_rebaseline`
 recovery preserves live scopes while taint recovery abandons them; and the
 taint-retry loop taints an existing worktree, survives a losing CAS before
@@ -240,8 +233,8 @@ driven together; an inherited external-taint marker is overlaid onto
 `database_failure` recovery on the next invocation. The generic
 `sce hooks mutation-scope` CLI ingress now drives both entrypoints
 (`start`/`advance`/`close`/`flush` → `coordinate()`, `abandon` → `abandon_scope()`);
-concrete harness lifecycle adapters (Claude Code, Codex, OpenCode, Pi) remain
-future work.
+the concrete Claude Code and Codex lifecycle adapters drive that ingress, while
+OpenCode and Pi remain future work.
 
 See also: [`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md)
 (the per-worktree snapshot-ref maintenance pass under the same `WorktreeLock`),
