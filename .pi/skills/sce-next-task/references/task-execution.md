@@ -194,11 +194,11 @@ that decision after context synchronization.
 Before returning a `complete` result, verify that it satisfies the authoritative
 handoff contract above.
 
-## 2.9 Return internal state
+## 2.9 Return the result
 
-After the phase reaches a terminal state, set exactly one internal state.
+After the phase reaches a terminal state, return exactly one internal result.
 
-Record only the internal state. Do not add explanatory prose before or after it.
+Return only the internal result. Do not add explanatory prose before or after it.
 
 A `complete` result is the authoritative handoff into step 3. Pass it unchanged;
 step 3 must consume it instead of reconstructing its fields.

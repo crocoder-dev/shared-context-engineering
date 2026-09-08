@@ -46,13 +46,6 @@
 
 ## Workflow language conventions
 
-- **Command** is the user-facing invocation such as `/next-task`.
-- **Workflow** is the complete procedure owned by a generated workflow `SKILL.md`.
-- **Phase** is an embedded operation such as plan review, task execution, or validation.
-- **Step** is one numbered action inside a workflow or phase.
-- **Internal result** is structured phase data that is not shown directly. Its discriminator is `status`.
-- **Report** is formatted Markdown shown to the user or persisted as a report section.
-- **Completion record** is execution evidence persisted on a completed task in its plan.
-- **Handover document** is the persisted session document under `context/handovers/`.
-
-Use the verbs consistently: run a phase, return an internal result, render a report or layout, and write a persisted file. Preserve distinct lifecycle terms such as task `done`, execution `complete`, context `synced`, and plan `validated`; do not collapse them into one generic success term.
+`workflow-vocabulary.md` is the sole authority for workflow and skill terminology,
+lifecycle language, verbs, and document-role conventions. This ownership table
+records behavior ownership only; do not duplicate the vocabulary here.

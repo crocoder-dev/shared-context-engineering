@@ -14,11 +14,11 @@ This phase owns:
   check.
 - Writing the Validation Report into the plan.
 - Marking acceptance criteria against the evidence.
-- Returning one Markdown validation result.
+- Returning one Markdown validation report.
 
 Return a result matching:
 
-the **Validation Result** section below in this file
+the **Validation report** section below in this file
 
 Write plan-file evidence matching:
 
@@ -109,7 +109,7 @@ Return exactly one Markdown report:
   passed, and the Validation Report was written.
 - `failed` when evidence was captured but required checks or criteria remain
   unsatisfied. Shape it as a session handoff per
-  the **Validation Result** section below in this file, ending recommended work with
+  the **Validation report** section below in this file, ending recommended work with
   `/validate {plan path}`.
 - `blocked` when validation cannot proceed safely.
 
@@ -140,7 +140,7 @@ The phase is complete after:
 - One plan was resolved, or resolution failed and was reported.
 - Implementation completeness was checked.
 - Validation ran to a terminal state, or a blocker prevented it.
-- One valid Markdown report matching the **Validation Result** section below in this file was
+- One valid Markdown report matching the **Validation report** section below in this file was
   returned.
 
 

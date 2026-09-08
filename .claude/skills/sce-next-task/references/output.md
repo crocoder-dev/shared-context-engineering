@@ -48,7 +48,7 @@ be synchronized before continuing.
 
 {completed-tasks} of {total-tasks} tasks complete.
 
-Next up:
+Next step:
 
 {next-task-id} — {next-task-title}
 

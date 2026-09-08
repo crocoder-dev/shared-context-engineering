@@ -11,7 +11,7 @@ compatibility: claude
 
 Write exactly one architecture decision record for one decision already qualified
 by successful task context synchronization. Return a deterministic internal
-handoff to the invoking synchronization phase. Do not render an independent
+result to the invoking synchronization phase. Do not render an independent
 user-visible response.
 
 ## Input
@@ -26,7 +26,7 @@ synchronization. It must identify:
 - Related current-state context and existing ADR paths.
 - An optional requested status.
 
-Do not accept raw workflow arguments, ordinary phase state, multiple decisions,
+Do not accept raw workflow arguments, ordinary phase result, multiple decisions,
 or direct user invocation. Do not reconstruct missing material facts.
 
 ## Qualification handoff
@@ -102,9 +102,9 @@ the filename, status, sections, and references satisfy this contract; every
 referenced repository path exists when practical to check; and no accepted ADR
 was modified.
 
-### 6. Return internal state
+### 6. Return the result
 
-Return exactly one internal handoff:
+Return exactly one internal result:
 
 - `written`: include `status`, `adr_path`, `decision`, `decision_status`,
   `created` (`true` for a new ADR and `false` for reuse), `supersedes`, and
@@ -116,7 +116,7 @@ Return exactly one internal handoff:
   `required_action`. Use this only when decision writing cannot proceed safely.
 
 Use stable field names and repository-relative paths. Return no prose before or
-after the handoff. The invoking synchronization phase owns all user-visible
+after the result. The invoking synchronization phase owns all user-visible
 reporting.
 
 ## Boundaries

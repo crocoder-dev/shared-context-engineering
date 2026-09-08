@@ -6,8 +6,8 @@ local validationName = model.semanticReference.apply("sce-validation", "Validati
 /// Cited from inside `references/validation.md` itself, where the Validation
 /// Result contract is now appended below the phase steps.
 local validationResultSelfRef = model.semanticReference.apply(
-  "the **Validation Result** section below in this file",
-  "the **Validation Result** section below in this file"
+  "the **Validation report** section below in this file",
+  "the **Validation report** section below in this file"
 )
 /// Cited from `references/validation-report.md`, a sibling file, so it must
 /// name `references/validation.md` explicitly rather than say "below".
@@ -32,7 +32,7 @@ local reportVersusResult = model.semanticReference.apply(
 /// workflow uses the same emitted document, so the reference remains unchanged.
 local validationResultHandoff = model.semanticReference.apply(
   """
-  The phase must return a Markdown report matching its validation result contract.
+  The phase must return a Markdown report matching its validation report contract.
   Branch on the report's `Status:`.
   """,
   "Branch on the report's `Status:`."
@@ -41,7 +41,7 @@ local invoke = model.semanticReference.apply("Invoke", "Run")
 local invokedSkills = model.semanticReference.apply("invoked skills", "embedded phases")
 local invokedSkill = model.semanticReference.apply("invoked skill", "embedded phase")
 local markdownResult = model.semanticReference.apply("Markdown report", "internal state")
-local returningValidationResult = model.semanticReference.apply("Returning one Markdown validation result", "Recording one Markdown validation result")
+local returningValidationResult = model.semanticReference.apply("Returning one Markdown validation report", "Recording one Markdown validation report")
 local returnExactlyOneMarkdownResult = model.semanticReference.apply("Return exactly one Markdown report", "Set exactly one internal state")
 local returnOnlyMarkdownReport = model.semanticReference.apply("Return only the Markdown report", "Record only the Markdown report")
 local returnLower = model.semanticReference.apply("return", "set internal status")
@@ -121,7 +121,7 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     - Confirming every implementation task is complete.
     - Running full validation and acceptance-criteria checks.
     - Writing the Validation Report into the plan.
-    - Returning one Markdown validation result.
+    - Returning one Markdown validation report.
     
     Do not duplicate any of it. Do not write the Validation Report yourself.
     
@@ -420,7 +420,7 @@ local renderValidationReport = (mode: model.WorkflowRenderMode) -> """
     - When status is `failed`, always include **Retry** with the exact
       `/validate {plan path}` command. Omit **Retry** when status is `validated`.
     - Keep evidence concise and factual. Do not narrate the whole implementation
-      history or add execution-policy claims absent from the validation result.
+      history or add execution-policy claims absent from the validation report.
     - When a previous `## Validation Report` already exists, replace it with the new
       one rather than stacking duplicates.
     """
@@ -600,7 +600,7 @@ local VALIDATION_RESULT = renderValidationResult.apply("package")
 /// within this same file rather than at a separate `references/output.md`.
 local VALIDATION_REFERENCE = renderValidationSkillBody.apply("package") + "\n\n" + VALIDATION_RESULT
 
-/// Composite-only user-visible layouts. The validation result contract lives
+/// Composite-only user-visible layouts. The validation report contract lives
 /// in the validation reference, while this file carries the completion layout
 /// cited by the composite `SKILL.md`.
 local VALIDATE_OUTPUT_LAYOUTS = """

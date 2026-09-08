@@ -5,8 +5,8 @@ Run this phase for step 3 of the workflow, and only when task execution returned
 session inherits what this task established. It never touches code, tests, or
 plan state.
 
-Input: either the complete `complete` result from the task execution phase
-(same-session), passed verbatim, or the plan path and task ID a plan-review
+Input: either the task execution result with `status: complete`
+(same-session), passed unchanged, or the plan path and task ID a plan-review
 recovery step resolved for a completed task with unresolved context synchronization, together with that task's own
 completed record — read directly from the plan — and its persisted `Context
 synchronization blocker` when present (cross-session retry). Whichever was
@@ -331,4 +331,4 @@ Do not:
   except `sce-decision`, or invoke `sce-decision` outside the decision gate in
   successful context synchronization.
 - Delete a context file that has uncommitted changes.
-- Return an execution-style internal state.
+- Return a task-execution internal result.

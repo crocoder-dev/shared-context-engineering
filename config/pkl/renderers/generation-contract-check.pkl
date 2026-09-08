@@ -1224,12 +1224,18 @@ hidden assertWorkflowLanguageConsistency = (artifacts: Mapping) ->
                     && planTemplate.contains("reports cleanup or repair work")
                     && planTemplate.contains("it does not perform that work")
                     && contextSync.contains("completed task with unresolved context synchronization")
+                    && !next.contains("Next up:")
+                    && !next.contains("Set exactly one internal state:")
+                    && !next.contains("Record only the internal state")
+                    && !validationRef.contains("Markdown result")
+                    && !validationRef.contains("Validation Result")
       )
     ) "workflow language: shared vocabulary, phase naming, report naming, and document format are consistent"
     else throw("generated workflow language/format drifted from the shared T11 conventions")
 
 contractChecks {
   ["workflow-language-consistency"] = assertWorkflowLanguageConsistency.apply(generatedArtifacts)
+  ["workflow-vocabulary-decision-result"] = if (generatedArtifacts["config/.pi/skills/sce-decision/SKILL.md"].contains("internal result") && !generatedArtifacts["config/.pi/skills/sce-decision/SKILL.md"].contains("Return internal state") && !generatedArtifacts["config/.pi/skills/sce-decision/SKILL.md"].contains("internal handoff")) "sce-decision: uses internal-result vocabulary" else throw("sce-decision vocabulary drifted from workflow-vocabulary.md")
   ["compact-execution-contracts"] = assertCompactExecutionContracts.apply(workflowDocuments)
   ["compact-execution-contract-negative-fixtures"] = assertCompactExecutionContractFixtures
   ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
