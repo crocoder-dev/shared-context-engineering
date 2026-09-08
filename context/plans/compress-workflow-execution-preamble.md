@@ -298,3 +298,22 @@ The two additional root edits replace existing text without increasing line coun
     `nix run .#pkl-check-generated`, targeted ownership assertions across all three
     tracked targets, and `git diff --check`.
   - Context synchronization: synced.
+
+
+## Follow-up: synchronization-debt recovery contract
+
+- [x] T04: `Repair next-task synchronization-debt recovery` (status:done)
+  - Scope: the composite `/next-task` sync-debt branch, plan-review's `sync_debt`
+    result identity, the generated semantic contract, the Pi/Claude/Codex tracked
+    mirrors, and the ownership table.
+  - Ownership after change: plan review resolves the plan path, debt task identity,
+    completed task record, and persisted blocker; `/next-task` routes that record
+    verbatim; task context sync validates and consumes it. No separate persisted
+    `Context synchronization handoff` object exists.
+  - Behavior preserved: all-completed-task debt scanning, legacy incomplete-record
+    blocking, lifecycle writes (`synced` / refreshed `blocked`), sync-specific blocked
+    output, and post-recovery re-review are unchanged.
+  - Verify: `pkl eval config/pkl/renderers/generation-contract-check.pkl`,
+    `nix run .#pkl-check-generated`, targeted Pi/Claude/Codex ownership assertions,
+    and `git diff --check`.
+  - Context synchronization: synced.

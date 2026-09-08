@@ -852,6 +852,7 @@ hidden assertNextTaskCompactCompletionWriting = (documents: Mapping) ->
 local requiredPlanReviewCompletedRecordTokens = new Listing {
   "no durable completed-task record (no `Files changed`,"
   "read directly from the plan by plan path and task ID"
+  "The resolved plan path."
 }
 
 hidden assertPlanReviewReadsCompletedRecord = (documents: Mapping) ->
@@ -892,14 +893,18 @@ hidden assertSyncDebtRecoveryBranch = (documents: Mapping) ->
       !path.endsWith("/skills/sce-next-task/SKILL.md")
       || (
         text.contains("`sync_debt` ->")
+        && !text.contains("Context synchronization handoff")
         && let (branch = text.drop(text.indexOf("`sync_debt` ->")))
           let (paragraph = if (branch.contains("\n\n")) branch.take(branch.indexOf("\n\n")) else branch)
             paragraph.contains("references/context-sync.md")
             && paragraph.contains("Task context synchronization phase")
+            && paragraph.contains("resolved plan path")
+            && paragraph.contains("debt task ID/title")
+            && paragraph.contains("completed task record")
             && paragraph.indexOf("references/context-sync.md") < paragraph.indexOf("Task context synchronization phase")
       )
     )
-  ) "generated sce-next-task SKILL.md: sync-debt recovery cites context-sync.md before invoking the phase"
+  ) "generated sce-next-task SKILL.md: sync-debt recovery routes the resolved completed task record"
   else throw("sce-next-task SKILL.md sync-debt recovery branch must cite references/context-sync.md before invoking the Task context synchronization phase")
 
 hidden assertPlanReviewAllTasksScope = (documents: Mapping) ->
