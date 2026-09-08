@@ -26,7 +26,8 @@
             "command": "root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || exit 0; exec bash \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" sce hooks codex-mutation-scope",
             "type": "command"
           }
-        ]
+        ],
+        "matcher": "^(Bash|apply_patch)$"
       }
     ],
     "PreToolUse": [
@@ -42,10 +43,11 @@
       {
         "hooks": [
           {
-            "command": "root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || exit 0; exec bash \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" sce hooks codex-mutation-scope",
+            "command": "sce_deny(){ printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"SCE could not establish mutation attribution for this tool execution.\"}}'; exit 0; }; root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || sce_deny; test -r \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" || sce_deny; SCE_CODEX_PRE_TOOL_USE_FAIL_CLOSED=1 exec bash \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" sce hooks codex-mutation-scope",
             "type": "command"
           }
-        ]
+        ],
+        "matcher": "^(Bash|apply_patch)$"
       }
     ],
     "SessionEnd": [
