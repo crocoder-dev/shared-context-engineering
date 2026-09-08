@@ -427,3 +427,28 @@ The two additional root edits replace existing text without increasing line coun
   - Verify: `pkl eval config/pkl/renderers/generation-contract-check.pkl`,
     `nix run .#pkl-check-generated`, targeted ownership checks, and `git diff --check`.
   - Context synchronization: synced.
+
+
+## Follow-up: decision qualification and ADR-template ownership
+
+- [x] T10: `Deduplicate decision gate and ADR section semantics` (status:done)
+  - Scope: task context-sync decision qualification, the standalone `sce-decision`
+    package, `references/adr-template.md`, canonical Pkl, generated semantic checks,
+    tracked Pi/Claude/Codex mirrors, and the ownership table.
+  - Ownership after change: `decisionGate` in `workflow-context-sync.pkl` solely owns
+    the qualification threshold and invocation decision. `sce-decision/SKILL.md`
+    consumes the caller's gate result and owns ADR lifecycle/history/path/result
+    behavior. `references/adr-template.md` solely owns the persisted ADR schema and
+    section semantics.
+  - Behavior preserved: only successful task synchronization invokes `sce-decision`;
+    routine/reversible changes remain nonqualifying; one request still writes or
+    reuses at most one ADR; allowed status/default, immutability, supersession,
+    collision handling, nonblocking `not_qualified`/`skipped`, blocking unsafe input,
+    and internal result shapes remain unchanged.
+  - Result: the selected decision skill/template plus next-task context-sync documents
+    shrink by 13 Markdown lines per tracked target, 39
+    across Pi/Claude/Codex.
+  - Verify: `pkl eval config/pkl/renderers/generation-contract-check.pkl`,
+    `nix run .#pkl-check-generated`, targeted ownership checks across all tracked
+    mirrors, and `git diff --check`.
+  - Context synchronization: synced.
