@@ -382,3 +382,28 @@ The two additional root edits replace existing text without increasing line coun
     `nix run .#pkl-check-generated`, targeted ownership assertions across all three
     tracked targets, and `git diff --check`.
   - Context synchronization: synced.
+
+
+## Follow-up: validation report policy ownership
+
+- [x] T08: `Deduplicate validation execution policy from report formatting` (status:done)
+  - Scope: `sce-validate` validation phase, persisted `validation-report.md`, returned
+    validation-result formatting rules, canonical Pkl, generated semantic checks,
+    tracked Pi/Claude/Codex mirrors, and the ownership table.
+  - Ownership after change: `references/validation.md` owns command selection and
+    execution, evidence interpretation, acceptance-criterion state, outcome
+    classification, and non-repairing boundaries. `references/validation-report.md`
+    owns only persisted report structure/presentation and renders the phase's
+    established results without re-evaluating them.
+  - Behavior preserved: plan-authored checks remain preferred, repository fallback
+    still applies only when needed, debug/scaffolding evidence can still fail
+    validation, failures remain observational, acceptance checkboxes still follow
+    evidence, failed plan reports still carry `/validate {plan path}`, and prior
+    Validation Report sections are replaced rather than stacked.
+  - Result: `references/validation.md` plus `references/validation-report.md` shrink
+    by 6 Markdown lines per tracked target, 18
+    lines across Pi/Claude/Codex.
+  - Verify: `pkl eval config/pkl/renderers/generation-contract-check.pkl`,
+    `nix run .#pkl-check-generated`, targeted ownership assertions across all three
+    tracked targets, and `git diff --check`.
+  - Context synchronization: synced.

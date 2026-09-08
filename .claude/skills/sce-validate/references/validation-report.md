@@ -7,6 +7,12 @@ under exactly one `## Validation Report` heading.
 This is plan-file content. The result returned to the workflow is defined
 separately in `references/validation.md`.
 
+This reference owns only the persisted report's structure and presentation.
+Validation execution owns command selection and execution, evidence
+interpretation, acceptance-criterion state, outcome classification, and the
+non-repairing boundary. Consume those results here; do not redefine or rerun
+validation policy in this report reference.
+
 Do not author this section while planning. Only `/validate` through `sce-validation`
 writes it.
 
@@ -49,28 +55,18 @@ After repairs, rerun:
 
 ## Rules
 
-- Use **Status:** `validated` only when every acceptance criterion is met and
-  every required full-validation command passed.
-- Use **Status:** `failed` when evidence was captured but required checks or
-  criteria remain unsatisfied.
-- List every command that ran under **Commands run**, including ones that
-  failed. Do not invent exit codes or outcomes.
-- Prefer the plan's `Full validation` commands and each criterion's `Validate:`
-  line over rediscovering project defaults. Fall back to repository conventions
-  only when the plan omits them.
-- Mark each acceptance criterion checkbox in the plan's `## Acceptance criteria`
-  section to match the evidence. Do not mark a criterion met unless the check
-  ran successfully or the inspection named by `Validate:` confirms it.
-- Under **Failed checks and follow-ups**, record every failing check and its
-  evidence, including leftover debug-only flags, temporary artifacts, or local
-  scaffolding. Do not describe code or test edits made during validation;
-  validation does not modify tests or product code to clear failures. Write
-  `None.` when status is `validated`.
+- Use the `validated` or `failed` status produced by validation execution; this
+  report does not redefine status-selection criteria.
+- List every command result supplied by validation execution under **Commands
+  run**. Preserve its exit code and concise outcome; do not invent either.
+- Under **Success-criteria verification**, render the acceptance-criterion
+  checkbox state and evidence already established by validation execution. Do
+  not independently re-evaluate or reclassify criteria here.
+- Under **Failed checks and follow-ups**, render every failure and follow-up
+  supplied by validation execution. Write `None.` when status is `validated`.
 - When status is `failed`, always include **Retry** with the exact
   `/validate {plan path}` command. Omit **Retry** when status is `validated`.
 - Keep evidence concise and factual. Do not narrate the whole implementation
-  history.
-- Do not claim durable context synchronization as part of validation.
-- Do not rewrite task evidence or reopen completed tasks.
+  history or add execution-policy claims absent from the validation result.
 - When a previous `## Validation Report` already exists, replace it with the new
   one rather than stacking duplicates.
