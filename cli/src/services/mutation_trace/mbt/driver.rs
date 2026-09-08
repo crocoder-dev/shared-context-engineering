@@ -57,13 +57,6 @@ pub(super) struct MutationCursorDriver {
 }
 
 impl MutationCursorDriver {
-    /// Exactly `spec/mutation_cursor.qnt`'s `init`: both worktrees at
-    /// `Tree0`/revision `0`/healthy/no-rebaseline, all four scopes
-    /// `NeverSeen` with `scopeActor`'s fixed partition (`Scope0`/`Scope1`
-    /// Claude Code and `Scope2` Codex on `WT0`, `Scope3` `OpenCode` on `WT1`),
-    /// and all six attempts `Available` with the same placeholder
-    /// `Flush(WT0)`/revision `0`/`Tree0`/`Tree0` baseline Quint's `init`
-    /// assigns every `AttemptId`.
     fn init() -> Self {
         let wt0 = worktree("wt0");
         let wt1 = worktree("wt1");
@@ -84,11 +77,12 @@ impl MutationCursorDriver {
             worktree_trees.insert(id.clone(), tree("tree0"));
         }
 
-        let scope_partition: [(&str, &WorktreeId, ActorKind); 4] = [
+        let scope_partition: [(&str, &WorktreeId, ActorKind); 5] = [
             ("scope0", &wt0, ActorKind::ClaudeCode),
             ("scope1", &wt0, ActorKind::ClaudeCode),
             ("scope2", &wt0, ActorKind::Codex),
             ("scope3", &wt1, ActorKind::OpenCode),
+            ("scope4", &wt0, ActorKind::Codex),
         ];
         let mut scopes = BTreeMap::new();
         for (id, owning_worktree, actor_kind) in scope_partition {

@@ -302,6 +302,38 @@ fn a_surviving_ai_mutation_line_is_attributed() {
 }
 
 #[test]
+fn an_ineligible_unscoped_transition_never_becomes_ai_mutation_lineage() {
+    let page_source = FakePageSource::new(vec![page_row(
+        1,
+        "t0",
+        "t1",
+        AttributionKind::IneligibleUnscoped,
+        None,
+    )]);
+    let tree_source = FakeTreeSource::new()
+        .with_file("t0", "f.rs", "a\n")
+        .with_diff(
+            "t0",
+            "t1",
+            "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1,1 +1,2 @@\n a\n+foo\n",
+        );
+
+    let attr = resolve_bounded_mutation_attribution(
+        &page_source,
+        &tree_source,
+        &worktree(),
+        &empty(),
+        &committed("f.rs", 1, 1, 1, vec![added(2, "foo")]),
+        &tree("t1"),
+        Some(1),
+    );
+
+    assert_eq!(attr.reconstructed_events, 1);
+    assert!(ai_contents(&attr).is_empty());
+    assert!(unresolved_contents(&attr).is_empty());
+}
+
+#[test]
 fn ai_mutation_survives_an_unrelated_later_mutation() {
     let page_source = FakePageSource::new(vec![
         non_ai_row(2, "t1", "t2"),

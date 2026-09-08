@@ -1,7 +1,7 @@
 module mutation_cursor {
   type WorktreeId = WT0 | WT1
   type ActorKind = ClaudeCode | Codex | OpenCode | Pi
-  type ScopeId = Scope0 | Scope1 | Scope2 | Scope3
+  type ScopeId = Scope0 | Scope1 | Scope2 | Scope3 | Scope4
   type TreeId = Tree0 | Tree1 | Tree2 | Tree3
   type EventId =
     | Event0
@@ -134,7 +134,7 @@ module mutation_cursor {
     | MbtStutter
 
   val WORKTREES: Set[WorktreeId] = Set(WT0, WT1)
-  val SCOPES: Set[ScopeId] = Set(Scope0, Scope1, Scope2, Scope3)
+  val SCOPES: Set[ScopeId] = Set(Scope0, Scope1, Scope2, Scope3, Scope4)
   val TREES: Set[TreeId] = Set(Tree0, Tree1, Tree2, Tree3)
   val EVENTS: Set[EventId] = Set(
     Event0,
@@ -171,6 +171,7 @@ module mutation_cursor {
       | Scope1 => WT0
       | Scope2 => WT0
       | Scope3 => WT1
+      | Scope4 => WT0
     }
 
   pure def scopeActor(scope: ScopeId): ActorKind =
@@ -179,6 +180,7 @@ module mutation_cursor {
       | Scope1 => ClaudeCode
       | Scope2 => Codex
       | Scope3 => OpenCode
+      | Scope4 => Codex
     }
 
   pure def isLive(status: ScopeStatus): bool = status == Active
@@ -257,8 +259,10 @@ module mutation_cursor {
       Scope1
     } else if (scopes.contains(Scope2)) {
       Scope2
-    } else {
+    } else if (scopes.contains(Scope3)) {
       Scope3
+    } else {
+      Scope4
     }
 
   var worktrees: WorktreeId -> WorktreeState
@@ -317,6 +321,24 @@ module mutation_cursor {
       AiContended
     }
   }
+
+  def isCodexScope(scope: ScopeId): bool =
+    scopes.get(scope).actorKind == Codex
+
+  pure def boundaryConfirmsScope(boundary: Boundary, scope: ScopeId): bool =
+    isClose(boundary) and boundaryScope(boundary) == scope
+
+  def hasUnconfirmedCodexScope(live: Set[ScopeId], boundary: Boundary): bool =
+    live.exists(scope =>
+      isCodexScope(scope) and not(boundaryConfirmsScope(boundary, scope))
+    )
+
+  def attributionForBoundary(worktree: WorktreeId, boundary: Boundary): Attribution =
+    if (hasUnconfirmedCodexScope(liveScopesOn(worktree), boundary)) {
+      IneligibleUnscoped
+    } else {
+      attributionFor(worktree)
+    }
 
   pure def mkMutationEvent(
     worktree: WorktreeId,
@@ -510,7 +532,7 @@ module mutation_cursor {
     val changed = observedChange and not(state.needsRebaseline)
     val advancesRevision = accepted and (not(isFlush(boundary)) or observedChange)
     val live = liveScopesOn(worktree)
-    val attribution = attributionFor(worktree)
+    val attribution = attributionForBoundary(worktree, boundary)
     val emitted: Set[MutationEvent] =
       if (changed) {
         Set(mkMutationEvent(
@@ -1250,6 +1272,8 @@ module mutation_cursor {
       event.attribution == IneligibleUnscoped
     } else if (event.activeScopes.size() == 0) {
       event.attribution == IneligibleUnscoped
+    } else if (hasUnconfirmedCodexScope(event.activeScopes, event.boundary)) {
+      event.attribution == IneligibleUnscoped
     } else if (event.activeScopes.size() == 1) {
       match event.attribution {
         | AiExclusive(scope) => event.activeScopes.contains(scope)
@@ -1273,6 +1297,37 @@ module mutation_cursor {
   val AiContendedRequiresMultipleActiveScopes = mutationEvents.forall(event => {
     event.attribution == AiContended implies event.activeScopes.size() >= 2
   })
+
+  pure def isPositiveAttribution(attribution: Attribution): bool =
+    match attribution {
+      | IneligibleUnscoped => false
+      | AiExclusive(_) => true
+      | AiContended => true
+    }
+
+  val NoPositiveAttributionWithUnconfirmedCodexScope =
+    mutationEvents.forall(event =>
+      isPositiveAttribution(event.attribution) implies
+        not(hasUnconfirmedCodexScope(event.activeScopes, event.boundary))
+    )
+
+  val UnconfirmedCodexScopeBlocksCrossHarnessAttribution =
+    mutationEvents.forall(event => {
+      val liveCodex = event.activeScopes.filter(scope => isCodexScope(scope))
+      val confirmsSome = liveCodex.exists(scope =>
+        boundaryConfirmsScope(event.boundary, scope)
+      )
+
+      (liveCodex.size() > 0 and not(confirmsSome)) implies
+        event.attribution == IneligibleUnscoped
+    })
+
+  val MultipleLiveCodexScopesSuppressPositiveAttribution =
+    mutationEvents.forall(event => {
+      val liveCodex = event.activeScopes.filter(scope => isCodexScope(scope))
+
+      liveCodex.size() >= 2 implies event.attribution == IneligibleUnscoped
+    })
 
   val StartDoesNotAbandonExistingScopes =
     startHistory.forall(start =>
@@ -1306,6 +1361,24 @@ module mutation_cursor {
   val HasUnscopedEvidence = mutationEvents.exists(event => {
     event.attribution == IneligibleUnscoped
   })
+
+  val HasCodexConfirmedExclusiveEvidence = mutationEvents.exists(event =>
+    isClose(event.boundary) and
+    isCodexScope(boundaryScope(event.boundary)) and
+    event.attribution == AiExclusive(boundaryScope(event.boundary))
+  )
+
+  val HasCodexConfirmedContendedEvidence = mutationEvents.exists(event =>
+    isClose(event.boundary) and
+    isCodexScope(boundaryScope(event.boundary)) and
+    event.attribution == AiContended
+  )
+
+  val HasUnconfirmedCodexSuppressedEvidence = mutationEvents.exists(event =>
+    hasUnconfirmedCodexScope(event.activeScopes, event.boundary) and
+    event.activeScopes.size() >= 1 and
+    event.attribution == IneligibleUnscoped
+  )
 
   val HasRejectedAttempt = ATTEMPTS.exists(id => {
     attempts.get(id).status == Rejected
@@ -1351,6 +1424,9 @@ module mutation_cursor {
     AttributionMatchesObservedScopes,
     AiExclusiveRequiresExactlyOneActiveScope,
     AiContendedRequiresMultipleActiveScopes,
+    NoPositiveAttributionWithUnconfirmedCodexScope,
+    UnconfirmedCodexScopeBlocksCrossHarnessAttribution,
+    MultipleLiveCodexScopesSuppressPositiveAttribution,
     StartDoesNotAbandonExistingScopes,
   }
 
@@ -1395,7 +1471,7 @@ module mutation_cursor {
     init
       .then(prepare(Attempt0, Start({ scope: Scope0, event: Event0 })))
       .then(commitAttempt(Attempt0))
-      .then(prepare(Attempt1, Start({ scope: Scope2, event: Event1 })))
+      .then(prepare(Attempt1, Start({ scope: Scope1, event: Event1 })))
       .then(commitAttempt(Attempt1))
       .then(mutate(WT0, Tree1))
       .then(prepare(Attempt2, Flush(WT0)))
@@ -1489,12 +1565,12 @@ module mutation_cursor {
     init
       .then(prepare(Attempt0, Start({ scope: Scope0, event: Event0 })))
       .then(commitAttempt(Attempt0))
-      .then(prepare(Attempt1, Start({ scope: Scope2, event: Event1 })))
+      .then(prepare(Attempt1, Start({ scope: Scope1, event: Event1 })))
       .then(commitAttempt(Attempt1))
       .then(mutate(WT0, Tree1))
       .then(prepare(Attempt2, Flush(WT0)))
       .then(commitAttempt(Attempt2))
-      .then(prepare(Attempt3, Close({ scope: Scope2, event: Event2 })))
+      .then(prepare(Attempt3, Close({ scope: Scope1, event: Event2 })))
       .then(commitAttempt(Attempt3))
       .then(mutate(WT0, Tree2))
       .then(prepare(Attempt4, Close({ scope: Scope0, event: Event3 })))
@@ -1567,18 +1643,18 @@ module mutation_cursor {
     init
       .then(prepare(Attempt0, Start({ scope: Scope0, event: Event0 })))
       .then(commitAttempt(Attempt0))
-      .then(prepare(Attempt1, Start({ scope: Scope2, event: Event1 })))
+      .then(prepare(Attempt1, Start({ scope: Scope1, event: Event1 })))
       .then(commitAttempt(Attempt1))
       .then(mutate(WT0, Tree1))
       .then(prepare(Attempt2, Flush(WT0)))
       .then(commitAttempt(Attempt2))
-      .then(prepare(Attempt3, Close({ scope: Scope2, event: Event2 })))
+      .then(prepare(Attempt3, Close({ scope: Scope1, event: Event2 })))
       .then(commitAttempt(Attempt3))
       .then(mutate(WT0, Tree2))
       .then(prepare(Attempt4, Flush(WT0)))
       .then(commitAttempt(Attempt4))
       .expect(scopes.get(Scope0).status == Active)
-      .expect(scopes.get(Scope2).status == Closed)
+      .expect(scopes.get(Scope1).status == Closed)
       .expect(
         mutationEvents.exists(event =>
           event.afterTree == Tree1 and
@@ -1650,7 +1726,7 @@ module mutation_cursor {
     init
       .then(prepare(Attempt0, Start({ scope: Scope0, event: Event0 })))
       .then(commitAttempt(Attempt0))
-      .then(prepare(Attempt1, Start({ scope: Scope2, event: Event1 })))
+      .then(prepare(Attempt1, Start({ scope: Scope1, event: Event1 })))
       .then(commitAttempt(Attempt1))
       .then(mutate(WT0, Tree1))
       .then(abandon(Scope0))
@@ -1671,7 +1747,7 @@ module mutation_cursor {
       .then(recover(WT0))
       .expect(worktrees.get(WT0).cursorTree == Tree1)
       .expect(not(worktrees.get(WT0).needsRebaseline))
-      .expect(scopes.get(Scope2).status == Active)
+      .expect(scopes.get(Scope1).status == Active)
       .then(mutate(WT0, Tree2))
       .then(prepare(Attempt3, Flush(WT0)))
       .then(commitAttempt(Attempt3))
@@ -1679,7 +1755,7 @@ module mutation_cursor {
         mutationEvents.exists(event =>
           event.beforeTree == Tree1 and
           event.afterTree == Tree2 and
-          event.attribution == AiExclusive(Scope2)
+          event.attribution == AiExclusive(Scope1)
         )
       )
       .expect(Safety)
@@ -1738,14 +1814,128 @@ module mutation_cursor {
       .then(commitAttempt(Attempt0))
       .then(prepare(Attempt1, Start({ scope: Scope2, event: Event1 })))
       .then(commitAttempt(Attempt1))
-      .then(mutate(WT0, Tree1))
-      .then(prepare(Attempt2, Flush(WT0)))
-      .then(commitAttempt(Attempt2))
       .expect(scopes.get(Scope0).status == Active)
       .expect(scopes.get(Scope2).status == Active)
+      .then(mutate(WT0, Tree1))
+      .then(prepare(Attempt2, Close({ scope: Scope2, event: Event2 })))
+      .then(commitAttempt(Attempt2))
       .expect(
         mutationEvents.exists(event =>
+          event.afterTree == Tree1 and
+          event.activeScopes == Set(Scope0, Scope2) and
           event.attribution == AiContended
+        )
+      )
+      .expect(HasCodexConfirmedContendedEvidence)
+      .expect(Safety)
+
+  run testUnconfirmedCodexScopeBlocksCrossHarnessContention =
+    init
+      .then(prepare(Attempt0, Start({ scope: Scope2, event: Event0 })))
+      .then(commitAttempt(Attempt0))
+      .then(prepare(Attempt1, Start({ scope: Scope0, event: Event1 })))
+      .then(commitAttempt(Attempt1))
+      .then(mutate(WT0, Tree1))
+      .then(prepare(Attempt2, Advance({ scope: Scope0, event: Event2 })))
+      .then(commitAttempt(Attempt2))
+      .expect(scopes.get(Scope2).status == Active)
+      .expect(scopes.get(Scope0).status == Active)
+      .expect(
+        mutationEvents.exists(event =>
+          event.afterTree == Tree1 and
+          event.activeScopes == Set(Scope0, Scope2) and
+          event.attribution == IneligibleUnscoped
+        )
+      )
+      .expect(HasUnconfirmedCodexSuppressedEvidence)
+      .expect(Safety)
+
+  run testUnconfirmedCodexScopeBlocksExclusiveAttribution =
+    init
+      .then(prepare(Attempt0, Start({ scope: Scope2, event: Event0 })))
+      .then(commitAttempt(Attempt0))
+      .then(mutate(WT0, Tree1))
+      .then(prepare(Attempt1, Advance({ scope: Scope2, event: Event1 })))
+      .then(commitAttempt(Attempt1))
+      .expect(
+        mutationEvents.exists(event =>
+          event.afterTree == Tree1 and
+          event.activeScopes == Set(Scope2) and
+          event.attribution == IneligibleUnscoped
+        )
+      )
+      .expect(Safety)
+
+  run testFlushDoesNotConfirmCodexScope =
+    init
+      .then(prepare(Attempt0, Start({ scope: Scope2, event: Event0 })))
+      .then(commitAttempt(Attempt0))
+      .then(mutate(WT0, Tree1))
+      .then(prepare(Attempt1, Flush(WT0)))
+      .then(commitAttempt(Attempt1))
+      .expect(
+        mutationEvents.exists(event =>
+          event.afterTree == Tree1 and
+          event.activeScopes == Set(Scope2) and
+          event.attribution == IneligibleUnscoped
+        )
+      )
+      .expect(Safety)
+
+  run testCodexCloseConfirmsExclusiveAttribution =
+    init
+      .then(prepare(Attempt0, Start({ scope: Scope2, event: Event0 })))
+      .then(commitAttempt(Attempt0))
+      .then(mutate(WT0, Tree1))
+      .then(prepare(Attempt1, Close({ scope: Scope2, event: Event1 })))
+      .then(commitAttempt(Attempt1))
+      .expect(scopes.get(Scope2).status == Closed)
+      .expect(
+        mutationEvents.exists(event =>
+          event.afterTree == Tree1 and
+          event.activeScopes == Set(Scope2) and
+          event.attribution == AiExclusive(Scope2)
+        )
+      )
+      .expect(HasCodexConfirmedExclusiveEvidence)
+      .expect(Safety)
+
+  run testSecondLiveCodexScopeSuppressesConfirmedCodexClose =
+    init
+      .then(prepare(Attempt0, Start({ scope: Scope2, event: Event0 })))
+      .then(commitAttempt(Attempt0))
+      .then(prepare(Attempt1, Start({ scope: Scope4, event: Event1 })))
+      .then(commitAttempt(Attempt1))
+      .then(mutate(WT0, Tree1))
+      .then(prepare(Attempt2, Close({ scope: Scope2, event: Event2 })))
+      .then(commitAttempt(Attempt2))
+      .expect(scopes.get(Scope4).status == Active)
+      .expect(
+        mutationEvents.exists(event =>
+          event.afterTree == Tree1 and
+          event.activeScopes == Set(Scope2, Scope4) and
+          event.attribution == IneligibleUnscoped
+        )
+      )
+      .expect(Safety)
+
+  run testTerminalCodexScopeDoesNotSuppressAttribution =
+    init
+      .then(prepare(Attempt0, Start({ scope: Scope2, event: Event0 })))
+      .then(commitAttempt(Attempt0))
+      .then(prepare(Attempt1, Close({ scope: Scope2, event: Event1 })))
+      .then(commitAttempt(Attempt1))
+      .then(prepare(Attempt2, Start({ scope: Scope0, event: Event2 })))
+      .then(commitAttempt(Attempt2))
+      .then(mutate(WT0, Tree1))
+      .then(prepare(Attempt3, Advance({ scope: Scope0, event: Event3 })))
+      .then(commitAttempt(Attempt3))
+      .expect(scopes.get(Scope2).status == Closed)
+      .expect(
+        mutationEvents.exists(event =>
+          event.afterTree == Tree1 and
+          event.activeScopes == Set(Scope0) and
+          event.attribution == AiExclusive(Scope0)
         )
       )
       .expect(Safety)
