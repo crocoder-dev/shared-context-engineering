@@ -1,18 +1,17 @@
 # Mutation-scope hook ingress: the harness-neutral transport seam
 
-`sce hooks mutation-scope` is the one generic CLI ingress that drives the
-mutation-scope runtime (`coordinate()` / `abandon_scope()`, documented in
-[`mutation-scope-runtime.md`](mutation-scope-runtime.md)). It reads a single
-normalized JSON lifecycle object from STDIN, strictly parses and validates it,
-translates it into one `RuntimeBoundary` or one `abandon_scope()` call, and
-invokes the existing runtime with a lazy DB provider.
+`sce hooks mutation-scope` is the generic CLI ingress for the mutation-scope
+runtime (`coordinate()` / `abandon_scope()`, documented in
+[`mutation-scope-runtime.md`](mutation-scope-runtime.md)). It strictly parses
+one normalized JSON lifecycle object from STDIN, translates it into one runtime
+call, and invokes the existing runtime with a lazy DB provider.
 
 Built by the `mutation-scope-hook-ingress` plan
 (`context/plans/mutation-scope-hook-ingress.md`). It lives in
 `cli/src/services/hooks/mutation_scope.rs` and is the transport/normalization
-seam every future Claude Code, Codex, OpenCode, and Pi adapter will target. It
-contains **no** concrete harness mapping and **no** lifecycle-event translation —
-see [Generic ingress vs harness adapter](#generic-ingress-vs-harness-adapter).
+seam used by shipped Claude Code/Codex adapters and intended for future
+OpenCode/Pi adapters. It contains **no** concrete mapping or lifecycle
+translation — see [Generic ingress vs harness adapter](#generic-ingress-vs-harness-adapter).
 
 ## Command routing
 
@@ -240,8 +239,9 @@ for an in-process consumer like the Claude driver, the same seam directly) as
 its transport. See [`mutation-scope-runtime.md`](mutation-scope-runtime.md)
 for the lifecycle obligations every such adapter must uphold.
 
-## Related context
+The Codex mapping and partial coverage are in [`codex-mutation-scope-integration.md`](codex-mutation-scope-integration.md).
 
+## Related context
 - [Mutation-scope runtime: the harness-adapter contract](mutation-scope-runtime.md)
 - [Claude mutation-scope integration: the first concrete harness adapter](claude-mutation-scope-integration.md)
 - [Mutation-trace runtime coordinator](mutation-trace-runtime-coordinator.md)
