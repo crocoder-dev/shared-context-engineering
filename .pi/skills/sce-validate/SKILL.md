@@ -6,17 +6,13 @@ description: >
 
 # SCE Validate
 
-## Execution contract
+## Purpose
 
-Own this workflow from input through its terminal user-visible response.
-Follow its steps, gates, and stops in order; do not add, skip, reorder, or merge them.
-Keep internal phase results private and continue immediately until a defined wait or stop.
-Resume user waits in this same skill and session.
-Render user-visible output only from the named workflow layouts or phase reports.
-Do not expose raw internal state or add text around a rendered layout or report.
-Non-SCE helpers may assist, but must return to the active step without changing
-phase order, gates, waits, writes, validation, stops, or terminal output.
-Do not invoke another SCE skill, package, or workflow command.
+Own this workflow from input parsing through its terminal user-visible response.
+Execute the phases below directly and in order. Phase statuses are internal state,
+not inter-SCE workflow handoffs. Do not invoke another SCE skill, sibling SCE
+package, or SCE workflow command. Follow the canonical workflow's steps, gates,
+and stops exactly as written: never invent, skip, reorder, or merge a step.
 
 ## Phase references
 
@@ -34,6 +30,25 @@ written into the plan file. Step 1 points to it at the moment it is needed, on a
 
 Read the reference before taking any action for step 1, not after.
 
+## User-visible output
+
+Use `references/output.md` for every gate and terminal response. Render no raw
+internal state. The reference contains only human-visible Markdown layouts.
+User-visible output is limited to those layouts: never invent a layout, and never
+wrap one in an added preamble, commentary, summary, or extra section.
+
+## Composite control flow
+
+Keep phase results as internal state and continue immediately whenever the
+canonical workflow says to continue. Stop only at a user wait or terminal branch.
+Any workflow-defined user wait resumes this same skill in the same session.
+Never expose an internal phase result as the workflow's final response.
+
+Relevant non-SCE skills may be used as helper capabilities during the active step.
+They are not workflow handoffs: when a helper returns, control returns to the active
+step. Helper use must preserve the canonical phase order, gates, waits, writes,
+validation, stops, and terminal user-visible output.
+
 ## Input
 
 `$ARGUMENTS` is the plan name or plan path.
@@ -50,7 +65,7 @@ Pass the plan name or path to the **Validation phase** unmodified. Do not restat
 summarize, or pre-scope it.
 
 Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is
-the path carried by the **Validation phase** in its Markdown report (`Plan:`, or a
+the path carried by the **Validation phase** in its Markdown result (`Plan:`, or a
 candidate path), so every emitted command is directly runnable.
 
 ## Workflow

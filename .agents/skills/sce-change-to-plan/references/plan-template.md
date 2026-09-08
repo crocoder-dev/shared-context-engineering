@@ -129,7 +129,6 @@ invent one: `None.` is the expected answer for a well-specified change.}
 
 ## Task rules
 
-- Number tasks sequentially as `T01..T0N`.
 - Every task is a checkbox line so progress stays machine-readable:
   `- [ ] T01: {title} (status:todo)`.
 - Author each executable task as one atomic commit unit by default.
@@ -146,9 +145,9 @@ invent one: `None.` is the expected answer for a well-specified change.}
 
 - The last task in the stack is an ordinary implementation task. Do not author a
   trailing "validation and cleanup" task.
-- Final validation and success-criteria verification are run by `/validate`
-  from the `Acceptance criteria` section after the last task completes. Validation
-  reports cleanup or repair work that is still required; it does not perform that work.
+- Final validation, cleanup, and success-criteria verification are run by
+  `/validate` from the `Acceptance criteria` section after the last task
+  completes.
 - Do not author a task whose only purpose is running the full check suite,
   verifying durable context, or removing scaffolding.
 - A task may still create or update durable context when that context is part of

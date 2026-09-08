@@ -61,7 +61,7 @@ sentence.
 
 ## 1.5 Return the brief
 
-Return one internal result with one of these statuses:
+Set exactly one internal state:
 
 - `loaded`
 - `bootstrap_required`
@@ -69,7 +69,7 @@ Return one internal result with one of these statuses:
 Report facts the workflow can act on. A brief that only lists file paths has
 moved no knowledge.
 
-Return only the internal result. Do not add explanatory prose before or after it.
+Record only the internal state. Do not add explanatory prose before or after it.
 
 Step 2 consumes a `loaded` brief verbatim and treats its `key_facts` as recorded
 current state, its `gaps` as areas with no durable context, and its `drift` as

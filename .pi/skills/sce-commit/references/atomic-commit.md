@@ -1,4 +1,4 @@
-# Atomic commit phase
+# SCE Atomic Commit
 
 ## Purpose
 
@@ -8,8 +8,8 @@ Write messages matching:
 
 `references/commit-message-style.md`
 
-This phase does not commit. The invoking `/commit` workflow decides
-whether a returned message is committed, and it is the only part that runs
+Committing is not this skill's job. The invoking `/commit` workflow decides
+whether a returned message is committed, and it is the only thing that runs
 `git commit`.
 
 ## Input
@@ -106,9 +106,8 @@ Confirm before returning that:
 
 ## Bypass execution handoff
 
-This subsection is the sole definition of the bypass execution sequence. This
-phase returns the message; when the mode is `bypass`, the invoking `/commit`
-workflow performs this handoff exactly as written:
+This phase returns the message; the invoking `/commit` workflow performs the
+bypass commit. When the mode is `bypass`, the invoking workflow must:
 
 1. Create the commit-message temp file outside the repository working tree,
    and write the returned `message` verbatim to it using a file-writing
@@ -147,7 +146,7 @@ Do not:
 
 ## Completion
 
-The phase is complete after:
+The skill is complete after:
 
 - The staged diff was read, or reading it failed and was reported.
 - Messages were written for every staged file, or a blocker prevented it.

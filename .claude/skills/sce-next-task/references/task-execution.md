@@ -6,9 +6,15 @@ application code, and the only one that asks the user for anything.
 Input: the complete `ready` result from the plan review phase, plus the `approve`
 flag when the user pre-approved this invocation.
 
-This phase owns the implementation gate and approval lifecycle, then implements,
-verifies, and records exactly one approved task. No other phase may ask for implementation
-confirmation.
+This phase exclusively owns:
+
+- Presenting the implementation summary.
+- Requesting implementation confirmation.
+- Implementing the task.
+- Running task-level verification.
+- Updating the task status and evidence.
+
+Do not present an additional implementation confirmation anywhere else.
 
 The `approve` flag means the user pre-approved this task when invoking the
 workflow. It suppresses the approval question and the wait. It never suppresses
@@ -54,12 +60,23 @@ Do not reconstruct missing material requirements.
 At the start of the phase, before any file modification, present the task using
 `references/output.md`.
 
-Always show the gate, including for straightforward, pre-approved, stale, or
-incomplete input. `references/output.md` owns its exact content and question text.
+The gate must be shown even when:
 
-Without `approve`, render the gate's approval question and wait. Do not return
-internal state or modify files until the user answers. With `approve`, render the
-gate without its question, do not wait, and continue at step 2.4.
+- The task appears straightforward.
+- The workflow believes approval was already implied.
+- The handoff is stale or incomplete.
+- The user is likely to approve.
+
+When the `approve` flag is absent, end the gate with exactly one approval
+question:
+
+`Continue with implementation now? (yes/no)`
+
+Stop and wait for the user's answer. Do not return internal state, and make no
+file modifications, until the user has answered.
+
+When the `approve` flag is supplied, show the gate as a summary, omit the
+approval question, do not wait, and continue at step 2.4.
 
 ## 2.3 Handle the user's decision
 
@@ -191,17 +208,24 @@ Set internal status `blocked` for every other non-successful outcome, including:
 Do not determine whether the plan is complete. The `/next-task` workflow owns
 that decision after context synchronization.
 
-Before returning a `complete` result, verify that it satisfies the authoritative
-handoff contract above.
+Before determining terminal status for a `complete` result, verify that the
+handoff contains the resolved plan, task identity, baseline-relative changed
+files, implementation summary, verification evidence, done-check evidence, plan
+update, and context-impact classification listed above. The mandatory five-root-
+file context pass remains required for every completed task, regardless of the
+reported context-impact classification, because it is cheap, deterministic, and
+load-bearing for context accuracy; `context_impact` must not be used to waive it.
 
-## 2.9 Return the result
+## 2.9 Return internal state
 
-After the phase reaches a terminal state, return exactly one internal result.
+After the phase reaches a terminal state, set exactly one internal state.
 
-Return only the internal result. Do not add explanatory prose before or after it.
+Record only the internal state. Do not add explanatory prose before or after it.
 
-A `complete` result is the authoritative handoff into step 3. Pass it unchanged;
-step 3 must consume it instead of reconstructing its fields.
+A `complete` result is the authoritative handoff into step 3, which reads the
+plan, completed task, changed files, implementation summary, verification
+evidence, done-check evidence, and context-impact classification out of it. Step
+3 is forbidden from reconstructing any of that, so it has to be present here.
 
 ## Task execution boundaries
 

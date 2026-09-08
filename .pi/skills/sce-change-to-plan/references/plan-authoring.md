@@ -5,18 +5,18 @@ Run this phase for step 2 of the workflow, and again for each revision in step 4
 Input: the change request, and the complete `loaded` brief from the context load
 phase. Pass the brief verbatim; do not restate, summarize, or reinterpret it.
 
-This phase owns the planning process:
+This phase exclusively owns:
 
-- Resolve whether the request targets a new or an existing plan.
-- Challenge the change and run the clarification gate.
-- Derive plan-specific content from the request and loaded context.
-- Decide task boundaries, dependencies, and ordering.
-- Write or revise exactly one `context/plans/{plan_name}.md`.
+- Resolving whether the request targets a new or an existing plan.
+- The clarification gate.
+- Normalizing the change summary, acceptance criteria, constraints, and non-goals.
+- Slicing the task stack into one-task/one-atomic-commit units.
+- Writing `context/plans/{plan_name}.md`.
 
-`references/plan-template.md` is the sole owner of the persisted plan schema.
-Read its `Acceptance criteria rules`, `Task rules` and `No validation task` rules,
-and `Updating an existing plan` rules before authoring or revising. Apply those
-rules rather than restating them here.
+Do not duplicate any of it elsewhere in the workflow.
+
+Use the document format in `references/plan-template.md`. Read it before writing
+the plan file.
 
 The workflow renders this phase's result as the summary defined in
 `references/output.md`.
@@ -27,7 +27,7 @@ responsibility.
 
 The context brief is the durable memory this plan starts from. Treat its
 `key_facts` as recorded current state, its `gaps` as areas with no durable
-context, and its `drift` as recorded context that no longer matches the code.
+context, and its `drift` as context the code has already outrun.
 
 When no brief is supplied, load the context named by the change request before
 authoring, and follow the selection discipline in *Inspect relevant context*.
@@ -48,9 +48,8 @@ undecidable.
 Determine whether the request targets a new plan or an existing plan in
 `context/plans/`.
 
-When it targets an existing plan, read that plan before authoring. Apply the
-`Updating an existing plan` rules in `references/plan-template.md` when writing;
-this step only resolves which plan is being revised.
+When it targets an existing plan, read that plan before authoring. Preserve its
+completed tasks, their recorded evidence, its structure, and its terminology.
 
 When multiple existing plans match and none can be selected safely, return
 `blocked` with the matching candidates.
@@ -152,16 +151,33 @@ Do not explore the entire repository by default.
 
 ## 2.5 Author the acceptance criteria
 
-Derive the plan-specific success outcomes and checks before slicing tasks, then
-apply the `Acceptance criteria rules` and exact section shape in
-`references/plan-template.md`. The template owns their generic validation
-semantics and placement.
+State how the finished plan is proven, before slicing tasks.
+
+Each criterion describes observable behavior of the finished system and names the
+check that proves it. Record repository-wide checks once under `Full validation`,
+and the durable context the change must be reflected in under `Context sync`.
+
+`/validate` runs this section after the last task completes. It is the only place
+a plan says how it is validated.
 
 ## 2.6 Author the task stack
 
-Slice and order the plan-specific work after the acceptance criteria, applying the
-`Task rules` and `No validation task` rules in `references/plan-template.md`.
-Do not restate those generic task rules here.
+Slice the work into sequential tasks `T01..T0N` using the task format and the
+atomic slicing contract in `references/plan-template.md`.
+
+Every executable task must be completable and landable as one coherent commit.
+Split any task that would require multiple independent commits. Convert broad
+wrappers such as `polish` or `finalize` into specific outcomes with concrete
+acceptance checks.
+
+Order tasks so each one's declared dependencies precede it.
+
+The last task is an ordinary implementation task. Do not author a trailing
+validation-and-cleanup task, or any task whose only purpose is running the full
+check suite, verifying durable context, or removing scaffolding.
+
+Confirm every acceptance criterion is satisfied by at least one task. When one is
+not, the task stack is incomplete.
 
 A finished stack always leaves at least one incomplete task, so the workflow can
 always hand off to `/next-task`. When the request resolves to a plan but produces
@@ -171,18 +187,20 @@ by completed tasks, set internal status `blocked` with category
 
 ## 2.7 Write the plan
 
-Write `context/plans/{plan_name}.md` by applying `references/plan-template.md`
-exactly. For revisions, apply its `Updating an existing plan` rules.
+Write `context/plans/{plan_name}.md` using `references/plan-template.md`.
+
+When updating an existing plan, keep completed tasks and their evidence intact,
+and append or renumber new tasks without disturbing recorded history.
 
 ## 2.8 Return the result
 
-Return one internal result with one of these statuses:
+Set exactly one internal state:
 
 - `plan_ready`
 - `needs_clarification`
 - `blocked`
 
-Return only the internal result. Do not add explanatory prose before or after it.
+Record only the internal state. Do not add explanatory prose before or after it.
 
 A `plan_ready` result always names the next task in `next_task`, and carries the
 `total_tasks` count and any open questions the summary needs. Step 3 renders those
@@ -190,13 +208,29 @@ without recomputing them.
 
 ## Plan authoring tone
 
-Write user-facing questions and open questions directly and specifically.
+Every question and open question this phase writes is read by the user. Write
+them the way a senior engineer talks in review: direct, specific, and unbothered
+by the possibility of being unwelcome.
 
-- Ask only about material concerns that can change scope, success criteria, or task ordering.
-- State the concern and the concrete evidence for it.
-- Name a smaller or safer alternative when one is known.
-- Do not invent concerns, add praise or reassurance, or repeat the same concern in several forms.
-- When the user overrules a concern, record the decision and continue. Do not reintroduce it as a constraint, non-goal, or task.
+- Ask about the thing that actually worries you, not a safer neighbouring thing.
+  A question you would not bother asking a colleague is not worth the user's
+  attention either.
+- State a doubt as a doubt. "I do not think this is worth the two tasks it
+  costs, because X" is useful. "It may be worth considering whether this aligns
+  with broader goals" is noise.
+- Name the alternative you have in mind. A challenge with no proposal behind it
+  is just friction.
+- Do not open with praise, do not close with reassurance, and do not apologize
+  for asking. Do not pad a doubt with hedges to make it land more gently.
+- Be persistent, not repetitive. Ask once, plainly, and let it stand; do not
+  restate the same doubt in three shapes to give it more weight.
+- Being disagreeable is not the goal. Being easy to agree with is the failure
+  mode. A plan the user waves through without reading has cost them nothing and
+  bought them nothing.
+
+When the user overrules a doubt, record it and move on. Do not relitigate a
+decision the user has made, and do not smuggle the objection back in as a
+constraint, a non-goal, or a task.
 
 ## Plan authoring boundaries
 
@@ -215,7 +249,8 @@ Do not:
 - Run task execution.
 - Synchronize context.
 - Run final validation.
-- Write a plan that violates `references/plan-template.md`.
+- Author a validation, cleanup, or context-verification task. `/validate` owns
+  that phase.
 - Set internal status `plan_ready` for a plan with no incomplete task.
 - Create a Git commit.
 - Author more than one plan.
