@@ -1539,7 +1539,7 @@ How this plan is proven complete. Each criterion is observable and names the
 check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation.
 
-- [ ] AC1: `sce hooks codex-mutation-scope` exists, is hidden from `sce --help`
+- [x] AC1: `sce hooks codex-mutation-scope` exists, is hidden from `sce --help`
   and `sce hooks --help`, and routes through the normal hook command stack
   (`HooksSubcommand::CodexMutationScope` -> `convert_hooks_subcommand_request`
   -> `HookSubcommand::CodexMutationScope` -> `run_hooks_subcommand_in_repo`,
@@ -1550,7 +1550,7 @@ performs final validation.
     (If T02 chooses D17 option 2, this AC instead asserts the new
     `CodexDispatchArm` mutation-scope variants and their non-fail-open handling
     inside `sce hooks codex`.)
-- [ ] AC2: The raw Codex mutation-scope event parser strictly validates the
+- [x] AC2: The raw Codex mutation-scope event parser strictly validates the
   fields T01 freezes as required for a tracked `PreToolUse` and rejects an empty
   payload, non-object JSON, and missing/blank/wrong-typed fields with a
   `Invalid Codex hook event payload from STDIN: <detail>.` diagnostic, never
@@ -1558,7 +1558,7 @@ performs final validation.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
     cli/Cargo.toml services::hooks::codex_mutation_scope` parser unit tests,
     including a fixture per T01 probe.
-- [ ] AC3: `classify_tool` returns exactly one of the three classes (D2) for
+- [x] AC3: `classify_tool` returns exactly one of the three classes (D2) for
   every Codex tool name T01 enumerated: `TrackedMutation` (`apply_patch`, the
   shell/`Bash` tool), `Delegation` (`collaborationspawn_agent` /
   `collaborationwait_agent` — no scope), `Untracked` (any `mcp__<server>__<tool>`
@@ -1571,7 +1571,7 @@ performs final validation.
   - Validate: classification unit-test table (each tool name -> class); adapter
     mapping unit tests asserting that `Untracked`/`Delegation` events produce no
     processed-event keys.
-- [ ] AC9b (MCP / unknown pass-through — direction B): A `PreToolUse(mcp__…)`
+- [x] AC9b (MCP / unknown pass-through — direction B): A `PreToolUse(mcp__…)`
   and a `PreToolUse(<unknown tool>)` are classified `Untracked` and produce a
   **Codex-neutral continue response** — no `ScopeId`, no `EventId`, no
   mutation-scope `Start`, no adapter attempt, no `recovery_pending`, no
@@ -1584,7 +1584,7 @@ performs final validation.
     successful-MCP lifecycle (`PreToolUse → PostToolUse`, probe 12 fixture)
     leaves zero mutation-scope rows/events; the recorded D23 decision in this
     plan.
-- [ ] AC9c (MCP mutate-then-error leaves no stale state — direction B): Driving
+- [x] AC9c (MCP mutate-then-error leaves no stale state — direction B): Driving
   the probe-13 lifecycle (`PreToolUse(mcp__…)` mutates a git-visible file, tool
   returns an error, **no `PostToolUse`**, then `Stop`/`SessionEnd`) through the
   adapter leaves **no stale attempt, no `recovery_pending`, no `abandon`, and no
@@ -1593,7 +1593,7 @@ performs final validation.
   - Validate: adapter unit test replaying the probe-13 fixture sequence and
     asserting the state store is empty throughout and after; T06 row-count
     assertion.
-- [ ] AC9d (failed MCP A -> successor B — direction B): Using the probe-14
+- [x] AC9d (failed MCP A -> successor B — direction B): Using the probe-14
   sequence (`A` = untracked MCP that mutates then errors, immediately followed by
   `PreToolUse(B)` where `B` is a tracked `Bash`/`apply_patch` **or** another
   MCP), A leaves **no mutation-scope bookkeeping** that can interfere with B: if
@@ -1602,13 +1602,13 @@ performs final validation.
   - Validate: adapter unit test over the probe-14 fixture asserting B (tracked)
     is the only live scope at its `Start` and no false `AiContended`; T06
     regression.
-- [ ] AC9e (parallel MCP — direction B): Using probes 16/17 (two MCP executions
+- [x] AC9e (parallel MCP — direction B): Using probes 16/17 (two MCP executions
   genuinely overlap), neither MCP `PreToolUse` creates a mutation scope, there is
   **no MCP/MCP `AiContended`**, and the adapter state store shows no leak (empty
   before, during, and after).
   - Validate: adapter unit test over the probe-16/17 fixtures; T06 regression
     asserting zero mutation-scope rows for the overlapping MCP pair.
-- [ ] AC9f (tracked tool overlapping MCP — semantics documented): With
+- [x] AC9f (tracked tool overlapping MCP — semantics documented): With
   `Start(Bash A)` live, an MCP call mutates the worktree, then `Close(Bash A)`.
   The runtime may report `AiExclusive(A)` for the interval. The test and the
   durable context must state this means **A was the only tracked scope live**,
@@ -1620,25 +1620,25 @@ performs final validation.
     AC22 confirms there is no SQL/schema change and that the only protocol/Quint
     semantic change is the boundary-aware unconfirmed-Codex attribution rule
     (D14), which leaves MCP's `Untracked` disposition untouched.
-- [ ] AC4: The Codex execution key is exactly the field tuple T02 froze from
+- [x] AC4: The Codex execution key is exactly the field tuple T02 froze from
   T01 evidence (recorded in D3). Duplicate delivery of the same live
   `PreToolUse` reuses the same `attempt_seq`, `ScopeId`, and `Start` `EventId`.
   - Validate: identity/formatter unit tests; state unit tests; T06 duplicate-
     delivery regression.
-- [ ] AC5: A later execution attempt of the same raw Codex tool identifier,
+- [x] AC5: A later execution attempt of the same raw Codex tool identifier,
   after the previous attempt became terminal, receives a new `attempt_seq` and a
   new `ScopeId`; a terminal `ScopeId` is never reused; replaying a live
   attempt's event is `ScopeId`/`EventId`-stable.
   - Validate: state unit tests (terminal attempt then fresh `attempt_seq`);
     formatter determinism tests; T06 reused-identifier regression.
-- [ ] AC6: A `TrackedMutation` `PreToolUse` reaches durable
+- [x] AC6: A `TrackedMutation` `PreToolUse` reaches durable
   generic-ingress `Start` before the hook returns its "continue" response to
   Codex (write-ahead `pending_start` -> ingress `Start` -> `active`), and the
   seam receives the raw hook `cwd` as `repository_root` (never `git_dir`).
   - Validate: adapter ordering unit test with an injected seam asserting the
     persisted phase from inside the seam call and the `repository_root`
     argument; T06 production-path confirmation.
-- [ ] AC7: Any failure to establish adapter state or `Start` during a
+- [x] AC7: Any failure to establish adapter state or `Start` during a
   `TrackedMutation` `PreToolUse` returns the exact Codex-native block response
   T01 froze (D8), never a silent success and never an explicit allow; the
   detailed error is logged via
@@ -1647,12 +1647,12 @@ performs final validation.
   - Validate: failure-classification unit tests asserting the exact response
     JSON/exit; `RecordingLogger` assertion that the detail is logged and not
     leaked into the model-visible reason.
-- [ ] AC8: A successful `TrackedMutation` tool with an `active` attempt closes
+- [x] AC8: A successful `TrackedMutation` tool with an `active` attempt closes
   its scope: `PreToolUse` -> real filesystem mutation -> terminal Codex hook
   produces exactly one eligible tool interval and one terminal (`Closed`) scope
   with attribution `AiExclusive`.
   - Validate: T06 real-Git + real-Agent-Trace-DB regression.
-- [ ] AC9: A `TrackedMutation` tool that partially mutated the checkout then
+- [x] AC9: A `TrackedMutation` tool that partially mutated the checkout then
   failed is handled per D10's T01 disposition:
   - **`Bash`:** the terminal `PostToolUse` closes the scope (partial mutation
     attributed to that scope).
@@ -1661,7 +1661,7 @@ performs final validation.
     exists, so there is nothing to close, abandon, or flush; see AC9c.
   - Validate: T06 failed-`Bash` and failed-`apply_patch` regressions whose
     assertions match the D10 disposition recorded by T01.
-- [ ] AC9a: A partially-mutating failed `TrackedMutation` tool A with **no
+- [x] AC9a: A partially-mutating failed `TrackedMutation` tool A with **no
   terminal event**, followed by another `TrackedMutation` `PreToolUse(B)` in the
   same turn: B never `Start`s alongside a zombie A. Normal path (Case A) — a
   terminal `PostToolUse` (or `Interrupt`/`SessionEnd`) precedes the successor.
@@ -1675,7 +1675,7 @@ performs final validation.
     sweep, seam order, fail-closed, lane scoping); T06 built-in failed-A-then-B
     regression (assert A `Abandoned` or `Closed` per tool, B the only live scope
     at its `Start`, no false `AiContended`).
-- [ ] AC10: Two simultaneously-live **tracked** scopes never collapse into one
+- [x] AC10: Two simultaneously-live **tracked** scopes never collapse into one
   shared `ScopeId`, and a tree transition observed while both are live is
   attributed per the refined D14 confirmation rule:
   1. observed at a boundary that does **not** confirm the live Codex scope
@@ -1699,7 +1699,7 @@ performs final validation.
     `an_unconfirmed_codex_overlap_never_reaches_the_mutation_ai_patch`,
     `a_confirmed_codex_close_overlap_is_contended_and_still_not_ai_lineage`); the
     plan records the D14 form exercised.
-- [ ] AC11: An outstanding **tracked** execution with no terminal hook is
+- [x] AC11: An outstanding **tracked** execution with no terminal hook is
   retired by exactly the Codex lifecycle signals T01 marked load-bearing (D12),
   via `abandon_scope`, leaving the worktree `needs_rebaseline`. The D12 sweeps
   operate only over adapter-owned tracked attempts; `Untracked` (MCP, unknown)
@@ -1707,7 +1707,7 @@ performs final validation.
   - Validate: T06 regressions for each proven cleanup signal; adapter cleanup
     unit tests including one asserting an `Untracked` execution left no attempt
     for a sweep to touch.
-- [ ] AC12: While `recovery_pending` is armed and known **tracked** attempts
+- [x] AC12: While `recovery_pending` is armed and known **tracked** attempts
   remain outstanding, every new `TrackedMutation` `PreToolUse` is denied (D8
   shape); an `Untracked` `PreToolUse` is not affected by the barrier; once
   quiescent, exactly one `{"operation":"flush"}` runs through the seam and
@@ -1718,18 +1718,18 @@ performs final validation.
   - Validate: adapter recovery-barrier unit tests (deny-while-outstanding,
     flush-then-proceed, flush-failure-stays-closed); T06 recovery-barrier
     regression.
-- [ ] AC13: A failed abandonment leaves the attempt tracked and
+- [x] AC13: A failed abandonment leaves the attempt tracked and
   `recovery_pending = true` (no successor mutation `Start` is allowed until
   recovery succeeds).
   - Validate: adapter unit test (failed `abandon` -> attempt retained, barrier
     armed, next `PreToolUse` denied, seam not re-driven).
-- [ ] AC14: A hook process whose raw payload `cwd` names checkout B drives
+- [x] AC14: A hook process whose raw payload `cwd` names checkout B drives
   mutation state for checkout B only (its `WorktreeId`/cursor advances; another
   checkout's cursor is unchanged); the adapter constructs no `WorktreeId` and
   passes no `worktree_id` key.
   - Validate: T06 worktree-isolation regression (real linked worktree);
     dependency-boundary grep for `worktree_id` key construction.
-- [ ] AC15: The background/detached execution boundary matches T01's finding
+- [x] AC15: The background/detached execution boundary matches T01's finding
   (D16): any Codex-managed background execution T01 shows is unbounded is denied
   in `PreToolUse` with the recorded message; the self-detaching-descendant
   boundary is documented with Codex-specific T01 evidence and the adapter adds
@@ -1737,14 +1737,14 @@ performs final validation.
   - Validate: adapter classification unit test (if a deny applies); T06
     documented unsupported-case regression; inspection of the T01 evidence
     fixture and the D16 disposition.
-- [ ] AC16: Generated `.codex/hooks.json` after `sce setup --codex` still
+- [x] AC16: Generated `.codex/hooks.json` after `sce setup --codex` still
   contains the four existing SCE registrations (`UserPromptSubmit`, `Stop`,
   `PreToolUse` matcher `Bash`, `PostToolUse` matcher `apply_patch`) routed to
   `sce hooks codex`, byte-for-byte, plus the new mutation-scope registrations;
   user-owned Codex handlers and unrelated valid event groups are preserved.
   - Validate: `nix run .#pkl-check-generated`; `codex_hook_config.rs` merge
     tests (existing + new); inspection of the rendered `config/.codex/hooks.json`.
-- [ ] AC16a: Upgrading a realistic already-installed, already-trusted SCE Codex
+- [x] AC16a: Upgrading a realistic already-installed, already-trusted SCE Codex
   document (exactly the canonical four registrations) through the same
   merge/setup path that adds mutation-scope hooks preserves, for every existing
   registration, the tuple `(event, matcher, matcher-group index, handler index,
@@ -1758,19 +1758,19 @@ performs final validation.
     upgrade regression asserting each existing registration's identity tuple and
     computed trust key are unchanged, the new hooks are appended once, user hooks
     unchanged, and a second run is idempotent.
-- [ ] AC17: `sce setup --codex` merge is idempotent for the mutation-scope
+- [x] AC17: `sce setup --codex` merge is idempotent for the mutation-scope
   registrations (a second run produces byte-identical output) and a
   structurally invalid existing `.codex/hooks.json` fails before the atomic swap
   with the existing file untouched.
   - Validate: `codex_hook_config.rs` idempotency + malformed-input tests.
-- [ ] AC17a: Every newly SCE-owned mutation-scope event has a
+- [x] AC17a: Every newly SCE-owned mutation-scope event has a
   `codex_hook_config::hook_event_key_label` entry whose label is the **exact
   upstream Codex key label** (verified against `openai/codex` source in T01/T05,
   not derived by lowercasing), with a dedicated test per newly registered event
   (D22).
   - Validate: `services::codex_hook_config` label tests, one per new event;
     a comment or `NOTES.md` citation of the upstream source for each label.
-- [ ] AC18: `sce doctor` gives each SCE-owned mutation-scope registration the
+- [x] AC18: `sce doctor` gives each SCE-owned mutation-scope registration the
   full three-dimension Codex health model (D21), reported independently of the
   four existing `sce hooks codex` registrations, proving all of:
   1. structural diagnosis (`PresentAndCurrent` / `Missing` / `Stale`,
@@ -1792,7 +1792,7 @@ performs final validation.
     hooks are reported with distinct readiness rather than one flattened
     `.codex/hooks.json` status; a filesystem assertion that no `$CODEX_HOME`
     write occurs.
-- [ ] AC19: Production Codex-adapter code (everything in
+- [x] AC19: Production Codex-adapter code (everything in
   `cli/src/services/hooks/codex_mutation_scope/` outside `#[cfg(test)]`)
   contains no `use` or qualified-path reference naming
   `crate::services::mutation_trace::{runtime,protocol,store}`,
@@ -1804,12 +1804,12 @@ performs final validation.
     cli/src/services/hooks/codex_mutation_scope/` returns no match outside a
     `#[cfg(test)]` module; manual check confirms exactly one `use` reaching
     `crate::services::hooks::mutation_scope`.
-- [ ] AC20: Codex mutation-scope-only regressions leave `diff_traces`,
+- [x] AC20: Codex mutation-scope-only regressions leave `diff_traces`,
   `post_commit_patch_intersections`, `agent_traces`, `messages`, and `parts`
   unchanged (before/after row-count assertions), and adapter state lives only
   below `<git-dir>/sce/`.
   - Validate: T06 regression with row-count assertions; state-module inspection.
-- [ ] AC21: Crash/recovery invariants hold against the real runtime: (a) a
+- [x] AC21: Crash/recovery invariants hold against the real runtime: (a) a
   `pending_start` attempt whose `Start` never committed is abandoned then
   recovered by the quiescent flush; (b) a `pending_start` attempt whose `Start`
   did commit is abandoned as a real runtime abandonment, not a late `Start`;
@@ -1817,7 +1817,7 @@ performs final validation.
   replay-safe on redelivery (no second transition, revision unchanged).
   - Validate: T06 regressions Test-crash-a/b/c driving real events after
     simulating each crash point via the adapter's own bookkeeping helpers only.
-- [ ] AC22: The **only** protocol / formal-model / mutation-attribution semantic
+- [x] AC22: The **only** protocol / formal-model / mutation-attribution semantic
   change introduced by the Codex integration is the accepted boundary-aware
   unconfirmed-Codex attribution rule recorded in D14 / the fifth PR #268
   follow-up. The diff against `origin/claude-mutation-scope-integration` may
@@ -1849,7 +1849,7 @@ performs final validation.
        unconfirmed Codex scopes"): `git diff b72f6c2c -- spec/mutation_cursor.qnt
        spec/mutation_cursor.md cli/src/services/mutation_trace/protocol.rs
        cli/src/services/mutation_trace/runtime/`.
-- [ ] AC23: Durable context clearly separates the generic mutation-scope
+- [x] AC23: Durable context clearly separates the generic mutation-scope
   ingress, the Codex mutation adapter, and the mutation runtime, and records:
   the tool-execution scope model, the **three-class** Codex tool classification
   (`TrackedMutation` / `Delegation` / `Untracked`) and the **partial-by-tool-
@@ -1876,7 +1876,7 @@ performs final validation.
   adapter**.
   - Validate: inspection of `context/cli/codex-mutation-scope-integration.md`
     and the updated cross-reference files.
-- [ ] AC24: The plan's exact unsupported / out-of-coverage limitations are
+- [x] AC24: The plan's exact unsupported / out-of-coverage limitations are
   enumerated in durable context:
   - **MCP tools and unknown/future Codex tools are outside Codex mutation-scope
     attribution coverage** (D23, direction B). They execute and may mutate; the
@@ -3374,9 +3374,9 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 - [x] T06: `Real Git/DB regressions through the production Codex path` (status:done)
   - Task ID: T06
-  - **Unblocked (2026-09-08).** T01–T05 are `done` and `synced`, the
-    protocol/formal safety follow-up is accepted, and the plan/AC22 consistency
-    cleanup is complete. T06 is ready to begin; it has not been started.
+  - **Completed (2026-09-08).** T01-T05 were done and synced, the
+    protocol/formal safety follow-up and AC22 consistency cleanup were complete,
+    and T06 subsequently completed against the frozen production baseline below.
   - **T06 production baseline (frozen).** The production semantics under test are
     frozen at the completion of the fifth T04 follow-up (head `b72f6c2c`):
     Codex tracked-tool classification; fail-closed bootstrap; Bash-policy
@@ -3680,6 +3680,18 @@ Persist this field in every plan; this is durable plan state, not chat state:
     registered. No production behavior, protocol, Quint, SQL, or Agent Trace
     schema changed in T07.
   - Context synchronization: synced
+  - Follow-up (2026-09-08 — final durable-context consistency pass):
+    The first T07 context sync added the authoritative Codex mutation-scope
+    domain file but left several pre-adapter absolute statements in
+    overview/current-state context. This follow-up removed those contradictions:
+    Codex is now consistently described as the second wired adapter; OpenCode/Pi
+    remain future adapters; generated mutation Pre/Post groups use
+    `^(Bash|apply_patch)$` while cleanup groups remain unmatched; tracked
+    mutation Pre bootstrap is fail-closed; the existing `sce hooks codex`
+    evidence pipeline is kept distinct from mutation-scope Bash tracking; and
+    current cross-harness wording distinguishes wired Claude overlap from future
+    OpenCode/Pi runtime capability.
+    No production behavior changed.
 
 ## Open questions
 
@@ -3866,3 +3878,74 @@ attribution-algorithm change is expected after that follow-up — T06 and T07 ar
 frozen against the post-follow-up head. Future work (direction C — first-class
 MCP attribution via a richer lifecycle mechanism) remains a separate, explicitly
 justified PR.
+
+## Validation Report
+
+**Status:** validated
+**Date:** 2026-09-08
+
+### Commands run
+
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::codex_mutation_scope` -> exit 0 (146 passed, 1 ignored)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::mutation_scope` -> exit 0 (36 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::codex` -> exit 0 (276 passed, 1 ignored)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::` -> exit 0 (478 passed, 1 ignored)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::` -> exit 0 (336 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::codex_hook_config` -> exit 0 (36 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::doctor::` -> exit 0 (27 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` -> exit 0 (1320 passed, 1 ignored)
+- `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` -> exit 0 (completed without warnings)
+- `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` -> exit 0 (format check passed)
+- `nix run .#pkl-check-generated` -> exit 0 (141 generated files; inventory sha256 `b5967aeccf044184f8e6aaab0a863254726e849664f95abdc733c77065dcb34e`)
+- `nix flake check` -> exit 0 (all checks passed; incompatible systems omitted)
+- `nix run .#sce -- hooks codex-mutation-scope </dev/null` -> exit 4 (strict empty-payload diagnostic, not unknown subcommand)
+- `nix run .#sce -- --help` and `nix run .#sce -- hooks --help` -> exit 0 (hidden command omitted from both help surfaces)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::parse::command_runtime` -> exit 0 (15 passed, including routing and hidden-help tests)
+- `nix shell nixpkgs#ripgrep -c rg -n --type rust '^\\s*use\\s+crate::services::mutation_trace::(runtime|protocol|store)|::(RepositoryAgentTraceDb|WorktreeId|GitSnapshotService)\\b' cli/src/services/hooks/codex_mutation_scope/` -> exit 0 (only test-module matches)
+- `git diff --name-only origin/claude-mutation-scope-integration -- cli/migrations/agent-trace-repository/ config/schema/agent-trace.schema.json` -> exit 0 (empty)
+- `git diff --name-only b72f6c2c -- spec/mutation_cursor.qnt spec/mutation_cursor.md cli/src/services/mutation_trace/protocol.rs cli/src/services/mutation_trace/runtime/` -> exit 0 (empty)
+- Durable-context inspection and line-budget check -> passed (Codex domain and coverage boundary present; affected files at or below 250 lines)
+- Protocol/Quint diff inspection against `origin/claude-mutation-scope-integration` -> passed (limited to the accepted D14 unconfirmed-Codex attribution rule and its formal/refinement tests)
+
+### Success-criteria verification
+
+- [x] AC1: Hidden command exists, routes correctly, and is strict/non-fail-open -> direct invocation returned the strict parser error; both help surfaces omitted it; 15 command-runtime tests passed.
+- [x] AC2: Raw event parser validates required fields and rejects malformed payloads -> Codex adapter suite passed parser fixtures and rejection tests.
+- [x] AC3: Classification is total across tracked, delegation, and untracked tools -> classification and no-scope tests passed.
+- [x] AC9b: MCP and unknown tools pass through neutrally without adapter state -> adapter and production regressions passed.
+- [x] AC9c: MCP mutate-then-error leaves no stale state -> adapter and production regressions passed.
+- [x] AC9d: Failed MCP followed by a successor cannot interfere with tracked or MCP execution -> successor regression passed.
+- [x] AC9e: Parallel MCP executions create no scopes or contention -> parallel-MCP regression passed.
+- [x] AC9f: Tracked-tool plus MCP overlap retains tracked-scope exclusivity semantics -> real regression passed and durable context records that `AiExclusive` is not sole authorship.
+- [x] AC4: Duplicate live delivery is identity and event stable -> adapter identity/state and production regressions passed.
+- [x] AC5: Terminal scopes are never reused -> fresh-attempt and reused-identifier regressions passed.
+- [x] AC6: Tracked admission is write-ahead and forwards raw `cwd` -> ordering/seam and production regressions passed.
+- [x] AC7: Tracked setup failures fail closed while delegation/untracked tools remain neutral -> failure-classification, logging, and production regressions passed.
+- [x] AC8: Successful tracked tools close with eligible exclusive attribution -> real Git/DB regressions passed.
+- [x] AC9: Failed Bash and apply_patch behavior matches the frozen lifecycle evidence -> failed-tool regressions passed.
+- [x] AC9a: Built-in failed-A/successor-B handling prevents zombie scopes -> driver and production regressions passed.
+- [x] AC10: Tracked scopes remain distinct and D14 confirmation rules hold -> Codex cross-harness regressions and mutation-trace confirmation tests passed.
+- [x] AC11: Proven cleanup signals retire outstanding tracked attempts -> cleanup driver and production regressions passed.
+- [x] AC12: Recovery barrier denies tracked work until quiescent flush succeeds, without affecting untracked tools -> recovery regressions passed.
+- [x] AC13: Failed abandonment retains the attempt and arms recovery -> abandonment regression passed.
+- [x] AC14: Raw `cwd` isolates linked-worktree state without constructing `worktree_id` -> linked-worktree regression and boundary inspection passed.
+- [x] AC15: Background/detached limitations match Codex evidence -> documented unsupported-case regression passed.
+- [x] AC16: Codex setup output preserves existing registrations and adds mutation registrations -> generated parity, merge tests, and flake checks passed.
+- [x] AC16a: Existing trusted registration identity is preserved during upgrade -> canonical-four upgrade regression passed.
+- [x] AC17: Setup merge is idempotent and rejects malformed documents before replacement -> merge tests passed.
+- [x] AC17a: New event labels match upstream Codex labels -> dedicated label tests passed.
+- [x] AC18: Doctor reports structural, trust, and policy dimensions independently without trust/policy writes -> doctor suite passed.
+- [x] AC19: Production adapter dependency boundary is limited to the in-process mutation-scope seam -> prohibited direct-reference inspection found only test-module matches; manual production inspection passed.
+- [x] AC20: Mutation-scope regressions leave unrelated trace tables unchanged and state is under `<git-dir>/sce/` -> production row-count and state-location regressions passed.
+- [x] AC21: Crash/recovery invariants are replay-safe against the real runtime -> all three production crash-point regressions passed.
+- [x] AC22: Only the accepted D14 protocol/formal refinement exists, with SQL/schema and frozen-baseline diffs empty -> both empty-diff checks passed and the predecessor diff inspection passed.
+- [x] AC23: Durable context separates ingress, adapter, and runtime and records the complete Codex contract -> new domain and cross-reference inspection passed; all affected files fit the line budget.
+- [x] AC24: Unsupported and out-of-coverage limits are explicit, including MCP rationale and future work -> the durable “Unsupported / Coverage boundary” inspection passed.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- First-class MCP mutation attribution remains explicitly deferred to a separate richer-lifecycle change.
