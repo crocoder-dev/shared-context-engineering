@@ -27,9 +27,10 @@ jobs:
 
       - name: Apply, verify, commit, and push sync-debt fix
         run: |
+          cp .sce-sync-debt-fix.py /tmp/sce-sync-debt-fix.py
           python3 - <<'PY'
           from pathlib import Path
-          path = Path('.sce-sync-debt-fix.py')
+          path = Path('/tmp/sce-sync-debt-fix.py')
           text = path.read_text()
           text = text.replace(
               'else throw(\\"sce-next-task SKILL.md sync-debt recovery must cite context-sync.md before running the phase and route the resolved plan path, debt task identity, and completed task record without a persisted Context synchronization handoff\\")',
@@ -37,4 +38,4 @@ jobs:
           )
           path.write_text(text)
           PY
-          nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 .sce-sync-debt-fix.py
+          nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 /tmp/sce-sync-debt-fix.py
