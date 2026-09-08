@@ -277,3 +277,24 @@ The two additional root edits replace existing text without increasing line coun
     the exact approval question remains in `references/output.md`, not `SKILL.md` or
     `task-execution.md`; generated inventory stays unchanged.
   - Context synchronization: synced.
+
+
+## Follow-up: complete execution-handoff schema ownership
+
+- [x] T03: `Deduplicate next-task complete execution handoff schema` (status:done)
+  - Scope: the composite same-session `complete` result produced by task execution,
+    the next-task handoff boundary, task-context-sync consumption/validation,
+    canonical Pkl sources, tracked Pi/Claude/Codex mirrors, and the ownership table.
+  - Ownership after change: `references/task-execution.md` defines the composite
+    complete handoff fields once; `/next-task` passes the result verbatim; context
+    sync validates and consumes that contract without restating its live field list.
+    Package mode retains its existing `references/execution-contract.yaml`.
+  - Separate shape preserved: cross-session synchronization recovery continues to
+    consume the persisted completed-task record and blocker; this task does not alter
+    synchronization-debt recovery semantics.
+  - Result: the selected next-task entrypoint/execution/context-sync documents shrink
+    by 19 Markdown lines per tracked target.
+  - Verify: `pkl eval config/pkl/renderers/generation-contract-check.pkl`,
+    `nix run .#pkl-check-generated`, targeted ownership assertions across all three
+    tracked targets, and `git diff --check`.
+  - Context synchronization: synced.

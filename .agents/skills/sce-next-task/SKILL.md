@@ -122,9 +122,8 @@ Read `references/context-sync.md`, then run the **Task context synchronization
 phase** with the complete `complete` result returned by the **Task execution
 phase**.
 
-Pass that result verbatim. It is the authoritative handoff, and the **Task context synchronization phase** owns reading the plan, task, changed files, verification evidence, and reported context impact out of it.
-
-Do not restate, summarize, or reconstruct any part of the execution result.
+Pass that `complete` result verbatim as the authoritative live handoff to the
+**Task context synchronization phase**. Do not restate, summarize, or reconstruct it.
 
 This phase verifies the five root context files on every invocation, whatever the
 change's reported impact, so it is never correct to skip it as unnecessary.

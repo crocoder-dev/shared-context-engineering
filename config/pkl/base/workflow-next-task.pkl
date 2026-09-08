@@ -1808,13 +1808,11 @@ Set internal status `blocked` for every other non-successful outcome, including:
 Do not determine whether the plan is complete. The `/next-task` workflow owns
 that decision after context synchronization.
 
-Before determining terminal status for a `complete` result, verify that the
-handoff contains the resolved plan, task identity, baseline-relative changed
-files, implementation summary, verification evidence, done-check evidence, plan
-update, and context-impact classification listed above. The mandatory five-root-
-file context pass remains required for every completed task, regardless of the
-reported context-impact classification, because it is cheap, deterministic, and
-load-bearing for context accuracy; `context_impact` must not be used to waive it.
+Before returning a `complete` result, verify that it satisfies the authoritative
+handoff contract above. The mandatory five-root-file context pass remains required
+for every completed task, regardless of the reported context-impact classification,
+because it is cheap, deterministic, and load-bearing for context accuracy;
+`context_impact` must not be used to waive it.
 
 ## 2.9 Return internal state
 
@@ -1822,10 +1820,8 @@ After the phase reaches a terminal state, set exactly one internal state.
 
 Record only the internal state. Do not add explanatory prose before or after it.
 
-A `complete` result is the authoritative handoff into step 3, which reads the
-plan, completed task, changed files, implementation summary, verification
-evidence, done-check evidence, and context-impact classification out of it. Step
-3 is forbidden from reconstructing any of that, so it has to be present here.
+A `complete` result is the authoritative handoff into step 3. Pass it unchanged;
+step 3 must consume it instead of reconstructing its fields.
 
 ## Task execution boundaries
 
