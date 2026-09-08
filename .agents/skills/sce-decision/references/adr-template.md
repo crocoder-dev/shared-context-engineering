@@ -1,7 +1,7 @@
 # Decision: {concise decision title}
 
 Date: {YYYY-MM-DD}
-Status: {Proposed|Accepted|Rejected|Deprecated|Superseded}
+Status: {validated decision status}
 Plan: `{context/plans/plan-name.md}`
 Task: `{task-id or comma-separated task IDs}`
 Supersedes: `{context/decisions/YYYY-MM-DD-prior-decision.md}`
@@ -14,7 +14,7 @@ Omit `Task` or `Supersedes` only when it does not apply. Do not omit `Plan`.
 
 ## Decision
 
-{Exactly one durable system-wide choice.}
+{Exactly one durable choice already qualified by task context synchronization.}
 
 ## Rationale
 

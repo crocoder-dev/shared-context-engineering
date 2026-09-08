@@ -157,6 +157,10 @@ verified classification and explain the difference in the report.
 
 ## 3.5 Record qualifying architecture decisions
 
+This subsection is the sole owner of decision qualification. The threshold below
+decides whether `sce-decision` is invoked; the decision skill consumes that gate
+result and must not restate or broaden it.
+
 During this successful synchronization, determine whether the completed change
 establishes or changes a system-wide important constraint involving one or more
 of:

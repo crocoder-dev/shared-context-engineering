@@ -31,7 +31,9 @@
 | Handover persisted schema and completeness validity | `references/handover-template.md` generated from `renderPersistedFormatBody` in `workflow-handover.pkl` | Writer composes and validates against this contract; loader validates against the same contract; `sce-handover/SKILL.md` owns routing, path checks, read/write boundaries, and terminal layout selection without restating required-section or content-validity rules | intentional/keep |
 | Compact workflow execution contract | `executionContract` in `workflow-content.pkl` | Inline in change-to-plan, next-task, commit, validate, and handover entrypoints on all four targets; no extra runtime read | shared rendering, preserved behavior |
 | Workflow routing | Six command documents in the workflow modules | Thin OpenCode Plan/Code agents | intentional/keep |
-| Standalone ADR writing contract | `decision-skill.pkl` | Cross-target `sce-decision` package; successful task synchronization invokes it through the shared decision gate | intentional/keep |
+| Decision qualification gate | `decisionGate` in `workflow-context-sync.pkl` | Successful task context synchronization decides qualification and invokes `sce-decision` once per qualifying decision; `sce-decision` consumes the caller's gate result without restating or broadening the threshold | intentional/keep |
+| Standalone ADR lifecycle, history, path, and result contract | `sce-decision/SKILL.md` generated from `skillText` in `decision-skill.pkl` | Cross-target internal `sce-decision` package; consumes one already-qualified request, validates status/history/path safety, writes or reuses one ADR, and returns the internal result | intentional/keep |
+| Persisted ADR schema and section semantics | `references/adr-template.md` generated from `templateText` in `decision-skill.pkl` | `sce-decision` reads and populates the template at the write boundary without restating the section schema or field semantics | intentional/keep |
 
 ## Guardrails
 

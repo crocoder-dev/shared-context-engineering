@@ -202,15 +202,7 @@ local expectedDecisionDocumentPaths = new Mapping {
 }
 
 local requiredDecisionSkillTokens = new Listing {
-  "qualifying system-wide"
-  "System boundaries or ownership"
-  "Public or cross-domain interfaces"
-  "Data models or persistence"
-  "Compatibility contracts"
-  "Security posture"
-  "Deployment or distribution strategy"
-  "major dependency"
-  "Routine implementation details"
+  "already qualified"
   "YYYY-MM-DD-<decision-slug>.md"
   "`Proposed`"
   "`Accepted`"
@@ -220,9 +212,16 @@ local requiredDecisionSkillTokens = new Listing {
   "otherwise default"
   "Never edit an ADR whose status is `Accepted`"
   "creates a new dated ADR"
-  "exactly one file"
+  "references/adr-template.md"
+  "exactly one ADR"
   "`written`"
   "`blocked`"
+}
+
+local requiredDecisionOwnershipSkillTokens = new Listing {
+  "## Qualification handoff"
+  "Treat the caller's gate result as authoritative"
+  "sole authority for\nthe persisted ADR schema and section semantics"
 }
 
 local requiredDecisionWorkflowTokens = new Listing {
@@ -239,6 +238,42 @@ local requiredDecisionWorkflowTokens = new Listing {
   "Reuse a written ADR path"
   "returned `adr_path`"
   "On `blocked`"
+}
+
+local requiredDecisionTemplateTokens = new Listing {
+  "## Context"
+  "## Decision"
+  "## Rationale"
+  "## Alternatives considered"
+  "## Compatibility and risks"
+  "## Guardrails"
+  "## Consequences"
+  "## Follow-up"
+  "## References"
+}
+
+local forbiddenDecisionSkillGateTokens = new Listing {
+  "System boundaries or ownership"
+  "Public or cross-domain interfaces"
+  "Data models or persistence"
+  "Compatibility contracts"
+  "Security posture"
+  "Deployment or distribution strategy"
+  "A major dependency"
+  "Routine implementation details, local refactors"
+  "similarly durable constraint that is costly or risky to reverse"
+}
+
+local forbiddenDecisionSkillTemplateRestatementTokens = new Listing {
+  "**Context** states"
+  "**Decision** states"
+  "**Rationale** explains"
+  "**Alternatives considered** names"
+  "**Compatibility and risks** states"
+  "**Guardrails** records"
+  "**Consequences** records"
+  "**Follow-up** lists"
+  "**References** links"
 }
 
 local requiredHandoverSkillTokens = new Listing {
@@ -418,18 +453,6 @@ local requiredPhaseReferencesBySkill = new Mapping {
   }
 }
 
-local requiredDecisionTemplateTokens = new Listing {
-  "## Context"
-  "## Decision"
-  "## Rationale"
-  "## Alternatives considered"
-  "## Compatibility and risks"
-  "## Guardrails"
-  "## Consequences"
-  "## Follow-up"
-  "## References"
-}
-
 local forbiddenWorkflowReferenceTokens = new Listing {
   "sce-context-load"
   "sce-plan-authoring"
@@ -599,6 +622,42 @@ local assertDecisionContent = (documents: Mapping) ->
   ) "generated decision package content: complete"
   else throw("generated decision package is missing a required ADR rule or template section")
 
+hidden assertDecisionGateTemplateOwnership = (artifacts: Mapping) ->
+  let (contexts = new Listing {
+    artifacts["config/.pi/skills/sce-next-task/references/context-sync.md"]
+    artifacts["config/.claude/skills/sce-next-task/references/context-sync.md"]
+    artifacts["config/.agents/skills/sce-next-task/references/context-sync.md"]
+  })
+    let (skills = new Listing {
+      artifacts["config/.pi/skills/sce-decision/SKILL.md"]
+      artifacts["config/.claude/skills/sce-decision/SKILL.md"]
+      artifacts["config/.agents/skills/sce-decision/SKILL.md"]
+    })
+      let (templates = new Listing {
+        artifacts["config/.pi/skills/sce-decision/references/adr-template.md"]
+        artifacts["config/.claude/skills/sce-decision/references/adr-template.md"]
+        artifacts["config/.agents/skills/sce-decision/references/adr-template.md"]
+      })
+        if (
+          contexts.every((text) -> text.contains("sole owner of decision qualification"))
+          && skills.every((text) ->
+            text.contains("## Qualification handoff")
+            && text.contains("caller's gate result as authoritative")
+            && text.contains("sole authority for")
+            && text.contains("persisted ADR schema and section semantics")
+            && !text.contains("## Decision gate")
+            && !text.contains("**Context** states")
+            && !text.contains("**Decision** states")
+          )
+          && templates.every((text) ->
+            text.contains("Status: {validated decision status}")
+            && text.contains("## Context")
+            && text.contains("## Decision")
+            && text.contains("## Rationale")
+            && !text.contains("Proposed|Accepted|Rejected|Deprecated|Superseded")
+          )
+        ) "sce-decision: context sync owns qualification and ADR template owns persisted section semantics"
+        else throw("decision qualification must be owned by tracked context-sync outputs while sce-decision consumes the gate and adr-template.md owns persisted ADR schema")
 local assertHandoverContent = (documents: Mapping) ->
   if (
     documents.length == 4
@@ -1167,6 +1226,7 @@ contractChecks {
   ["opencode-decision-permission"] = assertOpenCodeDecisionPermission.apply(opencode.agents)
   ["decision-package-paths"] = assertDecisionDocumentPaths.apply(decisionSkillDocuments)
   ["decision-package-content"] = assertDecisionContent.apply(decisionSkillDocuments)
+  ["decision-gate-template-ownership"] = assertDecisionGateTemplateOwnership.apply(generatedArtifacts)
   ["handover-package-content"] = assertHandoverContent.apply(handoverSkillDocuments)
   ["handover-schema-completeness-ownership"] = assertHandoverSchemaCompletenessOwnership.apply(workflowDocuments)
   ["brownfield-package-content"] = assertBrownfieldContent.apply(brownfieldSkillDocuments)
