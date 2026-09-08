@@ -21,11 +21,12 @@ new_assertion = """assertion = r'''hidden assertDecisionGateTemplateOwnership = 
         artifacts[\"config/.agents/skills/sce-decision/references/adr-template.md\"]
       })
         if (
-          contexts.every((text) -> text.contains(\"This subsection is the sole owner of decision qualification.\"))
+          contexts.every((text) -> text.contains(\"sole owner of decision qualification\"))
           && skills.every((text) ->
             text.contains(\"## Qualification handoff\")
-            && text.contains(\"Treat the caller's gate result as authoritative\")
-            && text.contains(\"Read `references/adr-template.md` before writing.\")
+            && text.contains(\"caller's gate result as authoritative\")
+            && text.contains(\"sole authority for\")
+            && text.contains(\"persisted ADR schema and section semantics\")
             && !text.contains(\"## Decision gate\")
             && !text.contains(\"**Context** states\")
             && !text.contains(\"**Decision** states\")
@@ -35,7 +36,7 @@ new_assertion = """assertion = r'''hidden assertDecisionGateTemplateOwnership = 
             && text.contains(\"## Context\")
             && text.contains(\"## Decision\")
             && text.contains(\"## Rationale\")
-            && !text.contains(\"Status: {Proposed|Accepted|Rejected|Deprecated|Superseded}\")
+            && !text.contains(\"Proposed|Accepted|Rejected|Deprecated|Superseded\")
           )
         ) \"sce-decision: context sync owns qualification and ADR template owns persisted section semantics\"
         else throw(\"decision qualification must be owned by tracked context-sync outputs while sce-decision consumes the gate and adr-template.md owns persisted ADR schema\")
