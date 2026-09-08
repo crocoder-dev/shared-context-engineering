@@ -402,6 +402,13 @@ boundary lock  <git-dir>/sce/codex-mutation-scope-boundary.lock
   MAY and SHOULD be held across the seam
 ```
 
+The second T04 concurrency follow-up exposed one final Option-B routing
+asymmetry: Untracked/Delegation `PreToolUse` already short-circuited before
+git-dir resolution, but `PostToolUse` still entered the boundary-lock/no-op Close
+path. `PostToolUse` now classifies first and returns neutral for every
+non-tracked tool, so complete MCP/unknown/delegation lifecycles leave no adapter
+footprint.
+
 They are not interchangeable and the boundary lock does not replace the state
 lock. Lock hierarchy is frozen (D13c): **`boundary lock -> state lock`**; the
 boundary lock is never acquired while the state lock is held. Both use
