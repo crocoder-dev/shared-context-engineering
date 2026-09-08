@@ -1026,6 +1026,49 @@ hidden assertSyncDebtBlockedRouting = (documents: Mapping) ->
   ) "generated sce-next-task SKILL.md: sync-debt recovery routes its blocked outcome to the Context synchronization blocked layout"
   else throw("sce-next-task SKILL.md sync-debt recovery blocked outcome must route to the Context synchronization blocked layout, not Review blocked")
 
+local validationExecutionPolicyTokens = new Listing {
+  "Prefer the plan's authored checks."
+  "Treat leftover debug-only flags, temporary files"
+  "Never report a check as passed unless it ran successfully"
+  "repair belongs to a later work session"
+  "Do not reopen completed tasks, rewrite task evidence, or change the task stack."
+}
+
+local validationReportForbiddenExecutionTokens = new Listing {
+  "Use **Status:** `validated` only when every acceptance criterion is met"
+  "Use **Status:** `failed` when evidence was captured"
+  "Prefer the plan's `Full validation` commands"
+  "Fall back to repository conventions"
+  "Do not mark a criterion met unless"
+  "leftover debug-only flags"
+  "validation does not modify tests or product code"
+  "Do not claim durable context synchronization"
+  "Do not rewrite task evidence or reopen completed tasks"
+}
+
+local requiredValidationReportPresentationTokens = new Listing {
+  "This reference owns only the persisted report's structure and presentation."
+  "Validation execution owns command selection and execution"
+  "Use the `validated` or `failed` status produced by validation execution"
+  "render the acceptance-criterion"
+  "already established by validation execution"
+  "render every failure and follow-up"
+  "When a previous `## Validation Report` already exists, replace it"
+}
+
+hidden assertValidationReportPolicyOwnership = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      if (path.endsWith("/skills/sce-validate/references/validation.md"))
+        validationExecutionPolicyTokens.every((token) -> text.contains(token))
+      else if (path.endsWith("/skills/sce-validate/references/validation-report.md"))
+        requiredValidationReportPresentationTokens.every((token) -> text.contains(token))
+        && validationReportForbiddenExecutionTokens.every((token) -> !text.contains(token))
+      else true
+    )
+  ) "sce-validate: validation owns execution policy and validation-report owns persisted presentation"
+  else throw("sce-validate validation.md must own command/evidence/classification/non-repair policy; validation-report.md may render established results but must not restate execution policy")
+
 hidden assertValidationIsObservational = (documents: Mapping) ->
   let (forbidden = new Listing {
     "Repair application code during final validation"
@@ -1108,6 +1151,7 @@ contractChecks {
   ["sync-debt-recovery-branch"] = assertSyncDebtRecoveryBranch.apply(workflowDocuments)
   ["plan-review-all-tasks-scope"] = assertPlanReviewAllTasksScope.apply(workflowDocuments)
   ["sync-debt-blocked-routing"] = assertSyncDebtBlockedRouting.apply(workflowDocuments)
+  ["validation-report-policy-ownership"] = assertValidationReportPolicyOwnership.apply(workflowDocuments)
   ["validation-observational"] = assertValidationIsObservational.apply(workflowDocuments)
   ["validate-decision-sync-boundary"] = assertValidateExcludesDecisionAndPlanSync.apply(workflowDocuments)
 }

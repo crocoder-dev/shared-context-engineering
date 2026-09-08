@@ -301,10 +301,8 @@ returns `validated`.
 
 - Name the exact `Plan:` path so every emitted command is runnable.
 - Use **Status:** exactly `validated`, `failed`, or `blocked`.
-- Never claim a check passed unless it ran successfully or the authorized
-  inspection confirmed it.
-- Do not modify tests or product code to clear a failure; record it under
-  **What failed**.
+- Use the status and evidence already produced by validation execution; do not
+  upgrade, reinterpret, or invent results while formatting this report.
 - The failed variant must always end its **Recommended work** with
   `/validate {plan path}` as the final step after repairs.
 - The failed variant must be self-contained enough to hand to another session
