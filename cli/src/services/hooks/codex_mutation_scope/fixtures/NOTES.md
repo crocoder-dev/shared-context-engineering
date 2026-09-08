@@ -493,3 +493,33 @@ No `mutation_cursor.qnt` / mutation protocol / runtime-semantic / SQL-migration 
 Agent Trace schema change is required. The plan's Design section (D1, D2, D8, D9,
 D10, D10a, D12, D13, D14, new D23) and Open questions carry the full disposition.
 The probe fixtures in this directory are unchanged evidence.
+
+## T05 — generated `.codex/hooks.json` registrations and event key labels
+
+The Codex mutation-scope adapter is registered through a **second** command
+contract, `sce hooks codex-mutation-scope`, alongside the existing four
+`sce hooks codex` registrations (plan D17). `config/pkl/renderers/codex-content.pkl`
+appends, after the four unchanged `sce hooks codex` groups, one unmatched
+(catch-all, no `matcher`) group per event the T04 driver dispatches on:
+`PreToolUse`, `PostToolUse`, `Stop`, `Interrupt`, `SubagentStop`, `SessionEnd`.
+Unmatched groups are what every T01 probe used
+(`fixtures/mcp_probe/hooks.json.sample`) and they deliver `Bash`, `apply_patch`,
+and `mcp__*` tool events alike.
+
+`codex_hook_config::hook_event_key_label` is the SCE-owned copy of upstream
+`hooks::hook_event_key_label`. The persisted `$CODEX_HOME/config.toml`
+`[hooks.state]` key for every registration uses these labels, so they must match
+upstream byte-for-byte and are **not** a naive lowercase (plan D22 / AC17a).
+Source of record: `openai/codex` tag `rust-v0.153.4`, commit
+`3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`, `codex-rs/hooks/src/lib.rs`
+lines 96–108 — the same map transcribed in the "Tested Codex version" table near
+the top of this file. The three labels T05 newly registers:
+
+| `.codex/hooks.json` key | `[hooks.state]` key label |
+| --- | --- |
+| `Interrupt` | `interrupt` |
+| `SubagentStop` | `subagent_stop` |
+| `SessionEnd` | `session_end` |
+
+(`PreToolUse` → `pre_tool_use`, `PostToolUse` → `post_tool_use`, `Stop` → `stop`
+were already SCE-owned for the `sce hooks codex` contract.)

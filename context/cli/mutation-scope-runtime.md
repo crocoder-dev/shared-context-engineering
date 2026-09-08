@@ -9,9 +9,11 @@ Built by the `mutation-scope-runtime-integration` plan
 `sce hooks mutation-scope` CLI ingress
 ([`mutation-scope-hook-ingress.md`](mutation-scope-hook-ingress.md)) and the
 shipped Claude Code adapter
-([`claude-mutation-scope-integration.md`](claude-mutation-scope-integration.md);
-Codex/OpenCode/Pi: none yet — see Status) both drive this seam. This file is the
-contract every harness adapter is written against, not shipped-adapter behavior.
+([`claude-mutation-scope-integration.md`](claude-mutation-scope-integration.md))
+and the Codex adapter (`sce hooks codex-mutation-scope`, now registered by
+`sce setup --codex`; OpenCode/Pi: none yet — see Status) all drive this seam.
+This file is the contract every harness adapter is written against, not
+shipped-adapter behavior.
 
 The mechanics behind each entrypoint live in their own domain files:
 [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md)
@@ -254,6 +256,12 @@ via the `pub(crate)` in-process seam
 and is covered by real-repository regressions against a real Agent Trace DB — its
 full contract is in
 [`claude-mutation-scope-integration.md`](claude-mutation-scope-integration.md).
-Codex, OpenCode, and Pi have no adapter; each still owns the `ScopeId` /
-`EventId` derivation and stale-process detection this contract requires, and
-repository-scoped unowned-checkout cleanup is still open.
+A Codex adapter (`cli/src/services/hooks/codex_mutation_scope/`, hidden
+`sce hooks codex-mutation-scope`) also maps onto this contract through the same
+seam and is now registered by `sce setup --codex`; its full contract (the
+tracked/delegation/untracked tool classification, the partial-by-tool-surface
+coverage boundary, and the checkout-local recovery bookkeeping) is authored in a
+dedicated file by the `codex-mutation-scope-integration` plan's final task.
+OpenCode and Pi have no adapter; each remaining harness still owns the
+`ScopeId` / `EventId` derivation and stale-process detection this contract
+requires, and repository-scoped unowned-checkout cleanup is still open.

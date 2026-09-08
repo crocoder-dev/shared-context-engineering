@@ -2566,8 +2566,9 @@ Persist this field in every plan; this is durable plan state, not chat state:
       unregistered. Durable adapter context (D13a/b/c, the coverage table, the
       concurrency story) is authored by T07 as already recorded.
 
-- [ ] T05: `Generated .codex/hooks.json registrations, setup merge, and doctor` (status:todo)
+- [x] T05: `Generated .codex/hooks.json registrations, setup merge, and doctor` (status:done)
   - Task ID: T05
+  - Completed: 2026-09-08
   - Scope: In —
     (a) `config/pkl/renderers/codex-content.pkl`: add the minimum mutation-scope
     `.codex/hooks.json` registrations the adapter uses (per T01's matcher
@@ -2628,7 +2629,161 @@ Persist this field in every plan; this is durable plan state, not chat state:
     test --manifest-path cli/Cargo.toml services::doctor::`; `nix develop -c
     ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
     services::setup::`.
-  - Context synchronization: pending
+  - Files changed:
+    - `config/pkl/renderers/codex-content.pkl` — a second command contract
+      `codexMutationScopeHookCommand` (`sce hooks codex-mutation-scope`); the
+      four `sce hooks codex` groups are byte-for-byte unchanged and a new
+      unmatched (catch-all) mutation-scope group is appended after each of
+      `Stop`, `PreToolUse`, `PostToolUse`, plus new `Interrupt`, `SubagentStop`,
+      `SessionEnd` events — exactly the six the T04 driver dispatches on (D17/D20).
+    - `config/pkl/renderers/generation-contract-check.pkl` — the
+      `codex-hook-invocation` contract now asserts the four `sce hooks codex`
+      handlers plus the six unmatched `sce hooks codex-mutation-scope` handlers,
+      with safe root resolution and no `eval`.
+    - `cli/src/services/codex_hook_config.rs` — command-aware ownership/merge:
+      `CodexHookCommand { Codex, MutationScope }`, `REQUIRED_EVENTS` is now 10
+      `(command, event, matcher)` rows, `required_registrations()` exported for
+      doctor, `RegistrationDiagnosis` / `Registration` carry `command`,
+      `command_owning_contract` / `handler_owning_command` / `handler_owned_by`
+      replace the single-contract predicate, `validate_generated_document_value`
+      locates each registration's group+handler by `(matcher, owning command)`
+      (multiple groups per event allowed), `merge_document` folds registrations
+      in `REQUIRED_EVENTS` order, `merge_event_groups` is command-scoped and
+      appends a fresh group rather than extending a group already holding the
+      other command's handler (D20 position stability), `hook_event_key_label`
+      gains `Interrupt`/`SubagentStop`/`SessionEnd`. Tests: AC16, AC16a
+      upgrade regression, AC17 idempotency + malformed-untouched, AC17a one label
+      test per new event, two-unmatched-`Stop`-groups, append-without-touching-Bash.
+    - `cli/src/services/doctor/inspect.rs` — `codex_registration_suffix`
+      (`PreToolUse(Bash)` unchanged for `Codex`, `<event>(mutation-scope)` for
+      `MutationScope`) and `codex_required_registration_children` replace the
+      hardcoded four-entry `codex_hook_registration_paths`;
+      `codex_hook_registration_child` derives the suffix from `diagnosis.command`.
+      Tests: `a_mutation_scope_registration_gets_the_full_three_dimension_health_model`
+      (structural / trust / policy, AC18 1-4), distinct-readiness vs
+      `sce hooks codex` (AC18), count assertions generalised to
+      `required_registrations().len()`.
+    - `cli/src/services/setup/mod.rs` — `install_merges_codex_hooks_*` test now
+      asserts 8 event keys and that the mutation-scope groups route to
+      `sce hooks codex-mutation-scope`.
+    - `scripts/test-codex-hook-command.sh` — the flake `codex-hook-command`
+      check now validates the four-plus-six-registration contract and that the
+      mutation-scope groups are unmatched and root-aware / fail-open.
+    - `cli/src/services/hooks/codex_mutation_scope/fixtures/NOTES.md` — a T05
+      section recording the registered event set, the unmatched-group choice
+      (T01 probe evidence), and the upstream `hook_event_key_label` citation
+      (`openai/codex` `rust-v0.153.4`, `codex-rs/hooks/src/lib.rs` lines 96–108)
+      for `interrupt` / `subagent_stop` / `session_end` (D22 / AC17a).
+    - `.codex/hooks.json` — the repo's own installed Codex hook config,
+      regenerated via `sce setup --codex` so the four `sce hooks codex`
+      registrations keep their exact `(event, matcher, group, handler)` identity
+      and the six mutation-scope registrations are appended (dogfood parity with
+      `.claude/settings.json`).
+  - Result: `.codex/hooks.json` generation now emits a second command contract.
+    The Codex mutation-scope adapter is registered as `sce hooks codex-mutation-scope`
+    on six unmatched groups (`PreToolUse`, `PostToolUse`, `Stop`, `Interrupt`,
+    `SubagentStop`, `SessionEnd`) appended after the four unchanged
+    `sce hooks codex` groups (D17). `codex_hook_config.rs`'s ownership, merge, and
+    diagnosis are command-aware: a handler is attributed to whichever trailing
+    command-token contract it matches, only that contract's stale/duplicate
+    handlers are repaired, and a new SCE group is appended rather than inserted
+    into a group already holding the other command's handler — so upgrading a
+    canonical-four document leaves every existing registration's identity tuple
+    and computed Codex trust key untouched (D20/AC16a), user handlers survive,
+    and a second merge is byte-identical (AC16/AC17). `hook_event_key_label`
+    covers `Interrupt`/`SubagentStop`/`SessionEnd` with the exact upstream labels
+    (D22/AC17a). `sce doctor` gives each mutation-scope registration the same
+    three-dimension model as the `sce hooks codex` registrations — structural,
+    Codex trust, effective project-hook policy — reported under a distinct
+    `.codex/hooks.json#<event>(mutation-scope)` row, never flattened, and
+    `--fix` still only rewrites SCE-owned `.codex/hooks.json` structure (the
+    trust/policy probes are read-only; no `$CODEX_HOME` write on any path)
+    (D21/AC18). No adapter behaviour, non-Codex renderer, or trust/policy probe
+    mechanism changed.
+  - Verify:
+    - `nix run .#pkl-check-generated` — **passed** (141 files; the
+      `codex-hook-invocation` and `codex-hook-command` contracts updated for the
+      four-plus-six registration shape). No committed file-count artifact — the
+      inventory digest is printed only; the file set is unchanged.
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::codex_hook_config` — **passed** (34 tests, incl.
+      the AC16a upgrade regression, AC17 idempotency/malformed, one AC17a label
+      test per new event, two-unmatched-`Stop`-groups, and the
+      append-without-touching-Bash placement test).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::doctor::` — **passed** (27 tests, incl. the new
+      three-dimension mutation-scope health test and the distinct-readiness
+      test).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::setup::` — **passed** (66 tests).
+    - `nix develop -c bash ./scripts/test-codex-hook-command.sh` — **passed**.
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::codex_hook_trust` — **passed** (13; trust module
+      unchanged and still correct for the new events/positions).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml` (full suite) — **passed** (1258 tests, 1 ignored).
+    - `clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` —
+      **clean**; `cargo fmt -- --check` — **clean**.
+  - Context impact: domain — a new generated `.codex/hooks.json` registration
+    set (six mutation-scope groups) and a command-aware Codex hook-config
+    ownership/merge/doctor model. User-visible surface: `sce setup --codex` now
+    installs the mutation-scope registrations; `sce doctor` reports them as
+    distinct `.codex/hooks.json#<event>(mutation-scope)` rows with the full
+    three-dimension health model. No public API, protocol, Quint, mutation-trace
+    SQL, or Agent Trace schema change (AC22 territory untouched). The generic
+    mutation-scope ingress/runtime and the existing `sce hooks codex`
+    conversation/diff pipeline are unchanged and additive. Durable
+    Codex-adapter context (`context/cli/codex-mutation-scope-integration.md`) is
+    authored by **T07** once the full adapter ships and is proven end-to-end
+    (T06); T05 corrected the now-contradicted cross-reference statements in
+    place (see Context synchronization).
+  - Context synchronization: synced
+    - T05 is the task that made the Codex mutation-scope adapter reachable:
+      `sce setup --codex` now installs six `sce hooks codex-mutation-scope`
+      registrations and `sce doctor` reports them. The T01–T04 precedent
+      deferred all durable-context edits to T07 on the grounds that the adapter
+      was "inert and unreachable" — that reasoning no longer holds after T05, so
+      the now-contradicted statements about generated `.codex/hooks.json`
+      content, `codex_hook_config` ownership, and the doctor per-registration
+      model were corrected in place: `context/overview.md` and
+      `context/architecture.md` (the four-registration / single-`sce hooks codex`
+      absolutes → four-plus-six, two command contracts, the D20 position-stable
+      append, the three-dimension doctor model with distinct
+      `#<event>(mutation-scope)` rows), `context/sce/codex-integration-runtime.md`
+      (dispatcher scope narrowed to the four conversation/diff registrations;
+      command-aware merge; twelve supported event names; `PreToolUse` no
+      `sce hooks codex` match), `context/sce/agent-trace-hooks-command-routing.md`
+      (two-contract ownership), `context/sce/doctor-human-text-contract.md` (the
+      mutation-scope rows and per-registration policy probe reuse), and the
+      mutation-scope stack summaries in `context/cli/mutation-scope-runtime.md`,
+      `context/cli/mutation-scope-hook-ingress.md`, and `context/context-map.md`
+      ("Codex has no adapter / remains unregistered" → the Codex adapter now
+      exists and is registered; OpenCode/Pi remain unwired). Mandatory
+      five-root pass done: `overview.md`, `architecture.md`, `context-map.md`
+      edited as above; `glossary.md` and `patterns.md` read and not
+      contradicted (T05 added no user-facing terminology — the three-class
+      classification and coverage boundary are T07's glossary scope).
+    - Deliberately **not** authored here (T07's explicit scope, dependent on
+      T05 **and** T06): the dedicated
+      `context/cli/codex-mutation-scope-integration.md` domain file (the
+      three-class tool classification, the D23 partial-by-tool-surface coverage
+      boundary and its T01 probe rationale, execution identity / `ScopeId`
+      derivation, the recovery bookkeeping, D8 fail-closed response, D9/D10/D10a
+      terminal boundaries, D12/D13 cleanup + recovery barrier, the
+      `AiExclusive`-is-not-sole-authorship statement, background/detached
+      limitations); `architecture.md` line 135's `hooks/mod.rs` enumeration
+      naming the new arm (a T04-accepted deferral); and splitting
+      `codex-integration-runtime.md` (291 lines) / `mutation-scope-runtime.md`
+      (267 lines) back under the 250-line budget — both were already over
+      budget before T05, and T07 edits and owns splitting them.
+    - No new ADR qualified. The "separate hidden command" architecture is
+      decision **D17**, already decided and recorded in this plan at T02; T05
+      is its merge/doctor-side implementation, consistent with the existing
+      `2026-08-23-codex-nondestructive-hook-ownership.md` ADR (whose core
+      non-destructive-merge principle is unchanged and, via D20, strengthened).
+      The plan reserves the "materially changes the accepted
+      non-destructive-ownership contract → new dated ADR" call for T07's full
+      re-evaluation once the adapter ships.
 
 - [ ] T06: `Real Git/DB regressions through the production Codex path` (status:todo)
   - Task ID: T06
