@@ -194,8 +194,12 @@ local decisionWorkflowText = (documents: Mapping, workflowSlug: String) ->
     }
   }.join("\n")
 
+local generatedTargetRoots = new Listing {
+  ".opencode"; ".claude"; ".pi"; ".agents"
+}
+
 local expectedDecisionDocumentPaths = new Mapping {
-  for (target in new Listing { ".opencode"; ".claude"; ".pi"; ".agents" }) {
+  for (target in generatedTargetRoots) {
     ["config/\(target)/skills/sce-decision/SKILL.md"] = true
     ["config/\(target)/skills/sce-decision/references/adr-template.md"] = true
   }
@@ -363,7 +367,7 @@ hidden hasExpectedExecutionContract = (text: String, allowsDecision: Boolean) ->
 
 hidden assertCompactExecutionContracts = (documents: Mapping) ->
   if (
-    new Listing { ".opencode"; ".claude"; ".pi"; ".agents" }.every((target) ->
+    generatedTargetRoots.every((target) ->
       compactWorkflowSlugs.every((slug) ->
         let (path = "config/\(target)/skills/sce-\(slug)/SKILL.md")
           documents.containsKey(path)
@@ -595,7 +599,7 @@ local assertDecisionDocumentPaths = (documents: Mapping) ->
 
 hidden assertPhaseReferenceContract = (documents: Mapping) ->
   if (
-    new Listing { ".opencode"; ".claude"; ".pi"; ".agents" }.every((target) ->
+    generatedTargetRoots.every((target) ->
       requiredPhaseReferencesBySkill.every((skillSlug, references) ->
         let (skillPath = "config/\(target)/skills/\(skillSlug)/SKILL.md")
           documents.containsKey(skillPath)
@@ -624,19 +628,19 @@ local assertDecisionContent = (documents: Mapping) ->
 
 hidden assertDecisionGateTemplateOwnership = (artifacts: Mapping) ->
   let (contexts = new Listing {
-    artifacts["config/.pi/skills/sce-next-task/references/context-sync.md"]
-    artifacts["config/.claude/skills/sce-next-task/references/context-sync.md"]
-    artifacts["config/.agents/skills/sce-next-task/references/context-sync.md"]
+    for (target in generatedTargetRoots) {
+      artifacts["config/\(target)/skills/sce-next-task/references/context-sync.md"]
+    }
   })
     let (skills = new Listing {
-      artifacts["config/.pi/skills/sce-decision/SKILL.md"]
-      artifacts["config/.claude/skills/sce-decision/SKILL.md"]
-      artifacts["config/.agents/skills/sce-decision/SKILL.md"]
+      for (target in generatedTargetRoots) {
+        artifacts["config/\(target)/skills/sce-decision/SKILL.md"]
+      }
     })
       let (templates = new Listing {
-        artifacts["config/.pi/skills/sce-decision/references/adr-template.md"]
-        artifacts["config/.claude/skills/sce-decision/references/adr-template.md"]
-        artifacts["config/.agents/skills/sce-decision/references/adr-template.md"]
+        for (target in generatedTargetRoots) {
+          artifacts["config/\(target)/skills/sce-decision/references/adr-template.md"]
+        }
       })
         if (
           contexts.every((text) -> text.contains("sole owner of decision qualification"))
@@ -669,7 +673,7 @@ local assertHandoverContent = (documents: Mapping) ->
 
 hidden assertHandoverSchemaCompletenessOwnership = (documents: Mapping) ->
   if (
-    new Listing { ".opencode"; ".claude"; ".pi"; ".agents" }.every((target) ->
+    generatedTargetRoots.every((target) ->
       let (skillPath = "config/\(target)/skills/sce-handover/SKILL.md")
         let (templatePath = "config/\(target)/skills/sce-handover/references/handover-template.md")
           documents.containsKey(skillPath)
@@ -1200,7 +1204,7 @@ hidden assertValidateExcludesDecisionAndPlanSync = (documents: Mapping) ->
 
 
 hidden assertWorkflowLanguageConsistency = (artifacts: Mapping) ->
-  let (targets = new Listing { ".pi"; ".claude"; ".agents" })
+  let (targets = generatedTargetRoots)
     if (
       targets.every((target) ->
         let (next = artifacts["config/\(target)/skills/sce-next-task/SKILL.md"])

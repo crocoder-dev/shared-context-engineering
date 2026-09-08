@@ -1,8 +1,10 @@
+# Handover document format
+
 The Markdown document writer mode creates under
 `context/handovers/{name}.md`. This is the persisted file's content, distinct
 from the terminal response defined in `references/output.md`.
 
-### Layout
+## Template
 
 ```markdown
 # Handover: {plan name or short session topic}
@@ -35,12 +37,22 @@ enough to act on directly.}
   `None.`}
 ```
 
-### Rules
+## Completeness contract
 
-- Include `Plan` and `Task` only when the session was working one identifiable
-  plan task; omit them rather than guessing.
-- Every one of the four required sections must appear, in this order, even
-  when its content is `None identified.` or an equivalent.
+- The first four `##` sections shown in **Template** are required and must appear
+  in that order.
+- Each required section's content, up to the next `##` heading or the end of the
+  file, must contain non-whitespace content. An empty list marker, unreplaced
+  `{...}` placeholder, or other template scaffolding alone is invalid.
+- Explicit `None identified.` statements or section-appropriate equivalents are
+  real content and are valid.
+- Writer mode must satisfy this contract before reporting success; loader mode
+  validates the same contract before presenting a handover.
+
+## Rules
+
+- Include `Plan` when one plan is known. Include `Task` only when one task is
+  known. Omit either field rather than guessing its value.
 - Keep `Assumptions` scoped to details actually labeled as inferred elsewhere
   in the document; do not duplicate confirmed facts here.
 - Describe durable state useful to a future session, not a transcript of this

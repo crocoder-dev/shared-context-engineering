@@ -7,13 +7,17 @@ compatibility: opencode
 
 # SCE Commit
 
-## Purpose
+## Execution contract
 
-Own this workflow from input parsing through its terminal user-visible response.
-Execute the phases below directly and in order. Phase statuses are internal state,
-not inter-SCE workflow handoffs. Do not invoke another SCE skill, sibling SCE
-package, or SCE workflow command. Follow the canonical workflow's steps, gates,
-and stops exactly as written: never invent, skip, reorder, or merge a step.
+Own this workflow from input through its terminal user-visible response.
+Follow its steps, gates, and stops in order; do not add, skip, reorder, or merge them.
+Keep internal phase results private and continue immediately until a defined wait or stop.
+Resume user waits in this same skill and session.
+Render user-visible output only from the named workflow layouts or phase reports.
+Do not expose raw internal state or add text around a rendered layout or report.
+Non-SCE helpers may assist, but must return to the active step without changing
+phase order, gates, waits, writes, validation, stops, or terminal output.
+Do not invoke another SCE skill, package, or workflow command.
 
 ## Phase reference
 
@@ -25,26 +29,6 @@ holds the phase itself.
 Read `references/atomic-commit.md` before running the phase, not after. A regular
 run that stops at the staging gate, and a bypass run that finds nothing staged,
 both end without ever needing it.
-
-## User-visible output
-
-Use `references/output.md` for every gate and terminal response. Render no raw
-internal state. The reference contains only human-visible Markdown layouts.
-User-visible output is limited to those layouts: never invent a layout, and never
-wrap one in an added preamble, commentary, summary, or extra section.
-
-## Composite control flow
-
-Keep phase results as internal state and continue immediately whenever the
-canonical workflow says to continue. Stop only at a user wait or terminal branch.
-Any workflow-defined user wait resumes this same skill in the same session.
-Never expose an internal phase result
-as the workflow's final response.
-
-Relevant non-SCE skills may be used as helper capabilities during the active step.
-They are not workflow handoffs: when a helper returns, control returns to the active
-step. Helper use must preserve the canonical phase order, gates, waits, writes,
-validation, stops, and terminal user-visible output.
 
 ## Input
 
@@ -114,14 +98,14 @@ Run `git diff --cached --quiet`. A zero exit status means nothing is staged.
 When nothing is staged, stop with the **No staged changes** layout from
 `references/output.md`.
 
-Do not stage anything. Do not proceed to the skill.
+Do not stage anything. Do not proceed to the phase.
 
 #### 2. Request one commit message
 
 Read `references/atomic-commit.md`, then run the **Atomic commit phase** with
 `mode: bypass` and the commit context.
 
-Bypass mode is the skill's contract for producing exactly one message. Do not
+Bypass mode is the phase's contract for producing exactly one message. Do not
 restate its overrides here; the **Atomic commit phase** owns them.
 
 Branch on `status`:
@@ -130,30 +114,22 @@ Branch on `status`:
 
 `bypass_message` -> Continue to the next step.
 
-The skill never returns `proposal` in bypass mode. Treat a `proposal` result as
+The phase never returns `proposal` in bypass mode. Treat a `proposal` result as
 a contract violation: report it and stop without committing.
 
 #### 3. Execute exactly one commit
 
-Follow the **Bypass execution handoff** in `references/atomic-commit.md`:
-
-1. Create the commit-message temp file outside the repository working tree, and
-   write the returned `message` verbatim to it using a file-writing operation. Do
-   not interpolate the multiline message into shell source or a shell command.
-2. Run `git commit -F <message-file>` exactly once.
-3. Only after that command succeeds, retrieve the commit hash explicitly with
-   `git rev-parse --verify HEAD^{commit}`. Do not parse Git's human-readable
-   output.
-4. Delete the temp file after the commit attempt, including on failure, where
-   practical.
+Follow the **Bypass execution handoff** in `references/atomic-commit.md` exactly
+as written. That handoff is the sole owner of the execution sequence; do not
+reconstruct, supplement, or restate it here.
 
 On success, render the **Bypass success** layout from `references/output.md` and
 stop.
 
 On failure, render the **Bypass Git failure** layout from the same file and stop.
 
-Do not retry, do not amend, do not stage additional files, and do not fabricate a
-commit hash.
+The handoff owns commit-failure handling. This workflow owns only the matching
+user-visible result layout above.
 
 ## Rules
 

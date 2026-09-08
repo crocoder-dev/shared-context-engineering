@@ -241,6 +241,8 @@
             ./config/pkl
             ./.version
             ./config/pkl/renderers/fixtures/atomic-commit-content-check.pkl
+            ./config/pkl/renderers/fixtures/opencode-decision-gate-template-ownership-check.pkl
+            ./config/pkl/renderers/fixtures/opencode-workflow-language-consistency-check.pkl
             ./config/pkl/renderers/fixtures/commit-forbidden-path-check.pkl
             ./config/pkl/renderers/fixtures/layout-reference-check.pkl
             ./config/pkl/renderers/fixtures/next-task-report-ownership-check.pkl

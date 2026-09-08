@@ -1,0 +1,14 @@
+import "../generation-contract-check.pkl" as contract
+
+local artifacts = new Mapping {
+  for (path, text in contract.generatedArtifacts) {
+    [path] = if (path == "config/.opencode/skills/sce-next-task/SKILL.md")
+      text + "\nNext up:"
+    else text
+  }
+}
+
+result = if (
+  contract.assertWorkflowLanguageConsistency.apply(artifacts)
+) "negative fixture unexpectedly accepted stale OpenCode workflow terminology"
+else throw("generated workflow language/format drifted from the shared T11 conventions")

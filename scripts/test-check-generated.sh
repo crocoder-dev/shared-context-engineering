@@ -27,6 +27,8 @@ touch \
   "${test_repo}/config/pkl/renderers/generation-contract-check.pkl" \
   "${test_repo}/config/pkl/renderers/fixtures/extra-artifact-check.pkl" \
   "${test_repo}/config/pkl/renderers/fixtures/missing-artifact-check.pkl" \
+  "${test_repo}/config/pkl/renderers/fixtures/opencode-decision-gate-template-ownership-check.pkl" \
+  "${test_repo}/config/pkl/renderers/fixtures/opencode-workflow-language-consistency-check.pkl" \
   "${test_repo}/config/pkl/renderers/fixtures/forbidden-workflow-reference-check.pkl" \
   "${test_repo}/config/pkl/renderers/fixtures/layout-reference-check.pkl" \
   "${test_repo}/config/pkl/renderers/fixtures/package-local-reference-check.pkl" \
@@ -95,6 +97,14 @@ case "${module}" in
     ;;
   *target-neutral-reference-check.pkl)
     printf '%s\n' 'target-neutral package references differ between Pi, Claude, and OpenCode' >&2
+    exit 1
+    ;;
+  *opencode-decision-gate-template-ownership-check.pkl)
+    printf '%s\n' 'decision qualification must be owned by tracked context-sync outputs while sce-decision consumes the gate and adr-template.md owns persisted ADR schema' >&2
+    exit 1
+    ;;
+  *opencode-workflow-language-consistency-check.pkl)
+    printf '%s\n' 'generated workflow language/format drifted from the shared T11 conventions' >&2
     exit 1
     ;;
   *stale-sync-debt-check.pkl)

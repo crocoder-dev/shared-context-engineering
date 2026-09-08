@@ -112,6 +112,12 @@ expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/opencode-missing-skill-artifact-check.pkl" \
   "OpenCode skill permission names a missing generated workflow artifact"
 expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/opencode-decision-gate-template-ownership-check.pkl" \
+  "decision qualification must be owned by tracked context-sync outputs while sce-decision consumes the gate and adr-template.md owns persisted ADR schema"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/opencode-workflow-language-consistency-check.pkl" \
+  "generated workflow language/format drifted from the shared T11 conventions"
+expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/layout-reference-check.pkl" \
   "generated workflow layout citation does not match a heading in \`config/.opencode/skills/sce-next-task/references/output.md\`"
 expect_pkl_fixture_failure \
