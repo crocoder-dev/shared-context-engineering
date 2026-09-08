@@ -407,3 +407,23 @@ The two additional root edits replace existing text without increasing line coun
     `nix run .#pkl-check-generated`, targeted ownership assertions across all three
     tracked targets, and `git diff --check`.
   - Context synchronization: synced.
+
+
+## Follow-up: handover schema and completeness ownership
+
+- [x] T09: `Deduplicate handover required-section and completeness contract` (status:done)
+  - Scope: `sce-handover` writer composition/post-write validation, loader completeness
+    validation, `references/handover-template.md`, canonical Pkl, generated semantic
+    checks, tracked Pi/Claude/Codex mirrors, handover context, and the ownership table.
+  - Ownership after change: `references/handover-template.md` solely owns persisted
+    schema and completeness validity. Writer and loader both consume that contract;
+    `SKILL.md` owns routing, path checks, read/write boundaries, and terminal layouts.
+  - Behavior preserved: same writer layout/order; `None identified.`-style content is
+    valid; whitespace-only, empty-list-marker, and unreplaced-placeholder-only required
+    sections remain invalid; loader stays read-only; writer validates before success.
+  - Result: `sce-handover/SKILL.md` plus `references/handover-template.md` shrink by
+    3 Markdown lines per tracked target, 9 across
+    Pi/Claude/Codex.
+  - Verify: `pkl eval config/pkl/renderers/generation-contract-check.pkl`,
+    `nix run .#pkl-check-generated`, targeted ownership checks, and `git diff --check`.
+  - Context synchronization: synced.

@@ -24,9 +24,10 @@ from `executionContract` in `workflow-content.pkl` through `workflow-composite.p
 It preserves the existing control-flow, output, and helper boundaries without an
 additional runtime read. Package-mode-only Purpose text is unchanged.
 
-The package contains `SKILL.md`, which owns mode routing, writer and loader
-behavior, `references/handover-template.md`, which owns the persisted document
-format, and `references/output.md`, which owns every human-visible layout. No
+The package contains `SKILL.md`, which owns mode routing plus writer/loader
+side-effect boundaries, `references/handover-template.md`, which solely owns
+the persisted document schema and completeness contract, and
+`references/output.md`, which owns every human-visible layout. No
 SCE sibling skill, package, or workflow command is invoked as a workflow
 handoff; relevant non-SCE helpers may assist inside the active step and return
 control to it.
