@@ -792,7 +792,7 @@ recovery_pending == true AND attempts.is_empty()
   -> a failed flush stays fail-closed
 ```
 
-A failed abandonment leaves the attempt tracked and `recovery_pending = true`
+A failed abandonment leaves the attempt tracked and recovery armed
 (never silently allows a successor tracked-mutation execution).
 
 **Successor-Start invariant.** A `TrackedMutation` `PreToolUse` must never reach
@@ -803,6 +803,57 @@ logic ships. MCP/unknown are `Untracked`, so they create no predecessor attempt
 and no barrier is needed. This invariant does **not** license abandoning an
 attempt that can legitimately run concurrently with the successor (D10a
 invariant (ii)).
+
+**D13a — inter-process concurrency semantics (T04 follow-up, 2026-09-08).**
+Codex runs every hook as an independent OS process, so the barrier and
+tracked-attempt admission must be atomic across processes, not merely
+lock-serialized field writes. The initial T04 driver composed the decision from
+an unlocked `read_state` recovery check followed by a separate `allocate_attempt`
+(no recovery re-check) plus a plain-boolean `recovery_pending` — a TOCTOU gap
+where a second process could arm recovery in between, a duplicate quiescent
+`flush`, and a stale `flush` completion clearing a newer recovery. The follow-up
+makes recovery **generation-aware** and moves admission into one locked
+transition:
+
+```text
+recovery state = Clear | Pending(generation) | Flushing(generation)
+                 + a monotonic next_recovery_generation
+
+admit_tracked_attempt(key, tool)  -- one adapter-state-lock transition:
+  Flushing(_)                        -> RecoveryBlocked
+  Pending(g) AND attempts non-empty  -> RecoveryBlocked
+  Pending(g) AND attempts empty      -> persist Flushing(g); return FlushClaimed(g)
+  Clear AND key already tracked       -> reuse that attempt (idempotent)
+  Clear AND an unrelated PendingStart -> UncertainAttemptBlocked
+  Clear otherwise                     -> persist a fresh PendingStart; return Admitted
+
+arm_recovery()  -- one transition:
+  Clear        -> Pending(next_recovery_generation++)
+  Pending(g)   -> Pending(g)                     (kept; not a downgrade)
+  Flushing(g)  -> Pending(next_recovery_generation++)   (supersedes the in-flight flush)
+
+complete_recovery_flush(g)  -- one transition, run AFTER the flush seam:
+  Flushing(g) -> Clear      (only when the generation still matches)
+  otherwise   -> no-op      (a newer recovery armed while the flush ran survives)
+
+relinquish_recovery_flush(g)  -- flush seam failed:
+  Flushing(g) -> Pending(g)   so a later PreToolUse re-claims and retries
+```
+
+The adapter-state lock is still **never** held across a `hooks::mutation_scope`
+seam call (I6). The driver drives at most one quiescent `flush` per
+`PreToolUse`: `FlushClaimed(g)` -> flush seam -> `complete_recovery_flush(g)` ->
+one re-entrant `admit_tracked_attempt`; a re-armed generation observed on
+re-entry is relinquished and the tool denied (the next `PreToolUse` owns it).
+
+**D13b — unresolved `PendingStart` is a conservative barrier (Problem 4).**
+`Start` seam success followed by a failed `mark_active` leaves a durable
+`PendingStart` attempt whose runtime `Start` may have committed. That attempt now
+blocks a successor tracked admission (`UncertainAttemptBlocked`) until a positive
+cleanup signal abandons it -> arms recovery -> quiescent `flush`. `PendingStart`
+means "the adapter cannot prove whether `Start` committed", never "`Start`
+definitely failed". A duplicate delivery for the same `AttemptKey` still reuses
+the same attempt and `ScopeId` (no second scope).
 
 ### D14 — Concurrency and AiContended
 
@@ -2146,11 +2197,16 @@ Persist this field in every plan; this is durable plan state, not chat state:
       `GitDirResolver` / `IngressSeam` injected `&dyn Fn` aliases, `ACTOR_KIND_CODEX`,
       `run_codex_mutation_scope_subcommand` / `_from_payload` / `_from_payload_with`
       (+ `#[cfg(test)] _at_state_root`), `dispatch_codex_hook_event`,
-      `handle_pre_tool_use`, `apply_recovery_barrier` / `BarrierOutcome`,
+      `handle_pre_tool_use`, `admit_or_recover` / `readmit_after_flush` /
+      `Admission` (superseding the initial `apply_recovery_barrier` /
+      `BarrierOutcome` — see the concurrency follow-up),
       `establish_start`, `handle_close`, `cleanup_attempts_matching`,
       `abandon_attempt`, `attempt_matches_key`, `scope_boundary_payload` /
       `abandon_payload` / `flush_payload`, `pre_tool_use_deny_json`,
-      `log_pre_tool_use_fail_closed`; 30 new `mod driver` unit tests)
+      `log_pre_tool_use_fail_closed`; `mod driver` unit tests including the
+      inter-process concurrency regressions Test A–F)
+    - `cli/src/services/hooks/codex_mutation_scope/state.rs` (T03's durable store,
+      materially revised by the concurrency follow-up — see below)
   - Result: Wired the hidden `sce hooks codex-mutation-scope` command through the
     normal hook stack unwrapped (non-fail-open), exactly as `mutation-scope` /
     `claude-mutation-scope`, and implemented the Codex adapter driver as a close
@@ -2233,6 +2289,64 @@ Persist this field in every plan; this is durable plan state, not chat state:
       **clean**.
     - `cargo fmt --manifest-path cli/Cargo.toml -- --check` — **clean** (after
       `cargo fmt`).
+  - Follow-up (2026-09-08 — inter-process concurrency correctness, PR #268):
+    The initial T04 driver implementation exposed an inter-process TOCTOU gap
+    between recovery-barrier inspection and tracked-attempt allocation, plus
+    duplicate quiescent `flush` and stale-`flush`-clear risks. `apply_recovery_barrier`
+    did an unlocked `read_state` recovery check and then a separate
+    `allocate_attempt` that never re-checked recovery, and `recovery_pending` was a
+    bare boolean. The follow-up moved recovery ownership and tracked admission into
+    **generation-aware atomic adapter-state transitions** (see D13a/D13b):
+    `state.rs` bumps `ADAPTER_STATE_VERSION` to `2`, replaces `recovery_pending: bool`
+    with `recovery: RecoveryState` (`Clear | Pending{generation} | Flushing{generation}`)
+    + a monotonic `next_recovery_generation`, and replaces `allocate_attempt` /
+    `mark_recovery_pending` / `clear_recovery_pending` with `admit_tracked_attempt`
+    (one locked transition: recovery check + duplicate-key reuse + unresolved-
+    `PendingStart` barrier + fresh `PendingStart` persist, returning
+    `Admitted | RecoveryBlocked | UncertainAttemptBlocked | FlushClaimed{generation}`),
+    `arm_recovery` (`Clear→Pending(new)`, `Pending(g)` kept, `Flushing(g)→Pending(new)`),
+    `complete_recovery_flush(g)` (clears only while still `Flushing(g)`), and
+    `relinquish_recovery_flush(g)` (failed flush → `Pending(g)` for retry). The
+    driver's `admit_or_recover` runs at most one quiescent `flush` per `PreToolUse`
+    with the state lock never held across the seam (I6). A `Start`-succeeded-then-
+    `mark_active`-failed attempt stays `PendingStart` and conservatively blocks a
+    successor Start until a cleanup signal abandons it → recovery → `flush`
+    (Problem 4 / D13b).
+    - New durable state shape: `{ version:2, next_attempt_seq, next_recovery_generation,
+      recovery: RecoveryState, attempts[] }`; a v1-shaped or unknown-version file is
+      rejected, never fabricated.
+    - `state.rs` state-machine tests: `Clear→Pending(g)`, `Pending(g)→Flushing(g)`,
+      one-claimer-per-generation (concurrent), `Flushing(g)→Clear` only on matching
+      generation, stale/superseded completion is a safe no-op, `Flushing(g1)` +
+      newer recovery survives completion(g1), recovery survives serialization/reload,
+      atomic admission refuses recovery state and persists `PendingStart` before
+      returning, blocks an unrelated `PendingStart`, allows a new key alongside an
+      `Active` attempt; retained: parallel admission converges without lost updates,
+      monotonic `attempt_seq`, checkout-local, durable write, malformed/version
+      rejection, OS lock behaviour + lock-released-between-helpers.
+    - `mod.rs` inter-process concurrency regressions (deterministic, channel-gated
+      seams — no probabilistic sleeps): **Test A** recovery armed mid-abandon blocks
+      a concurrent tracked `PreToolUse` and no `start` payload for it reaches the
+      seam; **Test B** two quiescent recovery callers emit exactly one `flush(g)`;
+      **Test C** recovery re-armed while `flush(g1)` is in flight → final state
+      `Pending(g2)`, the stale completion cannot clear it; **Test D** `Start` ok +
+      `mark_active` fails → successor denied, then cleanup → abandon → recovery →
+      one `flush` then `start`; **Test E** duplicate `AttemptKey` reuses the same
+      `ScopeId`; **Test F** `mcp__*` / unknown / delegation stay neutral while
+      recovery is `Pending`/`Flushing`.
+    - Re-validated: `services::hooks::codex_mutation_scope` — **passed** (87 tests);
+      `services::hooks::mutation_scope` — **passed** (36); `services::hooks::` —
+      **passed** (418); `services::hooks::codex` — **passed** (216, existing
+      dispatcher unaffected); `services::mutation_trace::` — **passed** (323, no
+      protocol/runtime change); `clippy --all-targets -- -D warnings` — **clean**;
+      `cargo fmt -- --check` — **clean**. AC19 boundary still clean (only
+      `super::mutation_scope::run_mutation_scope_from_payload`); no
+      `spec/mutation_cursor.qnt` / `mutation_trace/protocol.rs` /
+      `mutation_trace/runtime/` / `mutation_trace/store.rs` /
+      `cli/migrations/agent-trace-repository/` / `agent-trace.schema.json` change;
+      MCP Option B classification unchanged; no daemon, PID supervision, polling, or
+      new DB; the adapter-state lock is never held across the generic ingress seam.
+      Changes are confined to `codex_mutation_scope/{state,mod}.rs` and this plan.
   - Context impact: domain — a new adapter-domain driver plus a new hidden CLI
     route. User-visible surface: one hidden `sce hooks codex-mutation-scope`
     subcommand (hidden from `sce --help` / `sce hooks --help`); no visible-help
@@ -2275,6 +2389,13 @@ Persist this field in every plan; this is durable plan state, not chat state:
       structurally mirroring `claude_mutation_scope`; the Codex hook-ownership
       ADR (`2026-08-23-codex-nondestructive-hook-ownership.md`) is untouched
       (that is T05's `codex_hook_config.rs` scope).
+    - Concurrency follow-up (2026-09-08, PR #268) re-checked the five roots and
+      remains `no_context_change`: the generation-aware recovery state machine
+      (D13a/D13b) is adapter-internal inter-process synchronisation with no
+      protocol, Quint, runtime-semantic, SQL, or Agent Trace schema change (AC22
+      still holds) and no user-visible surface change — the adapter is still
+      inert and unregistered. Durable adapter context (D13a/b, the coverage
+      table, the concurrency story) is authored by T07 as already recorded.
 
 - [ ] T05: `Generated .codex/hooks.json registrations, setup merge, and doctor` (status:todo)
   - Task ID: T05

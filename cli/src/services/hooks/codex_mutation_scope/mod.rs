@@ -418,64 +418,77 @@ fn handle_pre_tool_use(
         }
     };
 
-    if matches!(
-        apply_recovery_barrier(&git_dir, repository_root, logger, seam),
-        BarrierOutcome::Deny
+    let key = identity.attempt_key();
+    match admit_or_recover(
+        &git_dir,
+        repository_root,
+        &key,
+        &identity.tool_name,
+        logger,
+        seam,
     ) {
-        return pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON);
-    }
-
-    match establish_start(&git_dir, repository_root, identity, logger, seam) {
-        Ok(()) => String::new(),
+        Ok(Admission::Admitted(allocated)) => {
+            match establish_start(&git_dir, repository_root, &allocated, logger, seam) {
+                Ok(()) => String::new(),
+                Err(error) => {
+                    log_pre_tool_use_fail_closed(logger, "establish_start", &error);
+                    pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON)
+                }
+            }
+        }
+        Ok(Admission::Denied) => pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON),
         Err(error) => {
-            log_pre_tool_use_fail_closed(logger, "establish_start", &error);
+            log_pre_tool_use_fail_closed(logger, "admit_tracked_attempt", &error);
             pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON)
         }
     }
 }
 
-enum BarrierOutcome {
-    Proceed,
-    Deny,
+enum Admission {
+    Admitted(state::AllocatedAttempt),
+    Denied,
 }
 
-fn apply_recovery_barrier(
+fn admit_or_recover(
     git_dir: &Path,
     repository_root: &Path,
+    key: &AttemptKey,
+    tool_name: &str,
     logger: Option<&dyn Logger>,
     seam: IngressSeam,
-) -> BarrierOutcome {
-    let state = match state::read_state(git_dir) {
-        Ok(state) => state,
-        Err(error) => {
-            log_pre_tool_use_fail_closed(logger, "recovery_barrier.read_state", &error);
-            return BarrierOutcome::Deny;
+) -> Result<Admission> {
+    match state::admit_tracked_attempt(git_dir, key, tool_name)? {
+        state::AdmitDecision::Admitted(allocated) => Ok(Admission::Admitted(allocated)),
+        state::AdmitDecision::RecoveryBlocked | state::AdmitDecision::UncertainAttemptBlocked => {
+            Ok(Admission::Denied)
         }
-    };
-
-    if !state.recovery_pending {
-        return BarrierOutcome::Proceed;
-    }
-
-    if !state.attempts.is_empty() {
-        return BarrierOutcome::Deny;
-    }
-
-    match seam(repository_root, &flush_payload(), logger) {
-        Ok(_) => match state::clear_recovery_pending(git_dir) {
-            Ok(()) => BarrierOutcome::Proceed,
-            Err(error) => {
-                log_pre_tool_use_fail_closed(
-                    logger,
-                    "recovery_barrier.clear_recovery_pending",
-                    &error,
-                );
-                BarrierOutcome::Deny
+        state::AdmitDecision::FlushClaimed { generation } => {
+            match seam(repository_root, &flush_payload(), logger) {
+                Ok(_) => match state::complete_recovery_flush(git_dir, generation)? {
+                    state::RecoveryFlushCompletion::Cleared => {
+                        readmit_after_flush(git_dir, key, tool_name)
+                    }
+                    state::RecoveryFlushCompletion::Superseded => Ok(Admission::Denied),
+                },
+                Err(error) => {
+                    log_pre_tool_use_fail_closed(logger, "recovery_flush", &error);
+                    state::relinquish_recovery_flush(git_dir, generation)?;
+                    Ok(Admission::Denied)
+                }
             }
-        },
-        Err(error) => {
-            log_pre_tool_use_fail_closed(logger, "recovery_barrier.flush", &error);
-            BarrierOutcome::Deny
+        }
+    }
+}
+
+fn readmit_after_flush(git_dir: &Path, key: &AttemptKey, tool_name: &str) -> Result<Admission> {
+    match state::admit_tracked_attempt(git_dir, key, tool_name)? {
+        state::AdmitDecision::Admitted(allocated) => Ok(Admission::Admitted(allocated)),
+        state::AdmitDecision::FlushClaimed { generation } => {
+            state::relinquish_recovery_flush(git_dir, generation)?;
+            Ok(Admission::Denied)
+        }
+        state::AdmitDecision::RecoveryBlocked | state::AdmitDecision::UncertainAttemptBlocked => {
+            Ok(Admission::Denied)
         }
     }
 }
@@ -483,11 +496,10 @@ fn apply_recovery_barrier(
 fn establish_start(
     git_dir: &Path,
     repository_root: &Path,
-    identity: &CodexToolIdentity,
+    allocated: &state::AllocatedAttempt,
     logger: Option<&dyn Logger>,
     seam: IngressSeam,
 ) -> Result<()> {
-    let allocated = state::allocate_attempt(git_dir, &identity.attempt_key(), &identity.tool_name)?;
     let scope_id = &allocated.attempt.scope_id;
     let start_payload =
         scope_boundary_payload("start", scope_id, &codex_scope_start_event_id(scope_id));
@@ -567,7 +579,7 @@ fn abandon_attempt(
     logger: Option<&dyn Logger>,
     seam: IngressSeam,
 ) -> Result<()> {
-    state::mark_recovery_pending(git_dir)?;
+    state::arm_recovery(git_dir)?;
 
     seam(repository_root, &abandon_payload(&attempt.scope_id), logger)?;
     state::remove_attempt(git_dir, &attempt.scope_id)?;
@@ -1056,8 +1068,11 @@ mod tests {
     mod driver {
         use std::cell::RefCell;
         use std::path::{Path, PathBuf};
-        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+        use std::sync::mpsc;
         use std::sync::{Arc, Mutex};
+        use std::thread;
+        use std::time::Duration;
 
         use anyhow::{anyhow, Result};
 
@@ -1116,8 +1131,75 @@ mod tests {
             }
         }
 
-        fn fixed_resolver(git_dir: PathBuf) -> impl Fn(&str) -> Result<PathBuf> {
+        fn recording_seam(
+            log: Arc<Mutex<Vec<String>>>,
+        ) -> impl Fn(&Path, &str, Option<&dyn Logger>) -> Result<String> {
+            move |_root, payload, _logger| {
+                log.lock()
+                    .expect("recording seam mutex")
+                    .push(payload.to_string());
+                Ok(String::new())
+            }
+        }
+
+        struct SeamGate {
+            entered: mpsc::Receiver<()>,
+            release: mpsc::Sender<()>,
+        }
+
+        impl SeamGate {
+            fn wait_until_entered(&self) {
+                self.entered
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("gated seam should be entered");
+            }
+
+            fn release(&self) {
+                let _ = self.release.send(());
+            }
+        }
+
+        #[allow(clippy::type_complexity)]
+        fn gated_seam(
+            operation: &'static str,
+            calls: Arc<Mutex<Vec<String>>>,
+        ) -> (
+            impl Fn(&Path, &str, Option<&dyn Logger>) -> Result<String> + Send,
+            SeamGate,
+        ) {
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let release_rx = Mutex::new(release_rx);
+            let seam = move |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| {
+                calls
+                    .lock()
+                    .expect("gated seam mutex")
+                    .push(payload.to_string());
+                if payload.contains(&format!(r#""operation":"{operation}""#)) {
+                    entered_tx.send(()).expect("gate entry signal");
+                    release_rx
+                        .lock()
+                        .expect("gate release mutex")
+                        .recv()
+                        .expect("gate release signal");
+                }
+                Ok(String::new())
+            };
+            (
+                seam,
+                SeamGate {
+                    entered: entered_rx,
+                    release: release_tx,
+                },
+            )
+        }
+
+        fn fixed_resolver(git_dir: PathBuf) -> impl Fn(&str) -> Result<PathBuf> + Send + Clone {
             move |_cwd| Ok(git_dir.clone())
+        }
+
+        fn panicking_resolver(_cwd: &str) -> Result<PathBuf> {
+            panic!("resolve_git_dir must not be called for a non-tracked tool")
         }
 
         #[derive(Clone, Default)]
@@ -1199,64 +1281,54 @@ mod tests {
             state::read_state(git_dir).expect("adapter state should be readable")
         }
 
+        fn seed_attempt(
+            git_dir: &Path,
+            session_id: &str,
+            agent_id: Option<&str>,
+            tool_use_id: &str,
+            phase: state::AttemptPhase,
+        ) -> state::AdapterAttempt {
+            state::seed_attempt_for_tests(
+                git_dir,
+                &AttemptKey {
+                    session_id: session_id.to_string(),
+                    agent_id: agent_id.map(str::to_string),
+                    tool_use_id: tool_use_id.to_string(),
+                },
+                "Bash",
+                phase,
+            )
+        }
+
+        fn drive(
+            payload: &str,
+            resolver: &(impl Fn(&str) -> Result<PathBuf> + ?Sized),
+            seam: &(impl Fn(&Path, &str, Option<&dyn Logger>) -> Result<String> + ?Sized),
+        ) -> String {
+            run_codex_mutation_scope_from_payload_with(payload, None, &resolver, &seam)
+                .expect("driver should return Ok")
+        }
+
         #[test]
         fn untracked_mcp_pre_tool_use_creates_no_scope_and_never_touches_seam_or_git_dir() {
-            let resolver = |_: &str| -> Result<PathBuf> {
-                panic!("an untracked tool must never resolve a git dir")
-            };
             let payload = pre_tool_use_json(&[(
                 TOOL_NAME_FIELD,
                 Value::String("mcp__probe__mutate_success".to_string()),
             )]);
-
-            let output = run_codex_mutation_scope_from_payload_with(
-                &payload,
-                None,
-                &resolver,
-                &unreachable_seam,
-            )
-            .expect("untracked PreToolUse should succeed");
-
+            let output = drive(&payload, &panicking_resolver, &unreachable_seam);
             assert_eq!(output, "");
         }
 
         #[test]
-        fn unknown_tool_pre_tool_use_creates_no_scope_ac3() {
-            let resolver = |_: &str| -> Result<PathBuf> {
-                panic!("an unknown tool must never resolve a git dir")
-            };
-            let payload = pre_tool_use_json(&[(
-                TOOL_NAME_FIELD,
-                Value::String("some_future_codex_tool".to_string()),
-            )]);
-
-            let output = run_codex_mutation_scope_from_payload_with(
-                &payload,
-                None,
-                &resolver,
-                &unreachable_seam,
-            )
-            .expect("unknown PreToolUse should succeed");
-
-            assert_eq!(output, "");
-        }
-
-        #[test]
-        fn delegation_tool_pre_tool_use_creates_no_scope_ac3() {
-            let resolver = |_: &str| -> Result<PathBuf> {
-                panic!("a delegation tool must never resolve a git dir")
-            };
-            for tool in ["collaborationspawn_agent", "collaborationwait_agent"] {
+        fn unknown_and_delegation_pre_tool_use_create_no_scope_ac3() {
+            for tool in [
+                "some_future_codex_tool",
+                "collaborationspawn_agent",
+                "collaborationwait_agent",
+            ] {
                 let payload =
                     pre_tool_use_json(&[(TOOL_NAME_FIELD, Value::String(tool.to_string()))]);
-                let output = run_codex_mutation_scope_from_payload_with(
-                    &payload,
-                    None,
-                    &resolver,
-                    &unreachable_seam,
-                )
-                .expect("delegation PreToolUse should succeed");
-                assert_eq!(output, "", "tool {tool} must produce a neutral continue");
+                assert_eq!(drive(&payload, &panicking_resolver, &unreachable_seam), "");
             }
         }
 
@@ -1269,47 +1341,11 @@ mod tests {
             for tool in ["mcp__probe__mutate_success", "some_future_codex_tool"] {
                 let payload =
                     pre_tool_use_json(&[(TOOL_NAME_FIELD, Value::String(tool.to_string()))]);
-                run_codex_mutation_scope_from_payload_with(&payload, None, &resolver, &ok_seam)
-                    .expect("untracked PreToolUse should succeed");
+                drive(&payload, &resolver, &ok_seam);
             }
 
-            assert!(
-                state::read_state(&git_dir)
-                    .expect("absent state reads as default")
-                    .attempts
-                    .is_empty(),
-                "AC9b: an untracked PreToolUse must not record an attempt"
-            );
-
-            remove_test_git_dir(&git_dir);
-        }
-
-        #[test]
-        fn successful_mcp_lifecycle_leaves_no_scope_ac9b() {
-            let git_dir = unique_test_git_dir("mcp-success-lifecycle");
-            let resolver = fixed_resolver(git_dir.clone());
-
-            let pre = pre_tool_use_json(&[
-                (
-                    TOOL_NAME_FIELD,
-                    Value::String("mcp__probe__mutate_success".to_string()),
-                ),
-                (TOOL_USE_ID_FIELD, Value::String("exec-mcp".to_string())),
-            ]);
-            let post = post_tool_use_json(&[
-                (
-                    TOOL_NAME_FIELD,
-                    Value::String("mcp__probe__mutate_success".to_string()),
-                ),
-                (TOOL_USE_ID_FIELD, Value::String("exec-mcp".to_string())),
-            ]);
-
-            run_codex_mutation_scope_from_payload_with(&pre, None, &resolver, &unreachable_seam)
-                .expect("MCP PreToolUse should succeed");
-            run_codex_mutation_scope_from_payload_with(&post, None, &resolver, &unreachable_seam)
-                .expect("MCP PostToolUse should be a no-op");
-
             assert!(read_state(&git_dir).attempts.is_empty());
+            assert!(read_state(&git_dir).recovery.is_clear());
 
             remove_test_git_dir(&git_dir);
         }
@@ -1331,23 +1367,14 @@ mod tests {
                         .push((payload.to_string(), root == Path::new(CWD)));
                     assert!(
                         phase_is_pending,
-                        "AC6: Start must be driven while the attempt is still PendingStart"
+                        "AC6: Start driven while attempt is PendingStart"
                     );
                     Ok(String::new())
                 };
 
-            let output = run_codex_mutation_scope_from_payload_with(
-                &pre_tool_use_json(&[]),
-                None,
-                &resolver,
-                &seam,
-            )
-            .expect("tracked PreToolUse should establish a Start");
+            let output = drive(&pre_tool_use_json(&[]), &resolver, &seam);
+            assert_eq!(output, "");
 
-            assert_eq!(
-                output, "",
-                "a successful Start returns Codex's neutral continue"
-            );
             let calls = seen.into_inner();
             assert_eq!(calls.len(), 1);
             assert!(calls[0].0.contains(r#""operation":"start""#));
@@ -1365,34 +1392,22 @@ mod tests {
         }
 
         #[test]
-        fn duplicate_pre_tool_use_reuses_the_same_scope_id_ac4() {
+        fn duplicate_pre_tool_use_reuses_the_same_scope_id_ac4_test_e() {
             let git_dir = unique_test_git_dir("duplicate-pre");
             let resolver = fixed_resolver(git_dir.clone());
 
-            run_codex_mutation_scope_from_payload_with(
-                &pre_tool_use_json(&[]),
-                None,
-                &resolver,
-                &ok_seam,
-            )
-            .expect("first PreToolUse should succeed");
-            let scope_id_after_first = read_state(&git_dir).attempts[0].scope_id.clone();
+            drive(&pre_tool_use_json(&[]), &resolver, &ok_seam);
+            let scope_id = read_state(&git_dir).attempts[0].scope_id.clone();
 
-            run_codex_mutation_scope_from_payload_with(
-                &pre_tool_use_json(&[]),
-                None,
-                &resolver,
-                &ok_seam,
-            )
-            .expect("replayed PreToolUse should succeed");
+            drive(&pre_tool_use_json(&[]), &resolver, &ok_seam);
 
             let attempts = read_state(&git_dir).attempts;
             assert_eq!(
                 attempts.len(),
                 1,
-                "AC4: a replayed live PreToolUse must not fork a new attempt"
+                "AC4/Test E: a replay must not fork a new attempt"
             );
-            assert_eq!(attempts[0].scope_id, scope_id_after_first);
+            assert_eq!(attempts[0].scope_id, scope_id);
 
             remove_test_git_dir(&git_dir);
         }
@@ -1413,14 +1428,8 @@ mod tests {
             .expect("a resolver failure must still return Ok with a deny payload");
 
             assert_eq!(output, pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON));
-            assert!(
-                !output.contains("boom"),
-                "the internal detail must never leak to Codex"
-            );
-            assert!(
-                !output.contains("allow"),
-                "a fail-closed PreToolUse must never allow"
-            );
+            assert!(!output.contains("boom"));
+            assert!(!output.contains("allow"));
 
             let warnings = logger.warnings();
             assert_eq!(warnings.len(), 1);
@@ -1429,7 +1438,7 @@ mod tests {
         }
 
         #[test]
-        fn start_seam_failure_denies_with_stable_reason_and_logs_ac7() {
+        fn start_seam_failure_denies_and_leaves_the_pending_start_attempt_as_a_barrier_ac7() {
             let git_dir = unique_test_git_dir("start-seam-failure");
             let resolver = fixed_resolver(git_dir.clone());
             let logger = RecordingLogger::default();
@@ -1444,9 +1453,29 @@ mod tests {
             .expect("a Start failure must still return Ok with a deny payload");
 
             assert_eq!(output, pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON));
-            assert!(
-                !logger.warnings().is_empty(),
-                "the Start failure must be logged"
+            assert!(!logger.warnings().is_empty());
+
+            let final_state = read_state(&git_dir);
+            assert_eq!(final_state.attempts.len(), 1);
+            assert_eq!(
+                final_state.attempts[0].phase,
+                state::AttemptPhase::PendingStart
+            );
+
+            let successor = pre_tool_use_json(&[(
+                TOOL_USE_ID_FIELD,
+                Value::String("exec-successor".to_string()),
+            )]);
+            assert_eq!(
+                run_codex_mutation_scope_from_payload_with(
+                    &successor,
+                    None,
+                    &resolver,
+                    &unreachable_seam,
+                )
+                .expect("successor must return Ok with a deny payload"),
+                pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON),
+                "I5: an unresolved PendingStart must block a successor Start",
             );
 
             remove_test_git_dir(&git_dir);
@@ -1462,16 +1491,15 @@ mod tests {
             ] {
                 let payload =
                     pre_tool_use_json(&[(TOOL_NAME_FIELD, Value::String(tool.to_string()))]);
-                let output = run_codex_mutation_scope_from_payload_with(
-                    &payload,
-                    None,
-                    &resolver,
-                    &unreachable_seam,
-                )
-                .expect("non-tracked PreToolUse should succeed");
                 assert_eq!(
-                    output, "",
-                    "tool {tool} must not be denied for being untracked"
+                    run_codex_mutation_scope_from_payload_with(
+                        &payload,
+                        None,
+                        &resolver,
+                        &unreachable_seam,
+                    )
+                    .expect("non-tracked PreToolUse should succeed"),
+                    "",
                 );
             }
         }
@@ -1481,13 +1509,7 @@ mod tests {
             let git_dir = unique_test_git_dir("close-success");
             let resolver = fixed_resolver(git_dir.clone());
 
-            run_codex_mutation_scope_from_payload_with(
-                &pre_tool_use_json(&[]),
-                None,
-                &resolver,
-                &ok_seam,
-            )
-            .expect("PreToolUse should establish an active attempt");
+            drive(&pre_tool_use_json(&[]), &resolver, &ok_seam);
 
             let seen: RefCell<Vec<String>> = RefCell::new(Vec::new());
             let seam =
@@ -1495,15 +1517,8 @@ mod tests {
                     seen.borrow_mut().push(payload.to_string());
                     Ok(String::new())
                 };
-            let output = run_codex_mutation_scope_from_payload_with(
-                &post_tool_use_json(&[]),
-                None,
-                &resolver,
-                &seam,
-            )
-            .expect("PostToolUse should close the scope");
+            assert_eq!(drive(&post_tool_use_json(&[]), &resolver, &seam), "");
 
-            assert_eq!(output, "");
             let calls = seen.into_inner();
             assert_eq!(calls.len(), 1);
             assert!(calls[0].contains(r#""operation":"close""#));
@@ -1516,17 +1531,13 @@ mod tests {
         fn pending_start_close_abandons_rather_than_late_starting_d11() {
             let git_dir = unique_test_git_dir("pending-start-close");
             let resolver = fixed_resolver(git_dir.clone());
-
-            state::allocate_attempt(
+            seed_attempt(
                 &git_dir,
-                &AttemptKey {
-                    session_id: "session-1".to_string(),
-                    agent_id: None,
-                    tool_use_id: "exec-1".to_string(),
-                },
-                "Bash",
-            )
-            .expect("seeding a pending_start attempt should succeed");
+                "session-1",
+                None,
+                "exec-1",
+                state::AttemptPhase::PendingStart,
+            );
 
             let seen: RefCell<Vec<String>> = RefCell::new(Vec::new());
             let seam =
@@ -1534,20 +1545,15 @@ mod tests {
                     seen.borrow_mut().push(payload.to_string());
                     Ok(String::new())
                 };
-            run_codex_mutation_scope_from_payload_with(
-                &post_tool_use_json(&[]),
-                None,
-                &resolver,
-                &seam,
-            )
-            .expect("PostToolUse on a pending_start attempt should abandon");
+            drive(&post_tool_use_json(&[]), &resolver, &seam);
 
             let calls = seen.into_inner();
             assert_eq!(calls.len(), 1);
             assert!(calls[0].contains(r#""operation":"abandon""#));
+
             let final_state = read_state(&git_dir);
             assert!(final_state.attempts.is_empty());
-            assert!(final_state.recovery_pending);
+            assert!(!final_state.recovery.is_clear());
 
             remove_test_git_dir(&git_dir);
         }
@@ -1557,30 +1563,15 @@ mod tests {
             let git_dir = unique_test_git_dir("failed-close");
             let resolver = fixed_resolver(git_dir.clone());
 
-            run_codex_mutation_scope_from_payload_with(
-                &pre_tool_use_json(&[]),
-                None,
-                &resolver,
-                &ok_seam,
-            )
-            .expect("PreToolUse should establish an active attempt");
+            drive(&pre_tool_use_json(&[]), &resolver, &ok_seam);
 
             let seam = seam_failing_on("close");
-            run_codex_mutation_scope_from_payload_with(
-                &post_tool_use_json(&[]),
-                None,
-                &resolver,
-                &seam,
-            )
-            .expect("a failed Close should abandon, not propagate");
+            drive(&post_tool_use_json(&[]), &resolver, &seam);
 
             let final_state = read_state(&git_dir);
+            assert!(final_state.attempts.is_empty());
             assert!(
-                final_state.attempts.is_empty(),
-                "the abandoned attempt is retired"
-            );
-            assert!(
-                final_state.recovery_pending,
+                !final_state.recovery.is_clear(),
                 "D11: a failed Close arms recovery"
             );
 
@@ -1592,13 +1583,7 @@ mod tests {
             let git_dir = unique_test_git_dir("failed-close-and-abandon");
             let resolver = fixed_resolver(git_dir.clone());
 
-            run_codex_mutation_scope_from_payload_with(
-                &pre_tool_use_json(&[]),
-                None,
-                &resolver,
-                &ok_seam,
-            )
-            .expect("PreToolUse should establish an active attempt");
+            drive(&pre_tool_use_json(&[]), &resolver, &ok_seam);
 
             let seam = seam_failing_on_any(vec!["close", "abandon"]);
             let error = run_codex_mutation_scope_from_payload_with(
@@ -1611,8 +1596,8 @@ mod tests {
             assert!(error.to_string().contains("abandon"));
 
             let final_state = read_state(&git_dir);
-            assert_eq!(final_state.attempts.len(), 1, "the attempt stays tracked");
-            assert!(final_state.recovery_pending);
+            assert_eq!(final_state.attempts.len(), 1);
+            assert!(!final_state.recovery.is_clear());
 
             remove_test_git_dir(&git_dir);
         }
@@ -1622,60 +1607,49 @@ mod tests {
             let git_dir = unique_test_git_dir("close-no-attempt");
             let resolver = fixed_resolver(git_dir.clone());
 
-            let output = run_codex_mutation_scope_from_payload_with(
-                &post_tool_use_json(&[(
-                    TOOL_NAME_FIELD,
-                    Value::String("mcp__probe__mutate_success".to_string()),
-                )]),
-                None,
-                &resolver,
-                &unreachable_seam,
-            )
-            .expect("a PostToolUse with nothing to close is a no-op");
-
-            assert_eq!(output, "");
+            assert_eq!(
+                drive(
+                    &post_tool_use_json(&[(
+                        TOOL_NAME_FIELD,
+                        Value::String("mcp__probe__mutate_success".to_string()),
+                    )]),
+                    &resolver,
+                    &unreachable_seam,
+                ),
+                "",
+            );
             assert!(read_state(&git_dir).attempts.is_empty());
 
             remove_test_git_dir(&git_dir);
-        }
-
-        fn seed_attempt(
-            git_dir: &Path,
-            session_id: &str,
-            agent_id: Option<&str>,
-            tool_use_id: &str,
-        ) {
-            let allocated = state::allocate_attempt(
-                git_dir,
-                &AttemptKey {
-                    session_id: session_id.to_string(),
-                    agent_id: agent_id.map(str::to_string),
-                    tool_use_id: tool_use_id.to_string(),
-                },
-                "Bash",
-            )
-            .expect("seeding an attempt should succeed");
-            state::mark_active(git_dir, &allocated.attempt.scope_id)
-                .expect("marking the seeded attempt active should succeed");
         }
 
         #[test]
         fn stop_sweeps_only_main_thread_attempts_d12() {
             let git_dir = unique_test_git_dir("stop-sweep");
             let resolver = fixed_resolver(git_dir.clone());
-            seed_attempt(&git_dir, "session-1", None, "exec-main");
-            seed_attempt(&git_dir, "session-1", Some("agent-1"), "exec-agent");
-
-            run_codex_mutation_scope_from_payload_with(
-                &turn_scoped_payload(HOOK_EVENT_STOP, "session-1", "turn-1"),
+            seed_attempt(
+                &git_dir,
+                "session-1",
                 None,
+                "exec-main",
+                state::AttemptPhase::Active,
+            );
+            seed_attempt(
+                &git_dir,
+                "session-1",
+                Some("agent-1"),
+                "exec-agent",
+                state::AttemptPhase::Active,
+            );
+
+            drive(
+                &turn_scoped_payload(HOOK_EVENT_STOP, "session-1", "turn-1"),
                 &resolver,
                 &ok_seam,
-            )
-            .expect("Stop cleanup should succeed");
+            );
 
             let attempts = read_state(&git_dir).attempts;
-            assert_eq!(attempts.len(), 1, "only the subagent attempt survives Stop");
+            assert_eq!(attempts.len(), 1);
             assert_eq!(attempts[0].tool_use_id, "exec-agent");
 
             remove_test_git_dir(&git_dir);
@@ -1685,24 +1659,36 @@ mod tests {
         fn interrupt_sweeps_every_attempt_for_the_session_d12() {
             let git_dir = unique_test_git_dir("interrupt-sweep");
             let resolver = fixed_resolver(git_dir.clone());
-            seed_attempt(&git_dir, "session-1", None, "exec-main");
-            seed_attempt(&git_dir, "session-1", Some("agent-1"), "exec-agent");
-            seed_attempt(&git_dir, "session-2", None, "exec-other");
-
-            run_codex_mutation_scope_from_payload_with(
-                &turn_scoped_payload(HOOK_EVENT_INTERRUPT, "session-1", "turn-1"),
+            seed_attempt(
+                &git_dir,
+                "session-1",
                 None,
+                "exec-main",
+                state::AttemptPhase::Active,
+            );
+            seed_attempt(
+                &git_dir,
+                "session-1",
+                Some("agent-1"),
+                "exec-agent",
+                state::AttemptPhase::Active,
+            );
+            seed_attempt(
+                &git_dir,
+                "session-2",
+                None,
+                "exec-other",
+                state::AttemptPhase::Active,
+            );
+
+            drive(
+                &turn_scoped_payload(HOOK_EVENT_INTERRUPT, "session-1", "turn-1"),
                 &resolver,
                 &ok_seam,
-            )
-            .expect("Interrupt cleanup should succeed");
+            );
 
             let attempts = read_state(&git_dir).attempts;
-            assert_eq!(
-                attempts.len(),
-                1,
-                "SIGINT retires the whole interrupted session"
-            );
+            assert_eq!(attempts.len(), 1);
             assert_eq!(attempts[0].session_id, "session-2");
 
             remove_test_git_dir(&git_dir);
@@ -1712,17 +1698,33 @@ mod tests {
         fn subagent_stop_sweeps_only_the_matching_agent_d12() {
             let git_dir = unique_test_git_dir("subagent-stop-sweep");
             let resolver = fixed_resolver(git_dir.clone());
-            seed_attempt(&git_dir, "session-1", Some("agent-a"), "exec-a");
-            seed_attempt(&git_dir, "session-1", Some("agent-b"), "exec-b");
-            seed_attempt(&git_dir, "session-1", None, "exec-main");
-
-            run_codex_mutation_scope_from_payload_with(
-                &subagent_stop_payload("session-1", "turn-1", "agent-a"),
+            seed_attempt(
+                &git_dir,
+                "session-1",
+                Some("agent-a"),
+                "exec-a",
+                state::AttemptPhase::Active,
+            );
+            seed_attempt(
+                &git_dir,
+                "session-1",
+                Some("agent-b"),
+                "exec-b",
+                state::AttemptPhase::Active,
+            );
+            seed_attempt(
+                &git_dir,
+                "session-1",
                 None,
+                "exec-main",
+                state::AttemptPhase::Active,
+            );
+
+            drive(
+                &subagent_stop_payload("session-1", "turn-1", "agent-a"),
                 &resolver,
                 &ok_seam,
-            )
-            .expect("SubagentStop cleanup should succeed");
+            );
 
             let mut remaining: Vec<String> = read_state(&git_dir)
                 .attempts
@@ -1742,16 +1744,22 @@ mod tests {
         fn session_end_sweeps_every_attempt_for_the_session_d12() {
             let git_dir = unique_test_git_dir("session-end-sweep");
             let resolver = fixed_resolver(git_dir.clone());
-            seed_attempt(&git_dir, "session-1", None, "exec-main");
-            seed_attempt(&git_dir, "session-1", Some("agent-1"), "exec-agent");
-
-            run_codex_mutation_scope_from_payload_with(
-                &session_end_payload("session-1"),
+            seed_attempt(
+                &git_dir,
+                "session-1",
                 None,
-                &resolver,
-                &ok_seam,
-            )
-            .expect("SessionEnd cleanup should succeed");
+                "exec-main",
+                state::AttemptPhase::Active,
+            );
+            seed_attempt(
+                &git_dir,
+                "session-1",
+                Some("agent-1"),
+                "exec-agent",
+                state::AttemptPhase::Active,
+            );
+
+            drive(&session_end_payload("session-1"), &resolver, &ok_seam);
 
             assert!(read_state(&git_dir).attempts.is_empty());
 
@@ -1762,7 +1770,13 @@ mod tests {
         fn lifecycle_cleanup_with_a_failed_abandon_keeps_the_attempt_tracked_d12() {
             let git_dir = unique_test_git_dir("sweep-failed-abandon");
             let resolver = fixed_resolver(git_dir.clone());
-            seed_attempt(&git_dir, "session-1", None, "exec-main");
+            seed_attempt(
+                &git_dir,
+                "session-1",
+                None,
+                "exec-main",
+                state::AttemptPhase::Active,
+            );
 
             let seam = seam_failing_on("abandon");
             let error = run_codex_mutation_scope_from_payload_with(
@@ -1776,7 +1790,7 @@ mod tests {
 
             let final_state = read_state(&git_dir);
             assert_eq!(final_state.attempts.len(), 1);
-            assert!(final_state.recovery_pending);
+            assert!(!final_state.recovery.is_clear());
 
             remove_test_git_dir(&git_dir);
         }
@@ -1785,8 +1799,14 @@ mod tests {
         fn recovery_barrier_denies_new_tracked_pre_tool_use_while_attempts_remain_ac12() {
             let git_dir = unique_test_git_dir("barrier-attempts-remain");
             let resolver = fixed_resolver(git_dir.clone());
-            seed_attempt(&git_dir, "session-1", None, "exec-live");
-            state::mark_recovery_pending(&git_dir).expect("arming the barrier should succeed");
+            seed_attempt(
+                &git_dir,
+                "session-1",
+                None,
+                "exec-live",
+                state::AttemptPhase::Active,
+            );
+            state::arm_recovery(&git_dir).expect("arming the barrier should succeed");
 
             let output = run_codex_mutation_scope_from_payload_with(
                 &pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String("exec-new".to_string()))]),
@@ -1802,27 +1822,37 @@ mod tests {
         }
 
         #[test]
-        fn recovery_barrier_does_not_affect_untracked_pre_tool_use_ac12() {
+        fn recovery_barrier_does_not_affect_untracked_pre_tool_use_ac12_test_f() {
             let git_dir = unique_test_git_dir("barrier-untracked-unaffected");
             let resolver = fixed_resolver(git_dir.clone());
-            seed_attempt(&git_dir, "session-1", None, "exec-live");
-            state::mark_recovery_pending(&git_dir).expect("arming the barrier should succeed");
-
-            let output = run_codex_mutation_scope_from_payload_with(
-                &pre_tool_use_json(&[(
-                    TOOL_NAME_FIELD,
-                    Value::String("mcp__probe__mutate_success".to_string()),
-                )]),
+            seed_attempt(
+                &git_dir,
+                "session-1",
                 None,
-                &resolver,
-                &unreachable_seam,
-            )
-            .expect("an untracked PreToolUse ignores the barrier");
-
-            assert_eq!(
-                output, "",
-                "AC12: the barrier never denies an untracked tool"
+                "exec-live",
+                state::AttemptPhase::Active,
             );
+            state::arm_recovery(&git_dir).expect("arming the barrier should succeed");
+
+            for tool in [
+                "mcp__probe__mutate_success",
+                "some_future_codex_tool",
+                "collaborationspawn_agent",
+            ] {
+                let payload =
+                    pre_tool_use_json(&[(TOOL_NAME_FIELD, Value::String(tool.to_string()))]);
+                assert_eq!(
+                    run_codex_mutation_scope_from_payload_with(
+                        &payload,
+                        None,
+                        &resolver,
+                        &unreachable_seam,
+                    )
+                    .expect("an untracked PreToolUse ignores the barrier"),
+                    "",
+                    "Test F: recovery must never deny an untracked tool",
+                );
+            }
 
             remove_test_git_dir(&git_dir);
         }
@@ -1832,20 +1862,7 @@ mod tests {
             let git_dir = unique_test_git_dir("barrier-flush-success");
             std::fs::create_dir_all(&git_dir).expect("git dir should be created");
             let resolver = fixed_resolver(git_dir.clone());
-
-            let seeded = state::allocate_attempt(
-                &git_dir,
-                &AttemptKey {
-                    session_id: "session-1".to_string(),
-                    agent_id: None,
-                    tool_use_id: "exec-seed".to_string(),
-                },
-                "Bash",
-            )
-            .expect("seeding a retired attempt should succeed");
-            state::mark_recovery_pending(&git_dir).expect("arming the barrier should succeed");
-            state::remove_attempt(&git_dir, &seeded.attempt.scope_id)
-                .expect("removing the seeded attempt should succeed");
+            state::arm_recovery(&git_dir).expect("arming the barrier should succeed");
 
             let seen: RefCell<Vec<String>> = RefCell::new(Vec::new());
             let seam =
@@ -1854,15 +1871,13 @@ mod tests {
                     Ok(String::new())
                 };
 
-            let output = run_codex_mutation_scope_from_payload_with(
+            let output = drive(
                 &pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String("exec-new".to_string()))]),
-                None,
                 &resolver,
                 &seam,
-            )
-            .expect("a quiescent recovery should flush then proceed");
-
+            );
             assert_eq!(output, "");
+
             let operations = seen.into_inner();
             assert_eq!(
                 operations.len(),
@@ -1874,10 +1889,11 @@ mod tests {
 
             let final_state = read_state(&git_dir);
             assert!(
-                !final_state.recovery_pending,
+                final_state.recovery.is_clear(),
                 "a successful flush clears the barrier"
             );
             assert_eq!(final_state.attempts.len(), 1);
+            assert_eq!(final_state.attempts[0].phase, state::AttemptPhase::Active);
 
             remove_test_git_dir(&git_dir);
         }
@@ -1887,20 +1903,8 @@ mod tests {
             let git_dir = unique_test_git_dir("barrier-flush-failure");
             std::fs::create_dir_all(&git_dir).expect("git dir should be created");
             let resolver = fixed_resolver(git_dir.clone());
-
-            let seeded = state::allocate_attempt(
-                &git_dir,
-                &AttemptKey {
-                    session_id: "session-1".to_string(),
-                    agent_id: None,
-                    tool_use_id: "exec-seed".to_string(),
-                },
-                "Bash",
-            )
-            .expect("seeding a retired attempt should succeed");
-            state::mark_recovery_pending(&git_dir).expect("arming the barrier should succeed");
-            state::remove_attempt(&git_dir, &seeded.attempt.scope_id)
-                .expect("removing the seeded attempt should succeed");
+            let generation =
+                state::arm_recovery(&git_dir).expect("arming the barrier should succeed");
 
             let seam = seam_failing_on("flush");
             let output = run_codex_mutation_scope_from_payload_with(
@@ -1913,14 +1917,12 @@ mod tests {
 
             assert_eq!(output, pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON));
             let final_state = read_state(&git_dir);
-            assert!(
-                final_state.recovery_pending,
-                "a failed flush keeps the barrier armed"
+            assert_eq!(
+                final_state.recovery,
+                state::RecoveryState::Pending { generation },
+                "a failed flush hands the generation back as Pending so a later PreToolUse retries",
             );
-            assert!(
-                final_state.attempts.is_empty(),
-                "a denied PreToolUse allocates nothing"
-            );
+            assert!(final_state.attempts.is_empty());
 
             remove_test_git_dir(&git_dir);
         }
@@ -1937,35 +1939,21 @@ mod tests {
                 ),
                 (TOOL_USE_ID_FIELD, Value::String("exec-mcp".to_string())),
             ]);
-            run_codex_mutation_scope_from_payload_with(
-                &mcp_pre,
-                None,
-                &resolver,
-                &unreachable_seam,
-            )
-            .expect("MCP PreToolUse is a neutral continue");
+            drive(&mcp_pre, &resolver, &unreachable_seam);
             assert!(read_state(&git_dir).attempts.is_empty());
 
-            run_codex_mutation_scope_from_payload_with(
+            drive(
                 &turn_scoped_payload(HOOK_EVENT_STOP, "session-1", "turn-1"),
-                None,
                 &resolver,
                 &ok_seam,
-            )
-            .expect("Stop finds nothing to retire");
-            run_codex_mutation_scope_from_payload_with(
-                &session_end_payload("session-1"),
-                None,
-                &resolver,
-                &ok_seam,
-            )
-            .expect("SessionEnd finds nothing to retire");
+            );
+            drive(&session_end_payload("session-1"), &resolver, &ok_seam);
 
             let final_state = read_state(&git_dir);
             assert!(final_state.attempts.is_empty());
             assert!(
-                !final_state.recovery_pending,
-                "AC9c: no Start ⇒ no abandon ⇒ no recovery_pending"
+                final_state.recovery.is_clear(),
+                "AC9c: no Start => no abandon => recovery stays clear"
             );
 
             remove_test_git_dir(&git_dir);
@@ -1988,17 +1976,11 @@ mod tests {
                 (TOOL_USE_ID_FIELD, Value::String("exec-b".to_string())),
             ]);
 
-            run_codex_mutation_scope_from_payload_with(&mcp_a, None, &resolver, &unreachable_seam)
-                .expect("MCP A is a neutral continue");
-            run_codex_mutation_scope_from_payload_with(&bash_b, None, &resolver, &ok_seam)
-                .expect("Bash B starts on its own merits");
+            drive(&mcp_a, &resolver, &unreachable_seam);
+            drive(&bash_b, &resolver, &ok_seam);
 
             let attempts = read_state(&git_dir).attempts;
-            assert_eq!(
-                attempts.len(),
-                1,
-                "AC9d: B is the only live scope, no successor barrier ran"
-            );
+            assert_eq!(attempts.len(), 1);
             assert_eq!(attempts[0].tool_use_id, "exec-b");
             assert_eq!(attempts[0].phase, state::AttemptPhase::Active);
 
@@ -2018,19 +2000,13 @@ mod tests {
                     ),
                     (TOOL_USE_ID_FIELD, Value::String(tool_use_id.to_string())),
                 ]);
-                run_codex_mutation_scope_from_payload_with(
-                    &payload,
-                    None,
-                    &resolver,
-                    &unreachable_seam,
-                )
-                .expect("each overlapping MCP PreToolUse is a neutral continue");
+                drive(&payload, &resolver, &unreachable_seam);
                 assert!(read_state(&git_dir).attempts.is_empty());
             }
 
             let final_state = read_state(&git_dir);
             assert!(final_state.attempts.is_empty());
-            assert!(!final_state.recovery_pending);
+            assert!(final_state.recovery.is_clear());
 
             remove_test_git_dir(&git_dir);
         }
@@ -2047,24 +2023,12 @@ mod tests {
             let successor_pre =
                 pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String("exec-b".to_string()))]);
 
-            run_codex_mutation_scope_from_payload_with(&predecessor_pre, None, &resolver, &ok_seam)
-                .expect("A starts");
-            run_codex_mutation_scope_from_payload_with(
-                &predecessor_post,
-                None,
-                &resolver,
-                &ok_seam,
-            )
-            .expect("A closes on its terminal PostToolUse");
-            run_codex_mutation_scope_from_payload_with(&successor_pre, None, &resolver, &ok_seam)
-                .expect("B starts");
+            drive(&predecessor_pre, &resolver, &ok_seam);
+            drive(&predecessor_post, &resolver, &ok_seam);
+            drive(&successor_pre, &resolver, &ok_seam);
 
             let attempts = read_state(&git_dir).attempts;
-            assert_eq!(
-                attempts.len(),
-                1,
-                "AC9a: A is retired before B starts, no zombie"
-            );
+            assert_eq!(attempts.len(), 1);
             assert_eq!(attempts[0].tool_use_id, "exec-b");
 
             remove_test_git_dir(&git_dir);
@@ -2086,6 +2050,270 @@ mod tests {
             .to_string();
             let error = run_codex_mutation_scope_from_payload(&payload, None).unwrap_err();
             assert!(error.to_string().contains("unsupported hook_event_name"));
+        }
+
+        #[test]
+        fn test_a_recovery_armed_mid_abandon_blocks_a_concurrent_tracked_pre_tool_use() {
+            let git_dir = unique_test_git_dir("race-admission-vs-recovery");
+            std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+            seed_attempt(
+                &git_dir,
+                "session-1",
+                None,
+                "exec-a",
+                state::AttemptPhase::Active,
+            );
+
+            let calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let (abandon_seam, gate) = gated_seam("abandon", Arc::clone(&calls));
+
+            let sweeper = {
+                let git_dir = git_dir.clone();
+                let resolver = fixed_resolver(git_dir.clone());
+                thread::spawn(move || {
+                    run_codex_mutation_scope_from_payload_with(
+                        &session_end_payload("session-1"),
+                        None,
+                        &resolver,
+                        &abandon_seam,
+                    )
+                    .expect("SessionEnd cleanup should succeed")
+                })
+            };
+
+            gate.wait_until_entered();
+
+            assert_eq!(
+                read_state(&git_dir).recovery,
+                state::RecoveryState::Pending { generation: 1 },
+                "arm_recovery must run before the abandon seam call",
+            );
+
+            let resolver = fixed_resolver(git_dir.clone());
+            let output = run_codex_mutation_scope_from_payload_with(
+                &pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String("exec-b".to_string()))]),
+                None,
+                &resolver,
+                &unreachable_seam,
+            )
+            .expect("the concurrent tracked PreToolUse must return a deny payload");
+            assert_eq!(
+                output,
+                pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON),
+                "Test A: B must be denied and must never reach the Start seam",
+            );
+
+            gate.release();
+            sweeper.join().expect("sweeper thread should not panic");
+
+            let recorded = calls.lock().expect("calls mutex").clone();
+            assert!(
+                recorded
+                    .iter()
+                    .all(|payload| !payload.contains(r#""operation":"start""#)),
+                "Test A: no start payload for B may reach the seam, got {recorded:?}",
+            );
+            assert!(read_state(&git_dir).attempts.is_empty());
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn test_b_two_quiescent_recovery_callers_emit_exactly_one_flush() {
+            let git_dir = unique_test_git_dir("race-two-quiescent-flush");
+            std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+            let generation = state::arm_recovery(&git_dir).expect("arming recovery should succeed");
+
+            let flush_calls = Arc::new(AtomicUsize::new(0));
+            let calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let (owner_seam, gate) = gated_seam("flush", Arc::clone(&calls));
+
+            let owner = {
+                let git_dir = git_dir.clone();
+                let resolver = fixed_resolver(git_dir.clone());
+                let flush_calls = Arc::clone(&flush_calls);
+                thread::spawn(move || {
+                    let seam = move |root: &Path,
+                                     payload: &str,
+                                     logger: Option<&dyn Logger>|
+                          -> Result<String> {
+                        if payload.contains(r#""operation":"flush""#) {
+                            flush_calls.fetch_add(1, Ordering::SeqCst);
+                        }
+                        owner_seam(root, payload, logger)
+                    };
+                    run_codex_mutation_scope_from_payload_with(
+                        &pre_tool_use_json(&[(
+                            TOOL_USE_ID_FIELD,
+                            Value::String("exec-owner".to_string()),
+                        )]),
+                        None,
+                        &resolver,
+                        &seam,
+                    )
+                    .expect("owner PreToolUse should return Ok")
+                })
+            };
+
+            gate.wait_until_entered();
+
+            let resolver = fixed_resolver(git_dir.clone());
+            let contender_flushes = Arc::new(AtomicUsize::new(0));
+            let contender_flushes_seam = Arc::clone(&contender_flushes);
+            let contender_seam = move |_root: &Path,
+                                       payload: &str,
+                                       _logger: Option<&dyn Logger>|
+                  -> Result<String> {
+                if payload.contains(r#""operation":"flush""#) {
+                    contender_flushes_seam.fetch_add(1, Ordering::SeqCst);
+                }
+                Ok(String::new())
+            };
+            let contender_output = run_codex_mutation_scope_from_payload_with(
+                &pre_tool_use_json(&[(
+                    TOOL_USE_ID_FIELD,
+                    Value::String("exec-contender".to_string()),
+                )]),
+                None,
+                &resolver,
+                &contender_seam,
+            )
+            .expect("contender PreToolUse should return Ok");
+            assert_eq!(
+                contender_output,
+                pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON),
+                "Test B: the contender must stay fail-closed while the owner flushes",
+            );
+            assert_eq!(
+                contender_flushes.load(Ordering::SeqCst),
+                0,
+                "Test B: only the owner may run the flush for generation {generation}",
+            );
+
+            gate.release();
+            owner.join().expect("owner thread should not panic");
+
+            assert_eq!(
+                flush_calls.load(Ordering::SeqCst),
+                1,
+                "Test B: exactly one Flush is emitted for the recovery generation",
+            );
+            assert!(read_state(&git_dir).recovery.is_clear());
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn test_c_recovery_rearmed_while_flush_in_flight_survives_the_stale_completion() {
+            let git_dir = unique_test_git_dir("race-rearm-during-flush");
+            std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+            state::arm_recovery(&git_dir).expect("arm g1");
+
+            let calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let (flush_seam, gate) = gated_seam("flush", Arc::clone(&calls));
+
+            let flusher = {
+                let git_dir = git_dir.clone();
+                let resolver = fixed_resolver(git_dir.clone());
+                thread::spawn(move || {
+                    run_codex_mutation_scope_from_payload_with(
+                        &pre_tool_use_json(&[(
+                            TOOL_USE_ID_FIELD,
+                            Value::String("exec-flusher".to_string()),
+                        )]),
+                        None,
+                        &resolver,
+                        &flush_seam,
+                    )
+                    .expect("flusher PreToolUse should return Ok")
+                })
+            };
+
+            gate.wait_until_entered();
+            assert_eq!(
+                read_state(&git_dir).recovery,
+                state::RecoveryState::Flushing { generation: 1 },
+            );
+
+            let second_generation = state::arm_recovery(&git_dir).expect("re-arm to g2");
+            assert_eq!(second_generation, 2);
+
+            gate.release();
+            let flusher_output = flusher.join().expect("flusher thread should not panic");
+            assert_eq!(
+                flusher_output,
+                pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON),
+                "Test C: the flusher denies because recovery was re-armed under it",
+            );
+
+            assert_eq!(
+                read_state(&git_dir).recovery,
+                state::RecoveryState::Pending { generation: 2 },
+                "Test C: the stale Flush(g1) completion must not clear Pending(g2)",
+            );
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn test_d_start_succeeds_but_mark_active_fails_blocks_a_successor_until_recovery() {
+            let git_dir = unique_test_git_dir("start-then-mark-active-fails");
+            let resolver = fixed_resolver(git_dir.clone());
+
+            state::arm_mark_active_failure_for_tests();
+            let logger = RecordingLogger::default();
+            let output = run_codex_mutation_scope_from_payload_with(
+                &pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String("exec-a".to_string()))]),
+                Some(&logger),
+                &resolver,
+                &ok_seam,
+            )
+            .expect("a mark_active failure still returns Ok with a deny payload");
+            assert_eq!(output, pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON));
+
+            let after_start = read_state(&git_dir);
+            assert_eq!(after_start.attempts.len(), 1);
+            assert_eq!(
+                after_start.attempts[0].phase,
+                state::AttemptPhase::PendingStart
+            );
+            assert!(after_start.recovery.is_clear());
+
+            let successor =
+                pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String("exec-b".to_string()))]);
+            assert_eq!(
+                run_codex_mutation_scope_from_payload_with(
+                    &successor,
+                    None,
+                    &resolver,
+                    &unreachable_seam,
+                )
+                .expect("successor returns a deny payload"),
+                pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON),
+                "Test D: an uncertain PendingStart blocks a successor Start",
+            );
+
+            drive(&session_end_payload("session-1"), &resolver, &ok_seam);
+            assert!(read_state(&git_dir).attempts.is_empty());
+            assert!(!read_state(&git_dir).recovery.is_clear());
+
+            let recording: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let seam = recording_seam(Arc::clone(&recording));
+            let recovered = drive(&successor, &resolver, &seam);
+            assert_eq!(recovered, "");
+
+            let ops = recording.lock().expect("recording mutex").clone();
+            assert_eq!(ops.len(), 2, "expected flush then start, got {ops:?}");
+            assert!(ops[0].contains(r#""operation":"flush""#));
+            assert!(ops[1].contains(r#""operation":"start""#));
+
+            let final_state = read_state(&git_dir);
+            assert!(final_state.recovery.is_clear());
+            assert_eq!(final_state.attempts.len(), 1);
+            assert_eq!(final_state.attempts[0].phase, state::AttemptPhase::Active);
+            assert_eq!(final_state.attempts[0].tool_use_id, "exec-b");
+
+            remove_test_git_dir(&git_dir);
         }
     }
 }
