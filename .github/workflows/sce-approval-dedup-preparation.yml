@@ -6,6 +6,7 @@ on:
       - codex/compress-workflow-execution-preamble
     paths:
       - .sce-validation-report-dedup.py
+      - .sce-validation-report-dedup-fix.py
       - .github/workflows/sce-approval-dedup-preparation.yml
 
 permissions:
@@ -27,5 +28,6 @@ jobs:
 
       - name: Apply, verify, commit, and push validation report deduplication
         run: |
+          python3 .sce-validation-report-dedup-fix.py
           cp .sce-validation-report-dedup.py /tmp/sce-validation-report-dedup.py
           nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 /tmp/sce-validation-report-dedup.py
