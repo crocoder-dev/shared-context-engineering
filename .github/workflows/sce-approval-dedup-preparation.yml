@@ -28,4 +28,14 @@ jobs:
       - name: Apply, verify, commit, and push root-pass deduplication
         run: |
           cp .sce-root-pass-dedup.py /tmp/sce-root-pass-dedup.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('/tmp/sce-root-pass-dedup.py')
+          text = path.read_text()
+          needle = 'text = replace_exact(text, old_plan_discovery_source, new_plan_discovery_source, 1, "plan context discovery root list")'
+          replacement = needle + '\ntext = replace_exact(text, old_task_discovery_rendered, new_task_discovery_rendered, 1, "composite task context discovery root list")'
+          if text.count(needle) != 1:
+              raise SystemExit('expected one plan discovery replacement anchor')
+          path.write_text(text.replace(needle, replacement))
+          PY
           nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 /tmp/sce-root-pass-dedup.py
