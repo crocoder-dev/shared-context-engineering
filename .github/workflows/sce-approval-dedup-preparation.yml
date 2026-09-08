@@ -5,7 +5,7 @@ on:
     branches:
       - codex/compress-workflow-execution-preamble
     paths:
-      - .sce-clean-pr-history.py
+      - .sce-fix-approval-reference.py
 
 permissions:
   contents: write
@@ -13,7 +13,7 @@ permissions:
 jobs:
   prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - name: Checkout preparation branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -21,5 +21,8 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.sha }}
 
-      - name: Rewrite PR branch to two implementation commits
-        run: python3 .sce-clean-pr-history.py
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+
+      - name: Amend the approval deduplication commit
+        run: nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 .sce-fix-approval-reference.py
