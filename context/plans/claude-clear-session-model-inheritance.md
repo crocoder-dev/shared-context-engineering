@@ -123,29 +123,29 @@ How this plan is proven complete. Each criterion is observable and names the
 check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation.
 
-- [ ] AC1: A `SessionStart` event with no `model` field, whose `transcript_path`
+- [x] AC1: A `SessionStart` event with no `model` field, whose `transcript_path`
   file's leading records carry a `bridgeSessionId` that a sibling transcript in
   the same directory also carries, and whose sibling already has a
   `claude_model_state` row, causes the new session to persist a
   `claude_model_state` row with the sibling's model and `source="bridge_inherited"`.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_state`.
-- [ ] AC2: When `transcript_path` is missing/unreadable, the bridge record is
+- [x] AC2: When `transcript_path` is missing/unreadable, the bridge record is
   absent or malformed, no sibling shares the bridge id, or the sibling has no
   recorded state, the handler behaves exactly as today: silent no-op, zero
   stdout, no DB write, and existing state (if any) is never cleared or
   overwritten. Every branch fails open.
   - Validate: focused tests covering each failure branch under the same test command as AC1.
-- [ ] AC3: Bridge discovery reads only the leading records of each candidate
+- [x] AC3: Bridge discovery reads only the leading records of each candidate
   transcript (never a full-file scan), performs no network access, and leaves
   `PostModelSwitch` handling and the existing diff-trace precedence
   (`direct > exact transcript > exact state > NULL`) unchanged.
   - Validate: inspect the discovery helper for a bounded read; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model` and `claude_model_attribution` pass unchanged alongside new coverage.
-- [ ] AC4: A diff-trace event in a session that inherited its model this way, with
+- [x] AC4: A diff-trace event in a session that inherited its model this way, with
   no direct model and no winning transcript match, resolves `diff_traces.model_id`
   from the inherited state exactly as it would from a normal `SessionStart.model`
   seed.
   - Validate: persisted-row regression under `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_attribution`.
-- [ ] AC5: A decision record documents the production evidence (real captured
+- [x] AC5: A decision record documents the production evidence (real captured
   `/clear` `SessionStart` payloads confirmed to omit `model`; confirmed absence of
   `bridgeSessionId` in any captured hook payload shape; confirmed presence of
   `bridgeSessionId` in the transcript's bridge-session record; confirmed
@@ -225,7 +225,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Record the bridge-session model-inheritance decision` (status:todo)
+- [x] T01: `Record the bridge-session model-inheritance decision` (status:done)
   - Task ID: T01
   - Scope: In — write `context/decisions/{date}-claude-bridge-session-model-inheritance.md`
     covering the production evidence, mechanism, best-effort caveat, and guardrail
@@ -236,9 +236,28 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Done when: the decision file exists in ADR format and contains every element
     AC5 names; no other file changes.
   - Verify: inspect the file against AC5.
-  - Context synchronization: pending
+  - Completed: 2026-09-08
+  - Files changed: `context/decisions/2026-09-08-claude-bridge-session-model-inheritance.md`
+  - Result: Added the accepted decision for bounded, local-only inheritance of
+    Claude model state across bridge-linked model-less SessionStart events,
+    documenting production evidence, best-effort ordering caveats, and the
+    existing Claude-specific attribution guardrails.
+  - Verify: ADR inspection passed against AC5: the file records the real
+    model-less `/clear` payloads, absence of `bridgeSessionId` in hook payloads,
+    transcript bridge records and sibling pairing, the discovery mechanism,
+    bounded/fail-open semantics, best-effort/no-ordering-guarantee caveat, and
+    compliance with the 2026-09-01 Claude model-state decision's local-only,
+    non-exported, non-generic guardrails. Baseline-relative comparison found
+    only the new decision file changed before this plan record.
+  - Done checks: All satisfied — the ADR exists in repository format, contains
+    every AC5 element, and no implementation or unrelated context file changed.
+  - Context impact: cross-cutting decision — establishes the bounded
+    Claude-specific bridge-inheritance exception and its guardrails; context
+    synchronization must reconcile the decision and inspect the mandatory root
+    context files before another task starts.
+  - Context synchronization: synced
 
-- [ ] T02: `Add bounded bridge-session discovery helper` (status:todo)
+- [x] T02: `Add bounded bridge-session discovery helper` (status:done)
   - Task ID: T02
   - Scope: In — new `cli/src/services/hooks/claude_bridge_session.rs` with two
     fail-open functions: (a) extract `bridgeSessionId` from a transcript path's
@@ -254,9 +273,25 @@ Persist this field in every plan; this is durable plan state, not chat state:
     missing/malformed bridge record, and no matching sibling; and its reads are
     bounded, not full-file scans.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_bridge_session`.
-  - Context synchronization: pending
+  - Completed: 2026-09-08
+  - Files changed: `cli/src/services/hooks/claude_bridge_session.rs`,
+    `cli/src/services/hooks/mod.rs`
+  - Result: Added bounded, fail-open bridge-session extraction and sibling
+    discovery for Claude JSONL transcripts, selecting the most recently modified
+    matching sibling and returning its filename-derived session ID without DB or
+    network access.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_bridge_session` passed: 5 tests passed, 0 failed.
+  - Done checks: All satisfied — real-shaped leading records resolve the bridge
+    ID and newest matching sibling; missing, unreadable, malformed, empty, and
+    unmatched cases fail open; and a regression proves records beyond the bounded
+    leading-record limit are not scanned.
+  - Context impact: cross-cutting implementation boundary — adds the
+    Claude-specific bounded bridge discovery module that T03 will call from the
+    model-less `SessionStart` path; context synchronization must reconcile the
+    new helper and inspect the mandatory root context files before T03 starts.
+  - Context synchronization: synced
 
-- [ ] T03: `Wire bridge inheritance into SessionStart and prove end-to-end attribution` (status:todo)
+- [x] T03: `Wire bridge inheritance into SessionStart and prove end-to-end attribution` (status:done)
   - Task ID: T03
   - Scope: In — in `claude_model_state.rs`, when parsing yields no observation for
     a model-less `SessionStart`, invoke T02's helper against the event's own
@@ -272,12 +307,30 @@ Persist this field in every plan; this is durable plan state, not chat state:
     regression proving a diff-trace event in the newly-seeded session resolves
     `model_id` from the inherited state. Out — schema/migration changes,
     `PostModelSwitch` changes, export/sync changes.
-  - Dependencies: T02
-  - Done when: AC1, AC2, AC3, and AC4 all hold, and the existing
-    `claude_model_state`, `claude_model`, and `claude_model_attribution` suites
-    pass unchanged alongside the new coverage.
-  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_state`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_attribution`; `nix flake check`.
-  - Context synchronization: pending
+   - Dependencies: T02
+   - Done when: AC1, AC2, AC3, and AC4 all hold, and the existing
+     `claude_model_state`, `claude_model`, and `claude_model_attribution` suites
+     pass unchanged alongside the new coverage.
+   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_state`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_attribution`; `nix flake check`.
+   - Completed: 2026-09-08
+   - Files changed: `cli/src/services/hooks/claude_model_state.rs`,
+     `cli/src/services/hooks/mod.rs`
+   - Result: Wired model-less Claude `SessionStart` events through bounded
+     bridge-session discovery, exact main-session state lookup, and the existing
+     guarded persistence path with `source="bridge_inherited"`; removed no
+     remaining diagnostic breadcrumbs and added persisted-row diff-trace
+     attribution coverage.
+   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_state` passed: 16 tests passed, 0 failed; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_attribution` passed: 3 tests passed, 0 failed; `nix flake check` passed: all checks passed. The additional `claude_model` filter passed: 22 tests passed, 0 failed.
+   - Done checks: All satisfied — AC1 is proven by bridge-linked sibling state
+     inheritance with the expected source and observation kind; AC2 remains
+     fail-open for missing discovery/state and preserves empty stdout; AC3 is
+     covered by T02's bounded helper and unchanged model/precedence suites; and
+     AC4 is proven by the persisted inherited-state diff-trace regression.
+   - Context impact: cross-cutting implementation boundary — changes Claude
+     model-state lifecycle behavior and its attribution handoff; context
+     synchronization must reconcile the fallback and inspect the mandatory root
+     context files before another task or final validation.
+   - Context synchronization: synced
 
 ## Open questions
 
@@ -289,3 +342,33 @@ baseline is 100% of `/clear` sessions unattributed, so trading silence for
 but it changes the failure mode from "we don't know" to "we have a plausible but
 sometimes-wrong answer," which is a different kind of wrong worth deciding on
 deliberately rather than assuming away.
+
+## Validation Report
+
+**Status:** validated
+**Date:** 2026-09-08
+
+### Commands run
+
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral Pkl generation passed: 141 files)
+- `nix flake check` -> exit 0 (all checks passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_bridge_session` -> exit 0 (5 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_state` -> exit 0 (16 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model` -> exit 0 (22 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_attribution` -> exit 0 (3 passed, 0 failed)
+
+### Success-criteria verification
+
+- [x] AC1: Model-less `SessionStart` inherits the sibling model and persists `source="bridge_inherited"` -> persisted-row regression passed in `claude_model_attribution_bridge_inheritance_seeds_state_and_diff_trace`.
+- [x] AC2: Discovery and state-missing/error branches fail open without output or destructive state changes -> focused model-state and bridge-session failure-path tests passed; implementation inspection confirmed missing/unreadable/malformed/unmatched inputs and missing sibling state return without writes.
+- [x] AC3: Discovery is bounded/local-only and attribution precedence plus existing model suites remain unchanged -> bounded-reader regression passed, helper uses `take(MAX_LEADING_RECORDS)`, and `claude_bridge_session`, `claude_model`, and `claude_model_attribution` suites passed.
+- [x] AC4: Inherited state supplies diff-trace model attribution -> persisted-row regression passed with `diff_traces.model_id=claude/inherited-model`.
+- [x] AC5: Required production evidence, mechanism, caveat, and guardrails are documented -> inspected `context/decisions/2026-09-08-claude-bridge-session-model-inheritance.md`.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- Bridge inheritance remains best-effort and may inherit a stale model if a model switch races the first tool call.
