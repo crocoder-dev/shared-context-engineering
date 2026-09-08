@@ -1,12 +1,11 @@
-name: Prepare validation report deduplication
+name: Prepare handover completeness deduplication
 
 on:
   push:
     branches:
       - codex/compress-workflow-execution-preamble
     paths:
-      - .sce-validation-report-dedup.py
-      - .sce-validation-report-dedup-fix.py
+      - .sce-handover-schema-dedup.py
       - .github/workflows/sce-approval-dedup-preparation.yml
 
 permissions:
@@ -26,8 +25,7 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
 
-      - name: Apply, verify, commit, and push validation report deduplication
+      - name: Apply, verify, commit, and push handover completeness deduplication
         run: |
-          cp .sce-validation-report-dedup.py /tmp/sce-validation-report-dedup.py
-          python3 .sce-validation-report-dedup-fix.py
-          nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 /tmp/sce-validation-report-dedup.py
+          cp .sce-handover-schema-dedup.py /tmp/sce-handover-schema-dedup.py
+          nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 /tmp/sce-handover-schema-dedup.py
