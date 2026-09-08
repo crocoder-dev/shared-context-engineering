@@ -43,3 +43,16 @@
 - Keep SCE workflow control flow inside the owning workflow skill. Relevant non-SCE skills may assist as in-step helpers that return control to the active step; `sce-decision` remains the sole SCE sibling-skill exception, usable only from successful task synchronization's decision gate, once per qualifying decision.
 - Do not reintroduce the removed `/validate` plan-context-sync handoff, legacy context-sync, or automated-profile Markdown ownership.
 - Do not reintroduce phase skills as a generated surface. Workflow behavior belongs in the canonical modules and installation belongs to the six command-routed workflow packages (see [Atomic commit workflow](atomic-commit-workflow.md) for `/commit`). The standalone `sce-decision` package is a separate internal surface, not a generated phase package or user-facing workflow.
+
+## Workflow language conventions
+
+- **Command** is the user-facing invocation such as `/next-task`.
+- **Workflow** is the complete procedure owned by a generated workflow `SKILL.md`.
+- **Phase** is an embedded operation such as plan review, task execution, or validation.
+- **Step** is one numbered action inside a workflow or phase.
+- **Internal result** is structured phase data that is not shown directly. Its discriminator is `status`.
+- **Report** is formatted Markdown shown to the user or persisted as a report section.
+- **Completion record** is execution evidence persisted on a completed task in its plan.
+- **Handover document** is the persisted session document under `context/handovers/`.
+
+Use the verbs consistently: run a phase, return an internal result, render a report or layout, and write a persisted file. Preserve distinct lifecycle terms such as task `done`, execution `complete`, context `synced`, and plan `validated`; do not collapse them into one generic success term.

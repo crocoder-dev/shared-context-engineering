@@ -1,4 +1,4 @@
-# SCE Validation
+# Validation phase
 
 ## Purpose
 
@@ -79,8 +79,7 @@ validation.
 
 When a check fails, record the failure and continue gathering evidence. Do not
 modify tests, application code, or configuration to make a check pass. Final
-validation measures the finished work; repair belongs to a later work session,
-not this skill.
+validation measures the finished work; repair belongs to a normal work session outside this phase.
 
 Never report a check as passed unless it ran successfully or the authorized
 inspection confirmed the criterion.
@@ -102,9 +101,9 @@ Do not reopen completed tasks, rewrite task evidence, or change the task stack.
 
 For `blocked`, leave the plan file unchanged.
 
-### 6. Return the Markdown result
+### 6. Return the Markdown report
 
-Return exactly one Markdown result:
+Return exactly one Markdown report:
 
 - `validated` when every acceptance criterion is met, required full validation
   passed, and the Validation Report was written.
@@ -141,12 +140,12 @@ The phase is complete after:
 - One plan was resolved, or resolution failed and was reported.
 - Implementation completeness was checked.
 - Validation ran to a terminal state, or a blocker prevented it.
-- One valid Markdown result matching the **Validation Result** section below in this file was
+- One valid Markdown report matching the **Validation Result** section below in this file was
   returned.
 
 
 
-# Validation Result
+# Validation report
 
 Return only one completed Markdown report using the applicable variant below.
 Do not include unused sections, placeholders, YAML, or a fenced code block.
@@ -158,10 +157,10 @@ The `Status` value must be exactly one of:
 - `blocked`
 
 The plan-file `## Validation Report` section is written separately using
-`references/validation-report.md`. This file is the skill's return value to the
+`references/validation-report.md`. This file is the phase's return value to the
 invoking workflow.
 
-## Validated variant
+## Validated report
 
 # Validation Report
 
@@ -192,7 +191,7 @@ Omit this section when unnecessary.}
 
 ---
 
-## Failed variant
+## Failed report
 
 This variant is a session handoff. Another agent or a later session must be
 able to act from it alone. Write it as a prompt the user can paste forward, not
@@ -256,7 +255,7 @@ returns `validated`.
 
 ---
 
-## Blocked variant
+## Blocked report
 
 # Validation blocked
 

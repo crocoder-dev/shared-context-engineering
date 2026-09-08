@@ -8,7 +8,7 @@ Present the selected task, then each issue's problem, impact, and required
 decision. If plan resolution is ambiguous, list candidate paths and
 `/next-task {candidate-path}`. State whether another task remains executable.
 
-## Plan already complete
+## Implementation complete
 
 ```markdown
 -------------------------------------

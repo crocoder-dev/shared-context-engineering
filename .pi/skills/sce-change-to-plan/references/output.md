@@ -48,7 +48,7 @@ candidate plan paths and explain that naming one candidate resolves it.
 
 This plan is a draft. State a correction and it will be updated.
 
-Next up:
+Next step:
 
 {next-task-id} — {next-task-title}
 
@@ -71,17 +71,17 @@ This is chat output, not a file. Nothing here is written to the plan.
 
 Path: {plan.path}
 
-## Summary:
+## Summary
 {plan summary}
 
-## Tasks:
+## Tasks
 1. {task.id} — {task.title}
 2. {task.id} — {task.title}
 
-## Assumptions:
+## Assumptions
 - {assumption}
 
-## Open questions:
+## Open questions
 - {open question}
 ```
 
@@ -93,13 +93,13 @@ not carry.
 - `Plan:` — `plan.name`. Append ` (updated)` when `plan.action` is `updated`.
   Render nothing extra when it is `created`.
 - `Path:` — `plan.path`, exactly as returned, so it stays runnable.
-- `Summary:` — `summary`, as prose. This is the only place the reader learns
+- `Summary` — `summary`, as prose. This is the only place the reader learns
   what the plan actually does, so never omit it and never replace it with a
   restatement of the task titles.
-- `Tasks:` — one numbered line per entry in `tasks`, in plan order. Append
+- `Tasks` — one numbered line per entry in `tasks`, in plan order. Append
   ` (done)` to any task whose `status` is `done`.
-- `Assumptions:` — one line per entry in `assumptions`.
-- `Open questions:` — one line per entry in `open_questions`.
+- `Assumptions` — one line per entry in `assumptions`.
+- `Open questions` — one line per entry in `open_questions`.
 
 ## Empty sections
 
@@ -109,14 +109,14 @@ explicit `None.` confirms nothing is pending.
 When `assumptions` is empty:
 
 ```
-## Assumptions:
+## Assumptions
 - None.
 ```
 
 When `open_questions` is absent:
 
 ```
-## Open questions:
+## Open questions
 - None.
 ```
 
@@ -137,16 +137,16 @@ When `open_questions` is absent:
 
 Path: context/plans/red-sce-banner.md
 
-## Summary:
-Renders the ASCII-art SCE banner at the top of `sce` help in red instead of the current gradient. Colour-disabled output is unchanged, and no other help surface is affected.
+## Summary
+Renders the ASCII-art SCE banner at the top of `sce` help in red instead of the current gradient. Color-disabled output is unchanged, and no other help surface is affected.
 
-## Tasks:
+## Tasks
 1. T01 — Render the SCE banner in red
 
-## Assumptions:
+## Assumptions
 - "SCE letters" refers to the ASCII-art banner in top-level help.
 - Red is uniform terminal red when colors are enabled; plain ASCII remains unchanged otherwise.
 
-## Open questions:
+## Open questions
 - None.
 ```

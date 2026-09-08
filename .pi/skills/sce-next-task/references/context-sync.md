@@ -7,7 +7,7 @@ plan state.
 
 Input: either the complete `complete` result from the task execution phase
 (same-session), passed verbatim, or the plan path and task ID a plan-review
-recovery step resolved for a `blocked` task, together with that task's own
+recovery step resolved for a completed task with unresolved context synchronization, together with that task's own
 completed record — read directly from the plan — and its persisted `Context
 synchronization blocker` when present (cross-session retry). Whichever was
 supplied is authoritative; this phase consumes it without redefining its shape.

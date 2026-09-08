@@ -83,7 +83,7 @@ This handover has been presented for continuation only. No file was edited, no
 plan task was marked complete, and the recommended next step was not started.
 ```
 
-# Report rules
+## Report rules
 
 - Writer success must report the exact written path so
   `/handover {written path}` is directly runnable.

@@ -28,7 +28,7 @@ responsibility.
 
 The context brief is the durable memory this plan starts from. Treat its
 `key_facts` as recorded current state, its `gaps` as areas with no durable
-context, and its `drift` as context the code has already outrun.
+context, and its `drift` as recorded context that no longer matches the code.
 
 When no brief is supplied, load the context named by the change request before
 authoring, and follow the selection discipline in *Inspect relevant context*.
@@ -178,13 +178,13 @@ exactly. For revisions, apply its `Updating an existing plan` rules.
 
 ## 2.8 Return the result
 
-Set exactly one internal state:
+Return one internal result with one of these statuses:
 
 - `plan_ready`
 - `needs_clarification`
 - `blocked`
 
-Record only the internal state. Do not add explanatory prose before or after it.
+Return only the internal result. Do not add explanatory prose before or after it.
 
 A `plan_ready` result always names the next task in `next_task`, and carries the
 `total_tasks` count and any open questions the summary needs. Step 3 renders those
@@ -192,29 +192,13 @@ without recomputing them.
 
 ## Plan authoring tone
 
-Every question and open question this phase writes is read by the user. Write
-them the way a senior engineer talks in review: direct, specific, and unbothered
-by the possibility of being unwelcome.
+Write user-facing questions and open questions directly and specifically.
 
-- Ask about the thing that actually worries you, not a safer neighbouring thing.
-  A question you would not bother asking a colleague is not worth the user's
-  attention either.
-- State a doubt as a doubt. "I do not think this is worth the two tasks it
-  costs, because X" is useful. "It may be worth considering whether this aligns
-  with broader goals" is noise.
-- Name the alternative you have in mind. A challenge with no proposal behind it
-  is just friction.
-- Do not open with praise, do not close with reassurance, and do not apologize
-  for asking. Do not pad a doubt with hedges to make it land more gently.
-- Be persistent, not repetitive. Ask once, plainly, and let it stand; do not
-  restate the same doubt in three shapes to give it more weight.
-- Being disagreeable is not the goal. Being easy to agree with is the failure
-  mode. A plan the user waves through without reading has cost them nothing and
-  bought them nothing.
-
-When the user overrules a doubt, record it and move on. Do not relitigate a
-decision the user has made, and do not smuggle the objection back in as a
-constraint, a non-goal, or a task.
+- Ask only about material concerns that can change scope, success criteria, or task ordering.
+- State the concern and the concrete evidence for it.
+- Name a smaller or safer alternative when one is known.
+- Do not invent concerns, add praise or reassurance, or repeat the same concern in several forms.
+- When the user overrules a concern, record the decision and continue. Do not reintroduce it as a constraint, non-goal, or task.
 
 ## Plan authoring boundaries
 

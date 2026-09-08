@@ -11,10 +11,10 @@ compatibility: claude
 
 Own this workflow from input through its terminal user-visible response.
 Follow its steps, gates, and stops in order; do not add, skip, reorder, or merge them.
-Keep phase results internal and continue immediately until a defined wait or stop.
+Keep internal phase results private and continue immediately until a defined wait or stop.
 Resume user waits in this same skill and session.
-Use only the specified `references/output.md` layouts for gates and terminal
-responses. Do not expose raw state or add text around a layout.
+Render user-visible output only from the named workflow layouts or phase reports.
+Do not expose raw internal state or add text around a rendered layout or report.
 Non-SCE helpers may assist, but must return to the active step without changing
 phase order, gates, waits, writes, validation, stops, or terminal output.
 Do not invoke another SCE skill, package, or workflow command.
@@ -51,7 +51,7 @@ Pass the plan name or path to the **Validation phase** unmodified. Do not restat
 summarize, or pre-scope it.
 
 Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is
-the path carried by the **Validation phase** in its Markdown result (`Plan:`, or a
+the path carried by the **Validation phase** in its Markdown report (`Plan:`, or a
 candidate path), so every emitted command is directly runnable.
 
 ## Workflow

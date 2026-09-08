@@ -452,3 +452,14 @@ The two additional root edits replace existing text without increasing line coun
     `nix run .#pkl-check-generated`, targeted ownership checks across all tracked
     mirrors, and `git diff --check`.
   - Context synchronization: synced.
+
+## Follow-up: workflow language and document consistency
+
+- [x] T11: `Normalize workflow language and document format` (status:done)
+  - Scope: shared workflow vocabulary, embedded-phase/reference wording, output/report terminology, plan-authoring tone, handover persisted-document format, validation non-repairing wording, canonical Pkl, generated Pi/Claude/Codex mirrors, semantic generation checks, and ownership context.
+  - Vocabulary after change: command = user invocation; workflow = complete procedure; phase = embedded operation; step = numbered action; internal result = structured private phase data; report = formatted Markdown; completion record = persisted task evidence; handover document = persisted session handover.
+  - Format after change: embedded references identify themselves as phases rather than sibling skills; persisted-format references use a document title plus Template/contract/rules sections; output headings use consistent sentence-case punctuation; output and validation prose distinguish internal results from rendered reports.
+  - Correctness fixes: `/validate` remains observational and reports cleanup/repair work instead of performing it; handover `Plan` and `Task` metadata are independently included only when known; context-sync recovery names completed tasks with unresolved synchronization; next-task calls the pre-validation terminal state `Implementation complete` rather than `Plan already complete`.
+  - Behavior preserved: command names, argument tokens, status values, approval gates, phase order, write permissions, persisted plan/task field names, decision qualification, and lifecycle transitions remain unchanged.
+  - Verify: `pkl eval config/pkl/renderers/generation-contract-check.pkl`; `nix run .#pkl-check-generated`; exact 141-artifact inventory; generated mirror parity; `git diff --check`; `workflow-language-consistency` semantic contract.
+  - Context synchronization: synced.

@@ -182,13 +182,13 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
 
     \(noStagedChangesLayout.render.apply(mode))
 
-    Do not stage anything. Do not proceed to the skill.
+    Do not stage anything. Do not proceed to the phase.
 
     #### 2. Request one commit message
 
     \(invoke.render.apply(mode)) \(atomicCommit.render.apply(mode))\(bypassPhaseReferenceQualifier.render.apply(mode)) with `mode: bypass` and the commit context.
 
-    Bypass mode is the skill's contract for producing exactly one message. Do not
+    Bypass mode is the phase's contract for producing exactly one message. Do not
     restate its overrides here; \(atomicCommit.render.apply(mode)) owns them.
 
     \(commitContractHandoff.render.apply(mode))
@@ -197,7 +197,7 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
 
     `bypass_message` -> Continue to the next step.
 
-    The skill never returns `proposal` in bypass mode. Treat a `proposal` result as
+    The phase never returns `proposal` in bypass mode. Treat a `proposal` result as
     a contract violation: report it and stop without committing.
 
     #### 3. Execute exactly one commit
@@ -245,7 +245,7 @@ local COMMAND = structuredCommand.render.apply("package", "").text
 
 local renderAtomicCommitSkillBody = (mode: model.WorkflowRenderMode) -> """
     \(model.packageOnlyBlock.apply("""
-    # SCE Atomic Commit
+    # Atomic commit phase
 
     ## Purpose
 
@@ -255,8 +255,8 @@ local renderAtomicCommitSkillBody = (mode: model.WorkflowRenderMode) -> """
 
     \(commitMessageStyle.render.apply(mode))
 
-    Committing is not this skill's job. The invoking `/commit` workflow decides
-    whether a returned message is committed, and it is the only thing that runs
+    This phase does not commit. The invoking `/commit` workflow decides
+    whether a returned message is committed, and it is the only part that runs
     `git commit`.
 
     ## Input
@@ -392,7 +392,7 @@ local renderAtomicCommitSkillBody = (mode: model.WorkflowRenderMode) -> """
 
     ## Completion
 
-    The skill is complete after:
+    The phase is complete after:
 
     - The staged diff was read, or reading it failed and was reported.
     - Messages were written for every staged file, or a blocker prevented it.
@@ -552,14 +552,14 @@ Run `git diff --cached --quiet`. A zero exit status means nothing is staged.
 When nothing is staged, stop with the **No staged changes** layout from
 `references/output.md`.
 
-Do not stage anything. Do not proceed to the skill.
+Do not stage anything. Do not proceed to the phase.
 
 #### 2. Request one commit message
 
 Read `references/atomic-commit.md`, then run the **Atomic commit phase** with
 `mode: bypass` and the commit context.
 
-Bypass mode is the skill's contract for producing exactly one message. Do not
+Bypass mode is the phase's contract for producing exactly one message. Do not
 restate its overrides here; the **Atomic commit phase** owns them.
 
 Branch on `status`:
@@ -568,7 +568,7 @@ Branch on `status`:
 
 `bypass_message` -> Continue to the next step.
 
-The skill never returns `proposal` in bypass mode. Treat a `proposal` result as
+The phase never returns `proposal` in bypass mode. Treat a `proposal` result as
 a contract violation: report it and stop without committing.
 
 #### 3. Execute exactly one commit
