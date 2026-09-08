@@ -1,12 +1,11 @@
-name: Prepare handover completeness deduplication
+name: Prepare decision gate deduplication
 
 on:
   push:
     branches:
       - codex/compress-workflow-execution-preamble
     paths:
-      - .sce-handover-schema-dedup.py
-      - .sce-handover-schema-dedup-fix.py
+      - .sce-decision-dedup.py
       - .github/workflows/sce-approval-dedup-preparation.yml
 
 permissions:
@@ -26,8 +25,7 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
 
-      - name: Apply, verify, commit, and push handover completeness deduplication
+      - name: Apply, verify, commit, and push decision gate deduplication
         run: |
-          cp .sce-handover-schema-dedup.py /tmp/sce-handover-schema-dedup.py
-          python3 .sce-handover-schema-dedup-fix.py
-          nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 /tmp/sce-handover-schema-dedup.py
+          cp .sce-decision-dedup.py /tmp/sce-decision-dedup.py
+          nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 /tmp/sce-decision-dedup.py
