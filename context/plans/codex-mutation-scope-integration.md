@@ -1977,8 +1977,9 @@ Persist this field in every plan; this is durable plan state, not chat state:
       correctly states Codex has no wired mutation-scope adapter). No
       architecture decision qualified for an ADR.
 
-- [ ] T03: `Durable checkout-local Codex adapter state and recovery bookkeeping` (status:todo)
+- [x] T03: `Durable checkout-local Codex adapter state and recovery bookkeeping` (status:done)
   - Task ID: T03
+  - Completed: 2026-09-08
   - Scope: In — `cli/src/services/hooks/codex_mutation_scope/state.rs`: the
     versioned `{version, next_attempt_seq, recovery_pending, attempts[]}` store
     at `<git-dir>/sce/codex-mutation-scope-state.json`, the
@@ -1999,7 +2000,81 @@ Persist this field in every plan; this is durable plan state, not chat state:
     external call boundary (helper-level test).
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
     cli/Cargo.toml services::hooks::codex_mutation_scope`.
-  - Context synchronization: pending
+  - Files changed:
+    - `cli/src/services/hooks/codex_mutation_scope/state.rs` (new — the versioned
+      `{version, next_attempt_seq, recovery_pending, attempts[]}` store at
+      `<git-dir>/sce/codex-mutation-scope-state.json` with its own lock at
+      `<git-dir>/sce/codex-mutation-scope-state.lock`; `pending_start | active`
+      phase model; `allocate_attempt` / `mark_active` / `remove_attempt` /
+      `mark_recovery_pending` / `clear_recovery_pending` helpers; the
+      `checkout::persist_checkout_id_inner`-style lock → temp file → `sync_data`
+      → atomic rename → best-effort parent-dir `sync_all` durable write;
+      malformed / wrong-version rejection; 20 unit tests)
+    - `cli/src/services/hooks/codex_mutation_scope/mod.rs` (one line —
+      `pub(crate) mod state;`)
+  - Result: Added the Codex adapter's durable checkout-local bookkeeping layer,
+    structurally mirroring #263's `claude_mutation_scope::state` (post-follow-up
+    helper set). The store is `AdapterState` (`version` = 1, `next_attempt_seq`,
+    `recovery_pending`, `attempts: Vec<AdapterAttempt>`); each `AdapterAttempt`
+    carries `attempt_seq`, the D4 `scope_id` (from `format_codex_scope_id`), the
+    D3 identity fields (`session_id`, `agent_id?`, `tool_use_id`), `tool_name`,
+    and `phase` (`PendingStart | Active`). `allocate_attempt` reuses a live
+    attempt on a duplicate key (same `attempt_seq` / `ScopeId`, no counter
+    advance) and otherwise draws a fresh monotonic `attempt_seq`; a removed
+    (terminal) attempt is never reused — a later same-`tool_use_id` execution
+    draws a new `attempt_seq` and a new `ScopeId` (AC5 state half). Writes go
+    through a `try_lock`-based `AdapterStateLock` (separate `.lock` file, D6) and
+    the durable temp-file/`sync_data`/atomic-rename pattern; the lock is released
+    before each helper returns and is never held across an external boundary
+    (D6). Malformed JSON and any `version != 1` file are rejected, never
+    fabricated (D5). **D5 process-isolation reasoning confirmed and recorded
+    here:** T01 proved Codex runs every registered hook handler as its own
+    short-lived OS process (plan line ~972), so a `PreToolUse` process and the
+    later `PostToolUse` process share no memory — the durable cross-process
+    store is required, exactly as for Claude; the store shape does not change.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::hooks::codex_mutation_scope` — **passed** (43
+      tests: 20 new `state::tests` covering monotonic + checkout-local
+      allocation, duplicate-key reuse, terminal→fresh non-reuse, phase
+      transition, unknown-`scope_id` rejection, durable round-trip,
+      malformed / wrong-version rejection, interrupted-before-rename atomicity,
+      leftover-lock-file, parallel writers, lock contention, lock-released-
+      between-helpers, and the `<git-dir>/sce/` path boundary; plus the 23
+      pre-existing T02 tests).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::hooks::` — **passed** (374 tests; existing
+      `sce hooks codex` / mutation-scope / Claude-adapter suites unaffected).
+    - `clippy --all-targets -- -D warnings` — **clean**.
+    - `cargo fmt -- --check` — **clean** (after `cargo fmt`).
+  - Context impact: domain — a new adapter-domain Rust module (durable state
+    store + helpers) with **no non-test caller** (no event parsing, no
+    runtime/ingress call, no driver, no CLI wiring — all deferred to T04). No
+    user-visible behaviour, no public interface, no generated config. The D5/D6
+    durability contract lives in the plan's Design section and the module doc
+    comment; durable Codex-adapter context
+    (`context/cli/codex-mutation-scope-integration.md`) is authored by T07 once
+    behaviour ships, as for T01/T02.
+  - Context synchronization: synced
+    - T03 ships an internal Rust state module (`codex_mutation_scope::state`)
+      with **no non-test caller** — no event parsing wiring, no runtime/ingress
+      call, no driver, no CLI command, no `sce setup` registration — and no
+      user-visible behaviour, public interface, or generated config. The D5/D6
+      durability and process-isolation contract is plan-internal design state,
+      not durable context. The durable Codex-adapter
+      context (`context/cli/codex-mutation-scope-integration.md` and the
+      cross-reference edits to `context/overview.md`, `context/context-map.md`,
+      `context/cli/mutation-scope-hook-ingress.md`, etc.) is authored by **T07**
+      once behaviour ships — exactly as recorded for T01/T02. Mandatory
+      five-root pass done: `overview.md` (its "Codex … still have no adapter"
+      statement remains accurate — nothing is wired), `architecture.md` (its
+      `sce hooks codex` description is untouched and additive), `glossary.md`,
+      `patterns.md`, `context-map.md` all read and confirmed not contradicted.
+      No architecture decision qualified for an ADR — a durable adapter-state
+      file mirroring the existing `claude_mutation_scope::state` pattern is a
+      routine, reversible implementation detail with no boundary, interface,
+      persistence-contract, or security-posture change (the store is explicitly
+      not attribution evidence, not exported, not synced).
 
 - [ ] T04: `Codex mutation-scope driver + hidden command routing` (status:todo)
   - Task ID: T04
