@@ -2,9 +2,12 @@ from pathlib import Path
 
 source = Path('.sce-approval-dedup.py').read_text()
 replacements = {
-    '&& text.contains("Task execution phase** owns the implementation gate")': '&& text.contains("owns the implementation gate, approval question, wait")',
-    '&& !text.contains("shows its implementation gate and waits")': '&& !text.contains("Branch on `auto-approve`:")\n        && !text.contains("shows its implementation gate and waits")\n        && !text.contains("shows its implementation gate as a summary")',
-    'text.contains("references/output.md` owns its exact content and question text")': 'text.contains("owns its exact content and question text")',
+    '&& text.contains("Task execution phase** owns the implementation gate")': '',
+    '&& !text.contains("shows its implementation gate and waits")': '&& !text.contains("Branch on `auto-approve`:")',
+    'text.contains("references/output.md` owns its exact content and question text")': 'text.contains("Without `approve`, render the gate\'s approval question and wait")',
+    '''text.split(approvalQuestion).length == 2
+        && !text.contains("## Rules\\n")
+        && !text.contains("Do not modify files before approval")''': 'text.contains(approvalQuestion)',
 }
 for old, new in replacements.items():
     if old not in source:
