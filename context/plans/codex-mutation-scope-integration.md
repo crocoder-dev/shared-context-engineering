@@ -3372,7 +3372,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     ./scripts/test-codex-hook-command.sh` — **passed**; `clippy ... --all-targets
     -- -D warnings` — **clean**; `cargo fmt -- --check` — **clean**.
 
-- [ ] T06: `Real Git/DB regressions through the production Codex path` (status:todo)
+- [x] T06: `Real Git/DB regressions through the production Codex path` (status:done)
   - Task ID: T06
   - **Unblocked (2026-09-08).** T01–T05 are `done` and `synced`, the
     protocol/formal safety follow-up is accepted, and the plan/AC22 consistency
@@ -3486,7 +3486,90 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `git diff b72f6c2c -- spec/mutation_cursor.qnt spec/mutation_cursor.md
     cli/src/services/mutation_trace/protocol.rs
     cli/src/services/mutation_trace/runtime/` is empty.
-  - Context synchronization: pending
+  - Completed: 2026-09-08
+  - Files changed:
+    - `cli/src/services/hooks/codex_mutation_scope/mod.rs` (+1622, test-only:
+      new `tests::production_regressions` module)
+  - Result: Added 27 production-path regressions in
+    `codex_mutation_scope::tests::production_regressions`, each driving real
+    temporary Git repositories and real repository Agent Trace DBs through
+    `run_codex_mutation_scope_from_payload_at_state_root` (the `#[cfg(test)]`
+    state-root variant of the real adapter entry point, which already existed
+    from T04) into the generic ingress and the real mutation runtime. No manual
+    `mutation_trace_*` inserts and no injected seams; the only injection is the
+    adapter's own `state::seed_attempt_for_tests` bookkeeping helper for the
+    crash rows. **No production file changed** — the diff is confined to the
+    adapter module's `#[cfg(test)]` tree.
+    Matrix coverage (test -> criterion):
+    `test1`/`test3` tracked `Bash` and `apply_patch` success -> `Closed` /
+    `AiExclusive` (AC8); `test2` `Bash` partial write then non-zero exit ->
+    `Closed`, partial mutation attributed to that scope (AC9); `test4`
+    `apply_patch` verification failure -> no mutation, `Stop` sweep, no scope to
+    close (AC9); `test5` duplicate `Pre`/`Post` redelivery -> same `ScopeId`, no
+    second transition (AC4); `test6`/`test6b`/`test7`/`test4` the four proven D12
+    cleanup signals `Interrupt` / `SessionEnd` / `SubagentStop` / `Stop` (AC11);
+    `test7` subagent tracked tool -> its own `agent_id`-bearing scope, swept only
+    by its own `SubagentStop`; `test8` linked worktree -> only its own cursor
+    advances (AC14); `test9` full successful MCP lifecycle -> allowed, zero
+    mutation-scope rows, no adapter state file (AC9b); `test10` probe-13
+    mutate-then-error -> no stale attempt, no `recovery_pending`, no zombie
+    (AC9c); `test11` probe-14 failed MCP then tracked successor -> successor is
+    the only live scope, no false `AiContended` (AC9d); `test12` probe-16
+    parallel MCP -> no scopes, no MCP-derived `AiContended`, no state leak
+    (AC9e); `test13` tracked `Bash` overlapping a real MCP mutation ->
+    `AiExclusive` asserted with the tracked-scope-exclusivity (not
+    sole-authorship) reading recorded in the assertion message (AC9f); `test14`
+    unknown tool -> neutral response, untracked (AC9b); `test15` raw Agent Trace
+    tables (`diff_traces`, `post_commit_patch_intersections`, `agent_traces`,
+    `messages`, `parts`) unchanged before/after, adapter state only below
+    `<git-dir>/sce/` (AC20, also asserted at the end of every other row);
+    `test16` arbitrary-blocker zombie built-in A then same-lane successor B ->
+    `Abandon(A)` -> flush -> `Start(B)`, nothing attributed to A, no false
+    `AiContended` (AC9a); `test17`/`test18`/`test19` the three crash points
+    (AC21a/b/c); `test20` `recovery_pending` denies a tracked successor while
+    attempts remain and clears only on durable flush success (AC12); `test21`
+    reused `tool_use_id` after terminal -> fresh `ScopeId` (AC5); `test22`
+    self-detaching descendant write after `PostToolUse` -> `IneligibleUnscoped`
+    at the later flush, never folded into the closed scope (AC15 documented
+    half; D16 records that this `codex exec` surface exposes no Codex-managed
+    background execution to deny); `test23` policy-denied tracked `Bash` -> deny
+    response, no scope, no bookkeeping (AC7 production half); `test24`/`test25`/
+    `test26` the refined D14 rule in both directions plus the suppression case —
+    `IneligibleUnscoped` at a non-confirming other-harness `Close` with
+    `active_scopes` still carrying both scopes, `AiContended` at the Codex
+    scope's own `Close`, and back to `IneligibleUnscoped` when a second
+    unconfirmed live Codex scope remains (AC10). The other harness's scope is
+    driven through the same production generic-ingress seam with
+    `"actor_kind":"claude_code"`, never by SQL.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::hooks::codex_mutation_scope` — **pass**
+      (146 passed, 0 failed, 1 ignored; the 27 new regressions included).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::mutation_trace::` — **pass** (336 passed,
+      0 failed, including the MBT refinement suite).
+    - `git diff b72f6c2c -- spec/mutation_cursor.qnt spec/mutation_cursor.md
+      cli/src/services/mutation_trace/protocol.rs
+      cli/src/services/mutation_trace/runtime/` — **empty** (frozen baseline
+      held; AC22).
+    - Additional checks run: `services::hooks::` (478 passed, 0 failed);
+      `clippy --all-targets -- -D warnings` — clean; `fmt --check` — clean;
+      `git diff origin/claude-mutation-scope-integration --
+      cli/migrations/agent-trace-repository/
+      config/schema/agent-trace.schema.json` — empty (AC22 SQL/schema half);
+      the AC19 dependency-boundary grep matches only inside the
+      `#[cfg(test)]` module.
+  - Deviation: the `#[cfg(test)]` state-root entry point the scope asked T06 to
+    add already existed (`run_codex_mutation_scope_from_payload_at_state_root`,
+    added by T04 and previously unused); T06 uses it rather than adding a second
+    one. AC9f's "comment/doc line" is carried by the test's assertion message
+    and test name rather than a code comment, per the repository's
+    no-comments-in-code convention; T07 owns the durable-context wording.
+  - Context impact: none for durable context — test-only change, no production
+    behaviour, interface, or architecture change. The Codex adapter domain file
+    and the cross-reference updates remain T07's scope; this task adds the
+    executable evidence those documents will describe.
+  - Context synchronization: synced
 
 - [ ] T07: `Author the durable Codex mutation-scope context` (status:todo)
   - Task ID: T07

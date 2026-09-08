@@ -3536,4 +3536,1626 @@ mod tests {
             remove_test_git_dir(&git_dir);
         }
     }
+
+    mod production_regressions {
+        use std::fs;
+        use std::path::{Path, PathBuf};
+        use std::process::Command;
+
+        use super::*;
+        use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
+        use crate::services::agent_trace_storage::{
+            resolve_agent_trace_storage_at_state_root, AgentTraceStorageContext,
+        };
+        use crate::services::checkout::{get_or_create_checkout_id, resolve_git_dir};
+        use crate::services::mutation_trace::store::decode_revision;
+
+        const PROBE01_APPLY_PATCH_POST: &str = include_str!(
+            "fixtures/probe01-apply-patch-and-shell-success.apply_patch.post_tool_use.json"
+        );
+        const PROBE02_FAILED_SHELL_PRE: &str = include_str!(
+            "fixtures/probe02-shell-partial-write-then-nonzero-exit.pre_tool_use.json"
+        );
+        const PROBE06_APPLY_PATCH_FAILURE_PRE: &str = include_str!(
+            "fixtures/probe06-apply-patch-verification-failure-no-post.pre_tool_use.json"
+        );
+        const PROBE09_DETACHED_PRE: &str =
+            include_str!("fixtures/probe09-self-detaching-descendant.pre_tool_use.json");
+        const PROBE09_DETACHED_POST: &str =
+            include_str!("fixtures/probe09-self-detaching-descendant.post_tool_use.json");
+        const PROBE11_INTERRUPT_PRE: &str =
+            include_str!("fixtures/probe11-interrupt-event-on-sigint.pre_tool_use.json");
+        const PROBE13_MCP_STOP: &str =
+            include_str!("fixtures/probe13-mcp-mutate-then-error.stop.json");
+        const PROBE14_MCP_FAILED_PRE: &str =
+            include_str!("fixtures/probe14-mcp-failed-then-successor.failed.pre_tool_use.json");
+        const PROBE14_MCP_SUCCESSOR_PRE: &str =
+            include_str!("fixtures/probe14-mcp-failed-then-successor.successor.pre_tool_use.json");
+        const PROBE14_MCP_SUCCESSOR_POST: &str =
+            include_str!("fixtures/probe14-mcp-failed-then-successor.successor.post_tool_use.json");
+        const PROBE16_MCP_PARALLEL_A_PRE: &str =
+            include_str!("fixtures/probe16-mcp-parallel-server-optin.a.pre_tool_use.json");
+        const PROBE16_MCP_PARALLEL_A_POST: &str =
+            include_str!("fixtures/probe16-mcp-parallel-server-optin.a.post_tool_use.json");
+        const PROBE16_MCP_PARALLEL_B_PRE: &str =
+            include_str!("fixtures/probe16-mcp-parallel-server-optin.b.pre_tool_use.json");
+        const PROBE16_MCP_PARALLEL_B_POST: &str =
+            include_str!("fixtures/probe16-mcp-parallel-server-optin.b.post_tool_use.json");
+
+        const OTHER_HARNESS_ACTOR_KIND: &str = "claude_code";
+
+        fn git(dir: &Path, args: &[&str]) -> String {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git should spawn");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).expect("git output should be UTF-8")
+        }
+
+        struct CodexRepo {
+            temp: tempfile::TempDir,
+            root: PathBuf,
+            state_root: PathBuf,
+        }
+
+        impl CodexRepo {
+            fn new(label: &str) -> Self {
+                let temp = tempfile::Builder::new()
+                    .prefix(&format!("sce-codex-mutation-scope-regression-{label}-"))
+                    .tempdir()
+                    .expect("temp dir should be created");
+                let root = temp.path().join("repo");
+                fs::create_dir_all(&root).expect("repo dir should be created");
+                git(&root, &["init", "-q"]);
+                git(&root, &["config", "user.email", "test@example.invalid"]);
+                git(&root, &["config", "user.name", "SCE Test"]);
+                git(
+                    &root,
+                    &["remote", "add", "origin", "git@github.com:acme/widgets.git"],
+                );
+                fs::write(root.join("file.txt"), "one\n").expect("seed file should write");
+                git(&root, &["add", "-A"]);
+                git(&root, &["commit", "-qm", "base"]);
+
+                let state_root = temp.path().join("state");
+                fs::create_dir_all(&state_root).expect("state root should be created");
+                resolve_agent_trace_storage_at_state_root(
+                    &AgentTraceStorageContext {
+                        repository_root: &root,
+                        explicit_repository_id: None,
+                        repository_remote: "origin",
+                    },
+                    &state_root,
+                )
+                .expect("state-root storage should initialize the repository DB");
+
+                Self {
+                    temp,
+                    root,
+                    state_root,
+                }
+            }
+
+            fn drive(&self, payload: &str) -> Result<String> {
+                run_codex_mutation_scope_from_payload_at_state_root(&self.state_root, payload, None)
+            }
+
+            fn drive_generic(&self, payload: &str) -> Result<String> {
+                self.drive_generic_at(&self.root, payload)
+            }
+
+            fn drive_generic_at(&self, repository_root: &Path, payload: &str) -> Result<String> {
+                crate::services::hooks::mutation_scope::run_mutation_scope_from_payload_at_state_root(
+                    repository_root,
+                    &self.state_root,
+                    payload,
+                    None,
+                )
+            }
+
+            fn drive_flush(&self) -> Result<String> {
+                self.drive_generic(&flush_payload())
+            }
+
+            fn db(&self) -> RepositoryAgentTraceDb {
+                crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
+                    &self.root,
+                    &self.state_root,
+                    "codex mutation-scope regression test assertions",
+                )
+                .expect("assertion DB should open")
+            }
+
+            fn cwd(&self) -> String {
+                Self::cwd_at(&self.root)
+            }
+
+            fn cwd_at(root: &Path) -> String {
+                root.to_string_lossy().into_owned()
+            }
+
+            fn working_tree_at(root: &Path) -> String {
+                git(root, &["add", "-A"]);
+                git(root, &["write-tree"]).trim().to_owned()
+            }
+
+            fn working_tree(&self) -> String {
+                Self::working_tree_at(&self.root)
+            }
+
+            fn git_dir_at(root: &Path) -> PathBuf {
+                resolve_git_dir(root).expect("git dir should resolve")
+            }
+
+            fn git_dir(&self) -> PathBuf {
+                Self::git_dir_at(&self.root)
+            }
+
+            fn adapter_state_at(root: &Path) -> state::AdapterState {
+                state::read_state(&Self::git_dir_at(root))
+                    .expect("adapter state should be readable")
+            }
+
+            fn adapter_state(&self) -> state::AdapterState {
+                Self::adapter_state_at(&self.root)
+            }
+
+            fn adapter_state_file_exists(&self) -> bool {
+                state::adapter_state_dir(&self.git_dir())
+                    .join("codex-mutation-scope-state.json")
+                    .exists()
+            }
+
+            fn worktree_id_at(root: &Path) -> String {
+                get_or_create_checkout_id(&Self::git_dir_at(root))
+                    .expect("checkout id should resolve")
+            }
+
+            fn worktree_id(&self) -> String {
+                Self::worktree_id_at(&self.root)
+            }
+
+            fn add_worktree(&self, name: &str) -> PathBuf {
+                let worktree_path = self.temp.path().join(name);
+                git(
+                    &self.root,
+                    &[
+                        "worktree",
+                        "add",
+                        "-q",
+                        worktree_path.to_str().expect("utf-8 worktree path"),
+                    ],
+                );
+                worktree_path
+            }
+
+            fn write(&self, name: &str, contents: &str) {
+                fs::write(self.root.join(name), contents).expect("regression write should succeed");
+            }
+
+            fn live_scope_id(&self) -> String {
+                let state = self.adapter_state();
+                assert_eq!(state.attempts.len(), 1, "exactly one live attempt expected");
+                state.attempts[0].scope_id.clone()
+            }
+        }
+
+        fn count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
+            db.query_map(&format!("SELECT COUNT(*) FROM {table}"), (), |row| {
+                row.get::<i64>(0).map_err(anyhow::Error::from)
+            })
+            .expect("count query should succeed")
+            .into_iter()
+            .next()
+            .expect("a count row should exist")
+        }
+
+        fn raw_agent_trace_row_counts(db: &RepositoryAgentTraceDb) -> [i64; 5] {
+            [
+                count(db, "diff_traces"),
+                count(db, "post_commit_patch_intersections"),
+                count(db, "agent_traces"),
+                count(db, "messages"),
+                count(db, "parts"),
+            ]
+        }
+
+        fn assert_raw_agent_trace_tables_untouched(db: &RepositoryAgentTraceDb) {
+            assert_eq!(
+                raw_agent_trace_row_counts(db),
+                [0, 0, 0, 0, 0],
+                "AC20: the mutation-scope adapter must never write the raw Agent Trace tables"
+            );
+        }
+
+        fn worktree_row(
+            db: &RepositoryAgentTraceDb,
+            worktree_id: &str,
+        ) -> Option<(u64, String, bool)> {
+            db.query_map(
+                "SELECT revision, cursor_tree, needs_rebaseline FROM mutation_trace_worktrees \
+                 WHERE worktree_id = ?1",
+                (worktree_id,),
+                |row| {
+                    let blob: Vec<u8> = row.get(0).map_err(anyhow::Error::from)?;
+                    let revision = decode_revision(&blob)?;
+                    let cursor_tree = row.get::<String>(1).map_err(anyhow::Error::from)?;
+                    let needs_rebaseline = row.get::<i64>(2).map_err(anyhow::Error::from)? != 0;
+                    Ok((revision, cursor_tree, needs_rebaseline))
+                },
+            )
+            .expect("worktree-row query should succeed")
+            .into_iter()
+            .next()
+        }
+
+        fn processed_events(db: &RepositoryAgentTraceDb) -> Vec<(String, String)> {
+            db.query_map(
+                "SELECT scope_id, event_id FROM mutation_trace_processed_events \
+                 ORDER BY scope_id, event_id",
+                (),
+                |row| {
+                    let scope_id = row.get::<String>(0).map_err(anyhow::Error::from)?;
+                    let event_id = row.get::<String>(1).map_err(anyhow::Error::from)?;
+                    Ok((scope_id, event_id))
+                },
+            )
+            .expect("processed-events query should succeed")
+        }
+
+        fn scope_status(db: &RepositoryAgentTraceDb, scope_id: &str) -> Option<(String, String)> {
+            db.query_map(
+                "SELECT actor_kind, status FROM mutation_trace_scopes WHERE scope_id = ?1",
+                (scope_id,),
+                |row| {
+                    let actor_kind = row.get::<String>(0).map_err(anyhow::Error::from)?;
+                    let status = row.get::<String>(1).map_err(anyhow::Error::from)?;
+                    Ok((actor_kind, status))
+                },
+            )
+            .expect("scope query should succeed")
+            .into_iter()
+            .next()
+        }
+
+        fn mutation_events_for(
+            db: &RepositoryAgentTraceDb,
+            worktree_id: &str,
+        ) -> Vec<(String, Option<String>, String)> {
+            db.query_map(
+                "SELECT attribution_kind, attribution_scope_id, boundary_kind \
+                 FROM mutation_trace_events WHERE worktree_id = ?1 ORDER BY revision",
+                (worktree_id,),
+                |row| {
+                    let attribution_kind = row.get::<String>(0).map_err(anyhow::Error::from)?;
+                    let attribution_scope_id =
+                        row.get::<Option<String>>(1).map_err(anyhow::Error::from)?;
+                    let boundary_kind = row.get::<String>(2).map_err(anyhow::Error::from)?;
+                    Ok((attribution_kind, attribution_scope_id, boundary_kind))
+                },
+            )
+            .expect("mutation-events query should succeed")
+        }
+
+        fn active_scopes_for(db: &RepositoryAgentTraceDb, worktree_id: &str) -> Vec<String> {
+            db.query_map(
+                "SELECT scope_id FROM mutation_trace_event_active_scopes \
+                 WHERE worktree_id = ?1 ORDER BY revision, scope_id",
+                (worktree_id,),
+                |row| row.get::<String>(0).map_err(anyhow::Error::from),
+            )
+            .expect("active-scopes query should succeed")
+        }
+
+        fn fixture_at(fixture: &str, cwd: &str) -> String {
+            let mut object: Map<String, Value> =
+                serde_json::from_str(fixture).expect("a fixture payload is a JSON object");
+            object.insert(CWD_FIELD.to_string(), Value::String(cwd.to_string()));
+            Value::Object(object).to_string()
+        }
+
+        struct ToolEvent<'a> {
+            event_name: &'a str,
+            cwd: &'a str,
+            session_id: &'a str,
+            turn_id: &'a str,
+            tool_name: &'a str,
+            tool_use_id: &'a str,
+            agent_id: Option<&'a str>,
+        }
+
+        fn tool_event_json(event: &ToolEvent, tool_input: Option<Value>) -> String {
+            let mut object = Map::new();
+            object.insert(
+                HOOK_EVENT_NAME_FIELD.to_string(),
+                Value::String(event.event_name.to_string()),
+            );
+            object.insert(
+                SESSION_ID_FIELD.to_string(),
+                Value::String(event.session_id.to_string()),
+            );
+            object.insert(
+                TURN_ID_FIELD.to_string(),
+                Value::String(event.turn_id.to_string()),
+            );
+            object.insert(CWD_FIELD.to_string(), Value::String(event.cwd.to_string()));
+            object.insert(
+                TOOL_NAME_FIELD.to_string(),
+                Value::String(event.tool_name.to_string()),
+            );
+            object.insert(
+                TOOL_USE_ID_FIELD.to_string(),
+                Value::String(event.tool_use_id.to_string()),
+            );
+            if let Some(agent_id) = event.agent_id {
+                object.insert(
+                    AGENT_ID_FIELD.to_string(),
+                    Value::String(agent_id.to_string()),
+                );
+            }
+            if let Some(tool_input) = tool_input {
+                object.insert(TOOL_INPUT_FIELD.to_string(), tool_input);
+            }
+            Value::Object(object).to_string()
+        }
+
+        struct TrackedCall<'a> {
+            cwd: &'a str,
+            session_id: &'a str,
+            turn_id: &'a str,
+            tool_name: &'a str,
+            tool_use_id: &'a str,
+            agent_id: Option<&'a str>,
+        }
+
+        impl TrackedCall<'_> {
+            fn pre(&self) -> String {
+                tool_event_json(
+                    &ToolEvent {
+                        event_name: HOOK_EVENT_PRE_TOOL_USE,
+                        cwd: self.cwd,
+                        session_id: self.session_id,
+                        turn_id: self.turn_id,
+                        tool_name: self.tool_name,
+                        tool_use_id: self.tool_use_id,
+                        agent_id: self.agent_id,
+                    },
+                    Some(json!({ "command": "echo regression >> file.txt" })),
+                )
+            }
+
+            fn post(&self) -> String {
+                tool_event_json(
+                    &ToolEvent {
+                        event_name: HOOK_EVENT_POST_TOOL_USE,
+                        cwd: self.cwd,
+                        session_id: self.session_id,
+                        turn_id: self.turn_id,
+                        tool_name: self.tool_name,
+                        tool_use_id: self.tool_use_id,
+                        agent_id: self.agent_id,
+                    },
+                    None,
+                )
+            }
+        }
+
+        fn bash_call<'a>(
+            cwd: &'a str,
+            session_id: &'a str,
+            tool_use_id: &'a str,
+        ) -> TrackedCall<'a> {
+            TrackedCall {
+                cwd,
+                session_id,
+                turn_id: "turn-1",
+                tool_name: CODEX_TRACKED_TOOL_BASH,
+                tool_use_id,
+                agent_id: None,
+            }
+        }
+
+        fn turn_event_json(event_name: &str, cwd: &str, session_id: &str, turn_id: &str) -> String {
+            json!({
+                HOOK_EVENT_NAME_FIELD: event_name,
+                SESSION_ID_FIELD: session_id,
+                TURN_ID_FIELD: turn_id,
+                CWD_FIELD: cwd,
+            })
+            .to_string()
+        }
+
+        fn session_end_json(cwd: &str, session_id: &str) -> String {
+            json!({
+                HOOK_EVENT_NAME_FIELD: HOOK_EVENT_SESSION_END,
+                SESSION_ID_FIELD: session_id,
+                CWD_FIELD: cwd,
+            })
+            .to_string()
+        }
+
+        fn other_harness_payload(operation: &str, scope_id: &str) -> String {
+            json!({
+                "operation": operation,
+                "scope_id": scope_id,
+                "event_id": format!("{scope_id}|{operation}"),
+                "actor_kind": OTHER_HARNESS_ACTOR_KIND,
+            })
+            .to_string()
+        }
+
+        #[test]
+        fn test1_tracked_bash_success_closes_ai_exclusive_ac8() {
+            let repo = CodexRepo::new("test1-bash-success");
+            let cwd = repo.cwd();
+            let pre = fixture_at(PROBE01_SHELL_PRE, &cwd);
+            let post = fixture_at(PROBE01_SHELL_POST, &cwd);
+
+            assert_eq!(
+                repo.drive(&pre).expect("PreToolUse should succeed"),
+                "",
+                "a tracked PreToolUse that established Start returns the neutral response"
+            );
+            let scope_id = repo.live_scope_id();
+
+            repo.write("file.txt", "one\ntwo\n");
+
+            assert_eq!(repo.drive(&post).expect("PostToolUse should succeed"), "");
+            assert!(
+                repo.adapter_state().attempts.is_empty(),
+                "the closed attempt must be removed from adapter bookkeeping"
+            );
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, &scope_id),
+                Some(("codex".to_string(), "closed".to_string()))
+            );
+            let worktree_id = repo.worktree_id();
+            assert_eq!(
+                mutation_events_for(&db, &worktree_id),
+                vec![(
+                    "ai_exclusive".to_string(),
+                    Some(scope_id.clone()),
+                    "close".to_string(),
+                )]
+            );
+            assert_eq!(
+                worktree_row(&db, &worktree_id).map(|(_, cursor_tree, _)| cursor_tree),
+                Some(repo.working_tree())
+            );
+            assert_eq!(
+                processed_events(&db),
+                vec![
+                    (scope_id.clone(), codex_scope_close_event_id(&scope_id)),
+                    (scope_id.clone(), codex_scope_start_event_id(&scope_id)),
+                ],
+                "rows are ordered by (scope_id, event_id), and 'close' sorts before 'start'"
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test2_failed_bash_partial_write_still_closes_ai_exclusive_ac9() {
+            let repo = CodexRepo::new("test2-failed-bash");
+            let cwd = repo.cwd();
+
+            repo.drive(&fixture_at(PROBE02_FAILED_SHELL_PRE, &cwd))
+                .expect("PreToolUse should succeed");
+            let scope_id = repo.live_scope_id();
+
+            repo.write("file.txt", "one\npartial\n");
+
+            assert_eq!(
+                repo.drive(&fixture_at(PROBE02_FAILED_SHELL_POST, &cwd))
+                    .expect("a non-zero-exit shell still fires PostToolUse"),
+                ""
+            );
+            assert!(repo.adapter_state().attempts.is_empty());
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, &scope_id),
+                Some(("codex".to_string(), "closed".to_string())),
+                "D10: a Bash tool that partially mutated then exited non-zero closes its scope"
+            );
+            let worktree_id = repo.worktree_id();
+            assert_eq!(
+                mutation_events_for(&db, &worktree_id),
+                vec![(
+                    "ai_exclusive".to_string(),
+                    Some(scope_id),
+                    "close".to_string(),
+                )],
+                "the partial mutation is attributed to the failed tool's own scope"
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test3_apply_patch_success_closes_ai_exclusive_ac8() {
+            let repo = CodexRepo::new("test3-apply-patch-success");
+            let cwd = repo.cwd();
+
+            repo.drive(&fixture_at(PROBE01_APPLY_PATCH_PRE, &cwd))
+                .expect("PreToolUse should succeed");
+            let scope_id = repo.live_scope_id();
+
+            repo.write("alpha.txt", "alpha one\n");
+
+            repo.drive(&fixture_at(PROBE01_APPLY_PATCH_POST, &cwd))
+                .expect("PostToolUse should succeed");
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, &scope_id),
+                Some(("codex".to_string(), "closed".to_string()))
+            );
+            let worktree_id = repo.worktree_id();
+            assert_eq!(
+                mutation_events_for(&db, &worktree_id),
+                vec![(
+                    "ai_exclusive".to_string(),
+                    Some(scope_id),
+                    "close".to_string(),
+                )]
+            );
+            assert_eq!(
+                worktree_row(&db, &worktree_id).map(|(_, cursor_tree, _)| cursor_tree),
+                Some(repo.working_tree())
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test4_apply_patch_verification_failure_mutates_nothing_and_is_swept_ac9() {
+            let repo = CodexRepo::new("test4-apply-patch-failure");
+            let cwd = repo.cwd();
+            let pre = fixture_at(PROBE06_APPLY_PATCH_FAILURE_PRE, &cwd);
+            let tree_before = repo.working_tree();
+
+            repo.drive(&pre).expect("PreToolUse should succeed");
+            let scope_id = repo.live_scope_id();
+
+            let stop = {
+                let execution = pre_tool_use(&pre);
+                turn_event_json(
+                    HOOK_EVENT_STOP,
+                    &cwd,
+                    &execution.identity.session_id,
+                    &execution.identity.turn_id,
+                )
+            };
+            repo.drive(&stop)
+                .expect("Stop should retire the attempt that never received PostToolUse");
+
+            assert!(repo.adapter_state().attempts.is_empty());
+            assert!(!repo.adapter_state().recovery.is_clear());
+            assert_eq!(
+                repo.working_tree(),
+                tree_before,
+                "D10: apply_patch verification failure never touches the working tree"
+            );
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, &scope_id),
+                Some(("codex".to_string(), "abandoned".to_string()))
+            );
+            let worktree_id = repo.worktree_id();
+            assert_eq!(
+                mutation_events_for(&db, &worktree_id),
+                vec![],
+                "no mutation happened, so nothing is attributed"
+            );
+            assert!(worktree_row(&db, &worktree_id)
+                .is_some_and(|(_, _, needs_rebaseline)| needs_rebaseline));
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test5_duplicate_tracked_lifecycle_is_idempotent_ac4() {
+            let repo = CodexRepo::new("test5-duplicate-lifecycle");
+            let cwd = repo.cwd();
+            let pre = fixture_at(PROBE01_SHELL_PRE, &cwd);
+            let post = fixture_at(PROBE01_SHELL_POST, &cwd);
+
+            repo.drive(&pre).expect("first PreToolUse should succeed");
+            let scope_id = repo.live_scope_id();
+            assert_eq!(
+                repo.drive(&pre)
+                    .expect("duplicate PreToolUse should be idempotent"),
+                ""
+            );
+            assert_eq!(
+                repo.live_scope_id(),
+                scope_id,
+                "AC4: duplicate delivery of a live PreToolUse reuses the same ScopeId"
+            );
+
+            repo.write("file.txt", "one\ntwo\n");
+            repo.drive(&post).expect("first PostToolUse should succeed");
+
+            let db = repo.db();
+            let (revision_before, events_before, processed_before) = (
+                worktree_row(&db, &repo.worktree_id())
+                    .map(|(revision, _, _)| revision)
+                    .expect("a worktree row should exist"),
+                count(&db, "mutation_trace_events"),
+                count(&db, "mutation_trace_processed_events"),
+            );
+
+            assert_eq!(
+                repo.drive(&post)
+                    .expect("duplicate PostToolUse delivery must be a safe no-op"),
+                ""
+            );
+
+            let db = repo.db();
+            assert_eq!(
+                worktree_row(&db, &repo.worktree_id()).map(|(revision, _, _)| revision),
+                Some(revision_before)
+            );
+            assert_eq!(count(&db, "mutation_trace_events"), events_before);
+            assert_eq!(
+                count(&db, "mutation_trace_processed_events"),
+                processed_before
+            );
+            assert_eq!(
+                processed_events(&db)
+                    .into_iter()
+                    .filter(|(scope, event)| scope == &scope_id
+                        && event == &codex_scope_close_event_id(&scope_id))
+                    .count(),
+                1
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test6_interrupted_tracked_execution_is_retired_by_interrupt_ac11() {
+            let repo = CodexRepo::new("test6-interrupt");
+            let cwd = repo.cwd();
+
+            repo.drive(&fixture_at(PROBE11_INTERRUPT_PRE, &cwd))
+                .expect("PreToolUse should succeed");
+            let scope_id = repo.live_scope_id();
+
+            repo.write("file.txt", "one\ninterrupted\n");
+
+            assert_eq!(
+                repo.drive(&fixture_at(PROBE11_INTERRUPT, &cwd))
+                    .expect("Interrupt should succeed"),
+                ""
+            );
+
+            assert!(
+                repo.adapter_state().attempts.is_empty(),
+                "AC11: Interrupt is a proven cleanup signal for the interrupted turn"
+            );
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, &scope_id),
+                Some(("codex".to_string(), "abandoned".to_string()))
+            );
+            let worktree_id = repo.worktree_id();
+            assert!(worktree_row(&db, &worktree_id)
+                .is_some_and(|(_, _, needs_rebaseline)| needs_rebaseline));
+            assert_eq!(mutation_events_for(&db, &worktree_id), vec![]);
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test6b_session_end_is_the_load_bearing_backstop_ac11() {
+            let repo = CodexRepo::new("test6b-session-end");
+            let cwd = repo.cwd();
+
+            repo.drive(&fixture_at(PROBE01_SHELL_PRE, &cwd))
+                .expect("PreToolUse should succeed");
+            let scope_id = repo.live_scope_id();
+
+            repo.write("file.txt", "one\nstranded\n");
+
+            assert_eq!(
+                repo.drive(&fixture_at(PROBE01_SESSION_END, &cwd))
+                    .expect("SessionEnd should succeed"),
+                ""
+            );
+
+            assert!(
+                repo.adapter_state().attempts.is_empty(),
+                "D12: SessionEnd is the load-bearing whole-session backstop"
+            );
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, &scope_id),
+                Some(("codex".to_string(), "abandoned".to_string()))
+            );
+            assert!(worktree_row(&db, &repo.worktree_id())
+                .is_some_and(|(_, _, needs_rebaseline)| needs_rebaseline));
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test7_subagent_tracked_tool_gets_its_own_scope_identity() {
+            let repo = CodexRepo::new("test7-subagent");
+            let cwd = repo.cwd();
+            let subagent_pre = fixture_at(PROBE08_AGENT_APPLY_PATCH_PRE, &cwd);
+            let subagent_identity = pre_tool_use(&subagent_pre).identity;
+            let agent_id = subagent_identity
+                .agent_id
+                .clone()
+                .expect("probe08 carries a delegated-agent identity");
+            let main_thread = TrackedCall {
+                cwd: &cwd,
+                session_id: &subagent_identity.session_id,
+                turn_id: "main-turn",
+                tool_name: CODEX_TRACKED_TOOL_BASH,
+                tool_use_id: "exec-main-thread",
+                agent_id: None,
+            };
+
+            repo.drive(&main_thread.pre())
+                .expect("main-thread PreToolUse should succeed");
+            repo.drive(&subagent_pre)
+                .expect("subagent PreToolUse should succeed");
+
+            let state = repo.adapter_state();
+            assert_eq!(state.attempts.len(), 2);
+            let subagent_scope_id = state
+                .attempts
+                .iter()
+                .find(|attempt| attempt.agent_id.as_deref() == Some(agent_id.as_str()))
+                .map(|attempt| attempt.scope_id.clone())
+                .expect("the subagent attempt carries its agent_id");
+            let main_scope_id = state
+                .attempts
+                .iter()
+                .find(|attempt| attempt.agent_id.is_none())
+                .map(|attempt| attempt.scope_id.clone())
+                .expect("the main-thread attempt has no agent_id");
+            assert_ne!(subagent_scope_id, main_scope_id);
+            assert!(subagent_scope_id.contains(&agent_id));
+
+            repo.drive(&fixture_at(PROBE08_SUBAGENT_STOP, &cwd))
+                .expect("SubagentStop should succeed");
+
+            let remaining = repo.adapter_state();
+            assert_eq!(
+                remaining
+                    .attempts
+                    .iter()
+                    .map(|attempt| attempt.scope_id.clone())
+                    .collect::<Vec<_>>(),
+                vec![main_scope_id.clone()],
+                "D12: SubagentStop sweeps only the ending agent's attempts"
+            );
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, &subagent_scope_id).map(|(_, status)| status),
+                Some("abandoned".to_string())
+            );
+            assert_eq!(
+                scope_status(&db, &main_scope_id).map(|(_, status)| status),
+                Some("active".to_string())
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test8_linked_worktree_advances_only_its_own_cursor_ac14() {
+            let repo = CodexRepo::new("test8-linked-worktree");
+            let worktree_path = repo.add_worktree("codex-worktree");
+            let worktree_cwd = CodexRepo::cwd_at(&worktree_path);
+
+            let main_worktree_id = repo.worktree_id();
+            let linked_worktree_id = CodexRepo::worktree_id_at(&worktree_path);
+            assert_ne!(main_worktree_id, linked_worktree_id);
+
+            repo.drive_flush()
+                .expect("main-checkout baseline flush should succeed");
+            let main_cursor_before = worktree_row(&repo.db(), &main_worktree_id)
+                .map(|(_, cursor_tree, _)| cursor_tree)
+                .expect("main checkout should have a baseline worktree row");
+
+            let pre = fixture_at(PROBE10_WORKTREE_PRE, &worktree_cwd);
+            let post = {
+                let identity = pre_tool_use(&pre).identity;
+                tool_event_json(
+                    &ToolEvent {
+                        event_name: HOOK_EVENT_POST_TOOL_USE,
+                        cwd: &worktree_cwd,
+                        session_id: &identity.session_id,
+                        turn_id: &identity.turn_id,
+                        tool_name: &identity.tool_name,
+                        tool_use_id: &identity.tool_use_id,
+                        agent_id: None,
+                    },
+                    None,
+                )
+            };
+
+            repo.drive(&pre)
+                .expect("linked-worktree PreToolUse should succeed");
+            let scope_id = CodexRepo::adapter_state_at(&worktree_path).attempts[0]
+                .scope_id
+                .clone();
+            fs::write(worktree_path.join("wt.txt"), "worktree-write\n")
+                .expect("the linked worktree's own write should succeed");
+            repo.drive(&post)
+                .expect("linked-worktree PostToolUse should succeed");
+
+            let db = repo.db();
+            assert_eq!(
+                worktree_row(&db, &main_worktree_id).map(|(_, cursor_tree, _)| cursor_tree),
+                Some(main_cursor_before),
+                "AC14: the main checkout's cursor must not move"
+            );
+            let linked_row =
+                worktree_row(&db, &linked_worktree_id).expect("linked worktree row should exist");
+            assert_eq!(
+                linked_row.1,
+                CodexRepo::working_tree_at(&worktree_path),
+                "AC14: the linked worktree's own cursor advances"
+            );
+            assert_eq!(
+                mutation_events_for(&db, &linked_worktree_id),
+                vec![(
+                    "ai_exclusive".to_string(),
+                    Some(scope_id),
+                    "close".to_string(),
+                )]
+            );
+            assert_eq!(mutation_events_for(&db, &main_worktree_id), vec![]);
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test9_successful_mcp_lifecycle_creates_no_mutation_scope_ac9b() {
+            let repo = CodexRepo::new("test9-mcp-success");
+            let cwd = repo.cwd();
+
+            assert_eq!(
+                repo.drive(&fixture_at(PROBE12_MCP_PRE, &cwd))
+                    .expect("an MCP PreToolUse is allowed"),
+                "",
+                "AC9b: an Untracked tool gets the Codex-neutral continue response"
+            );
+            repo.write("mcp_a.txt", "written by the MCP server\n");
+            assert_eq!(
+                repo.drive(&fixture_at(PROBE12_MCP_POST, &cwd))
+                    .expect("an MCP PostToolUse is ignored"),
+                ""
+            );
+
+            assert!(
+                !repo.adapter_state_file_exists(),
+                "AC9b: an Untracked lifecycle writes no adapter bookkeeping at all"
+            );
+
+            let db = repo.db();
+            assert_eq!(count(&db, "mutation_trace_scopes"), 0);
+            assert_eq!(count(&db, "mutation_trace_events"), 0);
+            assert_eq!(count(&db, "mutation_trace_processed_events"), 0);
+            assert_eq!(count(&db, "mutation_trace_worktrees"), 0);
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test10_mcp_mutate_then_error_leaves_no_zombie_state_ac9c() {
+            let repo = CodexRepo::new("test10-mcp-mutate-then-error");
+            let cwd = repo.cwd();
+
+            repo.drive(&fixture_at(PROBE13_MCP_MUTATE_THEN_ERROR_PRE, &cwd))
+                .expect("an MCP PreToolUse is allowed");
+            repo.write("mcp_b.txt", "mutated before the MCP error\n");
+
+            repo.drive(&fixture_at(PROBE13_MCP_STOP, &cwd))
+                .expect("Stop should find nothing to retire");
+            repo.drive(&fixture_at(PROBE13_MCP_SESSION_END, &cwd))
+                .expect("SessionEnd should find nothing to retire");
+
+            assert!(
+                !repo.adapter_state_file_exists(),
+                "AC9c: no Start occurred, so there is no stale attempt and no recovery to arm"
+            );
+
+            let db = repo.db();
+            assert_eq!(count(&db, "mutation_trace_scopes"), 0);
+            assert_eq!(count(&db, "mutation_trace_events"), 0);
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test11_failed_mcp_then_tracked_successor_starts_clean_ac9d() {
+            let repo = CodexRepo::new("test11-mcp-then-tracked");
+            let cwd = repo.cwd();
+            let failed_mcp = fixture_at(PROBE14_MCP_FAILED_PRE, &cwd);
+            let failed_identity = pre_tool_use(&failed_mcp).identity;
+
+            repo.drive(&failed_mcp)
+                .expect("the failing MCP PreToolUse is allowed");
+            repo.write("mcp_c1.txt", "mutated by the failing MCP tool\n");
+            repo.drive(&fixture_at(PROBE14_MCP_SUCCESSOR_PRE, &cwd))
+                .expect("the MCP successor is also Untracked");
+            repo.drive(&fixture_at(PROBE14_MCP_SUCCESSOR_POST, &cwd))
+                .expect("the MCP successor's PostToolUse is ignored");
+
+            let tracked_successor = TrackedCall {
+                cwd: &cwd,
+                session_id: &failed_identity.session_id,
+                turn_id: &failed_identity.turn_id,
+                tool_name: CODEX_TRACKED_TOOL_BASH,
+                tool_use_id: "exec-tracked-successor",
+                agent_id: None,
+            };
+            repo.drive(&tracked_successor.pre())
+                .expect("the tracked successor should Start normally");
+            let scope_id = repo.live_scope_id();
+            assert!(
+                repo.adapter_state().recovery.is_clear(),
+                "AC9d: no MCP attempt existed, so no successor barrier runs"
+            );
+
+            repo.write("file.txt", "one\ntracked-successor\n");
+            repo.drive(&tracked_successor.post())
+                .expect("the tracked successor's PostToolUse should close its scope");
+
+            let db = repo.db();
+            let worktree_id = repo.worktree_id();
+            assert_eq!(count(&db, "mutation_trace_scopes"), 1);
+            assert_eq!(
+                mutation_events_for(&db, &worktree_id),
+                vec![(
+                    "ai_exclusive".to_string(),
+                    Some(scope_id),
+                    "close".to_string(),
+                )],
+                "AC9d: the tracked successor is the only live scope — no false AiContended"
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test12_parallel_mcp_executions_create_no_scopes_ac9e() {
+            let repo = CodexRepo::new("test12-parallel-mcp");
+            let cwd = repo.cwd();
+
+            repo.drive(&fixture_at(PROBE16_MCP_PARALLEL_A_PRE, &cwd))
+                .expect("parallel MCP A is allowed");
+            repo.drive(&fixture_at(PROBE16_MCP_PARALLEL_B_PRE, &cwd))
+                .expect("parallel MCP B is allowed");
+            assert!(
+                !repo.adapter_state_file_exists(),
+                "AC9e: neither overlapping MCP execution creates adapter state"
+            );
+
+            repo.write("mcp_parallel_a.txt", "a\n");
+            repo.write("mcp_parallel_b.txt", "b\n");
+
+            repo.drive(&fixture_at(PROBE16_MCP_PARALLEL_A_POST, &cwd))
+                .expect("parallel MCP A PostToolUse is ignored");
+            repo.drive(&fixture_at(PROBE16_MCP_PARALLEL_B_POST, &cwd))
+                .expect("parallel MCP B PostToolUse is ignored");
+
+            assert!(!repo.adapter_state_file_exists());
+
+            let db = repo.db();
+            assert_eq!(
+                count(&db, "mutation_trace_scopes"),
+                0,
+                "AC9e: overlapping MCP executions produce no scopes and therefore no AiContended"
+            );
+            assert_eq!(count(&db, "mutation_trace_events"), 0);
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test13_tracked_scope_overlapping_an_mcp_mutation_is_tracked_exclusivity_ac9f() {
+            let repo = CodexRepo::new("test13-tracked-plus-mcp");
+            let cwd = repo.cwd();
+
+            repo.drive(&fixture_at(PROBE01_SHELL_PRE, &cwd))
+                .expect("the tracked Bash PreToolUse should Start");
+            let scope_id = repo.live_scope_id();
+
+            repo.drive(&fixture_at(PROBE12_MCP_PRE, &cwd))
+                .expect("the overlapping MCP call is allowed and untracked");
+            repo.write("mcp_a.txt", "written by the MCP server, not by Bash\n");
+            repo.drive(&fixture_at(PROBE12_MCP_POST, &cwd))
+                .expect("the MCP PostToolUse is ignored");
+
+            repo.drive(&fixture_at(PROBE01_SHELL_POST, &cwd))
+                .expect("the tracked Bash PostToolUse should close its scope");
+
+            let db = repo.db();
+            let worktree_id = repo.worktree_id();
+            assert_eq!(count(&db, "mutation_trace_scopes"), 1);
+            assert_eq!(
+                mutation_events_for(&db, &worktree_id),
+                vec![(
+                    "ai_exclusive".to_string(),
+                    Some(scope_id),
+                    "close".to_string(),
+                )],
+                "AC9f: ai_exclusive means exactly one TRACKED scope was live in the interval, \
+                 not that the tracked scope authored every mutation — the MCP call did mutate \
+                 mcp_a.txt inside this interval and remains unattributed (D14/D23)"
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test14_unknown_tool_is_allowed_untracked_ac9b() {
+            let repo = CodexRepo::new("test14-unknown-tool");
+            let cwd = repo.cwd();
+            let unknown = TrackedCall {
+                cwd: &cwd,
+                session_id: "session-unknown",
+                turn_id: "turn-1",
+                tool_name: "some_future_codex_tool",
+                tool_use_id: "exec-unknown",
+                agent_id: None,
+            };
+
+            assert_eq!(
+                repo.drive(&unknown.pre())
+                    .expect("an unknown tool is never denied for being untracked"),
+                ""
+            );
+            repo.write("unknown_tool_output.txt", "the unknown tool mutated\n");
+            assert_eq!(
+                repo.drive(&unknown.post())
+                    .expect("an unknown tool's PostToolUse is ignored"),
+                ""
+            );
+
+            assert!(!repo.adapter_state_file_exists());
+
+            let db = repo.db();
+            assert_eq!(count(&db, "mutation_trace_scopes"), 0);
+            assert_eq!(count(&db, "mutation_trace_events"), 0);
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test15_regression_matrix_leaves_raw_agent_trace_tables_untouched_ac20() {
+            let repo = CodexRepo::new("test15-raw-tables");
+            let cwd = repo.cwd();
+
+            let before = raw_agent_trace_row_counts(&repo.db());
+            assert_eq!(before, [0, 0, 0, 0, 0]);
+
+            repo.drive(&fixture_at(PROBE01_SHELL_PRE, &cwd))
+                .expect("tracked PreToolUse should succeed");
+            repo.write("file.txt", "one\ntwo\n");
+            repo.drive(&fixture_at(PROBE01_SHELL_POST, &cwd))
+                .expect("tracked PostToolUse should succeed");
+            repo.drive(&fixture_at(PROBE12_MCP_PRE, &cwd))
+                .expect("MCP PreToolUse should succeed");
+            repo.write("mcp_a.txt", "mcp\n");
+            repo.drive(&fixture_at(PROBE12_MCP_POST, &cwd))
+                .expect("MCP PostToolUse should succeed");
+            repo.drive(&fixture_at(PROBE01_APPLY_PATCH_PRE, &cwd))
+                .expect("apply_patch PreToolUse should succeed");
+            repo.drive(&fixture_at(PROBE01_STOP, &cwd))
+                .expect("Stop should succeed");
+
+            let db = repo.db();
+            assert_eq!(
+                raw_agent_trace_row_counts(&db),
+                before,
+                "AC20: mutation-scope-only regressions leave diff_traces, \
+                 post_commit_patch_intersections, agent_traces, messages and parts unchanged"
+            );
+            assert!(count(&db, "mutation_trace_scopes") > 0);
+            assert!(
+                state::adapter_state_dir(&repo.git_dir()).starts_with(repo.git_dir()),
+                "AC20: adapter state lives only below <git-dir>/sce/"
+            );
+        }
+
+        #[test]
+        fn test16_arbitrary_blocker_zombie_then_same_lane_successor_ac9a() {
+            let repo = CodexRepo::new("test16-zombie-successor");
+            let cwd = repo.cwd();
+            let zombie = bash_call(&cwd, "session-lane", "exec-zombie");
+            let successor = bash_call(&cwd, "session-lane", "exec-successor");
+
+            repo.drive(&zombie.pre())
+                .expect("the first tracked PreToolUse should Start");
+            let zombie_scope_id = repo.live_scope_id();
+            repo.write("file.txt", "one\nzombie-partial\n");
+
+            repo.drive(&successor.pre())
+                .expect("the same-lane successor should sweep, flush, then Start");
+            let successor_scope_id = repo.live_scope_id();
+            assert_ne!(zombie_scope_id, successor_scope_id);
+            assert!(
+                repo.adapter_state().recovery.is_clear(),
+                "the quiescent flush must clear the barrier before Start(B)"
+            );
+
+            repo.write("file.txt", "one\nzombie-partial\nsuccessor\n");
+            repo.drive(&successor.post())
+                .expect("the successor's PostToolUse should close its scope");
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, &zombie_scope_id),
+                Some(("codex".to_string(), "abandoned".to_string())),
+                "AC9a: the stale same-lane predecessor is abandoned, never closed"
+            );
+            assert_eq!(
+                scope_status(&db, &successor_scope_id),
+                Some(("codex".to_string(), "closed".to_string()))
+            );
+            let worktree_id = repo.worktree_id();
+            let events = mutation_events_for(&db, &worktree_id);
+            assert!(
+                events.iter().all(|(kind, scope, _)| kind != "ai_contended"
+                    && scope.as_deref() != Some(zombie_scope_id.as_str())),
+                "AC9a: no false AiContended and nothing attributed to the zombie: {events:?}"
+            );
+            assert_eq!(
+                events.last(),
+                Some(&(
+                    "ai_exclusive".to_string(),
+                    Some(successor_scope_id),
+                    "close".to_string()
+                )),
+                "the successor is the only live scope at its own Close"
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test17_crash_before_start_commit_is_recovered_conservatively_ac21a() {
+            let repo = CodexRepo::new("test17-crash-before-start");
+            let cwd = repo.cwd();
+            let git_dir = repo.git_dir();
+            let crashed = bash_call(&cwd, "session-crash", "exec-crashed");
+            let key = key("session-crash", None, "exec-crashed");
+
+            let attempt = state::seed_attempt_for_tests(
+                &git_dir,
+                &key,
+                "turn-1",
+                CODEX_TRACKED_TOOL_BASH,
+                state::AttemptPhase::PendingStart,
+            );
+
+            repo.drive(&crashed.post())
+                .expect("D11: a pending_start attempt must abandon, not late-Start");
+
+            assert!(repo.adapter_state().attempts.is_empty());
+            assert!(!repo.adapter_state().recovery.is_clear());
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, &attempt.scope_id),
+                None,
+                "AC21a: a Start that never committed must never appear as a real scope"
+            );
+            assert_eq!(count(&db, "mutation_trace_events"), 0);
+
+            let fresh = bash_call(&cwd, "session-crash", "exec-fresh");
+            repo.drive(&fresh.pre())
+                .expect("the next tracked PreToolUse proceeds after the quiescent flush");
+            assert!(repo.adapter_state().recovery.is_clear());
+            assert_eq!(repo.adapter_state().attempts.len(), 1);
+
+            assert_raw_agent_trace_tables_untouched(&repo.db());
+        }
+
+        #[test]
+        fn test18_start_committed_before_state_settlement_is_abandoned_ac21b() {
+            let repo = CodexRepo::new("test18-crash-after-start");
+            let cwd = repo.cwd();
+            let git_dir = repo.git_dir();
+            let crashed = bash_call(&cwd, "session-crash", "exec-crashed");
+            let key = key("session-crash", None, "exec-crashed");
+
+            let attempt = state::seed_attempt_for_tests(
+                &git_dir,
+                &key,
+                "turn-1",
+                CODEX_TRACKED_TOOL_BASH,
+                state::AttemptPhase::PendingStart,
+            );
+            let scope_id = attempt.scope_id.clone();
+
+            repo.drive_generic(&scope_boundary_payload(
+                "start",
+                &scope_id,
+                &codex_scope_start_event_id(&scope_id),
+            ))
+            .expect("the runtime Start should commit durably");
+            assert_eq!(
+                repo.adapter_state().attempts[0].phase,
+                state::AttemptPhase::PendingStart
+            );
+
+            repo.drive(&crashed.post())
+                .expect("D11: a committed Start with unsettled bookkeeping must be abandoned");
+
+            assert!(repo.adapter_state().attempts.is_empty());
+            assert!(!repo.adapter_state().recovery.is_clear());
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, &scope_id),
+                Some(("codex".to_string(), "abandoned".to_string())),
+                "AC21b: the committed Start settles as a real abandonment, not a late Start"
+            );
+            assert!(worktree_row(&db, &repo.worktree_id())
+                .is_some_and(|(_, _, needs_rebaseline)| needs_rebaseline));
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test19_close_committed_before_state_cleanup_is_replay_safe_ac21c() {
+            let repo = CodexRepo::new("test19-crash-after-close");
+            let cwd = repo.cwd();
+            let call = bash_call(&cwd, "session-close", "exec-close");
+
+            repo.drive(&call.pre()).expect("PreToolUse should succeed");
+            let scope_id = repo.live_scope_id();
+            repo.write("file.txt", "one\ntwo\n");
+
+            repo.drive_generic(&scope_boundary_payload(
+                "close",
+                &scope_id,
+                &codex_scope_close_event_id(&scope_id),
+            ))
+            .expect("the runtime Close should commit durably");
+            assert_eq!(repo.adapter_state().attempts.len(), 1);
+
+            let db = repo.db();
+            let (revision_before, events_before) = (
+                worktree_row(&db, &repo.worktree_id())
+                    .map(|(revision, _, _)| revision)
+                    .expect("a worktree row should exist"),
+                count(&db, "mutation_trace_events"),
+            );
+
+            repo.drive(&call.post())
+                .expect("a replayed Close against an already-durable commit must be safe");
+
+            assert!(
+                repo.adapter_state().attempts.is_empty(),
+                "the stale bookkeeping is finally cleared"
+            );
+
+            let db = repo.db();
+            assert_eq!(
+                worktree_row(&db, &repo.worktree_id()).map(|(revision, _, _)| revision),
+                Some(revision_before),
+                "AC21c: a durably completed Close is never re-applied as a second transition"
+            );
+            assert_eq!(count(&db, "mutation_trace_events"), events_before);
+            assert_eq!(
+                scope_status(&db, &scope_id).map(|(_, status)| status),
+                Some("closed".to_string())
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test20_recovery_pending_blocks_a_tracked_successor_until_recovery_succeeds_ac12() {
+            let repo = CodexRepo::new("test20-recovery-barrier");
+            let cwd = repo.cwd();
+            let first = bash_call(&cwd, "session-a", "exec-a");
+            let second = bash_call(&cwd, "session-b", "exec-b");
+            let blocked = bash_call(&cwd, "session-c", "exec-c");
+
+            repo.drive(&first.pre()).expect("session-a Start");
+            repo.drive(&second.pre()).expect("session-b Start");
+            assert_eq!(repo.adapter_state().attempts.len(), 2);
+
+            repo.write("file.txt", "one\nabandoned\n");
+            repo.drive(&turn_event_json(
+                HOOK_EVENT_INTERRUPT,
+                &cwd,
+                "session-a",
+                "turn-1",
+            ))
+            .expect("Interrupt should retire session-a's attempt");
+            assert!(!repo.adapter_state().recovery.is_clear());
+            assert_eq!(repo.adapter_state().attempts.len(), 1);
+
+            assert_eq!(
+                repo.drive(&blocked.pre())
+                    .expect("a barred PreToolUse still returns Ok with a deny payload"),
+                pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON),
+                "AC12: while recovery is armed and attempts remain, a tracked successor is denied"
+            );
+            assert!(
+                repo.adapter_state()
+                    .attempts
+                    .iter()
+                    .all(|attempt| attempt.tool_use_id != "exec-c"),
+                "the denied successor must never be admitted"
+            );
+
+            repo.drive(&session_end_json(&cwd, "session-b"))
+                .expect("SessionEnd should retire session-b's attempt");
+            assert!(repo.adapter_state().attempts.is_empty());
+            assert!(!repo.adapter_state().recovery.is_clear());
+
+            repo.drive(&blocked.pre())
+                .expect("once quiescent, the flush runs and the successor Starts");
+            assert!(
+                repo.adapter_state().recovery.is_clear(),
+                "AC12: recovery_pending clears only on durable flush success"
+            );
+            let scope_id = repo.live_scope_id();
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, &scope_id).map(|(_, status)| status),
+                Some("active".to_string())
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test21_reused_tool_use_id_after_terminal_gets_a_fresh_scope_id_ac5() {
+            let repo = CodexRepo::new("test21-reused-identifier");
+            let cwd = repo.cwd();
+            let call = bash_call(&cwd, "session-reuse", "exec-reused");
+
+            repo.drive(&call.pre()).expect("first PreToolUse");
+            let first_scope_id = repo.live_scope_id();
+            repo.write("file.txt", "one\nfirst\n");
+            repo.drive(&call.post()).expect("first PostToolUse");
+            assert!(repo.adapter_state().attempts.is_empty());
+
+            repo.drive(&call.pre())
+                .expect("a later attempt reusing the same tool_use_id");
+            let second_scope_id = repo.live_scope_id();
+            assert_ne!(
+                first_scope_id, second_scope_id,
+                "AC5: a terminal ScopeId is never reused"
+            );
+
+            repo.write("file.txt", "one\nfirst\nsecond\n");
+            repo.drive(&call.post()).expect("second PostToolUse");
+
+            let db = repo.db();
+            assert_eq!(
+                scope_status(&db, &first_scope_id).map(|(_, status)| status),
+                Some("closed".to_string())
+            );
+            assert_eq!(
+                scope_status(&db, &second_scope_id).map(|(_, status)| status),
+                Some("closed".to_string())
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test22_self_detaching_descendant_write_is_not_folded_into_the_closed_scope_ac15() {
+            let repo = CodexRepo::new("test22-detached-descendant");
+            let cwd = repo.cwd();
+
+            repo.drive(&fixture_at(PROBE09_DETACHED_PRE, &cwd))
+                .expect("PreToolUse should succeed");
+            let scope_id = repo.live_scope_id();
+
+            repo.write("file.txt", "one\nforeground\n");
+            let tree_at_close = repo.working_tree();
+            repo.drive(&fixture_at(PROBE09_DETACHED_POST, &cwd))
+                .expect("PostToolUse should succeed");
+
+            let db = repo.db();
+            let worktree_id = repo.worktree_id();
+            assert_eq!(
+                worktree_row(&db, &worktree_id).map(|(_, cursor_tree, _)| cursor_tree),
+                Some(tree_at_close.clone())
+            );
+            let events_before_flush = mutation_events_for(&db, &worktree_id);
+
+            repo.write("file.txt", "one\nforeground\ndetached-descendant\n");
+            let tree_after_descendant = repo.working_tree();
+            assert_ne!(tree_after_descendant, tree_at_close);
+
+            repo.drive_flush()
+                .expect("a later diagnostic flush should succeed");
+
+            let db = repo.db();
+            let events_after_flush = mutation_events_for(&db, &worktree_id);
+            assert_eq!(events_after_flush.len(), events_before_flush.len() + 1);
+            let (attribution_kind, attribution_scope_id, _) = events_after_flush
+                .last()
+                .expect("a flush event should exist");
+            assert_eq!(
+                attribution_kind, "ineligible_unscoped",
+                "AC15/D16: SCE does not supervise self-detaching descendants; \
+                 a post-terminal write is never folded into the closed tool scope"
+            );
+            assert_ne!(attribution_scope_id.as_deref(), Some(scope_id.as_str()));
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test23_denied_tracked_execution_leaves_no_untracked_start_ac7() {
+            let repo = CodexRepo::new("test23-policy-denied");
+            let cwd = repo.cwd();
+            fs::create_dir_all(repo.root.join(".sce")).expect(".sce dir should be created");
+            fs::write(
+                repo.root.join(".sce").join("config.json"),
+                concat!(
+                    r#"{"policies":{"bash":{"custom":[{"id":"no-rm","#,
+                    r#""match":{"argv_prefix":["rm"]},"#,
+                    r#""message":"rm is blocked in this repository"}]}}}"#,
+                ),
+            )
+            .expect("repo bash policy config should write");
+
+            let denied = tool_event_json(
+                &ToolEvent {
+                    event_name: HOOK_EVENT_PRE_TOOL_USE,
+                    cwd: &cwd,
+                    session_id: "session-denied",
+                    turn_id: "turn-1",
+                    tool_name: CODEX_TRACKED_TOOL_BASH,
+                    tool_use_id: "exec-denied",
+                    agent_id: None,
+                },
+                Some(json!({ "command": "rm -rf build" })),
+            );
+
+            let response = repo
+                .drive(&denied)
+                .expect("a policy-denied Bash command still returns Ok with a deny payload");
+            assert!(response.contains(r#""permissionDecision":"deny""#));
+
+            assert!(
+                !repo.adapter_state_file_exists(),
+                "AC7: a denied tracked execution must never leave an untracked Start behind"
+            );
+
+            let db = repo.db();
+            assert_eq!(count(&db, "mutation_trace_scopes"), 0);
+            assert_eq!(count(&db, "mutation_trace_events"), 0);
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test24_cross_harness_overlap_at_a_non_confirming_boundary_is_ineligible_ac10() {
+            let repo = CodexRepo::new("test24-cross-harness-ineligible");
+            let cwd = repo.cwd();
+            let codex_call = bash_call(&cwd, "session-cross", "exec-codex");
+            let other_scope_id = "claude-scope-1";
+
+            repo.drive_generic(&other_harness_payload("start", other_scope_id))
+                .expect("the other harness's Start should commit");
+            repo.drive(&codex_call.pre())
+                .expect("the Codex PreToolUse should Start");
+            let codex_scope_id = repo.live_scope_id();
+
+            repo.write("file.txt", "one\ncontended\n");
+
+            repo.drive_generic(&other_harness_payload("close", other_scope_id))
+                .expect("the other harness's Close should commit");
+
+            let db = repo.db();
+            let worktree_id = repo.worktree_id();
+            assert_eq!(
+                mutation_events_for(&db, &worktree_id),
+                vec![("ineligible_unscoped".to_string(), None, "close".to_string())],
+                "AC10/D14: an unconfirmed live Codex scope forces IneligibleUnscoped at a \
+                 boundary that does not confirm it — never AiContended"
+            );
+            let mut active = active_scopes_for(&db, &worktree_id);
+            active.sort();
+            let mut expected = vec![codex_scope_id, other_scope_id.to_string()];
+            expected.sort();
+            assert_eq!(
+                active, expected,
+                "active_scopes still records the complete live set; only eligibility changes"
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test25_cross_harness_overlap_at_the_codex_close_is_contended_ac10() {
+            let repo = CodexRepo::new("test25-cross-harness-contended");
+            let cwd = repo.cwd();
+            let codex_call = bash_call(&cwd, "session-cross", "exec-codex");
+            let other_scope_id = "claude-scope-1";
+
+            repo.drive_generic(&other_harness_payload("start", other_scope_id))
+                .expect("the other harness's Start should commit");
+            repo.drive(&codex_call.pre())
+                .expect("the Codex PreToolUse should Start");
+            let codex_scope_id = repo.live_scope_id();
+
+            repo.write("file.txt", "one\ncontended\n");
+
+            repo.drive(&codex_call.post())
+                .expect("the Codex PostToolUse should close its scope");
+
+            let db = repo.db();
+            let worktree_id = repo.worktree_id();
+            assert_eq!(
+                mutation_events_for(&db, &worktree_id),
+                vec![("ai_contended".to_string(), None, "close".to_string())],
+                "AC10/D14: the Codex scope's own Close confirms it, so the overlap with the \
+                 other harness's live scope is attributed AiContended"
+            );
+            assert_eq!(
+                scope_status(&db, &codex_scope_id).map(|(_, status)| status),
+                Some("closed".to_string())
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test26_a_second_unconfirmed_codex_scope_suppresses_contention_ac10() {
+            let repo = CodexRepo::new("test26-second-codex-scope");
+            let cwd = repo.cwd();
+            let confirmed = bash_call(&cwd, "session-one", "exec-one");
+            let unconfirmed = bash_call(&cwd, "session-two", "exec-two");
+            let other_scope_id = "claude-scope-1";
+
+            repo.drive_generic(&other_harness_payload("start", other_scope_id))
+                .expect("the other harness's Start should commit");
+            repo.drive(&confirmed.pre())
+                .expect("the first Codex PreToolUse should Start");
+            repo.drive(&unconfirmed.pre())
+                .expect("a second Codex lane's PreToolUse should Start");
+            assert_eq!(repo.adapter_state().attempts.len(), 2);
+
+            repo.write("file.txt", "one\ncontended\n");
+
+            repo.drive(&confirmed.post())
+                .expect("the first Codex scope's Close should commit");
+
+            let db = repo.db();
+            let worktree_id = repo.worktree_id();
+            assert_eq!(
+                mutation_events_for(&db, &worktree_id),
+                vec![("ineligible_unscoped".to_string(), None, "close".to_string())],
+                "AC10/D14: a second unconfirmed live Codex scope suppresses attribution back to \
+                 IneligibleUnscoped even at a confirming Codex Close"
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+    }
 }
