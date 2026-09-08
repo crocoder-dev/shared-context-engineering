@@ -1,11 +1,11 @@
-name: Prepare sync-debt recovery fix
+name: Prepare root-pass deduplication
 
 on:
   push:
     branches:
       - codex/compress-workflow-execution-preamble
     paths:
-      - .sce-sync-debt-fix.py
+      - .sce-root-pass-dedup.py
       - .github/workflows/sce-approval-dedup-preparation.yml
 
 permissions:
@@ -25,17 +25,7 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
 
-      - name: Apply, verify, commit, and push sync-debt fix
+      - name: Apply, verify, commit, and push root-pass deduplication
         run: |
-          cp .sce-sync-debt-fix.py /tmp/sce-sync-debt-fix.py
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('/tmp/sce-sync-debt-fix.py')
-          text = path.read_text()
-          text = text.replace(
-              'else throw(\\"sce-next-task SKILL.md sync-debt recovery must cite context-sync.md before running the phase and route the resolved plan path, debt task identity, and completed task record without a persisted Context synchronization handoff\\")',
-              'else throw(\\"sce-next-task SKILL.md sync-debt recovery branch must cite references/context-sync.md before invoking the Task context synchronization phase\\")',
-          )
-          path.write_text(text)
-          PY
-          nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 /tmp/sce-sync-debt-fix.py
+          cp .sce-root-pass-dedup.py /tmp/sce-root-pass-dedup.py
+          nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 /tmp/sce-root-pass-dedup.py
