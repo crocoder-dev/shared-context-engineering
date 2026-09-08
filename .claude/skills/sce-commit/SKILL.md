@@ -119,25 +119,17 @@ a contract violation: report it and stop without committing.
 
 #### 3. Execute exactly one commit
 
-Follow the **Bypass execution handoff** in `references/atomic-commit.md`:
-
-1. Create the commit-message temp file outside the repository working tree, and
-   write the returned `message` verbatim to it using a file-writing operation. Do
-   not interpolate the multiline message into shell source or a shell command.
-2. Run `git commit -F <message-file>` exactly once.
-3. Only after that command succeeds, retrieve the commit hash explicitly with
-   `git rev-parse --verify HEAD^{commit}`. Do not parse Git's human-readable
-   output.
-4. Delete the temp file after the commit attempt, including on failure, where
-   practical.
+Follow the **Bypass execution handoff** in `references/atomic-commit.md` exactly
+as written. That handoff is the sole owner of the execution sequence; do not
+reconstruct, supplement, or restate it here.
 
 On success, render the **Bypass success** layout from `references/output.md` and
 stop.
 
 On failure, render the **Bypass Git failure** layout from the same file and stop.
 
-Do not retry, do not amend, do not stage additional files, and do not fabricate a
-commit hash.
+The handoff owns commit-failure handling. This workflow owns only the matching
+user-visible result layout above.
 
 ## Rules
 
