@@ -157,8 +157,8 @@ and cursor.
 ## Concurrency and attribution confirmation
 
 Codex built-in tracked tools were observed serially, so no Codex-only overlap
-was observed. Distinct tracked scopes remain required, and a tracked Codex scope
-can overlap a Claude, OpenCode, or Pi scope on the same worktree.
+was observed; a tracked Codex scope can currently overlap a Claude Code scope on
+the same worktree. Generic runtime and `ActorKind` support future OpenCode/Pi adapters once wired.
 
 The accepted boundary-aware rule is important: Codex `Start` is write-ahead
 admission, not positive execution confirmation, because an arbitrary sibling
