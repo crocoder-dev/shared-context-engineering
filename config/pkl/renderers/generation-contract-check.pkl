@@ -255,6 +255,81 @@ local requiredHandoverSkillTokens = new Listing {
   "Never invoke another SCE skill, sibling SCE package, or SCE workflow command"
 }
 
+local compactWorkflowSlugs = new Listing {
+  "change-to-plan"; "next-task"; "commit"; "validate"; "handover"
+}
+
+hidden isCompactWorkflowPath = (path: String) ->
+  compactWorkflowSlugs.any((slug) -> path.endsWith("/skills/sce-\(slug)/SKILL.md"))
+
+// This oracle intentionally does not read the production rendering helper.
+local expectedExecutionContract = (allowsDecision: Boolean) ->
+  """
+  ## Execution contract
+
+  Own this workflow from input through its terminal user-visible response.
+  Follow its steps, gates, and stops in order; do not add, skip, reorder, or merge them.
+  Keep phase results internal and continue immediately until a defined wait or stop.
+  Resume user waits in this same skill and session.
+  Use only the specified `references/output.md` layouts for gates and terminal
+  responses. Do not expose raw state or add text around a layout.
+  Non-SCE helpers may assist, but must return to the active step without changing
+  phase order, gates, waits, writes, validation, stops, or terminal output.
+  """ + "\n" + if (allowsDecision)
+    """
+    Do not invoke another SCE skill, package, or workflow command except `sce-decision`,
+    and only from the successful context-synchronization decision gate.
+    """
+  else
+    "Do not invoke another SCE skill, package, or workflow command."
+
+local compactContractClauses = new Listing {
+  "Own this workflow from input through its terminal user-visible response."
+  "Follow its steps, gates, and stops in order; do not add, skip, reorder, or merge them."
+  "Keep phase results internal and continue immediately until a defined wait or stop."
+  "Resume user waits in this same skill and session."
+  "Use only the specified `references/output.md` layouts for gates and terminal\nresponses. Do not expose raw state or add text around a layout."
+  "Non-SCE helpers may assist, but must return to the active step without changing\nphase order, gates, waits, writes, validation, stops, or terminal output."
+}
+
+hidden hasExpectedExecutionContract = (text: String, allowsDecision: Boolean) ->
+  text.split("## Execution contract\n").length == 2
+  && text.contains(expectedExecutionContract.apply(allowsDecision))
+  && !text.contains("## Purpose\n")
+  && !text.contains("## User-visible output\n")
+  && !text.contains("## Composite control flow\n")
+  && (text.contains("`sce-decision`") == allowsDecision)
+  && (!allowsDecision || !text.contains("Do not invoke another SCE skill, package, or workflow command."))
+
+hidden assertCompactExecutionContracts = (documents: Mapping) ->
+  if (
+    new Listing { ".opencode"; ".claude"; ".pi"; ".agents" }.every((target) ->
+      compactWorkflowSlugs.every((slug) ->
+        let (path = "config/\(target)/skills/sce-\(slug)/SKILL.md")
+          documents.containsKey(path)
+          && hasExpectedExecutionContract.apply(documents[path], slug == "next-task")
+      )
+    )
+  ) "compact execution contracts: five workflows, four targets, exact safeguards and permissions"
+  else throw("selected workflow has a missing, duplicated, or incorrect execution contract")
+
+hidden assertCompactExecutionContractFixtures =
+  let (standard = expectedExecutionContract.apply(false))
+    let (decision = expectedExecutionContract.apply(true))
+      if (
+        hasExpectedExecutionContract.apply(standard, false)
+        && hasExpectedExecutionContract.apply(decision, true)
+        && compactContractClauses.every((clause) ->
+          !hasExpectedExecutionContract.apply(standard.replaceAll(clause, ""), false)
+          && !hasExpectedExecutionContract.apply(decision.replaceAll(clause, ""), true)
+        )
+        && !hasExpectedExecutionContract.apply(standard, true)
+        && !hasExpectedExecutionContract.apply(decision, false)
+        && !hasExpectedExecutionContract.apply(decision + "\n" + "Do not invoke another SCE skill, package, or workflow command.", true)
+        && !hasExpectedExecutionContract.apply(standard + "\n" + standard, false)
+      ) "compact execution contract fixtures: omitted safeguards, wrong permissions, contradictions, duplicates rejected"
+      else throw("compact execution contract oracle accepted an invalid fixture")
+
 local requiredHelperSkillCompositionTokens = new Listing {
   "Relevant non-SCE skills may be used as helper capabilities during the active step."
   "They are not workflow handoffs: when a helper returns, control returns to the active"
@@ -442,7 +517,9 @@ local assertWorkflowHelperComposition = (documents: Mapping) ->
   if (
     documents.every((path, text) ->
       !path.endsWith("/SKILL.md")
-      || requiredHelperSkillCompositionTokens.every((token) -> text.contains(token))
+      || (if (isCompactWorkflowPath.apply(path))
+        compactContractClauses.every((token) -> text.contains(token))
+      else requiredHelperSkillCompositionTokens.every((token) -> text.contains(token)))
     )
   ) "generated workflow helper composition: complete"
   else throw("generated workflow skill is missing the required helper-skill composition rule")
@@ -452,7 +529,9 @@ local assertScopedWorkflowProhibitions = (documents: Mapping) ->
     documents.every((path, text) ->
       !path.endsWith("/SKILL.md")
       || (
-        requiredScopedWorkflowTokens.every((token) -> text.contains(token))
+        (if (isCompactWorkflowPath.apply(path))
+          text.contains("Do not invoke another SCE skill, package, or workflow command")
+        else requiredScopedWorkflowTokens.every((token) -> text.contains(token)))
         && forbiddenUnscopedWorkflowTokens.every((token) -> !text.contains(token))
       )
     )
@@ -883,6 +962,8 @@ hidden assertValidateExcludesDecisionAndPlanSync = (documents: Mapping) ->
     else throw("generated sce-validate document must not contain a sce-decision reference or plan-context-sync wording")
 
 contractChecks {
+  ["compact-execution-contracts"] = assertCompactExecutionContracts.apply(workflowDocuments)
+  ["compact-execution-contract-negative-fixtures"] = assertCompactExecutionContractFixtures
   ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
   ["codex-hook-invocation"] = assertCodexHookInvocationContract.apply(generatedArtifacts)
   ["codex-skills-exclude-arguments"] = assertCodexSkillsExcludeArguments.apply(generatedArtifacts)

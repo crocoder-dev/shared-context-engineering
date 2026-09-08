@@ -19,10 +19,10 @@ generation, the same as the other four workflows.
 Unlike the other four workflows, `sce-handover` has no phases: its base
 module's `structuredComposite.phases` listing is always empty, so its `SKILL.md`
 never renders an `## Embedded phase behavior` appendix. Composite-mode
-rendering (used by every generated target) supplies the shared generic
-Purpose / User-visible-output / Composite-control-flow preamble from
-`workflow-composite.pkl`, distinct from the skill's own package-mode-only
-Purpose text.
+rendering (used by every generated target) supplies the compact `Execution contract`
+from `executionContract` in `workflow-content.pkl` through `workflow-composite.pkl`.
+It preserves the existing control-flow, output, and helper boundaries without an
+additional runtime read. Package-mode-only Purpose text is unchanged.
 
 The package contains `SKILL.md`, which owns mode routing, writer and loader
 behavior, `references/handover-template.md`, which owns the persisted document
