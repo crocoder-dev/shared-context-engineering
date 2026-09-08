@@ -8,6 +8,7 @@ on:
       - .sce-decision-dedup.py
       - .sce-decision-dedup-fix.py
       - .sce-decision-dedup-fix-contract.py
+      - .sce-decision-dedup-fix-invocation.py
       - .github/workflows/sce-approval-dedup-preparation.yml
 
 permissions:
@@ -32,4 +33,5 @@ jobs:
           cp .sce-decision-dedup.py /tmp/sce-decision-dedup.py
           python3 .sce-decision-dedup-fix.py
           python3 .sce-decision-dedup-fix-contract.py
+          python3 .sce-decision-dedup-fix-invocation.py
           nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 /tmp/sce-decision-dedup.py
