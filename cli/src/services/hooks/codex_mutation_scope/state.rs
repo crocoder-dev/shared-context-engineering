@@ -16,7 +16,7 @@ const STATE_LOCK_WHAT: &str = "adapter-state";
 
 const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
-const ADAPTER_STATE_VERSION: u32 = 2;
+const ADAPTER_STATE_VERSION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -49,6 +49,7 @@ pub(crate) struct AdapterAttempt {
     pub attempt_seq: u64,
     pub scope_id: String,
     pub session_id: String,
+    pub turn_id: String,
     pub agent_id: Option<String>,
     pub tool_use_id: String,
     pub tool_name: String,
@@ -60,6 +61,10 @@ impl AdapterAttempt {
         self.session_id == key.session_id
             && self.agent_id == key.agent_id
             && self.tool_use_id == key.tool_use_id
+    }
+
+    pub(crate) fn in_builtin_lane(&self, session_id: &str, turn_id: &str) -> bool {
+        self.session_id == session_id && self.turn_id == turn_id
     }
 }
 
@@ -101,6 +106,7 @@ pub(crate) enum AdmitDecision {
     Admitted(AllocatedAttempt),
     RecoveryBlocked,
     UncertainAttemptBlocked,
+    StalePredecessorBlocked,
     FlushClaimed { generation: u64 },
 }
 
@@ -242,6 +248,7 @@ fn acquire_lock(git_dir: &Path) -> Result<AdapterStateLock> {
 fn allocate_pending_start(
     state: &mut AdapterState,
     key: &AttemptKey,
+    turn_id: &str,
     tool_name: &str,
 ) -> AdapterAttempt {
     let attempt_seq = state.next_attempt_seq;
@@ -249,6 +256,7 @@ fn allocate_pending_start(
         attempt_seq,
         scope_id: format_codex_scope_id(attempt_seq, key),
         session_id: key.session_id.clone(),
+        turn_id: turn_id.to_string(),
         agent_id: key.agent_id.clone(),
         tool_use_id: key.tool_use_id.clone(),
         tool_name: tool_name.to_string(),
@@ -262,6 +270,7 @@ fn allocate_pending_start(
 pub(crate) fn admit_tracked_attempt(
     git_dir: &Path,
     key: &AttemptKey,
+    turn_id: &str,
     tool_name: &str,
 ) -> Result<AdmitDecision> {
     let _lock = acquire_lock(git_dir)?;
@@ -291,6 +300,12 @@ pub(crate) fn admit_tracked_attempt(
         }));
     }
 
+    if state.attempts.iter().any(|attempt| {
+        attempt.in_builtin_lane(&key.session_id, turn_id) && !attempt.matches_key(key)
+    }) {
+        return Ok(AdmitDecision::StalePredecessorBlocked);
+    }
+
     if state
         .attempts
         .iter()
@@ -299,7 +314,7 @@ pub(crate) fn admit_tracked_attempt(
         return Ok(AdmitDecision::UncertainAttemptBlocked);
     }
 
-    let attempt = allocate_pending_start(&mut state, key, tool_name);
+    let attempt = allocate_pending_start(&mut state, key, turn_id, tool_name);
     write_state_durably(git_dir, &state)?;
     Ok(AdmitDecision::Admitted(AllocatedAttempt {
         attempt,
@@ -401,12 +416,13 @@ pub(crate) fn relinquish_recovery_flush(git_dir: &Path, generation: u64) -> Resu
 pub(crate) fn seed_attempt_for_tests(
     git_dir: &Path,
     key: &AttemptKey,
+    turn_id: &str,
     tool_name: &str,
     phase: AttemptPhase,
 ) -> AdapterAttempt {
     let _lock = acquire_lock(git_dir).expect("test seed lock");
     let mut state = read_state(git_dir).expect("test seed read");
-    allocate_pending_start(&mut state, key, tool_name);
+    allocate_pending_start(&mut state, key, turn_id, tool_name);
     let seeded = state.attempts.last_mut().expect("attempt was just pushed");
     seeded.phase = phase;
     let attempt = seeded.clone();
@@ -465,12 +481,32 @@ mod tests {
         }
     }
 
+    const TEST_TURN: &str = "turn-1";
+
     fn admit(git_dir: &Path, key: &AttemptKey, tool_name: &str) -> AdmitDecision {
-        admit_tracked_attempt(git_dir, key, tool_name).expect("admit should not error")
+        admit_in_turn(git_dir, key, TEST_TURN, tool_name)
+    }
+
+    fn admit_in_turn(
+        git_dir: &Path,
+        key: &AttemptKey,
+        turn_id: &str,
+        tool_name: &str,
+    ) -> AdmitDecision {
+        admit_tracked_attempt(git_dir, key, turn_id, tool_name).expect("admit should not error")
     }
 
     fn admit_and_activate(git_dir: &Path, key: &AttemptKey, tool_name: &str) -> AdapterAttempt {
-        match admit(git_dir, key, tool_name) {
+        admit_and_activate_in_turn(git_dir, key, TEST_TURN, tool_name)
+    }
+
+    fn admit_and_activate_in_turn(
+        git_dir: &Path,
+        key: &AttemptKey,
+        turn_id: &str,
+        tool_name: &str,
+    ) -> AdapterAttempt {
+        match admit_in_turn(git_dir, key, turn_id, tool_name) {
             AdmitDecision::Admitted(allocated) => {
                 mark_active(git_dir, &allocated.attempt.scope_id)
                     .expect("mark_active should succeed");
@@ -486,7 +522,7 @@ mod tests {
 
         let state = read_state(&git_dir).expect("missing state file should read as default");
         assert_eq!(state, AdapterState::default());
-        assert_eq!(state.version, 2);
+        assert_eq!(state.version, 3);
         assert!(state.recovery.is_clear());
         assert_eq!(state.next_recovery_generation, 1);
 
@@ -498,11 +534,22 @@ mod tests {
         let git_dir = unique_test_git_dir("sequential-allocation");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
 
-        let first = admit_and_activate(&git_dir, &key("session-1", None, "exec-1"), "Bash");
-        let second = admit_and_activate(&git_dir, &key("session-1", None, "exec-2"), "apply_patch");
-        let third = admit_and_activate(
+        let first = admit_and_activate_in_turn(
+            &git_dir,
+            &key("session-1", None, "exec-1"),
+            "turn-1",
+            "Bash",
+        );
+        let second = admit_and_activate_in_turn(
+            &git_dir,
+            &key("session-1", None, "exec-2"),
+            "turn-2",
+            "apply_patch",
+        );
+        let third = admit_and_activate_in_turn(
             &git_dir,
             &key("session-1", Some("agent-1"), "exec-3"),
+            "turn-3",
             "Bash",
         );
 
@@ -524,10 +571,25 @@ mod tests {
         std::fs::create_dir_all(&git_dir_a).expect("git dir A should be created");
         std::fs::create_dir_all(&git_dir_b).expect("git dir B should be created");
 
-        admit_and_activate(&git_dir_a, &key("session-1", None, "exec-1"), "Bash");
-        admit_and_activate(&git_dir_a, &key("session-1", None, "exec-2"), "Bash");
+        admit_and_activate_in_turn(
+            &git_dir_a,
+            &key("session-1", None, "exec-1"),
+            "turn-1",
+            "Bash",
+        );
+        admit_and_activate_in_turn(
+            &git_dir_a,
+            &key("session-1", None, "exec-2"),
+            "turn-2",
+            "Bash",
+        );
 
-        let first_b = admit_and_activate(&git_dir_b, &key("session-1", None, "exec-1"), "Bash");
+        let first_b = admit_and_activate_in_turn(
+            &git_dir_b,
+            &key("session-1", None, "exec-1"),
+            "turn-1",
+            "Bash",
+        );
         assert_eq!(
             first_b.attempt_seq, 1,
             "checkout B's monotonic counter must be independent of checkout A's"
@@ -623,17 +685,26 @@ mod tests {
     }
 
     #[test]
-    fn admit_blocks_a_successor_while_an_unrelated_pending_start_is_unresolved() {
+    fn admit_blocks_a_successor_while_an_unrelated_pending_start_in_another_lane_is_unresolved() {
         let git_dir = unique_test_git_dir("admit-blocks-on-pending-start");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
 
-        let AdmitDecision::Admitted(_) = admit(&git_dir, &key("session-1", None, "exec-a"), "Bash")
-        else {
+        let AdmitDecision::Admitted(_) = admit_in_turn(
+            &git_dir,
+            &key("session-1", None, "exec-a"),
+            "turn-1",
+            "Bash",
+        ) else {
             panic!("first admission should be Admitted");
         };
 
         assert_eq!(
-            admit(&git_dir, &key("session-1", None, "exec-b"), "Bash"),
+            admit_in_turn(
+                &git_dir,
+                &key("session-1", None, "exec-b"),
+                "turn-2",
+                "Bash"
+            ),
             AdmitDecision::UncertainAttemptBlocked,
             "I5: an unrelated unresolved PendingStart must block a successor Start"
         );
@@ -642,16 +713,96 @@ mod tests {
     }
 
     #[test]
-    fn admit_allows_a_new_key_alongside_an_active_attempt() {
+    fn admit_blocks_a_new_key_in_the_same_builtin_lane_as_an_outstanding_attempt() {
+        let git_dir = unique_test_git_dir("admit-blocks-same-lane");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+
+        admit_and_activate_in_turn(
+            &git_dir,
+            &key("session-1", None, "exec-a"),
+            "turn-1",
+            "Bash",
+        );
+
+        assert_eq!(
+            admit_in_turn(
+                &git_dir,
+                &key("session-1", None, "exec-b"),
+                "turn-1",
+                "Bash"
+            ),
+            AdmitDecision::StalePredecessorBlocked,
+            "a new tracked attempt must not be admitted while an older different \
+             AttemptKey in the same (session_id, turn_id) built-in lane is outstanding",
+        );
+        assert_eq!(
+            read_state(&git_dir).expect("state readable").attempts.len(),
+            1,
+            "the backstop admits nothing while the predecessor remains",
+        );
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn admit_blocks_a_new_key_when_a_same_lane_predecessor_is_only_pending_start() {
+        let git_dir = unique_test_git_dir("admit-blocks-same-lane-pending");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+
+        seed_attempt_for_tests(
+            &git_dir,
+            &key("session-1", None, "exec-a"),
+            "turn-1",
+            "Bash",
+            AttemptPhase::PendingStart,
+        );
+
+        assert_eq!(
+            admit_in_turn(&git_dir, &key("session-1", None, "exec-b"), "turn-1", "Bash"),
+            AdmitDecision::StalePredecessorBlocked,
+            "a same-lane PendingStart predecessor blocks admission before the uncertain-attempt path",
+        );
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn admit_never_treats_duplicate_delivery_as_a_same_lane_predecessor() {
+        let git_dir = unique_test_git_dir("admit-duplicate-not-predecessor");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+        let attempt_key = key("session-1", None, "exec-1");
+
+        admit_and_activate_in_turn(&git_dir, &attempt_key, "turn-1", "Bash");
+
+        let AdmitDecision::Admitted(again) =
+            admit_in_turn(&git_dir, &attempt_key, "turn-1", "Bash")
+        else {
+            panic!("duplicate delivery in the same lane must still reuse, never StalePredecessorBlocked");
+        };
+        assert!(again.reused);
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn admit_allows_a_new_key_alongside_an_active_attempt_in_a_different_lane() {
         let git_dir = unique_test_git_dir("admit-alongside-active");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
 
-        admit_and_activate(&git_dir, &key("session-1", None, "exec-a"), "Bash");
+        admit_and_activate_in_turn(
+            &git_dir,
+            &key("session-1", None, "exec-a"),
+            "turn-1",
+            "Bash",
+        );
 
-        let AdmitDecision::Admitted(second) =
-            admit(&git_dir, &key("session-1", None, "exec-b"), "Bash")
-        else {
-            panic!("a distinct execution may run alongside an Active attempt (D14)");
+        let AdmitDecision::Admitted(second) = admit_in_turn(
+            &git_dir,
+            &key("session-1", None, "exec-b"),
+            "turn-2",
+            "Bash",
+        ) else {
+            panic!("a distinct-lane execution may run alongside an Active attempt (D14)");
         };
         assert!(!second.reused);
         assert_eq!(
@@ -670,6 +821,7 @@ mod tests {
         seed_attempt_for_tests(
             &git_dir,
             &key("session-1", None, "exec-live"),
+            "turn-1",
             "Bash",
             AttemptPhase::Active,
         );
@@ -717,6 +869,7 @@ mod tests {
                     admit_tracked_attempt(
                         &git_dir,
                         &key("session-1", None, &format!("exec-{suffix}")),
+                        &format!("turn-{suffix}"),
                         "Bash",
                     )
                     .expect("admit should not error")
@@ -1053,6 +1206,7 @@ mod tests {
         assert_eq!(reloaded.recovery, RecoveryState::Pending { generation: 1 });
         assert_eq!(reloaded.attempts.len(), 1);
         assert_eq!(reloaded.attempts[0].phase, AttemptPhase::Active);
+        assert_eq!(reloaded.attempts[0].turn_id, "turn-1");
         assert_eq!(reloaded.attempts[0].agent_id.as_deref(), Some("agent-2"));
         assert_eq!(reloaded.attempts[0].tool_name, "apply_patch");
         assert_eq!(reloaded.attempts[0].scope_id, attempt.scope_id);
@@ -1088,6 +1242,13 @@ mod tests {
                 "version": 1,
                 "next_attempt_seq": 1,
                 "recovery_pending": false,
+                "attempts": []
+            }),
+            serde_json::json!({
+                "version": 2,
+                "next_attempt_seq": 1,
+                "next_recovery_generation": 1,
+                "recovery": { "phase": "clear" },
                 "attempts": []
             }),
         ] {
@@ -1141,7 +1302,12 @@ mod tests {
         std::fs::write(lock_path(&git_dir), b"leftover")
             .expect("leftover lock file should be writable");
 
-        let decision = admit_tracked_attempt(&git_dir, &key("session-1", None, "exec-1"), "Bash");
+        let decision = admit_tracked_attempt(
+            &git_dir,
+            &key("session-1", None, "exec-1"),
+            "turn-1",
+            "Bash",
+        );
         assert!(
             matches!(decision, Ok(AdmitDecision::Admitted(_))),
             "a lock file with no active OS lock held against it must not block a new acquirer"
@@ -1162,8 +1328,9 @@ mod tests {
                 let git_dir = git_dir.clone();
                 thread::spawn(move || {
                     let attempt_key = key("session-1", None, &format!("exec-{index}"));
+                    let turn_id = format!("turn-{index}");
                     loop {
-                        match admit_tracked_attempt(&git_dir, &attempt_key, "Bash")
+                        match admit_tracked_attempt(&git_dir, &attempt_key, &turn_id, "Bash")
                             .expect("admit should not error")
                         {
                             AdmitDecision::Admitted(allocated) => {

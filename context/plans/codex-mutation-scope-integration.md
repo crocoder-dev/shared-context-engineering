@@ -704,34 +704,66 @@ T01 must define "same lane" using only identity/concurrency facts it actually
 established. T02 freezes the lane key and the successor-barrier design (if
 Case B); T04 implements it; T06 proves it.
 
-**T01 disposition (codex-cli 0.153.4): scope-split by tool type. Case A for
-built-ins; Case C for MCP *if MCP were modeled as a scope* — resolved in v1 by
-NOT modeling MCP as a scope (D23, re-planning direction B).**
+**T01 disposition (codex-cli 0.153.4): scope-split by tool type. Built-ins have a
+normal Case-A lifecycle plus an exceptional Case-B hook-block lifecycle; MCP is
+Case C *if MCP were modeled as a scope* — resolved in v1 by NOT modeling MCP as a
+scope (D23, re-planning direction B).**
 
-**Built-in `Bash` / `apply_patch`: PROVEN — Case A.** The dangerous scenario does
-not arise, and no successor-barrier logic ships for built-ins.
+**Built-in `Bash` / `apply_patch` — normal lifecycle: Case A.**
 - A failed **shell** tool always emits `PostToolUse` (terminal) before the next
   `PreToolUse` — Codex runs built-in mutation-capable tools serially (D1), so
   predecessor A is already terminal in bookkeeping when successor B's
   `PreToolUse` arrives.
 - A failed **`apply_patch`** never mutates the working tree (atomic
   verification), so there is nothing to strand.
-- A **hook-blocked** tool never executes (`PreToolUse` only, no `PostToolUse`) —
-  no scope was established when the SCE Bash policy or the SCE mutation-scope
-  preflight is the source of the block (D8 fail-closed / the PR #268 Bash-policy
-  preflight both happen before `start`).
+- A tool blocked by the **SCE** Bash policy or the **SCE** mutation-scope
+  preflight never executes and never established a scope (D8 fail-closed / the
+  PR #268 Bash-policy preflight both happen before `start`).
 - The only built-in "partial mutation, no `PostToolUse`" case is **whole-turn
   interruption** (SIGINT), which emits `Interrupt` then `SessionEnd` and ends the
   turn — there is no in-turn successor `PreToolUse` to race.
 Evidence: `fixtures/probe02-*`, `probe06-*`, `probe07-*`, `probe11-*`.
 
-**Known exception (PR #268, tracked as a remaining lifecycle issue in the T04
-follow-up notes):** an *arbitrary user-owned / third-party* concurrent
-`PreToolUse(Bash)` hook that denies while the SCE Bash policy allows leaves an
-`Active` scope with no `PostToolUse` — the "predecessor already terminal in
-bookkeeping" assumption above does not hold for a non-SCE block. Turn-boundary
-cleanup (D12) plus the D13 barrier bound the damage to a single turn; the clean
-fix is the Case-B lane-scoped successor sweep for built-ins, deferred.
+**Built-in `Bash` / `apply_patch` — exceptional hook-block lifecycle: Case B
+(PR #268 follow-up, 2026-09-08).** Codex v0.153.4 executes matching `PreToolUse`
+handlers concurrently and combines their verdicts afterwards. An *arbitrary
+user-owned / third-party* sibling `PreToolUse` hook can therefore DENY the
+aggregate execution *after* the SCE mutation-scope handler has already
+established `Start(A)`, leaving `Active(A)` with no `PostToolUse(A)`. Codex
+exposes no aggregate-denial event to the mutation adapter, so SCE cannot observe
+that denial directly. The "predecessor already terminal in bookkeeping"
+assumption of Case A does not hold for a non-SCE block.
+
+For this case, a later tracked built-in `PreToolUse(B)` in the same proven serial
+lane is positive evidence that an older outstanding built-in attempt A in that
+lane is stale (T01 proved built-in mutation-capable execution is serial within
+one lane, including across the parent/subagent boundary — D1). Before the
+successor may `Start`:
+
+```text
+stale same-lane predecessor -> arm recovery -> Abandon(A) -> quiescent Flush -> Start(B)
+```
+
+never `Start(A) -> Start(B) -> Abandon(A)`. `Abandon` (not `Close`) is used
+because A's terminal outcome is missing/uncertain. A failed `Abandon` or a failed
+`Flush` keeps the successor denied and fail-closed. Multiple stale attempts in
+the lane are all retired before B may `Start`. Duplicate delivery of the same
+`AttemptKey` is not a predecessor and is never swept (idempotency preserved). A
+defensive backstop in the state/admission layer (`AdmitDecision::
+StalePredecessorBlocked`) refuses `Start(B)` if a driver bug ever left an older
+different-`AttemptKey` same-lane attempt outstanding.
+
+**Lane key = `(session_id, turn_id)`.** `agent_id` is **not** part of the lane —
+T01 showed built-in mutation-capable execution stays serial across the
+parent/subagent boundary within one session+turn, so `parent Bash` then
+`subagent apply_patch` in the same session+turn share the built-in serial lane.
+`turn_id` is lane metadata persisted on each tracked attempt; it is **not** added
+to `AttemptKey` and does not change `ScopeId` / `EventId` formatting. Different
+`session_id` or different `turn_id` executions are never swept by this inference
+— normal `Stop` / `Interrupt` / `SessionEnd` cleanup (D12) owns turn/session
+boundary lifecycle. Evidence: `fixtures/probe08-*` (parent/subagent serial),
+`fixtures/probe02-*` / `probe11-*`; regressions in
+`codex_mutation_scope::tests::driver::regression1..9`.
 
 **MCP: the T01 finding is correct and stands — `MCP is D10a Case C *if modeled
 as a scope*`.** The T01 MCP extension establishes all three conditions of Case C
@@ -772,10 +804,12 @@ and there are none for MCP. This is a deliberate attribution-coverage boundary
 lifecycle is safe, does **not** silently downgrade MCP/unknown to read-only, and
 does **not** pretend an MCP mutation was attributed.
 
-T02 records the D10a lane key as **N/A** (confirmed 2026-09-08) — Case A for
-built-ins ships no barrier; MCP/unknown are `Untracked` and ship no barrier and
-no scope. The T02 event model therefore carries no lane-key field and
-`classify_tool` has no successor-sweep hook. Evidence:
+T02 originally recorded the D10a lane key as N/A. **Superseded by the PR #268
+follow-up (2026-09-08):** built-ins now ship a Case-B lane-scoped successor sweep
+keyed on `CodexBuiltInLane = (session_id, turn_id)`. `AttemptKey` and `ScopeId`
+formatting are unchanged; `turn_id` is persisted as adapter-attempt lane metadata
+only (adapter-state version bumped 2 -> 3). MCP/unknown remain `Untracked` and
+still ship no barrier and no scope. Evidence:
 `fixtures/probe13-mcp-mutate-then-error.*`,
 `fixtures/probe14-mcp-failed-then-successor.*`,
 `fixtures/probe15-mcp-blocked-call.*`,
@@ -823,8 +857,10 @@ is `SessionEnd`).
 
 The failed-tool -> successor-tool sequence (D10a) is the one case where the
 "next lifecycle signal" backstop is too late **for a tracked tool**; for
-built-ins it is Case A (a terminal `PostToolUse` always precedes the successor),
-and for MCP/unknown it does not arise because they are `Untracked` (no scope, no
+built-ins the normal path is Case A (a terminal `PostToolUse` always precedes the
+successor) and the exceptional arbitrary-hook-block path is Case B (a later
+same-lane tracked `PreToolUse` sweeps the stale predecessor before `Start`), and
+for MCP/unknown it does not arise because they are `Untracked` (no scope, no
 attempt). Owned by D10a, not this table.
 
 **T01 disposition (codex-cli 0.153.4): PROVEN.**
@@ -881,12 +917,18 @@ A failed abandonment leaves the attempt tracked and recovery armed
 
 **Successor-Start invariant.** A `TrackedMutation` `PreToolUse` must never reach
 its write-ahead `Start` while a known-stale predecessor **tracked** attempt
-(D10a) remains `active`/`pending_start` in bookkeeping. For built-ins this is
-Case A (a terminal `PostToolUse` precedes the successor), so no successor-barrier
-logic ships. MCP/unknown are `Untracked`, so they create no predecessor attempt
-and no barrier is needed. This invariant does **not** license abandoning an
-attempt that can legitimately run concurrently with the successor (D10a
-invariant (ii)).
+(D10a) remains `active`/`pending_start` in bookkeeping. For built-ins the normal
+path is Case A (a terminal `PostToolUse` precedes the successor). The exceptional
+arbitrary-hook-block path is Case B (PR #268 follow-up): before `Start(B)` the
+`PreToolUse(B)` driver sweeps every tracked built-in attempt that shares B's
+`(session_id, turn_id)` lane but not its `AttemptKey` — `arm recovery` ->
+`Abandon` -> quiescent `Flush` -> `Start(B)` — and the state/admission layer
+backstops this with `AdmitDecision::StalePredecessorBlocked` so a driver bug
+denies `Start(B)` rather than silently allowing overlap. MCP/unknown are
+`Untracked`, so they create no predecessor attempt and no barrier is needed. This
+invariant does **not** license abandoning an attempt that can legitimately run
+concurrently with the successor — the sweep is lane-scoped, so a different
+`session_id` or `turn_id` attempt is left untouched (D10a invariant (ii)).
 
 **D13a — inter-process concurrency semantics (T04 follow-up, 2026-09-08).**
 Codex runs every hook as an independent OS process, so the barrier and
@@ -1518,14 +1560,18 @@ performs final validation.
     assertions match the D10 disposition recorded by T01.
 - [ ] AC9a: A partially-mutating failed `TrackedMutation` tool A with **no
   terminal event**, followed by another `TrackedMutation` `PreToolUse(B)` in the
-  same turn (Case A): a terminal `PostToolUse` (or `Interrupt`/`SessionEnd`)
-  always precedes the successor `PreToolUse` for built-ins, so no
-  successor-barrier logic ships and B never `Start`s alongside a zombie A. The
-  MCP form of this scenario is covered by AC9d, not here, because MCP creates no
-  attempt.
-  - Validate: T06 built-in failed-A-then-B regression (assert A `Abandoned` or
-    `Closed` per tool, B the only live scope at its `Start`, no false
-    `AiContended`).
+  same turn: B never `Start`s alongside a zombie A. Normal path (Case A) — a
+  terminal `PostToolUse` (or `Interrupt`/`SessionEnd`) precedes the successor.
+  Exceptional path (Case B, PR #268 arbitrary-hook-block follow-up) — the
+  `PreToolUse(B)` driver sweeps every same-lane (`session_id`, `turn_id`)
+  built-in attempt whose `AttemptKey != B` first: `Abandon(A)` -> quiescent
+  `Flush` -> `Start(B)`, with an `AdmitDecision::StalePredecessorBlocked`
+  backstop. The MCP form of this scenario is covered by AC9d, not here, because
+  MCP creates no attempt.
+  - Validate: `codex_mutation_scope::tests::driver::regression1..9` (Case-B
+    sweep, seam order, fail-closed, lane scoping); T06 built-in failed-A-then-B
+    regression (assert A `Abandoned` or `Closed` per tool, B the only live scope
+    at its `Start`, no false `AiContended`).
 - [ ] AC10: Two simultaneously-live **tracked** scopes produce `AiContended` for
   a tree transition observed while both are live; the adapter never assigns them
   one shared `ScopeId`. Per D14 the exercised form is a **tracked Codex scope
@@ -1547,8 +1593,10 @@ performs final validation.
   remain outstanding, every new `TrackedMutation` `PreToolUse` is denied (D8
   shape); an `Untracked` `PreToolUse` is not affected by the barrier; once
   quiescent, exactly one `{"operation":"flush"}` runs through the seam and
-  `recovery_pending` clears only on durable flush success. (No D10a successor
-  barrier ships — built-ins are Case A and MCP/unknown are `Untracked`.)
+  `recovery_pending` clears only on durable flush success. (The D10a Case-B
+  built-in successor sweep also runs `Abandon` -> quiescent `flush` -> `Start`
+  through this same recovery machinery; MCP/unknown are `Untracked` and ship no
+  barrier.)
   - Validate: adapter recovery-barrier unit tests (deny-while-outstanding,
     flush-then-proceed, flush-failure-stays-closed); T06 recovery-barrier
     regression.
@@ -2396,8 +2444,10 @@ Persist this field in every plan; this is durable plan state, not chat state:
     → whole-session sweep — all sweeps over adapter-owned tracked attempts only
     (D12); D13 recovery barrier denies new `TrackedMutation` `PreToolUse` while
     tracked attempts remain and runs exactly one quiescent `flush`, clearing
-    `recovery_pending` only on durable flush success. No D10a successor-barrier /
-    lane-key code ships (T02 recorded the lane key N/A). The driver's only
+    `recovery_pending` only on durable flush success. (T04 shipped no D10a
+    successor-barrier / lane-key code; **superseded by the fourth concurrency
+    follow-up below**, which adds the Case-B lane-scoped built-in successor sweep
+    keyed on `(session_id, turn_id)`.) The driver's only
     mutation-stack dependency in non-test code is
     `super::mutation_scope::run_mutation_scope_from_payload`, wire payload built
     as a JSON string (D18/AC19). Injected git-dir resolver + seam make every
@@ -2636,28 +2686,113 @@ Persist this field in every plan; this is durable plan state, not chat state:
     confined to `cli/src/services/hooks/codex/{mod,bash_policy}.rs`,
     `cli/src/services/hooks/codex_mutation_scope/mod.rs`, and this plan.
     Arbitrary user-owned concurrent `PreToolUse(Bash)` denial — analysis result:
-    **not covered by this fix; a separate follow-up is required.** This fix
-    removes only the SCE-owned race (SCE policy deny vs SCE mutation-scope
-    `Start`). If a third-party / user-owned `PreToolUse(Bash)` hook denies while
-    the SCE Bash policy allows, SCE still establishes `Active(A)` and Codex still
-    blocks the tool with no `PostToolUse(A)`. The mutation-scope hook cannot see
-    the aggregate Codex decision — matching local handlers run concurrently and
-    Codex does not report other hooks' verdicts. Existing turn-boundary cleanup
-    (D12: `Stop` / `Interrupt` / `SessionEnd` → `abandon` A → recovery armed →
-    quiescent `flush` on the next tracked `PreToolUse`) and the D13 recovery
-    barrier **bound the exposure to a single turn and prevent cross-turn
-    contamination** — the zombie `Active` is abandoned and flushed at the turn
-    boundary. The residual gap: within that turn, a successor tracked
-    `PreToolUse(B)` starts alongside the zombie `Active(A)` (no successor sweep
-    ships for built-ins — D10a Case A assumed the predecessor is already terminal
-    in bookkeeping when the successor arrives, which an arbitrary concurrent
-    blocker hook violates). A tree transition observed in that window can be
-    falsely attributed to A or flagged `AiContended`. The clean fix is the D10a
-    Case-B lane-scoped successor sweep for built-ins (T01 proved built-ins run
-    serially, so `PreToolUse(B)` is valid evidence A is stale) — deferred here as
-    out of scope for the SCE-owned race. **This does not block T06 for the
-    SCE-owned scope**, but T06/T07 must decide whether to ship the built-in
-    successor sweep. Recorded as a remaining lifecycle issue; not hidden.
+    the SCE-owned race (SCE policy deny vs SCE mutation-scope `Start`) is removed
+    by this third follow-up; the remaining arbitrary-blocker successor-safety gap
+    is fixed by the **fourth follow-up** below.
+  - Fourth concurrency follow-up (2026-09-08 — arbitrary-blocker successor sweep,
+    PR #268): Codex v0.153.4 runs matching `PreToolUse` handlers concurrently and
+    combines their verdicts afterwards. An arbitrary user-owned / third-party
+    sibling `PreToolUse` hook can DENY the aggregate execution *after* the SCE
+    mutation-scope handler has already driven `Start(A)`, leaving `Active(A)`
+    with no `PostToolUse(A)`. Codex exposes no aggregate-denial event to the
+    mutation adapter, so SCE cannot learn that verdict directly. Turn-boundary
+    cleanup (D12) + the D13 barrier already bound the damage to one turn, but
+    within that turn a successor tracked `PreToolUse(B)` could still `Start`
+    alongside the zombie `Active(A)`, risking false `AiContended` / attribution.
+    Fix — the D10a Case-B lane-scoped successor sweep for built-ins:
+    - `CodexBuiltInLane = (session_id, turn_id)` (T01 proved built-in
+      mutation-capable execution is serial within one session+turn, including
+      across the parent/subagent boundary — so `agent_id` is **not** in the
+      lane). A later tracked built-in `PreToolUse(B)` in that lane is positive
+      evidence an older outstanding built-in attempt A there is stale.
+    - `AdapterAttempt` now persists `turn_id` as lane metadata. `AttemptKey`
+      stays `(session_id, agent_id?, tool_use_id)`; `ScopeId` / `EventId`
+      formatting unchanged. Adapter-state version bumped **2 -> 3**; a prior
+      (v2) checkout-local state file is rejected (fail-closed), never silently
+      swept on a guessed lane — this is checkout-local ephemeral state, no DB
+      migration.
+    - `PreToolUse(B)` flow inside the boundary lock: normalize recovery -> sweep
+      every same-lane attempt whose `AttemptKey != B` (`arm_recovery` ->
+      `Abandon` -> remove; never `Close`, since A's terminus is missing) ->
+      drive the existing quiescent recovery (`FlushClaimed` -> `flush` ->
+      `complete_recovery_flush`) -> re-admit B -> `Start(B)`. Seam order for the
+      primary regression: `Start(A)` `Abandon(A)` `Flush` `Start(B)`, never
+      `Start(A)` `Start(B)` `Abandon(A)`.
+    - Duplicate delivery (`AttemptKey(A) == AttemptKey(B)`) is not a predecessor
+      and is never swept — same `attempt_seq` / `ScopeId`, no second `Start`.
+    - `PendingStart` predecessors are swept the same way (conservative
+      `Abandon` + recovery), because a same-lane successor proves the prior
+      attempt is no longer legitimately running.
+    - Fail-closed: a failed `Abandon` keeps A tracked + recovery armed and denies
+      B; a failed `Flush` after a successful `Abandon` keeps recovery armed and
+      denies B; state-transition / lock failure denies B via the stable
+      mutation-scope deny contract.
+    - Defensive backstop: `AdmitDecision::StalePredecessorBlocked` — the
+      state/admission layer refuses to admit a new tracked attempt while an older
+      different-`AttemptKey` same-lane attempt is outstanding, so a driver bug or
+      incomplete sweep yields no `Start(B)` rather than silent overlap. The
+      boundary lock means this normally never fires after a successful sweep.
+    - Different `session_id` / different `turn_id` attempts are never swept by
+      this inference — D12 `Stop` / `Interrupt` / `SessionEnd` cleanup still owns
+      turn/session boundary lifecycle.
+    Regressions added (`codex_mutation_scope::state` + `::tests::driver`):
+    same-lane predecessor blocks admission (`StalePredecessorBlocked`);
+    same-lane `PendingStart` predecessor blocks; duplicate delivery is never a
+    predecessor; different-lane attempt still admits alongside (D14); zombie-A
+    then same-lane successor B drives `Start`->`Abandon`->`Flush`->`Start`
+    (`regression1`), `apply_patch` <-> `Bash` variants (`regression2`),
+    parent<->subagent same lane (`regression3`), different session not swept
+    (`regression4`), different turn not swept (`regression5`), duplicate key not
+    swept (`regression6`), `PendingStart` predecessor swept (`regression7`),
+    `Abandon` failure fail-closed (`regression8`), `Flush` failure fail-closed
+    (`regression9`); adapter-state v2 file now rejected as an unsupported
+    version.
+    Re-validated: `services::hooks::codex_mutation_scope` — **passed** (119, 1
+    ignored); `services::hooks::` — **passed** (451, 1 ignored);
+    `services::hooks::codex` — **passed** (249, 1 ignored);
+    `services::codex_hook_config` — **passed** (36); full `cargo test
+    --manifest-path cli/Cargo.toml` — **passed** (1280, 1 ignored);
+    `clippy --all-targets -- -D warnings` — **clean**; `cargo fmt -- --check` —
+    **clean**. No `spec/mutation_cursor.qnt` / `mutation_trace/protocol.rs` /
+    `mutation_trace/runtime/` / `mutation_trace/store.rs` /
+    `cli/migrations/agent-trace-repository/` / `agent-trace.schema.json` /
+    MCP-semantics / generated-config / Bash-policy-preflight change. Changes
+    confined to
+    `cli/src/services/hooks/codex_mutation_scope/{mod,state}.rs` and this plan.
+    Untracked-successor / cross-harness analysis (required by this follow-up):
+    - The generated mutation-scope `PreToolUse` matcher intentionally does not
+      fire for MCP / unknown / delegation (Option B, D23), so the Case-B sweep
+      does **not** run at `PreToolUse(mcp__…)` (or an unknown/delegation
+      `PreToolUse`) after a zombie built-in `Active(A)`. This is not hidden.
+    - Arbitrary hook denial is fundamentally unobservable at A: SCE never learns
+      the aggregate verdict. `Active(A)` is kept conservatively live; only a
+      later **proven same-lane** tracked built-in `PreToolUse(B)` is positive
+      seriality evidence that A is stale. The fix does **not** claim any later
+      non-built-in `PreToolUse` proves A stale — no T01 evidence supports that,
+      and a separate cleanup-only path is **not** designed here.
+    - If no same-lane tracked built-in successor occurs in the turn, A is
+      retired by turn-boundary cleanup (`Stop` / `Interrupt` / `SessionEnd` ->
+      `abandon` -> recovery -> `flush`, D12). `abandon` keeps no
+      snapshot/attribution semantics for the unobserved interval
+      (`mutation_scope::tests::real_git_db_ingress::test4`), so an MCP mutation
+      in the zombie window is folded into `needs_rebaseline`, never falsely
+      attributed to A — the same un-attributed-MCP coverage boundary already
+      accepted under D23.
+    - Residual, single-turn-bounded: a **cross-harness** mutation-scope event
+      (another harness's scope boundary) landing while zombie A is still `Active`
+      and before any same-lane tracked successor or turn boundary could produce
+      a false `AiContended` against A for that transition. This is the same
+      exposure class the third follow-up recorded; this fix shrinks the window
+      (an in-turn same-lane tracked successor now retires A immediately instead
+      of waiting for the turn boundary) but does not eliminate it. It is bounded
+      to one turn by D12/D13 and does **not** block T06, which proves the
+      SCE-owned production path. Not claimed as "arbitrary-blocker safety fully
+      solved"; recorded as a remaining bounded exposure, tracked for T06/T07 to
+      weigh against a broader cleanup signal only if future evidence justifies
+      one.
+    - Matcher and MCP behaviour are unchanged; no MCP tracking, MCP denial,
+      unknown-tool denial, PID supervision, polling, timeout-as-evidence, or
+      global/cross-session sweep was added.
   - Context impact: domain — a new adapter-domain driver plus a new hidden CLI
     route. User-visible surface: one hidden `sce hooks codex-mutation-scope`
     subcommand (hidden from `sce --help` / `sce hooks --help`); no visible-help
@@ -3041,6 +3176,16 @@ Persist this field in every plan; this is durable plan state, not chat state:
         `post_commit_patch_intersections`, `agent_traces`, `messages`, `parts`)
         remain untouched by the mutation-scope adapter (before/after row counts)
         (AC20).
+    16. **arbitrary-blocker zombie built-in A -> same-lane successor B** (D10a
+        Case B): drive `PreToolUse(A = Bash)` to `Active(A)`, omit
+        `PostToolUse(A)` (models a third-party sibling `PreToolUse` denying the
+        aggregate), then `PreToolUse(B)` with the same `session_id` / `turn_id`
+        and a different `tool_use_id`. Through the real runtime, A is
+        `Abandoned` and flushed before B `Start`s, B is the only live scope at
+        its `Start`, and no false `AiContended` / attribution to A results. The
+        adapter-level seam-ordering regression (`Start(A)` -> `Abandon(A)` ->
+        `Flush` -> `Start(B)`) already ships in
+        `codex_mutation_scope::tests::driver::regression1..9` (AC9a).
     Plus the crash/recovery rows: crash before `Start` commit -> conservative
     recovery (AC21a); `Start` committed before bookkeeping settlement ->
     abandonment recovery, not late-`Start` (AC21b); terminal transition committed
@@ -3140,10 +3285,15 @@ risk is resolved by exclusion, with the Case C evidence retained as the reason
 `cli/src/services/hooks/codex_mutation_scope/fixtures/NOTES.md`). Headline
 resolutions:
 
-- **D10a is Case A for built-in `Bash` / `apply_patch` only.** A failed shell
-  tool still fires `PostToolUse`; a failed `apply_patch` writes nothing;
-  interruption ends the turn. No serial-lane successor barrier ships for
-  built-ins.
+- **D10a for built-in `Bash` / `apply_patch`: normal Case A + exceptional
+  Case B.** Normal path (Case A): a failed shell tool still fires `PostToolUse`;
+  a failed `apply_patch` writes nothing; interruption ends the turn. Exceptional
+  path (Case B, PR #268 arbitrary-hook-block follow-up): an arbitrary concurrent
+  sibling `PreToolUse` hook can deny the aggregate execution after SCE drove
+  `Start(A)`, so a later same-lane (`session_id`, `turn_id`) tracked built-in
+  `PreToolUse(B)` sweeps the stale predecessor — `Abandon(A)` -> quiescent
+  `Flush` -> `Start(B)` — with an `AdmitDecision::StalePredecessorBlocked`
+  backstop. `agent_id` is not part of the lane.
 - **D10a is Case C for MCP *if MCP were modeled as a scope* — resolved by NOT
   modeling MCP as a scope (direction B, D23).** The T01 MCP
   extension (probes 12–17) proves, live, all three Case C conditions at once,
@@ -3215,9 +3365,14 @@ with fixtures and the MCP one by an explicit coverage boundary:
 
 - **RESOLVED — Failed tool with no terminal event, then another tool in the same
   turn.** (D10a — the single highest-risk correctness question.) For built-in
-  `Bash` / `apply_patch`: **Case A** — a failed shell tool still fires
+  `Bash` / `apply_patch`: **normal Case A** — a failed shell tool still fires
   `PostToolUse`, a failed `apply_patch` writes nothing, and interruption ends the
-  turn; no barrier ships. For **MCP: Case C *if modeled as a scope*** — probes
+  turn; **exceptional Case B** (PR #268) — an arbitrary concurrent sibling
+  `PreToolUse` hook can deny after `Start(A)`, so a later same-lane
+  (`session_id`, `turn_id`) tracked built-in `PreToolUse(B)` sweeps the stale
+  predecessor (`Abandon` -> `Flush` -> `Start(B)`) with a
+  `StalePredecessorBlocked` backstop. For **MCP: Case C *if modeled as a
+  scope*** — probes
   13/14/16/17 prove a mutation-capable MCP tool can mutate-then-fail with no
   terminal hook, no cleanup signal reaches the adapter before the successor
   `PreToolUse`, and same-lane MCP executions can overlap. **Resolved by direction
