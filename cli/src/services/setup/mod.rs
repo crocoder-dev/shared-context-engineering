@@ -2307,7 +2307,20 @@ mod tests {
             merged["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"],
             "echo user"
         );
-        assert_eq!(merged["hooks"].as_object().unwrap().len(), 5);
+        assert_eq!(merged["hooks"].as_object().unwrap().len(), 8);
+        for event in ["Interrupt", "SubagentStop", "SessionEnd"] {
+            assert!(
+                merged["hooks"][event][0]["hooks"][0]["command"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("sce hooks codex-mutation-scope"),
+                "{event} must route to the mutation-scope command"
+            );
+        }
+        assert!(merged["hooks"]["PreToolUse"][1]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .ends_with("sce hooks codex-mutation-scope"));
 
         let _ = fs::remove_dir_all(&repo);
     }

@@ -2006,15 +2006,6 @@ fn collect_codex_integration_groups(
 /// `.codex/hooks.json`'s relative path within Codex's embedded-asset set.
 const CODEX_HOOKS_JSON_RELATIVE_PATH: &str = ".codex/hooks.json";
 
-/// Build one `IntegrationChildHealth` per required Codex hook registration,
-/// combining `codex_hook_config`'s structural diagnosis with Codex's
-/// effective hook-discovery policy readiness (`codex_hook_policy`) and its
-/// own hook-trust readiness (`codex_hook_trust`) for registrations that are
-/// structurally present. A registration only needs a policy/trust check once
-/// it is structurally current; a missing or stale registration has no
-/// on-disk canonical handler for Codex to ever load, so policy/trust do not
-/// apply. `policy_readiness` is probed once per doctor invocation by the
-/// caller and reused here for all four registrations.
 fn codex_hooks_json_registration_children(
     hooks_json_path: &Path,
     generated_bytes: &[u8],
@@ -2025,14 +2016,10 @@ fn codex_hooks_json_registration_children(
         Ok(bytes) => Some(bytes),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => {
-            return codex_hook_registration_paths()
-                .into_iter()
-                .map(|(suffix, _event, _matcher)| IntegrationChildHealth {
-                    relative_path: format!("{CODEX_HOOKS_JSON_RELATIVE_PATH}#{suffix}"),
-                    path: hooks_json_path.to_path_buf(),
-                    content_state: IntegrationContentState::ReadFailed(error.to_string()),
-                })
-                .collect();
+            return codex_required_registration_children(
+                hooks_json_path,
+                &IntegrationContentState::ReadFailed(error.to_string()),
+            );
         }
     };
 
@@ -2043,23 +2030,14 @@ fn codex_hooks_json_registration_children(
         };
 
     match document_diagnosis {
-        codex_hook_config::HooksDocumentDiagnosis::Absent => codex_hook_registration_paths()
-            .into_iter()
-            .map(|(suffix, _event, _matcher)| IntegrationChildHealth {
-                relative_path: format!("{CODEX_HOOKS_JSON_RELATIVE_PATH}#{suffix}"),
-                path: hooks_json_path.to_path_buf(),
-                content_state: IntegrationContentState::Missing,
-            })
-            .collect(),
+        codex_hook_config::HooksDocumentDiagnosis::Absent => {
+            codex_required_registration_children(hooks_json_path, &IntegrationContentState::Missing)
+        }
         codex_hook_config::HooksDocumentDiagnosis::Malformed(error) => {
-            codex_hook_registration_paths()
-                .into_iter()
-                .map(|(suffix, _event, _matcher)| IntegrationChildHealth {
-                    relative_path: format!("{CODEX_HOOKS_JSON_RELATIVE_PATH}#{suffix}"),
-                    path: hooks_json_path.to_path_buf(),
-                    content_state: IntegrationContentState::Malformed(error.clone()),
-                })
-                .collect()
+            codex_required_registration_children(
+                hooks_json_path,
+                &IntegrationContentState::Malformed(error),
+            )
         }
         codex_hook_config::HooksDocumentDiagnosis::Registrations(diagnoses) => diagnoses
             .iter()
@@ -2075,18 +2053,35 @@ fn codex_hooks_json_registration_children(
     }
 }
 
-/// The four required registrations' display suffixes, in canonical order.
-fn codex_hook_registration_paths() -> [(&'static str, &'static str, Option<&'static str>); 4] {
-    [
-        ("UserPromptSubmit", "UserPromptSubmit", None),
-        ("Stop", "Stop", None),
-        ("PreToolUse(Bash)", "PreToolUse", Some("Bash")),
-        (
-            "PostToolUse(apply_patch)",
-            "PostToolUse",
-            Some("apply_patch"),
-        ),
-    ]
+fn codex_registration_suffix(
+    command: codex_hook_config::CodexHookCommand,
+    event: &str,
+    matcher: Option<&str>,
+) -> String {
+    match command {
+        codex_hook_config::CodexHookCommand::Codex => match matcher {
+            Some(matcher) => format!("{event}({matcher})"),
+            None => event.to_string(),
+        },
+        codex_hook_config::CodexHookCommand::MutationScope => format!("{event}(mutation-scope)"),
+    }
+}
+
+fn codex_required_registration_children(
+    hooks_json_path: &Path,
+    content_state: &IntegrationContentState,
+) -> Vec<IntegrationChildHealth> {
+    codex_hook_config::required_registrations()
+        .into_iter()
+        .map(|(command, event, matcher)| {
+            let suffix = codex_registration_suffix(command, event, matcher);
+            IntegrationChildHealth {
+                relative_path: format!("{CODEX_HOOKS_JSON_RELATIVE_PATH}#{suffix}"),
+                path: hooks_json_path.to_path_buf(),
+                content_state: content_state.clone(),
+            }
+        })
+        .collect()
 }
 
 /// Human-readable explanation for `IntegrationContentState::PolicyBlocked`,
@@ -2102,10 +2097,7 @@ fn codex_hook_registration_child(
     trust_context: &codex_hook_trust::TrustContext,
     policy_readiness: &CodexHookPolicyReadiness,
 ) -> IntegrationChildHealth {
-    let suffix = codex_hook_registration_paths()
-        .into_iter()
-        .find(|(_, event, matcher)| *event == diagnosis.event && *matcher == diagnosis.matcher)
-        .map_or(diagnosis.event, |(suffix, _, _)| suffix);
+    let suffix = codex_registration_suffix(diagnosis.command, diagnosis.event, diagnosis.matcher);
     let relative_path = format!("{CODEX_HOOKS_JSON_RELATIVE_PATH}#{suffix}");
 
     // Decision order (AC28): structural state wins first (a missing or stale
@@ -2620,7 +2612,10 @@ mod tests {
             .flat_map(|group| &group.children)
             .filter(|child| child.relative_path.starts_with(".codex/hooks.json#"))
             .collect::<Vec<_>>();
-        assert_eq!(registration_children.len(), 4);
+        assert_eq!(
+            registration_children.len(),
+            codex_hook_config::required_registrations().len()
+        );
         for child in &registration_children {
             assert_eq!(
                 child.content_state,
@@ -3296,11 +3291,28 @@ mod tests {
         handler: serde_json::Value,
     ) -> codex_hook_config::RegistrationDiagnosis {
         codex_hook_config::RegistrationDiagnosis {
+            command: codex_hook_config::CodexHookCommand::Codex,
             event,
             matcher,
             state: codex_hook_config::RegistrationStructuralState::PresentAndCurrent,
             owned_handler: Some(handler),
             position: Some((0, 0)),
+        }
+    }
+
+    fn mutation_scope_diagnosis(
+        event: &'static str,
+        state: codex_hook_config::RegistrationStructuralState,
+        handler: Option<serde_json::Value>,
+        position: Option<(usize, usize)>,
+    ) -> codex_hook_config::RegistrationDiagnosis {
+        codex_hook_config::RegistrationDiagnosis {
+            command: codex_hook_config::CodexHookCommand::MutationScope,
+            event,
+            matcher: None,
+            state,
+            owned_handler: handler,
+            position,
         }
     }
 
@@ -3504,6 +3516,167 @@ mod tests {
     }
 
     #[test]
+    fn a_mutation_scope_registration_gets_the_full_three_dimension_health_model() {
+        let root = unique_temp_repository_root("codex-mutation-scope-3d");
+        let hooks_json_path = root.join("hooks.json");
+        std::fs::write(&hooks_json_path, "{}").unwrap();
+        let handler = bare_command_handler_json();
+
+        let missing = mutation_scope_diagnosis(
+            "SessionEnd",
+            codex_hook_config::RegistrationStructuralState::Missing,
+            None,
+            None,
+        );
+        assert_eq!(
+            codex_hook_registration_child(
+                &hooks_json_path,
+                &missing,
+                &deterministic_untrusted_context("ms-missing"),
+                &allowed_policy(),
+            )
+            .content_state,
+            IntegrationContentState::Missing
+        );
+
+        let stale = mutation_scope_diagnosis(
+            "SessionEnd",
+            codex_hook_config::RegistrationStructuralState::Stale,
+            Some(handler.clone()),
+            Some((0, 1)),
+        );
+        assert_eq!(
+            codex_hook_registration_child(
+                &hooks_json_path,
+                &stale,
+                &deterministic_untrusted_context("ms-stale"),
+                &allowed_policy(),
+            )
+            .content_state,
+            IntegrationContentState::Stale
+        );
+
+        let present = mutation_scope_diagnosis(
+            "SessionEnd",
+            codex_hook_config::RegistrationStructuralState::PresentAndCurrent,
+            Some(handler.clone()),
+            Some((0, 0)),
+        );
+
+        let untrusted = codex_hook_registration_child(
+            &hooks_json_path,
+            &present,
+            &deterministic_untrusted_context("ms-untrusted"),
+            &allowed_policy(),
+        );
+        assert_eq!(
+            untrusted.content_state,
+            IntegrationContentState::NotTrusted("untrusted".to_string())
+        );
+        assert_eq!(
+            untrusted.relative_path,
+            ".codex/hooks.json#SessionEnd(mutation-scope)"
+        );
+
+        let policy_blocked = codex_hook_registration_child(
+            &hooks_json_path,
+            &present,
+            &deterministic_untrusted_context("ms-blocked"),
+            &CodexHookPolicyReadiness::PolicyBlocked,
+        );
+        assert!(matches!(
+            policy_blocked.content_state,
+            IntegrationContentState::PolicyBlocked(_)
+        ));
+
+        let policy_unknown = codex_hook_registration_child(
+            &hooks_json_path,
+            &present,
+            &deterministic_untrusted_context("ms-unknown"),
+            &CodexHookPolicyReadiness::Unknown("codex executable not found".to_string()),
+        );
+        assert!(matches!(
+            policy_unknown.content_state,
+            IntegrationContentState::PolicyUnknown(_)
+        ));
+
+        let hash = codex_hook_trust::hash_command_handler("SessionEnd", None, &handler).unwrap();
+        let trust_context = write_trust_state(
+            &root,
+            "ms-trusted",
+            &hooks_json_path,
+            "SessionEnd",
+            (0, 0),
+            &format!("trusted_hash = \"{hash}\""),
+        );
+        assert_eq!(
+            codex_hook_registration_child(
+                &hooks_json_path,
+                &present,
+                &trust_context,
+                &allowed_policy(),
+            )
+            .content_state,
+            IntegrationContentState::Match
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn mutation_scope_and_sce_hooks_codex_registrations_report_distinct_readiness() {
+        let root = unique_temp_repository_root("codex-mutation-scope-distinct");
+        let codex_dir = root.join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let hooks_json_path = codex_dir.join("hooks.json");
+        std::fs::write(
+            &hooks_json_path,
+            embedded_codex_asset_bytes(".codex/hooks.json"),
+        )
+        .unwrap();
+
+        let generated = embedded_codex_asset_bytes(".codex/hooks.json");
+        let codex_stop_handler: serde_json::Value = {
+            let document: serde_json::Value = serde_json::from_slice(generated).unwrap();
+            document["hooks"]["Stop"][0]["hooks"][0].clone()
+        };
+        let hash =
+            codex_hook_trust::hash_command_handler("Stop", None, &codex_stop_handler).unwrap();
+        let trust_context = write_trust_state(
+            &root,
+            "codex-stop-trusted",
+            &hooks_json_path,
+            "Stop",
+            (0, 0),
+            &format!("trusted_hash = \"{hash}\""),
+        );
+
+        let groups =
+            collect_codex_integration_groups(&root, &[], &trust_context, &allowed_policy());
+        let child = |suffix: &str| {
+            groups
+                .iter()
+                .flat_map(|group| &group.children)
+                .find(|child| child.relative_path == format!(".codex/hooks.json#{suffix}"))
+                .unwrap_or_else(|| panic!("expected a .codex/hooks.json#{suffix} child"))
+                .content_state
+                .clone()
+        };
+
+        assert_eq!(child("Stop"), IntegrationContentState::Match);
+        assert_eq!(
+            child("Stop(mutation-scope)"),
+            IntegrationContentState::NotTrusted("untrusted".to_string())
+        );
+        assert_eq!(
+            child("Interrupt(mutation-scope)"),
+            IntegrationContentState::NotTrusted("untrusted".to_string())
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
     fn structural_missing_state_wins_over_a_blocked_or_unknown_policy() {
         let root = absent_repository_root();
         for policy in [
@@ -3521,7 +3694,10 @@ mod tests {
                 .flat_map(|group| &group.children)
                 .filter(|child| child.relative_path.starts_with(".codex/hooks.json#"))
                 .collect::<Vec<_>>();
-            assert_eq!(registration_children.len(), 4);
+            assert_eq!(
+                registration_children.len(),
+                codex_hook_config::required_registrations().len()
+            );
             for child in registration_children {
                 assert_eq!(
                     child.content_state,
@@ -3587,15 +3763,18 @@ mod tests {
             .flat_map(|group| &group.children)
             .filter(|child| child.relative_path.starts_with(".codex/hooks.json#"))
             .collect::<Vec<_>>();
-        assert_eq!(registration_children.len(), 4);
+        assert_eq!(
+            registration_children.len(),
+            codex_hook_config::required_registrations().len()
+        );
         for child in registration_children {
             assert!(
                 matches!(
                     child.content_state,
                     IntegrationContentState::PolicyBlocked(_)
                 ),
-                "the single probed policy value must apply identically to every one of the \
-                 four registrations, not be re-probed per registration: '{}' was {:?}",
+                "the single probed policy value must apply identically to every \
+                 registration, not be re-probed per registration: '{}' was {:?}",
                 child.relative_path,
                 child.content_state
             );

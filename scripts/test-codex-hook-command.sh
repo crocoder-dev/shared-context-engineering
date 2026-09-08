@@ -22,22 +22,25 @@ helper="${generated_root}/config/.codex/hooks/run-sce-or-show-install-guidance.s
 [ -f "${hooks_json}" ] || fail "generated hooks.json is missing"
 [ -f "${helper}" ] || fail "generated hook helper is missing"
 
-expected_events='["PostToolUse","PreToolUse","Stop","UserPromptSubmit"]'
+expected_events='["Interrupt","PostToolUse","PreToolUse","SessionEnd","Stop","SubagentStop","UserPromptSubmit"]'
 actual_events="$(jq -c '.hooks | keys | sort' "${hooks_json}")"
 [ "${actual_events}" = "${expected_events}" ] || fail "unexpected Codex hook event registrations: ${actual_events}"
 
 jq -e '
-  ((.hooks.UserPromptSubmit | length == 1) and (.hooks.UserPromptSubmit[0].hooks | length == 1))
-  and ((.hooks.Stop | length == 1) and (.hooks.Stop[0].hooks | length == 1))
-  and ((.hooks.PreToolUse | length == 1) and (.hooks.PreToolUse[0].matcher == "Bash") and (.hooks.PreToolUse[0].hooks | length == 1))
-  and ((.hooks.PostToolUse | length == 1) and (.hooks.PostToolUse[0].matcher == "apply_patch") and (.hooks.PostToolUse[0].hooks | length == 1))
+  ((.hooks.UserPromptSubmit | length == 1) and (.hooks.UserPromptSubmit[0].hooks | length == 1) and (.hooks.UserPromptSubmit[0] | has("matcher") | not))
+  and ((.hooks.Stop | length == 2) and (.hooks.Stop[0].hooks | length == 1) and (.hooks.Stop[1].hooks | length == 1) and (.hooks.Stop[1] | has("matcher") | not))
+  and ((.hooks.PreToolUse | length == 2) and (.hooks.PreToolUse[0].matcher == "Bash") and (.hooks.PreToolUse[0].hooks | length == 1) and (.hooks.PreToolUse[1] | has("matcher") | not) and (.hooks.PreToolUse[1].hooks | length == 1))
+  and ((.hooks.PostToolUse | length == 2) and (.hooks.PostToolUse[0].matcher == "apply_patch") and (.hooks.PostToolUse[0].hooks | length == 1) and (.hooks.PostToolUse[1] | has("matcher") | not) and (.hooks.PostToolUse[1].hooks | length == 1))
+  and ((.hooks.Interrupt | length == 1) and (.hooks.Interrupt[0] | has("matcher") | not))
+  and ((.hooks.SubagentStop | length == 1) and (.hooks.SubagentStop[0] | has("matcher") | not))
+  and ((.hooks.SessionEnd | length == 1) and (.hooks.SessionEnd[0] | has("matcher") | not))
   and (has("$schema") | not)
-' "${hooks_json}" >/dev/null || fail "Codex hook registrations are not the expected four-entry contract"
+' "${hooks_json}" >/dev/null || fail "Codex hook registrations do not match the expected four-plus-mutation-scope contract"
 
 hook_command="$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "${hooks_json}")"
-for event in UserPromptSubmit Stop PreToolUse PostToolUse; do
-  event_command="$(jq -r --arg event "${event}" '.hooks[$event][0].hooks[0].command' "${hooks_json}")"
-  [ "${event_command}" = "${hook_command}" ] || fail "${event} does not use the shared Codex hook command"
+for path in '.hooks.UserPromptSubmit[0]' '.hooks.Stop[0]' '.hooks.PreToolUse[0]' '.hooks.PostToolUse[0]'; do
+  event_command="$(jq -r "${path}.hooks[0].command" "${hooks_json}")"
+  [ "${event_command}" = "${hook_command}" ] || fail "${path} does not use the shared Codex hook command"
 done
 case "${hook_command}" in
   *'git rev-parse --show-toplevel'*'2>/dev/null'*'|| exit 0; exec bash '*'$root/.codex/hooks/run-sce-or-show-install-guidance.sh'*' sce hooks codex') ;;
@@ -45,6 +48,16 @@ case "${hook_command}" in
 esac
 case "${hook_command}" in
   *eval*) fail "Codex hook command uses eval" ;;
+esac
+
+mutation_scope_command="$(jq -r '.hooks.PreToolUse[1].hooks[0].command' "${hooks_json}")"
+for path in '.hooks.PreToolUse[1]' '.hooks.PostToolUse[1]' '.hooks.Stop[1]' '.hooks.Interrupt[0]' '.hooks.SubagentStop[0]' '.hooks.SessionEnd[0]'; do
+  group_command="$(jq -r "${path}.hooks[0].command" "${hooks_json}")"
+  [ "${group_command}" = "${mutation_scope_command}" ] || fail "${path} does not route to the shared mutation-scope command"
+done
+case "${mutation_scope_command}" in
+  *'git rev-parse --show-toplevel'*'2>/dev/null'*'|| exit 0; exec bash '*'$root/.codex/hooks/run-sce-or-show-install-guidance.sh'*' sce hooks codex-mutation-scope') ;;
+  *) fail "Codex mutation-scope hook command is not root-aware and fail-open: ${mutation_scope_command}" ;;
 esac
 
 repo="${tmp_root}/repo with spaces"

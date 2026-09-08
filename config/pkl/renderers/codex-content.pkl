@@ -55,15 +55,10 @@ local missingSceInstallMessage = "sce CLI not found. Install it from https://sce
 
 local codexSceHookScriptPath = ".codex/hooks/run-sce-or-show-install-guidance.sh"
 
-/// Codex invokes hooks with the event cwd, which may be nested below the
-/// repository root. Resolve that root at invocation time and fail open when
-/// Git cannot resolve it; the quoted expansion keeps spaces in the root safe.
 local codexSceHookCommand = "root=\\\"$(git rev-parse --show-toplevel 2>/dev/null)\\\" || exit 0; exec bash \\\"$root/\(codexSceHookScriptPath)\\\" sce hooks codex"
 
-/// Every Codex lifecycle event Codex routes to the SCE hook is dispatched
-/// through a single command (`sce hooks codex`); the typed dispatcher inside
-/// that command (T06) distinguishes event/tool combinations from the JSON
-/// payload it receives on stdin, so no per-event command varies here.
+local codexMutationScopeHookCommand = "root=\\\"$(git rev-parse --show-toplevel 2>/dev/null)\\\" || exit 0; exec bash \\\"$root/\(codexSceHookScriptPath)\\\" sce hooks codex-mutation-scope"
+
 hooksJson = new common.RenderedTextFile {
   slug = "hooks"
   rendered = """
@@ -87,6 +82,14 @@ hooksJson = new common.RenderedTextFile {
             "command": "\(codexSceHookCommand)"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(codexMutationScopeHookCommand)"
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -98,6 +101,14 @@ hooksJson = new common.RenderedTextFile {
             "command": "\(codexSceHookCommand)"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(codexMutationScopeHookCommand)"
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -107,6 +118,44 @@ hooksJson = new common.RenderedTextFile {
           {
             "type": "command",
             "command": "\(codexSceHookCommand)"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(codexMutationScopeHookCommand)"
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(codexMutationScopeHookCommand)"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(codexMutationScopeHookCommand)"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\(codexMutationScopeHookCommand)"
           }
         ]
       }

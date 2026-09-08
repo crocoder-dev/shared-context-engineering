@@ -64,19 +64,23 @@ local assertCodexHookInvocationContract = (artifacts: Mapping) ->
       && text.split("\"Stop\"").length == 2
       && text.split("\"PreToolUse\"").length == 2
       && text.split("\"PostToolUse\"").length == 2
-      && text.split("\"type\": \"command\"").length == 5
+      && text.split("\"Interrupt\"").length == 2
+      && text.split("\"SubagentStop\"").length == 2
+      && text.split("\"SessionEnd\"").length == 2
+      && text.split("\"type\": \"command\"").length == 11
       && text.split("\"matcher\": \"Bash\"").length == 2
       && text.split("\"matcher\": \"apply_patch\"").length == 2
+      && text.split("sce hooks codex\"").length == 5
+      && text.split("sce hooks codex-mutation-scope\"").length == 7
       && !text.contains("\"$schema\"")
       && text.contains("git rev-parse --show-toplevel")
       && text.contains("2>/dev/null")
       && text.contains("|| exit 0")
       && text.contains("exec bash")
       && text.contains("$root/.codex/hooks/run-sce-or-show-install-guidance.sh")
-      && text.contains("sce hooks codex")
       && !text.contains("eval")
-    ) "Codex hook invocation: four registrations use safe repository-root resolution"
-    else throw("Codex hook invocation must resolve the Git root safely and preserve the exact four registrations")
+    ) "Codex hook invocation: four sce-hooks-codex plus six mutation-scope registrations use safe repository-root resolution"
+    else throw("Codex hook invocation must resolve the Git root safely and preserve the four sce-hooks-codex plus six mutation-scope registrations")
 
 /// Current upstream Codex skill loading provides no Claude/OpenCode-style
 /// `$ARGUMENTS` substitution, so a literal, unsubstituted token in generated
