@@ -285,21 +285,11 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     
     \(invoke.render.apply(mode)) \(taskExecution.render.apply(mode)) with the complete `ready` result from \(planReview.render.apply(mode)).
     
-    Branch on `auto-approve`:
-    
-    `approved` -> Also pass the `approve` flag. \(taskExecutionUpper.render.apply(mode)) then shows its implementation gate as a summary and proceeds without asking.
-    
-    else -> Do not pass the `approve` flag. \(taskExecutionUpper.render.apply(mode)) shows its implementation gate and waits for the user's decision.
-    
-    \(taskExecutionUpper.render.apply(mode)) exclusively owns:
-    
-    - Presenting the implementation summary.
-    - Requesting implementation confirmation.
-    - Implementing the task.
-    - Running task-level verification.
-    - Updating the task status and evidence.
-    
-    Do not present an additional implementation confirmation.
+    Pass the `approve` flag only when `auto-approve` is `approved`; otherwise omit it.
+    \(taskExecutionUpper.render.apply(mode)) exclusively owns the implementation gate,
+    approval question, wait, decision handling, implementation, task-level verification,
+    and task-status/evidence update. Do not duplicate that procedure here or present an
+    additional implementation confirmation.
     
     \(model.inlinePhaseBody.apply(executionSkillBody).render.apply(mode))Branch on the execution result.
     
@@ -888,23 +878,13 @@ local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
     At the start of the phase, before any file modification, present the task using
     \(implementationGate.render.apply(mode)).
     
-    The gate must be shown even when:
+    Always show the gate, including for straightforward, pre-approved, stale, or
+    incomplete input. `references/output.md` owns its exact content and question text.
     
-    - The task appears straightforward.
-    - The workflow believes approval was already implied.
-    - The handoff is stale or incomplete.
-    - The user is likely to approve.
-    
-    When the `approve` flag is absent, end the gate with exactly one approval
-    question:
-    
-    `Continue with implementation now? (yes/no)`
-    
-    Stop and wait for the user's answer. Do not \(returnYamlLower.render.apply(mode)), and make no file
-    modifications, until the user has answered.
-    
-    When the `approve` flag is supplied, show the gate as a summary, omit the
-    approval question, do not wait, and continue at \(taskExecutionHeadings.stepReference.apply(mode, 4)).
+    Without `approve`, render the gate's approval question and wait. Do not
+    \(returnYamlLower.render.apply(mode)) or modify files until the user answers. With `approve`, render
+    the gate without its question, do not wait, and continue at
+    \(taskExecutionHeadings.stepReference.apply(mode, 4)).
     
     \(taskExecutionHeadings.stepHeading.apply(mode, 3, "Handle the user's decision"))
     
@@ -1474,17 +1454,8 @@ local renderImplementationGate = (mode: model.WorkflowRenderMode) -> """
     When the `approve` flag is supplied, omit the question and end after
     **Verification**.
     
-    ## Rules
-    
-    - Show the gate exactly once for an unchanged task.
-    - Do not modify files before approval.
-    - Do not add requirements absent from the reviewed task.
-    - Do not present multiple competing approaches unless a material decision is
-      required.
-    - Do not emit YAML while waiting for the user's answer. Stop after the gate and
-      wait.
-    - If the handoff is stale or incomplete, show the known task information and
-      identify the problem under **Risks or trade-offs**.
+    If the handoff is stale or incomplete, show the known task information and
+    identify the problem under **Risks or trade-offs**.
     """
 
 local IMPLEMENTATION_GATE = renderImplementationGate.apply("package")
@@ -1652,15 +1623,9 @@ application code, and the only one that asks the user for anything.
 Input: the complete `ready` result from the plan review phase, plus the `approve`
 flag when the user pre-approved this invocation.
 
-This phase exclusively owns:
-
-- Presenting the implementation summary.
-- Requesting implementation confirmation.
-- Implementing the task.
-- Running task-level verification.
-- Updating the task status and evidence.
-
-Do not present an additional implementation confirmation anywhere else.
+This phase owns the implementation gate and approval lifecycle, then implements,
+verifies, and records exactly one approved task. No other phase may ask for implementation
+confirmation.
 
 The `approve` flag means the user pre-approved this task when invoking the
 workflow. It suppresses the approval question and the wait. It never suppresses
@@ -1706,23 +1671,12 @@ Do not reconstruct missing material requirements.
 At the start of the phase, before any file modification, present the task using
 `references/output.md`.
 
-The gate must be shown even when:
+Always show the gate, including for straightforward, pre-approved, stale, or
+incomplete input. `references/output.md` owns its exact content and question text.
 
-- The task appears straightforward.
-- The workflow believes approval was already implied.
-- The handoff is stale or incomplete.
-- The user is likely to approve.
-
-When the `approve` flag is absent, end the gate with exactly one approval
-question:
-
-`Continue with implementation now? (yes/no)`
-
-Stop and wait for the user's answer. Do not return internal state, and make no
-file modifications, until the user has answered.
-
-When the `approve` flag is supplied, show the gate as a summary, omit the
-approval question, do not wait, and continue at step 2.4.
+Without `approve`, render the gate's approval question and wait. Do not return
+internal state or modify files until the user answers. With `approve`, render the
+gate without its question, do not wait, and continue at step 2.4.
 
 ## 2.3 Handle the user's decision
 
@@ -2022,17 +1976,8 @@ When the `approve` flag is absent, end with exactly:
 When the `approve` flag is supplied, omit the question and end after
 **Verification**.
 
-## Rules
-
-- Show the gate exactly once for an unchanged task.
-- Do not modify files before approval.
-- Do not add requirements absent from the reviewed task.
-- Do not present multiple competing approaches unless a material decision is
-  required.
-- Do not emit YAML while waiting for the user's answer. Stop after the gate and
-  wait.
-- If the handoff is stale or incomplete, show the known task information and
-  identify the problem under **Risks or trade-offs**.
+If the handoff is stale or incomplete, show the known task information and
+identify the problem under **Risks or trade-offs**.
 """
 
 structuredComposite = new model.StructuredCompositeSource {

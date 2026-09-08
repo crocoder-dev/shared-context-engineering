@@ -6,15 +6,9 @@ application code, and the only one that asks the user for anything.
 Input: the complete `ready` result from the plan review phase, plus the `approve`
 flag when the user pre-approved this invocation.
 
-This phase exclusively owns:
-
-- Presenting the implementation summary.
-- Requesting implementation confirmation.
-- Implementing the task.
-- Running task-level verification.
-- Updating the task status and evidence.
-
-Do not present an additional implementation confirmation anywhere else.
+This phase owns the implementation gate and approval lifecycle, then implements,
+verifies, and records exactly one approved task. No other phase may ask for implementation
+confirmation.
 
 The `approve` flag means the user pre-approved this task when invoking the
 workflow. It suppresses the approval question and the wait. It never suppresses
@@ -60,23 +54,12 @@ Do not reconstruct missing material requirements.
 At the start of the phase, before any file modification, present the task using
 `references/output.md`.
 
-The gate must be shown even when:
+Always show the gate, including for straightforward, pre-approved, stale, or
+incomplete input. `references/output.md` owns its exact content and question text.
 
-- The task appears straightforward.
-- The workflow believes approval was already implied.
-- The handoff is stale or incomplete.
-- The user is likely to approve.
-
-When the `approve` flag is absent, end the gate with exactly one approval
-question:
-
-`Continue with implementation now? (yes/no)`
-
-Stop and wait for the user's answer. Do not return internal state, and make no
-file modifications, until the user has answered.
-
-When the `approve` flag is supplied, show the gate as a summary, omit the
-approval question, do not wait, and continue at step 2.4.
+Without `approve`, render the gate's approval question and wait. Do not return
+internal state or modify files until the user answers. With `approve`, render the
+gate without its question, do not wait, and continue at step 2.4.
 
 ## 2.3 Handle the user's decision
 

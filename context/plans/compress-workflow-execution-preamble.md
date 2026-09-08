@@ -14,8 +14,11 @@ file that the agent must load. The reduction must occur in the emitted Markdown,
 not merely in the Pkl source.
 
 Planning baseline: `2d14959c6770d3635dfadb457e137c6fc05feba4` on `main`.
-This plan covers finding 1 of the workflow duplication audit only. Implementation
-and focused generation checks are complete. Full `nix flake check` remains for PR CI.
+This plan started with finding 1 of the workflow duplication audit. PR #270 now also
+contains a separate follow-up commit for the next-task approval-gate duplication: the
+entrypoint routes the optional approval flag, task execution owns approval behavior, and
+`references/output.md` owns only the exact gate layout/question. Full `nix flake check`
+remains for PR CI.
 
 ## Acceptance criteria
 
@@ -255,3 +258,22 @@ Measurements include one trailing newline per selected section, exclude unchange
 The five root context files were reviewed for generation and workflow claims affected by this change. `overview.md`, `architecture.md`, and `context-map.md` require no change. `patterns.md` and `glossary.md` now identify the compact contract owner without changing workflow behavior. The existing ownership-table and handover links remain valid; both domain documents describe the implementation. No new feature or qualifying architecture decision was introduced.
 
 The two additional root edits replace existing text without increasing line counts. No other root context changed. Full repository validation is still pending; successful focused checks do not imply that `nix flake check` has passed.
+
+## Follow-up: approval-gate ownership deduplication
+
+- [x] T02: `Deduplicate next-task approval-gate procedure` (status:done)
+  - Scope: `sce-next-task` entrypoint, task-execution reference, output reference,
+    canonical Pkl source, generation assertions, tracked Pi/Claude/Codex mirrors,
+    and the ownership table.
+  - Ownership after change: the entrypoint parses `approved` and conditionally passes
+    `approve`; task execution exclusively owns show/wait/approve/decline/block and
+    the no-edit-before-approval boundary; `references/output.md` owns the gate field
+    order and exact approval question only.
+  - Behavior preserved: the gate is always shown, pre-approval never skips it, the
+    non-preapproved path waits in the same workflow, ambiguous answers may ask the
+    same question once more, rejection returns `declined`, and editing remains
+    forbidden before approval.
+  - Verify: existing generation contracts pass; rendered package inspection confirms
+    the exact approval question remains in `references/output.md`, not `SKILL.md` or
+    `task-execution.md`; generated inventory stays unchanged.
+  - Context synchronization: synced.

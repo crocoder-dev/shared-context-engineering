@@ -127,14 +127,5 @@ When the `approve` flag is absent, end with exactly:
 When the `approve` flag is supplied, omit the question and end after
 **Verification**.
 
-## Rules
-
-- Show the gate exactly once for an unchanged task.
-- Do not modify files before approval.
-- Do not add requirements absent from the reviewed task.
-- Do not present multiple competing approaches unless a material decision is
-  required.
-- Do not emit YAML while waiting for the user's answer. Stop after the gate and
-  wait.
-- If the handoff is stale or incomplete, show the known task information and
-  identify the problem under **Risks or trade-offs**.
+If the handoff is stale or incomplete, show the known task information and
+identify the problem under **Risks or trade-offs**.
