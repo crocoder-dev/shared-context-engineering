@@ -5,7 +5,7 @@ on:
     branches:
       - codex/compress-workflow-execution-preamble
     paths:
-      - .sce-handoff-dedup-v3.py
+      - .sce-handoff-dedup-v4.py
       - .github/workflows/sce-approval-dedup-preparation.yml
 
 permissions:
@@ -26,4 +26,4 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
 
       - name: Apply, verify, commit, and push handoff deduplication
-        run: nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 .sce-handoff-dedup-v3.py
+        run: nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 .sce-handoff-dedup-v4.py
