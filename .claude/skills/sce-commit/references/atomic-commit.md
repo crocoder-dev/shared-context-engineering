@@ -1,4 +1,4 @@
-# SCE Atomic Commit
+# Atomic commit phase
 
 ## Purpose
 
@@ -8,8 +8,8 @@ Write messages matching:
 
 `references/commit-message-style.md`
 
-Committing is not this skill's job. The invoking `/commit` workflow decides
-whether a returned message is committed, and it is the only thing that runs
+This phase does not commit. The invoking `/commit` workflow decides
+whether a returned message is committed, and it is the only part that runs
 `git commit`.
 
 ## Input
@@ -147,7 +147,7 @@ Do not:
 
 ## Completion
 
-The skill is complete after:
+The phase is complete after:
 
 - The staged diff was read, or reading it failed and was reported.
 - Messages were written for every staged file, or a blocker prevented it.

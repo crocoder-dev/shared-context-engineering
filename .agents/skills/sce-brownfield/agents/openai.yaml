@@ -1,0 +1,6 @@
+interface:
+  display_name: "SCE Brownfield"
+  short_description: "Reconstruct durable context from an existing repository's own evidence"
+  default_prompt: "Reconstruct durable SCE context from this repository's own evidence."
+policy:
+  allow_implicit_invocation: false

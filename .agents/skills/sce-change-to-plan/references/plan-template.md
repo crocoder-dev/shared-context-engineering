@@ -146,9 +146,9 @@ invent one: `None.` is the expected answer for a well-specified change.}
 
 - The last task in the stack is an ordinary implementation task. Do not author a
   trailing "validation and cleanup" task.
-- Final validation, cleanup, and success-criteria verification are run by
-  `/validate` from the `Acceptance criteria` section after the last task
-  completes.
+- Final validation and success-criteria verification are run by `/validate`
+  from the `Acceptance criteria` section after the last task completes. Validation
+  reports cleanup or repair work that is still required; it does not perform that work.
 - Do not author a task whose only purpose is running the full check suite,
   verifying durable context, or removing scaffolding.
 - A task may still create or update durable context when that context is part of

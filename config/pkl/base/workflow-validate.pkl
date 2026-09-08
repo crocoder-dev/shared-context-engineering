@@ -18,7 +18,7 @@ local validationReport = model.semanticReference.apply("`references/validation-r
 local reportVersusResult = model.semanticReference.apply(
   """
   The plan-file `## Validation Report` section is written separately using
-  `references/validation-report.md`. This file is the skill's return value to the
+  `references/validation-report.md`. This file is the phase's return value to the
   invoking workflow.
   """,
   """
@@ -32,7 +32,7 @@ local reportVersusResult = model.semanticReference.apply(
 /// workflow uses the same emitted document, so the reference remains unchanged.
 local validationResultHandoff = model.semanticReference.apply(
   """
-  The skill must return a Markdown result matching its validation result contract.
+  The phase must return a Markdown report matching its validation result contract.
   Branch on the report's `Status:`.
   """,
   "Branch on the report's `Status:`."
@@ -40,9 +40,9 @@ local validationResultHandoff = model.semanticReference.apply(
 local invoke = model.semanticReference.apply("Invoke", "Run")
 local invokedSkills = model.semanticReference.apply("invoked skills", "embedded phases")
 local invokedSkill = model.semanticReference.apply("invoked skill", "embedded phase")
-local markdownResult = model.semanticReference.apply("Markdown result", "internal state")
+local markdownResult = model.semanticReference.apply("Markdown report", "internal state")
 local returningValidationResult = model.semanticReference.apply("Returning one Markdown validation result", "Recording one Markdown validation result")
-local returnExactlyOneMarkdownResult = model.semanticReference.apply("Return exactly one Markdown result", "Set exactly one internal state")
+local returnExactlyOneMarkdownResult = model.semanticReference.apply("Return exactly one Markdown report", "Set exactly one internal state")
 local returnOnlyMarkdownReport = model.semanticReference.apply("Return only the Markdown report", "Record only the Markdown report")
 local returnLower = model.semanticReference.apply("return", "set internal status")
 local returnUpper = model.semanticReference.apply("Return", "Set internal status")
@@ -106,7 +106,7 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     summarize, or pre-scope it.
     
     Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is
-    the path carried by \(validation.render.apply(mode)) in its Markdown result (`Plan:`, or a
+    the path carried by \(validation.render.apply(mode)) in its Markdown report (`Plan:`, or a
     candidate path), so every emitted command is directly runnable.
     
     ## Workflow
@@ -137,7 +137,7 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     Do not rewrite it into a shorter summary. Do not drop the retry command. Do not
     add an alternate continuation that replaces `/validate`. Stop.
     
-    `validated` -> Print the complete validated Markdown result as returned.
+    `validated` -> Print the complete validated Markdown report as returned.
     Continue to the next step.
     
     ### 2. Report completion
@@ -182,7 +182,7 @@ local COMMAND = structuredCommand.render.apply("package", "").text
 
 local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     \(model.packageOnlyBlock.apply("""
-    # SCE Validation
+    # Validation phase
     
     ## Purpose
     
@@ -260,8 +260,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
 
     When a check fails, record the failure and continue gathering evidence. Do not
     modify tests, application code, or configuration to make a check pass. Final
-    validation measures the finished work; repair belongs to a later work session,
-    not this skill.
+    validation measures the finished work; repair belongs to a normal work session outside this phase.
     
     Never report a check as passed unless it ran successfully or the authorized
     inspection confirmed the criterion.
@@ -429,7 +428,7 @@ local renderValidationReport = (mode: model.WorkflowRenderMode) -> """
 local VALIDATION_REPORT = renderValidationReport.apply("package")
 
 local renderValidationResult = (mode: model.WorkflowRenderMode) -> """
-    # Validation Result
+    # Validation report
     
     Return only one completed Markdown report using the applicable variant below.
     Do not include unused sections, placeholders, YAML, or a fenced code block.
@@ -442,7 +441,7 @@ local renderValidationResult = (mode: model.WorkflowRenderMode) -> """
     
     \(reportVersusResult.render.apply(mode))
     
-    ## Validated variant
+    ## Validated report
     
     # Validation Report
     
@@ -473,7 +472,7 @@ local renderValidationResult = (mode: model.WorkflowRenderMode) -> """
     
     ---
     
-    ## Failed variant
+    ## Failed report
     
     This variant is a session handoff. Another agent or a later session must be
     able to act from it alone. Write it as a prompt the user can paste forward, not
@@ -537,7 +536,7 @@ local renderValidationResult = (mode: model.WorkflowRenderMode) -> """
     
     ---
     
-    ## Blocked variant
+    ## Blocked report
     
     # Validation blocked
     

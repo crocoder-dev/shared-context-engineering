@@ -10,10 +10,10 @@ description: >
 
 Own this workflow from input through its terminal user-visible response.
 Follow its steps, gates, and stops in order; do not add, skip, reorder, or merge them.
-Keep phase results internal and continue immediately until a defined wait or stop.
+Keep internal phase results private and continue immediately until a defined wait or stop.
 Resume user waits in this same skill and session.
-Use only the specified `references/output.md` layouts for gates and terminal
-responses. Do not expose raw state or add text around a layout.
+Render user-visible output only from the named workflow layouts or phase reports.
+Do not expose raw internal state or add text around a rendered layout or report.
 Non-SCE helpers may assist, but must return to the active step without changing
 phase order, gates, waits, writes, validation, stops, or terminal output.
 Do not invoke another SCE skill, package, or workflow command.
@@ -97,14 +97,14 @@ Run `git diff --cached --quiet`. A zero exit status means nothing is staged.
 When nothing is staged, stop with the **No staged changes** layout from
 `references/output.md`.
 
-Do not stage anything. Do not proceed to the skill.
+Do not stage anything. Do not proceed to the phase.
 
 #### 2. Request one commit message
 
 Read `references/atomic-commit.md`, then run the **Atomic commit phase** with
 `mode: bypass` and the commit context.
 
-Bypass mode is the skill's contract for producing exactly one message. Do not
+Bypass mode is the phase's contract for producing exactly one message. Do not
 restate its overrides here; the **Atomic commit phase** owns them.
 
 Branch on `status`:
@@ -113,7 +113,7 @@ Branch on `status`:
 
 `bypass_message` -> Continue to the next step.
 
-The skill never returns `proposal` in bypass mode. Treat a `proposal` result as
+The phase never returns `proposal` in bypass mode. Treat a `proposal` result as
 a contract violation: report it and stop without committing.
 
 #### 3. Execute exactly one commit
