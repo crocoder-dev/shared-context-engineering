@@ -2076,8 +2076,9 @@ Persist this field in every plan; this is durable plan state, not chat state:
       persistence-contract, or security-posture change (the store is explicitly
       not attribution evidence, not exported, not synced).
 
-- [ ] T04: `Codex mutation-scope driver + hidden command routing` (status:todo)
+- [x] T04: `Codex mutation-scope driver + hidden command routing` (status:done)
   - Task ID: T04
+  - Completed: 2026-09-08
   - Scope: In — per the D17 decision (default: separate command),
     `cli_schema::HooksSubcommand::CodexMutationScope` (hidden via
     `#[command(hide = true)]`), the `convert_hooks_subcommand_request` arm,
@@ -2131,7 +2132,149 @@ Persist this field in every plan; this is durable plan state, not chat state:
     ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
     services::hooks::mutation_scope`; `services::parse::` routing tests; live
     binary check of the hidden command; AC19 grep.
-  - Context synchronization: pending
+  - Files changed:
+    - `cli/src/cli_schema.rs` (new hidden `HooksSubcommand::CodexMutationScope`
+      variant, `#[command(hide = true)]`)
+    - `cli/src/services/parse/command_runtime.rs`
+      (`convert_hooks_subcommand_request` arm →
+      `HookSubcommand::CodexMutationScope`; two routing/hidden-help tests)
+    - `cli/src/services/hooks/mod.rs` (`HookSubcommand::CodexMutationScope`
+      variant; unwrapped / non-fail-open `run_hooks_subcommand_in_repo` dispatch
+      arm mirroring `MutationScope` / `ClaudeMutationScope`;
+      `hook_runtime_invocation_name` arm)
+    - `cli/src/services/hooks/codex_mutation_scope/mod.rs` (adapter driver:
+      `GitDirResolver` / `IngressSeam` injected `&dyn Fn` aliases, `ACTOR_KIND_CODEX`,
+      `run_codex_mutation_scope_subcommand` / `_from_payload` / `_from_payload_with`
+      (+ `#[cfg(test)] _at_state_root`), `dispatch_codex_hook_event`,
+      `handle_pre_tool_use`, `apply_recovery_barrier` / `BarrierOutcome`,
+      `establish_start`, `handle_close`, `cleanup_attempts_matching`,
+      `abandon_attempt`, `attempt_matches_key`, `scope_boundary_payload` /
+      `abandon_payload` / `flush_payload`, `pre_tool_use_deny_json`,
+      `log_pre_tool_use_fail_closed`; 30 new `mod driver` unit tests)
+  - Result: Wired the hidden `sce hooks codex-mutation-scope` command through the
+    normal hook stack unwrapped (non-fail-open), exactly as `mutation-scope` /
+    `claude-mutation-scope`, and implemented the Codex adapter driver as a close
+    structural mirror of #263's `claude_mutation_scope` driver, adapted to Codex's
+    six-event surface (`PreToolUse`, `PostToolUse`, `Stop`, `Interrupt`,
+    `SubagentStop`, `SessionEnd` — no `PermissionDenied` / `StopFailure` /
+    `UserPromptSubmit` / `WorktreeRemove`). Mappings: `TrackedMutation`
+    (`Bash` / `apply_patch`) `PreToolUse` → D13 recovery barrier → D7 write-ahead
+    `Start` (`pending_start` → ingress `start` with `actor_kind:"codex"` and the
+    raw hook `cwd` as `repository_root` → `active`) → D8 fail-closed
+    `hookSpecificOutput` `permissionDecision:"deny"` on any failure (resolver,
+    barrier, allocation, seam), detail logged via
+    `sce.hooks.codex_mutation_scope.pre_tool_use_fail_closed`, never leaked to the
+    model; `Untracked` (`mcp__*`, unknown) and `Delegation`
+    (`collaborationspawn_agent` / `collaborationwait_agent`) `PreToolUse` →
+    neutral empty continue, no `Start`, no attempt, no bookkeeping, never denied
+    for being untracked, never affected by the recovery barrier (D2/D8/D23);
+    `PostToolUse` for a tracked `active` attempt → `close` then `remove_attempt`,
+    a `pending_start` attempt → `abandon`, a failed `close` → `abandon` +
+    `recovery_pending` (D9/D11); no `Close`-on-failure path (built-in Case A);
+    `Stop` → main-turn (`agent_id` none) scoped abandon sweep; `Interrupt` →
+    whole-session sweep (SIGINT tears down the session, strictly covered by the
+    `SessionEnd` backstop); `SubagentStop` → `agent_id`-scoped sweep; `SessionEnd`
+    → whole-session sweep — all sweeps over adapter-owned tracked attempts only
+    (D12); D13 recovery barrier denies new `TrackedMutation` `PreToolUse` while
+    tracked attempts remain and runs exactly one quiescent `flush`, clearing
+    `recovery_pending` only on durable flush success. No D10a successor-barrier /
+    lane-key code ships (T02 recorded the lane key N/A). The driver's only
+    mutation-stack dependency in non-test code is
+    `super::mutation_scope::run_mutation_scope_from_payload`, wire payload built
+    as a JSON string (D18/AC19). Injected git-dir resolver + seam make every
+    mapping unit-testable without a real repo or DB. No background-execution
+    classifier/deny ships (D16 — the `codex exec` shell tool has no
+    `run_in_background`); AC15's live-check for that path is therefore N/A for
+    this Codex surface.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::hooks::codex_mutation_scope` — **passed** (73
+      tests: 30 new `tests::driver` covering the `Untracked` / `Delegation`
+      pass-through with an untouched state store (AC9b), a full successful-MCP
+      lifecycle leaving no scope (AC9b), write-ahead `Start` ordering + `cwd` as
+      `repository_root` observed from inside the seam (AC6), duplicate-delivery
+      `ScopeId` reuse (AC4), resolver/`Start`-seam fail-closed with the exact
+      deny JSON + logged detail + never-allow (AC7), `Delegation`/`Untracked`
+      never fail-closed (AC7), successful `close` (AC8), `pending_start` → abandon
+      and failed `close` → abandon + `recovery_pending` (D11/AC13), failed
+      `close` + failed `abandon` keep the attempt tracked (D11), `PostToolUse`
+      with no matching attempt is a no-op, `Stop` / `Interrupt` / `SubagentStop`
+      / `SessionEnd` scoped sweeps + a failed-abandon sweep keeping the attempt
+      tracked (D12), recovery-barrier deny-while-outstanding / untracked-unaffected
+      / flush-then-start / flush-failure-stays-closed (AC12), probe-13
+      mutate-then-error leaves no stale state (AC9c), probe-14 failed-MCP →
+      tracked successor starts clean (AC9d), probes-16/17 parallel MCP creates no
+      scopes (AC9e), built-in failed-A-then-B never leaves a zombie (AC9a),
+      malformed / unsupported-event payloads propagate as real errors; plus the
+      43 pre-existing T02/T03 tests).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::hooks::mutation_scope` — **passed** (36 tests;
+      generic ingress unaffected).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::parse::` — **passed** (15 tests, incl. the new
+      `codex_mutation_scope_hook_parses_to_hook_subcommand` and
+      `codex_mutation_scope_hook_is_hidden_from_hooks_help`).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::hooks::` — **passed** (404 tests; existing
+      `sce hooks codex` / Claude-adapter / mutation-scope suites unaffected and
+      additive).
+    - Live binary (AC1): `sce hooks codex-mutation-scope </dev/null` →
+      `Error [SCE-ERR-RUNTIME]: Invalid Codex hook event payload from STDIN:
+      expected a JSON object, got an empty payload.` exit 4 (strict parser, not
+      "unknown subcommand", not fail-open); `sce hooks --help` lists `codex` and
+      `mutation-scope` but **not** `codex-mutation-scope`; `sce --help` does not
+      list it.
+    - AC19 grep
+      (`^\s*use\s+crate::services::mutation_trace::(runtime|protocol|store)|::(RepositoryAgentTraceDb|WorktreeId|GitSnapshotService)\b`
+      over `cli/src/services/hooks/codex_mutation_scope/`) — **clean**; the only
+      non-test mutation-stack import is
+      `super::mutation_scope::run_mutation_scope_from_payload`.
+    - `clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` —
+      **clean**.
+    - `cargo fmt --manifest-path cli/Cargo.toml -- --check` — **clean** (after
+      `cargo fmt`).
+  - Context impact: domain — a new adapter-domain driver plus a new hidden CLI
+    route. User-visible surface: one hidden `sce hooks codex-mutation-scope`
+    subcommand (hidden from `sce --help` / `sce hooks --help`); no visible-help
+    or public-API change. No generated config yet (`.codex/hooks.json` / `sce
+    setup` wiring is T05), no real Git/DB path yet (T06). The generic
+    mutation-scope ingress, runtime, protocol, Quint model, and Agent Trace
+    schema are unchanged (AC22 territory — no edits to those paths). Durable
+    Codex-adapter context (`context/cli/codex-mutation-scope-integration.md` and
+    the cross-reference edits to `context/overview.md`,
+    `context/architecture.md`, `context/cli/mutation-scope-runtime.md`,
+    `context/cli/mutation-scope-hook-ingress.md`,
+    `context/sce/agent-trace-hooks-command-routing.md`,
+    `context/sce/codex-integration-runtime.md`, `context/context-map.md`) is
+    authored by **T07** once the full adapter ships, exactly as recorded for
+    T01/T02/T03.
+  - Context synchronization: synced
+    - T04 wires an internal Rust adapter driver plus one hidden, **unregistered**
+      CLI route (`sce hooks codex-mutation-scope`). No `sce setup` registration
+      (T05), no `.codex/hooks.json` generation (T05), and no real Git/DB path
+      (T06) — so no real Codex session can reach the adapter yet. Consistent with
+      the plan's "Context sync" section and the T01/T02/T03 precedent, the durable
+      Codex-adapter context (`context/cli/codex-mutation-scope-integration.md`)
+      and the root/domain cross-reference edits (`context/overview.md`,
+      `context/architecture.md` line ~135,
+      `context/cli/mutation-scope-runtime.md`,
+      `context/cli/mutation-scope-hook-ingress.md`,
+      `context/sce/agent-trace-hooks-command-routing.md`,
+      `context/sce/codex-integration-runtime.md`, `context/context-map.md`) are
+      authored by **T07** once the adapter is registered and proven. Mandatory
+      five-root pass done: `overview.md` (its "Codex, OpenCode, and Pi still have
+      no adapter" sentence stays accurate — the driver is inert until T05),
+      `architecture.md` (its `hooks/mod.rs` line-135 enumeration will name the
+      new arm at T07, matching how the `mutation-scope` / `claude-mutation-scope`
+      arms were documented at their integration task), `glossary.md`,
+      `patterns.md`, `context-map.md` all read and confirmed not contradicted by
+      an inert, unreachable adapter. No architecture decision qualified for an
+      ADR — T04 is a new caller of the existing
+      `hooks::mutation_scope::run_mutation_scope_from_payload` seam under the
+      already-recorded D17 decision (separate hidden command, decided at T02),
+      structurally mirroring `claude_mutation_scope`; the Codex hook-ownership
+      ADR (`2026-08-23-codex-nondestructive-hook-ownership.md`) is untouched
+      (that is T05's `codex_hook_config.rs` scope).
 
 - [ ] T05: `Generated .codex/hooks.json registrations, setup merge, and doctor` (status:todo)
   - Task ID: T05
