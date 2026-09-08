@@ -2,11 +2,21 @@ from pathlib import Path
 
 path = Path("/tmp/sce-validation-report-dedup.py")
 text = path.read_text()
-old = """Do not author this section while planning. Only `/validate` through the **Validation phase**
+
+old_intro = """Do not author this section while planning. Only `/validate` through the **Validation phase**
 writes it."""
-new = """Do not author this section while planning. Only `/validate` through `sce-validation`
+new_intro = """Do not author this section while planning. Only `/validate` through `sce-validation`
 writes it."""
-count = text.count(old)
-if count != 2:
-    raise SystemExit(f"expected 2 rendered intro spellings, found {count}")
-path.write_text(text.replace(old, new))
+intro_count = text.count(old_intro)
+if intro_count != 2:
+    raise SystemExit(f"expected 2 rendered intro spellings, found {intro_count}")
+text = text.replace(old_intro, new_intro)
+
+old_token = '"Do not modify tests, application code, or configuration to make a check pass."'
+new_token = '"repair belongs to a later work session"'
+token_count = text.count(old_token)
+if token_count != 2:
+    raise SystemExit(f"expected 2 validation ownership tokens, found {token_count}")
+text = text.replace(old_token, new_token)
+
+path.write_text(text)
