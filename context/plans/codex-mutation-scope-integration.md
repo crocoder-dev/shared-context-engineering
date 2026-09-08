@@ -37,13 +37,15 @@ as a scope on Codex 0.153.4 (D10a Case C) is exactly why it is excluded.
 
 This extends the mutation-scope stack. The generic ingress, the runtime
 (`coordinate()` / `abandon_scope()`), and the `mutation-trace` protocol already
-exist and are **unchanged in contract**. `ActorKind::Codex` and the
-`"actor_kind":"codex"` wire value are already accepted by
-`parse_mutation_scope_payload` today — the Codex adapter is a new caller of an
-existing seam, not a protocol change. This change adds the Codex harness adapter
-layer the ingress explicitly deferred, its checkout-local bookkeeping, its
-hidden command/routing, and its generated `.codex/hooks.json` registrations
-through the existing shared Codex hook-config ownership/merge/doctor system.
+exist, and the adapter itself is a new caller of them rather than a rewrite of
+them. `ActorKind::Codex` and the `"actor_kind":"codex"` wire value are already
+accepted by `parse_mutation_scope_payload` today. The one deliberate exception
+is the accepted fifth PR #268 follow-up, which refines the generic attribution
+semantics with the boundary-aware unconfirmed-Codex rule (D14) — see "Protocol
+scope" below. This change adds the Codex harness adapter layer the ingress
+explicitly deferred, its checkout-local bookkeeping, its hidden command/routing,
+and its generated `.codex/hooks.json` registrations through the existing shared
+Codex hook-config ownership/merge/doctor system.
 
 **The Claude adapter is a structural reference, not a lifecycle specification
 for Codex.** Codex's hook surface differs materially from Claude's: it has no
@@ -64,20 +66,44 @@ to write only through the mutation runtime (`mutation_trace_*` tables); the
 `apply_patch -> diff_traces -> post-commit intersection` evidence pipeline is a
 complementary system and is not folded into mutation-scope storage.
 
-No mutation protocol, Quint model, mutation-trace SQL migration,
-mutation-attribution algorithm, or Agent Trace schema change is in scope. If T01
-reveals Codex fundamentally cannot be represented by the current mutation-scope
-contract, T01 stops and records the contradiction in this plan's Open questions
-rather than modifying the protocol; any protocol change becomes a separate,
-explicitly justified PR.
+**Protocol scope (chronological — the plan's scope changed once, deliberately).**
+
+1. **Original adapter plan.** No mutation protocol, Quint model, mutation-trace
+   SQL migration, mutation-attribution algorithm, or Agent Trace schema change
+   was required: the adapter was to be a new caller of an existing seam. If T01
+   revealed Codex fundamentally could not be represented by the current
+   mutation-scope contract, T01 was to stop and record the contradiction rather
+   than modify the protocol.
+2. **The accepted protocol-level safety follow-up.** T04's lifecycle analysis
+   exposed an *unobservable* arbitrary-hook denial window: an arbitrary sibling
+   `PreToolUse` hook can deny a Codex tool after SCE has already driven
+   `Start(A)`, and SCE never learns that verdict — so a cross-harness boundary
+   observing a mutation during that window could produce **false positive**
+   attribution. No adapter-local fix exists (the observable state is identical
+   for "A is running" and "A was denied"). The **fifth PR #268 follow-up**
+   therefore intentionally refined the generic mutation protocol and the Quint
+   model with **boundary-aware unconfirmed-Codex attribution semantics** (D14):
+   `spec/mutation_cursor.qnt`, `spec/mutation_cursor.md`,
+   `cli/src/services/mutation_trace/protocol.rs`, and the mutation-trace
+   runtime/MBT tests that refine and validate the rule.
+3. **From that point onward (T06, T07).** No *further* protocol, Quint,
+   runtime-semantic, mutation-attribution-algorithm, mutation-trace SQL, or
+   Agent Trace schema change is expected or permitted. Any additional such
+   change becomes a separate, explicitly justified PR.
+
+**No mutation-trace SQL migration and no Agent Trace schema change is in scope
+at any point** — `cli/migrations/agent-trace-repository/` and
+`config/schema/agent-trace.schema.json` remain untouched by this PR (AC22).
 
 **T01 outcome (recorded 2026-09-08):** the built-in `Bash` / `apply_patch`
 surface *is* representable by the current contract; the MCP mutation-scope
 lifecycle *is not* (D10a Case C). Re-planning chose **direction B** — MCP and
 unknown tools remain usable but are outside the Codex adapter's mutation-scope
-coverage. This requires **no** protocol / Quint / mutation-trace SQL / Agent
-Trace schema change (D23); it narrows the Codex adapter's coverage boundary
-only. T01 is done; T02 is unblocked.
+coverage. That decision required **no** protocol / Quint / mutation-trace SQL /
+Agent Trace schema change (D23); it narrows the Codex adapter's coverage
+boundary only. T01 is done; T02 is unblocked. *(This records what was true at
+T01. The later protocol change has a different cause — cross-harness
+zombie-attribution, not the MCP coverage decision; see D14 and D23.)*
 
 ## Stack and base
 
@@ -1059,9 +1085,24 @@ executions into one `ScopeId`.
 
 **Refined by the fifth follow-up (2026-09-08, PR #268) — Codex `Start` is not
 execution confirmation.** The earlier statement that such an overlap can simply
-produce `AiContended` was too broad. The refined rule, implemented in
-`spec/mutation_cursor.qnt` (`attributionForBoundary`) and
-`mutation_trace/protocol.rs` (`attribution_for_boundary`):
+produce `AiContended` was too broad. **D14 is the authoritative record of the
+accepted cross-harness attribution semantics** and of the only
+protocol/formal-model change this PR introduces (AC22). In short:
+
+```text
+Codex Start is write-ahead admission, not positive execution confirmation.
+
+An unconfirmed live Codex scope suppresses positive attribution at any
+non-confirming boundary.
+
+The exact Codex scope's own Close confirms that scope for the current boundary.
+
+If another live Codex scope remains unconfirmed, attribution remains
+IneligibleUnscoped.
+```
+
+The rule as implemented in `spec/mutation_cursor.qnt` (`attributionForBoundary`)
+and `mutation_trace/protocol.rs` (`attribution_for_boundary`):
 
 ```text
 Codex v1 Start is an admission/write-ahead scope boundary, not positive proof
@@ -1456,12 +1497,20 @@ mutations are detected immediately.
 - must **not** create any `Start`, `attempt`, `recovery_pending`, `Close`,
   `Abandon`, or `Flush` for an MCP or unknown execution.
 
-**No protocol / formal change.** This choice requires **no**
-`mutation_cursor.qnt` change, **no** mutation-trace protocol change, **no**
-mutation runtime semantic change, **no** SQL migration, and **no** Agent Trace
-schema change — the existing runtime already models exclusivity among tracked
-scopes, not global filesystem authorship. Direction B changes only the Codex
-adapter's coverage boundary.
+**No protocol / formal change is caused by *this* decision.** Direction B
+requires **no** `mutation_cursor.qnt` change, **no** mutation-trace protocol
+change, **no** mutation runtime semantic change, **no** SQL migration, and **no**
+Agent Trace schema change — the existing runtime already models exclusivity among
+tracked scopes, not global filesystem authorship. Direction B changes only the
+Codex adapter's coverage boundary.
+
+*Do not confuse this with the accepted fifth PR #268 follow-up.* That follow-up
+**did** intentionally change the protocol and Quint model, but for a distinct
+cause: `tracked Codex Start` + `arbitrary sibling hook denial` + a
+`cross-harness mutation boundary` could produce **false positive** attribution
+(D14). MCP's disposition here — `MCP / unknown -> Untracked -> no scope -> no
+adapter bookkeeping` — is unchanged by it, and MCP overlap still never becomes
+`AiContended`.
 
 **Rejected / deferred alternatives (historical rationale):**
 
@@ -1563,12 +1612,14 @@ performs final validation.
   `Start(Bash A)` live, an MCP call mutates the worktree, then `Close(Bash A)`.
   The runtime may report `AiExclusive(A)` for the interval. The test and the
   durable context must state this means **A was the only tracked scope live**,
-  **not** that MCP did not mutate. The generic protocol is **not** changed to
-  force this into `AiContended`.
+  **not** that MCP did not mutate. MCP remains `Untracked` and the accepted
+  protocol refinement does **not** convert MCP overlap into `AiContended`.
   - Validate: T06 regression (`Bash` scope + real MCP mutation via
     `fixtures/mcp_probe/`) asserting the `AiExclusive` result and a comment/doc
     line recording the tracked-scope-exclusivity (not sole-authorship) reading;
-    AC22 confirms no protocol/Quint change.
+    AC22 confirms there is no SQL/schema change and that the only protocol/Quint
+    semantic change is the boundary-aware unconfirmed-Codex attribution rule
+    (D14), which leaves MCP's `Untracked` disposition untouched.
 - [ ] AC4: The Codex execution key is exactly the field tuple T02 froze from
   T01 evidence (recorded in D3). Duplicate delivery of the same live
   `PreToolUse` reuses the same `attempt_seq`, `ScopeId`, and `Start` `EventId`.
@@ -1766,14 +1817,38 @@ performs final validation.
   replay-safe on redelivery (no second transition, revision unchanged).
   - Validate: T06 regressions Test-crash-a/b/c driving real events after
     simulating each crash point via the adapter's own bookkeeping helpers only.
-- [ ] AC22: The diff against
-  `origin/claude-mutation-scope-integration` is empty for
-  `spec/mutation_cursor.qnt`, `cli/src/services/mutation_trace/protocol.rs`,
-  `cli/migrations/agent-trace-repository/`, and
-  `config/schema/agent-trace.schema.json`; no mutation-trace SQL migration and
-  no Quint/protocol/attribution-algorithm change is introduced.
-  - Validate: `git diff origin/claude-mutation-scope-integration -- <those
-    paths>` is empty.
+- [ ] AC22: The **only** protocol / formal-model / mutation-attribution semantic
+  change introduced by the Codex integration is the accepted boundary-aware
+  unconfirmed-Codex attribution rule recorded in D14 / the fifth PR #268
+  follow-up. The diff against `origin/claude-mutation-scope-integration` may
+  therefore contain the intentional changes to `spec/mutation_cursor.qnt`,
+  `spec/mutation_cursor.md`, `cli/src/services/mutation_trace/protocol.rs`, and
+  the mutation-trace runtime, MBT harness, and refinement tests required to
+  refine and validate that rule — and nothing else of that kind. **No mutation-trace SQL migration is
+  introduced. No Agent Trace schema change is introduced.** The following must
+  remain unchanged against the predecessor: `cli/migrations/agent-trace-repository/`
+  and `config/schema/agent-trace.schema.json`. T06 and T07 introduce **no
+  further** production protocol, Quint, runtime-semantic,
+  mutation-attribution-algorithm, SQL, or schema change.
+  - Validate, in three parts:
+    1. Inspect the protocol / Quint diff
+       (`git diff origin/claude-mutation-scope-integration -- spec/
+       cli/src/services/mutation_trace/`) and verify every hunk is part of the
+       accepted unconfirmed-Codex attribution rule and its formal/refinement
+       tests (D14: `isCodexScope`, `boundaryConfirmsScope`,
+       `hasUnconfirmedCodexScope`, `attributionForBoundary` /
+       `is_codex_scope`, `boundary_confirms_scope`,
+       `has_unconfirmed_codex_scope`, `attribution_for_boundary`, the
+       `SafetyAttribution` invariants, the `scope4` MBT wiring, and their
+       regressions).
+    2. Assert empty: `git diff origin/claude-mutation-scope-integration --
+       cli/migrations/agent-trace-repository/
+       config/schema/agent-trace.schema.json`.
+    3. T06 baseline freeze — assert empty against the post-fifth-follow-up head
+       (`b72f6c2c`, "runtime+language: Prevent false mutation attribution for
+       unconfirmed Codex scopes"): `git diff b72f6c2c -- spec/mutation_cursor.qnt
+       spec/mutation_cursor.md cli/src/services/mutation_trace/protocol.rs
+       cli/src/services/mutation_trace/runtime/`.
 - [ ] AC23: Durable context clearly separates the generic mutation-scope
   ingress, the Codex mutation adapter, and the mutation runtime, and records:
   the tool-execution scope model, the **three-class** Codex tool classification
@@ -1784,7 +1859,11 @@ performs final validation.
   failed-tool handling, why MCP/unknown are `Untracked` (the three T01 probe
   findings), the Codex lifecycle cleanup signals and the load-bearing backstop,
   the recovery barrier, worktree/cwd ownership, the concurrency story (including
-  that `AiExclusive` is tracked-scope exclusivity, not sole authorship), the
+  that `AiExclusive` is tracked-scope exclusivity, not sole authorship, **and**
+  the accepted boundary-aware unconfirmed-Codex attribution rule of D14 — Codex
+  `Start` is write-ahead admission, not execution confirmation; an unconfirmed
+  live Codex scope forces `IneligibleUnscoped` at any non-confirming boundary;
+  only that exact scope's own `Close` confirms it), the
   exact background/detached execution limitations, and the Codex hook-config
   coexistence contract (existing-registration trust-identity preservation, the
   three-dimension doctor health model, upstream-verified event key labels) —
@@ -1833,7 +1912,10 @@ performs final validation.
 - `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`
 - `nix run .#pkl-check-generated`
 - `nix flake check`
-- `git diff origin/claude-mutation-scope-integration -- spec/mutation_cursor.qnt cli/src/services/mutation_trace/protocol.rs cli/migrations/agent-trace-repository/ config/schema/agent-trace.schema.json` must be empty.
+- `git diff origin/claude-mutation-scope-integration -- cli/migrations/agent-trace-repository/ config/schema/agent-trace.schema.json` must be empty (AC22 SQL/schema half).
+- `git diff origin/claude-mutation-scope-integration -- spec/ cli/src/services/mutation_trace/` is **not** required to be empty; it is inspected and must be limited to the accepted boundary-aware unconfirmed-Codex attribution rule and its formal/refinement tests (D14, AC22).
+- `git diff b72f6c2c -- spec/mutation_cursor.qnt spec/mutation_cursor.md cli/src/services/mutation_trace/protocol.rs cli/src/services/mutation_trace/runtime/` must be empty (T06/T07 add no further production semantic change, AC22).
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::` (the accepted attribution rule's refinement/MBT regressions).
 
 Final branch comparison is against `claude-mutation-scope-integration`
 (#263 head), not `main`, while this PR remains stacked on #263.
@@ -1919,12 +2001,20 @@ Persist this field in every plan; this is durable plan state, not chat state:
   `cli/src/services/doctor/` (three-dimension structural + trust + effective-
   policy diagnosis for each mutation-scope registration per D21),
   and the context files listed under Context sync.
+  **Added by the accepted fifth PR #268 follow-up only** (D14; closed, not
+  reopened by T06/T07): `spec/mutation_cursor.qnt`, `spec/mutation_cursor.md`,
+  `cli/src/services/mutation_trace/protocol.rs`, and the
+  `cli/src/services/mutation_trace/runtime/` + MBT tests that refine and
+  validate the boundary-aware unconfirmed-Codex attribution rule.
 - **Out of scope:** OpenCode/Pi mutation-scope adapters; a generic
-  adapter-framework extraction; any change to the mutation protocol, Quint
-  model, `mutation_trace/protocol.rs`, `mutation_trace/store.rs`, or
-  `mutation_trace/runtime/`; any mutation-trace SQL migration; any Agent Trace
-  schema migration or `config/schema/agent-trace.schema.json` change; any new
-  mutation-attribution algorithm; the existing `sce hooks codex`
+  adapter-framework extraction; **any protocol / Quint / `mutation_trace`
+  runtime-semantic / mutation-attribution-algorithm change beyond the one
+  accepted boundary-aware unconfirmed-Codex attribution rule** (D14, fifth PR
+  #268 follow-up — `spec/mutation_cursor.qnt`, `spec/mutation_cursor.md`,
+  `mutation_trace/protocol.rs`, and the runtime/MBT tests that refine and
+  validate it); any change to `mutation_trace/store.rs`; any mutation-trace SQL
+  migration; any Agent Trace schema migration or
+  `config/schema/agent-trace.schema.json` change; the existing `sce hooks codex`
   conversation/diff pipeline behavior (`UserPromptSubmit`/`Stop`/
   `PreToolUse(Bash)`/`PostToolUse(apply_patch)` slices — unchanged); folding
   `apply_patch -> diff_traces` into mutation-scope storage; PID/process-group
@@ -2623,7 +2713,9 @@ Persist this field in every plan; this is durable plan state, not chat state:
       `super::mutation_scope::run_mutation_scope_from_payload`); no
       `spec/mutation_cursor.qnt` / `mutation_trace/protocol.rs` /
       `mutation_trace/runtime/` / `mutation_trace/store.rs` /
-      `cli/migrations/agent-trace-repository/` / `agent-trace.schema.json` change;
+      `cli/migrations/agent-trace-repository/` / `agent-trace.schema.json` change
+      *(this describes **this** follow-up's own diff; the fifth follow-up below
+      intentionally changes the protocol/Quint attribution semantics)*;
       MCP Option B classification unchanged; no daemon, PID supervision, polling, or
       new DB; the adapter-state lock is never held across the generic ingress seam.
       Changes are confined to `codex_mutation_scope/{state,mod}.rs` and this plan.
@@ -2693,7 +2785,9 @@ Persist this field in every plan; this is durable plan state, not chat state:
       **clean**; `cargo fmt -- --check` — **clean**. AC19 boundary still clean; no
       `spec/mutation_cursor.qnt` / `mutation_trace/protocol.rs` /
       `mutation_trace/runtime/` / `mutation_trace/store.rs` /
-      `cli/migrations/agent-trace-repository/` / `agent-trace.schema.json` change;
+      `cli/migrations/agent-trace-repository/` / `agent-trace.schema.json` change
+      *(this follow-up's own diff; the fifth follow-up below intentionally
+      changes the protocol/Quint attribution semantics)*;
       no daemon, PID supervision, lease expiry, or polling — timeouts are used only
       for OS-lock acquisition failure, never to infer lifecycle completion. Changes
       confined to `codex_mutation_scope/{mod,state,os_lock,boundary_lock}.rs` and
@@ -2749,7 +2843,9 @@ Persist this field in every plan; this is durable plan state, not chat state:
     — **clean**; `cargo fmt -- --check` — **clean**. No `spec/mutation_cursor.qnt`
     / `mutation_trace/protocol.rs` / `mutation_trace/runtime/` /
     `mutation_trace/store.rs` / `cli/migrations/agent-trace-repository/` /
-    `agent-trace.schema.json` / MCP-semantics / generated-config change. Changes
+    `agent-trace.schema.json` / MCP-semantics / generated-config change *(this
+    follow-up's own diff; the fifth follow-up below intentionally changes the
+    protocol/Quint attribution semantics)*. Changes
     confined to `cli/src/services/hooks/codex/{mod,bash_policy}.rs`,
     `cli/src/services/hooks/codex_mutation_scope/mod.rs`, and this plan.
     Arbitrary user-owned concurrent `PreToolUse(Bash)` denial — analysis result:
@@ -2823,7 +2919,9 @@ Persist this field in every plan; this is durable plan state, not chat state:
     **clean**. No `spec/mutation_cursor.qnt` / `mutation_trace/protocol.rs` /
     `mutation_trace/runtime/` / `mutation_trace/store.rs` /
     `cli/migrations/agent-trace-repository/` / `agent-trace.schema.json` /
-    MCP-semantics / generated-config / Bash-policy-preflight change. Changes
+    MCP-semantics / generated-config / Bash-policy-preflight change *(this
+    follow-up's own diff; the fifth follow-up below intentionally changes the
+    protocol/Quint attribution semantics)*. Changes
     confined to
     `cli/src/services/hooks/codex_mutation_scope/{mod,state}.rs` and this plan.
     Untracked-successor / cross-harness analysis (required by this follow-up):
@@ -2920,8 +3018,11 @@ Persist this field in every plan; this is durable plan state, not chat state:
     subcommand (hidden from `sce --help` / `sce hooks --help`); no visible-help
     or public-API change. No generated config yet (`.codex/hooks.json` / `sce
     setup` wiring is T05), no real Git/DB path yet (T06). The generic
-    mutation-scope ingress, runtime, protocol, Quint model, and Agent Trace
-    schema are unchanged (AC22 territory — no edits to those paths). Durable
+    mutation-scope ingress and the Agent Trace schema are unchanged, and no
+    mutation-trace SQL migration exists. The generic protocol, Quint model, and
+    mutation-trace runtime **were** changed — once, deliberately — by T04's
+    **fifth** follow-up (the boundary-aware unconfirmed-Codex attribution rule,
+    D14/AC22); the first four follow-ups left them untouched. Durable
     Codex-adapter context (`context/cli/codex-mutation-scope-integration.md` and
     the cross-reference edits to `context/overview.md`,
     `context/architecture.md`, `context/cli/mutation-scope-runtime.md`,
@@ -2957,14 +3058,34 @@ Persist this field in every plan; this is durable plan state, not chat state:
       structurally mirroring `claude_mutation_scope`; the Codex hook-ownership
       ADR (`2026-08-23-codex-nondestructive-hook-ownership.md`) is untouched
       (that is T05's `codex_hook_config.rs` scope).
-    - Concurrency follow-up (2026-09-08, PR #268) re-checked the five roots and
-      remains `no_context_change`: the generation-aware recovery state machine
-      (D13a/D13b) and the second follow-up's boundary lock (D13c) are
+    - Concurrency follow-ups one through four (2026-09-08, PR #268) re-checked
+      the five roots and remain `no_context_change`: the generation-aware
+      recovery state machine (D13a/D13b), the second follow-up's boundary lock
+      (D13c), the Bash-policy preflight, and the same-lane predecessor sweep are
       adapter-internal inter-process synchronisation with no protocol, Quint,
-      runtime-semantic, SQL, or Agent Trace schema change (AC22 still holds) and
-      no user-visible surface change — the adapter is still inert and
-      unregistered. Durable adapter context (D13a/b/c, the coverage table, the
-      concurrency story) is authored by T07 as already recorded.
+      runtime-semantic, SQL, or Agent Trace schema change and no user-visible
+      surface change — the adapter is still inert and unregistered. Durable
+      adapter context (D13a/b/c, the coverage table, the concurrency story) is
+      authored by T07 as already recorded.
+    - **Fifth follow-up (2026-09-08, PR #268) — protocol/formal change, recorded
+      here rather than deferred.** Unlike the first four, this one changes the
+      *generic* mutation semantics: `spec/mutation_cursor.qnt`,
+      `spec/mutation_cursor.md`, `cli/src/services/mutation_trace/protocol.rs`,
+      and the mutation-trace runtime/MBT tests. `spec/mutation_cursor.md` is the
+      Quint model's own durable prose and was updated in the same commit; D14 in
+      this plan is the authoritative plan-side record. AC22 was rewritten to
+      describe this as the **only** protocol/formal/attribution-semantic change
+      of the Codex integration (SQL and Agent Trace schema remain untouched). The
+      five roots (`overview.md`, `architecture.md`, `glossary.md`,
+      `patterns.md`, `context-map.md`) were re-checked and none states an
+      attribution rule this contradicts. **Two domain files now overstate the
+      old rule and are added to T07's scope:**
+      `context/cli/mutation-trace-runtime-coordinator.md` (~line 194, "two live
+      scopes yield `AiContended` regardless of matching or differing
+      `ActorKind`") and `context/cli/mutation-scope-runtime.md` (~line 236,
+      "`AiContended` (more than one live scope)") — both are now conditional on
+      no unconfirmed live Codex scope being present at the boundary. They are
+      left to T07, which owns durable-context authorship for this plan.
 
 - [x] T05: `Generated .codex/hooks.json registrations, setup merge, and doctor` (status:done)
   - Task ID: T05
@@ -3130,7 +3251,9 @@ Persist this field in every plan; this is durable plan state, not chat state:
     installs the mutation-scope registrations; `sce doctor` reports them as
     distinct `.codex/hooks.json#<event>(mutation-scope)` rows with the full
     three-dimension health model. No public API, protocol, Quint, mutation-trace
-    SQL, or Agent Trace schema change (AC22 territory untouched). The generic
+    SQL, or Agent Trace schema change *in T05's own diff* (the later fifth T04
+    follow-up intentionally changes the protocol/Quint attribution semantics —
+    D14/AC22). The generic
     mutation-scope ingress/runtime and the existing `sce hooks codex`
     conversation/diff pipeline are unchanged and additive. Durable
     Codex-adapter context (`context/cli/codex-mutation-scope-integration.md`) is
@@ -3251,6 +3374,22 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 - [ ] T06: `Real Git/DB regressions through the production Codex path` (status:todo)
   - Task ID: T06
+  - **Unblocked (2026-09-08).** T01–T05 are `done` and `synced`, the
+    protocol/formal safety follow-up is accepted, and the plan/AC22 consistency
+    cleanup is complete. T06 is ready to begin; it has not been started.
+  - **T06 production baseline (frozen).** The production semantics under test are
+    frozen at the completion of the fifth T04 follow-up (head `b72f6c2c`):
+    Codex tracked-tool classification; fail-closed bootstrap; Bash-policy
+    preflight; the boundary-lock / recovery protocol; the same-lane predecessor
+    sweep; and the boundary-aware unconfirmed-Codex attribution rule (D14). T06
+    may add tests, fixtures, and test-only helpers (including the `#[cfg(test)]`
+    state-root entry point below), but must **not** change these production
+    semantics. Concretely, T06 must leave `spec/mutation_cursor.qnt`,
+    `spec/mutation_cursor.md`, `cli/src/services/mutation_trace/protocol.rs`,
+    and `cli/src/services/mutation_trace/runtime/` unchanged **relative to
+    `b72f6c2c`** (AC22). If a T06 regression exposes another production
+    correctness issue, **T06 stops**, records the contradiction in this plan, and
+    a separate follow-up fixes production behaviour before T06 resumes.
   - Scope: In — regressions using real temporary Git repositories and real
     repository Agent Trace DBs, driven through the production Codex-adapter ->
     generic-ingress -> real runtime path (no manual `mutation_trace_*` inserts;
@@ -3290,8 +3429,8 @@ Persist this field in every plan; this is durable plan state, not chat state:
     13. **tracked `Bash`/`apply_patch` overlapping an MCP mutation** -> the
         runtime result (`AiExclusive` on the tracked scope) is asserted **and**
         documented as *tracked-scope exclusivity, not sole authorship* — MCP did
-        mutate in the interval; the generic protocol is not changed to force
-        `AiContended` (AC9f);
+        mutate in the interval; the accepted protocol refinement does not convert
+        MCP overlap into `AiContended` (AC9f);
     14. **unknown tool -> allowed untracked** — `PreToolUse(<unknown name>)`
         returns the neutral response, no scope, no bookkeeping (AC9b);
     15. raw Agent Trace tables (`diff_traces`,
@@ -3316,17 +3455,25 @@ Persist this field in every plan; this is durable plan state, not chat state:
     identifier after terminal -> new `ScopeId` (AC5); any unsupported background
     execution is rejected / documented (AC15); denied tracked execution -> no
     mutation under an untracked `Start` (AC7 production half); cross-harness
-    overlap -> `AiContended` (AC10).
+    overlap attributed per the refined D14 rule — `IneligibleUnscoped` at a
+    boundary that does not confirm the live Codex scope, `AiContended` only at
+    that Codex scope's own `Close` with no other unconfirmed live Codex scope
+    (AC10, **both** directions).
     The mutation-scope regressions use **real** temporary Git repos and real
     Agent Trace DBs. The live MCP fixtures (`fixtures/mcp_probe/`, probes 12–17)
     remain evidence fixtures and are **reused** to drive rows 9–13 rather than
     re-running `codex exec` in ordinary unit tests.
     Each applicable test asserts scope status, processed-event keys, revision,
     `cursor_tree`, mutation-event count, attribution kind, `needs_rebaseline`,
-    and adapter state. Out — new production behavior; any process supervision or
-    detached-child detection; any test that inserts the event it means to prove;
-    any regression asserting an MCP execution itself produces mutation-scope
-    attribution.
+    and adapter state. Out — **new production behaviour beyond the already
+    accepted T01–T05 plus the lifecycle/attribution follow-ups**; any *further*
+    change to Codex adapter semantics, the mutation protocol, the Quint model,
+    mutation runtime semantics, the attribution algorithm, mutation-trace SQL, or
+    the Agent Trace schema (T06 adds **no further** protocol changes — the
+    accepted fifth follow-up already landed the only one, D14/AC22); any process
+    supervision or detached-child detection; any test that inserts the event it
+    means to prove; any regression asserting an MCP execution itself produces
+    mutation-scope attribution.
   - Dependencies: T04 (T05 only for a test that installs generated settings —
     prefer driving the adapter entry point directly).
   - Done when: the whole matrix passes and collectively satisfies AC4, AC5,
@@ -3335,7 +3482,10 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
     cli/Cargo.toml services::hooks::codex_mutation_scope`; `nix develop -c
     ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
-    services::mutation_trace::`.
+    services::mutation_trace::`; and the frozen-baseline check
+    `git diff b72f6c2c -- spec/mutation_cursor.qnt spec/mutation_cursor.md
+    cli/src/services/mutation_trace/protocol.rs
+    cli/src/services/mutation_trace/runtime/` is empty.
   - Context synchronization: pending
 
 - [ ] T07: `Author the durable Codex mutation-scope context` (status:todo)
@@ -3352,7 +3502,12 @@ Persist this field in every plan; this is durable plan state, not chat state:
     built-ins; Case C *if MCP were modeled as a scope*, resolved by not modeling
     it), D12 cleanup signals + the load-bearing backstop, D13 recovery barrier,
     D15 worktree/cwd ownership, D14 concurrency (including that `AiExclusive` is
-    tracked-scope exclusivity, not sole authorship), D16 background/detached
+    tracked-scope exclusivity, not sole authorship, **and** the accepted
+    boundary-aware unconfirmed-Codex attribution rule: Codex `Start` is
+    write-ahead admission, not execution confirmation; an unconfirmed live Codex
+    scope forces `IneligibleUnscoped` at any non-confirming boundary; only that
+    exact scope's own `Close` confirms it; another unconfirmed live Codex scope
+    keeps attribution ineligible), D16 background/detached
     limitations, D17 command architecture, D18 dependency direction, and
     D20/D21/D22 the Codex hook trust-identity preservation, three-dimension
     doctor health model, and upstream-verified event key labels), with an
@@ -3364,7 +3519,14 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `context/sce/agent-trace-hooks-command-routing.md`,
     `context/sce/codex-integration-runtime.md`, `context/context-map.md`,
     `context/overview.md`, and `context/architecture.md` (line 135) to record
-    that a second concrete harness adapter now exists — each edit additive,
+    that a second concrete harness adapter now exists; and correct the two
+    domain statements the accepted fifth follow-up made too broad —
+    `context/cli/mutation-trace-runtime-coordinator.md` ("two live scopes yield
+    `AiContended` regardless of matching or differing `ActorKind`") and
+    `context/cli/mutation-scope-runtime.md` ("`AiContended` (more than one live
+    scope)") — both now conditional on no unconfirmed live Codex scope at the
+    boundary (D14). `spec/mutation_cursor.md` already carries the Quint-side
+    prose and needs no T07 edit. Each edit additive,
     naming Codex as wired/registered and leaving OpenCode/Pi as still-unwired,
     and keeping the existing `sce hooks codex` conversation/diff description
     intact. Write a new dated ADR **only if** T01/T02 established a genuinely
@@ -3379,10 +3541,16 @@ Persist this field in every plan; this is durable plan state, not chat state:
     file rather than overrun); `nix flake check` and `nix run
     .#pkl-check-generated` still pass.
   - Verify: inspection of the new file and each updated cross-reference against
-    AC23/AC24; `git diff origin/claude-mutation-scope-integration --
-    spec/mutation_cursor.qnt cli/src/services/mutation_trace/protocol.rs
+    AC23/AC24; the SQL/schema half of AC22 — `git diff
+    origin/claude-mutation-scope-integration --
     cli/migrations/agent-trace-repository/ config/schema/agent-trace.schema.json`
-    is empty (AC22); `nix flake check`.
+    is empty; the frozen-baseline check `git diff b72f6c2c --
+    spec/mutation_cursor.qnt spec/mutation_cursor.md
+    cli/src/services/mutation_trace/protocol.rs
+    cli/src/services/mutation_trace/runtime/` is empty (T07 introduces no
+    further protocol/Quint/runtime-semantic change); durable context records the
+    accepted boundary-aware unconfirmed-Codex attribution refinement (D14);
+    `nix flake check`.
   - Context synchronization: pending
 
 ## Open questions
@@ -3539,16 +3707,34 @@ with fixtures and the MCP one by an explicit coverage boundary:
   genuinely cannot preserve position, doctor must say re-trust is needed. Not
   blocking — this is a T05 implementation constraint, not an unknown.
 
-No Quint / mutation-cursor protocol / mutation-trace SQL migration / Agent Trace
-schema / attribution-algorithm change is expected or required: the generic
-mutation-scope contract already models `Start`/`Advance`/`Close`/`Flush`/
-`abandon`, already accepts `ActorKind::Codex`, and already handles replay
-idempotency, conservative recovery, and `AiContended` — the Claude adapter proved
-the contract is sufficient for a concrete harness without touching any of those.
-The T01 MCP D10a Case C finding did **not** force a protocol change: re-planning
-direction B (D23) resolves it entirely within the Codex adapter's coverage
-boundary — MCP and unknown tools are `Untracked`. The runtime already models
-exclusivity among the tracked scopes it is told about, not global filesystem
-authorship, so nothing formal changes. Future work (direction C — first-class MCP
-attribution via a richer lifecycle mechanism) would be a separate, explicitly
+**Protocol / formal scope — how it actually resolved.** The adapter work needed
+no formal change: the generic mutation-scope contract already models
+`Start`/`Advance`/`Close`/`Flush`/`abandon`, already accepts `ActorKind::Codex`,
+and already handles replay idempotency, conservative recovery, and `AiContended`
+— the Claude adapter proved the contract is sufficient for a concrete harness
+without touching any of it. The T01 MCP D10a Case C finding did **not** force a
+protocol change either: re-planning direction B (D23) resolves it entirely
+within the Codex adapter's coverage boundary — MCP and unknown tools are
+`Untracked`, and the runtime already models exclusivity among the tracked scopes
+it is told about rather than global filesystem authorship.
+
+**One formal change was nevertheless required, for a different cause, and is
+accepted.** T04's lifecycle analysis found that an arbitrary sibling
+`PreToolUse` hook can deny a Codex tool *after* SCE drove `Start(A)`, with the
+aggregate verdict never exposed to SCE. `ScopeState { actor_kind: Codex, status:
+Active }` is then the identical observable for "A is running" and "A was denied",
+so no adapter-local fix exists, and a cross-harness boundary observing a mutation
+in that window would emit **false positive** attribution. The **fifth PR #268
+follow-up** therefore intentionally refined the generic protocol and the Quint
+model with boundary-aware unconfirmed-Codex attribution semantics (D14):
+`spec/mutation_cursor.qnt`, `spec/mutation_cursor.md`,
+`cli/src/services/mutation_trace/protocol.rs`, and the mutation-trace runtime /
+MBT tests that refine and validate the rule. That is the **only** protocol /
+Quint / runtime-semantic / attribution-algorithm change in this PR (AC22).
+
+**No mutation-trace SQL migration and no Agent Trace schema change exists or is
+expected**, and no *further* protocol, Quint, runtime-semantic, or
+attribution-algorithm change is expected after that follow-up — T06 and T07 are
+frozen against the post-follow-up head. Future work (direction C — first-class
+MCP attribution via a richer lifecycle mechanism) remains a separate, explicitly
 justified PR.
