@@ -6,6 +6,7 @@ on:
       - codex/compress-workflow-execution-preamble
     paths:
       - .sce-handover-schema-dedup.py
+      - .sce-handover-schema-dedup-fix.py
       - .github/workflows/sce-approval-dedup-preparation.yml
 
 permissions:
@@ -28,4 +29,5 @@ jobs:
       - name: Apply, verify, commit, and push handover completeness deduplication
         run: |
           cp .sce-handover-schema-dedup.py /tmp/sce-handover-schema-dedup.py
+          python3 .sce-handover-schema-dedup-fix.py
           nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 /tmp/sce-handover-schema-dedup.py
