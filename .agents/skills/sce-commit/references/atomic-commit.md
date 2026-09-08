@@ -106,8 +106,9 @@ Confirm before returning that:
 
 ## Bypass execution handoff
 
-This phase returns the message; the invoking `/commit` workflow performs the
-bypass commit. When the mode is `bypass`, the invoking workflow must:
+This subsection is the sole definition of the bypass execution sequence. This
+phase returns the message; when the mode is `bypass`, the invoking `/commit`
+workflow performs this handoff exactly as written:
 
 1. Create the commit-message temp file outside the repository working tree,
    and write the returned `message` verbatim to it using a file-writing

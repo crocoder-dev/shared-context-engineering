@@ -361,3 +361,24 @@ The two additional root edits replace existing text without increasing line coun
     `nix run .#pkl-check-generated`, targeted ownership assertions across all three
     tracked targets, and `git diff --check`.
   - Context synchronization: synced.
+
+
+## Follow-up: commit bypass execution ownership
+
+- [x] T07: `Deduplicate commit bypass execution sequence` (status:done)
+  - Scope: `sce-commit` bypass step 3, the atomic-commit bypass handoff, canonical
+    Pkl, generated semantic checks, tracked Pi/Claude/Codex mirrors, and the ownership table.
+  - Ownership after change: `references/atomic-commit.md` **Bypass execution handoff**
+    solely defines the temp-file, verbatim-message write, single `git commit -F`,
+    post-success `HEAD^{commit}` lookup, commit-failure behavior, and cleanup sequence.
+    `/commit` invokes that handoff once and owns only success/failure layout selection.
+  - Behavior preserved: `oneshot` and `skip` remain identical; bypass still commits
+    at most once, never stages, never retries or amends, reads the hash only after a
+    successful commit, reports Git failure unchanged, and cleans up the temp file where practical.
+  - Result: `sce-commit/SKILL.md` plus `references/atomic-commit.md` shrink by
+    7 Markdown lines per tracked target, 21
+    lines across Pi/Claude/Codex.
+  - Verify: `pkl eval config/pkl/renderers/generation-contract-check.pkl`,
+    `nix run .#pkl-check-generated`, targeted ownership assertions across all three
+    tracked targets, and `git diff --check`.
+  - Context synchronization: synced.

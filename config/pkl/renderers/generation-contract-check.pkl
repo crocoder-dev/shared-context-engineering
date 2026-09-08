@@ -726,6 +726,36 @@ hidden assertAtomicCommitContent = (documents: Mapping) ->
   ) "sce-commit atomic reference: delegates message style and omits the result contract"
   else throw("atomic-commit.md must delegate message rules to commit-message-style.md and omit the removed result contract")
 
+local requiredCommitBypassExecutionTokens = new Listing {
+  "This subsection is the sole definition of the bypass execution sequence."
+  "write the returned `message` verbatim"
+  "`git commit -F <message-file>` exactly once"
+  "`git rev-parse --verify HEAD^{commit}`"
+  "Delete the temp file after the commit attempt"
+  "Never retry, amend"
+}
+
+local forbiddenCommitBypassEntrypointSequenceTokens = new Listing {
+  "write the returned `message` verbatim"
+  "`git commit -F <message-file>` exactly once"
+  "`git rev-parse --verify HEAD^{commit}`"
+  "Delete the temp file after the commit attempt"
+}
+
+hidden assertCommitBypassExecutionOwnership = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      if (path.endsWith("/skills/sce-commit/references/atomic-commit.md"))
+        requiredCommitBypassExecutionTokens.every((token) -> text.contains(token))
+      else if (path.endsWith("/skills/sce-commit/SKILL.md"))
+        text.contains("Follow the **Bypass execution handoff** in `references/atomic-commit.md` exactly")
+        && text.contains("That handoff is the sole owner of the execution sequence")
+        && forbiddenCommitBypassEntrypointSequenceTokens.every((token) -> !text.contains(token))
+      else true
+    )
+  ) "sce-commit bypass execution: atomic reference solely owns the exact execution sequence"
+  else throw("sce-commit must define the exact bypass temp-file/commit/hash/cleanup sequence only in references/atomic-commit.md; SKILL.md may invoke that handoff but must not restate it")
+
 hidden assertNextTaskReportOwnership = (documents: Mapping) ->
   if (
     documents.every((path, text) ->
@@ -1064,6 +1094,7 @@ contractChecks {
   ["validate-forbidden-paths"] = assertValidateForbiddenPaths.apply(generatedArtifacts)
   ["commit-forbidden-paths"] = assertCommitForbiddenPaths.apply(generatedArtifacts)
   ["atomic-commit-content"] = assertAtomicCommitContent.apply(workflowDocuments)
+  ["commit-bypass-execution-ownership"] = assertCommitBypassExecutionOwnership.apply(workflowDocuments)
   ["next-task-report-ownership"] = assertNextTaskReportOwnership.apply(workflowDocuments)
   ["target-neutral-references"] = assertTargetNeutralReferences.apply(workflowDocuments)
   ["no-stale-sync-debt-text"] = assertNoStaleSyncDebtText.apply(generatedArtifacts)
