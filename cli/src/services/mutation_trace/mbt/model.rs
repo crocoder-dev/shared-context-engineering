@@ -59,6 +59,7 @@ pub(super) enum WireScopeId {
     Scope1,
     Scope2,
     Scope3,
+    Scope4,
 }
 
 impl From<WireScopeId> for ScopeId {
@@ -69,6 +70,7 @@ impl From<WireScopeId> for ScopeId {
                 WireScopeId::Scope1 => "scope1",
                 WireScopeId::Scope2 => "scope2",
                 WireScopeId::Scope3 => "scope3",
+                WireScopeId::Scope4 => "scope4",
             }
             .to_string(),
         )

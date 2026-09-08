@@ -134,7 +134,8 @@ turn, not a delegated agent. Sequential tracked tool calls are sequential
 scopes. Whether two Codex mutation-capable executions can genuinely overlap
 (and therefore whether Codex alone can produce `AiContended`) is answered by
 T01 below. `AiContended` can still arise from a Codex *tracked* scope
-overlapping another harness's scope on the same worktree regardless; see D14.
+overlapping another harness's scope on the same worktree, but only at the Codex
+scope's own confirming `Close`; see D14.
 
 This is a **Codex adapter coverage policy**. It does **not** broaden or narrow
 the generic mutation-scope runtime contract, which already models exclusivity
@@ -168,7 +169,9 @@ among the tracked scopes it is told about, not exhaustive filesystem authorship
   `Bash` / `apply_patch` executed strictly serially across all 11 built-in
   probes, so built-in Codex-alone overlap was never observed. Cross-harness
   `AiContended` (a Codex tracked scope overlapping a Claude/OpenCode/Pi scope)
-  remains reachable regardless; see D14.
+  remains reachable, but only at the Codex scope's own confirming `Close`; the
+  same overlap observed at the other harness's boundary is `IneligibleUnscoped`.
+  See D14.
 The adapter still never collapses two executions into one `ScopeId`. Evidence:
 `fixtures/probe01…`, `probe02…`, `probe08-subagent-delegation.*`,
 `probe16-mcp-parallel-server-optin.*`, `probe17-mcp-parallel-readonly-hint.*` +
@@ -1051,12 +1054,54 @@ lifecycle completion.
 
 Two simultaneously-live **tracked** scopes (two tracked Codex executions per D1,
 or a tracked Codex execution overlapping a Claude/OpenCode/Pi execution on the
-same worktree) carry distinct `ScopeId`s, so the runtime can report `AiContended`
-for a tree transition observed while both are live. The adapter never collapses
-two executions into one `ScopeId`.
+same worktree) carry distinct `ScopeId`s. The adapter never collapses two
+executions into one `ScopeId`.
 
-**The generic mutation-scope semantic is preserved exactly and needs no
-protocol or Quint change:**
+**Refined by the fifth follow-up (2026-09-08, PR #268) — Codex `Start` is not
+execution confirmation.** The earlier statement that such an overlap can simply
+produce `AiContended` was too broad. The refined rule, implemented in
+`spec/mutation_cursor.qnt` (`attributionForBoundary`) and
+`mutation_trace/protocol.rs` (`attribution_for_boundary`):
+
+```text
+Codex v1 Start is an admission/write-ahead scope boundary, not positive proof
+that the tool ultimately executed, because arbitrary sibling PreToolUse hooks
+can deny after SCE's Start hook succeeds.
+
+While a live Codex scope remains unconfirmed, any mutation transition observed
+at a boundary that does not positively confirm that Codex scope is attribution-
+ineligible. In particular, another harness boundary cannot produce
+AiContended merely by overlapping an unconfirmed Codex scope.
+
+A tracked Codex scope becomes positively confirmed for attribution at its own
+proven PostToolUse -> Close boundary. At that boundary, normal AiExclusive /
+AiContended semantics apply if no other unconfirmed Codex scope remains.
+```
+
+An **unconfirmed live Codex scope** is a scope that is live (`Active`), whose
+`actor_kind` is `Codex`, and which the *current* boundary does not confirm — the
+only confirming boundary being `Close` on that exact scope. `Flush`, a later
+`Start` (including `Start(B)` in the same lane), and any other harness's
+`Advance`/`Close`/`Start` confirm nothing. Confirmation is derived per boundary
+from existing durable state (`ScopeState.status`, `ScopeState.actor_kind`, and
+the boundary's own scope); **no `confirmed` bit is persisted**, and after `Close`
+the scope is terminal anyway, so no persistent confirmation state is needed.
+
+Any unconfirmed live Codex scope on the worktree forces `IneligibleUnscoped` for
+the whole transition — the uncertain scope is **not** merely dropped from the
+live set so the remaining harness can be attributed, because that would still be
+a positive claim under incomplete knowledge. `MutationEvent.active_scopes` still
+records the complete actual live set (e.g. `{codex-A, claude-C}` with
+`attribution = IneligibleUnscoped`); only attribution eligibility changes.
+
+**This is an intentional false negative.** When Codex A and Claude C are both
+genuinely running and a Claude boundary observes a mutation before
+`PostToolUse(A)`, SCE now reports `IneligibleUnscoped` rather than the true
+`AiContended`, because the same observable protocol state is equally compatible
+with "A was denied by an arbitrary sibling hook and never ran". This is the exact
+application of `false negatives > false positives` for mutation attribution.
+
+**The generic mutation-scope semantic is otherwise preserved exactly:**
 
 ```text
 AiExclusive(scope) == exactly one tracked mutation scope was live in the interval
@@ -1085,12 +1130,19 @@ require a protocol or Quint change.
     still report `AiExclusive(Bash)`, which per the semantic above means "the
     only *tracked* scope live", **not** "MCP did not mutate". T06 documents this
     explicitly (see the tracked-tool-plus-MCP-overlap regression).
-- **Cross-harness: `AiContended` remains reachable** — a tracked Codex scope
-  overlapping a Claude/OpenCode/Pi scope on the same worktree.
-The T06 concurrency regression (AC10) crosses harnesses. There is **no**
-MCP-overlap `AiContended` regression because MCP produces no tracked scopes; T06
-instead adds a `Bash`-overlapping-MCP regression that asserts the
-`AiExclusive` = tracked-scope-exclusivity (not sole-authorship) semantic.
+- **Cross-harness: `AiContended` remains reachable, but only at a confirming
+  Codex `Close`** — a tracked Codex scope overlapping a Claude/OpenCode/Pi scope
+  on the same worktree, where the observing boundary is `Close` on that Codex
+  scope. The same overlap observed at the *other* harness's boundary is
+  `IneligibleUnscoped`.
+The T06 concurrency regression (AC10) crosses harnesses and must exercise **both**
+directions. There is **no** MCP-overlap `AiContended` regression because MCP
+produces no tracked scopes; T06 instead adds a `Bash`-overlapping-MCP regression
+that asserts the `AiExclusive` = tracked-scope-exclusivity (not sole-authorship)
+semantic. MCP / unknown / delegation remain Option B (`Untracked`, allowed, no
+mutation scope) and neither confirm nor invalidate a live Codex scope; an MCP
+mutation may still occur while Codex A is unconfirmed and continues to follow the
+existing conservative/untracked attribution path.
 
 ### D15 — Raw Codex hook cwd is authoritative — T01-GATED
 
@@ -1572,15 +1624,30 @@ performs final validation.
     sweep, seam order, fail-closed, lane scoping); T06 built-in failed-A-then-B
     regression (assert A `Abandoned` or `Closed` per tool, B the only live scope
     at its `Start`, no false `AiContended`).
-- [ ] AC10: Two simultaneously-live **tracked** scopes produce `AiContended` for
-  a tree transition observed while both are live; the adapter never assigns them
-  one shared `ScopeId`. Per D14 the exercised form is a **tracked Codex scope
-  overlapping a second harness's scope** on the same worktree. There is **no**
-  MCP-derived `AiContended` (MCP is `Untracked`); the `Bash`-overlapping-MCP case
-  is AC9f, and asserts `AiExclusive` = tracked-scope exclusivity, not sole
-  authorship.
-  - Validate: T06 cross-harness concurrency regression; the plan records the D14
-    form exercised.
+- [ ] AC10: Two simultaneously-live **tracked** scopes never collapse into one
+  shared `ScopeId`, and a tree transition observed while both are live is
+  attributed per the refined D14 confirmation rule:
+  1. observed at a boundary that does **not** confirm the live Codex scope
+     (the other harness's `Advance`/`Close`/`Start`, or a `Flush`) ->
+     `IneligibleUnscoped`, never `AiContended`, with `active_scopes` still
+     carrying both scopes;
+  2. observed at the Codex scope's own `Close` (its proven `PostToolUse`
+     terminus), with no other unconfirmed live Codex scope ->
+     `AiContended`.
+  A second live Codex scope suppresses (2) back to `IneligibleUnscoped`. There is
+  **no** MCP-derived `AiContended` (MCP is `Untracked`); the
+  `Bash`-overlapping-MCP case is AC9f, and asserts `AiExclusive` = tracked-scope
+  exclusivity, not sole authorship.
+  - Validate: T06 cross-harness concurrency regression exercising **both**
+    directions above; protocol/runtime regressions already landed with the fifth
+    follow-up (`mutation_trace::tests`
+    `an_unconfirmed_codex_scope_makes_another_harness_boundary_ineligible_instead_of_contended`,
+    `a_codex_close_overlapping_a_live_non_codex_scope_still_attributes_contention`,
+    `a_second_live_codex_scope_suppresses_attribution_at_a_confirming_codex_close`;
+    `mutation_trace::runtime::tests`
+    `an_unconfirmed_codex_overlap_never_reaches_the_mutation_ai_patch`,
+    `a_confirmed_codex_close_overlap_is_contended_and_still_not_ai_lineage`); the
+    plan records the D14 form exercised.
 - [ ] AC11: An outstanding **tracked** execution with no terminal hook is
   retired by exactly the Codex lifecycle signals T01 marked load-bearing (D12),
   via `abandon_scope`, leaving the worktree `needs_rebaseline`. The D12 sweeps
@@ -2784,15 +2851,70 @@ Persist this field in every plan; this is durable plan state, not chat state:
       a false `AiContended` against A for that transition. This is the same
       exposure class the third follow-up recorded; this fix shrinks the window
       (an in-turn same-lane tracked successor now retires A immediately instead
-      of waiting for the turn boundary) but does not eliminate it. It is bounded
-      to one turn by D12/D13 and does **not** block T06, which proves the
-      SCE-owned production path. Not claimed as "arbitrary-blocker safety fully
-      solved"; recorded as a remaining bounded exposure, tracked for T06/T07 to
-      weigh against a broader cleanup signal only if future evidence justifies
-      one.
+      of waiting for the turn boundary) but does not eliminate it.
+      **RESOLVED by the fifth follow-up below (2026-09-08, PR #268)** — the
+      protocol-level unconfirmed-Codex uncertainty rule now withholds positive
+      attribution for exactly this window, so no false `AiContended` /
+      `AiExclusive` can be emitted against a zombie A. The lane-scoped successor
+      sweep is unchanged and still required: the two solve different problems —
+      the adapter Case-B sweep *removes* stale A once a proven same-lane Codex
+      successor arrives; the protocol uncertainty rule *prevents positive
+      attribution* before such cleanup is possible.
     - Matcher and MCP behaviour are unchanged; no MCP tracking, MCP denial,
       unknown-tool denial, PID supervision, polling, timeout-as-evidence, or
       global/cross-session sweep was added.
+  - Fifth concurrency follow-up (2026-09-08 — unconfirmed-Codex attribution
+    uncertainty, PR #268): closes the cross-harness zombie window the fourth
+    follow-up left open. The Codex adapter **cannot** solve it: at the moment
+    another harness's boundary arrives, `ScopeState { actor_kind: Codex, status:
+    Active }` is the identical observable for both "A is genuinely running" and
+    "A was denied by an arbitrary sibling `PreToolUse` hook after SCE emitted
+    `Start(A)`", and the aggregate Codex `PreToolUse` decision is never exposed
+    to SCE — so adapter-local cleanup cannot decide whether A is stale. The fix
+    is therefore protocol/formal-model level, per the refined D14 rule.
+    - Model change: `spec/mutation_cursor.qnt` gains `isCodexScope`,
+      `boundaryConfirmsScope`, `hasUnconfirmedCodexScope` and
+      `attributionForBoundary`; `commitAttempt` now builds its `MutationEvent`
+      with `attributionForBoundary(worktree, boundary)`. `Scope4` (Codex on
+      `WT0`) is added so two simultaneously live Codex scopes are representable.
+    - Rust refinement: `mutation_trace/protocol.rs` gains `is_codex_scope`,
+      `boundary_confirms_scope`, `has_unconfirmed_codex_scope` and
+      `attribution_for_boundary`; `ResolvedAttempt::apply` uses it. `MBT` driver
+      and wire model gain `scope4`, so Quint Connect keeps replaying the same
+      semantics through the real `protocol.rs`.
+    - New formal invariants (all in `SafetyAttribution`):
+      `NoPositiveAttributionWithUnconfirmedCodexScope`,
+      `UnconfirmedCodexScopeBlocksCrossHarnessAttribution`,
+      `MultipleLiveCodexScopesSuppressPositiveAttribution`;
+      `AttributionMatchesObservedScopes` gained the unconfirmed-Codex branch.
+      Reachability witnesses `HasCodexConfirmedExclusiveEvidence`,
+      `HasCodexConfirmedContendedEvidence`,
+      `HasUnconfirmedCodexSuppressedEvidence` keep Codex attribution from
+      becoming permanently ineligible. New deterministic runs:
+      `testUnconfirmedCodexScopeBlocksCrossHarnessContention`,
+      `testUnconfirmedCodexScopeBlocksExclusiveAttribution`,
+      `testFlushDoesNotConfirmCodexScope`,
+      `testCodexCloseConfirmsExclusiveAttribution`,
+      `testSecondLiveCodexScopeSuppressesConfirmedCodexClose`,
+      `testTerminalCodexScopeDoesNotSuppressAttribution`;
+      `testDifferentActorStartKeepsExistingScope` now observes its transition at
+      the confirming Codex `Close`. No existing invariant was weakened or
+      skipped.
+    - Downstream: `mutation_attribution.rs` needed no production change — only
+      healthy `AiExclusive` becomes `TransitionOrigin::MutationAi`, so an
+      `IneligibleUnscoped` transition can never enter `mutation_ai_patch`. That
+      is frozen by
+      `an_ineligible_unscoped_transition_never_becomes_ai_mutation_lineage` and
+      by the real-coordinator end-to-end regressions.
+    - Unchanged: `Start` at `PreToolUse` (still write-ahead, still required for
+      mutation coverage), `AttemptKey`, `ScopeId`/`EventId` formatting, the
+      `(session_id, turn_id)` lane and its successor sweep, Bash policy
+      preflight, boundary lock, recovery state, adapter-state version, MCP /
+      unknown / delegation Option-B routing. **No** new DB column, `ScopeStatus`,
+      `ActorKind`, `Attribution` variant, adapter-state field, migration, or
+      schema field: `ScopeState.actor_kind` / `ScopeState.status` plus the
+      boundary's own scope already determine confirmation for the current
+      boundary. The Codex adapter itself has no production change.
   - Context impact: domain — a new adapter-domain driver plus a new hidden CLI
     route. User-visible surface: one hidden `sce hooks codex-mutation-scope`
     subcommand (hidden from `sce --help` / `sce hooks --help`); no visible-help
