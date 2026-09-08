@@ -1,6 +1,6 @@
 from pathlib import Path
 
-path = Path(".sce-validation-report-dedup.py")
+path = Path("/tmp/sce-validation-report-dedup.py")
 text = path.read_text()
 old = """Do not author this section while planning. Only `/validate` through the **Validation phase**
 writes it."""
