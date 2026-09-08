@@ -125,9 +125,11 @@ run_without_git() {
 run_without_git "${tmp_root}/outside-output"
 [ ! -s "${tmp_root}/outside-output" ] || fail "Git-root failure was not silent"
 
-git_bin="$(command -v git)"
-bash_bin="$(command -v bash)"
-minimal_path="$(dirname "${git_bin}"):$(dirname "${bash_bin}")"
+minimal_path="${tmp_root}/minimal-bin"
+mkdir -p "${minimal_path}"
+for minimal_tool in bash cat git; do
+  ln -s "$(command -v "${minimal_tool}")" "${minimal_path}/${minimal_tool}"
+done
 printf '%s' "${sentinel}" |
   (
     cd "${repo}"
