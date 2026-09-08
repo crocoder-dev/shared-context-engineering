@@ -6,14 +6,18 @@ description: >
 
 # SCE Next Task
 
-## Purpose
+## Execution contract
 
-Own this workflow from input parsing through its terminal user-visible response.
-Execute the phases below directly and in order. Phase statuses are internal state,
-not inter-SCE workflow handoffs. Do not invoke another SCE skill, sibling SCE
-package, or SCE workflow command except `sce-decision`, and invoke `sce-decision`
-only from the successful context-synchronization decision gate. Follow the canonical workflow's steps, gates,
-and stops exactly as written: never invent, skip, reorder, or merge a step.
+Own this workflow from input through its terminal user-visible response.
+Follow its steps, gates, and stops in order; do not add, skip, reorder, or merge them.
+Keep phase results internal and continue immediately until a defined wait or stop.
+Resume user waits in this same skill and session.
+Use only the specified `references/output.md` layouts for gates and terminal
+responses. Do not expose raw state or add text around a layout.
+Non-SCE helpers may assist, but must return to the active step without changing
+phase order, gates, waits, writes, validation, stops, or terminal output.
+Do not invoke another SCE skill, package, or workflow command except `sce-decision`,
+and only from the successful context-synchronization decision gate.
 
 ## Phase references
 
@@ -33,25 +37,6 @@ references carry gates that must fire before their phase's first side effect, so
 phase begun from this summary alone will already have skipped them. Read only the
 reference for the step you have reached: a run that stops at step 1 never needs the
 other two, which is why they are separate files.
-
-## User-visible output
-
-Use `references/output.md` for every gate and terminal response. Render no raw
-internal state. The reference contains only human-visible Markdown layouts.
-User-visible output is limited to those layouts: never invent a layout, and never
-wrap one in an added preamble, commentary, summary, or extra section.
-
-## Composite control flow
-
-Keep phase results as internal state and continue immediately whenever the
-canonical workflow says to continue. Stop only at a user wait or terminal branch.
-Any workflow-defined user wait resumes this same skill in the same session.
-Never expose an internal phase result as the workflow's final response.
-
-Relevant non-SCE skills may be used as helper capabilities during the active step.
-They are not workflow handoffs: when a helper returns, control returns to the active
-step. Helper use must preserve the canonical phase order, gates, waits, writes,
-validation, stops, and terminal user-visible output.
 
 ## Input
 

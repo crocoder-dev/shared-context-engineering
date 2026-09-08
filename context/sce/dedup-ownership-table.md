@@ -22,6 +22,7 @@
 | Final validation and validation report | `sce-validation` in `workflow-validate.pkl` | `/validate`; composed into `sce-validate`; thin OpenCode Code agent | intentional/keep |
 | Validated-plan durable context synchronization | Retained plan instance from `workflow-context-sync.pkl` | No current workflow consumer; `/validate` is validation-only | retained source, not generated |
 | Staged-diff analysis and commit-message authoring | `sce-atomic-commit` in `workflow-commit.pkl` | `/commit`; composed into `sce-commit`; thin OpenCode Code agent | intentional/keep |
+| Compact workflow execution contract | `executionContract` in `workflow-content.pkl` | Inline in change-to-plan, next-task, commit, validate, and handover entrypoints on all four targets; no extra runtime read | shared rendering, preserved behavior |
 | Workflow routing | Six command documents in the workflow modules | Thin OpenCode Plan/Code agents | intentional/keep |
 | Standalone ADR writing contract | `decision-skill.pkl` | Cross-target `sce-decision` package; successful task synchronization invokes it through the shared decision gate | intentional/keep |
 
