@@ -16,17 +16,18 @@ for how the other three tools intake conversation/diff evidence.
 
 The generated `.codex/hooks.json` routes its four conversation/diff
 registrations through `sce hooks codex` and its six mutation-scope registrations
-through `sce hooks codex-mutation-scope`. Each command resolves
-`git rev-parse --show-toplevel` at invocation time, then invokes the
-repository-root
-`.codex/hooks/run-sce-or-show-install-guidance.sh` helper with quoted
-expansions. It therefore works from the repository root, arbitrary nested
-Codex working directories, and repository paths containing spaces. Git-root
-resolution failures exit successfully without stdout; the helper retains its
-existing missing-`sce` stderr guidance and forwards the hook JSON STDIN
-unchanged. The exact registration set (four `sce hooks codex` plus six
-`sce hooks codex-mutation-scope`) and invocation contract is covered by the
-generated contract and `codex-hook-command` flake check. See [the ADR](../decisions/2026-08-23-codex-root-aware-hook-invocation.md).
+through `sce hooks codex-mutation-scope`. The mutation-scope `PreToolUse` and
+`PostToolUse` groups use matcher `^(Bash|apply_patch)$`; `Stop`, `Interrupt`,
+`SubagentStop`, and `SessionEnd` omit matcher and are unmatched. The existing
+conversation/diff command resolves `git rev-parse --show-toplevel` at invocation
+time, then invokes the repository-root helper with quoted expansions. It works
+from nested Codex working directories and repository paths containing spaces,
+and remains fail-open where designed when Git-root resolution fails. The
+tracked mutation `PreToolUse` bootstrap is separate and fails closed when SCE
+cannot establish attribution; mutation-scope `PostToolUse` and cleanup hooks do
+not use that bootstrap behavior. The exact registration set and invocation
+contract are covered by the generated contract and `codex-hook-command` flake
+check. See [the ADR](../decisions/2026-08-23-codex-root-aware-hook-invocation.md).
 
 ## Non-destructive hook configuration ownership
 
@@ -39,11 +40,13 @@ supported event names, defaulted matcher groups, and `command`, `mcp_tool`,
 valid Codex fields, event groups, matcher groups, and handlers. Merge is
 command-aware over two contracts: it replaces stale or duplicate handlers with
 one current handler per required registration — the four `sce hooks codex`
-registrations and six additive `sce hooks codex-mutation-scope` registrations,
-each appended in its own unmatched group after the existing groups so an
-already-trusted handler keeps its `(event, matcher, group index, handler index)`
-identity and computed Codex trust key — touching only the matching command's
-handlers. Ownership requires the helper path plus one of the `sce hooks codex` /
+registrations and six `sce hooks codex-mutation-scope` registrations. Within
+the mutation-scope contract, `PreToolUse` and `PostToolUse` use matcher
+`^(Bash|apply_patch)$`, while `Stop`, `Interrupt`, `SubagentStop`, and
+`SessionEnd` are appended in unmatched groups. Each group is appended after the
+existing groups so an already-trusted handler keeps its `(event, matcher, group
+index, handler index)` identity and computed Codex trust key — touching only the
+matching command's handlers. Ownership requires the helper path plus one of the `sce hooks codex` /
 `sce hooks codex-mutation-scope` command contracts; a generic `sce` substring is
 not enough.
 Malformed or structurally invalid existing documents fail before staging, so
@@ -169,9 +172,13 @@ no reimplemented matching and no Codex-specific DB adapter:
   rather than by calling that Claude-specific function.
 
 Neither branch reads or writes `diff_traces`, a snapshot, or any
-pending-state file; Bash-triggered filesystem mutations remain untracked for
-Codex (see "Explicit non-goals" in
-[agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md)).
+pending-state file. The existing `sce hooks codex` diff-evidence pipeline does
+not convert Bash filesystem effects into `diff_traces`, and its apply-patch
+evidence has the operation limitations documented separately. The
+`sce hooks codex-mutation-scope` adapter nevertheless tracks Bash executions as
+`TrackedMutation` scopes; that scope does not prove Bash authored every
+mutation in its interval. See "Explicit non-goals" in
+[agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md).
 
 ## `PostToolUse(apply_patch)` diff capture
 
@@ -189,9 +196,10 @@ All four `sce hooks codex` dispatch arms (`UserPromptSubmit`, `Stop`,
 `PreToolUse(Bash)`, `PostToolUse(apply_patch)`) now have real behavior.
 `PreToolUse(apply_patch)` is deliberately not a `sce hooks codex` arm (see plan
 `context/plans/codex-cli-integration.md`'s no-snapshot design) and falls
-open as a `NoOp` like any other unsupported combination; the unmatched
-`PreToolUse` group routed to `sce hooks codex-mutation-scope` is a separate
-concern handled by that command.
+open as a `NoOp` like any other unsupported combination; the separate
+mutation-scope `PreToolUse` registration matched by `^(Bash|apply_patch)$` and
+routed to `sce hooks codex-mutation-scope` is a separate concern handled by
+that command.
 
 ## Verification
 
