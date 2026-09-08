@@ -387,6 +387,30 @@ across a `hooks::mutation_scope` seam invocation**, so no
 `checkout::resolve_git_dir` but not `read_checkout_id` /
 `get_or_create_checkout_id`, and never constructs a `WorktreeId`.
 
+**D6 follow-up (2026-09-08, PR #268).** The adapter now holds **two** distinct
+checkout-local OS advisory locks (both built on the shared
+`os_lock::OsAdvisoryLock` primitive):
+
+```text
+state lock     <git-dir>/sce/codex-mutation-scope-state.lock
+  protects individual reads / writes / transitions of the JSON state
+  NEVER held across the hooks::mutation_scope seam
+
+boundary lock  <git-dir>/sce/codex-mutation-scope-boundary.lock
+  serializes one complete adapter boundary transaction
+  (state -> mutation-scope ingress -> state)
+  MAY and SHOULD be held across the seam
+```
+
+They are not interchangeable and the boundary lock does not replace the state
+lock. Lock hierarchy is frozen (D13c): **`boundary lock -> state lock`**; the
+boundary lock is never acquired while the state lock is held. Both use
+`flock`-equivalent OS ownership (not file existence), so a leftover lock file
+alone blocks nothing and process death releases ownership automatically. The
+`adapter lock -> WorktreeLock` argument is unchanged — neither adapter lock is
+held across the seam-driven `coordinate()` / `abandon_scope()` that take the
+`WorktreeLock`.
+
 ### D7 — Write-ahead Start ordering
 
 Unless T01 proves a different safe ordering from Codex's hook semantics, the
@@ -853,7 +877,73 @@ blocks a successor tracked admission (`UncertainAttemptBlocked`) until a positiv
 cleanup signal abandons it -> arms recovery -> quiescent `flush`. `PendingStart`
 means "the adapter cannot prove whether `Start` committed", never "`Start`
 definitely failed". A duplicate delivery for the same `AttemptKey` still reuses
-the same attempt and `ScopeId` (no second scope).
+the same attempt and `ScopeId` (no second scope). **D13c follow-up:** a duplicate
+delivery whose reused attempt is already `Active` drives **no** second runtime
+`Start` boundary (`establish_start` early-returns); a duplicate whose reused
+attempt is still `PendingStart` re-drives `Start` (runtime-deduplicated on
+`(scope_id, <scope>|start)`) so an uncertain `Start` is retried.
+
+**D13c — checkout-local boundary lock for cross-process serializability
+(second T04 follow-up, 2026-09-08, PR #268).** The generation-aware state fix
+(D13a) removed the state-transition TOCTOU gaps but left two correctness gaps
+because the adapter still ran `durable state transition -> release state lock ->
+mutation-scope ingress -> durable state transition` across independent Codex
+hook processes:
+
+1. **Admission could race recovery before `Start`.** Between one process's
+   `admit(B)` / persist `PendingStart(B)` / release state lock and its `Start(B)`
+   seam call, a second process could `arm_recovery()` for an unrelated uncertain
+   lifecycle, so `B` reached runtime `Start` after recovery became required.
+2. **An orphaned `Flushing(g)` permanently wedged the checkout.** If the process
+   that persisted `Pending(g) -> Flushing(g)` died before
+   `complete_recovery_flush(g)` / `relinquish_recovery_flush(g)`, the durable
+   state stayed `Flushing(g)` and every future tracked admission returned
+   `RecoveryBlocked` with no owner-death recovery path.
+
+Fix: a second checkout-local OS advisory lock,
+`<git-dir>/sce/codex-mutation-scope-boundary.lock` (`AdapterBoundaryLock`),
+serializes the **complete** adapter boundary transaction — everything from the
+first durable read through the ingress seam to the final durable write — against
+every other adapter boundary transaction on the same checkout. It wraps: tracked
+`PreToolUse` / `Start`, `PostToolUse` / `Close`, `Stop` / `Interrupt` /
+`SubagentStop` / `SessionEnd` cleanup, `Abandon`, and the quiescent `Flush`. It
+is **not** taken for MCP / unknown / delegation tools (Option B `Untracked` /
+`Delegation` stay neutral and resolve no git dir). The state lock is unchanged
+and still never held across the seam; the boundary lock is held across the seam.
+
+Frozen lock hierarchy:
+
+```text
+boundary lock
+  -> state lock            (only when an individual JSON transition is needed)
+```
+
+Never acquire the boundary lock while holding the state lock.
+
+Because Codex hooks are independent short-lived OS processes and the boundary
+lock is released on process exit, holding it is the liveness proof for crash
+recovery. Immediately after acquiring the boundary lock, the tracked
+`PreToolUse` path calls
+`state::normalize_recovery_after_boundary_lock_acquired`, which conservatively
+rewrites any persisted `Flushing(g) -> Pending(g)` (generation preserved — it is
+neither assumed the crashed `Flush` succeeded nor that it failed). The existing
+quiescent-flush claim then re-runs `Flush(g)` exactly once and converges to
+`Clear`. Re-running `Flush` is safe under the **existing** runtime contract:
+`RuntimeBoundary::Flush` carries no `event_id`, is a pure snapshot-diff
+observation, is the runtime's own crash-recovery re-run path, and does not
+advance the revision when it observes no change (verified from
+`mutation_scope.rs` ingress `test5` and `coordinator.rs` flush tests — no
+runtime, protocol, or Quint change). A **live** `Flush` owner is never reclaimed
+because any contender blocks on the boundary lock before it can inspect or
+normalize state. Generation semantics (D13a) are unchanged and retained: the
+boundary lock solves ownership / liveness, the generation solves stale
+completion.
+
+This is checkout-local (`<git-dir>/sce/...`); linked worktrees with independent
+git dirs are independent (D15 preserved). No repo-global or machine-global lock;
+no daemon, PID probing, lease expiry, or polling. Timeouts are used only for
+OS-lock acquisition failure (fail-closed for tracked tools), never to infer
+lifecycle completion.
 
 ### D14 — Concurrency and AiContended
 
@@ -2347,6 +2437,77 @@ Persist this field in every plan; this is durable plan state, not chat state:
       MCP Option B classification unchanged; no daemon, PID supervision, polling, or
       new DB; the adapter-state lock is never held across the generic ingress seam.
       Changes are confined to `codex_mutation_scope/{state,mod}.rs` and this plan.
+  - Second concurrency follow-up (2026-09-08 — boundary-lock serialization + orphaned
+    `Flushing(g)` recovery, PR #268): the generation-aware state fix removed the
+    state-transition TOCTOU gaps but left the `state -> ingress -> state` operation
+    non-serializable across independent hook processes (a second process could
+    `arm_recovery` between one process's `admit(B)` and its `Start(B)`), and left a
+    durable `Flushing(g)` orphanable if the claiming process died before
+    `complete_recovery_flush(g)` / `relinquish_recovery_flush(g)` — wedging every
+    future tracked admission with `RecoveryBlocked`. The follow-up adds a
+    **checkout-local OS boundary lock** at
+    `<git-dir>/sce/codex-mutation-scope-boundary.lock` (`AdapterBoundaryLock`, built
+    on the shared `os_lock::OsAdvisoryLock` primitive that the adapter-state lock now
+    also uses — `try_lock`/poll/timeout, `flock`-equivalent OS ownership, leftover
+    file safe, released on process exit). The boundary lock wraps the **complete**
+    adapter boundary transaction (`normalize` → `admit_or_recover` → quiescent
+    `flush` → `establish_start`, and every terminal/cleanup path:
+    `PostToolUse`/`Close`, `Stop`, `Interrupt`, `SubagentStop`, `SessionEnd`,
+    `Abandon`). It is **not** taken for `Untracked` / `Delegation` / MCP tools — they
+    still return neutral without resolving the git dir. The adapter-state lock is
+    unchanged in responsibility (individual JSON transitions) and still **never**
+    held across the ingress seam; the boundary lock MAY and SHOULD be held across the
+    seam. Lock hierarchy is frozen: **`boundary lock -> state lock`**, never the
+    inverse (D13c). Boundary-lock ownership doubles as crash detection: once a
+    process holds it, no prior adapter boundary transaction — hence no prior `Flush`
+    owner — is still executing, so `state::normalize_recovery_after_boundary_lock_acquired`
+    (called immediately after acquiring the boundary lock, in the tracked
+    `PreToolUse` path) conservatively rewrites a persisted `Flushing(g) -> Pending(g)`
+    with the generation preserved; the existing quiescent-flush claim then re-runs
+    `Flush(g)` exactly once and converges to `Clear`. Re-running `Flush` is safe
+    under the existing runtime contract — `RuntimeBoundary::Flush` carries no
+    `event_id`, is a pure snapshot-diff observation, is the runtime's own
+    crash-recovery re-run path (`coordinator.rs`), and does not advance the revision
+    when it observes no change (verified from `mutation_scope.rs` ingress `test5` and
+    `coordinator.rs` flush tests — no runtime change needed). A live `Flush` owner is
+    never reclaimed because a contender blocks on the boundary lock before it can
+    inspect state. Duplicate `PreToolUse` delivery for an already-`Active` attempt
+    now drives **no** second logical `Start` (`establish_start` early-returns on
+    `reused && phase == Active`); a duplicate `PendingStart` still re-drives `Start`
+    (runtime-deduplicated on `(scope_id, <scope>|start)`).
+    - New files: `codex_mutation_scope/os_lock.rs` (shared OS advisory-lock
+      primitive), `codex_mutation_scope/boundary_lock.rs` (`AdapterBoundaryLock` +
+      cross-process tests). `state.rs` adds
+      `normalize_recovery_after_boundary_lock_acquired` (precondition: caller owns
+      the boundary lock) and exposes `adapter_state_dir`; `AdapterStateLock` now
+      wraps the shared primitive. No state-file shape or version change (still `2`).
+    - Deterministic regressions added (channel-gated seams + one real child-process
+      test): **Test G** admission completed, another process cannot `arm_recovery`
+      before `Start`; **Test H** (supersedes the old Test A) cleanup owning the
+      boundary lock blocks admission until recovery is processed
+      (`abandon -> flush -> start` serialized order); **Test I** orphaned
+      `Flushing(g)` reclaimed and `Flush` retried exactly once, generation
+      preserved; **Test J** a live `Flush` owner is never reclaimed by a blocked
+      process (exactly one `Flush`); **Test K** crash after durable `Flush` before
+      the completion write converges with one retry `Flush`; **Test L** duplicate
+      `Active` delivery drives no second `Start`; **Test M** `mcp__*` / unknown /
+      delegation never resolve a git dir, take a state lock, take the boundary lock,
+      or reach the ingress; **`process_death_releases_the_boundary_lock`** spawns a
+      real child process that acquires the boundary lock and exits without
+      unlocking, and the parent then reacquires it. The old Test B (two quiescent
+      callers, one flush) is subsumed by Tests H and J.
+    - Re-validated: `services::hooks::codex_mutation_scope` — **passed** (98 tests,
+      1 ignored subprocess helper); `services::hooks::mutation_scope` — **passed**;
+      `services::hooks::` — **passed** (429); full `cargo test --manifest-path
+      cli/Cargo.toml` — **passed** (1247); `clippy --all-targets -- -D warnings` —
+      **clean**; `cargo fmt -- --check` — **clean**. AC19 boundary still clean; no
+      `spec/mutation_cursor.qnt` / `mutation_trace/protocol.rs` /
+      `mutation_trace/runtime/` / `mutation_trace/store.rs` /
+      `cli/migrations/agent-trace-repository/` / `agent-trace.schema.json` change;
+      no daemon, PID supervision, lease expiry, or polling — timeouts are used only
+      for OS-lock acquisition failure, never to infer lifecycle completion. Changes
+      confined to `codex_mutation_scope/{mod,state,os_lock,boundary_lock}.rs` and
+      this plan.
   - Context impact: domain — a new adapter-domain driver plus a new hidden CLI
     route. User-visible surface: one hidden `sce hooks codex-mutation-scope`
     subcommand (hidden from `sce --help` / `sce hooks --help`); no visible-help
@@ -2391,11 +2552,12 @@ Persist this field in every plan; this is durable plan state, not chat state:
       (that is T05's `codex_hook_config.rs` scope).
     - Concurrency follow-up (2026-09-08, PR #268) re-checked the five roots and
       remains `no_context_change`: the generation-aware recovery state machine
-      (D13a/D13b) is adapter-internal inter-process synchronisation with no
-      protocol, Quint, runtime-semantic, SQL, or Agent Trace schema change (AC22
-      still holds) and no user-visible surface change — the adapter is still
-      inert and unregistered. Durable adapter context (D13a/b, the coverage
-      table, the concurrency story) is authored by T07 as already recorded.
+      (D13a/D13b) and the second follow-up's boundary lock (D13c) are
+      adapter-internal inter-process synchronisation with no protocol, Quint,
+      runtime-semantic, SQL, or Agent Trace schema change (AC22 still holds) and
+      no user-visible surface change — the adapter is still inert and
+      unregistered. Durable adapter context (D13a/b/c, the coverage table, the
+      concurrency story) is authored by T07 as already recorded.
 
 - [ ] T05: `Generated .codex/hooks.json registrations, setup merge, and doctor` (status:todo)
   - Task ID: T05
