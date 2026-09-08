@@ -8,21 +8,31 @@ new_assertion = """assertion = r'''hidden assertDecisionGateTemplateOwnership = 
   if (
     workflowDocs.every((path, text) ->
       !path.endsWith(\"/skills/sce-next-task/references/context-sync.md\")
-      || text.contains(\"sole owner of decision qualification\")
+      || text.contains(\"This subsection is the sole owner of decision qualification.\")
     )
     && decisionDocs.every((path, text) ->
-      if (path.endsWith(\"/skills/sce-decision/SKILL.md\"))
-        requiredDecisionOwnershipSkillTokens.every((token) -> text.contains(token))
-        && forbiddenDecisionSkillGateTokens.every((token) -> !text.contains(token))
-        && forbiddenDecisionSkillTemplateRestatementTokens.every((token) -> !text.contains(token))
-      else if (path.endsWith(\"/skills/sce-decision/references/adr-template.md\"))
+      !path.endsWith(\"/skills/sce-decision/SKILL.md\")
+      || (
+        text.contains(\"## Qualification handoff\")
+        && text.contains(\"Treat the caller's gate result as authoritative\")
+        && text.contains(\"Read `references/adr-template.md` before writing.\")
+        && !text.contains(\"## Decision gate\")
+        && !text.contains(\"**Context** states\")
+        && !text.contains(\"**Decision** states\")
+      )
+    )
+    && decisionDocs.every((path, text) ->
+      !path.endsWith(\"/skills/sce-decision/references/adr-template.md\")
+      || (
         text.contains(\"Status: {validated decision status}\")
-        && requiredDecisionTemplateTokens.every((token) -> text.contains(token))
-        && !text.contains(\"Proposed|Accepted|Rejected|Deprecated|Superseded\")
-      else true
+        && text.contains(\"## Context\")
+        && text.contains(\"## Decision\")
+        && text.contains(\"## Rationale\")
+        && !text.contains(\"Status: {Proposed|Accepted|Rejected|Deprecated|Superseded}\")
+      )
     )
   ) \"sce-decision: context sync owns qualification and ADR template owns persisted section semantics\"
-  else throw(\"decision qualification must exist only in next-task context-sync, while adr-template.md owns persisted ADR section semantics and sce-decision consumes both contracts\")
+  else throw(\"decision qualification must be owned by next-task context-sync while sce-decision consumes the gate and adr-template.md owns persisted ADR schema\")
 '''"""
 pattern = r"assertion = r'''hidden assertDecisionGateTemplateOwnership = \(documents: Mapping\) ->.*?\n'''"
 text, count = re.subn(pattern, new_assertion, text, count=1, flags=re.S)
