@@ -7,68 +7,87 @@ use crate::services::bash_policy::{
     evaluate_bash_command_policy, format_policy_block_message, PolicyEvaluation,
 };
 use crate::services::config;
+#[cfg(test)]
 use crate::services::config::policy::BashPolicyConfig;
 
 use super::CodexHookEvent;
 
-/// Routes a Codex `PreToolUse(Bash)` event through the existing SCE Bash
-/// policy engine (`evaluate_bash_command_policy` in
-/// `cli/src/services/bash_policy.rs`) unchanged — no reimplemented matching.
-///
-/// An allowed command produces silent hook success (empty stdout, no
-/// model-visible output). A blocked command produces Codex's own native
-/// `PreToolUse` deny response: `{"hookSpecificOutput": {"hookEventName":
-/// "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason":
-/// ...}}`, confirmed against Codex's real hook contract (`openai/codex`
-/// issue #28437) — identical in shape to `render_claude_hook_result` in
-/// `bash_policy.rs`. Neither branch reads or writes `diff_traces`, a
-/// snapshot, or any pending-state file; `apply_patch` handling is a
-/// different dispatch arm (T10/T11).
-pub(super) fn handle(repository_root: &Path, event: &CodexHookEvent) -> Result<String> {
-    let command = bash_command_from_event(event)?;
+pub(crate) enum CodexBashPolicyDecision {
+    Allowed,
+    Blocked(String),
+}
 
+pub(crate) fn evaluate_codex_bash_policy(
+    repository_root: &Path,
+    command: &str,
+) -> Result<CodexBashPolicyDecision> {
     let policy_config = config::resolve_bash_policy_runtime_config(repository_root)
         .context("Failed to resolve bash policy configuration for Codex PreToolUse Bash.")?;
 
-    render_bash_policy_response(command, policy_config.as_ref())
+    decision_from_evaluation(evaluate_bash_command_policy(
+        command,
+        policy_config.as_ref(),
+    ))
 }
 
-fn render_bash_policy_response(
-    command: &str,
-    policy_config: Option<&BashPolicyConfig>,
-) -> Result<String> {
-    match evaluate_bash_command_policy(command, policy_config) {
-        PolicyEvaluation::Allowed { .. } => Ok(String::new()),
-        PolicyEvaluation::Blocked { policy, .. } => serde_json::to_string(&json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": format_policy_block_message(&policy)
-            }
-        }))
-        .context("Failed to serialize Codex PreToolUse Bash deny response."),
+fn decision_from_evaluation(evaluation: PolicyEvaluation) -> Result<CodexBashPolicyDecision> {
+    match evaluation {
+        PolicyEvaluation::Allowed { .. } => Ok(CodexBashPolicyDecision::Allowed),
+        PolicyEvaluation::Blocked { policy, .. } => Ok(CodexBashPolicyDecision::Blocked(
+            codex_bash_policy_deny_response(&format_policy_block_message(&policy))?,
+        )),
     }
 }
 
-/// Codex's `PreToolUse` `tool_input` for the `Bash` tool carries the shell
-/// command string under `command`, mirroring Claude's own `Bash` `tool_input`
-/// shape (`ClaudeBashToolInput` in `bash_policy.rs`). This is a working
-/// assumption pending direct confirmation against a live Codex CLI payload
-/// (see plan `context/plans/codex-cli-integration.md` Assumptions and T06's
-/// precedent for adjusting only field extraction, not architecture, if
-/// reality differs).
-fn bash_command_from_event(event: &CodexHookEvent) -> Result<&str> {
-    event
-        .tool_input
-        .as_ref()
+fn codex_bash_policy_deny_response(reason: &str) -> Result<String> {
+    serde_json::to_string(&json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason
+        }
+    }))
+    .context("Failed to serialize Codex PreToolUse Bash deny response.")
+}
+
+pub(crate) fn bash_command_from_tool_input(tool_input: Option<&serde_json::Value>) -> Result<&str> {
+    tool_input
         .and_then(|value| value.get("command"))
-        .and_then(|value| value.as_str())
+        .and_then(serde_json::Value::as_str)
         .filter(|command| !command.trim().is_empty())
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "Invalid Codex PreToolUse Bash payload: tool_input.command must be a non-empty string."
             )
         })
+}
+
+pub(super) fn handle(repository_root: &Path, event: &CodexHookEvent) -> Result<String> {
+    let command = bash_command_from_event(event)?;
+
+    Ok(
+        match evaluate_codex_bash_policy(repository_root, command)? {
+            CodexBashPolicyDecision::Allowed => String::new(),
+            CodexBashPolicyDecision::Blocked(response) => response,
+        },
+    )
+}
+
+#[cfg(test)]
+fn render_bash_policy_response(
+    command: &str,
+    policy_config: Option<&BashPolicyConfig>,
+) -> Result<String> {
+    Ok(
+        match decision_from_evaluation(evaluate_bash_command_policy(command, policy_config))? {
+            CodexBashPolicyDecision::Allowed => String::new(),
+            CodexBashPolicyDecision::Blocked(response) => response,
+        },
+    )
+}
+
+fn bash_command_from_event(event: &CodexHookEvent) -> Result<&str> {
+    bash_command_from_tool_input(event.tool_input.as_ref())
 }
 
 #[cfg(test)]
@@ -133,6 +152,47 @@ mod tests {
     fn bash_command_from_event_rejects_blank_command() {
         let event = event_with_tool_input(Some(json!({"command": "   "})));
         assert!(bash_command_from_event(&event).is_err());
+    }
+
+    #[test]
+    fn shared_policy_evaluation_is_identical_for_the_handler_and_the_mutation_scope_preflight() {
+        let repo = unique_temp_dir("shared-policy-parity");
+        std::fs::create_dir_all(repo.join(".sce")).expect("create .sce dir");
+        std::fs::write(
+            repo.join(".sce").join("config.json"),
+            concat!(
+                r#"{"policies":{"bash":{"custom":[{"id":"no-rm","#,
+                r#""match":{"argv_prefix":["rm"]},"#,
+                r#""message":"rm is blocked in this repository"}]}}}"#,
+            ),
+        )
+        .expect("write repo bash policy config");
+
+        let blocked_event = event_with_tool_input(Some(json!({"command": "rm -rf build"})));
+        let handler_output = handle(&repo, &blocked_event).expect("handler evaluates policy");
+        match evaluate_codex_bash_policy(&repo, "rm -rf build").expect("shared evaluator") {
+            CodexBashPolicyDecision::Blocked(response) => assert_eq!(
+                handler_output, response,
+                "the handler's rendered deny must match the shared evaluator's Blocked response",
+            ),
+            CodexBashPolicyDecision::Allowed => panic!("expected a policy block for `rm`"),
+        }
+
+        let allowed_event = event_with_tool_input(Some(json!({"command": "echo ok > ok.txt"})));
+        assert_eq!(
+            handle(&repo, &allowed_event).expect("handler evaluates policy"),
+            "",
+            "an allowed command is silent through the handler",
+        );
+        assert!(
+            matches!(
+                evaluate_codex_bash_policy(&repo, "echo ok > ok.txt").expect("shared evaluator"),
+                CodexBashPolicyDecision::Allowed
+            ),
+            "the shared evaluator agrees the command is allowed",
+        );
+
+        std::fs::remove_dir_all(&repo).ok();
     }
 
     #[test]
