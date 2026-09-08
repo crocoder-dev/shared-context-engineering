@@ -37,9 +37,21 @@ fn healthy_worktree(cursor_tree: TreeId, revision: u64) -> WorktreeState {
 }
 
 fn scope_with_status(status: ScopeStatus, worktree_id: WorktreeId) -> ScopeState {
+    scope_with_actor(status, ActorKind::ClaudeCode, worktree_id)
+}
+
+fn codex_scope(status: ScopeStatus, worktree_id: WorktreeId) -> ScopeState {
+    scope_with_actor(status, ActorKind::Codex, worktree_id)
+}
+
+fn scope_with_actor(
+    status: ScopeStatus,
+    actor_kind: ActorKind,
+    worktree_id: WorktreeId,
+) -> ScopeState {
     ScopeState {
         status,
-        actor_kind: ActorKind::Codex,
+        actor_kind,
         worktree_id,
     }
 }
@@ -997,6 +1009,220 @@ fn commit_close_on_the_sole_live_scope_that_also_observes_a_change_still_counts_
     assert_eq!(event.active_scopes, BTreeSet::from([scope("scope0")]));
 }
 
+fn state_with_scopes(scopes: &[(&str, ScopeState)]) -> ProtocolState {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+    for (id, scope_state) in scopes {
+        state.scopes.insert(scope(id), scope_state.clone());
+    }
+    state
+}
+
+fn commit_boundary(state: &ProtocolState, boundary: Boundary, observed: TreeId) -> MutationEvent {
+    let prepared = prepare(state, attempt_id("attempt0"), boundary, observed);
+    let outcome = commit(&prepared, &attempt_id("attempt0"));
+    assert!(outcome.evaluation.changed);
+    assert_eq!(outcome.state.mutation_events.len(), 1);
+    outcome
+        .state
+        .mutation_events
+        .into_iter()
+        .next()
+        .expect("exactly one mutation event")
+}
+
+#[test]
+fn an_unconfirmed_codex_scope_makes_another_harness_boundary_ineligible_instead_of_contended() {
+    let state = state_with_scopes(&[
+        ("codex-a", codex_scope(ScopeStatus::Active, worktree("wt0"))),
+        (
+            "claude-c",
+            scope_with_status(ScopeStatus::Active, worktree("wt0")),
+        ),
+    ]);
+
+    let event = commit_boundary(
+        &state,
+        Boundary::Advance {
+            scope: scope("claude-c"),
+            event: event("event0"),
+        },
+        tree("tree1"),
+    );
+
+    assert_eq!(
+        event.active_scopes,
+        BTreeSet::from([scope("codex-a"), scope("claude-c")])
+    );
+    assert_eq!(event.attribution, Attribution::IneligibleUnscoped);
+    assert_ne!(event.attribution, Attribution::AiContended);
+}
+
+#[test]
+fn a_codex_close_confirms_its_own_scope_and_still_attributes_exclusively() {
+    let state =
+        state_with_scopes(&[("codex-a", codex_scope(ScopeStatus::Active, worktree("wt0")))]);
+
+    let event = commit_boundary(
+        &state,
+        Boundary::Close {
+            scope: scope("codex-a"),
+            event: event("event0"),
+        },
+        tree("tree1"),
+    );
+
+    assert_eq!(event.active_scopes, BTreeSet::from([scope("codex-a")]));
+    assert_eq!(
+        event.attribution,
+        Attribution::AiExclusive(scope("codex-a"))
+    );
+}
+
+#[test]
+fn a_codex_close_overlapping_a_live_non_codex_scope_still_attributes_contention() {
+    let state = state_with_scopes(&[
+        ("codex-a", codex_scope(ScopeStatus::Active, worktree("wt0"))),
+        (
+            "claude-c",
+            scope_with_status(ScopeStatus::Active, worktree("wt0")),
+        ),
+    ]);
+
+    let event = commit_boundary(
+        &state,
+        Boundary::Close {
+            scope: scope("codex-a"),
+            event: event("event0"),
+        },
+        tree("tree1"),
+    );
+
+    assert_eq!(
+        event.active_scopes,
+        BTreeSet::from([scope("codex-a"), scope("claude-c")])
+    );
+    assert_eq!(event.attribution, Attribution::AiContended);
+}
+
+#[test]
+fn a_second_live_codex_scope_suppresses_attribution_at_a_confirming_codex_close() {
+    let state = state_with_scopes(&[
+        ("codex-a", codex_scope(ScopeStatus::Active, worktree("wt0"))),
+        ("codex-b", codex_scope(ScopeStatus::Active, worktree("wt0"))),
+    ]);
+
+    let event = commit_boundary(
+        &state,
+        Boundary::Close {
+            scope: scope("codex-a"),
+            event: event("event0"),
+        },
+        tree("tree1"),
+    );
+
+    assert_eq!(
+        event.active_scopes,
+        BTreeSet::from([scope("codex-a"), scope("codex-b")])
+    );
+    assert_eq!(event.attribution, Attribution::IneligibleUnscoped);
+}
+
+#[test]
+fn two_live_non_codex_scopes_still_attribute_contention() {
+    let state = state_with_scopes(&[
+        (
+            "claude-a",
+            scope_with_actor(ScopeStatus::Active, ActorKind::ClaudeCode, worktree("wt0")),
+        ),
+        (
+            "pi-b",
+            scope_with_actor(ScopeStatus::Active, ActorKind::Pi, worktree("wt0")),
+        ),
+    ]);
+
+    let event = commit_boundary(
+        &state,
+        Boundary::Advance {
+            scope: scope("claude-a"),
+            event: event("event0"),
+        },
+        tree("tree1"),
+    );
+
+    assert_eq!(event.attribution, Attribution::AiContended);
+}
+
+#[test]
+fn a_single_live_non_codex_scope_still_attributes_exclusively_at_its_close() {
+    let state = state_with_scopes(&[(
+        "claude-a",
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    )]);
+
+    let event = commit_boundary(
+        &state,
+        Boundary::Close {
+            scope: scope("claude-a"),
+            event: event("event0"),
+        },
+        tree("tree1"),
+    );
+
+    assert_eq!(
+        event.attribution,
+        Attribution::AiExclusive(scope("claude-a"))
+    );
+}
+
+#[test]
+fn a_flush_never_confirms_a_live_codex_scope() {
+    let state =
+        state_with_scopes(&[("codex-a", codex_scope(ScopeStatus::Active, worktree("wt0")))]);
+
+    let event = commit_boundary(
+        &state,
+        Boundary::Flush {
+            worktree: worktree("wt0"),
+        },
+        tree("tree1"),
+    );
+
+    assert_eq!(event.active_scopes, BTreeSet::from([scope("codex-a")]));
+    assert_eq!(event.attribution, Attribution::IneligibleUnscoped);
+}
+
+#[test]
+fn a_terminal_codex_scope_does_not_suppress_later_attribution() {
+    for terminal in [ScopeStatus::Closed, ScopeStatus::Abandoned] {
+        let state = state_with_scopes(&[
+            ("codex-a", codex_scope(terminal, worktree("wt0"))),
+            (
+                "claude-c",
+                scope_with_status(ScopeStatus::Active, worktree("wt0")),
+            ),
+        ]);
+
+        let event = commit_boundary(
+            &state,
+            Boundary::Advance {
+                scope: scope("claude-c"),
+                event: event("event0"),
+            },
+            tree("tree1"),
+        );
+
+        assert_eq!(event.active_scopes, BTreeSet::from([scope("claude-c")]));
+        assert_eq!(
+            event.attribution,
+            Attribution::AiExclusive(scope("claude-c")),
+            "a {terminal:?} Codex scope is not live and must not suppress attribution"
+        );
+    }
+}
+
 #[test]
 fn taint_changes_exactly_tainted_failure_kind_and_revision() {
     let mut state = ProtocolState::default();
@@ -1125,7 +1351,7 @@ fn abandon_transitions_a_live_scope_without_moving_the_cursor_or_changing_identi
 
     let abandoned = next.scopes.get(&scope("scope0")).unwrap();
     assert_eq!(abandoned.status, ScopeStatus::Abandoned);
-    assert_eq!(abandoned.actor_kind, ActorKind::Codex);
+    assert_eq!(abandoned.actor_kind, ActorKind::ClaudeCode);
     assert_eq!(abandoned.worktree_id, worktree("wt0"));
 
     let owning_worktree = next.worktrees.get(&worktree("wt0")).unwrap();
@@ -1251,7 +1477,7 @@ fn abandon_succeeds_for_a_live_scope_on_a_snapshot_tainted_worktree() {
 
     let abandoned = next.scopes.get(&scope("scope0")).unwrap();
     assert_eq!(abandoned.status, ScopeStatus::Abandoned);
-    assert_eq!(abandoned.actor_kind, ActorKind::Codex);
+    assert_eq!(abandoned.actor_kind, ActorKind::ClaudeCode);
     assert_eq!(abandoned.worktree_id, worktree("wt0"));
 
     let owning_worktree = next.worktrees.get(&worktree("wt0")).unwrap();
