@@ -1,11 +1,11 @@
-name: Prepare root-pass deduplication
+name: Prepare plan-template deduplication
 
 on:
   push:
     branches:
       - codex/compress-workflow-execution-preamble
     paths:
-      - .sce-root-pass-dedup.py
+      - .sce-plan-template-dedup.py
       - .github/workflows/sce-approval-dedup-preparation.yml
 
 permissions:
@@ -25,17 +25,7 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
 
-      - name: Apply, verify, commit, and push root-pass deduplication
+      - name: Apply, verify, commit, and push plan-template deduplication
         run: |
-          cp .sce-root-pass-dedup.py /tmp/sce-root-pass-dedup.py
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('/tmp/sce-root-pass-dedup.py')
-          text = path.read_text()
-          needle = 'text = replace_exact(text, old_plan_discovery_source, new_plan_discovery_source, 1, "plan context discovery root list")'
-          replacement = needle + '\ntext = replace_exact(text, old_task_discovery_rendered, new_task_discovery_rendered, 1, "composite task context discovery root list")'
-          if text.count(needle) != 1:
-              raise SystemExit('expected one plan discovery replacement anchor')
-          path.write_text(text.replace(needle, replacement))
-          PY
-          nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 /tmp/sce-root-pass-dedup.py
+          cp .sce-plan-template-dedup.py /tmp/sce-plan-template-dedup.py
+          nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 /tmp/sce-plan-template-dedup.py
