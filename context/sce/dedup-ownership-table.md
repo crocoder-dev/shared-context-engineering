@@ -17,7 +17,7 @@
 | Context discovery before planning | `sce-context-load` in `workflow-change-to-plan.pkl` | `/change-to-plan`; composed into `sce-change-to-plan` | intentional/keep |
 | Plan authoring, clarification, and task slicing | `sce-plan-authoring` in `workflow-change-to-plan.pkl` | `/change-to-plan`; composed into `sce-change-to-plan`; thin OpenCode Plan agent | intentional/keep |
 | Task resolution and readiness | `sce-plan-review` in `workflow-next-task.pkl` | `/next-task`; composed into `sce-next-task`; thin OpenCode Code agent | intentional/keep |
-| Approval-gated one-task implementation | `sce-task-execution` in `workflow-next-task.pkl` | `/next-task`; composed into `sce-next-task`; thin OpenCode Code agent | intentional/keep |
+| Approval-gated one-task implementation | `sce-task-execution` in `workflow-next-task.pkl` | `/next-task` parses and conditionally passes `approve`; `references/output.md` owns only exact gate content/order; composed into `sce-next-task`; thin OpenCode Code agent | intentional/keep |
 | Post-task durable context synchronization | Task instance from `workflow-context-sync.pkl` | `/next-task`; composed into `sce-next-task` | dedup/shared skeleton |
 | Final validation and validation report | `sce-validation` in `workflow-validate.pkl` | `/validate`; composed into `sce-validate`; thin OpenCode Code agent | intentional/keep |
 | Validated-plan durable context synchronization | Retained plan instance from `workflow-context-sync.pkl` | No current workflow consumer; `/validate` is validation-only | retained source, not generated |

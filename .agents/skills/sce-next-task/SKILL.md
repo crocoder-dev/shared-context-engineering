@@ -101,18 +101,10 @@ action; otherwise it returns `sync_debt`, resolved by the branch above.
 Read `references/task-execution.md`, then run the **Task execution phase** with
 the complete `ready` result from the **Plan review phase**.
 
-This phase always shows an implementation gate before it modifies any file, and it
-is the only phase permitted to ask the user for confirmation. Both properties are
-load-bearing, so reach them through the reference rather than acting from this
-summary.
-
-Branch on `auto-approve`:
-
-`approved` -> Also pass the `approve` flag. The **Task execution phase** then shows its implementation gate as a summary and proceeds without asking.
-
-else -> Do not pass the `approve` flag. The **Task execution phase** shows its implementation gate and waits for the user's decision.
-
-Do not present an additional implementation confirmation.
+Pass the `approve` flag only when `auto-approve` is `approved`; otherwise omit it.
+The **Task execution phase** owns the implementation gate, approval question, wait,
+user-decision handling, and no-edit-before-approval boundary. Do not duplicate that
+procedure here or present an additional implementation confirmation.
 
 Branch on the execution result.
 
