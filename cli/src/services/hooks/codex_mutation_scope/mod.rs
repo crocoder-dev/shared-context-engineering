@@ -352,6 +352,13 @@ fn dispatch_codex_hook_event(
             seam,
         )),
         CodexHookEvent::PostToolUse(identity) => {
+            if !matches!(
+                classify_tool(&identity.tool_name),
+                ToolClassification::TrackedMutation
+            ) {
+                return Ok(String::new());
+            }
+
             let git_dir = resolve_git_dir(&identity.cwd)?;
             let repository_root = Path::new(&identity.cwd);
             with_boundary_lock(&git_dir, || {
@@ -1644,10 +1651,7 @@ mod tests {
 
             assert_eq!(
                 drive(
-                    &post_tool_use_json(&[(
-                        TOOL_NAME_FIELD,
-                        Value::String("mcp__probe__mutate_success".to_string()),
-                    )]),
+                    &post_tool_use_json(&[(TOOL_NAME_FIELD, Value::String("Bash".to_string()),)]),
                     &resolver,
                     &unreachable_seam,
                 ),
@@ -2536,6 +2540,113 @@ mod tests {
             assert!(
                 !state::adapter_state_dir(&git_dir).exists(),
                 "Test M: an untracked tool resolves no git dir and touches no adapter state",
+            );
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn untracked_post_tool_use_never_touches_mutation_scope_machinery() {
+            let git_dir = unique_test_git_dir("untracked-post-no-footprint");
+            let resolver = fixed_resolver(git_dir.clone());
+
+            for tool in [
+                "mcp__probe__mutate_success",
+                "some_future_codex_tool",
+                "collaborationspawn_agent",
+                "collaborationwait_agent",
+            ] {
+                let payload =
+                    post_tool_use_json(&[(TOOL_NAME_FIELD, Value::String(tool.to_string()))]);
+
+                assert_eq!(
+                    run_codex_mutation_scope_from_payload_with(
+                        &payload,
+                        None,
+                        &panicking_resolver,
+                        &unreachable_seam,
+                    )
+                    .expect("an untracked PostToolUse is neutral"),
+                    "",
+                    "untracked PostToolUse for {tool:?} must return neutral",
+                );
+                assert_eq!(
+                    drive(&payload, &resolver, &unreachable_seam),
+                    "",
+                    "untracked PostToolUse for {tool:?} must not call the ingress seam",
+                );
+            }
+
+            assert!(
+                !state::adapter_state_dir(&git_dir).exists(),
+                "an untracked PostToolUse resolves no git dir and creates no adapter state directory",
+            );
+            assert!(
+                !crate::services::hooks::codex_mutation_scope::boundary_lock::boundary_lock_path(
+                    &git_dir
+                )
+                .exists(),
+                "an untracked PostToolUse must not create the adapter boundary lock",
+            );
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn a_complete_successful_mcp_lifecycle_leaves_zero_adapter_footprint() {
+            let git_dir = unique_test_git_dir("mcp-lifecycle-no-footprint");
+            let resolver = fixed_resolver(git_dir.clone());
+
+            let mcp = &[(
+                TOOL_NAME_FIELD,
+                Value::String("mcp__probe__mutate_success".to_string()),
+            )];
+
+            assert_eq!(
+                run_codex_mutation_scope_from_payload_with(
+                    &pre_tool_use_json(mcp),
+                    None,
+                    &panicking_resolver,
+                    &unreachable_seam,
+                )
+                .expect("MCP PreToolUse is neutral"),
+                "",
+            );
+            assert_eq!(
+                run_codex_mutation_scope_from_payload_with(
+                    &post_tool_use_json(mcp),
+                    None,
+                    &panicking_resolver,
+                    &unreachable_seam,
+                )
+                .expect("MCP PostToolUse is neutral"),
+                "",
+            );
+
+            assert_eq!(
+                drive(&pre_tool_use_json(mcp), &resolver, &unreachable_seam),
+                ""
+            );
+            assert_eq!(
+                drive(&post_tool_use_json(mcp), &resolver, &unreachable_seam),
+                ""
+            );
+
+            let state = read_state(&git_dir);
+            assert!(state.attempts.is_empty(), "no attempts recorded");
+            assert!(state.recovery.is_clear(), "recovery stays Clear");
+
+            assert!(
+                !state::adapter_state_dir(&git_dir).exists(),
+                "a complete successful MCP lifecycle creates no adapter state directory, \
+                 state lock, or boundary lock",
+            );
+            assert!(
+                !crate::services::hooks::codex_mutation_scope::boundary_lock::boundary_lock_path(
+                    &git_dir
+                )
+                .exists(),
+                "a complete successful MCP lifecycle creates no boundary lock",
             );
 
             remove_test_git_dir(&git_dir);
