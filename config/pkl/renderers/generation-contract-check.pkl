@@ -829,6 +829,37 @@ hidden assertCompactPlanTemplateSchema = (documents: Mapping) ->
   ) "generated plan template: compact task/completion schema present, legacy fields absent"
   else throw("generated plan-template.md must use the compact task and completion schema and must not reference the removed Goal, Boundaries (in/out of scope), Verification notes, Implementation evidence, Verification evidence, or Context synchronization handoff fields")
 
+local planTemplateOwnedPolicyTokens = new Listing {
+  "Acceptance criteria describe the finished system, not the work."
+  "Every criterion carries a `Validate:` line."
+  "List repository-wide checks once under `Full validation`"
+  "Number tasks sequentially as `T01..T0N`."
+  "Author each executable task as one atomic commit unit by default."
+  "Split any candidate task that would require multiple independent commits"
+  "The last task in the stack is an ordinary implementation task."
+  "Preserve completed tasks, their `(status:done)` markers"
+}
+
+local requiredPlanAuthoringTemplateReferences = new Listing {
+  "`references/plan-template.md` is the sole owner of the persisted plan schema"
+  "`Acceptance criteria rules`"
+  "`Task rules` and `No validation task` rules"
+  "`Updating an existing plan` rules"
+}
+
+hidden assertPlanTemplatePolicyOwnership = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      if (path.endsWith("/skills/sce-change-to-plan/references/plan-template.md"))
+        planTemplateOwnedPolicyTokens.every((token) -> text.contains(token))
+      else if (path.endsWith("/skills/sce-change-to-plan/references/plan-authoring.md"))
+        requiredPlanAuthoringTemplateReferences.every((token) -> text.contains(token))
+        && planTemplateOwnedPolicyTokens.every((token) -> !text.contains(token))
+      else true
+    )
+  ) "sce-change-to-plan: plan-template owns persisted schema and generic authoring policy"
+  else throw("sce-change-to-plan plan-template.md must own the persisted plan schema and generic acceptance/task/update rules; plan-authoring.md may reference those rules but must not restate them")
+
 local requiredNextTaskCompletionWritingTokens = new Listing {
   "Record directly on the completed task:"
   "`Files changed`"
@@ -1038,6 +1069,7 @@ contractChecks {
   ["no-stale-sync-debt-text"] = assertNoStaleSyncDebtText.apply(generatedArtifacts)
   ["plan-review-sync-debt-recovery"] = assertPlanReviewSyncDebtRecovery.apply(workflowDocuments)
   ["compact-plan-template-schema"] = assertCompactPlanTemplateSchema.apply(workflowDocuments)
+  ["plan-template-policy-ownership"] = assertPlanTemplatePolicyOwnership.apply(workflowDocuments)
   ["next-task-compact-completion-writing"] = assertNextTaskCompactCompletionWriting.apply(workflowDocuments)
   ["plan-review-reads-completed-record"] = assertPlanReviewReadsCompletedRecord.apply(workflowDocuments)
   ["context-sync-validates-task-record"] = assertContextSyncValidatesTaskRecord.apply(workflowDocuments)

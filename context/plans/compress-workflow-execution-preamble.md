@@ -337,3 +337,27 @@ The two additional root edits replace existing text without increasing line coun
     `nix run .#pkl-check-generated`, targeted Pi/Claude/Codex ownership assertions,
     and `git diff --check`.
   - Context synchronization: synced.
+
+
+## Follow-up: plan-template authoring-policy ownership
+
+- [x] T06: `Deduplicate plan authoring from the persisted plan template` (status:done)
+  - Scope: change-to-plan plan-authoring and plan-template references, canonical Pkl,
+    generated semantic checks, tracked Pi/Claude/Codex mirrors, and the ownership table.
+  - Ownership after change: `references/plan-template.md` solely owns the persisted
+    plan schema plus generic acceptance-criteria, task-format/atomic-slicing,
+    no-validation-task, completion-record, and existing-plan-update rules. The
+    Plan authoring phase owns process order, plan-specific decisions, clarification,
+    and the `no_actionable_work` outcome, and references the template at write boundaries.
+  - Behavior preserved: criteria are still authored before tasks; tasks remain
+    sequential atomic-commit units with ordered dependencies and no trailing validation
+    task; existing completed-task history stays protected; every written plan still uses
+    the same persisted schema. The sequential `T01..T0N` rule moved into the template
+    rather than being dropped.
+  - Result: plan-authoring + plan-template shrink by 16 Markdown
+    lines per tracked target, 48 lines across
+    Pi/Claude/Codex.
+  - Verify: `pkl eval config/pkl/renderers/generation-contract-check.pkl`,
+    `nix run .#pkl-check-generated`, targeted ownership assertions across all three
+    tracked targets, and `git diff --check`.
+  - Context synchronization: synced.
