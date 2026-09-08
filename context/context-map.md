@@ -102,6 +102,11 @@ Feature/domain context:
 
 - Setup behavior selection contract: [local bootstrap](sce/setup-repo-local-config-bootstrap.md) is canonical for the independent interactive confirmations, explicit nested config values, non-interactive existing-config safety, and unchanged runtime gates; see also [config precedence](cli/config-precedence-contract.md), [automatic sync](cli/agent-trace-auto-sync.md), [hook routing](sce/agent-trace-hooks-command-routing.md), and [commit attribution](sce/agent-trace-commit-msg-coauthor-policy.md).
 
+Additional mutation-scope integration context:
+
+- `context/cli/codex-mutation-scope-integration.md` (the second concrete harness adapter: Codex tracked/delegation/untracked classification, partial-by-tool-surface coverage, identity and checkout-local recovery state, write-ahead fail-closed lifecycle, cleanup signals, boundary-aware attribution confirmation, and Codex setup/doctor ownership)
+- `context/sce/codex-apply-patch-diff-runtime.md` (the complementary Codex `PostToolUse(apply_patch)` parsing, path containment, normalization, and `diff_traces` evidence contract)
+
 Working areas:
 
 - `context/plans/` (active plan execution artifacts, not durable history)
