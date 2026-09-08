@@ -887,6 +887,36 @@ hidden assertContextSyncValidatesTaskRecord = (documents: Mapping) ->
   ) "sce-next-task context-sync reference: validates the completed task record, not a persisted handoff"
   else throw("sce-next-task context-sync.md must validate the completed task record directly from the plan and must not reference a persisted Context synchronization handoff")
 
+local mandatoryRootContextPaths = new Listing {
+  "`context/overview.md`"
+  "`context/architecture.md`"
+  "`context/glossary.md`"
+  "`context/patterns.md`"
+  "`context/context-map.md`"
+}
+
+hidden assertNextTaskRootPassOwnership = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      if (path.endsWith("/skills/sce-next-task/references/task-execution.md"))
+        !text.contains("five-root-file context pass")
+        && !text.contains("mandatory root pass")
+      else if (path.endsWith("/skills/sce-next-task/references/context-sync.md"))
+        text.contains("### The mandatory root pass")
+        && text.contains("## 3.3 Discover applicable context")
+        && text.contains("## 3.4 Determine whether durable context changed")
+        && let (discoveryTail = text.drop(text.indexOf("## 3.3 Discover applicable context")))
+          let (discovery = discoveryTail.take(discoveryTail.indexOf("### The mandatory root pass")))
+            let (rootTail = text.drop(text.indexOf("### The mandatory root pass")))
+              let (rootPass = rootTail.take(rootTail.indexOf("## 3.4 Determine whether durable context changed")))
+                discovery.contains("The mandatory root-pass subsection owns the exact five-file root set.")
+                && mandatoryRootContextPaths.every((rootPath) -> !discovery.contains(rootPath))
+                && mandatoryRootContextPaths.every((rootPath) -> rootPass.contains(rootPath))
+      else true
+    )
+  ) "sce-next-task root pass: context-sync solely owns the exact five-file set"
+  else throw("sce-next-task must define the exact five-file mandatory root pass only in context-sync's mandatory-root-pass subsection; discovery may reference it by name and task-execution must not restate it")
+
 hidden assertSyncDebtRecoveryBranch = (documents: Mapping) ->
   if (
     documents.every((path, text) ->
@@ -1011,6 +1041,7 @@ contractChecks {
   ["next-task-compact-completion-writing"] = assertNextTaskCompactCompletionWriting.apply(workflowDocuments)
   ["plan-review-reads-completed-record"] = assertPlanReviewReadsCompletedRecord.apply(workflowDocuments)
   ["context-sync-validates-task-record"] = assertContextSyncValidatesTaskRecord.apply(workflowDocuments)
+  ["next-task-root-pass-ownership"] = assertNextTaskRootPassOwnership.apply(workflowDocuments)
   ["sync-debt-recovery-branch"] = assertSyncDebtRecoveryBranch.apply(workflowDocuments)
   ["plan-review-all-tasks-scope"] = assertPlanReviewAllTasksScope.apply(workflowDocuments)
   ["sync-debt-blocked-routing"] = assertSyncDebtBlockedRouting.apply(workflowDocuments)

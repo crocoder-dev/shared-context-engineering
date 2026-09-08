@@ -82,15 +82,11 @@ Start with the execution result:
 
 Then inspect existing repository context in this order when present:
 
-1. `context/context-map.md`
-2. Context files for the affected domain or subsystem
-3. `context/overview.md`
-4. `context/architecture.md`
-5. `context/glossary.md`
-6. `context/patterns.md`
-7. Operational, product, or decision records directly related to the change
+1. The context map and its links to affected domain or subsystem context
+2. The mandatory root pass defined below
+3. Operational, product, or decision records directly related to the change
 
-Use the context map and existing links to locate authoritative files.
+The mandatory root-pass subsection owns the exact five-file root set.
 
 Do not scan or rewrite the entire `context/` tree by default.
 
