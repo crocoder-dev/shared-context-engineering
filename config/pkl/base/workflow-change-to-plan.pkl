@@ -210,7 +210,7 @@ sentence.
 
 ## 1.5 Return the brief
 
-Set exactly one internal state:
+Return one internal result with one of these statuses:
 
 - `loaded`
 - `bootstrap_required`
@@ -218,7 +218,7 @@ Set exactly one internal state:
 Report facts the workflow can act on. A brief that only lists file paths has
 moved no knowledge.
 
-Record only the internal state. Do not add explanatory prose before or after it.
+Return only the internal result. Do not add explanatory prose before or after it.
 
 Step 2 consumes a `loaded` brief verbatim and treats its `key_facts` as recorded
 current state, its `gaps` as areas with no durable context, and its `drift` as
@@ -271,7 +271,7 @@ responsibility.
 
 The context brief is the durable memory this plan starts from. Treat its
 `key_facts` as recorded current state, its `gaps` as areas with no durable
-context, and its `drift` as context the code has already outrun.
+context, and its `drift` as recorded context that no longer matches the code.
 
 When no brief is supplied, load the context named by the change request before
 authoring, and follow the selection discipline in *Inspect relevant context*.
@@ -421,13 +421,13 @@ exactly. For revisions, apply its `Updating an existing plan` rules.
 
 ## 2.8 Return the result
 
-Set exactly one internal state:
+Return one internal result with one of these statuses:
 
 - `plan_ready`
 - `needs_clarification`
 - `blocked`
 
-Record only the internal state. Do not add explanatory prose before or after it.
+Return only the internal result. Do not add explanatory prose before or after it.
 
 A `plan_ready` result always names the next task in `next_task`, and carries the
 `total_tasks` count and any open questions the summary needs. Step 3 renders those
@@ -435,29 +435,13 @@ without recomputing them.
 
 ## Plan authoring tone
 
-Every question and open question this phase writes is read by the user. Write
-them the way a senior engineer talks in review: direct, specific, and unbothered
-by the possibility of being unwelcome.
+Write user-facing questions and open questions directly and specifically.
 
-- Ask about the thing that actually worries you, not a safer neighbouring thing.
-  A question you would not bother asking a colleague is not worth the user's
-  attention either.
-- State a doubt as a doubt. "I do not think this is worth the two tasks it
-  costs, because X" is useful. "It may be worth considering whether this aligns
-  with broader goals" is noise.
-- Name the alternative you have in mind. A challenge with no proposal behind it
-  is just friction.
-- Do not open with praise, do not close with reassurance, and do not apologize
-  for asking. Do not pad a doubt with hedges to make it land more gently.
-- Be persistent, not repetitive. Ask once, plainly, and let it stand; do not
-  restate the same doubt in three shapes to give it more weight.
-- Being disagreeable is not the goal. Being easy to agree with is the failure
-  mode. A plan the user waves through without reading has cost them nothing and
-  bought them nothing.
-
-When the user overrules a doubt, record it and move on. Do not relitigate a
-decision the user has made, and do not smuggle the objection back in as a
-constraint, a non-goal, or a task.
+- Ask only about material concerns that can change scope, success criteria, or task ordering.
+- State the concern and the concrete evidence for it.
+- Name a smaller or safer alternative when one is known.
+- Do not invent concerns, add praise or reassurance, or repeat the same concern in several forms.
+- When the user overrules a concern, record the decision and continue. Do not reintroduce it as a constraint, non-goal, or task.
 
 ## Plan authoring boundaries
 
@@ -633,9 +617,9 @@ invent one: `None.` is the expected answer for a well-specified change.}
 
 - The last task in the stack is an ordinary implementation task. Do not author a
   trailing "validation and cleanup" task.
-- Final validation, cleanup, and success-criteria verification are run by
-  `/validate` from the `Acceptance criteria` section after the last task
-  completes.
+- Final validation and success-criteria verification are run by `/validate`
+  from the `Acceptance criteria` section after the last task completes. Validation
+  reports cleanup or repair work that is still required; it does not perform that work.
 - Do not author a task whose only purpose is running the full check suite,
   verifying durable context, or removing scaffolding.
 - A task may still create or update durable context when that context is part of
@@ -725,7 +709,7 @@ candidate plan paths and explain that naming one candidate resolves it.
 
 This plan is a draft. State a correction and it will be updated.
 
-Next up:
+Next step:
 
 {next-task-id} — {next-task-title}
 
@@ -748,17 +732,17 @@ This is chat output, not a file. Nothing here is written to the plan.
 
 Path: {plan.path}
 
-## Summary:
+## Summary
 {plan summary}
 
-## Tasks:
+## Tasks
 1. {task.id} — {task.title}
 2. {task.id} — {task.title}
 
-## Assumptions:
+## Assumptions
 - {assumption}
 
-## Open questions:
+## Open questions
 - {open question}
 ```
 
@@ -770,13 +754,13 @@ not carry.
 - `Plan:` — `plan.name`. Append ` (updated)` when `plan.action` is `updated`.
   Render nothing extra when it is `created`.
 - `Path:` — `plan.path`, exactly as returned, so it stays runnable.
-- `Summary:` — `summary`, as prose. This is the only place the reader learns
+- `Summary` — `summary`, as prose. This is the only place the reader learns
   what the plan actually does, so never omit it and never replace it with a
   restatement of the task titles.
-- `Tasks:` — one numbered line per entry in `tasks`, in plan order. Append
+- `Tasks` — one numbered line per entry in `tasks`, in plan order. Append
   ` (done)` to any task whose `status` is `done`.
-- `Assumptions:` — one line per entry in `assumptions`.
-- `Open questions:` — one line per entry in `open_questions`.
+- `Assumptions` — one line per entry in `assumptions`.
+- `Open questions` — one line per entry in `open_questions`.
 
 ## Empty sections
 
@@ -786,14 +770,14 @@ explicit `None.` confirms nothing is pending.
 When `assumptions` is empty:
 
 ```
-## Assumptions:
+## Assumptions
 - None.
 ```
 
 When `open_questions` is absent:
 
 ```
-## Open questions:
+## Open questions
 - None.
 ```
 
@@ -814,17 +798,17 @@ When `open_questions` is absent:
 
 Path: context/plans/red-sce-banner.md
 
-## Summary:
-Renders the ASCII-art SCE banner at the top of `sce` help in red instead of the current gradient. Colour-disabled output is unchanged, and no other help surface is affected.
+## Summary
+Renders the ASCII-art SCE banner at the top of `sce` help in red instead of the current gradient. Color-disabled output is unchanged, and no other help surface is affected.
 
-## Tasks:
+## Tasks
 1. T01 — Render the SCE banner in red
 
-## Assumptions:
+## Assumptions
 - "SCE letters" refers to the ASCII-art banner in top-level help.
 - Red is uniform terminal red when colors are enabled; plain ASCII remains unchanged otherwise.
 
-## Open questions:
+## Open questions
 - None.
 ```
 """
@@ -975,7 +959,7 @@ local readyContinuationLayout = model.semanticReference.apply(
 
   This plan is a draft. State a correction and it will be updated.
 
-  Next up:
+  Next step:
 
   {next-task-id} — {next-task-title}
 
@@ -1486,7 +1470,7 @@ local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
 
     The context brief is the durable memory this plan starts from. Treat its
     `key_facts` as recorded current state, its `gaps` as areas with no durable
-    context, and its `drift` as context the code has already outrun.
+    context, and its `drift` as recorded context that no longer matches the code.
 
     When no brief is supplied, load the context named by the change request before
     authoring, and follow the selection discipline in *Inspect relevant context*.
@@ -2205,17 +2189,17 @@ local PLAN_SUMMARY = """
 
     Path: {plan.path}
 
-    ## Summary:
+    ## Summary
     {plan summary}
 
-    ## Tasks:
+    ## Tasks
     1. {task.id} — {task.title}
     2. {task.id} — {task.title}
 
-    ## Assumptions:
+    ## Assumptions
     - {assumption}
 
-    ## Open questions:
+    ## Open questions
     - {open question}
     ```
 
@@ -2227,13 +2211,13 @@ local PLAN_SUMMARY = """
     - `Plan:` — `plan.name`. Append ` (updated)` when `plan.action` is `updated`.
       Render nothing extra when it is `created`.
     - `Path:` — `plan.path`, exactly as returned, so it stays runnable.
-    - `Summary:` — `summary`, as prose. This is the only place the reader learns
+    - `Summary` — `summary`, as prose. This is the only place the reader learns
       what the plan actually does, so never omit it and never replace it with a
       restatement of the task titles.
-    - `Tasks:` — one numbered line per entry in `tasks`, in plan order. Append
+    - `Tasks` — one numbered line per entry in `tasks`, in plan order. Append
       ` (done)` to any task whose `status` is `done`.
-    - `Assumptions:` — one line per entry in `assumptions`.
-    - `Open questions:` — one line per entry in `open_questions`.
+    - `Assumptions` — one line per entry in `assumptions`.
+    - `Open questions` — one line per entry in `open_questions`.
 
     ## Empty sections
 
@@ -2243,14 +2227,14 @@ local PLAN_SUMMARY = """
     When `assumptions` is empty:
 
     ```
-    ## Assumptions:
+    ## Assumptions
     - None.
     ```
 
     When `open_questions` is absent:
 
     ```
-    ## Open questions:
+    ## Open questions
     - None.
     ```
 
@@ -2271,17 +2255,17 @@ local PLAN_SUMMARY = """
 
     Path: context/plans/red-sce-banner.md
 
-    ## Summary:
-    Renders the ASCII-art SCE banner at the top of `sce` help in red instead of the current gradient. Colour-disabled output is unchanged, and no other help surface is affected.
+    ## Summary
+    Renders the ASCII-art SCE banner at the top of `sce` help in red instead of the current gradient. Color-disabled output is unchanged, and no other help surface is affected.
 
-    ## Tasks:
+    ## Tasks
     1. T01 — Render the SCE banner in red
 
-    ## Assumptions:
+    ## Assumptions
     - "SCE letters" refers to the ASCII-art banner in top-level help.
     - Red is uniform terminal red when colors are enabled; plain ASCII remains unchanged otherwise.
 
-    ## Open questions:
+    ## Open questions
     - None.
     ```
     """

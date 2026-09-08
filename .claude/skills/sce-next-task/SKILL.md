@@ -11,10 +11,10 @@ compatibility: claude
 
 Own this workflow from input through its terminal user-visible response.
 Follow its steps, gates, and stops in order; do not add, skip, reorder, or merge them.
-Keep phase results internal and continue immediately until a defined wait or stop.
+Keep internal phase results private and continue immediately until a defined wait or stop.
 Resume user waits in this same skill and session.
-Use only the specified `references/output.md` layouts for gates and terminal
-responses. Do not expose raw state or add text around a layout.
+Render user-visible output only from the named workflow layouts or phase reports.
+Do not expose raw internal state or add text around a rendered layout or report.
 Non-SCE helpers may assist, but must return to the active step without changing
 phase order, gates, waits, writes, validation, stops, or terminal output.
 Do not invoke another SCE skill, package, or workflow command except `sce-decision`,
@@ -80,7 +80,7 @@ Branch on the outcome:
 
 `synced` | `no_context_change` -> Re-invoke the **Plan review phase** with the same `plan-name-or-path` and, when present, `task-id` to resume normal task selection.
 
-`plan_complete` -> Render the **Plan already complete** layout from `references/output.md`. Stop.
+`plan_complete` -> Render the **Implementation complete** layout from `references/output.md`. Stop.
 
 `ready` -> Pass the complete readiness result to the **Task execution phase**.
 
@@ -119,10 +119,9 @@ Branch on the execution result.
 ### 3. Synchronize context
 
 Read `references/context-sync.md`, then run the **Task context synchronization
-phase** with the complete `complete` result returned by the **Task execution
-phase**.
+phase** with the task execution result whose `status` is `complete`.
 
-Pass that `complete` result verbatim as the authoritative live handoff to the
+Pass that result unchanged as the authoritative live handoff to the
 **Task context synchronization phase**. Do not restate, summarize, or reconstruct it.
 
 This phase verifies the five root context files on every invocation, whatever the
@@ -139,7 +138,7 @@ Branch on the synchronization result.
 
 Do not select another task. Stop.
 
-`synced` | `no_context_change` -> Print out the report the **Task context synchronization phase** returned. Continue to the next step.
+`synced` | `no_context_change` -> Render the Markdown report returned by the **Task context synchronization phase** unchanged. Continue to the next step.
 
 ### 4. Determine the continuation
 

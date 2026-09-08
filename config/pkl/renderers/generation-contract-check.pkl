@@ -289,8 +289,8 @@ local requiredHandoverSkillTokens = new Listing {
 }
 
 local requiredHandoverTemplateCompletenessTokens = new Listing {
-  "### Completeness contract"
-  "first four `##` sections shown in **Layout** are required"
+  "## Completeness contract"
+  "first four `##` sections shown in **Template** are required"
   "next `##` heading or the end of the"
   "empty list marker"
   "`{...}` placeholder"
@@ -329,10 +329,10 @@ local expectedExecutionContract = (allowsDecision: Boolean) ->
 
   Own this workflow from input through its terminal user-visible response.
   Follow its steps, gates, and stops in order; do not add, skip, reorder, or merge them.
-  Keep phase results internal and continue immediately until a defined wait or stop.
+  Keep internal phase results private and continue immediately until a defined wait or stop.
   Resume user waits in this same skill and session.
-  Use only the specified `references/output.md` layouts for gates and terminal
-  responses. Do not expose raw state or add text around a layout.
+  Render user-visible output only from the named workflow layouts or phase reports.
+  Do not expose raw internal state or add text around a rendered layout or report.
   Non-SCE helpers may assist, but must return to the active step without changing
   phase order, gates, waits, writes, validation, stops, or terminal output.
   """ + "\n" + if (allowsDecision)
@@ -346,9 +346,9 @@ local expectedExecutionContract = (allowsDecision: Boolean) ->
 local compactContractClauses = new Listing {
   "Own this workflow from input through its terminal user-visible response."
   "Follow its steps, gates, and stops in order; do not add, skip, reorder, or merge them."
-  "Keep phase results internal and continue immediately until a defined wait or stop."
+  "Keep internal phase results private and continue immediately until a defined wait or stop."
   "Resume user waits in this same skill and session."
-  "Use only the specified `references/output.md` layouts for gates and terminal\nresponses. Do not expose raw state or add text around a layout."
+  "Render user-visible output only from the named workflow layouts or phase reports.\nDo not expose raw internal state or add text around a rendered layout or report."
   "Non-SCE helpers may assist, but must return to the active step without changing\nphase order, gates, waits, writes, validation, stops, or terminal output."
 }
 
@@ -1128,7 +1128,7 @@ local validationExecutionPolicyTokens = new Listing {
   "Prefer the plan's authored checks."
   "Treat leftover debug-only flags, temporary files"
   "Never report a check as passed unless it ran successfully"
-  "repair belongs to a later work session"
+  "repair belongs to a normal work session outside this phase"
   "Do not reopen completed tasks, rewrite task evidence, or change the task stack."
 }
 
@@ -1198,7 +1198,38 @@ hidden assertValidateExcludesDecisionAndPlanSync = (documents: Mapping) ->
     ) "sce-validate package: no sce-decision reference or plan-context-sync wording"
     else throw("generated sce-validate document must not contain a sce-decision reference or plan-context-sync wording")
 
+
+hidden assertWorkflowLanguageConsistency = (artifacts: Mapping) ->
+  let (targets = new Listing { ".pi"; ".claude"; ".agents" })
+    if (
+      targets.every((target) ->
+        let (next = artifacts["config/\(target)/skills/sce-next-task/SKILL.md"])
+          let (commitRef = artifacts["config/\(target)/skills/sce-commit/references/atomic-commit.md"])
+            let (validationRef = artifacts["config/\(target)/skills/sce-validate/references/validation.md"])
+              let (handoverTemplate = artifacts["config/\(target)/skills/sce-handover/references/handover-template.md"])
+                let (planTemplate = artifacts["config/\(target)/skills/sce-change-to-plan/references/plan-template.md"])
+                  let (contextSync = artifacts["config/\(target)/skills/sce-next-task/references/context-sync.md"])
+                    next.contains("Keep internal phase results private")
+                    && next.contains("named workflow layouts or phase reports")
+                    && next.contains("**Implementation complete**")
+                    && commitRef.contains("# Atomic commit phase")
+                    && commitRef.contains("The phase is complete after:")
+                    && !commitRef.contains("Committing is not this skill's job")
+                    && validationRef.contains("# Validation phase")
+                    && validationRef.contains("# Validation report")
+                    && !validationRef.contains("# SCE Validation")
+                    && handoverTemplate.contains("# Handover document format")
+                    && handoverTemplate.contains("## Template")
+                    && handoverTemplate.contains("Include `Plan` when one plan is known")
+                    && planTemplate.contains("reports cleanup or repair work")
+                    && planTemplate.contains("it does not perform that work")
+                    && contextSync.contains("completed task with unresolved context synchronization")
+      )
+    ) "workflow language: shared vocabulary, phase naming, report naming, and document format are consistent"
+    else throw("generated workflow language/format drifted from the shared T11 conventions")
+
 contractChecks {
+  ["workflow-language-consistency"] = assertWorkflowLanguageConsistency.apply(generatedArtifacts)
   ["compact-execution-contracts"] = assertCompactExecutionContracts.apply(workflowDocuments)
   ["compact-execution-contract-negative-fixtures"] = assertCompactExecutionContractFixtures
   ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
