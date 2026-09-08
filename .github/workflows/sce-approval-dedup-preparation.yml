@@ -6,6 +6,7 @@ on:
       - codex/compress-workflow-execution-preamble
     paths:
       - .sce-decision-dedup.py
+      - .sce-decision-dedup-fix.py
       - .github/workflows/sce-approval-dedup-preparation.yml
 
 permissions:
@@ -28,4 +29,5 @@ jobs:
       - name: Apply, verify, commit, and push decision gate deduplication
         run: |
           cp .sce-decision-dedup.py /tmp/sce-decision-dedup.py
+          python3 .sce-decision-dedup-fix.py
           nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 /tmp/sce-decision-dedup.py
