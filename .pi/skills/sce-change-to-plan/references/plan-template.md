@@ -129,6 +129,7 @@ invent one: `None.` is the expected answer for a well-specified change.}
 
 ## Task rules
 
+- Number tasks sequentially as `T01..T0N`.
 - Every task is a checkbox line so progress stays machine-readable:
   `- [ ] T01: {title} (status:todo)`.
 - Author each executable task as one atomic commit unit by default.

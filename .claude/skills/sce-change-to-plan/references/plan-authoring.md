@@ -5,18 +5,19 @@ Run this phase for step 2 of the workflow, and again for each revision in step 4
 Input: the change request, and the complete `loaded` brief from the context load
 phase. Pass the brief verbatim; do not restate, summarize, or reinterpret it.
 
-This phase exclusively owns:
+This phase owns the planning process:
 
-- Resolving whether the request targets a new or an existing plan.
-- The clarification gate.
-- Normalizing the change summary, acceptance criteria, constraints, and non-goals.
-- Slicing the task stack into one-task/one-atomic-commit units.
-- Writing `context/plans/{plan_name}.md`.
+- Resolve whether the request targets a new or an existing plan.
+- Challenge the change and run the clarification gate.
+- Derive plan-specific content from the request and loaded context.
+- Decide task boundaries, dependencies, and ordering.
+- Write or revise exactly one `context/plans/{plan_name}.md`.
 
-Do not duplicate any of it elsewhere in the workflow.
-
-Use the document format in `references/plan-template.md`. Read it before writing
-the plan file.
+`references/plan-template.md` is the sole owner of the persisted plan schema and
+generic document-authoring rules: acceptance-criteria format and validation
+semantics, task fields and atomic slicing, the no-validation-task rule, completion
+records, and existing-plan update preservation. Read it before authoring or
+revising and apply those rules rather than restating them here.
 
 The workflow renders this phase's result as the summary defined in
 `references/output.md`.
@@ -48,8 +49,9 @@ undecidable.
 Determine whether the request targets a new plan or an existing plan in
 `context/plans/`.
 
-When it targets an existing plan, read that plan before authoring. Preserve its
-completed tasks, their recorded evidence, its structure, and its terminology.
+When it targets an existing plan, read that plan before authoring. Apply the
+`Updating an existing plan` rules in `references/plan-template.md` when writing;
+this step only resolves which plan is being revised.
 
 When multiple existing plans match and none can be selected safely, return
 `blocked` with the matching candidates.
@@ -151,33 +153,17 @@ Do not explore the entire repository by default.
 
 ## 2.5 Author the acceptance criteria
 
-State how the finished plan is proven, before slicing tasks.
-
-Each criterion describes observable behavior of the finished system and names the
-check that proves it. Record repository-wide checks once under `Full validation`,
-and the durable context the change must be reflected in under `Context sync`.
-
-`/validate` runs this section after the last task completes. It is the only place
-a plan says how it is validated.
+Derive the plan-specific success outcomes and checks before slicing tasks, then
+apply the `Acceptance criteria rules` and exact section shape in
+`references/plan-template.md`. The template owns their generic validation
+semantics and placement.
 
 ## 2.6 Author the task stack
 
-Slice the work into sequential tasks `T01..T0N` using the task format and the
-atomic slicing contract in `references/plan-template.md`.
-
-Every executable task must be completable and landable as one coherent commit.
-Split any task that would require multiple independent commits. Convert broad
-wrappers such as `polish` or `finalize` into specific outcomes with concrete
-acceptance checks.
-
-Order tasks so each one's declared dependencies precede it.
-
-The last task is an ordinary implementation task. Do not author a trailing
-validation-and-cleanup task, or any task whose only purpose is running the full
-check suite, verifying durable context, or removing scaffolding.
-
-Confirm every acceptance criterion is satisfied by at least one task. When one is
-not, the task stack is incomplete.
+Slice and order the plan-specific work after the acceptance criteria, applying the
+`Task rules` and `No validation task` rules in `references/plan-template.md`.
+The template owns the task field shape, atomic-commit constraint, dependency-order
+rule, acceptance-coverage rule, and generic task exclusions.
 
 A finished stack always leaves at least one incomplete task, so the workflow can
 always hand off to `/next-task`. When the request resolves to a plan but produces
@@ -187,10 +173,8 @@ by completed tasks, set internal status `blocked` with category
 
 ## 2.7 Write the plan
 
-Write `context/plans/{plan_name}.md` using `references/plan-template.md`.
-
-When updating an existing plan, keep completed tasks and their evidence intact,
-and append or renumber new tasks without disturbing recorded history.
+Write `context/plans/{plan_name}.md` by applying `references/plan-template.md`
+exactly. For revisions, apply its `Updating an existing plan` rules.
 
 ## 2.8 Return the result
 
@@ -249,8 +233,7 @@ Do not:
 - Run task execution.
 - Synchronize context.
 - Run final validation.
-- Author a validation, cleanup, or context-verification task. `/validate` owns
-  that phase.
+- Write a plan that violates `references/plan-template.md`.
 - Set internal status `plan_ready` for a plan with no incomplete task.
 - Create a Git commit.
 - Author more than one plan.
