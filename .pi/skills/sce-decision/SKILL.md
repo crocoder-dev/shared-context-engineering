@@ -1,17 +1,17 @@
 ---
 name: sce-decision
 description: >
-  Write one immutable ADR for one qualifying system-wide decision
+  Write one immutable ADR for one decision already qualified by context synchronization
 ---
 
 # SCE Decision
 
 ## Purpose
 
-Write exactly one architecture decision record for one qualifying system-wide
-important decision during successful task context synchronization. Return
-a deterministic internal handoff to the invoking synchronization phase. Do not
-render an independent user-visible response.
+Write exactly one architecture decision record for one decision already qualified
+by successful task context synchronization. Return a deterministic internal
+result to the invoking synchronization phase. Do not render an independent
+user-visible response.
 
 ## Input
 
@@ -25,31 +25,25 @@ synchronization. It must identify:
 - Related current-state context and existing ADR paths.
 - An optional requested status.
 
-Do not accept raw workflow arguments, ordinary phase state, multiple decisions,
+Do not accept raw workflow arguments, ordinary phase result, multiple decisions,
 or direct user invocation. Do not reconstruct missing material facts.
 
-## Decision gate
+## Qualification handoff
 
-A decision qualifies only when it establishes or changes a system-wide important
-constraint involving at least one of:
+The invoking task context synchronization phase solely owns the decision
+qualification threshold and decides whether this skill is invoked. Treat the
+caller's gate result as authoritative; do not redefine, broaden, or independently
+rerun that threshold here.
 
-- System boundaries or ownership.
-- Public or cross-domain interfaces.
-- Data models or persistence.
-- Compatibility contracts.
-- Security posture.
-- Deployment or distribution strategy.
-- A major dependency.
-- A similarly durable constraint that is costly or risky to reverse.
+Require the request to state why the caller qualified the decision and include
+supporting evidence. If the request explicitly represents a nonqualifying gate
+outcome, return `not_qualified` (or `skipped` when the caller deliberately skipped
+the gate) without writing an ADR. If a claimed qualification is unsupported by
+its supplied evidence, return `not_qualified`. Missing, contradictory, or
+otherwise unsafe material input remains `blocked`.
 
-Routine implementation details, local refactors, naming and formatting choices,
-temporary experiments, and easily reversible choices do not qualify. When the
-request does not demonstrate the threshold, return `not_qualified` (or
-`skipped` when the caller deliberately skips the gate); do not create an ADR
-merely because context synchronization occurred. A nonqualifying or skipped
-result is non-blocking, so the invoking synchronization phase continues
-normally. Reserve `blocked` for missing, contradictory, or otherwise unsafe
-decision input or history.
+`not_qualified` and `skipped` are non-blocking to the invoking synchronization
+phase.
 
 ## Workflow
 
@@ -91,21 +85,10 @@ deterministic slug; never add an arbitrary counter and never overwrite a record.
 
 ### 4. Write the ADR
 
-Create exactly one file using `references/adr-template.md` and these rules:
-
-- **Context** states the forces and constraint that made a decision necessary.
-- **Decision** states one resulting choice, not a list of unrelated choices.
-- **Rationale** explains why this path best satisfies the constraints.
-- **Alternatives considered** names credible alternatives and why they were not
-  selected.
-- **Compatibility and risks** states compatibility effects, migration concerns,
-  and material risks with mitigations.
-- **Guardrails** records durable limits that keep the decision narrow.
-- **Consequences** records positive and negative resulting constraints.
-- **Follow-up** lists only established work or conditions; use `None.` when no
-  follow-up is established.
-- **References** links the plan, relevant tasks, evidence, current-state context,
-  related ADRs, and any superseded ADR.
+Read `references/adr-template.md` before writing. It is the sole authority for
+the persisted ADR schema and section semantics. Populate that template from the
+validated request and evidence; do not restate or invent a parallel section
+contract here.
 
 Use repository-relative Markdown links where practical. Describe durable truth,
 not the implementation session. Do not edit current-state context; the invoking
@@ -118,9 +101,9 @@ the filename, status, sections, and references satisfy this contract; every
 referenced repository path exists when practical to check; and no accepted ADR
 was modified.
 
-### 6. Return internal state
+### 6. Return the result
 
-Return exactly one internal handoff:
+Return exactly one internal result:
 
 - `written`: include `status`, `adr_path`, `decision`, `decision_status`,
   `created` (`true` for a new ADR and `false` for reuse), `supersedes`, and
@@ -132,7 +115,7 @@ Return exactly one internal handoff:
   `required_action`. Use this only when decision writing cannot proceed safely.
 
 Use stable field names and repository-relative paths. Return no prose before or
-after the handoff. The invoking synchronization phase owns all user-visible
+after the result. The invoking synchronization phase owns all user-visible
 reporting.
 
 ## Boundaries

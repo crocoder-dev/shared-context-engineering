@@ -6,14 +6,18 @@ description: >
 
 # SCE Next Task
 
-## Purpose
+## Execution contract
 
-Own this workflow from input parsing through its terminal user-visible response.
-Execute the phases below directly and in order. Phase statuses are internal state,
-not inter-SCE workflow handoffs. Do not invoke another SCE skill, sibling SCE
-package, or SCE workflow command except `sce-decision`, and invoke `sce-decision`
-only from the successful context-synchronization decision gate. Follow the canonical workflow's steps, gates,
-and stops exactly as written: never invent, skip, reorder, or merge a step.
+Own this workflow from input through its terminal user-visible response.
+Follow its steps, gates, and stops in order; do not add, skip, reorder, or merge them.
+Keep internal phase results private and continue immediately until a defined wait or stop.
+Resume user waits in this same skill and session.
+Render user-visible output only from the named workflow layouts or phase reports.
+Do not expose raw internal state or add text around a rendered layout or report.
+Non-SCE helpers may assist, but must return to the active step without changing
+phase order, gates, waits, writes, validation, stops, or terminal output.
+Do not invoke another SCE skill, package, or workflow command except `sce-decision`,
+and only from the successful context-synchronization decision gate.
 
 ## Phase references
 
@@ -33,25 +37,6 @@ references carry gates that must fire before their phase's first side effect, so
 phase begun from this summary alone will already have skipped them. Read only the
 reference for the step you have reached: a run that stops at step 1 never needs the
 other two, which is why they are separate files.
-
-## User-visible output
-
-Use `references/output.md` for every gate and terminal response. Render no raw
-internal state. The reference contains only human-visible Markdown layouts.
-User-visible output is limited to those layouts: never invent a layout, and never
-wrap one in an added preamble, commentary, summary, or extra section.
-
-## Composite control flow
-
-Keep phase results as internal state and continue immediately whenever the
-canonical workflow says to continue. Stop only at a user wait or terminal branch.
-Any workflow-defined user wait resumes this same skill in the same session.
-Never expose an internal phase result as the workflow's final response.
-
-Relevant non-SCE skills may be used as helper capabilities during the active step.
-They are not workflow handoffs: when a helper returns, control returns to the active
-step. Helper use must preserve the canonical phase order, gates, waits, writes,
-validation, stops, and terminal user-visible output.
 
 ## Input
 
@@ -86,7 +71,7 @@ Branch on `status`:
 
 `blocked` -> Do not run implementation. Render the **Review blocked** layout from `references/output.md`. When `candidates` is present the plan could not be resolved, and each entry is a candidate path for `/next-task {candidate-path}`. `executable_tasks_remaining` true means another task remains executable and `/next-task {plan-path} {task-id}` selects one; false means no task in the plan can proceed until the plan is updated. Do not print the raw result. Stop.
 
-`sync_debt` -> Read `references/context-sync.md`, then run the **Task context synchronization phase** using the debt task's persisted `Context synchronization handoff` — and, when present, its persisted `Context synchronization blocker` — named by the **Plan review phase**. Do not reconstruct a missing handoff from conversation history.
+`sync_debt` -> Read `references/context-sync.md`, then run the **Task context synchronization phase** with the resolved plan path, debt task ID/title, and completed task record returned by the **Plan review phase**, plus its persisted `Context synchronization blocker` when present. Pass that completed task record verbatim. Do not reconstruct missing task data from conversation history.
 
 Write the debt task's lifecycle to the plan: `synced`, clearing its blocker, required action, and retry condition, for `synced` or `no_context_change`; a refreshed `blocked` state with the report's blocker, required action, and retry condition for `blocked`. If that lifecycle write fails, treat the outcome as `blocked`.
 
@@ -96,7 +81,7 @@ Branch on the outcome:
 
 `synced` | `no_context_change` -> Re-invoke the **Plan review phase** with the same `plan-name-or-path` and, when present, `task-id` to resume normal task selection.
 
-`plan_complete` -> Render the **Plan already complete** layout from `references/output.md`. Stop.
+`plan_complete` -> Render the **Implementation complete** layout from `references/output.md`. Stop.
 
 `ready` -> Pass the complete readiness result to the **Task execution phase**.
 
@@ -107,27 +92,20 @@ the plan, in plan order, regardless of its position relative to the task being
 selected or resumed, before allowing a new implementation task to start. A
 missing field, or any value other than `synced`, is unresolved synchronization
 debt. Never infer `synced` from conversation history. When the debt-carrying
-task has no durable `Context synchronization handoff` subsection, the **Plan
-review phase** returns `blocked` directly with a legacy-migration required
-action; otherwise it returns `sync_debt`, resolved by the branch above.
+task has no durable completed-task record, the **Plan review phase** returns
+`blocked` directly with a legacy-migration required action; otherwise it returns
+`sync_debt` with the resolved plan path, debt task ID/title, completed task
+record, and persisted blocker when present, for the branch above to route.
 
 ### 2. Execute the task
 
 Read `references/task-execution.md`, then run the **Task execution phase** with
 the complete `ready` result from the **Plan review phase**.
 
-This phase always shows an implementation gate before it modifies any file, and it
-is the only phase permitted to ask the user for confirmation. Both properties are
-load-bearing, so reach them through the reference rather than acting from this
-summary.
-
-Branch on `auto-approve`:
-
-`approved` -> Also pass the `approve` flag. The **Task execution phase** then shows its implementation gate as a summary and proceeds without asking.
-
-else -> Do not pass the `approve` flag. The **Task execution phase** shows its implementation gate and waits for the user's decision.
-
-Do not present an additional implementation confirmation.
+Pass the `approve` flag only when `auto-approve` is `approved`; otherwise omit it.
+The **Task execution phase** owns the implementation gate, approval question, wait,
+user-decision handling, and no-edit-before-approval boundary. Do not duplicate that
+procedure here or present an additional implementation confirmation.
 
 Branch on the execution result.
 
@@ -142,12 +120,10 @@ Branch on the execution result.
 ### 3. Synchronize context
 
 Read `references/context-sync.md`, then run the **Task context synchronization
-phase** with the complete `complete` result returned by the **Task execution
-phase**.
+phase** with the task execution result whose `status` is `complete`.
 
-Pass that result verbatim. It is the authoritative handoff, and the **Task context synchronization phase** owns reading the plan, task, changed files, verification evidence, and reported context impact out of it.
-
-Do not restate, summarize, or reconstruct any part of the execution result.
+Pass that result unchanged as the authoritative live handoff to the
+**Task context synchronization phase**. Do not restate, summarize, or reconstruct it.
 
 This phase verifies the five root context files on every invocation, whatever the
 change's reported impact, so it is never correct to skip it as unnecessary.
@@ -163,7 +139,7 @@ Branch on the synchronization result.
 
 Do not select another task. Stop.
 
-`synced` | `no_context_change` -> Print out the report the **Task context synchronization phase** returned. Continue to the next step.
+`synced` | `no_context_change` -> Render the Markdown report returned by the **Task context synchronization phase** unchanged. Continue to the next step.
 
 ### 4. Determine the continuation
 

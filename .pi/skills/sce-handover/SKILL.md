@@ -6,33 +6,17 @@ description: >
 
 # SCE Handover
 
-## Purpose
+## Execution contract
 
-Own this workflow from input parsing through its terminal user-visible response.
-Execute the phases below directly and in order. Phase statuses are internal state,
-not inter-SCE workflow handoffs. Do not invoke another SCE skill, sibling SCE
-package, or SCE workflow command. Follow the canonical workflow's steps, gates,
-and stops exactly as written: never invent, skip, reorder, or merge a step.
-
-## User-visible output
-
-Use `references/output.md` for every gate and terminal response. Render no raw
-internal state. The reference contains only human-visible Markdown layouts.
-User-visible output is limited to those layouts: never invent a layout, and never
-wrap one in an added preamble, commentary, summary, or extra section.
-
-## Composite control flow
-
-Keep phase results as internal state and continue immediately whenever the
-canonical workflow says to continue. Stop only at a user wait or terminal branch.
-Any workflow-defined user wait resumes this same skill in the same session.
-Never expose an internal phase result
-as the workflow's final response.
-
-Relevant non-SCE skills may be used as helper capabilities during the active step.
-They are not workflow handoffs: when a helper returns, control returns to the active
-step. Helper use must preserve the canonical phase order, gates, waits, writes,
-validation, stops, and terminal user-visible output.
+Own this workflow from input through its terminal user-visible response.
+Follow its steps, gates, and stops in order; do not add, skip, reorder, or merge them.
+Keep internal phase results private and continue immediately until a defined wait or stop.
+Resume user waits in this same skill and session.
+Render user-visible output only from the named workflow layouts or phase reports.
+Do not expose raw internal state or add text around a rendered layout or report.
+Non-SCE helpers may assist, but must return to the active step without changing
+phase order, gates, waits, writes, validation, stops, or terminal output.
+Do not invoke another SCE skill, package, or workflow command.
 
 ## Input
 
@@ -85,18 +69,10 @@ timestamp segment, rather than overwriting it.
 
 #### 3. Compose the handover document
 
-Read `references/handover-template.md` before composing. It defines the
-persisted-document format and is the only template authority. Populate all
-four required sections:
-
-- `Current Task State`
-- `Decisions Made`
-- `Open Questions / Blockers`
-- `Next Recommended Step`
-
-Every section must contain real content. Write `None identified.` (or a
-section-appropriate equivalent) when nothing applies — never omit a required
-section and never leave template placeholders in the written file.
+Read `references/handover-template.md` before composing. It is the sole
+authority for the persisted schema and **Completeness contract**. Populate its
+layout from the gathered facts and satisfy that contract without redefining the
+required-section set here.
 
 Label inferred or assumed details inline as assumptions; do not blend them with
 confirmed facts.
@@ -110,8 +86,8 @@ the required action, and stop without writing a file.
 #### 5. Write exactly one file
 
 Write the composed document to the path resolved in step 2. Before reporting
-success, confirm the written file contains all four required sections
-populated with real content.
+success, validate the written file against the template's **Completeness
+contract**.
 
 #### 6. Report
 
@@ -135,17 +111,12 @@ and stop.
 
 #### 2. Validate handover completeness
 
-Read the file and confirm it contains all four required sections:
-`Current Task State`, `Decisions Made`, `Open Questions / Blockers`, and
-`Next Recommended Step`. For each section, inspect the content up to the
-next required heading (or the end of the file): it must contain non-whitespace
-content, and it must not consist only of an empty list marker, a template
-placeholder such as `{What is being worked on...}`, or other unreplaced
-`{...}` scaffolding. Explicit statements such as `None identified.` are real
-content and are valid.
+Read the file and `references/handover-template.md`. Validate the file against
+the template's **Completeness contract**; do not define a second required-section
+list or a different content-validity rule here.
 
-When any required section is missing, empty, or placeholder-only, render the
-**Loader blocked** layout (invalid handover) and stop.
+When that contract fails, render the **Loader blocked** layout (invalid handover)
+and stop.
 
 #### 3. Present for continuation
 

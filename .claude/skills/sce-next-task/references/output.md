@@ -8,7 +8,7 @@ Present the selected task, then each issue's problem, impact, and required
 decision. If plan resolution is ambiguous, list candidate paths and
 `/next-task {candidate-path}`. State whether another task remains executable.
 
-## Plan already complete
+## Implementation complete
 
 ```markdown
 -------------------------------------
@@ -48,7 +48,7 @@ be synchronized before continuing.
 
 {completed-tasks} of {total-tasks} tasks complete.
 
-Next up:
+Next step:
 
 {next-task-id} — {next-task-title}
 
@@ -127,14 +127,5 @@ When the `approve` flag is absent, end with exactly:
 When the `approve` flag is supplied, omit the question and end after
 **Verification**.
 
-## Rules
-
-- Show the gate exactly once for an unchanged task.
-- Do not modify files before approval.
-- Do not add requirements absent from the reviewed task.
-- Do not present multiple competing approaches unless a material decision is
-  required.
-- Do not emit YAML while waiting for the user's answer. Stop after the gate and
-  wait.
-- If the handoff is stale or incomplete, show the known task information and
-  identify the problem under **Risks or trade-offs**.
+If the handoff is stale or incomplete, show the known task information and
+identify the problem under **Risks or trade-offs**.

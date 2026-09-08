@@ -34,11 +34,12 @@ For the first task carrying debt:
   Set internal status `blocked` with a required action to migrate the plan
   (backfill the completion record, or resolve the debt manually) and a retry
   condition of the plan carrying that structure. Stop.
-- Otherwise, set internal status `sync_debt`, naming the debt task (its ID and
-  title) and its own completed record — read directly from the plan by plan
-  path and task ID — including, when its field is `blocked`, its persisted
-  `Context synchronization blocker`. Do not run or cite the Task context
-  synchronization phase. Stop. Do not select or start a new task.
+- Otherwise, set internal status `sync_debt`, naming the resolved plan path,
+  the debt task (its ID and title), and its own completed record — read
+  directly from the plan by plan path and task ID — including, when its field
+  is `blocked`, its persisted `Context synchronization blocker`. Do not run
+  or cite the Task context synchronization phase. Stop. Do not select or start
+  a new task.
 
 Only after every completed task is `synced` does task selection proceed.
 
@@ -108,14 +109,14 @@ Set internal status `blocked` when a missing decision materially affects:
 
 ## 1.5 Return the result
 
-Set exactly one internal state:
+Return one internal result with one of these statuses:
 
 - `ready`
 - `blocked`
 - `plan_complete`
 - `sync_debt`
 
-Record only the internal state. Do not add explanatory prose before or after it.
+Return only the internal result. Do not add explanatory prose before or after it.
 
 A `ready` result must identify:
 
@@ -129,6 +130,7 @@ A `ready` result must identify:
 
 A `sync_debt` result must identify:
 
+- The resolved plan path.
 - The debt-carrying task's ID and title.
 - Its own completed record, read directly from the plan by plan path and task ID.
 - Its persisted `Context synchronization blocker`, when present.

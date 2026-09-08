@@ -5,23 +5,19 @@ Run this phase for step 3 of the workflow, and only when task execution returned
 session inherits what this task established. It never touches code, tests, or
 plan state.
 
-Input: either the complete `complete` result from the task execution phase
-(same-session), passed verbatim, or the plan path and task ID a plan-review
-recovery step resolved for a `blocked` task, together with that task's own
+Input: either the task execution result with `status: complete`
+(same-session), passed unchanged, or the plan path and task ID a plan-review
+recovery step resolved for a completed task with unresolved context synchronization, together with that task's own
 completed record — read directly from the plan — and its persisted `Context
 synchronization blocker` when present (cross-session retry). Whichever was
-supplied is the authoritative source, and this phase owns reading the plan,
-task, changed files, verification evidence, and reported context impact out
-of it.
+supplied is authoritative; this phase consumes it without redefining its shape.
 
 Do not restate, summarize, or reconstruct any part of it. Do not reconstruct a
 missing execution result or completed task record from conversation history.
 
-A live execution result must have:
-
-```text
-status: complete
-```
+A live execution result must have `status: complete` and satisfy the complete
+handoff contract in `references/task-execution.md`. Consume it verbatim; do not
+redefine or reconstruct its fields here.
 
 A cross-session retry has no separate `status` field to check; the completed
 task record's presence in the plan, identified by plan path and task ID, is
@@ -31,40 +27,30 @@ Use the report format in:
 
 `references/sync-report.md`
 
-Treat whichever source was supplied — the live execution result, or the
-completed task record read directly from the plan — as the authoritative
-source for:
-
-- The resolved plan and completed task.
-- `changes.files_changed`, or the completed task record's own `Files changed`
-  field on retry, already attributed relative to the pre-edit Git baseline.
-- Files changed by implementation.
-- The task's `Result` (or implementation summary, for a live result).
-- `Verify` outcomes (or verification evidence, for a live result).
-- Done-check evidence.
-- Reported context impact.
+For a cross-session retry, treat the completed task record read directly from
+the plan as authoritative for task identity, `Files changed`, `Result`, `Verify`
+outcomes, done-check evidence, and reported context impact. Its `Files changed`
+field remains the pre-edit-baseline-relative attribution; do not replace it with
+a whole-working-tree scan or a fresh diff against `HEAD`.
 
 This phase must not be run for `declined`, `blocked`, or `incomplete` execution
 results.
 
 ## 3.1 Validate the handoff
 
-Confirm that:
+For a live execution result, confirm `status` is exactly `complete` and the
+result satisfies the complete handoff contract in `references/task-execution.md`.
+Do not reconstruct missing fields.
 
-- A live execution result has `status` exactly `complete`; a cross-session
-  retry has no `status` field to check and is authoritative by the completed
-  task record's presence in the plan.
-- A resolved plan path and task ID are present; a live execution result
-  carries them in its `plan` and `task` objects, and a cross-session retry
-  receives them directly from the caller that resolved the debt task.
-- Exactly one completed task is identified, and — on retry — its record is
-  read directly from the plan by that plan path and task ID rather than
-  reconstructed in-band.
-- Changed files and a `Result` (an implementation summary, for a live result)
-  are present.
-- `Verify` outcomes (verification evidence, for a live result) are present.
-- Done-check evidence is present.
-- A context-impact classification is present.
+For a cross-session retry, confirm that:
+
+- A resolved plan path and task ID are present.
+- Exactly one completed task record is read directly from the plan by that plan
+  path and task ID rather than reconstructed in-band.
+- Its `Files changed` field is present as the pre-edit-baseline-relative
+  changed-file list.
+- `Result`, `Verify` outcomes, done-check evidence, and a context-impact
+  classification are present.
 
 If the required information is missing, the completed task record cannot be
 read from the plan, or either is internally contradictory, do not modify
@@ -96,15 +82,11 @@ Start with the execution result:
 
 Then inspect existing repository context in this order when present:
 
-1. `context/context-map.md`
-2. Context files for the affected domain or subsystem
-3. `context/overview.md`
-4. `context/architecture.md`
-5. `context/glossary.md`
-6. `context/patterns.md`
-7. Operational, product, or decision records directly related to the change
+1. The context map and its links to affected domain or subsystem context
+2. The mandatory root pass defined below
+3. Operational, product, or decision records directly related to the change
 
-Use the context map and existing links to locate authoritative files.
+The mandatory root-pass subsection owns the exact five-file root set.
 
 Do not scan or rewrite the entire `context/` tree by default.
 
@@ -174,6 +156,10 @@ If the reported classification is inconsistent with the actual change, use the
 verified classification and explain the difference in the report.
 
 ## 3.5 Record qualifying architecture decisions
+
+This subsection is the sole owner of decision qualification. The threshold below
+decides whether `sce-decision` is invoked; the decision skill consumes that gate
+result and must not restate or broaden it.
 
 During this successful synchronization, determine whether the completed change
 establishes or changes a system-wide important constraint involving one or more
@@ -345,4 +331,4 @@ Do not:
   except `sce-decision`, or invoke `sce-decision` outside the decision gate in
   successful context synchronization.
 - Delete a context file that has uncommitted changes.
-- Return an execution-style internal state.
+- Return a task-execution internal result.
