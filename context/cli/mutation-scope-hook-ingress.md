@@ -218,18 +218,21 @@ than by re-invoking this CLI command, and `sce setup` registers its hooks
 (`config/pkl/renderers/claude-content.pkl`) so a real Claude Code session
 reaches it. Its full contract is in
 [`claude-mutation-scope-integration.md`](claude-mutation-scope-integration.md).
-Still out of scope for this seam itself, and left as future work for every
-non-Claude harness:
+A Codex adapter (`cli/src/services/hooks/codex_mutation_scope/`, hidden
+`sce hooks codex-mutation-scope`) has since been built the same way and is
+registered by `sce setup --codex`. Still out of scope for this seam itself,
+and left as future work for the remaining harnesses:
 
-- Codex hook mapping, OpenCode plugin, Pi extension;
+- OpenCode plugin, Pi extension;
 - `SubagentStart` / `SubagentStop` / `PostToolUse` / tool-call translation for
-  those harnesses;
-- `session → ScopeId` or `tool-call → EventId` derivation for those harnesses;
+  OpenCode and Pi;
+- `session → ScopeId` or `tool-call → EventId` derivation for OpenCode and Pi;
 - PID tracking, process supervisors, staleness detection, automatic scope
   abandonment;
-- harness settings generation or `sce setup` integration for any of these
-  hooks (Claude's own registration now ships; Codex/OpenCode/Pi remain
-  unregistered).
+- harness settings generation or `sce setup` integration for OpenCode/Pi
+  (Claude's and Codex's registrations now ship — the Codex adapter lives in
+  `cli/src/services/hooks/codex_mutation_scope/` and is installed by
+  `sce setup --codex`; OpenCode/Pi remain unregistered).
 
 Each adapter still owns its own `ScopeId` / `EventId` / `actor_kind`
 derivation and its own stale-process detection, and targets this ingress (or,
