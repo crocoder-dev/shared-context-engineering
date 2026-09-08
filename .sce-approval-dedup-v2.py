@@ -1,4 +1,8 @@
 from pathlib import Path
+import subprocess
+
+subprocess.run(['git', 'config', 'user.name', 'David Abram'], check=True)
+subprocess.run(['git', 'config', 'user.email', 'david@crocoder.dev'], check=True)
 
 source = Path('.sce-approval-dedup.py').read_text()
 
