@@ -100,6 +100,11 @@ Feature/domain context:
 - `context/sce/config-schema-publication.md` (current embedded-only publication contract for the generated SCE config JSON Schema and the canonical SCE web application URL used in config declarations)
 - `context/sce/flatpak-distribution-patterns.md` (source-built Flatpak conventions, including Nix-side ephemeral fallback preparation for the Pkl-free build sandbox, manifest generation, local/release builds, release assets, and host-git bridge)
 
+Additional mutation-scope integration context:
+
+- `context/cli/codex-mutation-scope-integration.md` (the second concrete harness adapter: Codex tracked/delegation/untracked classification, partial-by-tool-surface coverage, identity and checkout-local recovery state, write-ahead fail-closed lifecycle, cleanup signals, boundary-aware attribution confirmation, and Codex setup/doctor ownership)
+- `context/sce/codex-apply-patch-diff-runtime.md` (the complementary Codex `PostToolUse(apply_patch)` parsing, path containment, normalization, and `diff_traces` evidence contract)
+
 Working areas:
 
 - `context/plans/` (active plan execution artifacts, not durable history)

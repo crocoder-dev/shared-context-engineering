@@ -175,95 +175,13 @@ Codex (see "Explicit non-goals" in
 
 ## `PostToolUse(apply_patch)` diff capture
 
-`cli/src/services/hooks/codex/apply_patch/` implements the
-`PostToolUse(apply_patch)` arm: `parser.rs` parses Codex's own `apply_patch`
-text format (`*** Begin Patch` ... `*** End Patch`, with `Add File`/`Delete
-File`/`Update File` operations and an optional `Update File` + `Move to`)
-into a typed `CodexPatch`; `path.rs` resolves its paths from the event cwd to
-safe repository-relative paths; `normalize.rs` normalizes it into SCE
-`Index:`-form unified-diff text `crate::services::patch::parse_patch` already
-accepts; `mod.rs`'s `handle` wires the stages together and persists the result:
-
-- Reads the raw patch text from `tool_input.command` (a working assumption
-  mirroring `PreToolUse(Bash)`'s own `tool_input.command` shape); a missing or
-  non-string `command` fails open with no evidence.
-- Before canonical parsing, outer intake preserves raw patch input and unwraps
-  exactly the upstream-compatible `<<EOF`, `<<'EOF'`, and `<<\"EOF\"` forms.
-  The wrapper is removed only when it has a complete canonical patch body;
-  unsupported shell prefixes or quoting, missing/malformed delimiters, and
-  trailing garbage fail open. Boundary-marker whitespace, environment IDs,
-  empty/context-only patches, multiple operations/hunks, and end-of-file
-  markers remain supported by the canonical parser.
-- After parsing, the handler discovers the real Git root rather than assuming
-  the process cwd is the repository root. It requires `cwd` to be a valid
-  absolute directory inside that root, resolves every source and move
-  destination independently from that cwd, and emits only lossless
-  repository-relative UTF-8 paths. Valid `..` components and absolute paths
-  are accepted when canonical resolution remains inside the worktree. Missing
-  targets are checked through their nearest existing prefix, so Add File paths
-  can remain absent while existing and missing symlink escapes are rejected.
-  Outside-repository cwd, outside paths, malformed/NUL paths, and ambiguous
-  mappings are logged as
-  `sce.hooks.codex.apply_patch.path_resolution_failed` and fail open before
-  normalization or database access. This canonical worktree containment rule
-  is an accepted compatibility and security decision; see [the ADR](../decisions/2026-08-23-codex-canonical-worktree-path-resolution.md).
-- A parse failure is logged (`sce.hooks.codex.apply_patch.parse_failed`) and
-  fails open with no evidence — never a deny response, since `apply_patch`
-  tracing is `PostToolUse`-only.
-- Normalization keeps only the touched (`+`/`-`) lines of each `Add`/`Update`
-  operation under deterministic, event-scoped synthetic line identities. The
-  bounded range is derived from the stable `tool_use_id`, and checked local
-  offsets are allocated across all emitted operations, hunks, and files so
-  separate events do not collide in the existing `combine_patches` identity
-  key. These positions are evidence identities, not source line numbers;
-  missing/invalid identities or exhausted ranges fail open. After cwd-aware
-  path resolution, Codex's unchanged context lines are dropped entirely and
-  never persisted or claimed as real filesystem positions. `Delete File`
-  operations, and an `Update File` + `Move to` with no changed lines, produce
-  no evidence; a wholly-empty normalized result (e.g. delete-only) is a
-  successful no-op with no `diff_traces` insert.
-- A non-empty result is persisted as exactly one `diff_traces` row via the
-  existing `insert_diff_trace` — `session_id = cx_<session_id>` after required
-  trimmed non-empty validation, `model_id = normalize_codex_model_id(event.model)`
-  when a model is reported, `tool_name = "codex"`, `tool_version = None`,
-  `payload_type = "patch"` — no new persistence adapter. The event-scoped
-  synthetic identity scheme is an accepted durable decision; see [the ADR](../decisions/2026-08-23-codex-event-scoped-apply-patch-evidence-identities.md).
-- The timestamp comes from `current_unix_time_ms()`; a timestamp-acquisition
-  failure here skips the insert entirely (fails open) rather than
-  substituting a fabricated epoch-zero value, matching `UserPromptSubmit`
-  and `Stop`'s own fail-open timestamp behavior above.
-- Every path — success, empty-normalize no-op, and every fail-open branch —
-  returns exactly empty stdout; Bash denial is the only structured Codex
-  response.
-
-Once committed, Codex evidence still attributes correctly through the
-existing, unmodified `intersect_patches` historical `kind`+`content` fallback
-(`cli/src/services/patch.rs`) even when the real committed lines land at
-different real line numbers. Multiple same-content events retain separate
-synthetic identities through the existing `combine_patches` behavior and can
-match corresponding committed additions. This module does not touch the
-fallback or combination semantics, and no `diff_traces`/Agent Trace schema
-migration was added to support it.
-
-## Conservative attribution boundary
-
-This pipeline proves supplied touched content, not the physical occurrence of
-that content in the repository. Codex provides no true source line ranges, and
-SCE intentionally takes no filesystem snapshot or maintains pending tool state.
-When repeated identical lines occur, `combine_patches` preserves separate
-event-scoped evidence identities, but the existing content-based intersection
-can only match available occurrences deterministically; it cannot prove which
-identical physical occurrence came from which event. The focused regression test
-covers this ambiguity and deliberately does not claim that issue 8 is solved.
-
-The complete supported path is therefore `PostToolUse apply_patch` →
-`tool_input.command` outer normalization and parsing → event-cwd/real-Git-root
-path resolution → SCE `payload_type = "patch"` `diff_traces` persistence →
-existing recent-row parsing, `combine_patches`, and post-commit intersection →
-Agent Trace. Delete File, pure rename, and Bash-created filesystem mutations
-remain without line-level evidence. There is no snapshot, pending-state,
-Codex-specific Agent Trace builder, schema migration, or generic intersection
-redesign in this path; malformed or unsafe inputs fail open silently.
+The existing Codex `PostToolUse(apply_patch)` evidence path remains separate
+from mutation-scope attribution. Its parser, cwd-aware path containment,
+event-scoped synthetic line identities, and `diff_traces` persistence contract
+are documented in
+[`codex-apply-patch-diff-runtime.md`](codex-apply-patch-diff-runtime.md).
+Malformed or unsafe input remains fail-open and Bash denial remains the only
+structured response from this dispatcher.
 
 ## No remaining stub arms
 
