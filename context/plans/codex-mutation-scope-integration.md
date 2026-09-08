@@ -688,8 +688,10 @@ and there are none for MCP. This is a deliberate attribution-coverage boundary
 lifecycle is safe, does **not** silently downgrade MCP/unknown to read-only, and
 does **not** pretend an MCP mutation was attributed.
 
-T02 records the D10a lane key as **N/A** — Case A for built-ins ships no barrier;
-MCP/unknown are `Untracked` and ship no barrier and no scope. Evidence:
+T02 records the D10a lane key as **N/A** (confirmed 2026-09-08) — Case A for
+built-ins ships no barrier; MCP/unknown are `Untracked` and ship no barrier and
+no scope. The T02 event model therefore carries no lane-key field and
+`classify_tool` has no successor-sweep hook. Evidence:
 `fixtures/probe13-mcp-mutate-then-error.*`,
 `fixtures/probe14-mcp-failed-then-successor.*`,
 `fixtures/probe15-mcp-blocked-call.*`,
@@ -957,6 +959,33 @@ group both execute (dump + block). A **separate hidden
 `sce hooks codex-mutation-scope` command** (option 1) remains the recommended
 default; nothing in T01 argues against it. Evidence: `fixtures/NOTES.md`,
 `.codex/hooks.json` two-handler `PreToolUse` group used across probes 3–11.
+
+**T02 decision (2026-09-08): option 1 — a separate hidden
+`sce hooks codex-mutation-scope` command.** Confirmed against T01 and the code:
+
+- The mutation-scope adapter is fail-closed on `PreToolUse` and
+  never-silently-drop on terminal boundaries; the existing `sce hooks codex`
+  dispatcher (`hooks::codex`) is fail-open (errors -> empty stdout). Folding the
+  two into one process (option 2) would couple their failure postures for
+  `PreToolUse(shell)` and `PostToolUse(apply_patch)` — the exact events both
+  systems care about.
+- T01 proved Codex runs each registered handler as its own OS process and that
+  two `PreToolUse` handlers in one matcher group both execute (dump + block
+  across probes 3–11), so a distinct command registered alongside
+  `sce hooks codex` runs independently — the direct analogue of Claude running
+  `sce policy bash` and `sce hooks claude-mutation-scope` side by side.
+- `#263`'s Claude adapter set the precedent: a dedicated non-fail-open
+  `sce hooks claude-mutation-scope` command, not an arm of the fail-open
+  `sce hooks claude` dispatcher.
+
+Consequences for later tasks (unchanged from each task's current wording, which
+already assumes option 1): T04 adds the hidden `HooksSubcommand::CodexMutationScope`
+routed unwrapped like `mutation-scope`; T05 makes `codex_hook_config.rs`
+command-aware (`CODEX_COMMAND_WORDS` becomes a set; `REQUIRED_EVENTS` records
+which command owns each registration) and appends the mutation-scope
+registrations position-stably after the existing `sce hooks codex` ones (D20).
+D8's denial routing is unaffected — the mutation-scope command owns its own
+`PreToolUse` registration.
 
 ### D18 — Adapter depends on hooks::mutation_scope only
 
@@ -1847,8 +1876,9 @@ Persist this field in every plan; this is durable plan state, not chat state:
       in this plan's Design section, Open questions, and
       `cli/src/services/hooks/codex_mutation_scope/fixtures/NOTES.md`.
 
-- [ ] T02: `Command architecture, Codex event model, classification, and identity` (status:todo)
+- [x] T02: `Command architecture, Codex event model, classification, and identity` (status:done)
   - Task ID: T02
+  - Completed: 2026-09-08
   - **Unblocked (2026-09-08).** The T01 D10a Case C blocker is resolved by
     re-planning direction B (D23): MCP tools and unknown tool names are
     `Untracked` — they execute and may mutate, but the adapter creates no scope,
@@ -1884,7 +1914,68 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
     cli/Cargo.toml services::hooks::codex_mutation_scope`; `clippy` /
     `fmt` clean.
-  - Context synchronization: pending
+  - Files changed:
+    - `cli/src/services/hooks/codex_mutation_scope/mod.rs` (new — event model,
+      strict parser, three-class `classify_tool`, D3 `AttemptKey`, D4
+      `cx-tool-v1` `ScopeId` / `EventId` formatters, 23 unit tests over the T01
+      fixture corpus)
+    - `cli/src/services/hooks/mod.rs` (one line — `pub mod codex_mutation_scope;`
+      module-tree declaration; no CLI wiring)
+    - `context/plans/codex-mutation-scope-integration.md` (D17 T02 decision =
+      option 1; D10a lane-key N/A confirmation; this task record)
+  - Result: Froze the Codex mutation-scope adapter's foundation layer. D17
+    decided as **option 1** — a separate hidden `sce hooks codex-mutation-scope`
+    command — recorded in D17 with the failure-posture, process-isolation, and
+    `#263`-precedent rationale. `codex_mutation_scope/mod.rs` contains:
+    `parse_codex_hook_event` (strict — empty / non-object / invalid-JSON /
+    unsupported `hook_event_name` / missing / blank / wrong-typed all rejected
+    with `Invalid Codex hook event payload from STDIN: <detail>.`, no fabricated
+    identity); `CodexHookEvent` limited to the six events the adapter registers
+    (`PreToolUse`, `PostToolUse`, `Stop`, `Interrupt`, `SubagentStop`,
+    `SessionEnd`); identity types carrying Codex's `turn_id` and subagent-only
+    `agent_id` / `agent_type`; `classify_tool` -> `TrackedMutation`
+    (`Bash`, `apply_patch`) / `Delegation` (`collaborationspawn_agent`,
+    `collaborationwait_agent`) / `Untracked` (`mcp__*` + any unknown name), with
+    no "mutation-capable therefore Start" path; `AttemptKey`
+    `(session_id, agent_id?, tool_use_id)` (turn_id excluded); `format_codex_scope_id`
+    (`cx-tool-v1|n=<seq>|s=<len>:<sid>|a=<len>:<aid>|t=<len>:<tuid>`, length-prefixed,
+    hash-free) and `codex_scope_{start,close}_event_id`. No durable state, no
+    ingress call, no CLI wiring, no generated settings, no D10a successor-barrier
+    (D10a lane key confirmed **N/A**). No background-execution classifier — T01
+    D16 proved the `codex exec` shell tool has no `run_in_background` parameter.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::hooks::codex_mutation_scope` — **passed** (23
+      tests: AC2 parser/fixtures, AC3 classification table + delegation/untracked
+      fixtures, AC4 formatter determinism + length-prefix disambiguation, AC5
+      fresh-seq / turn_id-excluded).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::hooks::` — **passed** (354 tests; existing
+      `sce hooks codex` / mutation-scope suites unaffected).
+    - `clippy --all-targets -- -D warnings` — **clean**.
+    - `cargo fmt -- --check` — **clean** (after `cargo fmt`).
+  - Context impact: domain — new adapter-domain Rust module (event model,
+    classifier, identity/formatter contract) plus the D17 command-architecture
+    decision and the D10a N/A confirmation now exist in the plan's Design
+    section. No user-visible behaviour, no public CLI interface, no generated
+    config yet (all deferred to T04/T05). Durable Codex-adapter context
+    (`context/cli/codex-mutation-scope-integration.md`) is authored by T07 once
+    behaviour ships; the frozen contract lives in the plan's Design section
+    (D2/D3/D4/D17) and this record until then.
+  - Context synchronization: synced
+    - T02 ships an internal Rust foundation module with **no non-test caller**
+      (no CLI wiring, no ingress call, no `sce setup` registration), no
+      user-visible behaviour, no public interface, and no generated config. The
+      D17 / D10a decisions are plan-internal design state, not durable context.
+      The durable Codex-adapter context
+      (`context/cli/codex-mutation-scope-integration.md` and the cross-reference
+      edits to `context/overview.md`, `context/context-map.md`,
+      `context/cli/mutation-scope-hook-ingress.md`, etc.) is authored by **T07**
+      once behaviour ships — exactly as recorded for T01. Mandatory five-root
+      pass done: `overview.md`, `architecture.md`, `glossary.md`, `patterns.md`,
+      `context-map.md` all read and confirmed not contradicted (each still
+      correctly states Codex has no wired mutation-scope adapter). No
+      architecture decision qualified for an ADR.
 
 - [ ] T03: `Durable checkout-local Codex adapter state and recovery bookkeeping` (status:todo)
   - Task ID: T03

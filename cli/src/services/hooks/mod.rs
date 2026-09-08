@@ -44,6 +44,7 @@ pub mod claude_model_state;
 pub mod claude_mutation_scope;
 pub mod claude_transcript;
 pub mod codex;
+pub mod codex_mutation_scope;
 pub mod command;
 pub mod lifecycle;
 pub mod mutation_scope;
