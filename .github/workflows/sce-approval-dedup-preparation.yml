@@ -1,11 +1,11 @@
-name: Prepare execution handoff deduplication
+name: Prepare sync-debt recovery fix
 
 on:
   push:
     branches:
       - codex/compress-workflow-execution-preamble
     paths:
-      - .sce-handoff-dedup-v4.py
+      - .sce-sync-debt-fix.py
       - .github/workflows/sce-approval-dedup-preparation.yml
 
 permissions:
@@ -25,5 +25,5 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
 
-      - name: Apply, verify, commit, and push handoff deduplication
-        run: nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 .sce-handoff-dedup-v4.py
+      - name: Apply, verify, commit, and push sync-debt fix
+        run: nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 .sce-sync-debt-fix.py
