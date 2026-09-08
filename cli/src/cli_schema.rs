@@ -329,6 +329,12 @@ pub enum HooksSubcommand {
         hide = true
     )]
     ClaudeMutationScope,
+
+    #[command(
+        about = "Run the Codex mutation-scope adapter (reads JSON payload from STDIN)",
+        hide = true
+    )]
+    CodexMutationScope,
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
