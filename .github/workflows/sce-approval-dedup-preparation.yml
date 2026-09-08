@@ -6,6 +6,7 @@ on:
       - codex/compress-workflow-execution-preamble
     paths:
       - .sce-handoff-dedup.py
+      - .github/workflows/sce-approval-dedup-preparation.yml
 
 permissions:
   contents: write
