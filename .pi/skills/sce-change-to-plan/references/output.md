@@ -66,7 +66,7 @@ This is chat output, not a file. Nothing here is written to the plan.
 
 ## Layout
 
-```
+```markdown
 # Plan: {plan.name}
 
 Path: {plan.path}
@@ -108,14 +108,14 @@ explicit `None.` confirms nothing is pending.
 
 When `assumptions` is empty:
 
-```
+```markdown
 ## Assumptions
 - None.
 ```
 
 When `open_questions` is absent:
 
-```
+```markdown
 ## Open questions
 - None.
 ```
@@ -132,7 +132,7 @@ When `open_questions` is absent:
 
 ## Example
 
-```
+```markdown
 # Plan: red-sce-banner
 
 Path: context/plans/red-sce-banner.md

@@ -67,6 +67,6 @@ After repairs, rerun:
 - When status is `failed`, always include **Retry** with the exact
   `/validate {plan path}` command. Omit **Retry** when status is `validated`.
 - Keep evidence concise and factual. Do not narrate the whole implementation
-  history or add execution-policy claims absent from the validation result.
+  history or add execution-policy claims absent from the validation report.
 - When a previous `## Validation Report` already exists, replace it with the new
   one rather than stacking duplicates.

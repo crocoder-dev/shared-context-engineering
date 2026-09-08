@@ -109,14 +109,14 @@ Set internal status `blocked` when a missing decision materially affects:
 
 ## 1.5 Return the result
 
-Set exactly one internal state:
+Return one internal result with one of these statuses:
 
 - `ready`
 - `blocked`
 - `plan_complete`
 - `sync_debt`
 
-Record only the internal state. Do not add explanatory prose before or after it.
+Return only the internal result. Do not add explanatory prose before or after it.
 
 A `ready` result must identify:
 

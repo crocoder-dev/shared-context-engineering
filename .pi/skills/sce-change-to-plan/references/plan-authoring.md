@@ -13,11 +13,10 @@ This phase owns the planning process:
 - Decide task boundaries, dependencies, and ordering.
 - Write or revise exactly one `context/plans/{plan_name}.md`.
 
-`references/plan-template.md` is the sole owner of the persisted plan schema and
-generic document-authoring rules: acceptance-criteria format and validation
-semantics, task fields and atomic slicing, the no-validation-task rule, completion
-records, and existing-plan update preservation. Read it before authoring or
-revising and apply those rules rather than restating them here.
+`references/plan-template.md` is the sole owner of the persisted plan schema.
+Read its `Acceptance criteria rules`, `Task rules` and `No validation task` rules,
+and `Updating an existing plan` rules before authoring or revising. Apply those
+rules rather than restating them here.
 
 The workflow renders this phase's result as the summary defined in
 `references/output.md`.
@@ -162,8 +161,7 @@ semantics and placement.
 
 Slice and order the plan-specific work after the acceptance criteria, applying the
 `Task rules` and `No validation task` rules in `references/plan-template.md`.
-The template owns the task field shape, atomic-commit constraint, dependency-order
-rule, acceptance-coverage rule, and generic task exclusions.
+Do not restate those generic task rules here.
 
 A finished stack always leaves at least one incomplete task, so the workflow can
 always hand off to `/next-task`. When the request resolves to a plan but produces
