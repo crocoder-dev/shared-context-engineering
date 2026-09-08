@@ -43,6 +43,12 @@ use sha2::{Digest, Sha256};
 /// default is normalized away before hashing, exactly as upstream does.
 const DEFAULT_HOOK_OUTPUT_TOKEN_LIMIT: u64 = 2_500;
 
+/// Codex gives `SessionEnd` and `Interrupt` command hooks a one-second
+/// default timeout and clamps them to three seconds before hashing their
+/// normalized identity (`hooks/src/engine/discovery.rs`).
+const DEFAULT_LIFECYCLE_HOOK_TIMEOUT: u64 = 1;
+const MAX_LIFECYCLE_HOOK_TIMEOUT: u64 = 3;
+
 /// Events whose hooks may carry `additionalContext`
 /// (`hooks/src/engine/discovery.rs`); `Stop` cannot, so an
 /// `additionalContextLimit` set on a Stop handler is dropped before hashing,
@@ -252,11 +258,14 @@ pub(crate) fn hash_command_handler(
     let mut handler_fields = serde_json::Map::new();
     handler_fields.insert("type".to_string(), Value::String("command".to_string()));
     handler_fields.insert("command".to_string(), Value::String(command.to_string()));
-    let timeout = object
-        .get("timeout")
-        .and_then(Value::as_u64)
-        .unwrap_or(600)
-        .max(1);
+    let configured_timeout = object.get("timeout").and_then(Value::as_u64);
+    let timeout = if matches!(event, "SessionEnd" | "Interrupt") {
+        configured_timeout
+            .unwrap_or(DEFAULT_LIFECYCLE_HOOK_TIMEOUT)
+            .clamp(1, MAX_LIFECYCLE_HOOK_TIMEOUT)
+    } else {
+        configured_timeout.unwrap_or(600).max(1)
+    };
     handler_fields.insert("timeout".to_string(), Value::from(timeout));
     let is_async = object
         .get("async")
@@ -405,6 +414,37 @@ mod tests {
         assert_eq!(
             without, with_limit,
             "Stop cannot carry additionalContext, so the field must not affect its hash"
+        );
+    }
+
+    #[test]
+    fn hashing_uses_codex_lifecycle_timeout_defaults_and_caps() {
+        let handler = bare_command_handler();
+
+        let mut timeout_one = handler.as_object().unwrap().clone();
+        timeout_one.insert("timeout".to_string(), json!(1));
+        let timeout_one = Value::Object(timeout_one);
+
+        let interrupt_default = hash_command_handler("Interrupt", None, &handler).unwrap();
+        let session_end_default = hash_command_handler("SessionEnd", None, &handler).unwrap();
+        assert_eq!(
+            interrupt_default,
+            hash_command_handler("Interrupt", None, &timeout_one).unwrap()
+        );
+        assert_eq!(
+            session_end_default,
+            hash_command_handler("SessionEnd", None, &timeout_one).unwrap()
+        );
+
+        let mut timeout_six_hundred = handler.as_object().unwrap().clone();
+        timeout_six_hundred.insert("timeout".to_string(), json!(600));
+        let timeout_six_hundred = Value::Object(timeout_six_hundred);
+        let mut capped_timeout = handler.as_object().unwrap().clone();
+        capped_timeout.insert("timeout".to_string(), json!(3));
+        let capped_timeout = Value::Object(capped_timeout);
+        assert_eq!(
+            hash_command_handler("Interrupt", None, &timeout_six_hundred).unwrap(),
+            hash_command_handler("Interrupt", None, &capped_timeout).unwrap()
         );
     }
 
