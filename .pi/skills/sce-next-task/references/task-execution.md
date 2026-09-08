@@ -192,10 +192,7 @@ Do not determine whether the plan is complete. The `/next-task` workflow owns
 that decision after context synchronization.
 
 Before returning a `complete` result, verify that it satisfies the authoritative
-handoff contract above. The mandatory five-root-file context pass remains required
-for every completed task, regardless of the reported context-impact classification,
-because it is cheap, deterministic, and load-bearing for context accuracy;
-`context_impact` must not be used to waive it.
+handoff contract above.
 
 ## 2.9 Return internal state
 

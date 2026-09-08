@@ -317,3 +317,23 @@ The two additional root edits replace existing text without increasing line coun
     `nix run .#pkl-check-generated`, targeted Pi/Claude/Codex ownership assertions,
     and `git diff --check`.
   - Context synchronization: synced.
+
+
+## Follow-up: mandatory root-pass ownership
+
+- [x] T05: `Deduplicate the mandatory five-root context pass` (status:done)
+  - Scope: next-task task execution and task context synchronization, the retained
+    plan-sync discovery list in the shared context-sync source, generated semantic
+    checks, tracked Pi/Claude/Codex mirrors, and the ownership table.
+  - Ownership after change: the task context-sync **mandatory root pass** subsection
+    is the sole owner of the exact five root paths. Discovery references that named
+    contract instead of relisting the paths; task execution only hands off
+    `context_impact` and does not restate synchronization policy.
+  - Behavior preserved: the same five root files remain mandatory on every task
+    synchronization invocation; missing files remain reportable gaps; impact
+    classifications still cannot waive the pass; synchronization verification still
+    requires every root file to be checked against code truth.
+  - Verify: `pkl eval config/pkl/renderers/generation-contract-check.pkl`,
+    `nix run .#pkl-check-generated`, targeted Pi/Claude/Codex ownership assertions,
+    and `git diff --check`.
+  - Context synchronization: synced.
