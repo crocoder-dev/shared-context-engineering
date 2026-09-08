@@ -28,6 +28,6 @@ jobs:
 
       - name: Apply, verify, commit, and push validation report deduplication
         run: |
-          python3 .sce-validation-report-dedup-fix.py
           cp .sce-validation-report-dedup.py /tmp/sce-validation-report-dedup.py
+          python3 .sce-validation-report-dedup-fix.py
           nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 /tmp/sce-validation-report-dedup.py
