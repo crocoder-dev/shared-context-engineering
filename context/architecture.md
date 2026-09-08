@@ -1,5 +1,15 @@
 # Architecture
 
+## Mutation-scope harness adapters
+
+The mutation-scope runtime now has two concrete lifecycle adapters: Claude Code
+and Codex. Codex is implemented in
+`cli/src/services/hooks/codex_mutation_scope/` and reaches the generic ingress
+through its in-process seam; its hidden command is registered by the shared
+Codex setup/merge/doctor path. OpenCode and Pi remain unwired. The Codex
+adapter's tracked-tool coverage and MCP boundary are documented in
+[`context/cli/codex-mutation-scope-integration.md`](cli/codex-mutation-scope-integration.md).
+
 ## Config generation boundary (current approved design)
 
 The repository keeps no committed OpenCode, Claude, Pi, or Codex generated target trees. `config/.opencode`, `config/.claude`, `config/.pi`, `config/.agents`, and `config/.codex` are logical payload layouts emitted only beneath temporary generation roots, Cargo `OUT_DIR`, and packaging-only fallback directories.

@@ -3571,7 +3571,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     executable evidence those documents will describe.
   - Context synchronization: synced
 
-- [ ] T07: `Author the durable Codex mutation-scope context` (status:todo)
+- [x] T07: `Author the durable Codex mutation-scope context` (status:done)
   - Task ID: T07
   - Scope: In — create `context/cli/codex-mutation-scope-integration.md` owning
     the Codex adapter domain (the tool-execution scope model, the D2 **three-class**
@@ -3634,7 +3634,52 @@ Persist this field in every plan; this is durable plan state, not chat state:
     further protocol/Quint/runtime-semantic change); durable context records the
     accepted boundary-aware unconfirmed-Codex attribution refinement (D14);
     `nix flake check`.
-  - Context synchronization: pending
+  - Completed: 2026-09-08
+  - Files changed:
+    - `context/cli/codex-mutation-scope-integration.md` (new durable Codex
+      adapter domain contract)
+    - `context/sce/codex-apply-patch-diff-runtime.md` (new split-out existing
+      Codex apply-patch evidence contract)
+    - `context/cli/mutation-scope-runtime.md`
+    - `context/cli/mutation-scope-hook-ingress.md`
+    - `context/cli/mutation-trace-runtime-coordinator.md`
+    - `context/sce/agent-trace-hooks-command-routing.md`
+    - `context/sce/codex-integration-runtime.md`
+    - `context/context-map.md`
+    - `context/overview.md`
+    - `context/architecture.md`
+  - Result: Authored the durable Codex mutation-scope domain contract for
+    codex-cli 0.153.4, including the tracked/delegation/untracked classification,
+    D23 MCP coverage boundary, write-ahead and fail-closed lifecycle, checkout-
+    local recovery, cleanup matrix, D14 boundary-aware attribution rule,
+    command/configuration ownership, doctor health dimensions, unsupported
+    boundaries, and T06 evidence. Updated all requested cross-references to
+    name Codex as the second wired adapter while preserving the existing
+    conversation/diff dispatcher. Split the existing Codex apply-patch detail
+    into its own context file and kept every affected context file within the
+    250-line budget. No new ADR qualified.
+  - Verify:
+    - New domain and split-out evidence documents plus every requested
+      cross-reference inspected against AC23/AC24 — **passed**.
+    - `git diff --check` and affected context line-budget checks — **passed**;
+      all affected files are at or below 250 lines.
+    - `git diff origin/claude-mutation-scope-integration --
+      cli/migrations/agent-trace-repository/ config/schema/agent-trace.schema.json`
+      — **passed** (empty).
+    - `git diff b72f6c2c -- spec/mutation_cursor.qnt spec/mutation_cursor.md
+      cli/src/services/mutation_trace/protocol.rs
+      cli/src/services/mutation_trace/runtime/` — **passed** (empty).
+    - `nix run .#pkl-check-generated` — **passed** (141 files; inventory sha256
+      `3d1e3aa23681e5c544eac660f9489f6ba4f48286efd9dc8de5b59fe8ee902d07`).
+    - `nix flake check` — **passed** (all checks passed; incompatible systems
+      omitted as usual).
+  - Context impact: cross-cutting durable context — added the Codex adapter
+    domain and complementary apply-patch evidence contract; updated mutation
+    runtime/ingress, hook routing, architecture, overview, and context-map
+    references because a second concrete harness adapter is now wired and
+    registered. No production behavior, protocol, Quint, SQL, or Agent Trace
+    schema changed in T07.
+  - Context synchronization: synced
 
 ## Open questions
 
