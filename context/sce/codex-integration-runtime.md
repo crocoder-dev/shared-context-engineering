@@ -1,7 +1,12 @@
 # Codex hook runtime (SCE)
 
-Rust-side runtime behind `sce hooks codex`, the single dispatcher subcommand
-every registered `.codex/hooks.json` event routes to. Source: `cli/src/services/hooks/codex/`.
+Rust-side runtime behind `sce hooks codex`, the dispatcher subcommand the four
+conversation/diff `.codex/hooks.json` registrations route to. Source:
+`cli/src/services/hooks/codex/`. `.codex/hooks.json` also carries six
+mutation-scope registrations routed to the separate
+`sce hooks codex-mutation-scope` command (the generic mutation-scope ingress,
+[../cli/mutation-scope-hook-ingress.md](../cli/mutation-scope-hook-ingress.md)) —
+not part of this dispatcher.
 See [Codex generated assets](../architecture.md) for the Pkl-authored
 `.codex/hooks.json`/hook-script side of this integration and
 [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md)
@@ -9,29 +14,38 @@ for how the other three tools intake conversation/diff evidence.
 
 ## Generated hook invocation
 
-The generated `.codex/hooks.json` routes all four registrations through the
-same command. That command resolves `git rev-parse --show-toplevel` at
-invocation time, then invokes the repository-root
+The generated `.codex/hooks.json` routes its four conversation/diff
+registrations through `sce hooks codex` and its six mutation-scope registrations
+through `sce hooks codex-mutation-scope`. Each command resolves
+`git rev-parse --show-toplevel` at invocation time, then invokes the
+repository-root
 `.codex/hooks/run-sce-or-show-install-guidance.sh` helper with quoted
 expansions. It therefore works from the repository root, arbitrary nested
 Codex working directories, and repository paths containing spaces. Git-root
 resolution failures exit successfully without stdout; the helper retains its
 existing missing-`sce` stderr guidance and forwards the hook JSON STDIN
-unchanged. The exact four-registration and invocation contract is covered by
-the generated contract and `codex-hook-command` flake check. See [the ADR](../decisions/2026-08-23-codex-root-aware-hook-invocation.md).
+unchanged. The exact registration set (four `sce hooks codex` plus six
+`sce hooks codex-mutation-scope`) and invocation contract is covered by the
+generated contract and `codex-hook-command` flake check. See [the ADR](../decisions/2026-08-23-codex-root-aware-hook-invocation.md).
 
 ## Non-destructive hook configuration ownership
 
 `.codex/hooks.json` is a user-owned document. `sce setup --codex` and
 `--all` merge the generated SCE fragment instead of replacing the whole file.
 The shared `cli/src/services/codex_hook_config.rs` service mirrors current
-Codex deserialization: top-level `description`/`hooks` only, the eleven
+Codex deserialization: top-level `description`/`hooks` only, the twelve
 supported event names, defaulted matcher groups, and `command`, `mcp_tool`,
 `prompt`, or `agent` handlers with their typed fields. It preserves unrelated
-valid Codex fields, event groups, matcher groups, and handlers, and replaces stale or duplicate SCE-owned handlers with
-one current handler for each of the four required registrations. Ownership
-requires both `.codex/hooks/run-sce-or-show-install-guidance.sh` and the
-`sce hooks codex` command contract; a generic `sce` substring is not enough.
+valid Codex fields, event groups, matcher groups, and handlers. Merge is
+command-aware over two contracts: it replaces stale or duplicate handlers with
+one current handler per required registration — the four `sce hooks codex`
+registrations and six additive `sce hooks codex-mutation-scope` registrations,
+each appended in its own unmatched group after the existing groups so an
+already-trusted handler keeps its `(event, matcher, group index, handler index)`
+identity and computed Codex trust key — touching only the matching command's
+handlers. Ownership requires the helper path plus one of the `sce hooks codex` /
+`sce hooks codex-mutation-scope` command contracts; a generic `sce` substring is
+not enough.
 Malformed or structurally invalid existing documents fail before staging, so
 the existing file remains untouched. Doctor diagnoses each required
 registration structurally (present-and-current, missing, or stale, with a
@@ -60,7 +74,7 @@ instead asks the installed `codex` binary for its own composed answer over
 `codex app-server --stdio`'s read-only `configRequirements/read` method,
 bounded by a strict timeout with the child process always terminated and
 reaped. Doctor probes this exactly once per invocation and reuses the result
-for all four registrations. A structurally current registration is only
+for every required registration. A structurally current registration is only
 `Match`/healthy when policy allows project hooks *and* it is durably trusted;
 `allow_managed_hooks_only = true` reports it `PolicyBlocked` (an
 Error-severity, manual-only problem) even when fully trusted, and a probe
@@ -76,7 +90,7 @@ managed/enterprise policy and never attempts to.
 - `classify_codex_event` matches `(hook_event_name, tool_name)` into one of
   four dispatch arms — `UserPromptSubmit`, `Stop`, `PreToolUse(Bash)`,
   `PostToolUse(apply_patch)` — with every other combination (`apply_patch`
-  under `PreToolUse` — no such registration exists in `.codex/hooks.json` —
+  under `PreToolUse` — no `sce hooks codex` registration matches it —
   unknown tool, `Bash` under `PostToolUse`, unrecognized `hook_event_name`)
   falling through to a deterministic `NoOp` success with empty stdout.
 - Malformed/non-JSON STDIN is logged through `sce.hooks.codex.error` and the
@@ -253,11 +267,13 @@ redesign in this path; malformed or unsafe inputs fail open silently.
 
 ## No remaining stub arms
 
-All four registered dispatch arms (`UserPromptSubmit`, `Stop`,
+All four `sce hooks codex` dispatch arms (`UserPromptSubmit`, `Stop`,
 `PreToolUse(Bash)`, `PostToolUse(apply_patch)`) now have real behavior.
-`PreToolUse(apply_patch)` is deliberately never registered (see plan
+`PreToolUse(apply_patch)` is deliberately not a `sce hooks codex` arm (see plan
 `context/plans/codex-cli-integration.md`'s no-snapshot design) and falls
-open as a `NoOp` like any other unsupported combination.
+open as a `NoOp` like any other unsupported combination; the unmatched
+`PreToolUse` group routed to `sce hooks codex-mutation-scope` is a separate
+concern handled by that command.
 
 ## Verification
 
@@ -265,8 +281,9 @@ open as a `NoOp` like any other unsupported combination.
   (also runnable narrowed per-arm, e.g. `hooks::codex::user_prompt_submit`).
   This includes the realistic repository-scoped PostToolUse/post-commit
   regression and the repeated-identical-content ambiguity test.
-- `nix run .#pkl-check-generated` verifies the four generated Codex hook
-  registrations and root-aware invocation contract.
+- `nix run .#pkl-check-generated` verifies the generated Codex hook
+  registrations (four `sce hooks codex` plus six `sce hooks codex-mutation-scope`)
+  and root-aware invocation contract.
 - `nix flake check` runs the same tests plus clippy/fmt/generated-asset checks.
 
 See also: [agent-trace-db.md](agent-trace-db.md),
