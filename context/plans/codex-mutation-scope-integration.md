@@ -503,6 +503,49 @@ used. Evidence:
 `fixtures/probe04-pre-tool-use-hook-hookspecificoutput-deny.*`,
 `fixtures/probe15-mcp-blocked-call.*`.
 
+### D8a — The generated bootstrap fail-closed boundary sits ahead of the Rust adapter (PR #268, 2026-09-08)
+
+D8's "failure to establish a durable Start denies the tool" is a property of the
+**T04 Rust adapter**. The generated `.codex/hooks.json` bootstrap can fail
+*before* the adapter runs — Git-root resolution, helper execution, or `sce`
+availability — and the original T05 registration used the fail-open
+conversation/diff bootstrap there, so a tracked `Bash` / `apply_patch`
+`PreToolUse` could `exit 0` neutrally with no scope. That is a D8 violation at
+the bootstrap layer.
+
+The fix has two parts, neither of which changes the adapter or Option B:
+
+1. **Matcher narrowing.** The generated mutation-scope `PreToolUse` and
+   `PostToolUse` hooks carry `matcher = "^(Bash|apply_patch)$"` (codex-cli
+   0.153.4 `hooks/src/events/common.rs` `matches_matcher`: regex-metacharacter
+   matchers compile with the `regex` crate and match with `is_match`, so this is
+   an anchored full-tool-name alternation). Codex therefore never dispatches the
+   generated mutation-scope tool hooks for `mcp__*`,
+   `collaborationspawn_agent`, `collaborationwait_agent`, or unknown tools —
+   they stay allowed / untracked under D23. This establishes the invariant: *if
+   the fail-closed `PreToolUse` bootstrap executes, the tool is a
+   TrackedMutation.* Narrowing (not a blanket bootstrap deny) is required —
+   a blanket deny would reject `PreToolUse(mcp__…)` and break Option B.
+
+2. **A fail-closed bootstrap mode.** The mutation-scope `PreToolUse` hook is a
+   separate generated command that emits the exact D8 deny contract (the same
+   `FAIL_CLOSED_DENY_REASON` string T04 uses) on stdout with `exit 0` when
+   Git-root resolution or the helper check fails, and sets
+   `SCE_CODEX_PRE_TOOL_USE_FAIL_CLOSED=1` so the shared helper converts a
+   missing `sce` or any non-zero adapter exit into that same deny — while
+   forwarding a successful adapter stdout (neutral, or a recovery-barrier deny)
+   unchanged. The blocking semantic comes from the Codex `PreToolUse` decision,
+   not from a non-zero process exit. The other five mutation-scope commands and
+   all four `sce hooks codex` commands keep the fail-open bootstrap — they are
+   observational / cleanup boundaries, not the point a mutation-capable tool
+   begins.
+
+Resulting invariant for `Bash` / `apply_patch` `PreToolUse`: either the
+bootstrap and adapter both succeed and a durable `Start` exists, or any
+bootstrap/adapter failure yields the exact Codex-native deny and the tool does
+not execute. There is no path where a tracked mutation tool runs while the
+mutation-scope `PreToolUse` never established `Start`.
+
 ### D9 — Terminal boundary on success — T01-GATED
 
 Terminal boundary rules apply **only to `TrackedMutation` tools** (`Bash`,
@@ -1195,6 +1238,19 @@ event/matcher structure (T01/T05 must say which, if any), the plan records it an
 `sce doctor` must surface that **re-trust is needed** — trust is never silently
 invalidated, and `sce doctor --fix` never writes, grants, or changes Codex trust
 or managed policy.
+
+**D20a — the PR #268 matcher change is inside the appended mutation-scope
+groups only (2026-09-08).** Adding `matcher = "^(Bash|apply_patch)$"` to the
+mutation-scope `PreToolUse` / `PostToolUse` groups changes those groups' Codex
+trust keys, but they are SCE-owned groups appended *after* the four
+`sce hooks codex` groups, so no `sce hooks codex` trust key moves — the four
+existing trusted registrations keep `(event, matcher, group index, handler
+index, handler contents/hash)` exactly. A mutation-scope group installed by the
+first T05 shape (unmatched) now diagnoses `Stale` and is migrated in place by
+`merge_or_create` (strip the owned handler from every group for the event,
+append one canonical `^(Bash|apply_patch)$` group), never by renumbering a
+`sce hooks codex` group. The canonical-four upgrade regression asserts this
+post-change.
 
 ### D21 — Doctor: three-dimension health for mutation-scope registrations
 
@@ -2784,6 +2840,70 @@ Persist this field in every plan; this is durable plan state, not chat state:
       The plan reserves the "materially changes the accepted
       non-destructive-ownership contract → new dated ADR" call for T07's full
       re-evaluation once the adapter ships.
+  - Follow-up (2026-09-08 — bootstrap fail-closed for tracked mutation
+    `PreToolUse`, PR #268): the initial T05 registration reused the fail-open
+    conversation/diff bootstrap for the mutation-scope `PreToolUse` hook and
+    registered every mutation-scope group unmatched. That let a tracked
+    `Bash` / `apply_patch` execution proceed unscoped when repository-root
+    resolution, helper execution, or `sce` availability failed before the Rust
+    adapter ran (D8 violation), because the neutral `exit 0` bootstrap returned
+    before any durable `Start`.
+    The mutation-scope `PreToolUse` and `PostToolUse` registrations are now
+    constrained at the Codex matcher boundary to the tracked tool set —
+    `matcher = "^(Bash|apply_patch)$"`, verified against codex-cli 0.153.4
+    `hooks/src/events/common.rs` `matches_matcher` (a matcher carrying regex
+    metacharacters is compiled with the `regex` crate and tested with
+    `is_match`, so this is an anchored full-tool-name alternation). `Stop`,
+    `Interrupt`, `SubagentStop`, and `SessionEnd` stay unmatched. `mcp__*`,
+    `collaborationspawn_agent`, `collaborationwait_agent`, and unknown tools do
+    not match, so Codex never dispatches the generated mutation-scope tool hooks
+    for them and they remain allowed / untracked under D23 (Option B). The Rust
+    classifier is unchanged and stays defensive: a manual invocation of the
+    hidden command with an untracked payload still returns neutral.
+    The mutation-scope `PreToolUse` command is now a separate generated command
+    (`codexMutationScopePreToolUseCommand`) that fails **closed**: a Git-root
+    resolution failure or a missing/unreadable helper emits the exact D8 deny
+    contract (`{"hookSpecificOutput":{"hookEventName":"PreToolUse",
+    "permissionDecision":"deny","permissionDecisionReason":"SCE could not
+    establish mutation attribution for this tool execution."}}` — the same
+    `FAIL_CLOSED_DENY_REASON` string T04 emits) on stdout with `exit 0`, and it
+    sets `SCE_CODEX_PRE_TOOL_USE_FAIL_CLOSED=1` so the shared helper converts a
+    missing `sce` or any non-zero adapter exit into the same deny contract while
+    forwarding a successful adapter stdout (neutral or a recovery-barrier deny)
+    unchanged. `command_owning_contract` recognises the leading env-assignment
+    form as `CodexHookCommand::MutationScope` without widening ownership. The
+    other five mutation-scope commands and the four `sce hooks codex` commands
+    are byte-identical to before, so the existing four trusted registrations
+    keep their `(event, matcher, group index, handler index, handler
+    contents/hash)` identity (D20); a previously installed unmatched
+    mutation-scope `PreToolUse` / `PostToolUse` registration now diagnoses
+    `Stale` and `sce setup --codex` / `sce doctor --fix` migrates it into the
+    tracked-tool matcher group. Doctor's per-registration model is unchanged —
+    command identity already disambiguates the `#<event>(mutation-scope)` rows,
+    so the regex is not surfaced.
+    Files changed: `config/pkl/renderers/codex-content.pkl` (split
+    `codexMutationScopePreToolUseCommand` out, matcher on the Pre/Post groups,
+    fail-closed helper mode in `sceHookScript`),
+    `config/pkl/renderers/generation-contract-check.pkl` (matcher + fail-closed
+    bootstrap + helper assertions, `codex-hook-helper-fail-closed` check),
+    `cli/src/services/codex_hook_config.rs` (`CODEX_MUTATION_SCOPE_TOOL_MATCHER`
+    on the two `REQUIRED_EVENTS` rows, env-assignment-tolerant
+    `command_owning_contract`, matcher/fail-closed test coverage incl. the
+    canonical-four upgrade regression and the legacy-unmatched-hook repair
+    test), `scripts/test-codex-hook-command.sh` (the matcher shape and the six
+    fail-closed / forward regressions replace the former fail-open contract),
+    `context/plans/codex-mutation-scope-integration.md` (this note plus the D8a
+    subsection). No mutation protocol, Quint model, mutation runtime, SQL, Agent
+    Trace schema, Option B MCP semantics, T04 driver behaviour, or attribution
+    semantics changed.
+    Verify: `nix run .#pkl-check-generated` — **passed**; `nix develop -c
+    ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    services::codex_hook_config` — **passed** (36); `... services::setup::` —
+    **passed** (66); `... services::doctor::` — **passed** (27); `...
+    services::hooks::codex_mutation_scope` — **passed** (100, 1 ignored); `...
+    services::hooks::codex::` — **passed** (129); `nix develop -c bash
+    ./scripts/test-codex-hook-command.sh` — **passed**; `clippy ... --all-targets
+    -- -D warnings` — **clean**; `cargo fmt -- --check` — **clean**.
 
 - [ ] T06: `Real Git/DB regressions through the production Codex path` (status:todo)
   - Task ID: T06
