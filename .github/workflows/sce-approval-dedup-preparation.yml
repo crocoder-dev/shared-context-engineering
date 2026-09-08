@@ -26,4 +26,15 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
 
       - name: Apply, verify, commit, and push sync-debt fix
-        run: nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 .sce-sync-debt-fix.py
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.sce-sync-debt-fix.py')
+          text = path.read_text()
+          text = text.replace(
+              'else throw(\\"sce-next-task SKILL.md sync-debt recovery must cite context-sync.md before running the phase and route the resolved plan path, debt task identity, and completed task record without a persisted Context synchronization handoff\\")',
+              'else throw(\\"sce-next-task SKILL.md sync-debt recovery branch must cite references/context-sync.md before invoking the Task context synchronization phase\\")',
+          )
+          path.write_text(text)
+          PY
+          nix shell --inputs-from . nixpkgs#python3 nixpkgs#pkl -c python3 .sce-sync-debt-fix.py
