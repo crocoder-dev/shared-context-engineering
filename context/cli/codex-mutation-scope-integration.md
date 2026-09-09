@@ -97,7 +97,7 @@ constructs `worktree_id`, and sends `actor_kind: "codex"` through the existing
 seam without spawning `sce`.
 
 A tracked `Start` also carries scope provenance (the `cx_`-prefixed session and
-normalized `model`); see [mutation-scope provenance](mutation-scope-provenance.md).
+normalized `model`); see [mutation-scope provenance](mutation-scope-provenance.md). The real `Bash` regression drives this adapter through generic `Start`, scope close, Git commit, mutation reconstruction, and Agent Trace persistence, verifying that the normalized model and `cx_` session survive as mutation provenance without writing direct `diff_traces` evidence.
 
 ## Write-ahead admission and failure posture
 

@@ -10,6 +10,12 @@ Codex setup/merge/doctor path. OpenCode and Pi remain unwired. The Codex
 adapter's tracked-tool coverage and MCP boundary are documented in
 [`context/cli/codex-mutation-scope-integration.md`](cli/codex-mutation-scope-integration.md).
 
+Both adapters attach optional `ScopeProvenance` at admission. The verified
+mutation protocol still decides scope ownership and `AiExclusive(scope)`;
+provenance is observational metadata resolved later into mutation-derived
+Agent Trace evidence. Real Claude/Codex `Bash` regressions cover this boundary
+through commit and persisted `agent_traces.trace_json`.
+
 ## Config generation boundary (current approved design)
 
 The repository keeps no committed OpenCode, Claude, Pi, or Codex generated target trees. `config/.opencode`, `config/.claude`, `config/.pi`, `config/.agents`, and `config/.codex` are logical payload layouts emitted only beneath temporary generation roots, Cargo `OUT_DIR`, and packaging-only fallback directories.
