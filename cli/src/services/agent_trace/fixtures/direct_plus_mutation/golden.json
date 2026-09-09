@@ -28,8 +28,7 @@
         {
           "url": "https://sce.crocoder.dev/conversations/PLACEHOLDER",
           "contributor": {
-            "type": "ai",
-            "model_id": "claude-sonnet-5"
+            "type": "ai"
           },
           "ranges": [
             {
