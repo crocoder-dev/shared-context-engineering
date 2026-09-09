@@ -207,6 +207,12 @@ write seam, provenance therefore cannot be registered without an existing owning
 That requirement is enforced in the store rather than by a `FOREIGN KEY`, leaving
 `004_mutation_trace_protocol.sql` unchanged.
 
+End-to-end regressions in `hooks/mod.rs` drive both shipped adapters through a
+real temporary Git repository and repository Agent Trace DB. Claude and Codex
+`Bash` scopes preserve their canonical session and model into the final
+mutation-derived Agent Trace; `ScopeId` proves ownership, while
+`ScopeProvenance` describes the owning scope.
+
 ## Related context
 
 - [Mutation-scope hook ingress](mutation-scope-hook-ingress.md)
