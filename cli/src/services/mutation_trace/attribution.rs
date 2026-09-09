@@ -169,7 +169,7 @@ pub fn patch_for_locations_with_provenance(
                             };
                             let provenance = selected.get(&location)?;
                             let mut line = line.clone();
-                            line.session_id = provenance.session_id.clone();
+                            line.session_id.clone_from(&provenance.session_id);
                             Some(line)
                         })
                         .collect::<Vec<_>>();

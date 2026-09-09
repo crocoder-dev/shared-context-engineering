@@ -1,26 +1,18 @@
 # Mutation-scope runtime: the harness-adapter contract
 
-The crate-visible surface of `cli/src/services/mutation_trace/runtime/` and the
-lifecycle contract every Codex, Claude Code, OpenCode, and Pi adapter must uphold.
+The crate-visible surface of `cli/src/services/mutation_trace/runtime/` and the lifecycle contract every Codex, Claude Code, OpenCode, and Pi adapter must uphold.
 
-Built by the `mutation-scope-runtime-integration` plan
-(`context/plans/mutation-scope-runtime-integration.md`). The generic
+Built by the `mutation-scope-runtime-integration` plan (`context/plans/mutation-scope-runtime-integration.md`). The generic
 [`sce hooks mutation-scope` ingress](mutation-scope-hook-ingress.md), shipped
-Claude Code adapter, and Codex adapter (`sce hooks codex-mutation-scope`,
-registered by `sce setup --codex`; OpenCode/Pi: none yet) drive this seam. This
+Claude Code adapter, and Codex adapter (`sce hooks codex-mutation-scope`, registered by `sce setup --codex`; OpenCode/Pi: none yet) drive this seam. This
 file records the adapter contract; the Codex-specific mapping is in
 [`codex-mutation-scope-integration.md`](codex-mutation-scope-integration.md).
 
-The mechanics live in [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md)
-(`coordinate()`), [`mutation-trace-scope-abandonment.md`](mutation-trace-scope-abandonment.md)
-(`abandon_scope()`), [`mutation-trace-protected-worktree.md`](mutation-trace-protected-worktree.md)
-(safety prefix), and [`mutation-trace-protocol.md`](mutation-trace-protocol.md)
-(pure protocol). This file records what adapters must do and why.
+The mechanics live in [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md) (`coordinate()`), [`mutation-trace-scope-abandonment.md`](mutation-trace-scope-abandonment.md) (`abandon_scope()`), [`mutation-trace-protected-worktree.md`](mutation-trace-protected-worktree.md) (safety prefix), and [`mutation-trace-protocol.md`](mutation-trace-protocol.md) (pure protocol). This file records what adapters must do and why.
 
 ## The exported seam
 
-`runtime/mod.rs` re-exports exactly ten names at `pub(crate)`, reachable as
-`crate::services::mutation_trace::runtime::*`:
+`runtime/mod.rs` re-exports exactly ten names at `pub(crate)`, reachable as `crate::services::mutation_trace::runtime::*`:
 
 | Name | From | Role |
 | --- | --- | --- |
@@ -35,26 +27,17 @@ The mechanics live in [`mutation-trace-runtime-coordinator.md`](mutation-trace-r
 | `AbandonRecoveryReason` | `scope_runtime` | the reason inside `RecoveryRequired` |
 | `AbandonScopeError` | `scope_runtime` | its error surface |
 
-`ExternalTaintOperation` crosses the boundary because it is part of
-`CoordinateError`'s public shape. It lives in `protected_worktree.rs` and is
-re-exported by `coordinator.rs` without making that module public.
+`ExternalTaintOperation` crosses the boundary because it is part of `CoordinateError`'s public shape. It lives in `protected_worktree.rs` and is re-exported by `coordinator.rs` without making that module public.
 
-Every runtime `mod` stays private, including `ProtectedWorktree`, its error,
-`WORKTREE_LOCK_TIMEOUT`, and `reconcile_worktree`. Adapters drive only the two
-entrypoints and never assemble the safety prefix.
+Every runtime `mod` stays private, including `ProtectedWorktree`, its error, `WORKTREE_LOCK_TIMEOUT`, and `reconcile_worktree`. Adapters drive only the two entrypoints and never assemble the safety prefix.
 
-The re-exports are the intentional crate-visible seam consumed by the generic
-ingress; runtime internals stay private. The two re-export statements retain
-`#[allow(unused_imports)]` because no consumer names the completing types yet.
+The re-exports are the intentional crate-visible seam consumed by the generic ingress; runtime internals stay private. The two re-export statements retain `#[allow(unused_imports)]` because no consumer names the completing types yet.
 
 ## What a mutation scope is
 
-**A scope is one independently mutation-capable execution**, not a session,
-process, or harness.
+**A scope is one independently mutation-capable execution**, not a session, process, or harness.
 
-A main agent and subagent that can edit concurrently are two scopes with
-**distinct `ScopeId`s**; sharing one would collapse their intervals and hide
-`AiContended`.
+A main agent and subagent that can edit concurrently are two scopes with **distinct `ScopeId`s**; sharing one would collapse their intervals and hide `AiContended`.
 
 A `ScopeId` is durably bound to one worktree. `abandon_scope()` rejects a target
 whose durable identity differs from the invoking checkout
@@ -62,8 +45,7 @@ whose durable identity differs from the invoking checkout
 
 ## `Start` / `Advance` / `Close`
 
-Each is a `RuntimeBoundary` passed to `coordinate()`, which captures a Git
-snapshot, drives the protocol, and advances the worktree cursor to the observed
+Each is a `RuntimeBoundary` passed to `coordinate()`, which captures a Git snapshot, drives the protocol, and advances the worktree cursor to the observed
 tree. The interval between two consecutive observed boundaries is what the
 protocol can attribute.
 
@@ -261,3 +243,8 @@ coverage boundary, and the checkout-local recovery bookkeeping) is in
 OpenCode and Pi have no adapter; each remaining harness still owns the
 `ScopeId` / `EventId` derivation and stale-process detection this contract
 requires, and repository-scoped unowned-checkout cleanup is still open.
+
+Real Claude and Codex `Bash` regressions exercise the complete runtime path
+through commit and persisted Agent Trace JSON. They confirm that
+`AiExclusive(scope)` supplies mutation attribution while `ScopeProvenance`
+supplies the separately resolved session/model metadata.

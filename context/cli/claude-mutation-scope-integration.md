@@ -151,7 +151,7 @@ rules:
   observation time is lost, so the adapter must not retry that `Close` later as
   the original observation; it abandons and arms `recovery_pending`. The ingress
   carried-success variants (`MarkerClearAfterCommit` /
-  `MarkerClearAfterCompletion`) are durable success and do not enter this path.
+  `MarkerClearAfterCompletion`) are durable success and do not enter this path. The admission snapshot is carried into the mutation-derived Agent Trace path: the real `Bash` regression persists the exact `(cc_<session>, "")` model state captured before the tool runs, then verifies the model and related session URL in `agent_traces.trace_json` after commit.
 
 ## Abandonment cleanup signals
 
