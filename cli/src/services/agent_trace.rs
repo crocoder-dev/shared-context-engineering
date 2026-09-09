@@ -459,6 +459,20 @@ fn classify_hunk_combined(
     }
 }
 
+fn combined_model_id(
+    direct_hunk: Option<&PatchHunk>,
+    mutation_hunk: Option<&PatchHunk>,
+) -> Option<String> {
+    match (direct_hunk, mutation_hunk) {
+        (Some(direct), Some(mutation)) if direct.model_id == mutation.model_id => {
+            direct.model_id.clone()
+        }
+        (Some(direct), None) => direct.model_id.clone(),
+        (None, Some(mutation)) => mutation.model_id.clone(),
+        (None, None) | (Some(_), Some(_)) => None,
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) fn patches_have_overlap(
     candidate_patch: &ParsedPatch,
@@ -596,13 +610,14 @@ fn build_trace_file(
             );
             let contributor_model_id = match contributor_kind {
                 HunkContributor::Ai | HunkContributor::Mixed => {
-                    matched_intersection_hunk.and_then(|hunk| hunk.model_id.clone())
+                    combined_model_id(matched_intersection_hunk, matched_mutation_hunk)
                 }
                 HunkContributor::Unknown => None,
             };
             record_hunk_line_changes(line_changes, contributor_kind, post_commit_hunk);
             let related_session_ids = matched_intersection_hunk
                 .into_iter()
+                .chain(matched_mutation_hunk)
                 .flat_map(|hunk| hunk.lines.iter())
                 .filter_map(|line| line.session_id.as_deref())
                 .filter(|session_id| !session_id.is_empty())

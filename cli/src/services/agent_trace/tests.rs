@@ -31,6 +31,49 @@ fn parse_fixture(fixture: &str) -> ParsedPatch {
     parse_patch(fixture, None).expect("fixture patch should parse")
 }
 
+fn build_evidence_trace_with_mutation_provenance(
+    direct_fixture: &str,
+    mutation_fixture: &str,
+    post_commit_fixture: &str,
+    mutation_model_id: Option<&str>,
+    mutation_session_ids: &[&str],
+) -> super::AgentTrace {
+    let mut direct_patch = parse_patch(direct_fixture, Some(EVIDENCE_DIRECT_SESSION_ID))
+        .expect("direct fixture patch should parse");
+    for file in &mut direct_patch.files {
+        for hunk in &mut file.hunks {
+            hunk.model_id = Some(String::from(EVIDENCE_DIRECT_MODEL_ID));
+        }
+    }
+
+    let mut mutation_ai_patch = parse_fixture(mutation_fixture);
+    for (line, session_id) in mutation_ai_patch.files[0].hunks[0]
+        .lines
+        .iter_mut()
+        .zip(mutation_session_ids.iter().copied())
+    {
+        line.session_id = Some(String::from(session_id));
+    }
+    mutation_ai_patch.files[0].hunks[0].model_id = mutation_model_id.map(str::to_owned);
+
+    let post_commit_patch = parse_fixture(post_commit_fixture);
+    build_agent_trace_from_evidence(
+        AgentTraceEvidence {
+            direct_patch: &direct_patch,
+            mutation_ai_patch: &mutation_ai_patch,
+        },
+        &post_commit_patch,
+        AgentTraceMetadataInput {
+            commit_timestamp: TEST_COMMIT_TIMESTAMP,
+            commit_revision: TEST_COMMIT_REVISION,
+            vcs_type: Some(AgentTraceVcsType::Git),
+            tool_name: Some(EVIDENCE_TOOL_NAME),
+            tool_version: Some(EVIDENCE_TOOL_VERSION),
+        },
+    )
+    .expect("agent trace should build")
+}
+
 const TEXT_FILE_LIFECYCLE_RECONSTRUCTION_INCREMENTALS: &[&str] = &[
     include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_01.patch"),
     include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_02.patch"),
@@ -529,6 +572,114 @@ fn mutation_only_no_provenance_evidence_matches_golden_agent_trace() {
         post_commit: include_str!("fixtures/mutation_only_no_provenance/post_commit.patch"),
         golden: include_str!("fixtures/mutation_only_no_provenance/golden.json"),
     });
+}
+
+#[test]
+fn mutation_only_evidence_emits_mutation_model_and_session() {
+    let trace = build_evidence_trace_with_mutation_provenance(
+        include_str!("fixtures/exclusive_without_direct/direct.patch"),
+        include_str!("fixtures/exclusive_without_direct/mutation_ai.patch"),
+        include_str!("fixtures/exclusive_without_direct/post_commit.patch"),
+        Some("gpt-5.6-sol"),
+        &[
+            "cx-session-1",
+            "cx-session-1",
+            "cx-session-1",
+            "cx-session-1",
+        ],
+    );
+
+    let conversation = &trace.files[0].conversations[0];
+    assert_eq!(conversation.contributor.kind, super::HunkContributor::Ai);
+    assert_eq!(
+        conversation.contributor.model_id.as_deref(),
+        Some("gpt-5.6-sol")
+    );
+    assert_eq!(
+        conversation.related,
+        Some(vec![super::ConversationRelated {
+            kind: String::from("session"),
+            url: String::from("https://sce.crocoder.dev/sessions/cx-session-1"),
+        }])
+    );
+    validate_agent_trace_value(
+        &serde_json::to_value(&trace).expect("agent trace should serialize"),
+    )
+    .expect("mutation-only agent trace should validate against schema");
+}
+
+#[test]
+fn combined_evidence_unions_sessions_and_requires_model_agreement() {
+    let matching_trace = build_evidence_trace_with_mutation_provenance(
+        include_str!("fixtures/direct_plus_mutation/direct.patch"),
+        include_str!("fixtures/direct_plus_mutation/mutation_ai.patch"),
+        include_str!("fixtures/direct_plus_mutation/post_commit.patch"),
+        Some(EVIDENCE_DIRECT_MODEL_ID),
+        &["sess-a", "sess-z"],
+    );
+    let matching_conversation = &matching_trace.files[0].conversations[0];
+    assert_eq!(
+        matching_conversation.contributor.model_id.as_deref(),
+        Some(EVIDENCE_DIRECT_MODEL_ID)
+    );
+    assert_eq!(
+        matching_conversation.related,
+        Some(vec![
+            super::ConversationRelated {
+                kind: String::from("session"),
+                url: String::from("https://sce.crocoder.dev/sessions/sess-a"),
+            },
+            super::ConversationRelated {
+                kind: String::from("session"),
+                url: String::from("https://sce.crocoder.dev/sessions/sess-direct"),
+            },
+            super::ConversationRelated {
+                kind: String::from("session"),
+                url: String::from("https://sce.crocoder.dev/sessions/sess-z"),
+            },
+        ])
+    );
+
+    let conflicting_trace = build_evidence_trace_with_mutation_provenance(
+        include_str!("fixtures/direct_plus_mutation/direct.patch"),
+        include_str!("fixtures/direct_plus_mutation/mutation_ai.patch"),
+        include_str!("fixtures/direct_plus_mutation/post_commit.patch"),
+        Some("claude-opus-5"),
+        &["sess-a", "sess-direct"],
+    );
+    assert_eq!(
+        conflicting_trace.files[0].conversations[0]
+            .contributor
+            .model_id,
+        None
+    );
+    assert_eq!(
+        conflicting_trace.files[0].conversations[0]
+            .related
+            .as_ref()
+            .expect("conflicting evidence should retain related sessions")
+            .len(),
+        2
+    );
+
+    let unknown_trace = build_evidence_trace_with_mutation_provenance(
+        include_str!("fixtures/direct_plus_mutation/direct.patch"),
+        include_str!("fixtures/direct_plus_mutation/mutation_ai.patch"),
+        include_str!("fixtures/direct_plus_mutation/post_commit.patch"),
+        None,
+        &["sess-a", "sess-z"],
+    );
+    assert_eq!(
+        unknown_trace.files[0].conversations[0].contributor.model_id,
+        None
+    );
+
+    for trace in [&matching_trace, &conflicting_trace, &unknown_trace] {
+        validate_agent_trace_value(
+            &serde_json::to_value(trace).expect("agent trace should serialize"),
+        )
+        .expect("combined agent trace should validate against schema");
+    }
 }
 
 #[test]
