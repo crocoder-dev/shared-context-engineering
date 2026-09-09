@@ -112,8 +112,19 @@ A Codex session-identity conflict is unreachable in practice: the
 `cx-tool-v1|…` scope identity embeds the session length-prefixed, so one
 `scope_id` cannot name two sessions.
 
-The Claude adapter is not yet wired. Until it is, Claude scopes are admitted
-carrying no provenance, which is the first-class supported case above.
+The [Claude adapter](claude-mutation-scope-integration.md) resolves provenance
+through an injectable `ClaudeModelStateResolver` with the shape
+`(repository_root, canonical_session_id, agent_id) -> Result<Option<String>>`.
+The production resolver uses the existing repository Agent Trace DB lookup for
+`claude_model_state_by_session_and_agent`, after canonicalizing the raw session
+to `cc_<session>`. It passes `agent_id = ""` for the main agent and the exact
+Claude `agent_id` for a subagent; a subagent never inherits the main-agent row.
+The lookup runs when the scope is admitted, before the generic `Start` ingress
+is called, and the returned Claude model is normalized before being sent as
+provenance. Missing state, `Ok(None)`, an unusable model, or a resolver error
+all produce `model_id = NULL` while retaining the canonical session and
+allowing `Start` to succeed. A later `PostModelSwitch` changes only current
+model state; insert-once scope provenance remains the original snapshot.
 
 ## Durable `Start` ordering
 
