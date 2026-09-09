@@ -397,8 +397,10 @@ performs final validation.
   succeeds and keeps `X`; only a different `session_id` for an existing
   `scope_id` errors, and it never rewrites the stored row. Inserting provenance
   for a `scope_id` unknown to `mutation_trace_scopes` fails, registration never
-  creates a scope implicitly, and no provenance row can exist without an owning
-  scope row. `mutation_trace_scopes` is structurally unchanged.
+  creates a scope implicitly, and the supported provenance write path through
+  `MutationTraceStore` requires an existing owning scope row and leaves no orphan
+  row when that scope is missing. `mutation_trace_scopes` is structurally
+  unchanged.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
     cli/Cargo.toml services::agent_trace_db` and
     `services::mutation_trace::store`; `git diff
@@ -632,12 +634,13 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Add durable mutation-scope provenance storage` (status:todo)
+- [x] T01: `Add durable mutation-scope provenance storage` (status:done)
   - Task ID: T01
   - Scope: In — `cli/migrations/agent-trace-repository/005_mutation_scope_provenance.sql`;
-    the typed `ScopeProvenance` insert/read API on `RepositoryAgentTraceDb` and
-    its `MutationTraceStore` seam; migration-readiness wiring. Out — any ingress,
-    adapter, attribution, or Agent Trace change.
+    the typed `ScopeProvenance` value and its insert/read API on
+    `MutationTraceStore`, backed by `RepositoryAgentTraceDb`'s generic
+    `execute`/`query_map` primitives; migration-readiness wiring. Out — any
+    ingress, adapter, attribution, or Agent Trace change.
   - Dependencies: none
   - Done when: provenance can be inserted with a known model and with a `NULL`
     model and read back by `scope_id`; D3's matrix is proven row by row — an
@@ -646,12 +649,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
     succeeds and keeps `X`, and only a differing `session_id` for an existing
     `scope_id` returns an error without mutating the stored row; inserting
     provenance for a `scope_id` that `mutation_trace_scopes` does not contain
-    fails, and registration never creates a scope implicitly, so no provenance
-    row can exist without an owning scope row.
+    fails, and registration never creates a scope implicitly, so the supported
+    provenance write path requires an existing owning scope row and leaves no
+    orphan row behind when that scope is missing.
     `AGENT_TRACE_REPOSITORY_MIGRATIONS` includes `005_mutation_scope_provenance`
     and schema readiness accounts for it.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::agent_trace_db`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::store`.
-  - Context synchronization: pending
+  - Completed: 2026-09-09
+  - Files changed: `cli/migrations/agent-trace-repository/005_mutation_scope_provenance.sql` (new); `cli/src/services/mutation_trace/store.rs`; `cli/src/services/agent_trace_db/repository.rs`
+  - Result: Added migration `005_mutation_scope_provenance.sql` defining `mutation_trace_scope_provenance` (`scope_id TEXT PRIMARY KEY`, `session_id TEXT NOT NULL`, nullable `model_id TEXT`, `created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))` matching `004`'s convention), discovered automatically by `build.rs`'s migrations directory scan, so `AGENT_TRACE_REPOSITORY_MIGRATIONS` gains `005_mutation_scope_provenance` and `TursoDb::ensure_schema_ready` derives its expected-migration set from that same list with no constant to edit. Added the typed `ScopeProvenance { scope_id: ScopeId, session_id: String, model_id: Option<String> }` value plus `MutationTraceStore::register_scope_provenance` and `MutationTraceStore::load_scope_provenance` in `store.rs`, alongside `SELECT_SCOPE_PROVENANCE_SQL`, `INSERT_SCOPE_PROVENANCE_IF_ABSENT_SQL` (`ON CONFLICT (scope_id) DO NOTHING`), and `scope_provenance_row_from_turso`, following the same access pattern the five `mutation_trace_*` tables from `004` already use. `register_scope_provenance` mirrors `register_scope`'s shape: it pre-checks the owning `mutation_trace_scopes` row via `load_scope` and bails before any insert when it is absent, performs the idle insert, then re-reads the stored row and returns it, erring only when the stored `session_id` differs from the incoming one. Insert-once therefore holds in both directions of `model_id` (stored `NULL` is not backfilled; a stored model is neither cleared nor overwritten) without any `UPDATE` path existing at all. Enforcing the owning-scope requirement in Rust rather than by a `FOREIGN KEY` left `004_mutation_trace_protocol.sql` byte-unchanged. `ScopeProvenance` lives in `store.rs`, not `types.rs`, so the pure-protocol type module is untouched; `#[allow(clippy::struct_field_names)]` follows the existing repository convention for `-D clippy::pedantic` (`attribution.rs`, `claude_mutation_scope/mod.rs`, `codex_mutation_scope/mod.rs`). Extended the three `repository.rs` migration-list assertions and the three schema-table lists to cover `005` / `mutation_trace_scope_provenance`, including the hook-runtime test proving the no-migration path still creates neither.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::agent_trace_db` — passed, 29/29; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::store` — passed, 97/97 (9 new provenance tests). Also ran, though not required by the task: `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` — passed; `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` — passed.
+  - Done checks: provenance inserts with a known model and with a `NULL` model and reads back by `scope_id` (verified — `register_scope_provenance_stores_a_known_model_and_reads_it_back`, `register_scope_provenance_stores_a_null_model_and_reads_it_back`); D3's matrix proven row by row — identical replay is an idempotent no-op leaving exactly one row (verified — `register_scope_provenance_replayed_identically_is_an_idempotent_no_op`), `existing NULL + incoming X` keeps `NULL` (verified — `register_scope_provenance_keeps_a_stored_null_model_when_one_is_later_discovered`), `existing X + incoming NULL` keeps `X` (verified — `register_scope_provenance_keeps_a_stored_model_when_the_replay_has_none`), `existing X + incoming Y` succeeds and keeps `X` (verified — `register_scope_provenance_keeps_the_first_model_when_a_later_one_disagrees`), and only a differing `session_id` errors while leaving the stored row byte-identical (verified — `register_scope_provenance_errors_on_a_session_conflict_without_rewriting_the_row`); provenance for a `scope_id` absent from `mutation_trace_scopes` fails, creates no provenance row, and creates no scope implicitly (verified — `register_scope_provenance_errors_for_an_unregistered_scope_and_creates_no_rows`, asserting both a zero provenance row count and `load_scope` still `None`); a scope without provenance reads back `None` rather than erroring (verified — `load_scope_provenance_returns_none_for_a_scope_without_provenance`); `AGENT_TRACE_REPOSITORY_MIGRATIONS` includes `005_mutation_scope_provenance` and schema readiness accounts for it (verified — `open_at_initializes_the_full_repository_schema` asserts the five-migration order and the new table then calls `ensure_schema_ready_for_hooks`, and `baseline_and_source_instance_fixture_migrates_to_mutation_trace_protocol_through_setup` proves a `001`+`002`-only fixture upgrades through `005`); `git diff --stat` over `004_mutation_trace_protocol.sql`, `protocol.rs`, `spec/`, and `config/schema/agent-trace.schema.json` is empty (verified).
+  - Context impact: local — additive schema-only migration plus one new store seam that nothing consumes yet. No ingress, adapter, attribution, or Agent Trace behavior changed. T01 documented the new durable storage boundary in `context/cli/mutation-scope-provenance.md` (new), `context/cli/mutation-trace-store.md`, `context/sce/agent-trace-db.md`, and `context/context-map.md`. Those files currently document only the storage-layer provenance seam; later tasks extend the relevant context as mutation `Start` ingress, the Claude/Codex producers, mutation reconstruction, and Agent Trace consumption are implemented, and T07 still performs the final cross-system synchronization pass. T02 is the first consumer of this seam.
+  - Context synchronization: synced
 
 - [ ] T02: `Carry optional provenance through mutation Start` (status:todo)
   - Task ID: T02
