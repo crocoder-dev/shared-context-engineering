@@ -7,8 +7,9 @@ Task `setup-repo-gate-and-local-config-bootstrap` T02, `turso-local-db-sync` T04
 ## Behavior
 
 - Any successful `sce setup` run in a git-backed repository creates `.sce/config.json` when the file is absent.
-- The bootstrap writes the canonical JSON payload with the versioned schema declaration and explicit Agent Trace opt-in: `{"$schema": "https://sce.crocoder.dev/v<version>/config.json", "agent_trace": {"auto_sync": true}}` (where `<version>` is the CLI release version, with a trailing newline).
-- If `.sce/config.json` already exists, the bootstrap step returns `Ok(())` immediately and leaves the file untouched — no merge, no reformat, no overwrite.
+- Interactive setup asks two independent post-selection confirmations: `Enable automatic Agent Trace synchronization? [Y/n]` and `Enable SCE commit attribution trailers? [Y/n]`. Both default to Yes, and the prompt seam carries each answer separately through setup dispatch so declining one does not change the other.
+- The bootstrap writes the canonical JSON payload with the versioned schema declaration and explicit opt-ins for both setup-controlled behaviors: `{"$schema": "https://sce.crocoder.dev/v<version>/config.json", "agent_trace": {"auto_sync": true}, "policies": {"attribution_hooks": {"enabled": true}}}` (where `<version>` is the CLI release version, with a trailing newline).
+- If `.sce/config.json` already exists, the bootstrap step returns `Ok(())` immediately and leaves the file untouched — no merge, no reformat, no overwrite. A later interactive target-install write may merge the two answered behavior values, while non-interactive setup leaves existing behavior keys and omissions unchanged.
 - The parent `.sce/` directory is created via `fs::create_dir_all` if missing.
 - The setup flow also bootstraps the canonical local DB through `LocalDbLifecycle::setup` and the Agent Trace DB through `AgentTraceDbLifecycle::setup`; both use the shared `TursoDb<M: DbSpec>` adapter.
 - After both repository preflights (`ensure_git_repository` and the effective named-remote URL check), setup consumes the shared resolver's degraded result for an invalid default-discovered repo-local `.sce/config.json`; the file remains untouched and the run continues through prompts, context baseline bootstrap, lifecycle providers, hooks, and target assets. An absent config continues through the normal bootstrap path, while explicit config selections remain fatal.
@@ -47,9 +48,16 @@ The same write also records the run's resolved optional-workflow selection under
 - The persisted set is repository-wide, not per target: a `--all` run records one selection covering `.opencode/`, `.claude/`, and `.pi/`.
 - Unknown slugs are rejected during request resolution, before any file or config write.
 
+## Interactive behavior persistence
+
+- The two interactive confirmations are persisted with the successful target-install write at `agent_trace.auto_sync` and `policies.attribution_hooks.enabled`. Enter accepts each Yes default; an explicit No changes only its corresponding value.
+- Non-interactive setup supplies no behavior selections. A newly created config therefore retains both explicit `true` bootstrap values, while an existing config's explicit values and omitted keys remain untouched.
+- The write preserves unrelated top-level and nested behavior keys, existing integration merge behavior, pretty JSON formatting, and the trailing newline. Invalid default-discovered repo-local config remains byte-preserved and skips this persistence, as it does for integration selections.
+- These setup values only configure the existing runtime gates: auto-sync remains a config-file-only post-commit launch choice, and attribution retains its environment/config precedence, `SCE_DISABLED` handling, overlap evidence requirement, and canonical trailer behavior.
+
 ## Implementation
 
-- `cli/src/services/setup/mod.rs` exports `bootstrap_repo_local_config(repository_root: &Path) -> Result<()>`, `bootstrap_context_baseline(repository_root: &Path) -> Result<String>`, and `persist_integration_targets(repository_root: &Path, target: SetupTarget, selected_optional_workflows: &[String]) -> Result<()>`, which writes both `integrations.target` and `integrations.optional_workflows`. `run_setup_for_mode` resolves the selection (the selection handed to it, else the persisted value read through the exported `persisted_optional_workflows`, which parses the repo-local file via `parse_file_config`) before installing and persisting it. `cli/src/services/setup/command.rs` resolves the repository root before any prompt so it can seed the interactive prompt from that persisted value, and passes the prompted selection — when the run was interactive — to `run_setup_for_mode` ahead of the request's `--workflow` list.
+- `cli/src/services/setup/mod.rs` exports `bootstrap_repo_local_config(repository_root: &Path) -> Result<()>`, `bootstrap_context_baseline(repository_root: &Path) -> Result<String>`, and `persist_integration_targets(...) -> Result<()>`, which writes integration selections and, when supplied by interactive setup, the two behavior values. `run_setup_for_mode` resolves the selection (the selection handed to it, else the persisted value read through the exported `persisted_optional_workflows`, which parses the repo-local file via `parse_file_config`) before installing and persisting it. `cli/src/services/setup/command.rs` resolves the repository root before any prompt so it can seed the interactive prompt from that persisted value, and passes the prompted selection and behavior values — when the run was interactive — to `run_setup_for_mode` ahead of the request's `--workflow` list.
 - `cli/src/services/local_db/lifecycle.rs` implements `LocalDbLifecycle::setup()` for local DB initialization.
 - `cli/src/services/agent_trace_db/lifecycle.rs` implements `AgentTraceDbLifecycle::setup()` for Agent Trace DB initialization.
 - Repo-local config bootstrap uses `RepoPaths::sce_config_file()` and `RepoPaths::sce_dir()`; context baseline bootstrap uses the shared context accessors including `RepoPaths::context_tmp_gitignore_file()`.
@@ -62,6 +70,6 @@ The same write also records the run's resolved optional-workflow selection under
 - Default-discovered invalid repo-local config is degradable and never rewritten; explicit `--config` / `SCE_CONFIG_FILE` selections remain fatal, while absent local config remains create-if-missing.
 - Context baseline bootstrap is independent of config/DB/hooks install and runs before those steps on normal setup paths.
 - Local bootstrap (repo config + local DB init) is independent of config install and hook install; it runs before both after context baseline bootstrap.
-- The bootstrap payload matches the `$schema` declaration accepted by startup config loading and the Pkl-authored JSON Schema embedded from Cargo `OUT_DIR`; its explicit `agent_trace.auto_sync: true` is distinct from the runtime resolver's `false` fallback for omitted values.
+- The bootstrap payload matches the `$schema` declaration accepted by startup config loading and the Pkl-authored JSON Schema embedded from Cargo `OUT_DIR`; its explicit `agent_trace.auto_sync: true` and `policies.attribution_hooks.enabled: true` values are distinct from the runtime resolver fallbacks for omitted values.
 
 See also [the degraded discovered-config boundary decision](../decisions/2026-09-04-setup-storage-degrade-invalid-discovered-config.md) and the superseded [fail-closed boundary decision](../decisions/2026-08-26-setup-storage-fail-closed-on-invalid-config.md).

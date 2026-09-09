@@ -16,6 +16,10 @@
 - `sce hooks codex`
 - `sce hooks claude-model-state`
 
+## Setup-controlled gates
+
+Interactive `sce setup` persists the independent confirmations at `agent_trace.auto_sync` and `policies.attribution_hooks.enabled`, using Yes defaults and treating Enter as `true`. Non-interactive setup supplies no behavior selections; creation of a missing config bootstraps both values as `true`, while an existing config's values and omissions remain unchanged. These are inputs to the existing gates below, not a second runtime policy path.
+
 ## Parser and dispatch behavior
 
 - `cli/src/app.rs` routes `hooks` through dedicated hook-subcommand parsing.

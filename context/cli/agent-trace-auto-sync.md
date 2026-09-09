@@ -11,9 +11,21 @@ explicitly; a config layer that omits the setting remains disabled at runtime.
 
 `agent_trace.auto_sync` is a config-file-only boolean resolved through the normal
 global-then-local config merge. The runtime fallback is `false`, while `sce setup`
-writes an explicit `true` when it creates a missing repo-local `.sce/config.json`.
-`sce config show` reports the resolved value and its source. Set it explicitly to
-`false` to opt out. There is no environment variable or CLI flag for this setting.
+writes an explicit `true` when it creates a missing repo-local `.sce/config.json`
+and persists the independent interactive answer when a target is selected. A
+non-interactive run does not add the key to an existing config. `sce config show`
+reports the resolved value and its source. Set it explicitly to `false` to opt out.
+There is no environment variable or CLI flag for this setting.
+
+For an interactive target setup, the selected value is persisted as part of the repo-local config merge:
+
+```json
+{
+  "agent_trace": { "auto_sync": true }
+}
+```
+
+Non-interactive setup does not change this key in an existing config. The separate attribution choice is persisted under `policies.attribution_hooks.enabled`; it does not introduce an environment or CLI override for auto-sync.
 
 ## Trigger boundary
 

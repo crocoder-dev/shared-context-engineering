@@ -48,3 +48,7 @@
 
 ## Verification evidence
 - `nix flake check`
+
+## Setup configuration
+
+Interactive setup can persist the attribution gate at `policies.attribution_hooks.enabled` through the existing repo-local JSON merge. The confirmation defaults to enabled and is independent from `agent_trace.auto_sync`; non-interactive setup preserves an existing value or omission, while a newly created config explicitly stores `enabled: true`. Runtime precedence and trailer semantics remain unchanged: `SCE_ATTRIBUTION_HOOKS_DISABLED` overrides config, `SCE_DISABLED` still disables the hook, and staged-diff AI-overlap evidence is still required.

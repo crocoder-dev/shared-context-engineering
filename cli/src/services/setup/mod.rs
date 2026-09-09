@@ -60,7 +60,7 @@ pub(crate) fn is_missing_git_remote_error(error: &anyhow::Error) -> bool {
 /// Agent Trace post-commit synchronization.
 fn repo_local_config_bootstrap_payload() -> String {
     format!(
-        "{{\n  \"$schema\": \"{}\",\n  \"agent_trace\": {{\n    \"auto_sync\": true\n  }}\n}}\n",
+        "{{\n  \"$schema\": \"{}\",\n  \"agent_trace\": {{\n    \"auto_sync\": true\n  }},\n  \"policies\": {{\n    \"attribution_hooks\": {{\n      \"enabled\": true\n    }}\n  }}\n}}\n",
         crate::services::agent_trace::sce_config_schema_url()
     )
 }
@@ -230,6 +230,12 @@ pub enum SetupDispatch {
         /// The optional workflows this run installs. `None` means no selection
         /// was resolved here, so the persisted selection is reused downstream.
         optional_workflows: Option<Vec<String>>,
+        /// The interactive selection for automatic Agent Trace synchronization.
+        /// `None` means setup did not prompt for this value.
+        agent_trace_auto_sync: Option<bool>,
+        /// The interactive selection for SCE commit-attribution trailers.
+        /// `None` means setup did not prompt for this value.
+        attribution_hooks_enabled: Option<bool>,
     },
     Cancelled,
 }
@@ -401,6 +407,8 @@ pub fn run_setup_for_mode(
     repository_root: &Path,
     mode: SetupMode,
     optional_workflows: Option<&[String]>,
+    agent_trace_auto_sync: Option<bool>,
+    attribution_hooks_enabled: Option<bool>,
 ) -> Result<String> {
     let target = match mode {
         SetupMode::Interactive => {
@@ -426,13 +434,19 @@ pub fn run_setup_for_mode(
             })?;
 
     // Persist selected integration targets and optional workflows in repo-local config.
-    persist_integration_targets(repository_root, target, &selected_optional_workflows)
-        .with_context(|| {
-            format!(
-                "Setup assets were installed for {} but failed to update repo-local config",
-                setup_target_label(target)
-            )
-        })?;
+    persist_integration_targets(
+        repository_root,
+        target,
+        &selected_optional_workflows,
+        agent_trace_auto_sync,
+        attribution_hooks_enabled,
+    )
+    .with_context(|| {
+        format!(
+            "Setup assets were installed for {} but failed to update repo-local config",
+            setup_target_label(target)
+        )
+    })?;
 
     Ok(format_setup_install_success_message(&outcome))
 }
@@ -489,8 +503,8 @@ pub fn ensure_git_remote(repository_root: &Path, remote_name: &str) -> Result<()
 /// Bootstraps the repo-local `.sce/config.json` file if it does not already exist.
 ///
 /// Creates the `.sce/` parent directory as needed, then writes the canonical
-/// schema and Agent Trace bootstrap JSON payload. If the file already exists, it
-/// is left untouched.
+/// schema and explicit Agent Trace/attribution bootstrap JSON payload. If the
+/// file already exists, it is left untouched.
 pub fn bootstrap_repo_local_config(repository_root: &Path) -> Result<()> {
     let repo_paths = RepoPaths::new(repository_root);
     let config_file = repo_paths.sce_config_file();
@@ -826,6 +840,8 @@ pub fn persist_integration_targets(
     repository_root: &Path,
     target: SetupTarget,
     selected_optional_workflows: &[String],
+    agent_trace_auto_sync: Option<bool>,
+    attribution_hooks_enabled: Option<bool>,
 ) -> Result<()> {
     let repo_paths = RepoPaths::new(repository_root);
     let config_file = repo_paths.sce_config_file();
@@ -894,6 +910,37 @@ pub fn persist_integration_targets(
             "optional_workflows": selected_optional_workflows,
         }),
     );
+
+    if let Some(value) = agent_trace_auto_sync {
+        let agent_trace = config_obj.entry("agent_trace").or_insert_with(|| json!({}));
+        let agent_trace_obj = agent_trace.as_object_mut().with_context(|| {
+            format!(
+                "Config file '{}' must contain an object at 'agent_trace'.",
+                config_file.display()
+            )
+        })?;
+        agent_trace_obj.insert("auto_sync".to_string(), json!(value));
+    }
+
+    if let Some(value) = attribution_hooks_enabled {
+        let policies = config_obj.entry("policies").or_insert_with(|| json!({}));
+        let policies_obj = policies.as_object_mut().with_context(|| {
+            format!(
+                "Config file '{}' must contain an object at 'policies'.",
+                config_file.display()
+            )
+        })?;
+        let attribution_hooks = policies_obj
+            .entry("attribution_hooks")
+            .or_insert_with(|| json!({}));
+        let attribution_hooks_obj = attribution_hooks.as_object_mut().with_context(|| {
+            format!(
+                "Config file '{}' must contain an object at 'policies.attribution_hooks'.",
+                config_file.display()
+            )
+        })?;
+        attribution_hooks_obj.insert("enabled".to_string(), json!(value));
+    }
 
     let updated = serde_json::to_string_pretty(&config).with_context(|| {
         format!(
@@ -1611,6 +1658,14 @@ pub trait SetupTargetPrompter {
     /// The optional workflows to install, pre-checked from `defaults`.
     /// `None` means the operator cancelled the prompt.
     fn prompt_optional_workflows(&self, defaults: &[String]) -> Result<Option<Vec<String>>>;
+
+    /// Whether automatic Agent Trace synchronization should be enabled.
+    /// `None` means the operator cancelled the prompt.
+    fn prompt_agent_trace_auto_sync(&self) -> Result<Option<bool>>;
+
+    /// Whether SCE commit-attribution trailers should be enabled.
+    /// `None` means the operator cancelled the prompt.
+    fn prompt_attribution_hooks_enabled(&self) -> Result<Option<bool>>;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1623,6 +1678,14 @@ impl SetupTargetPrompter for InquireSetupTargetPrompter {
 
     fn prompt_optional_workflows(&self, defaults: &[String]) -> Result<Option<Vec<String>>> {
         prompt::prompt_optional_workflows(defaults)
+    }
+
+    fn prompt_agent_trace_auto_sync(&self) -> Result<Option<bool>> {
+        prompt::prompt_agent_trace_auto_sync()
+    }
+
+    fn prompt_attribution_hooks_enabled(&self) -> Result<Option<bool>> {
+        prompt::prompt_attribution_hooks_enabled()
     }
 }
 
@@ -1660,7 +1723,7 @@ fn setup_prompt_title_with_color_policy(color_enabled: bool) -> String {
 
 mod prompt {
     use anyhow::{bail, Result};
-    use inquire::{InquireError, MultiSelect, Select};
+    use inquire::{Confirm, InquireError, MultiSelect, Select};
 
     use crate::services::style::{
         prompt_label, prompt_label_with_color_policy, prompt_value_with_color_policy,
@@ -1672,6 +1735,8 @@ mod prompt {
         SetupDispatch::Proceed {
             mode: SetupMode::NonInteractive(target),
             optional_workflows: None,
+            agent_trace_auto_sync: None,
+            attribution_hooks_enabled: None,
         }
     }
 
@@ -1726,6 +1791,25 @@ mod prompt {
             Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => Ok(None),
             Err(InquireError::NotTTY) => bail!(
                 "Interactive setup requires a TTY. Re-run with '--non-interactive' and one of '--opencode', '--claude', '--pi', '--codex', or '--all', adding '--workflow <slug>' for each optional workflow to install."
+            ),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub(super) fn prompt_agent_trace_auto_sync() -> Result<Option<bool>> {
+        prompt_confirmation("Enable automatic Agent Trace synchronization?")
+    }
+
+    pub(super) fn prompt_attribution_hooks_enabled() -> Result<Option<bool>> {
+        prompt_confirmation("Enable SCE commit attribution trailers?")
+    }
+
+    fn prompt_confirmation(label: &str) -> Result<Option<bool>> {
+        match Confirm::new(label).with_default(true).prompt() {
+            Ok(value) => Ok(Some(value)),
+            Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => Ok(None),
+            Err(InquireError::NotTTY) => bail!(
+                "Interactive setup requires a TTY. Re-run with '--non-interactive' and one of '--opencode', '--claude', '--pi', '--codex', or '--all'."
             ),
             Err(error) => Err(error.into()),
         }
@@ -1864,14 +1948,27 @@ where
                 return Ok(SetupDispatch::Cancelled);
             };
 
+            let Some(agent_trace_auto_sync) = prompter.prompt_agent_trace_auto_sync()? else {
+                return Ok(SetupDispatch::Cancelled);
+            };
+
+            let Some(attribution_hooks_enabled) = prompter.prompt_attribution_hooks_enabled()?
+            else {
+                return Ok(SetupDispatch::Cancelled);
+            };
+
             Ok(SetupDispatch::Proceed {
                 mode,
                 optional_workflows: Some(optional_workflows),
+                agent_trace_auto_sync: Some(agent_trace_auto_sync),
+                attribution_hooks_enabled: Some(attribution_hooks_enabled),
             })
         }
         SetupMode::NonInteractive(target) => Ok(SetupDispatch::Proceed {
             mode: SetupMode::NonInteractive(target),
             optional_workflows: None,
+            agent_trace_auto_sync: None,
+            attribution_hooks_enabled: None,
         }),
     }
 }
@@ -1950,7 +2047,7 @@ mod tests {
         assert_eq!(
             payload,
             format!(
-                "{{\n  \"$schema\": \"https://sce.crocoder.dev/v{}/config.json\",\n  \"agent_trace\": {{\n    \"auto_sync\": true\n  }}\n}}\n",
+                "{{\n  \"$schema\": \"https://sce.crocoder.dev/v{}/config.json\",\n  \"agent_trace\": {{\n    \"auto_sync\": true\n  }},\n  \"policies\": {{\n    \"attribution_hooks\": {{\n      \"enabled\": true\n    }}\n  }}\n}}\n",
                 env!("CARGO_PKG_VERSION")
             )
         );

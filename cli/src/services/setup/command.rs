@@ -44,7 +44,14 @@ impl SetupCommand {
                 setup::SetupDispatch::Proceed {
                     mode: resolved_mode,
                     optional_workflows,
-                } => Some((resolved_mode, optional_workflows)),
+                    agent_trace_auto_sync,
+                    attribution_hooks_enabled,
+                } => Some((
+                    resolved_mode,
+                    optional_workflows,
+                    agent_trace_auto_sync,
+                    attribution_hooks_enabled,
+                )),
                 setup::SetupDispatch::Cancelled => {
                     return Ok(setup::setup_cancelled_text());
                 }
@@ -84,16 +91,27 @@ impl SetupCommand {
         }
 
         // Handle config target installation (OpenCode/Claude assets).
-        if let Some((resolved_mode, prompted_optional_workflows)) = setup_dispatch {
+        if let Some((
+            resolved_mode,
+            prompted_optional_workflows,
+            agent_trace_auto_sync,
+            attribution_hooks_enabled,
+        )) = setup_dispatch
+        {
             // A prompted selection is authoritative for the run; without one the
             // `--workflow` selection (or, absent that, the persisted one) applies.
             let optional_workflows = prompted_optional_workflows
                 .as_deref()
                 .or(self.request.optional_workflows.as_deref());
 
-            let setup_message =
-                setup::run_setup_for_mode(&repository_root, resolved_mode, optional_workflows)
-                    .map_err(CliError::runtime)?;
+            let setup_message = setup::run_setup_for_mode(
+                &repository_root,
+                resolved_mode,
+                optional_workflows,
+                agent_trace_auto_sync,
+                attribution_hooks_enabled,
+            )
+            .map_err(CliError::runtime)?;
             sections.push(setup_message);
         }
 
