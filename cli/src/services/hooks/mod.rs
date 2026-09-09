@@ -125,7 +125,6 @@ struct DiffTracePayload {
     payload_type: String,
 }
 
-/// Either a diff-trace payload to persist or a deterministic no-op result.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum DiffTraceParseResult {
     Persist(DiffTracePayload),
@@ -198,14 +197,6 @@ impl ConversationTracePersistenceSummary {
     }
 }
 
-/// Required `sce hooks diff-trace` STDIN payload shape:
-/// `{ sessionID, diff, time, model_id?, tool_name, tool_version }`.
-///
-/// Validation contract:
-/// - `sessionID`, `diff`, and `tool_name` must be non-empty strings.
-/// - `model_id` is optional: absent or `null` → `None`, present+non-empty → `Some`, present+empty → error.
-/// - `time` must be a `u64` Unix epoch millisecond value.
-/// - `tool_version` must be present and either `null` or a non-empty string.
 pub fn run_hooks_subcommand(
     subcommand: &HookSubcommand,
     logger: Option<&dyn Logger>,
@@ -552,7 +543,6 @@ pub fn parse_conversation_trace_payload(stdin_payload: &str) -> Result<Conversat
         ))
     })?;
 
-    // Classify: Claude raw hook events carry hook_event_name.
     if payload.contains_key("hook_event_name") {
         let event_name = required_non_empty_string_field(
             payload,
@@ -732,11 +722,9 @@ fn parse_message_part_updated_item(
     let raw_text = required_string_field(payload, "text", conversation_trace_validation_error)?;
     let text = match part_type {
         PartType::Patch => {
-            // Try JSON first — if payload.text is already a serialized ParsedPatch, use it directly.
             if load_patch_from_json(&raw_text).is_ok() {
                 raw_text
             } else {
-                // Fall back to raw unified-diff parsing.
                 match parse_patch_from_text(&raw_text, None) {
                     Ok(parsed_patch) => serialize_to_json(&parsed_patch).map_err(|error| {
                         anyhow!(conversation_trace_validation_error(&format!(
@@ -951,12 +939,10 @@ fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTraceParseResult>
         .as_object()
         .ok_or_else(|| anyhow!(payload_kind.validation_error("expected a JSON object")))?;
 
-    // Classify: Claude structured payloads carry hook_event_name.
     if payload.contains_key("hook_event_name") {
         return parse_claude_diff_trace_payload(payload, stdin_payload, payload_kind);
     }
 
-    // OpenCode normalized payload — unchanged validation.
     let session_id = required_non_empty_string_field(payload, "sessionID", |d| {
         payload_kind.validation_error(d)
     })?;
@@ -983,10 +969,6 @@ fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTraceParseResult>
     }))
 }
 
-/// Parse a Claude structured hook payload into a diff-trace intake result.
-///
-/// Returns `NoOp` for events without diff traces and unsupported tool usage;
-/// only supported `PostToolUse Write` / `Edit` events produce a `Persist` result.
 fn parse_claude_diff_trace_payload(
     payload: &serde_json::Map<String, Value>,
     stdin_payload: &str,
@@ -1115,8 +1097,6 @@ fn normalize_codex_model_id(model: &str) -> Option<String> {
     Some(normalized.to_string())
 }
 
-/// Extract a u64 timestamp from a Claude hook event payload, falling back to the
-/// current system time when no timestamp field is present.
 fn extract_claude_event_time(payload: &serde_json::Map<String, Value>) -> u64 {
     for key in &["time", "timestamp"] {
         if let Some(time_value) = payload.get(*key) {
@@ -1636,9 +1616,6 @@ fn run_post_commit_agent_trace_flow(
         "Failed to open Agent Trace DB for post-commit trace.",
     )?;
 
-    // Direct evidence is resolved first with the existing intersection, then the
-    // committed lines it does not cover are offered to bounded mutation history
-    // (read-only, current-worktree-only, direct-only fallback on absent identity).
     let direct_intersection = intersect_patches_fn(
         &flow_result.combined_recent_patch,
         &flow_result.post_commit_data.parsed_patch,
@@ -1736,7 +1713,6 @@ where
     Ok(agent_trace)
 }
 
-/// Duration for looking up recent diff traces: 7 days in milliseconds.
 const RECENT_DAYS_MILLIS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 fn run_post_commit_intersection_flow(
@@ -1764,22 +1740,10 @@ fn run_post_commit_intersection_flow(
     )
 }
 
-/// Result of the staged-diff AI-overlap evidence check.
-///
-/// Used by the commit-msg hook to decide whether to append the canonical
-/// co-author trailer. Errors are collapsed to `NoEvidence` at the policy
-/// level (trailer is never appended on error), but the `Error` variant
-/// allows the caller to log a diagnostic event distinguishing error
-/// paths from honest no-overlap.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StagedDiffAiOverlapResult {
-    /// Staged diff overlaps with at least one recent AI/editor diff trace.
     Overlap,
-    /// No overlap found; staged diff and recent traces were both available
-    /// but share no touched lines.
     NoOverlap,
-    /// An error occurred (DB open failure, schema not ready, query error,
-    /// staged diff read failure, etc.). The trailer must not be appended.
     Error,
 }
 
@@ -2128,7 +2092,6 @@ pub enum HookNoOpReason {
     AttributionOnlyCommitMsgMode,
 }
 
-/// Post-commit patch data captured from git for intersection flows.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PostCommitPatchData {
     pub commit_oid: String,
@@ -2136,7 +2099,6 @@ pub struct PostCommitPatchData {
     pub parsed_patch: ParsedPatch,
 }
 
-/// Structured post-commit intersection flow result.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PostCommitIntersectionFlowResult {
     pub combined_recent_patch: ParsedPatch,
@@ -2145,7 +2107,6 @@ pub struct PostCommitIntersectionFlowResult {
     pub tool_version: Option<String>,
 }
 
-/// Capture and parse the current commit patch.
 pub fn capture_post_commit_patch_from_git(repository_root: &Path) -> Result<PostCommitPatchData> {
     let commit_oid = capture_head_oid_from_git(repository_root)?;
     let commit_time_ms = capture_head_timestamp_from_git(repository_root)?;
@@ -2207,17 +2168,6 @@ fn post_commit_patch_error(detail: &str, context: &str) -> String {
     format!("Post-commit patch capture error: {detail} ({context}).")
 }
 
-/// Transform a validated raw Claude `UserPromptSubmit` event payload into the two
-/// normalized `serde_json::Value` items expected by `parse_conversation_trace_payloads`.
-///
-/// Returns one `message` item and one `message.part` item sharing
-/// the same generated `UUIDv7` `message_id` and the event's `session_id`.
-///
-/// Supported events:
-/// - `UserPromptSubmit`: produces two items (parent user message + text part).
-///
-/// Any other `hook_event_name` value produces a validation error.
-/// Missing or empty required fields (`session_id`, `prompt`) produce a validation error.
 fn transform_claude_user_prompt_submit(
     payload: &serde_json::Map<String, Value>,
 ) -> Result<Vec<Value>> {
@@ -2234,7 +2184,6 @@ fn transform_claude_user_prompt_submit(
     )
 }
 
-/// Injectable counterpart of `transform_claude_user_prompt_submit` for deterministic testing.
 fn transform_claude_user_prompt_submit_with<G, T>(
     payload: &serde_json::Map<String, Value>,
     generate_message_id: G,
@@ -2287,18 +2236,6 @@ where
     ])
 }
 
-/// Transform a raw Claude `Stop` hook event into two normalized conversation-trace
-/// payload items.
-///
-/// Returns one `message` item and one `message.part` item sharing
-/// the same generated `UUIDv7` `message_id` and the event's `session_id`.
-///
-/// Supported events:
-/// - `Stop`: produces two items (assistant parent message + text part).
-///
-/// Any other `hook_event_name` value produces a validation error.
-/// Missing or empty required fields (`session_id`, `last_assistant_message`) produce
-/// a validation error.
 fn transform_claude_stop(payload: &serde_json::Map<String, Value>) -> Result<Vec<Value>> {
     transform_claude_stop_with(
         payload,
@@ -2313,7 +2250,6 @@ fn transform_claude_stop(payload: &serde_json::Map<String, Value>) -> Result<Vec
     )
 }
 
-/// Injectable counterpart of `transform_claude_stop` for deterministic testing.
 fn transform_claude_stop_with<G, T>(
     payload: &serde_json::Map<String, Value>,
     generate_message_id: G,
@@ -2382,7 +2318,6 @@ fn transform_claude_post_tool_use(payload: &serde_json::Map<String, Value>) -> R
     )
 }
 
-/// Injectable counterpart of `transform_claude_post_tool_use` for deterministic testing.
 fn transform_claude_post_tool_use_with<G, T>(
     payload: &serde_json::Map<String, Value>,
     generate_message_id: G,
@@ -2405,7 +2340,6 @@ where
         )));
     }
 
-    // Silently skip PostToolUse events for non-Write/Edit tools
     let tool_name = payload
         .get("tool_name")
         .and_then(|v| v.as_str())
@@ -4775,6 +4709,287 @@ mod tests {
                 1,
                 "attribution performs no mutation-cursor write"
             );
+        }
+    }
+
+    mod mutation_provenance_e2e {
+        use super::*;
+        use crate::services::agent_trace_db::{ClaudeModelStateObservation, ObservationKind};
+        use crate::services::agent_trace_storage::{
+            resolve_agent_trace_storage_at_state_root, AgentTraceStorageContext,
+        };
+        use crate::services::hooks::claude_mutation_scope;
+        use crate::services::hooks::codex_mutation_scope;
+        use crate::services::mutation_trace::runtime::resolve_post_commit_mutation_ai_patch;
+
+        fn git(repo: &Path, args: &[&str]) -> String {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .output()
+                .expect("git should spawn");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).expect("git output should be UTF-8")
+        }
+
+        fn row_count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
+            db.query_map(&format!("SELECT COUNT(*) FROM {table}"), (), |row| {
+                row.get::<i64>(0).map_err(anyhow::Error::from)
+            })
+            .expect("count query should succeed")
+            .into_iter()
+            .next()
+            .expect("count row should exist")
+        }
+
+        struct ProvenanceE2eRepo {
+            _temp: tempfile::TempDir,
+            root: PathBuf,
+            state_root: PathBuf,
+            db_path: PathBuf,
+        }
+
+        impl ProvenanceE2eRepo {
+            fn new(label: &str) -> Self {
+                let temp = tempfile::Builder::new()
+                    .prefix(&format!("sce-mutation-provenance-e2e-{label}-"))
+                    .tempdir()
+                    .expect("temp dir should be created");
+                let root = temp.path().join("repo");
+                fs::create_dir_all(&root).expect("repo dir should be created");
+                git(&root, &["init", "-q"]);
+                git(&root, &["config", "user.email", "test@example.invalid"]);
+                git(&root, &["config", "user.name", "SCE Test"]);
+                git(
+                    &root,
+                    &["remote", "add", "origin", "git@github.com:acme/widgets.git"],
+                );
+                fs::write(root.join("file.txt"), "one\n").expect("seed file should write");
+                git(&root, &["add", "-A"]);
+                git(&root, &["commit", "-qm", "base"]);
+
+                let state_root = temp.path().join("state");
+                fs::create_dir_all(&state_root).expect("state root should be created");
+                let storage = resolve_agent_trace_storage_at_state_root(
+                    &AgentTraceStorageContext {
+                        repository_root: &root,
+                        explicit_repository_id: None,
+                        repository_remote: "origin",
+                    },
+                    &state_root,
+                )
+                .expect("state-root storage should initialize the repository DB");
+
+                Self {
+                    _temp: temp,
+                    root,
+                    state_root,
+                    db_path: storage.db_path,
+                }
+            }
+
+            fn db(&self) -> RepositoryAgentTraceDb {
+                RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&self.db_path)
+                    .expect("repository DB should reopen")
+            }
+
+            fn cwd(&self) -> String {
+                self.root.to_string_lossy().into_owned()
+            }
+
+            fn write_change(&self, content: &str) {
+                fs::write(self.root.join("file.txt"), content).expect("mutation should write");
+            }
+
+            fn commit_change(&self) {
+                git(&self.root, &["add", "-A"]);
+                git(&self.root, &["commit", "-qm", "AI mutation"]);
+            }
+
+            fn run_post_commit(&self) -> Value {
+                let db = self.db();
+                run_post_commit_subcommand_with(
+                    &self.root,
+                    Some(AgentTraceVcsType::Git),
+                    "git@github.com:acme/widgets.git",
+                    |root| {
+                        run_post_commit_intersection_flow_with(
+                            root,
+                            capture_post_commit_patch_from_git,
+                            current_unix_time_ms,
+                            |cutoff_ms, end_ms| db.recent_diff_trace_patches(cutoff_ms, end_ms),
+                            |insert| db.insert_post_commit_patch_intersection(insert).map(|_| ()),
+                        )
+                    },
+                    |root, flow_result, vcs_type, remote_url| {
+                        let direct_intersection = intersect_patches_fn(
+                            &flow_result.combined_recent_patch,
+                            &flow_result.post_commit_data.parsed_patch,
+                        );
+                        let mutation_ai_patch = resolve_post_commit_mutation_ai_patch(
+                            root,
+                            &db,
+                            &direct_intersection,
+                            &flow_result.post_commit_data.parsed_patch,
+                        );
+
+                        run_post_commit_agent_trace_flow_with(
+                            flow_result,
+                            vcs_type,
+                            remote_url,
+                            &mutation_ai_patch,
+                            |value| {
+                                validate_agent_trace_value(value)
+                                    .map_err(|error| anyhow!(error.to_string()))
+                            },
+                            |insert| db.insert_agent_trace(insert).map(|_| ()),
+                        )
+                    },
+                    |_| Ok(false),
+                    |_| Ok(()),
+                    |_| db.passive_checkpoint(),
+                    None,
+                )
+                .expect("the real post-commit hook flow should persist Agent Trace");
+
+                db.query_map("SELECT trace_json FROM agent_traces", (), |row| {
+                    row.get::<String>(0).map_err(anyhow::Error::from)
+                })
+                .expect("persisted Agent Trace should be readable")
+                .into_iter()
+                .next()
+                .map(|trace| serde_json::from_str(&trace).expect("trace JSON should parse"))
+                .expect("one Agent Trace row should exist")
+            }
+        }
+
+        fn assert_mutation_trace_provenance(trace: &Value, model_id: &str, session_id: &str) {
+            assert_eq!(trace["files"][0]["path"], json!("file.txt"));
+            assert_eq!(
+                trace["files"][0]["conversations"][0]["contributor"],
+                json!({"type": "ai", "model_id": model_id})
+            );
+            assert_eq!(
+                trace["files"][0]["conversations"][0]["related"],
+                json!([{
+                    "type": "session",
+                    "url": format!("https://sce.crocoder.dev/sessions/{session_id}"),
+                }])
+            );
+            assert_eq!(
+                trace["metadata"]["sce"]["line_changes"]["ai"]["added"],
+                json!(1)
+            );
+            assert_eq!(
+                trace["metadata"]["sce"]["line_changes"]["unknown"]["added"],
+                json!(0)
+            );
+        }
+
+        #[test]
+        fn claude_bash_mutation_persists_model_and_session_in_agent_trace() {
+            let repo = ProvenanceE2eRepo::new("claude");
+            let session_id = "claude-session-e2e";
+            let db = repo.db();
+            db.upsert_claude_model_state(ClaudeModelStateObservation {
+                session_id: format!("cc_{session_id}"),
+                agent_id: String::new(),
+                model_id: String::from("claude/opus-4-1"),
+                observation_kind: ObservationKind::SessionStart,
+                source: String::from("test"),
+                observed_at_ms: 1,
+            })
+            .expect("Claude model state should be persisted");
+
+            let cwd = repo.cwd();
+            let pre = json!({
+                "hook_event_name": "PreToolUse",
+                "session_id": session_id,
+                "cwd": cwd,
+                "tool_name": "Bash",
+                "tool_use_id": "claude-bash-e2e",
+                "tool_input": {"command": "printf mutation"},
+            });
+            claude_mutation_scope::run_claude_mutation_scope_from_payload_at_state_root(
+                &repo.state_root,
+                &pre.to_string(),
+                None,
+            )
+            .expect("Claude Bash PreToolUse should establish a scope");
+
+            let post = json!({
+                "hook_event_name": "PostToolUse",
+                "session_id": session_id,
+                "cwd": repo.cwd(),
+                "tool_name": "Bash",
+                "tool_use_id": "claude-bash-e2e",
+            });
+            repo.write_change("one\nclaude mutation\n");
+            claude_mutation_scope::run_claude_mutation_scope_from_payload_at_state_root(
+                &repo.state_root,
+                &post.to_string(),
+                None,
+            )
+            .expect("Claude Bash PostToolUse should close the scope");
+            repo.commit_change();
+
+            let trace = repo.run_post_commit();
+            assert_mutation_trace_provenance(&trace, "claude/opus-4-1", "cc_claude-session-e2e");
+            assert_eq!(row_count(&repo.db(), "diff_traces"), 0);
+            assert_eq!(row_count(&repo.db(), "post_commit_patch_intersections"), 1);
+            assert_eq!(row_count(&repo.db(), "mutation_trace_events"), 1);
+            assert_eq!(row_count(&repo.db(), "agent_traces"), 1);
+        }
+
+        #[test]
+        fn codex_bash_mutation_persists_model_and_session_in_agent_trace() {
+            let repo = ProvenanceE2eRepo::new("codex");
+            let session_id = "codex-session-e2e";
+            let cwd = repo.cwd();
+            let pre = json!({
+                "hook_event_name": "PreToolUse",
+                "session_id": session_id,
+                "turn_id": "codex-turn-e2e",
+                "cwd": cwd,
+                "tool_name": "Bash",
+                "tool_use_id": "codex-bash-e2e",
+                "model": "gpt-5.6-sol",
+                "tool_input": {"command": "true"},
+            });
+            codex_mutation_scope::run_codex_mutation_scope_from_payload_at_state_root(
+                &repo.state_root,
+                &pre.to_string(),
+                None,
+            )
+            .expect("Codex Bash PreToolUse should establish a scope");
+
+            let post = json!({
+                "hook_event_name": "PostToolUse",
+                "session_id": session_id,
+                "turn_id": "codex-turn-e2e",
+                "cwd": repo.cwd(),
+                "tool_name": "Bash",
+                "tool_use_id": "codex-bash-e2e",
+            });
+            repo.write_change("one\ncodex mutation\n");
+            codex_mutation_scope::run_codex_mutation_scope_from_payload_at_state_root(
+                &repo.state_root,
+                &post.to_string(),
+                None,
+            )
+            .expect("Codex Bash PostToolUse should close the scope");
+            repo.commit_change();
+
+            let trace = repo.run_post_commit();
+            assert_mutation_trace_provenance(&trace, "gpt-5.6-sol", "cx_codex-session-e2e");
+            assert_eq!(row_count(&repo.db(), "diff_traces"), 0);
+            assert_eq!(row_count(&repo.db(), "post_commit_patch_intersections"), 1);
+            assert_eq!(row_count(&repo.db(), "mutation_trace_events"), 1);
+            assert_eq!(row_count(&repo.db(), "agent_traces"), 1);
         }
     }
 

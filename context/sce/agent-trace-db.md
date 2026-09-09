@@ -47,6 +47,12 @@ This adapter has no canonical `DbSpec::db_path()`; callers must resolve `<state_
 
 The repository-scoped adapter is consumed by `agent_trace_storage`, active hook runtime opening, Agent Trace setup/doctor lifecycle, and `sce sync`. Hook writers/readers resolve the current repository storage context before using `RepositoryAgentTraceDb`. The migration-running `new_at(path)` constructor is used by setup/lifecycle; hook runtime uses the no-migration constructor and fails open with `Run 'sce setup'.` guidance when schema readiness is not met. There is no longer a checkout-scoped adapter or trace database inspection service.
 
+The real Claude and Codex `Bash` regressions verify this repository-scoped
+adapter boundary end to end: migration `005` stores scope provenance,
+post-commit reads it for mutation projection, and `agent_traces.trace_json`
+contains the model and canonical session link without adding mutation evidence
+to `diff_traces` or the direct intersection table.
+
 ## Non-goals
 
 - No read/query helper for loading messages with their joined parts exists in the current runtime; the typed write helpers (`insert_message`, `insert_messages`, `insert_part`, `insert_parts`, `insert_conversation_text_event`) are the only exposed message/part API surface. Message/part query helpers are deferred to a future task.

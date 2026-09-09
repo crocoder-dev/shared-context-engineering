@@ -204,6 +204,12 @@ the `ScopeState` `register_scope` returns is the runtime's admission-bounded
 rule, not the store's. See
 [mutation-scope provenance](mutation-scope-provenance.md).
 
+The store boundary is covered end to end by adapter regressions: the mutation
+event is written through the protocol tables, scope provenance is read during
+post-commit projection, and only the final Agent Trace row receives the
+combined mutation evidence. The direct `diff_traces` and
+`post_commit_patch_intersections` layers remain separate.
+
 ## Non-goals
 
 - No Git or filesystem I/O — `store.rs` itself calls neither Git nor the
