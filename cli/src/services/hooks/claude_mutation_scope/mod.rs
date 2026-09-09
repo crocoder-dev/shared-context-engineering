@@ -384,7 +384,7 @@ pub(crate) fn run_claude_mutation_scope_from_payload(
 }
 
 #[cfg(test)]
-fn run_claude_mutation_scope_from_payload_at_state_root(
+pub(crate) fn run_claude_mutation_scope_from_payload_at_state_root(
     state_root: &Path,
     stdin_payload: &str,
     logger: Option<&dyn Logger>,

@@ -191,3 +191,7 @@ observable tree difference.
   persistence layers stay separated (`diff_traces` and
   `post_commit_patch_intersections` direct-only, `agent_traces.trace_json`
   combined).
+- `hooks/mod.rs` (`mutation_provenance_e2e`) — real Claude and Codex `Bash`
+  adapter admission through generic mutation scope, commit, causal projection,
+  and persisted Agent Trace JSON; mutation protocol attribution remains
+  distinct from scope provenance.

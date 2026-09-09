@@ -434,7 +434,7 @@ How this plan is proven complete. Each criterion is observable and names the
 check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation.
 
-- [ ] AC1: Durable scope provenance exists independently of verified scope
+- [x] AC1: Durable scope provenance exists independently of verified scope
   state. Migration `005_mutation_scope_provenance.sql` provides insert-once
   `scope_id -> session_id + model_id?` storage that accepts a nullable model and
   stores canonical prefixed sessions verbatim. D3's matrix holds exactly:
@@ -453,7 +453,7 @@ performs final validation.
     origin/codex-mutation-scope-integration --
     cli/migrations/agent-trace-repository/004_mutation_trace_protocol.sql` is
     empty.
-- [ ] AC2: The generic mutation `Start` accepts optional provenance without
+- [x] AC2: The generic mutation `Start` accepts optional provenance without
   changing protocol semantics, in D4's order. `start` with valid provenance
   initializes the worktree, registers the scope, registers provenance, then runs
   the pure protocol prepare/commit, all inside the existing protected-worktree
@@ -479,14 +479,14 @@ performs final validation.
     `services::mutation_trace::`; `git diff
     origin/codex-mutation-scope-integration --
     cli/src/services/mutation_trace/protocol.rs spec/` is empty.
-- [ ] AC3: Codex tracked mutations persist exact scope provenance. A
+- [x] AC3: Codex tracked mutations persist exact scope provenance. A
   `PreToolUse(Bash)` fixture produces a scope whose provenance row holds the
   expected `cx_`-prefixed session and the normalized Codex model; `apply_patch`
   behaves identically; a `PreToolUse` with no usable model produces
   `model_id = NULL` while keeping session attribution.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
     cli/Cargo.toml services::hooks::codex_mutation_scope`.
-- [ ] AC4: Claude tracked mutations persist scope provenance from exact Claude
+- [x] AC4: Claude tracked mutations persist scope provenance from exact Claude
   model state. A main-agent scope resolves `(cc_<session>, "")`; a subagent scope
   resolves `(cc_<session>, exact agent_id)`; a subagent with no exact row gets
   `model_id = NULL` rather than the main agent's model; a `PostModelSwitch`
@@ -494,7 +494,7 @@ performs final validation.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
     cli/Cargo.toml services::hooks::claude_mutation_scope` and
     `services::hooks::claude_model_state`.
-- [ ] AC5: Mutation lineage preserves provenance into the mutation-derived
+- [x] AC5: Mutation lineage preserves provenance into the mutation-derived
   patch. `MutationAi(scope_id)` lines carry their scope's canonical
   `session_id`; a hunk carries a model only when every mutation-attributed line
   in it resolves to the same known model; conflicting-model,
@@ -503,7 +503,7 @@ performs final validation.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
     cli/Cargo.toml services::mutation_trace::runtime::mutation_attribution` and
     `services::mutation_trace::`.
-- [ ] AC6: Agent Trace emits mutation-derived session and model attribution. A
+- [x] AC6: Agent Trace emits mutation-derived session and model attribution. A
   Codex `Bash`-created file yields `contributor.type = "ai"`, the normalized
   Codex `model_id`, and a related `cx_` session URL; a Claude `Bash`-created
   file yields the equivalent Claude model and `cc_` session URL; mutation-only
@@ -512,7 +512,7 @@ performs final validation.
   evidence agrees.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
     cli/Cargo.toml services::agent_trace` and `services::hooks::`.
-- [ ] AC7: Direct-only attribution and direct-coverage precedence are unchanged.
+- [x] AC7: Direct-only attribution and direct-coverage precedence are unchanged.
   Direct-only Codex `apply_patch` evidence behaves exactly as before, producing
   its existing `diff_traces` session and model attribution; direct-only Claude
   structured evidence behaves exactly as before; the existing Claude model
@@ -528,7 +528,7 @@ performs final validation.
     cli/Cargo.toml services::hooks::` and `services::agent_trace`; the
     `direct_only` golden fixture under
     `cli/src/services/agent_trace/fixtures/` is byte-unchanged.
-- [ ] AC8: No verified-protocol or Agent Trace schema expansion is introduced.
+- [x] AC8: No verified-protocol or Agent Trace schema expansion is introduced.
   `spec/mutation_cursor.qnt`, `spec/mutation_cursor.md`,
   `cli/src/services/mutation_trace/protocol.rs`, the pure protocol `ScopeState` /
   `MutationEvent` attribution types, and
@@ -875,7 +875,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: local — Agent Trace now consumes provenance already carried by the direct intersection and mutation-AI patch, combining model agreement and session links without changing payload type shapes, schema, hunk classification, or line-change bucketing. Context synchronization will update the Agent Trace generator context with the combined agreement rule; root context remains unchanged unless the mandatory pass finds a contradiction.
   - Context synchronization: synced
 
-- [ ] T07: `Add end-to-end provenance regressions and synchronize context` (status:todo)
+- [x] T07: `Add end-to-end provenance regressions and synchronize context` (status:done)
   - Task ID: T07
   - Scope: In — real temporary-repository, real Agent Trace DB regressions in
     `cli/src/services/hooks/mod.rs` covering the full
@@ -895,7 +895,13 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `ScopeId` proves ownership / `ScopeProvenance` describes the owning scope
     statement.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml`.
-  - Context synchronization: pending
+  - Completed: 2026-09-10
+  - Files changed: `cli/src/services/hooks/claude_mutation_scope/mod.rs`; `cli/src/services/hooks/codex_mutation_scope/mod.rs`; `cli/src/services/hooks/mod.rs`; `context/architecture.md`; `context/cli/claude-mutation-scope-integration.md`; `context/cli/codex-mutation-scope-integration.md`; `context/cli/mutation-scope-hook-ingress.md`; `context/cli/mutation-scope-provenance.md`; `context/cli/mutation-scope-runtime.md`; `context/cli/mutation-trace-agent-attribution.md`; `context/cli/mutation-trace-store.md`; `context/context-map.md`; `context/glossary.md`; `context/sce/agent-trace-db.md`; `context/sce/agent-trace-hooks-command-routing.md`; `context/sce/agent-trace-minimal-generator.md`; `context/plans/mutation-scope-provenance.md`
+  - Result: Added real temporary-Git and repository Agent Trace DB regressions for Claude and Codex Bash mutations, proving persisted mutation-derived Agent Trace JSON retains AI classification, model, and canonical session provenance while keeping direct diff and mutation persistence layers separate. Synchronized the named mutation-scope, Agent Trace, root architecture, glossary, and context-map records with the ownership-versus-provenance boundary and current end-to-end behavior.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::` — passed, 508 passed, 0 failed, 1 ignored; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` — passed, 1,371 passed, 0 failed, 1 ignored; `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` — passed; `git diff --check` — passed.
+  - Done checks: both real Claude and Codex Bash-created files reached persisted `agent_traces.trace_json` with `contributor.type = "ai"`, their available models, and canonical `cc_` / `cx_` related session URLs; direct `diff_traces` remained at zero while `post_commit_patch_intersections`, `mutation_trace_events`, and `agent_traces` each persisted one row per regression; all named context files describe the explicit `mutation protocol attribution != scope provenance` boundary and the `ScopeId` ownership / `ScopeProvenance` description distinction.
+  - Context impact: root — the completed behavior is cross-cutting across both mutation-scope producers, the mutation attribution consumer, Agent Trace persistence, and shared terminology; root architecture, glossary, and context-map records plus the affected domain records were updated to make the durable provenance contract discoverable.
+  - Context synchronization: synced
 
 ## Open questions
 
@@ -911,3 +917,50 @@ and leaves the model null; a Claude subagent without an exact row inherits
 nothing; a model switch after scope creation does not rewrite history; direct
 coverage exclusion stays authoritative on overlap; OpenCode/Pi keep provenance
 optional until those adapters are wired.
+
+## Validation Report
+
+**Status:** validated
+**Date:** 2026-09-10
+
+### Commands run
+
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::` -> exit 0 (354 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::mutation_scope` -> exit 0 (50 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::claude_mutation_scope` -> exit 0 (111 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::codex_mutation_scope` -> exit 0 (156 passed, 1 ignored)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::agent_trace` -> exit 0 (152 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::agent_trace_db` -> exit 0 (29 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::claude_model_state` -> exit 0 (12 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::store` -> exit 0 (97 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::mutation_attribution` -> exit 0 (25 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::` -> exit 0 (508 passed, 1 ignored)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` -> exit 0 (1,371 passed, 1 ignored)
+- `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` -> exit 0 (passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` -> exit 0 (passed)
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral generation passed; 141 files)
+- `nix flake check` -> exit 0 (all checks passed)
+- `git diff origin/codex-mutation-scope-integration -- cli/migrations/agent-trace-repository/004_mutation_trace_protocol.sql` -> exit 0 (empty)
+- `git diff origin/codex-mutation-scope-integration -- cli/src/services/mutation_trace/protocol.rs spec/` -> exit 0 (empty)
+- `git diff origin/codex-mutation-scope-integration -- spec/ cli/src/services/mutation_trace/protocol.rs config/schema/agent-trace.schema.json` -> exit 0 (empty)
+- `git diff --name-only origin/codex-mutation-scope-integration -- cli/migrations/agent-trace-repository/` -> exit 0 (only `005_mutation_scope_provenance.sql`)
+- `git diff origin/codex-mutation-scope-integration -- cli/src/services/agent_trace/fixtures/direct_only/golden.json` -> exit 0 (empty; byte-unchanged)
+
+### Success-criteria verification
+
+- [x] AC1: Durable scope provenance storage, replay/conflict matrix, owning-scope requirement, and unchanged migration `004` -> storage and Agent Trace DB suites passed; migration diff was empty.
+- [x] AC2: Optional provenance follows the ordered Start path without protocol changes -> mutation-scope and mutation-trace suites passed; protocol/spec diff was empty.
+- [x] AC3: Codex tracked mutations persist canonical session and normalized model provenance -> Codex suite passed, including Bash/apply_patch and null-model regressions.
+- [x] AC4: Claude tracked mutations use exact model state and preserve admission-time provenance -> Claude mutation-scope and model-state suites passed.
+- [x] AC5: Mutation lineage preserves session IDs and conservative model agreement -> mutation attribution and mutation-trace suites passed.
+- [x] AC6: Agent Trace emits mutation-derived sessions/models and combined agreement -> Agent Trace and hooks suites passed, including Claude/Codex end-to-end regressions.
+- [x] AC7: Direct-only attribution, golden output, and direct-coverage precedence remain unchanged -> Agent Trace/hooks suites passed and direct-only golden diff was empty.
+- [x] AC8: Verified protocol and Agent Trace schema remain unchanged; migration `005` is the only migration addition -> protocol/spec/schema diff was empty and migration listing contained only `005_mutation_scope_provenance.sql`.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- None identified.

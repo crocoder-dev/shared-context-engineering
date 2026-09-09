@@ -48,6 +48,11 @@ Per hunk, a `post_commit_patch` touched line is covered when it pairs one-to-one
 
 All types are `serde`-serializable with `snake_case` field naming. `Conversation.url` is always serialized as `https://sce.crocoder.dev/conversations/{agent_trace.id}` for the generated top-level trace ID. `Conversation.contributor` serializes as a nested object with a JSON field named `type`; `model_id` is present only when the combined direct/mutation evidence has one agreed concrete value. `Conversation.related` is optional and omitted when `None` (`skip_serializing_if = "Option::is_none"`) and populated from matched direct and mutation touched-line `session_id` provenance as deduplicated session links.
 
+The persisted Agent Trace path is covered with real Claude and Codex `Bash`
+mutations: mutation-only AI hunks retain their resolved model and canonical
+session link, while direct evidence remains a separate source. This preserves
+the boundary that mutation protocol attribution is not itself scope provenance.
+
 ## Payload shape
 
 Current output includes top-level metadata fields with this contract:
