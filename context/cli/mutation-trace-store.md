@@ -198,7 +198,10 @@ returns `Err`.
 
 `register_scope_provenance`/`load_scope_provenance` are the matching insert-once
 seams for the separate `mutation_trace_scope_provenance` table; registration
-requires an already-registered scope and never creates one implicitly. See
+requires an already-registered scope and never creates one implicitly. Both
+seams are status-blind — deciding *whether* a `Start` may create provenance from
+the `ScopeState` `register_scope` returns is the runtime's admission-bounded
+rule, not the store's. See
 [mutation-scope provenance](mutation-scope-provenance.md).
 
 ## Non-goals

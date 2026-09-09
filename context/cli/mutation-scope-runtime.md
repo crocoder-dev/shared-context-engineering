@@ -19,13 +19,14 @@ The mechanics live in [`mutation-trace-runtime-coordinator.md`](mutation-trace-r
 
 ## The exported seam
 
-`runtime/mod.rs` re-exports exactly nine names at `pub(crate)`, reachable as
+`runtime/mod.rs` re-exports exactly ten names at `pub(crate)`, reachable as
 `crate::services::mutation_trace::runtime::*`:
 
 | Name | From | Role |
 | --- | --- | --- |
 | `coordinate` | `coordinator` | the observed-boundary entrypoint |
 | `RuntimeBoundary` | `coordinator` | `Start` / `Advance` / `Close` / `Flush` |
+| `StartProvenance` | `coordinator` | the optional `session_id` + `model_id?` a `Start` may carry ([contract](mutation-scope-provenance.md)) |
 | `CoordinateOutcome` | `coordinator` | its success value |
 | `CoordinateError` | `coordinator` | its error surface |
 | `ExternalTaintOperation` | `coordinator` | `Inspect` / `Persist`, carried by `CoordinateError::ExternalTaintMarker` |
@@ -66,11 +67,11 @@ snapshot, drives the protocol, and advances the worktree cursor to the observed
 tree. The interval between two consecutive observed boundaries is what the
 protocol can attribute.
 
-- **`Start { scope, event, actor_kind }`** — the scope's first boundary. The
-  protocol observes it only from `ScopeStatus::NeverSeen`; an accepted, observing
-  `Start` transitions the scope to `Active`. The event it emits attributes to the
-  scopes live *before* the activation, so a `Start` never attributes the
-  preceding interval to the scope it is starting.
+- **`Start { scope, event, actor_kind, provenance? }`** — the scope's first
+  boundary, observed by the protocol only from `ScopeStatus::NeverSeen`; an
+  accepted, observing `Start` transitions the scope to `Active`. The event it
+  emits attributes to the scopes live *before* the activation, so a `Start`
+  never attributes the preceding interval to the scope it is starting.
 - **`Advance { scope, event, actor_kind }`** — every subsequent mutation
   boundary. Accepted only while the scope is live.
 - **`Close { scope, event, actor_kind }`** — the terminal observed boundary,
@@ -82,7 +83,24 @@ protocol can attribute.
 All three scope-carrying variants supply `actor_kind`, and `coordinate()`
 registers the scope's durable `(worktree_id, actor_kind)` identity on every one
 of them, not only on `Start` — a mismatch against an existing row is
-`CoordinateError::ScopeIdentityConflict`.
+`CoordinateError::ScopeIdentityConflict`. Only `Start` may carry
+`StartProvenance`, registered after that scope registration and before the
+protocol commits, never inside `ProtocolState` or the CAS transition; a failure
+aborts the `Start` as `CoordinateError::ScopeProvenanceRegistration`.
+
+That provenance step is conditional, and `coordinate()` decides using the
+durable `ScopeState` its own `register_scope` call just returned. A provenance
+row may only be **created** while that status is still `ScopeStatus::NeverSeen`,
+so provenance is always an admission-time snapshot: once a scope has been
+admitted by a committed protocol `Start`, absent provenance stays absent
+permanently and a later replay carrying provenance persists nothing. Because the
+rule keys on durable status rather than on the scope row's existence, the
+legitimate retry still works — a first attempt that registered the scope but
+never committed leaves it `NeverSeen`, so the retry may still register
+provenance. An **existing** provenance row is loaded and re-registered on every
+provenance-carrying `Start` regardless of status, so a replay naming a different
+`session_id` remains an identity conflict. Contract in
+[mutation-scope provenance](mutation-scope-provenance.md).
 
 Two obligations follow, and both are easy to get wrong:
 
@@ -220,13 +238,10 @@ or needs rebaseline).
 
 ## Status
 
-The seam is exported and the contract is recorded. It is now driven by the
-generic `sce hooks mutation-scope` CLI ingress, which reads one normalized JSON
-lifecycle object from STDIN and calls `coordinate()`
-(`start` / `advance` / `close` / `flush`) or `abandon_scope()` (`abandon`) with a
-lazy DB provider, translating `scope_id` / `event_id` / `actor_kind` verbatim,
-refusing any `worktree_id` key, and classifying results by durable completion
-rather than failing open. Full transport/normalization contract in
+The seam is exported and driven by the generic `sce hooks mutation-scope` CLI
+ingress, which strictly parses one normalized JSON lifecycle object from STDIN
+into one `coordinate()` or `abandon_scope()` call with a lazy DB provider, and
+classifies results by durable completion rather than failing open. Contract in
 [`mutation-scope-hook-ingress.md`](mutation-scope-hook-ingress.md); routing in
 [agent-trace hooks command routing](../sce/agent-trace-hooks-command-routing.md).
 
@@ -234,9 +249,8 @@ A generic ingress existing is not full harness integration existing. The shipped
 Claude Code adapter (`cli/src/services/hooks/claude_mutation_scope/`, hidden
 `sce hooks claude-mutation-scope`) maps Claude's hook events onto this contract
 via the `pub(crate)` in-process seam
-`mutation_scope::run_mutation_scope_from_payload`, is registered by `sce setup`,
-and is covered by real-repository regressions against a real Agent Trace DB — its
-full contract is in
+`mutation_scope::run_mutation_scope_from_payload` and is registered by
+`sce setup`; its full contract is in
 [`claude-mutation-scope-integration.md`](claude-mutation-scope-integration.md).
 A Codex adapter (`cli/src/services/hooks/codex_mutation_scope/`, hidden
 `sce hooks codex-mutation-scope`) also maps onto this contract through the same
