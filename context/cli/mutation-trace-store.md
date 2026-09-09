@@ -5,7 +5,10 @@ Durable persistence for the verified mutation-cursor protocol
 `mutation-cursor-store-persistence` plan. `store.rs` is the protocol's first
 real database call site: it stores worktree/scope/processed-event/mutation-event
 state in the repository-scoped Agent Trace DB (`RepositoryAgentTraceDb`) via
-migration `004_mutation_trace_protocol.sql`.
+migration `004_mutation_trace_protocol.sql`. A sixth, separate table added by
+migration `005_mutation_scope_provenance.sql` holds
+[mutation-scope provenance](mutation-scope-provenance.md) — observational
+metadata about a scope, not protocol state.
 
 ## Boundary shape
 
@@ -192,6 +195,11 @@ them.
 row and never auto-creates it. An existing scope is returned unchanged only
 when its stored `worktree_id` and `actor_kind` match the request; a mismatch
 returns `Err`.
+
+`register_scope_provenance`/`load_scope_provenance` are the matching insert-once
+seams for the separate `mutation_trace_scope_provenance` table; registration
+requires an already-registered scope and never creates one implicitly. See
+[mutation-scope provenance](mutation-scope-provenance.md).
 
 ## Non-goals
 
