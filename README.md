@@ -38,6 +38,24 @@ sce doctor    # verify the install is healthy
 
 `sce setup` writes OpenCode, Claude Code, and/or Pi config into your repo, installs the required git hooks, and initializes the per-repo Agent Trace database. Use `sce setup --pi` for Pi only, or `sce setup --all` for OpenCode + Claude Code + Pi. `sce doctor` is read-only by default; `sce doctor --fix` will repair the issues it knows how to repair (missing or stale hooks, missing canonical DB parent directories) and report the rest for manual follow-up.
 
+With plain `sce setup`, after choosing targets and optional workflows, answer two independent confirmations:
+
+```text
+Enable automatic Agent Trace synchronization? [Y/n]
+Enable SCE commit attribution trailers? [Y/n]
+```
+
+Both default to Yes, so pressing Enter enables that choice; answering `n` disables only the corresponding behavior. A successful target setup persists the answers in `.sce/config.json`:
+
+```json
+{
+  "agent_trace": { "auto_sync": true },
+  "policies": { "attribution_hooks": { "enabled": true } }
+}
+```
+
+Non-interactive setup asks no questions. It explicitly enables both behaviors only when creating a missing repo-local config; an existing config's behavior values and omissions are not changed merely by a non-interactive run. Runtime precedence and hook behavior remain unchanged: `agent_trace.auto_sync` is config-file-only with omitted fallback `false`, while attribution can still be disabled by `SCE_ATTRIBUTION_HOOKS_DISABLED`, `SCE_DISABLED`, or its config value.
+
 ## Bash policy
 
 **Stop agents from running commands your repo does not allow.**

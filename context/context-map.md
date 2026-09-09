@@ -86,6 +86,8 @@ Feature/domain context:
 - `context/sce/config-schema-publication.md` (current embedded-only publication contract for the generated SCE config JSON Schema and the canonical SCE web application URL used in config declarations)
 - `context/sce/flatpak-distribution-patterns.md` (source-built Flatpak conventions, including Nix-side ephemeral fallback preparation for the Pkl-free build sandbox, manifest generation, local/release builds, release assets, and host-git bridge)
 
+- Setup behavior selection contract: [local bootstrap](sce/setup-repo-local-config-bootstrap.md) is canonical for the independent interactive confirmations, explicit nested config values, non-interactive existing-config safety, and unchanged runtime gates; see also [config precedence](cli/config-precedence-contract.md), [automatic sync](cli/agent-trace-auto-sync.md), [hook routing](sce/agent-trace-hooks-command-routing.md), and [commit attribution](sce/agent-trace-commit-msg-coauthor-policy.md).
+
 Working areas:
 
 - `context/plans/` (active plan execution artifacts, not durable history)

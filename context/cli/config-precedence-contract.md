@@ -4,7 +4,7 @@
 
 This contract documents the implemented `sce config` command behavior, runtime resolver, renderer, and canonical Pkl-authored `sce/config.json` schema. The schema is emitted to payload-relative `config/schema/sce-config.schema.json` under Cargo `OUT_DIR` or packaging fallbacks and embedded by `cli/src/services/config/schema.rs` as `SCE_CONFIG_SCHEMA_JSON`; no generated schema is committed.
 
-The current implementation resolves flat logging keys and Agent Trace runtime keys with deterministic precedence and source metadata, exposes resolved-value inspection through `sce config show`, and keeps `sce config validate` focused on validation status plus errors/warnings. File logging is explicitly controlled by the config-file/default `log_to_file` boolean, which defaults to `true`; `log_to_file` and `log_dir` resolve independently, with omitted `log_dir` falling back to the default location. Threshold, format, directory, and `log_file_retention_limit` values are consumed by runtime logging; the concrete logger uses the retention value for primary and v2 creation-triggered cleanup. The config-file-only `agent_trace.auto_sync` value is consumed by the post-commit trigger boundary and by doctor readiness reporting: omitted values resolve to `false`, while `sce setup` writes an explicit `true` for a newly created repo-local config and explicit `false` remains the opt-out.
+The current implementation resolves flat logging keys and Agent Trace runtime keys with deterministic precedence and source metadata, exposes resolved-value inspection through `sce config show`, and keeps `sce config validate` focused on validation status plus errors/warnings. File logging is explicitly controlled by the config-file/default `log_to_file` boolean, which defaults to `true`; `log_to_file` and `log_dir` resolve independently, with omitted `log_dir` falling back to the default location. Threshold, format, directory, and `log_file_retention_limit` values are consumed by runtime logging; the concrete logger uses the retention value for primary and v2 creation-triggered cleanup. The config-file-only `agent_trace.auto_sync` value is consumed by the post-commit trigger boundary and by doctor readiness reporting: omitted values resolve to `false`, while `sce setup` writes explicit behavior values for interactive selections and explicit `true` bootstrap defaults for a newly created repo-local config; non-interactive setup does not add omitted behavior keys to an existing config and explicit `false` remains the opt-out.
 
 ## Command surface
 
@@ -29,7 +29,7 @@ Agent Trace repository identity keys are also config-file only with per-key `glo
 
 - `agent_trace.repository_id` — optional explicit repository identity; resolves as an optional value with no default.
 - `agent_trace.repository_remote` — Git remote name used to derive repository identity; defaults to `origin` (`DEFAULT_AGENT_TRACE_REPOSITORY_REMOTE` in `cli/src/services/config/resolver.rs`) when no config file sets it.
-- `agent_trace.auto_sync` — boolean for the post-commit Agent Trace synchronization trigger; config-file only, with no flag or environment layer. Omitted values resolve to `false`; a newly created repo-local config from `sce setup` explicitly writes `true`, and `false` remains the opt-out.
+- `agent_trace.auto_sync` — boolean for the post-commit Agent Trace synchronization trigger; config-file only, with no flag or environment layer. Omitted values resolve to `false`; a newly created repo-local config from `sce setup` explicitly writes `true`, an interactive setup answer can write either value, and `false` remains the opt-out.
 
 Resolved observability values that currently have no CLI flag layer follow the same lower-precedence chain without a flag step:
 
@@ -148,6 +148,12 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - Missing-client-id guidance for `workos_client_id` describes the full allowed chain for this key: `WORKOS_CLIENT_ID`, config-file key `workos_client_id`, or fallback to the baked default when no higher-precedence invalid override blocks it.
 - Auth login runtime guidance refers to the resolved source chain generically (`WORKOS_CLIENT_ID`, config file, or baked default for `workos_client_id`) instead of env-only wording.
 - `control_plane_base_url` resolves through the same shared auth-adjacent key path but has no dedicated auth failure guidance of its own; it is consumed by the Agent Trace control-plane client (`sce sync`).
+
+## Setup-written behavior values
+
+Interactive setup is the only selection path for these two behavior values. After target selection, it persists the independent confirmation results at `agent_trace.auto_sync` and `policies.attribution_hooks.enabled`; Enter accepts each Yes default, and `n` changes only that key. A non-interactive target run supplies no values, so it preserves both keys when present and preserves their omission when absent. Creating a missing repo-local config is the exception: setup bootstraps both values as explicit `true`.
+
+These setup writes do not add a resolver layer. `agent_trace.auto_sync` remains config-file-only with global-before-local merge and omitted fallback `false`; attribution remains enabled by default, with `SCE_ATTRIBUTION_HOOKS_DISABLED` overriding `policies.attribution_hooks.enabled`. `SCE_DISABLED`, staged-diff AI-overlap evidence, and all other hook semantics remain owned by the hook runtime.
 
 ## Related files
 
