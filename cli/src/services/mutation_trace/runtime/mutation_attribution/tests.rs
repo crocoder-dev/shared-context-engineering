@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use super::*;
-use crate::services::mutation_trace::store::AttributionKind;
+use crate::services::mutation_trace::store::{AttributionKind, ScopeProvenance};
 use crate::services::mutation_trace::types::{FailureKind, ScopeId};
 use crate::services::patch::{FileChangeKind, PatchFileChange, PatchHunk, TouchedLine};
 
@@ -83,6 +83,14 @@ fn non_ai_row(revision: u64, before: &str, after: &str) -> MutationEventPageRow 
     page_row(revision, before, after, AttributionKind::AiContended, None)
 }
 
+fn provenance(scope_id: &str, session_id: &str, model_id: Option<&str>) -> ScopeProvenance {
+    ScopeProvenance {
+        scope_id: ScopeId(scope_id.to_owned()),
+        session_id: session_id.to_owned(),
+        model_id: model_id.map(str::to_owned),
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PageRequest {
     cursor: Option<u64>,
@@ -91,17 +99,26 @@ struct PageRequest {
 
 struct FakePageSource {
     events: Vec<MutationEventPageRow>,
+    provenance: HashMap<ScopeId, ScopeProvenance>,
     fail_on_page: Option<usize>,
     requests: RefCell<Vec<PageRequest>>,
+    provenance_reads: RefCell<Vec<ScopeId>>,
 }
 
 impl FakePageSource {
     fn new(events: Vec<MutationEventPageRow>) -> Self {
         Self {
             events,
+            provenance: HashMap::new(),
             fail_on_page: None,
             requests: RefCell::new(Vec::new()),
+            provenance_reads: RefCell::new(Vec::new()),
         }
+    }
+
+    fn with_provenance(mut self, value: ScopeProvenance) -> Self {
+        self.provenance.insert(value.scope_id.clone(), value);
+        self
     }
 
     fn failing_on_page(mut self, page: usize) -> Self {
@@ -111,6 +128,10 @@ impl FakePageSource {
 
     fn requests(&self) -> Vec<PageRequest> {
         self.requests.borrow().clone()
+    }
+
+    fn provenance_reads(&self) -> Vec<ScopeId> {
+        self.provenance_reads.borrow().clone()
     }
 }
 
@@ -144,6 +165,11 @@ impl MutationEventPageSource for FakePageSource {
             .take(requested_limit)
             .cloned()
             .collect())
+    }
+
+    fn load_scope_provenance(&self, scope_id: &ScopeId) -> Result<Option<ScopeProvenance>> {
+        self.provenance_reads.borrow_mut().push(scope_id.clone());
+        Ok(self.provenance.get(scope_id).cloned())
     }
 }
 
@@ -299,6 +325,163 @@ fn a_surviving_ai_mutation_line_is_attributed() {
     assert!(unresolved_contents(&attr).is_empty());
     assert_eq!(attr.reconstructed_events, 1);
     assert_eq!(attr.barrier, None);
+    let hunk = &attr.result.mutation_ai_patch.files[0].hunks[0];
+    assert_eq!(hunk.model_id, None);
+    assert_eq!(hunk.lines[0].session_id, None);
+}
+
+#[test]
+fn a_mutation_ai_hunk_carries_scope_session_and_model_provenance() {
+    let page_source = FakePageSource::new(vec![ai_row(1, "t0", "t1", "scope-1")])
+        .with_provenance(provenance("scope-1", "cx_session-1", Some("codex/gpt-5")));
+    let tree_source = FakeTreeSource::new()
+        .with_file("t0", "f.rs", "a\n")
+        .with_diff(
+            "t0",
+            "t1",
+            "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1,1 +1,2 @@\n a\n+foo\n",
+        );
+
+    let attr = resolve_bounded_mutation_attribution(
+        &page_source,
+        &tree_source,
+        &worktree(),
+        &empty(),
+        &committed("f.rs", 1, 1, 1, vec![added(2, "foo")]),
+        &tree("t1"),
+        Some(1),
+    );
+
+    let hunk = &attr.result.mutation_ai_patch.files[0].hunks[0];
+    assert_eq!(hunk.model_id.as_deref(), Some("codex/gpt-5"));
+    assert_eq!(hunk.lines[0].session_id.as_deref(), Some("cx_session-1"));
+    assert_eq!(
+        page_source.provenance_reads(),
+        vec![ScopeId("scope-1".to_owned())]
+    );
+}
+
+#[test]
+fn mutation_ai_lines_keep_their_sessions_and_agreeing_models_across_scopes() {
+    let page_source = FakePageSource::new(vec![
+        ai_row(2, "t1", "t2", "scope-2"),
+        ai_row(1, "t0", "t1", "scope-1"),
+    ])
+    .with_provenance(provenance("scope-1", "cx_session-1", Some("codex/gpt-5")))
+    .with_provenance(provenance("scope-2", "cx_session-2", Some("codex/gpt-5")));
+    let tree_source = FakeTreeSource::new()
+        .with_file("t0", "f.rs", "a\n")
+        .with_diff(
+            "t0",
+            "t1",
+            "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1,1 +1,2 @@\n a\n+foo\n",
+        )
+        .with_diff(
+            "t1",
+            "t2",
+            "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -2,0 +3,1 @@\n+bar\n",
+        );
+
+    let attr = resolve_bounded_mutation_attribution(
+        &page_source,
+        &tree_source,
+        &worktree(),
+        &empty(),
+        &committed("f.rs", 1, 1, 1, vec![added(2, "foo"), added(3, "bar")]),
+        &tree("t2"),
+        Some(2),
+    );
+
+    let hunk = &attr.result.mutation_ai_patch.files[0].hunks[0];
+    assert_eq!(hunk.model_id.as_deref(), Some("codex/gpt-5"));
+    assert_eq!(
+        hunk.lines
+            .iter()
+            .map(|line| line.session_id.as_deref())
+            .collect::<Vec<_>>(),
+        vec![Some("cx_session-1"), Some("cx_session-2")]
+    );
+    assert_eq!(page_source.provenance_reads().len(), 2);
+}
+
+#[test]
+fn mutation_ai_hunk_omits_a_conflicting_model_but_keeps_line_sessions() {
+    let page_source = FakePageSource::new(vec![
+        ai_row(2, "t1", "t2", "scope-2"),
+        ai_row(1, "t0", "t1", "scope-1"),
+    ])
+    .with_provenance(provenance("scope-1", "cc_session-1", Some("claude/sonnet")))
+    .with_provenance(provenance("scope-2", "cc_session-2", Some("claude/opus")));
+    let tree_source = FakeTreeSource::new()
+        .with_file("t0", "f.rs", "a\n")
+        .with_diff(
+            "t0",
+            "t1",
+            "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1,1 +1,2 @@\n a\n+foo\n",
+        )
+        .with_diff(
+            "t1",
+            "t2",
+            "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -2,0 +3,1 @@\n+bar\n",
+        );
+
+    let attr = resolve_bounded_mutation_attribution(
+        &page_source,
+        &tree_source,
+        &worktree(),
+        &empty(),
+        &committed("f.rs", 1, 1, 1, vec![added(2, "foo"), added(3, "bar")]),
+        &tree("t2"),
+        Some(2),
+    );
+
+    let hunk = &attr.result.mutation_ai_patch.files[0].hunks[0];
+    assert_eq!(hunk.model_id, None);
+    assert_eq!(
+        hunk.lines
+            .iter()
+            .map(|line| line.session_id.as_deref())
+            .collect::<Vec<_>>(),
+        vec![Some("cc_session-1"), Some("cc_session-2")]
+    );
+}
+
+#[test]
+fn missing_or_unknown_scope_provenance_does_not_downgrade_ai_lines() {
+    let page_source = FakePageSource::new(vec![
+        ai_row(2, "t1", "t2", "scope-2"),
+        ai_row(1, "t0", "t1", "scope-1"),
+    ])
+    .with_provenance(provenance("scope-1", "cx_session-1", None))
+    .with_provenance(provenance("scope-2", "cx_session-2", Some("codex/gpt-5")));
+    let tree_source = FakeTreeSource::new()
+        .with_file("t0", "f.rs", "a\n")
+        .with_diff(
+            "t0",
+            "t1",
+            "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1,1 +1,2 @@\n a\n+foo\n",
+        )
+        .with_diff(
+            "t1",
+            "t2",
+            "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -2,0 +3,1 @@\n+bar\n",
+        );
+
+    let attr = resolve_bounded_mutation_attribution(
+        &page_source,
+        &tree_source,
+        &worktree(),
+        &empty(),
+        &committed("f.rs", 1, 1, 1, vec![added(2, "foo"), added(3, "bar")]),
+        &tree("t2"),
+        Some(2),
+    );
+
+    let hunk = &attr.result.mutation_ai_patch.files[0].hunks[0];
+    assert_eq!(ai_contents(&attr), vec!["foo".to_owned(), "bar".to_owned()]);
+    assert_eq!(hunk.model_id, None);
+    assert_eq!(hunk.lines[0].session_id.as_deref(), Some("cx_session-1"));
+    assert_eq!(hunk.lines[1].session_id.as_deref(), Some("cx_session-2"));
 }
 
 #[test]
