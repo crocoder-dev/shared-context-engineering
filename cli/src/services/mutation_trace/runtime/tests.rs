@@ -277,6 +277,7 @@ fn a_snapshot_failure_then_recovery_cycle_runs_through_the_public_api() {
             scope: scope.clone(),
             event: EventId("evt-during-failure".to_string()),
             actor_kind: ActorKind::ClaudeCode,
+            provenance: None,
         },
         ok_db,
     )
@@ -365,6 +366,7 @@ fn a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_reba
             scope: scope.clone(),
             event: EventId("evt-start".to_string()),
             actor_kind: ActorKind::ClaudeCode,
+            provenance: None,
         },
         ok_db,
     )
@@ -466,6 +468,7 @@ fn a_stale_marker_rebaselines_to_the_current_tree_abandons_scopes_then_processes
             scope: scope.clone(),
             event: EventId("evt-start".to_string()),
             actor_kind: ActorKind::ClaudeCode,
+            provenance: None,
         },
         ok_db,
     )
@@ -627,6 +630,7 @@ fn linked_worktrees_keep_independent_external_taint_markers_over_a_shared_db() {
             scope: linked_scope.clone(),
             event: EventId("evt-linked-start".to_string()),
             actor_kind: ActorKind::ClaudeCode,
+            provenance: None,
         },
         || repo.open_db(),
     )
@@ -717,6 +721,7 @@ fn a_snapshot_failure_arms_the_marker_and_the_next_invocation_recovers_once() {
             scope: scope.clone(),
             event: EventId("evt-during-failure".to_string()),
             actor_kind: ActorKind::ClaudeCode,
+            provenance: None,
         },
         ok_db,
     )
@@ -811,6 +816,7 @@ fn a_marker_clear_failure_after_a_durable_boundary_keeps_the_marker_for_a_later_
             scope: scope.clone(),
             event: EventId("evt-start".to_string()),
             actor_kind: ActorKind::ClaudeCode,
+            provenance: None,
         },
         ok_db,
     )
@@ -1261,6 +1267,7 @@ fn historical_before_and_after_pins_survive_reconciliation_after_real_coordinate
             scope: scope.clone(),
             event: EventId("evt-start".to_string()),
             actor_kind: ActorKind::ClaudeCode,
+            provenance: None,
         },
         ok_db,
     )
@@ -1814,6 +1821,7 @@ fn an_abandoned_scope_rebaselines_the_successor_start_without_evidence_for_the_g
             scope: scope_a.clone(),
             event: EventId("evt-a-start".to_string()),
             actor_kind: ActorKind::ClaudeCode,
+            provenance: None,
         },
         ok_db,
     )
@@ -1854,6 +1862,7 @@ fn an_abandoned_scope_rebaselines_the_successor_start_without_evidence_for_the_g
             scope: scope_b.clone(),
             event: EventId("evt-b-start".to_string()),
             actor_kind: ActorKind::ClaudeCode,
+            provenance: None,
         },
         ok_db,
     )
@@ -1930,6 +1939,7 @@ fn abandoning_a_stale_scope_leaves_an_unrelated_live_scope_active_through_the_re
             scope: stale.clone(),
             event: EventId("evt-stale-start".to_string()),
             actor_kind: ActorKind::ClaudeCode,
+            provenance: None,
         },
         ok_db,
     )
@@ -1940,6 +1950,7 @@ fn abandoning_a_stale_scope_leaves_an_unrelated_live_scope_active_through_the_re
             scope: live.clone(),
             event: EventId("evt-live-start".to_string()),
             actor_kind: ActorKind::Codex,
+            provenance: None,
         },
         ok_db,
     )
@@ -2017,6 +2028,7 @@ fn abandoning_a_scope_through_another_worktrees_checkout_is_rejected_without_wri
             scope: scope.clone(),
             event: EventId("evt-main-start".to_string()),
             actor_kind: ActorKind::ClaudeCode,
+            provenance: None,
         },
         ok_db,
     )
@@ -2095,6 +2107,7 @@ fn a_real_thread_cas_race_settles_on_the_competitors_terminal_status() {
             scope: scope.clone(),
             event: EventId("evt-race-start".to_string()),
             actor_kind: ActorKind::ClaudeCode,
+            provenance: None,
         },
         ok_db,
     )
@@ -2334,6 +2347,7 @@ fn drive_codex_overlap_transition(
             scope: codex.clone(),
             event: EventId("evt-codex-start".to_string()),
             actor_kind: ActorKind::Codex,
+            provenance: None,
         },
         ok_db,
     )
@@ -2344,6 +2358,7 @@ fn drive_codex_overlap_transition(
             scope: claude.clone(),
             event: EventId("evt-claude-start".to_string()),
             actor_kind: ActorKind::ClaudeCode,
+            provenance: None,
         },
         ok_db,
     )

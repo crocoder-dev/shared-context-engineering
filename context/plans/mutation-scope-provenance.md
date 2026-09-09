@@ -132,6 +132,10 @@ incoming: session S2, ...
 => identity conflict / error
 ```
 
+That matrix governs an incoming registration for a scope that **already has** a
+provenance row. Whether a row may be *created* in the first place is D4's
+admission-bounded rule.
+
 A model disagreement or a later model discovery must **never** cause
 mutation-scope admission to fail. This matters because provenance does not
 participate in the correctness of `AiExclusive`, `AiContended`, or
@@ -175,9 +179,9 @@ order, and this ordering stays inside the existing protected-worktree boundary:
 ```text
 initialize worktree
     ↓
-register scope(scope_id, worktree_id, actor_kind)
+register scope(scope_id, worktree_id, actor_kind) -> ScopeState
     ↓
-register provenance(scope_id, session_id, model_id?)
+conditionally register provenance(scope_id, session_id, model_id?)
     ↓
 run pure protocol prepare/commit for Start
 ```
@@ -197,6 +201,48 @@ Invariants:
   transition;
 - replaying a `Start` with identical session provenance remains safe and
   idempotent.
+
+**Provenance creation is admission-bounded.** `ScopeId` proves mutation
+ownership; `ScopeProvenance` describes the owning scope **as observed at
+admission**. It is therefore insert-once *and* creation-bounded, and must never
+be attached retroactively to a scope whose protocol `Start` already committed.
+
+The middle step is conditional, decided from the `ScopeState` that
+`register_scope` returns together with the existing provenance row:
+
+```text
+provenance row exists
+    -> register as usual; D3's replay/conflict matrix is authoritative
+       (same session -> success, first persisted model wins;
+        different session -> identity conflict / error)
+
+no provenance row + scope.status == NeverSeen
+    -> register the incoming provenance
+
+no provenance row + scope.status == Active or terminal
+    -> do nothing; provenance stays absent
+       the Start continues through normal replay / guarded behavior
+```
+
+Once a scope has transitioned beyond `NeverSeen`, absence of provenance is
+permanent. A later `Start` replay carrying provenance is not an error — it
+follows the protocol's ordinary replay semantics and simply persists nothing.
+
+This closes a retroactive-attachment hole. Without it, a `Start` that admitted a
+scope with no provenance could gain one from any later replay; for Claude that
+means a replay after a `PostModelSwitch` could resolve the *newer* model and
+attach it to an *older* scope.
+
+Two deliberate consequences:
+
+- The rule keys on **durable scope status**, not on "the scope row already
+  exists", so the legitimate retry survives: a first attempt that registered the
+  scope but never committed the protocol `Start` leaves it `NeverSeen`, so the
+  retry may still register provenance and then commit.
+- Only *creation* is bounded, not *validation*. An existing provenance row is
+  loaded and re-registered on every provenance-carrying `Start` whatever the
+  scope's status, so a replay of an already-admitted scope naming a different
+  `session_id` still fails as an identity conflict.
 
 None of this changes the pure protocol or the Quint design; the ordering lives
 entirely in the runtime adapter layer.
@@ -416,7 +462,14 @@ performs final validation.
   most an owning `NeverSeen` scope row and no provenance row without a
   registered scope; `start` without provenance still works; a replayed `start`
   with identical session provenance is idempotent and still succeeds; a `start`
-  whose provenance disagrees only on the model still succeeds. Provenance on
+  whose provenance disagrees only on the model still succeeds. Provenance
+  creation is admission-bounded: a row is created only while the durable scope
+  is `NeverSeen`, so a `start` replayed against an already-admitted scope with
+  no provenance row succeeds and still persists none, while a scope that is
+  still `NeverSeen` after a failed earlier attempt may gain provenance on
+  retry; an existing provenance row is still validated on every
+  provenance-carrying `start` whatever the scope's status, so a different
+  `session_id` remains a conflict. Provenance on
   `advance` / `close` / `flush` / `abandon` is rejected by the strict parser; a
   blank `session_id` or an unexpected provenance key is rejected. Provenance
   stays outside `ProtocolState` and the CAS transition, and pure mutation
@@ -514,10 +567,16 @@ Final branch comparison is against `origin/codex-mutation-scope-integration`
   and the "only `start`" restriction.
 - Update `context/cli/mutation-scope-runtime.md` — `RuntimeBoundary::Start`
   carries optional provenance, plus D4's durable `Start` ordering (worktree init
-  -> scope registration -> provenance registration -> pure protocol
+  -> scope registration -> conditional provenance registration -> pure protocol
   prepare/commit) and its invariants: provenance needs an existing owning scope,
   never creates one implicitly, never outlives one, and stays outside
   `ProtocolState` and the CAS transition.
+- Update `context/cli/mutation-scope-provenance.md` — D4's admission-bounded
+  creation rule: a provenance row may be created only while the durable scope is
+  `NeverSeen`; after admission, absent provenance stays absent permanently and a
+  later `Start` replay cannot backfill it; an existing row is still validated on
+  every provenance-carrying `Start`, so a different `session_id` remains an
+  identity conflict.
 - Update `context/cli/claude-mutation-scope-integration.md` — the injectable
   `ClaudeModelStateResolver` seam, the exact `(cc_<session>, agent_id)`
   model-state snapshot at admission, the no-inheritance rule for subagents, and
@@ -663,15 +722,16 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: local — additive schema-only migration plus one new store seam that nothing consumes yet. No ingress, adapter, attribution, or Agent Trace behavior changed. T01 documented the new durable storage boundary in `context/cli/mutation-scope-provenance.md` (new), `context/cli/mutation-trace-store.md`, `context/sce/agent-trace-db.md`, and `context/context-map.md`. Those files currently document only the storage-layer provenance seam; later tasks extend the relevant context as mutation `Start` ingress, the Claude/Codex producers, mutation reconstruction, and Agent Trace consumption are implemented, and T07 still performs the final cross-system synchronization pass. T02 is the first consumer of this seam.
   - Context synchronization: synced
 
-- [ ] T02: `Carry optional provenance through mutation Start` (status:todo)
+- [x] T02: `Carry optional provenance through mutation Start` (status:done)
   - Task ID: T02
   - Scope: In — `MutationScopePayload::Start` gains an optional provenance field;
     `parse_mutation_scope_payload` validation including the per-operation key
     sets; `RuntimeBoundary::Start` metadata plumbing through
     `runtime/coordinator.rs` and the `runtime/mod.rs` re-exports; durable
     registration through T01's seam in D4's order (worktree init -> scope
-    registration -> provenance registration -> pure protocol prepare/commit),
-    inside the existing protected-worktree boundary. Out — pure protocol
+    registration -> conditional provenance registration -> pure protocol
+    prepare/commit), inside the existing protected-worktree boundary, gated by
+    D4's admission-bounded creation rule. Out — pure protocol
     `Boundary::Start`, `protocol.rs`, Quint semantics, and any harness adapter.
   - Dependencies: T01
   - Done when: `start` with valid provenance runs D4's order and durably
@@ -683,14 +743,27 @@ Persist this field in every plan; this is durable plan state, not chat state:
     provenance succeeds idempotently; a `start` whose model disagrees with the
     stored row still succeeds; only a differing `session_id` for the same
     `scope_id` fails the `Start`; `start` without provenance behaves exactly as
-    today; provenance on `advance` / `close` / `flush` / `abandon` is rejected
+    today; provenance creation is admission-bounded — a `start` replayed against
+    an already-admitted scope with no provenance row succeeds under normal replay
+    semantics and still persists no provenance, leaving the revision and
+    processed-event set unchanged, while a scope still `NeverSeen` after a failed
+    earlier attempt can still gain provenance on retry and then commit, and an
+    existing provenance row is still validated on an admitted scope so a
+    differing `session_id` still conflicts; provenance on `advance` / `close` / `flush` / `abandon` is rejected
     with the existing `Invalid mutation-scope payload from STDIN: <detail>.`
     diagnostic; a blank `session_id`, a non-object `provenance`, and an
     unexpected provenance key are each rejected; `git diff` against
     `origin/codex-mutation-scope-integration` for `protocol.rs` and `spec/` is
     empty.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::mutation_scope`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::`.
-  - Context synchronization: pending
+  - Completed: 2026-09-09
+  - Files changed: `cli/src/services/hooks/mutation_scope.rs`; `cli/src/services/mutation_trace/runtime/coordinator.rs`; `cli/src/services/mutation_trace/runtime/mod.rs`; `cli/src/services/mutation_trace/runtime/tests.rs`
+  - Result: Added `StartProvenance { session_id: String, model_id: Option<String> }` in `runtime/coordinator.rs`, re-exported from `runtime/mod.rs`, and gave `RuntimeBoundary::Start` a `provenance: Option<StartProvenance>` field. The value deliberately omits `scope_id` — the boundary already names the scope — and `coordinate_boundary_inner` composes T01's `ScopeProvenance` from both. Registration sits between the existing `register_scope` call and the CAS prepare/commit loop, so D4's order (worktree init -> scope registration -> provenance registration -> pure protocol prepare/commit) holds inside the existing protected-worktree boundary, and a retried CAS attempt re-runs no provenance write. Failures map to a new pre-commit `CoordinateError::ScopeProvenanceRegistration(anyhow::Error)`, displayed as its source and grouped with `ScopeIdentityConflict` / `LockAcquisition`; the hook's existing catch-all branch renders it as a boundary failure before durable completion, so a rejected `Start` denies the tool. `into_protocol_boundary` still maps to the unchanged pure `Boundary::Start`, and `provenance` never enters `ProtocolState` or the CAS transition. On the ingress side, `MutationScopePayload::Start` gained the same optional field; `parse_scope_boundary` was split so `start` (`parse_start`) accepts `provenance` in its key set while `advance` / `close` keep today's exact set and `flush` / `abandon` are untouched, all sharing the extracted `parse_scope_boundary_identity`. `parse_provenance` requires a JSON object, rejects any key other than `session_id` / `model_id` with an `unexpected field 'provenance.<key>'` diagnostic, requires a non-blank `session_id`, and reads `model_id` through a new `optional_non_blank_str` helper that treats an absent key and an explicit `null` as `None`. A blank or whitespace-only `model_id` is rejected rather than coerced to `NULL`, matching the strict-parser discipline: both shipped producers normalize an unknown model to `None` (`normalize_codex_model_id` already returns `Option`), so a blank string is malformed input, never a legitimate "no model". Every existing `RuntimeBoundary::Start` construction site in `coordinator.rs` and `runtime/tests.rs` gained `provenance: None`, which is also the exact-behavior path for a producer that sends no provenance. No harness adapter, `protocol.rs`, or `spec/` file was touched.
+  - Amendment (2026-09-09, same task): the provenance step was made conditional so `ScopeProvenance` stays a true admission-time snapshot. `coordinate_boundary_inner` now binds the `ScopeState` that `register_scope` returns instead of discarding it, and passes it to a new `register_start_provenance(store, boundary, registered_scope)` helper (extracted so `coordinate_boundary_inner` stays under `clippy::too_many_lines`). That helper loads the existing provenance row first: when a row exists it always calls `register_scope_provenance`, so T01's immutable-session-identity and first-observed-model rules stay authoritative on every replay including for a long-admitted scope; when no row exists it registers only while `registered_scope.status == ScopeStatus::NeverSeen` and otherwise returns `Ok(())` without writing, letting the `Start` continue through the protocol's ordinary replay/guard behavior. The rule is keyed on durable scope status rather than on the scope row's existence precisely so a retry whose earlier attempt registered the scope but never committed the protocol `Start` can still register provenance. This closes a retroactive-attachment hole: previously `Start(A, provenance=None)` could admit a scope and a later `Start(A, provenance=Some(..))` replay would insert a row, which for Claude means a replay after a `PostModelSwitch` could attach the newer model to an older scope. Both the load failure and the registration failure map to the existing pre-commit `CoordinateError::ScopeProvenanceRegistration`. `ScopeStatus` was added to `coordinator.rs`'s `types` import; nothing else in the ordering, the error surface, the ingress, `ProtocolState`, the CAS transition, `protocol.rs`, or `spec/` changed.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::mutation_scope` — passed, 50/50 (13 provenance parser/ingress tests plus `test13`); `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::` — passed, 350/350 (2 coordinator ordering tests plus 3 admission-boundedness regressions), including the unchanged Quint-refinement MBT suites. Also ran, though not required by the task: `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` — passed; `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` — passed.
+  - Done checks: `start` with valid provenance runs D4's order and durably registers provenance before the call reports success (verified — `start_registers_provenance_after_its_owning_scope_and_before_the_protocol_commits` asserts the provenance row exists and the scope reached `Active`, and `test8_start_with_provenance_registers_it_before_the_protocol_start_commits` asserts the scope row, provenance row, and the committed `e1` processed event through the real-git/real-DB ingress); provenance for an unknown `scope_id` fails while a valid registered scope accepts it (verified — the store guard is T01's `register_scope_provenance_errors_for_an_unregistered_scope_and_creates_no_rows`, and the ingress side is proven by the two ordering tests above plus `test12_no_provenance_row_ever_exists_without_its_owning_scope`, whose LEFT JOIN asserts zero orphan rows); a provenance registration failure leaves the protocol `Start` uncommitted, leaves at most an owning `NeverSeen` scope row, and leaves no provenance row without a registered scope (verified — `a_provenance_registration_failure_rejects_the_start_before_the_protocol_commits` asserts `CoordinateError::ScopeProvenanceRegistration`, the scope still `NeverSeen`, empty `processed_events`, revision 0, and the stored row unchanged); a replayed `start` with identical session provenance succeeds idempotently and a `start` whose model disagrees still succeeds (verified — `test10_replayed_start_provenance_is_idempotent_and_keeps_the_first_model` replays identically, then with no model, then with a disagreeing model, asserting one row, the first model kept, and an unchanged revision and processed-event list); only a differing `session_id` for the same `scope_id` fails the `Start` (verified — `test11_conflicting_provenance_session_fails_the_start_without_rewriting_the_row` asserts the `already has provenance for session` diagnostic, the untouched row, and that event `e9` was never processed); `start` without provenance behaves exactly as today (verified — `test9_start_without_provenance_persists_no_provenance_row` asserts an `active` scope, zero provenance rows, and the committed `e1`, with `test1`–`test7` and every pre-existing runtime test unchanged); provenance on `advance` / `close` / `flush` / `abandon` is rejected with the existing diagnostic (verified — `provenance_is_rejected_on_every_operation_other_than_start` asserts the exact `Invalid mutation-scope payload from STDIN: unexpected field 'provenance'.` string for all four); a blank `session_id`, a non-object `provenance`, and an unexpected provenance key are each rejected (verified — `blank_or_non_string_provenance_session_id_is_rejected`, `non_object_provenance_is_rejected`, `unexpected_provenance_key_is_rejected`, plus `provenance_without_a_session_id_is_rejected` and `blank_or_non_string_provenance_model_id_is_rejected`); `git diff origin/codex-mutation-scope-integration -- cli/src/services/mutation_trace/protocol.rs spec/` is empty (verified — zero lines); provenance creation is admission-bounded (verified — `start_without_provenance_then_replay_with_provenance_does_not_backfill` admits scope `A` with `provenance: None`, asserts no provenance row, replays the same `Start` carrying `cc_session-1` / `claude/opus`, and asserts the provenance row is still absent with the worktree revision and processed-event set byte-identical to the admitted projection, and `test13_a_start_admitted_without_provenance_is_never_backfilled_by_a_replay` proves the same through the real-git/real-DB ingress with `SELECT COUNT(*) FROM mutation_trace_scope_provenance = 0`, the scope still `active`, and an unchanged revision); a retry before admission may still register provenance (verified — `never_seen_scope_can_receive_provenance_before_successful_start` seeds a `NeverSeen` scope row with no provenance, asserts that status, drives a `Start` carrying provenance, and asserts both the inserted row and the scope reaching `Active`); an existing provenance row is still validated after admission (verified — `an_admitted_scope_with_provenance_still_rejects_a_different_session` admits the scope with `cc_session-1`, replays with `cc_session-2`, and asserts `CoordinateError::ScopeProvenanceRegistration`, the unchanged stored row, and an unchanged revision and processed-event set; `test11_conflicting_provenance_session_fails_the_start_without_rewriting_the_row` covers the same through the ingress).
+  - Context impact: local — one optional ingress field, one runtime boundary field, one new pre-commit error variant, and one durable registration step that reuses T01's seam. No harness adapter, attribution, or Agent Trace behavior changed, and the pure protocol and Quint model are byte-unchanged. T02 documents the ingress and runtime halves of the provenance path in `context/cli/mutation-scope-hook-ingress.md`, `context/cli/mutation-scope-runtime.md`, and `context/sce/agent-trace-hooks-command-routing.md`, and owns the admission-bounded creation rule in `context/cli/mutation-scope-provenance.md` (whose insert-once storage semantics remain T01's); the producer, reconstruction, and Agent Trace context files stay owned by T03–T06, and T07 still performs the final cross-system synchronization pass. T03 and T04 are the first producers of this optional field.
+  - Context synchronization: synced
 
 - [ ] T03: `Populate Codex scope provenance` (status:todo)
   - Task ID: T03
