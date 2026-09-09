@@ -411,6 +411,7 @@ mod tests {
             "mutation_trace_processed_events",
             "mutation_trace_events",
             "mutation_trace_event_active_scopes",
+            "mutation_trace_scope_provenance",
         ] {
             assert!(
                 sqlite_object_exists(&db, "table", table),
@@ -453,10 +454,11 @@ mod tests {
                 String::from("002_repository_source_instance_id"),
                 String::from("003_claude_model_state"),
                 String::from("004_mutation_trace_protocol"),
+                String::from("005_mutation_scope_provenance"),
             ],
             "repository DBs should be initialized from the baseline schema plus \
-             its additive source-instance-id, Claude model-state, and \
-             mutation-trace-protocol migrations"
+             its additive source-instance-id, Claude model-state, \
+             mutation-trace-protocol, and mutation-scope-provenance migrations"
         );
 
         db.ensure_schema_ready_for_hooks()
@@ -499,6 +501,7 @@ mod tests {
                 String::from("002_repository_source_instance_id"),
                 String::from("003_claude_model_state"),
                 String::from("004_mutation_trace_protocol"),
+                String::from("005_mutation_scope_provenance"),
             ]
         );
 
@@ -1068,8 +1071,9 @@ mod tests {
                 String::from("002_repository_source_instance_id"),
                 String::from("003_claude_model_state"),
                 String::from("004_mutation_trace_protocol"),
+                String::from("005_mutation_scope_provenance"),
             ],
-            "an existing 001+002 database should get 003 and 004 applied on top through the setup/lifecycle path, without reapplying 001/002"
+            "an existing 001+002 database should get 003, 004, and 005 applied on top through the setup/lifecycle path, without reapplying 001/002"
         );
 
         for table in [
@@ -1078,6 +1082,7 @@ mod tests {
             "mutation_trace_processed_events",
             "mutation_trace_events",
             "mutation_trace_event_active_scopes",
+            "mutation_trace_scope_provenance",
         ] {
             assert!(
                 sqlite_object_exists(&migrated, "table", table),
@@ -1140,7 +1145,7 @@ mod tests {
                 String::from("001_repository_schema"),
                 String::from("002_repository_source_instance_id"),
             ],
-            "the no-migration hook-runtime path must never record or apply 003 or 004"
+            "the no-migration hook-runtime path must never record or apply 003, 004, or 005"
         );
 
         for table in [
@@ -1149,6 +1154,7 @@ mod tests {
             "mutation_trace_processed_events",
             "mutation_trace_events",
             "mutation_trace_event_active_scopes",
+            "mutation_trace_scope_provenance",
         ] {
             assert!(
                 !sqlite_object_exists(&db, "table", table),
