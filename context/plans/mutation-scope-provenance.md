@@ -849,7 +849,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: local — mutation reconstruction now consumes observational scope provenance and enriches only the mutation-AI projection. The mutation algorithm, bounded replay, direct-coverage exclusion, lineage semantics, Agent Trace construction, protocol, and schema are unchanged. Synchronized `context/cli/mutation-trace-agent-attribution.md` with the resolved session/model projection and conservative model-agreement behavior; the five mandatory root context files were verified unchanged.
   - Context synchronization: synced
 
-- [ ] T06: `Emit mutation-derived provenance in Agent Trace` (status:todo)
+- [x] T06: `Emit mutation-derived provenance in Agent Trace` (status:done)
   - Task ID: T06
   - Scope: In — `build_trace_file(...)` and the related conversation-construction
     helpers in `cli/src/services/agent_trace.rs`: union the related session IDs
@@ -867,7 +867,13 @@ Persist this field in every plan; this is durable plan state, not chat state:
     related sessions are the deduplicated, deterministically ordered union; all
     built payloads still validate against the embedded schema.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::agent_trace`.
-  - Context synchronization: pending
+  - Completed: 2026-09-09
+  - Files changed: `cli/src/services/agent_trace.rs`; `cli/src/services/agent_trace/tests.rs`; `cli/src/services/agent_trace/fixtures/direct_plus_mutation/golden.json`; `cli/src/services/agent_trace/fixtures/partial_combined/golden.json`
+  - Result: Updated Agent Trace conversation construction to combine direct and mutation evidence for model and session provenance. Mutation-only AI hunks now emit their resolved model and related session; direct and mutation sessions form a deduplicated deterministic union; a model is emitted for combined evidence only when both present models agree, while a missing or conflicting mutation model clears the model without changing hunk classification. Direct-only evidence remains unchanged. Added focused provenance/agreement/schema-validation regressions and updated mixed-evidence goldens to reflect the deliberate `direct model + mutation unknown` rule.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::agent_trace` — passed, 152/152; `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` — passed; `git diff --check` — passed.
+  - Done checks: mutation-only evidence emits its model and related session (verified — `mutation_only_evidence_emits_mutation_model_and_session`); direct-only output remains byte-identical (verified — `direct_only_evidence_matches_golden_agent_trace` and `direct_only_evidence_equals_direct_only_build_agent_trace`; the `direct_only` golden fixture was unchanged); direct X + mutation X emits X (verified — `combined_evidence_unions_sessions_and_requires_model_agreement`); direct X + mutation Y and direct X + mutation unknown omit `model_id` (verified by the same regression and updated `direct_plus_mutation` / `partial_combined` goldens); related sessions are deduplicated and deterministically ordered (verified by the same regression's `sess-a`, `sess-direct`, `sess-z` union); built payloads validate against the embedded schema (verified by all evidence regressions, including the new cases).
+  - Context impact: local — Agent Trace now consumes provenance already carried by the direct intersection and mutation-AI patch, combining model agreement and session links without changing payload type shapes, schema, hunk classification, or line-change bucketing. Context synchronization will update the Agent Trace generator context with the combined agreement rule; root context remains unchanged unless the mandatory pass finds a contradiction.
+  - Context synchronization: synced
 
 - [ ] T07: `Add end-to-end provenance regressions and synchronize context` (status:todo)
   - Task ID: T07
