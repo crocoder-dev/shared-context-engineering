@@ -92,6 +92,12 @@ alongside `diff_trees`).
   added line is looked up at its exact committed-tree position:
   `MutationAi -> mutation AI coverage`, `MutationNonAi -> resolved non-AI`,
   `Unknown` / missing / content mismatch -> unresolved.
+  Mutation-AI coverage retains the contributing `ScopeId` through this lookup,
+  then resolves its durable scope provenance once per distinct scope. A
+  resolved session is copied to each contributing `TouchedLine`; a mutation-AI
+  hunk receives a model only when every contributing line has the same known
+  model. Missing provenance, a NULL model, or disagreement leaves the hunk
+  model unset without changing its AI classification.
 - **Conservative failure.** A page-query failure truncates history (the window
   is simply smaller and the baseline older). A tree-diff / patch-parse /
   structural-apply failure reloads the affected files to an all-`Unknown`
@@ -133,12 +139,14 @@ no mutation-cursor state.
   `direct_coverage`; only committed lines it does not cover reach mutation
   history. `post_commit_patch_intersections` keeps its direct-only meaning and
   mutation evidence never enters `diff_traces`.
-- **No fabricated provenance.** The mutation-AI patch is target-shaped and
-  carries no model, session, tool, or tool-version metadata. `ScopeId`,
-  `ActorKind`, and `AiExclusive(scope)` are never translated into direct
-  provenance. Hunk model/session and the top-level `tool` object still derive
-  from direct evidence only; mutation-only coverage merely widens `ai` / `mixed`
-  classification. See
+- **No fabricated direct provenance.** The mutation-AI patch is target-shaped
+  and carries only the resolved observational session/model metadata described
+  above; it carries no tool or tool-version metadata. `ScopeId`, `ActorKind`,
+  and `AiExclusive(scope)` are never translated into direct provenance. The
+  current Agent Trace builder still derives hunk model/session and the
+  top-level `tool` object from direct evidence only; mutation-only coverage
+  widens `ai` / `mixed` classification while preserving the resolved metadata
+  for the combined attribution step. See
   [../sce/agent-trace-minimal-generator.md](../sce/agent-trace-minimal-generator.md).
 - **Final persistence.** The single combined Agent Trace (direct + mutation AI
   coverage) is validated against the embedded schema and stored in

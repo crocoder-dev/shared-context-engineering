@@ -1,20 +1,22 @@
 use anyhow::Result;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::checkout::{read_checkout_id, resolve_git_dir};
 use crate::services::mutation_trace::attribution::{
-    exclude_direct_coverage, logical_path, patch_for_locations, MutationAttributionResult,
-    PatchLineLocation,
+    exclude_direct_coverage, logical_path, patch_for_locations,
+    patch_for_locations_with_provenance, MutationAttributionResult, PatchLineLocation,
+    PatchLineProvenance,
 };
 use crate::services::mutation_trace::lineage::{LineProvenance, MutationLineage, TransitionOrigin};
 use crate::services::mutation_trace::store::{
-    AttributionKind, MutationEventPageRow, MutationTraceStore, MUTATION_ATTRIBUTION_PAGE_SIZE,
+    AttributionKind, MutationEventPageRow, MutationTraceStore, ScopeProvenance,
+    MUTATION_ATTRIBUTION_PAGE_SIZE,
 };
-use crate::services::mutation_trace::types::{FailureKind, TreeId, WorktreeId};
+use crate::services::mutation_trace::types::{FailureKind, ScopeId, TreeId, WorktreeId};
 use crate::services::patch::{parse_patch, ParsedPatch, TouchedLineKind};
 
 use super::git_snapshot::GitSnapshotService;
@@ -31,6 +33,11 @@ pub trait MutationEventPageSource {
         revision_cursor: Option<u64>,
         requested_limit: usize,
     ) -> Result<Vec<MutationEventPageRow>>;
+
+    fn load_scope_provenance(&self, scope_id: &ScopeId) -> Result<Option<ScopeProvenance>> {
+        let _ = scope_id;
+        Ok(None)
+    }
 }
 
 impl MutationEventPageSource for MutationTraceStore<'_> {
@@ -46,6 +53,10 @@ impl MutationEventPageSource for MutationTraceStore<'_> {
             revision_cursor,
             requested_limit,
         )
+    }
+
+    fn load_scope_provenance(&self, scope_id: &ScopeId) -> Result<Option<ScopeProvenance>> {
+        MutationTraceStore::load_scope_provenance(self, scope_id)
     }
 }
 
@@ -145,7 +156,7 @@ where
             &mut state,
         ))
     };
-    finish(&target, lineage.as_ref(), &state)
+    finish(&target, lineage.as_ref(), &state, page_source)
 }
 
 struct ReplayState {
@@ -157,13 +168,17 @@ struct ReplayState {
     barrier: Option<MutationAttributionBarrier>,
 }
 
-fn finish(
+fn finish<P>(
     target: &ParsedPatch,
     lineage: Option<&MutationLineage>,
     state: &ReplayState,
-) -> BoundedMutationAttribution {
+    page_source: &P,
+) -> BoundedMutationAttribution
+where
+    P: MutationEventPageSource + ?Sized,
+{
     let result = match lineage {
-        Some(lineage) => project(target, lineage),
+        Some(lineage) => project(target, lineage, page_source),
         None => MutationAttributionResult {
             mutation_ai_patch: empty_patch(),
             resolved_non_ai_patch: empty_patch(),
@@ -347,8 +362,15 @@ fn transition_origin(row: &MutationEventPageRow) -> TransitionOrigin {
     }
 }
 
-fn project(target: &ParsedPatch, lineage: &MutationLineage) -> MutationAttributionResult {
-    let mut ai = BTreeSet::new();
+fn project<P>(
+    target: &ParsedPatch,
+    lineage: &MutationLineage,
+    page_source: &P,
+) -> MutationAttributionResult
+where
+    P: MutationEventPageSource + ?Sized,
+{
+    let mut ai: BTreeMap<PatchLineLocation, ScopeId> = BTreeMap::new();
     let mut non_ai = BTreeSet::new();
     let mut unresolved = BTreeSet::new();
 
@@ -366,8 +388,8 @@ fn project(target: &ParsedPatch, lineage: &MutationLineage) -> MutationAttributi
                     continue;
                 }
                 match lineage.provenance_at(path, line.line_number, &line.content) {
-                    LineProvenance::MutationAi { .. } => {
-                        ai.insert(location);
+                    LineProvenance::MutationAi { scope_id } => {
+                        ai.insert(location, scope_id);
                     }
                     LineProvenance::MutationNonAi => {
                         non_ai.insert(location);
@@ -380,8 +402,31 @@ fn project(target: &ParsedPatch, lineage: &MutationLineage) -> MutationAttributi
         }
     }
 
+    let scope_provenance = ai
+        .values()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(|scope_id| {
+            let provenance = page_source.load_scope_provenance(scope_id).ok().flatten();
+            (scope_id.clone(), provenance)
+        })
+        .collect::<BTreeMap<_, _>>();
+    let ai_with_provenance = ai
+        .into_iter()
+        .map(|(location, scope_id)| {
+            let provenance = scope_provenance.get(&scope_id).and_then(Option::as_ref);
+            (
+                location,
+                PatchLineProvenance {
+                    session_id: provenance.map(|value| value.session_id.clone()),
+                    model_id: provenance.and_then(|value| value.model_id.clone()),
+                },
+            )
+        })
+        .collect();
+
     MutationAttributionResult {
-        mutation_ai_patch: patch_for_locations(target, &ai),
+        mutation_ai_patch: patch_for_locations_with_provenance(target, &ai_with_provenance),
         resolved_non_ai_patch: patch_for_locations(target, &non_ai),
         unresolved_patch: patch_for_locations(target, &unresolved),
     }
