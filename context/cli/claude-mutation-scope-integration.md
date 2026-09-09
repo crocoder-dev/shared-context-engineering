@@ -106,16 +106,17 @@ can form. The adapter may call `checkout::resolve_git_dir` but not
 
 ## PreToolUse: write-ahead Start, fail-closed
 
-For a tracked mutation-capable tool, `handle_pre_tool_use` runs:
-explicit-background-shell check -> resolve `git_dir` -> recovery barrier ->
-write-ahead `Start` — persist `phase=pending_start`, call the seam with
-`{"operation":"start","scope_id":<derived>,"event_id":<scope>|start,"actor_kind":"claude_code"}`,
-persist `pending_start -> active`, return empty success. The seam receives the
-raw `cwd` as its `repository_root` and SCE derives the `WorktreeId`, so durable
-generic-ingress `Start` is reached before the hook returns success to Claude.
+For a tracked mutation-capable tool, `handle_pre_tool_use` runs: explicit-background-shell check -> resolve `git_dir` -> recovery barrier ->
+write-ahead `Start` — persist `phase=pending_start`, resolve the canonical
+`cc_<session>` and the exact model-state key (`agent_id = ""` for the main
+agent), call the seam with the optional provenance snapshot, persist
+`pending_start -> active`, return empty success. The resolver is injectable for tests; production reads `claude_model_state_by_session_and_agent` from the
+repository Agent Trace DB. Missing state or resolver errors become a null model
+and never deny the mutation-capable tool. The seam receives the raw `cwd` as its
+`repository_root` and SCE derives the `WorktreeId`, so durable generic-ingress
+`Start` is reached before the hook returns success to Claude.
 
-**Fail-closed via Claude's deny decision.** Claude treats ordinary non-2 hook
-failures as non-blocking, so a generic non-zero exit would let the tool run
+**Fail-closed via Claude's deny decision.** Claude treats ordinary non-2 hook failures as non-blocking, so a generic non-zero exit would let the tool run
 without its `Start`. Therefore **any** failure in the mutation-capable
 `PreToolUse` path — state-allocation failure, seam `Start` failure, unresolvable
 `cwd`, or a barrier denial — returns (`Ok`, never `Err`):
@@ -126,9 +127,10 @@ without its `Start`. Therefore **any** failure in the mutation-capable
 
 The detailed error is logged via `Logger::warn`
 (`sce.hooks.claude_mutation_scope.pre_tool_use_fail_closed`); Claude's deny
-reason never carries it. The adapter never returns `allow`, so SCE cannot bypass
-Claude's permission system. A read-only or `Agent` `PreToolUse` returns empty
-stdout, no scope.
+reason never carries it. Model-state lookup failures are logged separately as
+model-unavailable metadata and do not enter this deny path. The adapter never
+returns `allow`, so SCE cannot bypass Claude's permission system. A read-only or
+`Agent` `PreToolUse` returns empty stdout, no scope.
 
 ## PostToolUse / PostToolUseFailure: close the scope
 
@@ -230,18 +232,16 @@ generated Claude settings state.
 
 ## Dependency boundary
 
-Dependency direction is strictly `claude_mutation_scope -> hooks::mutation_scope
+Dependency direction remains `claude_mutation_scope -> hooks::mutation_scope
 -> mutation_trace::runtime`. Production Claude-adapter code (outside
-`#[cfg(test)]` in `claude_mutation_scope/`) imports no
-`crate::services::mutation_trace::{runtime,protocol,store}` and names no
-`RepositoryAgentTraceDb`, `WorktreeId`, or `GitSnapshotService`; its only
-dependency into the mutation stack is the single
-`super::mutation_scope::run_mutation_scope_from_payload` seam import — the
-generic-ingress entrypoint made `pub(crate)` by this plan (T05), reused verbatim
-with no second `RuntimeBoundary` path and no spawned `sce` subprocess, inheriting
-that seam's strict parser, `RuntimeBoundary` mapping, lazy DB acquisition,
-durable-completion error classification, and empty-stdout semantics. T08 proves
-the whole path against real Git repositories and a real Agent Trace DB.
+`#[cfg(test)]`) imports no mutation-trace module and names no
+`RepositoryAgentTraceDb`, `WorktreeId`, or `GitSnapshotService`. Its only
+mutation-stack dependency is the reused
+`super::mutation_scope::run_mutation_scope_from_payload` seam, with no second
+`RuntimeBoundary` path or spawned `sce` subprocess. The production resolver
+uses the hooks-layer Agent Trace DB opener only for the exact
+`claude_model_state` read; the seam retains strict parsing, lazy DB acquisition,
+durable-completion classification, and empty-stdout semantics.
 
 ## Related context
 

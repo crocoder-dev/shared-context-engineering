@@ -788,7 +788,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: local — one producer now populates the optional `Start` field T02 already accepts. No storage, ingress, runtime, attribution, or Agent Trace behavior changed, and the pure protocol and Quint model are untouched. T03 documents the Codex producer half of the provenance path in `context/cli/codex-mutation-scope-integration.md` and extends the producer section of `context/cli/mutation-scope-provenance.md`; the storage semantics stay T01's and the admission-bounded creation rule stays T02's. T04 does the same for Claude, T05–T06 consume the stored rows, and T07 still performs the final cross-system synchronization pass.
   - Context synchronization: synced
 
-- [ ] T04: `Populate Claude scope provenance` (status:todo)
+- [x] T04: `Populate Claude scope provenance` (status:done)
   - Task ID: T04
   - Scope: In — introduce the injectable `ClaudeModelStateResolver` seam
     (`(repository_root, canonical_session_id, agent_id) -> Result<Option<String>>`;
@@ -814,7 +814,13 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `mutation-scope Start could not be established`; a `PostModelSwitch` applied
     after a scope is created leaves that scope's provenance row byte-identical.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::claude_mutation_scope`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::claude_model_state`.
-  - Context synchronization: pending
+  - Completed: 2026-09-09
+  - Files changed: `cli/src/services/hooks/claude_mutation_scope/mod.rs`
+  - Result: Added the injectable `ClaudeModelStateResolver` seam with a production implementation backed by `claude_model_state_by_session_and_agent`. Claude `PreToolUse` now canonicalizes the session to `cc_`, resolves the exact agent ID (`""` for the main agent), normalizes the resolved model, and attaches the snapshot to the generic `start` payload. Resolver errors and unavailable models become `model_id = NULL` while `Start` proceeds; resolver failures are logged with a model-unavailable event. The state-root test path uses the same production lookup against its test database. Added focused injected-resolver tests for main/subagent lookup and null-model degradation, plus a real repository regression proving a later `PostModelSwitch` cannot rewrite existing scope provenance. The generic ingress and Claude lifecycle/cleanup paths remain unchanged.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::claude_mutation_scope` — passed, 111/111; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::claude_model_state` — passed, 12/12; `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` — passed.
+  - Done checks: the resolver is injected through the Claude adapter's internal driver seam and exercised without a real database (verified — `pre_tool_use_resolves_main_and_subagent_model_state_exactly_at_admission`); main-agent resolution uses `(cc_session-1, "")`, subagent resolution uses `(cc_session-1, "agent-1")`, and each payload carries the matching model (verified by the same test); a missing exact subagent row does not inherit the main-agent model (verified — `subagent_without_exact_model_state_does_not_inherit_main_model`); absent exact model state and resolver infrastructure errors both preserve `cc_session-1`, emit `model_id: null`, and allow successful `Start` (verified — `missing_or_failed_model_resolution_keeps_session_provenance_and_allows_start`); production lookup reads the exact Claude model-state row and a subsequent `PostModelSwitch` leaves the stored provenance row unchanged (verified — `test18_model_switch_does_not_rewrite_scope_provenance`); existing Claude model-state behavior remains passing in the required 12-test suite.
+  - Context impact: local — Claude is now the second producer of the optional `Start` provenance field. No storage, generic ingress, mutation protocol, attribution, or Agent Trace behavior changed. Context synchronization extended `context/cli/claude-mutation-scope-integration.md` and `context/cli/mutation-scope-provenance.md` with the injectable resolver, exact agent-scoped snapshot, no-inheritance rule, and model-unavailable degradation semantics.
+  - Context synchronization: synced
 
 - [ ] T05: `Preserve ScopeId provenance through post-commit mutation reconstruction` (status:todo)
   - Task ID: T05
