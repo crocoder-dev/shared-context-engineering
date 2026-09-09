@@ -91,6 +91,30 @@ the boundary already names the scope; the
 [runtime](mutation-scope-runtime.md) composes the stored `ScopeProvenance` from
 both.
 
+## Producers
+
+Provenance is supplied by the harness adapter, never by the generic ingress,
+which stays harness-neutral. Each producer canonicalizes its own session and
+normalizes its own model before the `Start` leaves the adapter.
+
+The [Codex adapter](codex-mutation-scope-integration.md) reads both values off
+the same tracked `PreToolUse` payload it already parses: `session_id` becomes
+the `cx_`-prefixed canonical session, and `model` is normalized (trimmed, blank
+means absent). Both tracked tools — `Bash` and `apply_patch` — establish `Start`
+through one path, so both carry provenance. That `model` read is deliberately
+the one lenient field in an otherwise strict parser: an absent, `null`, blank,
+or non-string `model` yields no model rather than a rejected event, because the
+model is descriptive metadata and a malformed one must never fail-closed-deny a
+mutation-capable tool. Untracked and delegation tools never reach the `Start`
+path, so they establish neither a scope nor provenance.
+
+A Codex session-identity conflict is unreachable in practice: the
+`cx-tool-v1|…` scope identity embeds the session length-prefixed, so one
+`scope_id` cannot name two sessions.
+
+The Claude adapter is not yet wired. Until it is, Claude scopes are admitted
+carrying no provenance, which is the first-class supported case above.
+
 ## Durable `Start` ordering
 
 A `Start` carrying provenance runs these steps in order, inside the existing
