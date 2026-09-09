@@ -7,11 +7,10 @@ the mutation stack is the in-process
 `hooks::mutation_scope::run_mutation_scope_from_payload` seam; it does not call
 runtime, protocol, or database modules directly.
 
-The adapter was tested against codex-cli **0.153.4**, upstream
-`openai/codex` tag `rust-v0.153.4`, commit
-`3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`; raw lifecycle evidence is in
-[`codex_mutation_scope/fixtures`](../../cli/src/services/hooks/codex_mutation_scope/fixtures/)
-and `fixtures/NOTES.md`.
+The adapter was tested against codex-cli **0.153.4** (upstream `openai/codex`
+tag `rust-v0.153.4`, commit `3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`); raw
+lifecycle evidence is in `fixtures/NOTES.md` and
+[`codex_mutation_scope/fixtures`](../../cli/src/services/hooks/codex_mutation_scope/fixtures/).
 
 ## Scope model and coverage
 
@@ -89,14 +88,16 @@ cx-tool-v1|n=<attempt_seq>|s=<len>:<session_id>|a=<len>:<agent_id>|t=<len>:<tool
 ```
 
 The agent ID is empty for the main agent; event IDs are `<scope>|start` and
-`<scope>|close`. Live duplicates reuse attempt, scope, and event IDs, while a
-later execution never reuses a terminal scope, even if Codex reuses
-`tool_use_id`.
+`<scope>|close`. Live duplicates reuse attempt, scope, and event IDs; a later
+execution never reuses a terminal scope, even if Codex reuses `tool_use_id`.
 
 The raw hook `cwd` is passed as `repository_root`; the runtime derives Git
 directory, checkout identity, snapshots, and revisions. The adapter never
 constructs `worktree_id`, and sends `actor_kind: "codex"` through the existing
 seam without spawning `sce`.
+
+A tracked `Start` also carries scope provenance (the `cx_`-prefixed session and
+normalized `model`); see [mutation-scope provenance](mutation-scope-provenance.md).
 
 ## Write-ahead admission and failure posture
 
@@ -105,7 +106,7 @@ Tracked `PreToolUse` follows this ordering:
 ```text
 boundary lock
   -> state lock -> allocate sequence -> persist pending_start
-  -> generic ingress Start(scope, <scope>|start, codex)
+  -> generic ingress Start(scope, <scope>|start, codex, provenance)
   -> state lock -> mark active
   -> empty stdout / Codex continue
 ```
@@ -230,14 +231,13 @@ that excluded tools are read-only, harmless, or immediately detectable.
 
 ## Verification evidence
 
-T06 exercised the adapter through real temporary Git repositories, real
-repository Agent Trace databases, and the production entrypoint. The adapter
-suite passed with 146 tests; mutation-trace passed with 336. Regressions cover
-write-ahead admission, duplicate and reused
-identities, tracked success/failure, all cleanup signals, linked worktrees,
-MCP pass-through and mutate-then-error behavior, parallel MCP, tracked-tool plus
-MCP overlap, arbitrary-hook denial recovery, crash points, and both directions
-of the boundary-aware Codex attribution rule.
+The adapter is exercised through real temporary Git repositories, real
+repository Agent Trace databases, and the production entrypoint. Regressions
+cover write-ahead admission, duplicate and reused identities, tracked
+success/failure, cleanup signals, linked worktrees, MCP pass-through,
+mutate-then-error and parallel MCP, tracked-tool plus MCP overlap, denial
+recovery, crash points, both directions of the boundary-aware attribution rule,
+and scope provenance for both tracked tools.
 
 The frozen protocol/Quint/runtime baseline and the Agent Trace SQL/schema
 boundary remain unchanged after the accepted D14 follow-up:
