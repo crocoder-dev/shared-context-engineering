@@ -822,7 +822,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: local — Claude is now the second producer of the optional `Start` provenance field. No storage, generic ingress, mutation protocol, attribution, or Agent Trace behavior changed. Context synchronization extended `context/cli/claude-mutation-scope-integration.md` and `context/cli/mutation-scope-provenance.md` with the injectable resolver, exact agent-scoped snapshot, no-inheritance rule, and model-unavailable degradation semantics.
   - Context synchronization: synced
 
-- [ ] T05: `Preserve ScopeId provenance through post-commit mutation reconstruction` (status:todo)
+- [x] T05: `Preserve ScopeId provenance through post-commit mutation reconstruction` (status:done)
   - Task ID: T05
   - Scope: In — keep the `scope_id` alongside each AI-selected
     `PatchLineLocation` in `runtime/mutation_attribution.rs`; resolve
@@ -841,7 +841,13 @@ Persist this field in every plan; this is durable plan state, not chat state:
     multi-session hunks record each line's own session; existing AI / non-AI /
     unresolved classification counts in the current tests are unchanged.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::mutation_attribution`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::`.
-  - Context synchronization: pending
+  - Completed: 2026-09-09
+  - Files changed: `cli/src/services/mutation_trace/attribution.rs`; `cli/src/services/mutation_trace/runtime/mutation_attribution.rs`; `cli/src/services/mutation_trace/runtime/mutation_attribution/tests.rs`
+  - Result: Preserved `ScopeId` while projecting mutation-AI locations, loaded each distinct scope's `ScopeProvenance` through the mutation event source seam, and enriched the mutation-AI patch with per-line session IDs. Added conservative per-hunk model agreement: a known model is emitted only when every selected mutation-AI line in the hunk has the same known model; missing provenance, NULL models, and disagreements leave the hunk model unset without changing AI classification. Direct coverage exclusion and non-AI/unresolved projections remain unchanged.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::runtime::mutation_attribution` — passed, 25/25; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::` — passed, 354/354; `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml` — passed.
+  - Done checks: single-scope provenance and distinct-scope read-once behavior are covered by `a_mutation_ai_hunk_carries_scope_session_and_model_provenance` and `mutation_ai_lines_keep_their_sessions_and_agreeing_models_across_scopes`; same-model and per-line multi-session behavior is covered by `mutation_ai_lines_keep_their_sessions_and_agreeing_models_across_scopes`; conflicting models are covered by `mutation_ai_hunk_omits_a_conflicting_model_but_keeps_line_sessions`; NULL and missing provenance are covered by `missing_or_unknown_scope_provenance_does_not_downgrade_ai_lines` and `a_surviving_ai_mutation_line_is_attributed`; existing classification behavior remains green in the 354-test mutation-trace suite.
+  - Context impact: local — mutation reconstruction now consumes observational scope provenance and enriches only the mutation-AI projection. The mutation algorithm, bounded replay, direct-coverage exclusion, lineage semantics, Agent Trace construction, protocol, and schema are unchanged. Synchronized `context/cli/mutation-trace-agent-attribution.md` with the resolved session/model projection and conservative model-agreement behavior; the five mandatory root context files were verified unchanged.
+  - Context synchronization: synced
 
 - [ ] T06: `Emit mutation-derived provenance in Agent Trace` (status:todo)
   - Task ID: T06
