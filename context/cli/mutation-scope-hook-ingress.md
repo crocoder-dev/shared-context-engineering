@@ -71,9 +71,7 @@ The parser (`parse_mutation_scope_payload`) is strict and rejects, each with a
 - a `provenance` key on any operation but `start`, a non-object `provenance`, an
   unexpected `provenance.<key>`, or a blank `session_id` / `model_id` inside it.
 
-The hook transport remains local to `mutation_scope.rs`; no serde
-representation is added to the mutation-domain types.
-
+The hook transport remains local to `mutation_scope.rs`; no serde representation is added to the mutation-domain types. End-to-end regressions verify that this remains the harness-neutral transport: Claude and Codex supply canonical provenance at `Start`, while the ingress only forwards it and does not decide authorship or mutation attribution.
 ## Operation mapping
 
 `start` / `advance` / `close` build the matching `RuntimeBoundary` variant,
