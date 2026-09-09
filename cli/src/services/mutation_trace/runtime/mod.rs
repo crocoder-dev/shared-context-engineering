@@ -13,6 +13,7 @@ mod tests;
 #[allow(unused_imports)]
 pub(crate) use coordinator::{
     coordinate, CoordinateError, CoordinateOutcome, ExternalTaintOperation, RuntimeBoundary,
+    StartProvenance,
 };
 #[allow(unused_imports)]
 pub(crate) use git_snapshot::{resolve_git_dir, resolve_worktree_id};
