@@ -48,6 +48,7 @@ pub mod codex_mutation_scope;
 pub mod command;
 pub mod lifecycle;
 pub mod mutation_scope;
+pub mod opencode_mutation_scope;
 
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
@@ -107,6 +108,7 @@ pub enum HookSubcommand {
     MutationScope,
     ClaudeMutationScope,
     CodexMutationScope,
+    OpenCodeMutationScope,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -249,6 +251,9 @@ fn run_hooks_subcommand_in_repo(
         }
         HookSubcommand::CodexMutationScope => {
             codex_mutation_scope::run_codex_mutation_scope_subcommand(logger)
+        }
+        HookSubcommand::OpenCodeMutationScope => {
+            opencode_mutation_scope::run_opencode_mutation_scope_subcommand(logger)
         }
     }
 }
@@ -1089,6 +1094,15 @@ fn normalize_claude_model_id(model: &str) -> Option<String> {
 }
 
 fn normalize_codex_model_id(model: &str) -> Option<String> {
+    let normalized = model.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    Some(normalized.to_string())
+}
+
+fn normalize_opencode_model_id(model: &str) -> Option<String> {
     let normalized = model.trim();
     if normalized.is_empty() {
         return None;
@@ -1973,6 +1987,7 @@ fn hook_runtime_invocation_name(subcommand: &HookSubcommand) -> &'static str {
         HookSubcommand::MutationScope => "mutation-scope runtime invocation",
         HookSubcommand::ClaudeMutationScope => "Claude mutation-scope runtime invocation",
         HookSubcommand::CodexMutationScope => "Codex mutation-scope runtime invocation",
+        HookSubcommand::OpenCodeMutationScope => "OpenCode mutation-scope runtime invocation",
     }
 }
 
@@ -3689,6 +3704,27 @@ mod tests {
     #[test]
     fn normalize_codex_model_id_returns_none_for_blank_model_ids() {
         assert_eq!(normalize_codex_model_id("   "), None);
+    }
+
+    #[test]
+    fn normalize_opencode_model_id_preserves_qualified_and_unqualified_ids() {
+        for model in [
+            "opencode/big-pickle",
+            "anthropic/claude-sonnet-4",
+            "custom-model",
+        ] {
+            assert_eq!(normalize_opencode_model_id(model).as_deref(), Some(model));
+        }
+        assert_eq!(
+            normalize_opencode_model_id("  opencode/big-pickle  ").as_deref(),
+            Some("opencode/big-pickle")
+        );
+    }
+
+    #[test]
+    fn normalize_opencode_model_id_returns_none_for_blank_model_ids() {
+        assert_eq!(normalize_opencode_model_id(""), None);
+        assert_eq!(normalize_opencode_model_id("   "), None);
     }
 
     #[test]

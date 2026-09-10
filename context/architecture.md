@@ -6,11 +6,15 @@ The mutation-scope runtime now has two concrete lifecycle adapters: Claude Code
 and Codex. Codex is implemented in
 `cli/src/services/hooks/codex_mutation_scope/` and reaches the generic ingress
 through its in-process seam; its hidden command is registered by the shared
-Codex setup/merge/doctor path. OpenCode and Pi remain unwired. The Codex
-adapter's tracked-tool coverage and MCP boundary are documented in
+Codex setup/merge/doctor path. OpenCode and Pi remain unwired at the runtime
+seam. The Codex adapter's tracked-tool coverage and MCP boundary are documented
+in
 [`context/cli/codex-mutation-scope-integration.md`](cli/codex-mutation-scope-integration.md).
-OpenCode's tool lifecycle has been frozen (evidence only, no adapter) against
-`@opencode-ai/plugin@1.15.4` and OpenCode CLI 1.15.4 in
+OpenCode's tool lifecycle has been frozen against `@opencode-ai/plugin@1.15.4`
+and OpenCode CLI 1.15.4, and its adapter's identity/classification/encoding/
+provenance layer plus the hidden `sce hooks opencode-mutation-scope` command now
+exist in `cli/src/services/hooks/opencode_mutation_scope/` — parsing only, with
+no ingress-seam call, durable state, or setup registration yet. See
 [`context/cli/opencode-mutation-scope-integration.md`](cli/opencode-mutation-scope-integration.md).
 
 Both adapters attach optional `ScopeProvenance` at admission. The verified
