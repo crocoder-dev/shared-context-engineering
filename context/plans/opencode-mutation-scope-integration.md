@@ -630,7 +630,7 @@ before the first load-bearing probe.
 
 ## Task stack
 
-- [ ] T01: `Freeze OpenCode mutation lifecycle evidence` (status:todo)
+- [x] T01: `Freeze OpenCode mutation lifecycle evidence` (status:done)
   - Task ID: T01
   - Scope: In — reproduce the exact OpenCode lifecycle relevant to mutation
     attribution and commit the fixtures/report under
@@ -698,6 +698,24 @@ before the first load-bearing probe.
 
     Out — production adapter behavior; any Rust, TypeScript, Pkl, Quint, SQL,
     schema, or generated-file change.
+  - Credential-blocked source-only evidence: for a lifecycle case that cannot be
+    exercised live because the pinned OpenCode runtime requires unavailable
+    provider credentials, T01 may accept `PROVEN-BY-SOURCE` evidence only when:
+
+    1. the exact execution path is established from the pinned upstream source;
+    2. the source version exactly matches the frozen OpenCode CLI/plugin version;
+    3. the missing live probe is explicitly recorded in the T01 evidence report;
+    4. the source evidence is sufficient for the lifecycle/design decision being
+       frozen; and
+    5. any acceptance criterion requiring later production-path or live
+       integration coverage remains outstanding and is not considered satisfied
+       by the source-only evidence.
+
+    This exception is narrow. It applies only to cases genuinely blocked by
+    external/provider credential availability and only where the exact
+    pinned-source execution path is sufficient to prove the lifecycle property.
+    It does not permit "source inspection may replace live probes whenever
+    convenient", and it does not relax any acceptance criterion.
   - Dependencies: none
   - Done when: every load-bearing lifecycle assumption behind D1 through D11 in
     the `## Design` section has a `PROVEN`, `DOCUMENTED — NON-LOAD-BEARING`, or
@@ -711,7 +729,106 @@ before the first load-bearing probe.
     silently changing a version.
   - Verify: replay/inspect all probe fixtures; compare load-bearing behavior
     against pinned upstream source and cite it in the report.
-  - Context synchronization: pending
+  - Completed: 2026-09-10
+  - Files changed (vs baseline `cc2fe862`):
+    - `cli/src/services/hooks/opencode_mutation_scope/fixtures/NOTES.md` (new — the report)
+    - `cli/src/services/hooks/opencode_mutation_scope/fixtures/captures/*.jsonl`
+      (new — 23 instrumented hook/event captures)
+    - `cli/src/services/hooks/opencode_mutation_scope/fixtures/probe-plugins/`
+      (new — `capture.ts`, `order-first.ts`, `order-last.ts`, `customtool.ts`,
+      `opencode.json`; reference harness, comment-free)
+  - Result: Probed OpenCode CLI `opencode-ai@1.15.4` + `@opencode-ai/plugin@1.15.4`
+    (identical versions — no cross-version gap; CLI version selected and recorded
+    per the version policy, mirroring the Codex T01 "installed version" precedent)
+    against pinned upstream `sst/opencode` tag `v1.15.4`
+    (`2b92c5677e830e95d34fc3d5664a69297d2d0b51`), Linux `x86_64` / NixOS 26.05.
+    Probes driven with a throwaway git repo, an isolated `XDG_*` data/config tree
+    (the operator's shared `opencode.db` had been migrated by OpenCode 1.18.x and
+    threw `NOT NULL constraint failed: session_message.seq` against the 1.15.4
+    binary — confirming OpenCode persistence is global-user-scoped and
+    schema-version-coupled, not checkout-local), model `opencode/big-pickle`.
+    All of D1–D11 are `PROVEN` (D5's `apply_patch` leg is PROVEN-by-source:
+    identical `resolveTools` registry path to the live-proven `write`/`edit`,
+    with the patch gate making `apply_patch` and `edit`/`write` mutually
+    exclusive per session by model id). Probe A (`tool.execute.before` throw
+    blocks the tool), Probe B (`shell.env` throw blocks the child spawn), and
+    Probe C (earlier-plugin synchronous throw blocks later plugins + the tool)
+    are each `PROVEN`. Maximal safe v1 tracked set confirmed:
+    `{bash, write, edit, apply_patch}` as tool names (`write`/`edit` vs
+    `apply_patch` mutually exclusive per session), `task` as Delegation,
+    everything else (incl. MCP and plugin tools) Untracked. Bash Start boundary
+    is `shell.env` (fires after OpenCode permission eval, before spawn — rejected
+    bash never reaches it); file-tool Start is write-ahead `tool.execute.before`;
+    `tool.execute.after` is the Close boundary and fires for success / non-zero
+    exit / exit 127 / tool-enforced timeout but NOT for permission rejection,
+    interrupt, or internal validation failure. SIGINT/SIGKILL leave the scope
+    with zero terminal hook and zero cleanup event, and orphaned child processes
+    keep mutating after OpenCode exits — so no TTL is safe (D11) and D3's
+    confirmation-required rule is the correctness boundary. Concurrent bash
+    scopes in one session (distinct `callID`) genuinely overlap — no same-session
+    predecessor sweep (D9). Model provenance is available synchronously via
+    `chat.params` per turn (`providerID` + `api.id`), keyed by `sessionID`
+    (subagents get their own child-session `chat.params`); absent evidence →
+    `NULL`. **No soundness failure and no version failure — no re-planning gate
+    triggered.**
+  - Verify outcomes:
+    - Replay/inspect all probe fixtures — DONE: 23 committed captures, every line
+      valid JSONL, every `captures/*.jsonl` referenced in `NOTES.md` present;
+      barrier probes re-inspected (Probe A: `order-last` before-hook never runs +
+      `probeA.txt` absent; Probe B: `order-last` `shell.env` never runs +
+      `probeB.txt` absent; Probe C: only `order-first` before-hook runs +
+      `probeC.txt` absent).
+    - Compare load-bearing behavior against pinned upstream source and cite it —
+      DONE: every D1–D11 disposition in `NOTES.md` cites `packages/...` paths at
+      `v1.15.4` (`plugin/index.ts` trigger loop, `session/prompt.ts`
+      `resolveTools`, `tool/shell.ts` L412/L482/L628, `tool/write.ts`,
+      `tool/edit.ts`, `tool/apply_patch.ts`, `permission/index.ts`,
+      `session/llm.ts` L162, `config/plugin.ts`, `cli/cmd/run/runtime.lifecycle.ts`).
+    - `git diff --cached --check` — CLEAN (29 files, +2337, additions only, all
+      under the fixtures dir).
+  - Context impact: additive. New durable evidence artifact under
+    `cli/src/services/hooks/opencode_mutation_scope/fixtures/`. No production
+    code, no module wiring (`mod.rs` is T03), no `flake.nix` change (the dir is
+    inert until T03 adds tests + the `workspaceSrc` fileset entry — noted in
+    `NOTES.md`). New context doc
+    `context/cli/opencode-mutation-scope-integration.md` is expected during
+    synchronization; `context/cli/mutation-scope-hook-ingress.md`,
+    `context/cli/mutation-trace-protocol.md`, `context/architecture.md`,
+    `context/context-map.md`, `context/glossary.md`, `context/overview.md` to be
+    verified.
+  - Deviations / assumptions accepted:
+    - OpenCode CLI version = `1.15.4` (installed into the probe runtime, matching
+      the `@opencode-ai/plugin` pin), selected and recorded before the first
+      load-bearing probe per the version policy.
+    - `apply_patch` could not be exercised live: the patch gate needs a
+      `gpt-`-class model id, and no such OpenCode credential works here
+      (`openai/*` = ChatGPT/Codex account rejecting every model;
+      `opencode-go/gpt-5.6-luna` = insufficient balance; free/ollama models have
+      no `gpt-` id). Its lifecycle is PROVEN-by-source as identical to
+      `write`/`edit`. Live `apply_patch` fixtures for AC2 are an outstanding item
+      for T03–T06 before `/validate` — a credential gap, not a soundness gap.
+  - Task result — `apply_patch` evidence exception (recorded under the
+    *Credential-blocked source-only evidence* rule above):
+
+    ```text
+    apply_patch:
+      live lifecycle probe: unavailable because the pinned v1.15.4 runtime exposes
+      apply_patch only to an eligible gpt-* model and the probe environment had no
+      working credential for such a model;
+
+      lifecycle evidence: PROVEN-BY-SOURCE against pinned upstream
+      sst/opencode v1.15.4;
+
+      established path:
+        tool.execute.before
+        -> apply_patch validation / permission / mutation
+        -> tool.execute.after only on successful completion;
+
+      remaining requirement:
+        live/production-path apply_patch coverage is still required before
+        /validate where demanded by AC2 / T03-T06.
+    ```
+  - Context synchronization: synced
 
 - [ ] T02: `Generalize boundary-confirmed attribution to OpenCode` (status:todo)
   - Task ID: T02
