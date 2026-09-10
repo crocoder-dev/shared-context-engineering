@@ -513,6 +513,9 @@ fn convert_hooks_subcommand_request(
         cli_schema::HooksSubcommand::CodexMutationScope => {
             Ok(services::hooks::HookSubcommand::CodexMutationScope)
         }
+        cli_schema::HooksSubcommand::OpenCodeMutationScope => {
+            Ok(services::hooks::HookSubcommand::OpenCodeMutationScope)
+        }
     }
 }
 
@@ -658,6 +661,31 @@ mod tests {
         assert!(
             !help.contains("codex-mutation-scope"),
             "AC1: codex-mutation-scope must not be listed in `sce hooks --help`, got: {help}"
+        );
+    }
+
+    #[test]
+    fn opencode_mutation_scope_hook_parses_to_hook_subcommand() {
+        let command = parse(&["sce", "hooks", "opencode-mutation-scope"]);
+
+        let RuntimeCommand::Hooks(command) = command else {
+            panic!("expected hooks command");
+        };
+
+        assert_eq!(
+            command.subcommand,
+            services::hooks::HookSubcommand::OpenCodeMutationScope
+        );
+    }
+
+    #[test]
+    fn opencode_mutation_scope_hook_is_hidden_from_hooks_help() {
+        let help =
+            cli_schema::render_help_for_path(&["hooks"]).expect("hooks help should be renderable");
+
+        assert!(
+            !help.contains("opencode-mutation-scope"),
+            "opencode-mutation-scope must not be listed in `sce hooks --help`, got: {help}"
         );
     }
 
