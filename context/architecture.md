@@ -18,10 +18,14 @@ opencode-mutation-scope`) now drives the same in-process seam with a full
 and a generation-tracked recovery barrier. Exact `ToolError` evidence persists
 the doomed attempt as `PendingAbandon` before any cleanup seam call and the
 attempt is removed only after the generic `abandon` succeeds, so a transient
-cleanup failure is retried rather than losing the scope. It is **not yet
-generated as a plugin or registered by `sce setup`**, so no real OpenCode
-session reaches it; Pi has no adapter. See
-[`context/cli/opencode-mutation-scope-integration.md`](cli/opencode-mutation-scope-integration.md).
+cleanup failure is retried rather than losing the scope. A generated
+`sce-mutation-scope.ts` transport plugin (`config/lib/mutation-scope-plugin/`,
+registered last in the OpenCode `plugin` array) is installed as the final
+OpenCode plugin by `sce setup` — the config merge appends it after arbitrary
+user plugins and `sce doctor` flags any non-last position — so real OpenCode
+sessions now reach the adapter; Pi has no adapter. See
+[`context/cli/opencode-mutation-scope-integration.md`](cli/opencode-mutation-scope-integration.md)
+and [`context/cli/opencode-mutation-scope-adapter-lifecycle.md`](cli/opencode-mutation-scope-adapter-lifecycle.md).
 
 All three adapters attach optional `ScopeProvenance` at admission (OpenCode
 stamps `oc_<sessionID>` and the observed model, else `NULL`). The verified

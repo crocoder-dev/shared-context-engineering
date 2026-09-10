@@ -4,8 +4,8 @@ The crate-visible surface of `cli/src/services/mutation_trace/runtime/` and the 
 
 Built by the `mutation-scope-runtime-integration` plan (`context/plans/mutation-scope-runtime-integration.md`). The generic
 [`sce hooks mutation-scope` ingress](mutation-scope-hook-ingress.md), the shipped
-Claude Code and Codex adapters, and the OpenCode adapter (lifecycle wired, no
-plugin/`sce setup` registration yet; Pi: none) drive this seam. This file
+Claude Code, Codex, and OpenCode adapters (OpenCode reachable in production via a
+generated plugin installed last by `sce setup`; Pi: none) drive this seam. This file
 records the adapter contract; the harness-specific mappings are in
 [`codex-mutation-scope-integration.md`](codex-mutation-scope-integration.md) and
 [`opencode-mutation-scope-integration.md`](opencode-mutation-scope-integration.md).
@@ -240,7 +240,8 @@ The Codex adapter maps through the same seam and is registered by `sce setup
 coverage boundary, checkout-local recovery bookkeeping) is in
 [`codex-mutation-scope-integration.md`](codex-mutation-scope-integration.md). The
 OpenCode adapter maps the same way with checkout-local durable state and a
-recovery barrier but has no plugin/`sce setup` registration yet
+recovery barrier, and is driven in production by a generated `sce-mutation-scope.ts`
+plugin installed last by `sce setup`
 ([`opencode-mutation-scope-integration.md`](opencode-mutation-scope-integration.md)).
 Because OpenCode scopes are confirmation-required and legitimately concurrent,
 that adapter does not rely on `abandon_scope()` alone to make a preceding

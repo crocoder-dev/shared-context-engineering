@@ -14,3 +14,8 @@ sce_agent_trace_plugin = new CanonicalOpenCodePluginRegistration {
   id = "sce-agent-trace"
   path = "./plugins/sce-agent-trace.ts"
 }
+
+sce_mutation_scope_plugin = new CanonicalOpenCodePluginRegistration {
+  id = "sce-mutation-scope"
+  path = "./plugins/sce-mutation-scope.ts"
+}
