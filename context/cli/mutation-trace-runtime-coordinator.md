@@ -183,8 +183,9 @@ observation establishes a baseline with no evidence; an edit observed between
 `Start` and `Advance` commits exactly one `AiExclusive` event; replaying an
 identical `(scope, event)` boundary is a no-op, not a duplicate; `Close`
 attributes to the scope it is about to close; two live scopes yield
-`AiContended` when no unconfirmed live Codex scope remains at the boundary,
-regardless of matching or differing `ActorKind`; a CAS conflict
+`AiContended` when no unconfirmed live confirmation-required scope (Codex or
+OpenCode) remains at the boundary, regardless of matching or differing
+`ActorKind`; a CAS conflict
 reloads and recomputes without a second capture or pin; `needs_rebaseline`
 recovery preserves live scopes while taint recovery abandons them; and the
 taint-retry loop taints an existing worktree, survives a losing CAS before

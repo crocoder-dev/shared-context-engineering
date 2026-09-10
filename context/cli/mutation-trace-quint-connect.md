@@ -99,7 +99,7 @@ nested inside `MbtPrepare`).
 ## Finite ID mapping
 
 The Quint model's identity types (`WorktreeId`, `ScopeId`, `TreeId`,
-`EventId`, `AttemptId`) are bounded enums (`WT0`/`WT1`, `Scope0`-`Scope3`,
+`EventId`, `AttemptId`) are bounded enums (`WT0`/`WT1`, `Scope0`-`Scope5`,
 `Tree0`-`Tree3`, `Event0`-`Event9`, `Attempt0`-`Attempt5`). `mbt/model.rs`
 defines one `Wire*` enum per identity type mirroring those exact members,
 each converting via `From` into this crate's own opaque `String`-wrapping

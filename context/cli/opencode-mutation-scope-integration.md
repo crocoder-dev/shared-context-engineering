@@ -11,7 +11,9 @@ reserves the `"opencode"` actor value and the `oc_` session prefix via
 [`mutation-scope-provenance.md`](mutation-scope-provenance.md)).
 
 This document records what T01 froze about OpenCode's tool lifecycle so the
-adapter tasks (T02–T06) and any later revision inherit it without re-probing.
+adapter tasks (T03–T06) and any later revision inherit it without re-probing.
+T02 (the protocol generalization) has shipped — see **Attribution boundary**
+below.
 
 ## Evidence base
 
@@ -93,17 +95,29 @@ flowchart TD
   write after OpenCode was gone). No elapsed-time signal can distinguish an
   abandoned scope from an orphan still mutating — **no TTL is safe**.
 
-## Attribution boundary (planned)
+## Attribution boundary
 
 Because a tracked OpenCode `Start` is reachable without any confirming `Close`
 (permission rejection, interrupt, validation failure — all in the fixtures),
 OpenCode scopes are **confirmation-required**, like Codex: an OpenCode scope
 stays unconfirmed until its own exact successful `Close`, and an unconfirmed
-scope suppresses positive attribution at any boundary. T02 generalizes the
-current Codex-specific rule in [`mutation-trace-protocol.md`](mutation-trace-protocol.md)
-and `spec/mutation_cursor.qnt` to a harness-independent
-confirmation-required-actor predicate covering Codex and OpenCode; the public
-`Attribution` variants and `ProtocolState` shape do not change.
+scope suppresses positive attribution at any boundary.
+
+T02 shipped this: `protocol.rs` (`requires_boundary_confirmation(ActorKind)` /
+`has_unconfirmed_required_scope`) and `spec/mutation_cursor.qnt`
+(`requiresBoundaryConfirmation` / `hasUnconfirmedRequiredScope`) replaced the
+former Codex-only rule with a harness-independent confirmation-required-actor
+predicate — `Codex` and `OpenCode` → confirmation-required, `ClaudeCode` and
+`Pi` → not. A live unconfirmed OpenCode scope now yields `IneligibleUnscoped`
+at any Claude, Codex, Pi, Flush, or other-OpenCode boundary, and a confirming
+`Close(OpenCode A)` yields `AiExclusive(A)` when A is the only live scope,
+`AiContended` when the other live scopes are confirmation-safe. Codex outcomes
+are unchanged bit-for-bit. The public `Attribution` variants, `ProtocolState`,
+`ScopeState`, `MutationEvent`, and the Quint scope state are untouched. The
+Rust adapter (T03–T04) still has to drive this boundary; the protocol accepts
+it now. The generalized rule is also documented in
+[`codex-mutation-scope-integration.md`](codex-mutation-scope-integration.md) and
+[`mutation-scope-runtime.md`](mutation-scope-runtime.md).
 
 ## Model and session provenance (planned)
 
