@@ -9,6 +9,9 @@ through its in-process seam; its hidden command is registered by the shared
 Codex setup/merge/doctor path. OpenCode and Pi remain unwired. The Codex
 adapter's tracked-tool coverage and MCP boundary are documented in
 [`context/cli/codex-mutation-scope-integration.md`](cli/codex-mutation-scope-integration.md).
+OpenCode's tool lifecycle has been frozen (evidence only, no adapter) against
+`@opencode-ai/plugin@1.15.4` and OpenCode CLI 1.15.4 in
+[`context/cli/opencode-mutation-scope-integration.md`](cli/opencode-mutation-scope-integration.md).
 
 Both adapters attach optional `ScopeProvenance` at admission. The verified
 mutation protocol still decides scope ownership and `AiExclusive(scope)`;
