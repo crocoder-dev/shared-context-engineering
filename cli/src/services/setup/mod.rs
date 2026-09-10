@@ -1797,11 +1797,15 @@ mod prompt {
     }
 
     pub(super) fn prompt_agent_trace_auto_sync() -> Result<Option<bool>> {
-        prompt_confirmation("Enable automatic Agent Trace synchronization?")
+        prompt_confirmation(
+            "Automatically sync Agent Traces?\n(Requires an SCE account. Sends Agent Traces from supported AI coding tools\nto SCE servers so they can be stored and viewed in your account.)",
+        )
     }
 
     pub(super) fn prompt_attribution_hooks_enabled() -> Result<Option<bool>> {
-        prompt_confirmation("Enable SCE commit attribution trailers?")
+        prompt_confirmation(
+            "Record SCE involvement in Git commits?\n(Adds SCE metadata to commits created or assisted by SCE.)",
+        )
     }
 
     fn prompt_confirmation(label: &str) -> Result<Option<bool>> {

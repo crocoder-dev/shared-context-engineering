@@ -7,7 +7,18 @@ Task `setup-repo-gate-and-local-config-bootstrap` T02, `turso-local-db-sync` T04
 ## Behavior
 
 - Any successful `sce setup` run in a git-backed repository creates `.sce/config.json` when the file is absent.
-- Interactive setup asks two independent post-selection confirmations: `Enable automatic Agent Trace synchronization? [Y/n]` and `Enable SCE commit attribution trailers? [Y/n]`. Both default to Yes, and the prompt seam carries each answer separately through setup dispatch so declining one does not change the other.
+- Interactive setup asks two independent post-selection confirmations. The first displays:
+  ```
+  Automatically sync Agent Traces?
+  (Requires an SCE account. Sends Agent Traces from supported AI coding tools
+  to SCE servers so they can be stored and viewed in your account.)
+  ```
+  The second displays:
+  ```
+  Record SCE involvement in Git commits?
+  (Adds SCE metadata to commits created or assisted by SCE.)
+  ```
+  Both default to Yes, and the prompt seam carries each answer separately through setup dispatch so declining one does not change the other.
 - The bootstrap writes the canonical JSON payload with the versioned schema declaration and explicit opt-ins for both setup-controlled behaviors: `{"$schema": "https://sce.crocoder.dev/v<version>/config.json", "agent_trace": {"auto_sync": true}, "policies": {"attribution_hooks": {"enabled": true}}}` (where `<version>` is the CLI release version, with a trailing newline).
 - If `.sce/config.json` already exists, the bootstrap step returns `Ok(())` immediately and leaves the file untouched — no merge, no reformat, no overwrite. A later interactive target-install write may merge the two answered behavior values, while non-interactive setup leaves existing behavior keys and omissions unchanged.
 - The parent `.sce/` directory is created via `fs::create_dir_all` if missing.
