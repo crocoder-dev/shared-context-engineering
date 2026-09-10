@@ -503,7 +503,7 @@ Second phase:
     root context files before another task starts.
   - Context synchronization: synced
 
-- [ ] T05: `Carry ephemeral transcript_path through DiffTracePayload` (status:todo)
+- [x] T05: `Carry ephemeral transcript_path through DiffTracePayload` (status:done)
   - Task ID: T05
   - Scope: In — add a `#[serde(skip)]` `transcript_path: Option<String>` field to
     `DiffTracePayload` in `cli/src/services/hooks/mod.rs`, populate it at Claude
@@ -516,7 +516,27 @@ Second phase:
     `diff_traces` and every serialized payload, `None` for OpenCode/Pi/Codex inputs,
     and AC9's regression passes with no behavior change to attribution.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_diff_trace`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_attribution`.
-  - Context synchronization: pending
+  - Completed: 2026-09-10
+  - Files changed: `cli/src/services/hooks/mod.rs`
+  - Result: Added a `#[serde(skip)] transcript_path: Option<String>` field to
+    `DiffTracePayload`, populated from the raw event's `transcript_path` at Claude
+    structured parse time (via `non_empty_string`, mirroring `agent_id`), left
+    `None` in the OpenCode/Pi normalized branch and all test constructors. No
+    resolution or persistence code reads the field yet. Added three regressions:
+    the field is carried on a Claude structured parse, absent from the serialized
+    payload, `None` when the raw field is missing, and `None` for a normalized
+    OpenCode payload.
+  - Verify: `claude_diff_trace` -> exit 0 (6 passed, 0 failed, incl. the 3 new
+    regressions); `claude_model_attribution` -> exit 0 (3 passed, 0 failed,
+    unchanged).
+  - Done checks: All satisfied — the field reaches the persistence boundary as an
+    in-memory-only value, `#[serde(skip)]` keeps it out of every serialized
+    payload and `diff_traces`, non-Claude producers get `None`, and the
+    attribution suite is unchanged.
+  - Context impact: local — adds an unused ephemeral carrier field consumed by a
+    later task; no user-visible behavior, interface, schema, or terminology
+    change. Root-context pass still required before the next task.
+  - Context synchronization: synced
 
 - [ ] T06: `Return all bridge-linked chain members from discovery` (status:todo)
   - Task ID: T06
