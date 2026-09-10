@@ -55,9 +55,6 @@ pub(crate) fn is_missing_git_remote_error(error: &anyhow::Error) -> bool {
     error.downcast_ref::<MissingGitRemoteError>().is_some()
 }
 
-/// Canonical JSON payload for a newly bootstrapped repo-local `.sce/config.json`.
-/// Declares the SCE config JSON Schema and explicitly opts new repositories into
-/// Agent Trace post-commit synchronization.
 fn repo_local_config_bootstrap_payload() -> String {
     format!(
         "{{\n  \"$schema\": \"{}\",\n  \"agent_trace\": {{\n    \"auto_sync\": true\n  }},\n  \"policies\": {{\n    \"attribution_hooks\": {{\n      \"enabled\": true\n    }}\n  }}\n}}\n",
@@ -91,9 +88,6 @@ pub enum RequiredHookAsset {
     PostCommit,
 }
 
-/// A workflow that is generated for every target like any other, but whose
-/// assets are installed only when a repository explicitly selects it. The
-/// catalog below is generated from the Pkl workflow catalog at build time.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OptionalWorkflow {
     pub id: &'static str,
@@ -135,10 +129,6 @@ fn embedded_assets_for_concrete_target(target: SetupTarget) -> &'static [Embedde
     }
 }
 
-/// The directory names a target uses for workflow commands and workflow skills.
-/// Optional workflow asset membership is derived from these plus the catalog's
-/// slugs rather than from an enumerated file list, so a new optional workflow
-/// needs no Rust change.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct WorkflowAssetLayout {
     /// `None` for a target with no command directory (skills only), such as
@@ -184,9 +174,6 @@ fn asset_belongs_to_optional_workflow(
     is_command_asset || relative_path.starts_with(&skill_prefix)
 }
 
-/// Embedded assets for `target`, minus the command and skill assets of every
-/// optional workflow the repository has not selected. Assets that belong to no
-/// optional workflow are always yielded.
 pub fn iter_embedded_assets_for_setup_target_with_selection(
     target: SetupTarget,
     selected_optional_workflows: &[impl AsRef<str>],
@@ -227,14 +214,8 @@ pub enum SetupMode {
 pub enum SetupDispatch {
     Proceed {
         mode: SetupMode,
-        /// The optional workflows this run installs. `None` means no selection
-        /// was resolved here, so the persisted selection is reused downstream.
         optional_workflows: Option<Vec<String>>,
-        /// The interactive selection for automatic Agent Trace synchronization.
-        /// `None` means setup did not prompt for this value.
         agent_trace_auto_sync: Option<bool>,
-        /// The interactive selection for SCE commit-attribution trailers.
-        /// `None` means setup did not prompt for this value.
         attribution_hooks_enabled: Option<bool>,
     },
     Cancelled,
@@ -365,9 +346,6 @@ pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
     })
 }
 
-/// Validate repeated `--workflow` slugs against the build-generated catalog,
-/// deduping while preserving order. The error lists every available slug so a
-/// new optional workflow needs no Rust change here.
 fn validate_optional_workflow_slugs(raw_slugs: &[String]) -> Result<Vec<String>> {
     let mut selected: Vec<String> = Vec::new();
 
@@ -475,16 +453,10 @@ pub fn persisted_optional_workflows(repository_root: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Preflight check that verifies the given directory is inside a git repository.
-/// Returns the resolved repository root path on success.
-/// Returns an actionable error telling the operator to run `git init` on failure.
 pub fn ensure_git_repository(directory: &Path) -> Result<PathBuf> {
     install::ensure_git_repository(directory)
 }
 
-/// Preflight check that verifies the named Git remote has a configured URL.
-/// The URL itself is intentionally discarded so callers can preserve a
-/// technical diagnostic without echoing credential-bearing remote values.
 pub fn ensure_git_remote(repository_root: &Path, remote_name: &str) -> Result<()> {
     let remote_url = crate::services::repository_identity::resolve::lookup_remote_url_strict(
         repository_root,
@@ -500,11 +472,6 @@ pub fn ensure_git_remote(repository_root: &Path, remote_name: &str) -> Result<()
     }))
 }
 
-/// Bootstraps the repo-local `.sce/config.json` file if it does not already exist.
-///
-/// Creates the `.sce/` parent directory as needed, then writes the canonical
-/// schema and explicit Agent Trace/attribution bootstrap JSON payload. If the
-/// file already exists, it is left untouched.
 pub fn bootstrap_repo_local_config(repository_root: &Path) -> Result<()> {
     let repo_paths = RepoPaths::new(repository_root);
     let config_file = repo_paths.sce_config_file();
@@ -555,10 +522,6 @@ Working areas:
 - `context/tmp/`
 ";
 
-/// Creates the baseline durable-context tree additively.
-///
-/// Missing directories and baseline files are created with neutral templates.
-/// Existing files and directory contents are never overwritten.
 pub fn bootstrap_context_baseline(repository_root: &Path) -> Result<String> {
     let repo_paths = RepoPaths::new(repository_root);
 
@@ -753,10 +716,6 @@ pub fn install_embedded_setup_assets(
     install::install_embedded_setup_assets(repository_root, target, selected_optional_workflows)
 }
 
-/// Repairs a single merge-target asset (`.claude/settings.json` or
-/// `.opencode/opencode.json`) by reinstalling just that asset through the same
-/// per-asset merge-install path `sce setup` uses, so `sce doctor --fix` can
-/// restore a drifted SCE fragment without touching any other asset.
 pub(crate) fn repair_merge_target_asset(
     repository_root: &Path,
     target: SetupTarget,
@@ -829,13 +788,6 @@ fn integration_target_id_str(target: SetupTarget) -> &'static str {
     }
 }
 
-/// Persist a successfully installed setup target into the repo-local config file.
-///
-/// Reads the existing `.sce/config.json`, merges the new concrete target(s) into
-/// `integrations.target` (deduped, preserving existing unrelated fields), records
-/// the run's resolved optional-workflow selection in
-/// `integrations.optional_workflows`, and writes the file back. Creates the file
-/// with the bootstrap payload if it does not already exist.
 pub fn persist_integration_targets(
     repository_root: &Path,
     target: SetupTarget,
@@ -846,10 +798,6 @@ pub fn persist_integration_targets(
     let repo_paths = RepoPaths::new(repository_root);
     let config_file = repo_paths.sce_config_file();
 
-    // Default-discovered invalid config is intentionally degradable during
-    // setup. Do not rewrite it while recording the installed target: the
-    // startup resolver already reported the invalid layer and setup must leave
-    // the user's file byte-for-byte unchanged.
     if config_file.exists() && crate::services::config::validate_config_file(&config_file).is_err()
     {
         return Ok(());
@@ -1419,10 +1367,6 @@ mod install {
         })
     }
 
-    /// Deletes every catalog asset for `target` that this run did not install
-    /// (deselected, or dropped by a newer catalog), then removes any SCE-owned
-    /// skill directory left empty by that deletion. A directory still holding a
-    /// user file fails to remove and is left in place.
     fn prune_stale_assets_for_concrete_target(
         destination_root: &Path,
         target: SetupTarget,
@@ -1456,9 +1400,6 @@ mod install {
         Ok(())
     }
 
-    /// Removes now-empty parent directories of a pruned file, walking upward
-    /// until reaching `destination_root` or a directory that still has content
-    /// (removal fails and stops the walk).
     fn remove_empty_ancestor_directories(destination_root: &Path, removed_file: &Path) {
         let mut current = removed_file.parent();
         while let Some(directory) = current {
@@ -1654,17 +1595,8 @@ mod install {
 
 pub trait SetupTargetPrompter {
     fn prompt_target(&self) -> Result<SetupDispatch>;
-
-    /// The optional workflows to install, pre-checked from `defaults`.
-    /// `None` means the operator cancelled the prompt.
     fn prompt_optional_workflows(&self, defaults: &[String]) -> Result<Option<Vec<String>>>;
-
-    /// Whether automatic Agent Trace synchronization should be enabled.
-    /// `None` means the operator cancelled the prompt.
     fn prompt_agent_trace_auto_sync(&self) -> Result<Option<bool>>;
-
-    /// Whether SCE commit-attribution trailers should be enabled.
-    /// `None` means the operator cancelled the prompt.
     fn prompt_attribution_hooks_enabled(&self) -> Result<Option<bool>>;
 }
 
@@ -1767,9 +1699,6 @@ mod prompt {
         }
     }
 
-    /// The optional workflows to install, pre-checked from `defaults`. `None`
-    /// means the operator cancelled. An empty catalog skips the prompt entirely
-    /// and resolves to an empty selection.
     pub(super) fn prompt_optional_workflows(defaults: &[String]) -> Result<Option<Vec<String>>> {
         let Some((rows, default_indices)) =
             optional_workflow_prompt_inputs(super::OPTIONAL_WORKFLOWS, defaults)
@@ -1831,8 +1760,6 @@ mod prompt {
         }
     }
 
-    /// The prompt's rows and pre-checked indices, or `None` when the catalog
-    /// carries no optional workflow and the prompt is skipped entirely.
     pub(super) fn optional_workflow_prompt_inputs(
         catalog: &'static [OptionalWorkflow],
         defaults: &[String],
@@ -1856,9 +1783,6 @@ mod prompt {
             .collect()
     }
 
-    /// Row indices to pre-check, in catalog order. Ids that are not in the
-    /// catalog are ignored so a stale persisted selection cannot panic the
-    /// prompt.
     pub(super) fn optional_workflow_default_indices(
         catalog: &'static [OptionalWorkflow],
         defaults: &[String],
@@ -1925,12 +1849,6 @@ mod prompt {
     }
 }
 
-/// Resolve the interactive setup prompts into an installable dispatch.
-///
-/// `optional_workflow_defaults` pre-checks the optional-workflow prompt's rows;
-/// callers pass the repository's persisted selection, or the `--workflow`
-/// selection when one was supplied. A non-interactive mode prompts for nothing
-/// and carries no selection, leaving that resolution to `run_setup_for_mode`.
 pub fn resolve_setup_dispatch<P>(
     mode: SetupMode,
     prompter: &P,
