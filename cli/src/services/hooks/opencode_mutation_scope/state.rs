@@ -23,6 +23,7 @@ const ADAPTER_STATE_VERSION: u32 = 1;
 pub(crate) enum AttemptPhase {
     PendingStart,
     Active,
+    PendingAbandon,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -95,6 +96,7 @@ pub(crate) enum AdmitDecision {
     Admitted(AllocatedAttempt),
     RecoveryBlocked,
     UncertainAttemptBlocked,
+    TerminalAttemptBlocked,
     FlushClaimed { generation: u64 },
 }
 
@@ -257,6 +259,20 @@ pub(crate) fn admit_tracked_attempt(
     let _lock = acquire_lock(git_dir)?;
     let mut state = read_state(git_dir)?;
 
+    if let Some(existing) = state
+        .attempts
+        .iter()
+        .find(|attempt| attempt.matches_key(key))
+    {
+        if existing.phase == AttemptPhase::PendingAbandon {
+            return Ok(AdmitDecision::TerminalAttemptBlocked);
+        }
+        return Ok(AdmitDecision::Admitted(AllocatedAttempt {
+            attempt: existing.clone(),
+            reused: true,
+        }));
+    }
+
     match state.recovery {
         RecoveryState::Flushing { .. } => return Ok(AdmitDecision::RecoveryBlocked),
         RecoveryState::Pending { generation } => {
@@ -267,22 +283,12 @@ pub(crate) fn admit_tracked_attempt(
         RecoveryState::Clear => {}
     }
 
-    if let Some(existing) = state
-        .attempts
-        .iter()
-        .find(|attempt| attempt.matches_key(key))
-    {
-        return Ok(AdmitDecision::Admitted(AllocatedAttempt {
-            attempt: existing.clone(),
-            reused: true,
-        }));
-    }
-
-    if state
-        .attempts
-        .iter()
-        .any(|attempt| attempt.phase == AttemptPhase::PendingStart)
-    {
+    if state.attempts.iter().any(|attempt| {
+        matches!(
+            attempt.phase,
+            AttemptPhase::PendingStart | AttemptPhase::PendingAbandon
+        )
+    }) {
         return Ok(AdmitDecision::UncertainAttemptBlocked);
     }
 
@@ -345,6 +351,34 @@ pub(crate) fn arm_recovery(git_dir: &Path) -> Result<u64> {
         }
     };
     state.recovery = RecoveryState::Pending { generation };
+    write_state_durably(git_dir, &state)?;
+    Ok(generation)
+}
+
+pub(crate) fn begin_terminal_cleanup(git_dir: &Path, scope_ids: &[String]) -> Result<u64> {
+    let _lock = acquire_lock(git_dir)?;
+    let mut state = read_state(git_dir)?;
+
+    for attempt in &mut state.attempts {
+        if scope_ids
+            .iter()
+            .any(|scope_id| scope_id == &attempt.scope_id)
+        {
+            attempt.phase = AttemptPhase::PendingAbandon;
+        }
+    }
+
+    let generation = match state.recovery {
+        RecoveryState::Pending { generation } | RecoveryState::Flushing { generation } => {
+            generation
+        }
+        RecoveryState::Clear => {
+            let generation = state.next_recovery_generation;
+            state.next_recovery_generation += 1;
+            generation
+        }
+    };
+    state.recovery = RecoveryState::Flushing { generation };
     write_state_durably(git_dir, &state)?;
     Ok(generation)
 }
