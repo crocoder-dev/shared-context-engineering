@@ -167,6 +167,7 @@
           ./config/pkl
           ./config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts
           ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
+          ./config/lib/mutation-scope-plugin/opencode-sce-mutation-scope-plugin.ts
           ./config/lib/pi-plugin/sce-pi-extension.ts
           ./config/schema/agent-trace.schema.json
         ];
@@ -177,6 +178,7 @@
             ./.version
             ./config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts
             ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
+            ./config/lib/mutation-scope-plugin/opencode-sce-mutation-scope-plugin.ts
             ./config/lib/pi-plugin/sce-pi-extension.ts
             ./scripts/produce-cli-generated-input.sh
           ];
@@ -227,6 +229,7 @@
             ./config/lib/bun.lock
             ./config/lib/tsconfig.json
             ./config/lib/agent-trace-plugin
+            ./config/lib/mutation-scope-plugin
 ./config/lib/bash-policy-plugin/bash-policy-runtime.test.ts
             ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/structured_patch/fixtures)
@@ -263,6 +266,7 @@
             ./config/lib/pi-plugin/sce-pi-extension.ts
             ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
             ./config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts
+            ./config/lib/mutation-scope-plugin/opencode-sce-mutation-scope-plugin.ts
             (pkgs.lib.fileset.maybeMissing ./config/.opencode)
             (pkgs.lib.fileset.maybeMissing ./config/.claude)
             (pkgs.lib.fileset.maybeMissing ./config/.pi)

@@ -3,4 +3,5 @@
 config/pkl
 config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts
 config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
+config/lib/mutation-scope-plugin/opencode-sce-mutation-scope-plugin.ts
 config/lib/pi-plugin/sce-pi-extension.ts
