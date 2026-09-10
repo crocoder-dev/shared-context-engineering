@@ -557,22 +557,13 @@ fn admit_or_recover(
 ) -> Result<Admission> {
     match state::admit_tracked_attempt(git_dir, key, tool_name)? {
         AdmitDecision::Admitted(allocated) => Ok(Admission::Admitted(allocated)),
-        AdmitDecision::RecoveryBlocked | AdmitDecision::UncertainAttemptBlocked => {
-            Ok(Admission::Denied)
-        }
+        AdmitDecision::RecoveryBlocked
+        | AdmitDecision::UncertainAttemptBlocked
+        | AdmitDecision::TerminalAttemptBlocked => Ok(Admission::Denied),
         AdmitDecision::FlushClaimed { generation } => {
-            match seam(repository_root, &flush_payload(), logger) {
-                Ok(_) => match state::complete_recovery_flush(git_dir, generation)? {
-                    RecoveryFlushCompletion::Cleared => {
-                        readmit_after_flush(git_dir, key, tool_name)
-                    }
-                    RecoveryFlushCompletion::Superseded => Ok(Admission::Denied),
-                },
-                Err(error) => {
-                    log_fail_closed(logger, "recovery_flush", &error);
-                    state::relinquish_recovery_flush(git_dir, generation)?;
-                    Ok(Admission::Denied)
-                }
+            match resolve_recovery(git_dir, repository_root, generation, logger, seam)? {
+                RecoveryResolution::Cleared => readmit_after_flush(git_dir, key, tool_name),
+                RecoveryResolution::Unresolved => Ok(Admission::Denied),
             }
         }
     }
@@ -585,9 +576,9 @@ fn readmit_after_flush(git_dir: &Path, key: &AttemptKey, tool_name: &str) -> Res
             state::relinquish_recovery_flush(git_dir, generation)?;
             Ok(Admission::Denied)
         }
-        AdmitDecision::RecoveryBlocked | AdmitDecision::UncertainAttemptBlocked => {
-            Ok(Admission::Denied)
-        }
+        AdmitDecision::RecoveryBlocked
+        | AdmitDecision::UncertainAttemptBlocked
+        | AdmitDecision::TerminalAttemptBlocked => Ok(Admission::Denied),
     }
 }
 
@@ -635,7 +626,10 @@ fn handle_close(
 
     let doomed_scope_id = attempt.scope_id.clone();
 
-    if attempt.phase == state::AttemptPhase::PendingStart {
+    if matches!(
+        attempt.phase,
+        state::AttemptPhase::PendingStart | state::AttemptPhase::PendingAbandon
+    ) {
         return abandon_and_consume(git_dir, repository_root, logger, seam, move |candidate| {
             candidate.scope_id == doomed_scope_id
         });
@@ -657,6 +651,11 @@ fn handle_close(
     }
 }
 
+enum RecoveryResolution {
+    Cleared,
+    Unresolved,
+}
+
 fn abandon_and_consume(
     git_dir: &Path,
     repository_root: &Path,
@@ -664,38 +663,59 @@ fn abandon_and_consume(
     seam: IngressSeam,
     doomed: impl Fn(&state::AdapterAttempt) -> bool,
 ) -> Result<String> {
-    let doomed_attempts: Vec<state::AdapterAttempt> = state::read_state(git_dir)?
+    let doomed_scope_ids: Vec<String> = state::read_state(git_dir)?
         .attempts
         .into_iter()
         .filter(|attempt| doomed(attempt))
+        .map(|attempt| attempt.scope_id)
         .collect();
-    if doomed_attempts.is_empty() {
+    if doomed_scope_ids.is_empty() {
         return Ok(String::new());
     }
 
-    let generation = state::arm_and_begin_recovery_flush(git_dir)?;
+    let generation = state::begin_terminal_cleanup(git_dir, &doomed_scope_ids)?;
+    resolve_recovery(git_dir, repository_root, generation, logger, seam)?;
+    Ok(String::new())
+}
+
+fn resolve_recovery(
+    git_dir: &Path,
+    repository_root: &Path,
+    generation: u64,
+    logger: Option<&dyn Logger>,
+    seam: IngressSeam,
+) -> Result<RecoveryResolution> {
+    let pending_abandon: Vec<state::AdapterAttempt> = state::read_state(git_dir)?
+        .attempts
+        .into_iter()
+        .filter(|attempt| attempt.phase == state::AttemptPhase::PendingAbandon)
+        .collect();
 
     if let Err(error) = seam(repository_root, &flush_payload(), logger) {
-        log_fail_closed(logger, "abandon_consume_flush", &error);
+        log_fail_closed(logger, "recovery_ambiguity_flush", &error);
         state::relinquish_recovery_flush(git_dir, generation)?;
-        return Ok(String::new());
+        return Ok(RecoveryResolution::Unresolved);
     }
 
-    for attempt in &doomed_attempts {
+    for attempt in &pending_abandon {
         if let Err(error) = seam(repository_root, &abandon_payload(&attempt.scope_id), logger) {
-            log_fail_closed(logger, "abandon_consume_abandon", &error);
+            log_fail_closed(logger, "recovery_abandon", &error);
+            state::relinquish_recovery_flush(git_dir, generation)?;
+            return Ok(RecoveryResolution::Unresolved);
         }
         state::remove_attempt(git_dir, &attempt.scope_id)?;
     }
 
     if let Err(error) = seam(repository_root, &flush_payload(), logger) {
-        log_fail_closed(logger, "abandon_consume_rebaseline", &error);
+        log_fail_closed(logger, "recovery_rebaseline_flush", &error);
         state::relinquish_recovery_flush(git_dir, generation)?;
-        return Ok(String::new());
+        return Ok(RecoveryResolution::Unresolved);
     }
 
-    state::complete_recovery_flush(git_dir, generation)?;
-    Ok(String::new())
+    match state::complete_recovery_flush(git_dir, generation)? {
+        RecoveryFlushCompletion::Cleared => Ok(RecoveryResolution::Cleared),
+        RecoveryFlushCompletion::Superseded => Ok(RecoveryResolution::Unresolved),
+    }
 }
 
 fn scope_boundary_payload(operation: &str, scope_id: &str, event_id: &str) -> String {
@@ -1284,6 +1304,8 @@ mod lifecycle_tests {
     struct RecordingSeam {
         calls: Mutex<Vec<String>>,
         fail_operations: Vec<String>,
+        fail_once_operations: Mutex<Vec<String>>,
+        fail_operation_occurrence: Option<(String, usize)>,
     }
 
     impl RecordingSeam {
@@ -1291,24 +1313,60 @@ mod lifecycle_tests {
             Self {
                 calls: Mutex::new(Vec::new()),
                 fail_operations: Vec::new(),
+                fail_once_operations: Mutex::new(Vec::new()),
+                fail_operation_occurrence: None,
             }
         }
 
         fn failing_on(operations: &[&str]) -> Self {
             Self {
-                calls: Mutex::new(Vec::new()),
                 fail_operations: operations.iter().map(|op| (*op).to_string()).collect(),
+                ..Self::new()
+            }
+        }
+
+        fn failing_once_on(operations: &[&str]) -> Self {
+            Self {
+                fail_once_operations: Mutex::new(
+                    operations.iter().map(|op| (*op).to_string()).collect(),
+                ),
+                ..Self::new()
+            }
+        }
+
+        fn failing_on_nth_occurrence(operation: &str, occurrence: usize) -> Self {
+            Self {
+                fail_operation_occurrence: Some((operation.to_string(), occurrence)),
+                ..Self::new()
             }
         }
 
         fn handle(&self, payload: &str) -> Result<String> {
             let operation = operation_of(payload);
-            self.calls
-                .lock()
-                .expect("seam mutex")
-                .push(operation.clone());
+            let occurrence = {
+                let mut calls = self.calls.lock().expect("seam mutex");
+                calls.push(operation.clone());
+                calls
+                    .iter()
+                    .filter(|candidate| *candidate == &operation)
+                    .count()
+            };
             if self.fail_operations.contains(&operation) {
                 bail!("seam failure injected by test for '{operation}'");
+            }
+            if let Some((target, target_occurrence)) = &self.fail_operation_occurrence {
+                if target == &operation && *target_occurrence == occurrence {
+                    bail!(
+                        "seam failure injected by test for '{operation}' occurrence {occurrence}"
+                    );
+                }
+            }
+            {
+                let mut once = self.fail_once_operations.lock().expect("seam mutex");
+                if let Some(position) = once.iter().position(|candidate| candidate == &operation) {
+                    once.remove(position);
+                    bail!("transient seam failure injected once by test for '{operation}'");
+                }
             }
             Ok(String::new())
         }
@@ -1784,6 +1842,278 @@ mod lifecycle_tests {
 
         cleanup(&git_dir);
     }
+
+    #[test]
+    fn regression_a_abandon_failure_preserves_terminal_intent_then_recovers() {
+        let git_dir = temp_git_dir("regression-a-abandon-failure");
+
+        {
+            let ok_seam = RecordingSeam::new();
+            drive(&git_dir, &ok_seam, &tool_before("write", "call_1")).expect("A Start");
+        }
+
+        let failing = RecordingSeam::failing_on(&["abandon"]);
+        drive(&git_dir, &failing, &tool_error("write", "call_1"))
+            .expect("a terminal failure whose abandon fails still returns best-effort");
+
+        let state = read_state(&git_dir).expect("state readable");
+        assert_eq!(state.attempts.len(), 1, "A is not forgotten");
+        assert_eq!(state.attempts[0].call_id, "call_1");
+        assert_eq!(
+            state.attempts[0].phase,
+            AttemptPhase::PendingAbandon,
+            "the exact terminal attempt is durably marked PendingAbandon",
+        );
+        assert!(
+            !state.recovery.is_clear(),
+            "recovery stays unresolved while Abandon has not succeeded",
+        );
+        assert_eq!(
+            failing.operations(),
+            vec!["flush", "abandon"],
+            "the ambiguity flush ran, then the abandon that failed; no rebaseline flush, \
+             no removal",
+        );
+
+        let healthy = RecordingSeam::new();
+        drive(&git_dir, &healthy, &tool_before("write", "call_2"))
+            .expect("a healthy retry boundary resolves recovery and admits the new Start");
+
+        let state = read_state(&git_dir).expect("state readable");
+        assert_eq!(state.attempts.len(), 1);
+        assert_eq!(state.attempts[0].call_id, "call_2");
+        assert!(state.recovery.is_clear());
+        assert_eq!(
+            healthy.operations(),
+            vec!["flush", "abandon", "flush", "start"],
+            "recovery replays flush + abandon + rebaseline flush before the new Start",
+        );
+
+        cleanup(&git_dir);
+    }
+
+    #[test]
+    fn regression_b_ambiguity_flush_failure_blocks_new_starts_then_recovers() {
+        let git_dir = temp_git_dir("regression-b-ambiguity-flush-failure");
+        let live = RecordingSeam::new();
+
+        drive(&git_dir, &live, &shell_env("call_a")).expect("A Start");
+        drive(&git_dir, &live, &shell_env("call_b")).expect("B Start");
+
+        let failing = RecordingSeam::failing_on(&["flush"]);
+        drive(&git_dir, &failing, &tool_error("bash", "call_a")).expect("A terminal failure");
+
+        let state = read_state(&git_dir).expect("state readable");
+        let pending_abandon: Vec<&str> = state
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.phase == AttemptPhase::PendingAbandon)
+            .map(|attempt| attempt.call_id.as_str())
+            .collect();
+        let active: Vec<&str> = state
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.phase == AttemptPhase::Active)
+            .map(|attempt| attempt.call_id.as_str())
+            .collect();
+        assert_eq!(pending_abandon, vec!["call_a"], "A is PendingAbandon");
+        assert_eq!(active, vec!["call_b"], "B stays Active");
+        assert!(!state.recovery.is_clear(), "recovery pending");
+
+        let error = drive(&git_dir, &failing, &shell_env("call_c"))
+            .expect_err("a new tracked Start must fail closed while recovery is unresolved");
+        assert!(error.to_string().contains(FAIL_CLOSED_MESSAGE));
+        assert!(read_state(&git_dir)
+            .expect("state readable")
+            .attempts
+            .iter()
+            .all(|attempt| attempt.call_id != "call_c"));
+
+        let healthy = RecordingSeam::new();
+        drive(&git_dir, &healthy, &shell_env("call_c"))
+            .expect("once recovery succeeds a new Start is admitted normally");
+
+        let state = read_state(&git_dir).expect("state readable");
+        let mut remaining: Vec<&str> = state
+            .attempts
+            .iter()
+            .map(|attempt| attempt.call_id.as_str())
+            .collect();
+        remaining.sort_unstable();
+        assert_eq!(
+            remaining,
+            vec!["call_b", "call_c"],
+            "A removed, B kept, C admitted"
+        );
+        assert!(state
+            .attempts
+            .iter()
+            .all(|attempt| attempt.phase == AttemptPhase::Active));
+        assert!(state.recovery.is_clear());
+
+        cleanup(&git_dir);
+    }
+
+    #[test]
+    fn regression_c_rebaseline_flush_failure_is_recoverable_without_poison() {
+        let git_dir = temp_git_dir("regression-c-rebaseline-flush-failure");
+
+        {
+            let ok_seam = RecordingSeam::new();
+            drive(&git_dir, &ok_seam, &tool_before("edit", "call_1")).expect("Start");
+        }
+
+        let rebaseline_failing = RecordingSeam::failing_on_nth_occurrence("flush", 2);
+        drive(&git_dir, &rebaseline_failing, &tool_error("edit", "call_1"))
+            .expect("terminal failure whose rebaseline flush fails still returns");
+
+        assert_eq!(
+            rebaseline_failing.operations(),
+            vec!["flush", "abandon", "flush"],
+            "the ambiguity flush and the abandon succeeded; the rebaseline flush failed",
+        );
+        let state = read_state(&git_dir).expect("state readable");
+        assert!(
+            state.attempts.is_empty(),
+            "the abandon succeeded so the attempt is removed",
+        );
+        assert!(
+            !state.recovery.is_clear(),
+            "recovery state still carries the outstanding rebaseline",
+        );
+
+        let healthy = RecordingSeam::new();
+        drive(&git_dir, &healthy, &tool_before("edit", "call_2")).expect("retry admits new work");
+
+        let state = read_state(&git_dir).expect("state readable");
+        assert_eq!(state.attempts.len(), 1);
+        assert_eq!(state.attempts[0].call_id, "call_2");
+        assert!(state.recovery.is_clear());
+
+        cleanup(&git_dir);
+    }
+
+    #[test]
+    fn regression_e_duplicate_tool_error_is_idempotent() {
+        let git_dir = temp_git_dir("regression-e-duplicate-tool-error");
+
+        {
+            let ok_seam = RecordingSeam::new();
+            drive(&git_dir, &ok_seam, &tool_before("write", "call_1")).expect("Start");
+        }
+
+        let stuck = RecordingSeam::failing_on(&["abandon"]);
+        drive(&git_dir, &stuck, &tool_error("write", "call_1")).expect("first terminal failure");
+        drive(&git_dir, &stuck, &tool_error("write", "call_1"))
+            .expect("a duplicate ToolError while PendingAbandon is idempotent");
+
+        let state = read_state(&git_dir).expect("state readable");
+        assert_eq!(state.attempts.len(), 1, "no second attempt is created");
+        assert_eq!(state.attempts[0].phase, AttemptPhase::PendingAbandon);
+        assert_eq!(
+            state.next_recovery_generation, 2,
+            "the recovery generation is not incremented by the duplicate",
+        );
+
+        cleanup(&git_dir);
+    }
+
+    #[test]
+    fn regression_f_start_replay_for_a_pending_abandon_identity_never_reactivates() {
+        let git_dir = temp_git_dir("regression-f-start-replay-pending-abandon");
+
+        {
+            let ok_seam = RecordingSeam::new();
+            drive(&git_dir, &ok_seam, &tool_before("write", "call_1")).expect("Start");
+        }
+
+        let stuck = RecordingSeam::failing_on(&["abandon"]);
+        drive(&git_dir, &stuck, &tool_error("write", "call_1")).expect("terminal failure");
+
+        let error = drive(&git_dir, &stuck, &tool_before("write", "call_1"))
+            .expect_err("a replayed Start for a PendingAbandon identity must fail closed");
+        assert!(error.to_string().contains(FAIL_CLOSED_MESSAGE));
+
+        let state = read_state(&git_dir).expect("state readable");
+        assert_eq!(state.attempts.len(), 1);
+        assert_eq!(
+            state.attempts[0].phase,
+            AttemptPhase::PendingAbandon,
+            "the replayed Start does not return the attempt to Active",
+        );
+
+        cleanup(&git_dir);
+    }
+
+    #[test]
+    fn regression_g_late_tool_error_after_close_is_a_harmless_no_op() {
+        let git_dir = temp_git_dir("regression-g-late-tool-error");
+        let seam = RecordingSeam::new();
+
+        drive(&git_dir, &seam, &tool_before("write", "call_1")).expect("Start");
+        drive(&git_dir, &seam, &tool_after("write", "call_1")).expect("Close");
+        drive(&git_dir, &seam, &tool_error("write", "call_1"))
+            .expect("a late ToolError after a completed Close is inert");
+
+        assert_eq!(seam.operations(), vec!["start", "close"]);
+        let state = read_state(&git_dir).expect("state readable");
+        assert!(state.attempts.is_empty());
+        assert!(state.recovery.is_clear());
+
+        cleanup(&git_dir);
+    }
+
+    #[test]
+    fn regression_h_siblings_stay_active_through_a_transient_cleanup_failure() {
+        let git_dir = temp_git_dir("regression-h-siblings-preserved");
+        let live = RecordingSeam::new();
+
+        drive(&git_dir, &live, &shell_env("call_a")).expect("A Start");
+        drive(&git_dir, &live, &shell_env("call_b")).expect("B Start");
+        drive(&git_dir, &live, &shell_env("call_c")).expect("C Start");
+
+        let transient = RecordingSeam::failing_once_on(&["abandon"]);
+        drive(&git_dir, &transient, &tool_error("bash", "call_b"))
+            .expect("B terminal failure with a transient abandon failure");
+
+        let snapshot = read_state(&git_dir).expect("state readable");
+        let mut siblings: Vec<&str> = snapshot
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.phase == AttemptPhase::Active)
+            .map(|attempt| attempt.call_id.as_str())
+            .collect();
+        siblings.sort_unstable();
+        assert_eq!(
+            siblings,
+            vec!["call_a", "call_c"],
+            "A and C stay Active mid-failure"
+        );
+
+        let healthy = RecordingSeam::new();
+        drive(&git_dir, &healthy, &shell_env("call_d"))
+            .expect("the retry boundary resolves recovery and admits D");
+
+        let state = read_state(&git_dir).expect("state readable");
+        let mut remaining: Vec<&str> = state
+            .attempts
+            .iter()
+            .map(|attempt| attempt.call_id.as_str())
+            .collect();
+        remaining.sort_unstable();
+        assert_eq!(
+            remaining,
+            vec!["call_a", "call_c", "call_d"],
+            "B gone, A/C/D active"
+        );
+        assert!(state
+            .attempts
+            .iter()
+            .all(|attempt| attempt.phase == AttemptPhase::Active));
+        assert!(state.recovery.is_clear());
+
+        cleanup(&git_dir);
+    }
 }
 
 #[cfg(test)]
@@ -1864,6 +2194,37 @@ mod runtime_seam_tests {
 
         fn drive(&self, payload: &str) -> Result<String> {
             run_opencode_mutation_scope_from_payload_at_state_root(&self.state_root, payload, None)
+        }
+
+        fn drive_failing_seam_operation_once(
+            &self,
+            payload: &str,
+            fail_operation: &str,
+            remaining_failures: &std::cell::Cell<u32>,
+        ) -> Result<String> {
+            let resolver = |cwd: &str| resolve_git_dir(Path::new(cwd));
+            let seam_fn = |root: &Path, seam_payload: &str, logger: Option<&dyn Logger>| {
+                let operation = serde_json::from_str::<serde_json::Value>(seam_payload)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("operation")
+                            .and_then(|op| op.as_str())
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_default();
+                if operation == fail_operation && remaining_failures.get() > 0 {
+                    remaining_failures.set(remaining_failures.get() - 1);
+                    return Err(anyhow!("injected transient '{operation}' seam failure"));
+                }
+                crate::services::hooks::mutation_scope::run_mutation_scope_from_payload_at_state_root(
+                    root,
+                    &self.state_root,
+                    seam_payload,
+                    logger,
+                )
+            };
+            run_opencode_mutation_scope_from_payload_with_seams(payload, None, &resolver, &seam_fn)
         }
 
         fn write(&self, name: &str, contents: &str) {
@@ -2221,5 +2582,94 @@ mod runtime_seam_tests {
         assert!(!super::state::adapter_state_dir(&repo.git_dir())
             .join("opencode-mutation-scope-state.json")
             .exists());
+    }
+
+    #[test]
+    fn regression_d_concurrent_survivor_stays_usable_after_a_transient_cleanup_failure() {
+        let repo = OpenCodeRepo::new("regression-d-transient-cleanup-failure");
+
+        repo.drive(&before(&repo, "write", "call_a"))
+            .expect("A Start");
+        repo.drive(&before(&repo, "write", "call_b"))
+            .expect("B Start");
+        let scoped = read_state(&repo.git_dir()).expect("adapter state readable");
+        let scope_a = scoped
+            .attempts
+            .iter()
+            .find(|attempt| attempt.call_id == "call_a")
+            .expect("A is tracked")
+            .scope_id
+            .clone();
+        let scope_b = scoped
+            .attempts
+            .iter()
+            .find(|attempt| attempt.call_id == "call_b")
+            .expect("B is tracked")
+            .scope_id
+            .clone();
+
+        repo.write("file_a.txt", "a mutated\n");
+        repo.write("file_b.txt", "b mutated\n");
+
+        let remaining_failures = std::cell::Cell::new(1_u32);
+        repo.drive_failing_seam_operation_once(
+            &error(&repo, "write", "call_a"),
+            "abandon",
+            &remaining_failures,
+        )
+        .expect("A terminal failure with a transient abandon failure returns best-effort");
+
+        let state = read_state(&repo.git_dir()).expect("adapter state readable");
+        assert_eq!(
+            state
+                .attempts
+                .iter()
+                .find(|attempt| attempt.call_id == "call_a")
+                .map(|attempt| attempt.phase),
+            Some(super::state::AttemptPhase::PendingAbandon),
+            "A's terminal intent survives the transient failure",
+        );
+        assert_eq!(
+            state
+                .attempts
+                .iter()
+                .find(|attempt| attempt.call_id == "call_b")
+                .map(|attempt| attempt.phase),
+            Some(super::state::AttemptPhase::Active),
+            "B is untouched",
+        );
+        assert!(!state.recovery.is_clear());
+
+        repo.drive(&error(&repo, "write", "call_a"))
+            .expect("a healthy duplicate ToolError retries and completes cleanup");
+
+        let state = read_state(&repo.git_dir()).expect("adapter state readable");
+        let remaining: Vec<&str> = state
+            .attempts
+            .iter()
+            .map(|attempt| attempt.call_id.as_str())
+            .collect();
+        assert_eq!(remaining, vec!["call_b"], "A retired, B still live");
+        assert_eq!(state.attempts[0].phase, super::state::AttemptPhase::Active);
+        assert!(state.recovery.is_clear());
+        assert_eq!(
+            repo.scope_status(&scope_a).map(|(_, status)| status),
+            Some("abandoned".to_string()),
+        );
+
+        repo.write("file_c.txt", "b's own later work\n");
+        repo.drive(&after(&repo, "write", "call_b"))
+            .expect("B Close");
+
+        let events = repo.mutation_events();
+        assert!(
+            events.iter().any(|(kind, _)| kind == "ineligible_unscoped"),
+            "the ambiguous A/B interval is consumed as IneligibleUnscoped: {events:?}",
+        );
+        assert!(
+            events.iter().any(|(kind, scope)| kind == "ai_exclusive"
+                && scope.as_deref() == Some(scope_b.as_str())),
+            "B still attributes its own later mutation once recovery completed: {events:?}",
+        );
     }
 }

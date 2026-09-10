@@ -14,7 +14,11 @@ and OpenCode CLI 1.15.4, and its adapter in
 `cli/src/services/hooks/opencode_mutation_scope/` (hidden `sce hooks
 opencode-mutation-scope`) now drives the same in-process seam with a full
 `Start`/`Close`/`Abandon` lifecycle, checkout-local durable state under
-`<git-dir>/sce/`, and a generation-tracked recovery barrier. It is **not yet
+`<git-dir>/sce/` (attempt phases `PendingStart` → `Active` → `PendingAbandon`),
+and a generation-tracked recovery barrier. Exact `ToolError` evidence persists
+the doomed attempt as `PendingAbandon` before any cleanup seam call and the
+attempt is removed only after the generic `abandon` succeeds, so a transient
+cleanup failure is retried rather than losing the scope. It is **not yet
 generated as a plugin or registered by `sce setup`**, so no real OpenCode
 session reaches it; Pi has no adapter. See
 [`context/cli/opencode-mutation-scope-integration.md`](cli/opencode-mutation-scope-integration.md).
