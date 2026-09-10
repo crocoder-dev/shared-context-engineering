@@ -1376,7 +1376,7 @@ before the first load-bearing probe.
       `context/overview.md`, `context/context-map.md`,
       `context/plans/opencode-mutation-scope-integration.md`.
 
-- [ ] T05: `Wire the OpenCode mutation-scope plugin` (status:todo)
+- [x] T05: `Wire the OpenCode mutation-scope plugin` (status:done)
   - Task ID: T05
   - Scope: In — add canonical `config/lib/` TypeScript plugin support and the
     generated `config/.opencode/plugins/sce-mutation-scope.ts`; register it in
@@ -1397,7 +1397,296 @@ before the first load-bearing probe.
     not fabricate a Close.
   - Verify: `config-lib-bun-tests`; TypeScript typecheck;
     `nix run .#pkl-check-generated`; setup merge/doctor tests; `nix flake check`.
+  - Completed: 2026-09-11
+  - Files changed (vs baseline `af975c77`):
+    - `config/lib/mutation-scope-plugin/opencode-sce-mutation-scope-plugin.ts`
+      (new — thin transport plugin: `chat.params` per-session `providerID/api.id`
+      map ignoring the `title` agent, replacing rather than merging the cached
+      model on every non-`title` event (see the **T05 correctness correction**
+      below); `tool.execute.before` for `write`/`edit`/`apply_patch` →
+      fail-closed `ToolExecuteBefore`; `shell.env` → fail-closed `ShellEnv` bash
+      Start; `tool.execute.after` → best-effort `ToolExecuteAfter` Close; `event`
+      → best-effort `ToolError` only, plus local `SessionDeleted` model-cache
+      bookkeeping; `spawnSync sce hooks opencode-mutation-scope`, throw on any
+      non-`"ok"` outcome — non-zero exit, spawn failure, timeout, or `ENOENT` —
+      per the same correction)
+    - `config/lib/mutation-scope-plugin/mutation-scope-runtime.test.ts` (new —
+      10 Bun tests over a mocked `node:child_process`)
+    - `config/lib/tsconfig.json` (`mutation-scope-plugin/**/*.ts` include)
+    - `config/pkl/base/opencode.pkl` (`sce_mutation_scope_plugin` registration)
+    - `config/pkl/renderers/common.pkl` (`sce_mutation_scope_plugin` appended
+      last in `sceGeneratedOpenCodePlugins`)
+    - `config/pkl/generate.pkl` (read source + emit
+      `config/.opencode/plugins/sce-mutation-scope.ts`)
+    - `config/pkl/renderers/generation-contract-check.pkl` (expected artifact
+      path + `expectedArtifactPathCount` 141 → 142)
+    - `config/pkl/check-generated.sh` (`required_paths` entry)
+    - `config/pkl/generator-inputs.txt`, `cli/build.rs`
+      (`CANONICAL_GENERATOR_INPUTS` + `create_fixture` write), `flake.nix`
+      (`cliBuildInputFileset`, `cliGeneratedInputSrc`, `configLibBashPolicySrc`
+      dir entry, `pklGeneratedCheckSrc`) — new `.ts` threaded through every
+      generator-input list and Nix fileset
+    - `scripts/test-check-generated.sh` (fake-pkl scaffold plugin file)
+    - `cli/src/services/doctor/inspect.rs`
+      (`inspect_opencode_plugin_ordering_health` + call from
+      `inspect_opencode_integration_health` + test module import + a
+      two-case unit test; reuses `ProblemKind::OpenCodePluginRegistryInvalid`)
+    - `cli/src/services/setup/config_merge.rs` (`generated_opencode_config`
+      helper adds the third plugin; count assertions 2/3 → 3/4;
+      `opencode_merge_keeps_mutation_scope_last_after_arbitrary_user_plugins`
+      test)
+    - `cli/src/services/setup/mod.rs`
+      (`install_merges_into_existing_opencode_config_json_and_stays_idempotent`
+      asserts `sce-mutation-scope.ts` is the final installed plugin)
+  - Result: A generated `config/.opencode/plugins/sce-mutation-scope.ts` (byte-
+    identical to the `config/lib/` source) is registered as the final entry of
+    the generated `opencode.json` `plugin` array. The existing OpenCode
+    config merge (`merge_opencode_config`) already drops SCE-shaped entries and
+    appends `generated.plugin` in order, so the merged/installed array is
+    `[<user plugins…>, sce-bash-policy, sce-agent-trace, sce-mutation-scope]` for
+    any user configuration — no merge-logic change was required, only the
+    generated-array change plus coverage. `sce doctor` now flags an installed
+    `opencode.json` that lists `./plugins/sce-mutation-scope.ts` anywhere other
+    than last (`inspect_opencode_plugin_ordering_health`). The plugin is a pure
+    transport adapter: it holds no mutation-protocol state, forwards the
+    T03/T04 wire contract (`hook_event_name` discriminator + `session_id` /
+    `call_id` / `cwd` / `tool_name` / `model`), anchors bash Start to
+    `shell.env` (post-permission, pre-spawn) and `write`/`edit`/`apply_patch`
+    Start to write-ahead `tool.execute.before`, and throws on **any** failure to
+    establish a tracked Start — non-zero adapter exit, spawn failure, timeout,
+    or a missing `sce` CLI (`ENOENT`, which also logs an install warning) — and
+    on an unusable `shell.env` identity (missing/empty `sessionID`/`callID`,
+    which never reaches the adapter at all) — so OpenCode always blocks the
+    tool when Start cannot be established (T01 Probe A/B; see the **T05
+    correctness correction** below for the `ENOENT` fix and the **T05
+    shell.env identity correction** below for the identity fix).
+    `tool.execute.after` is the only Close path and only fires on real tool
+    success, so terminal failures never fabricate a Close. Model provenance is
+    observed synchronously per turn via `chat.params` (`providerID/api.id`,
+    keyed by `sessionID`, ignoring the internal `title` agent); every
+    non-`title` event replaces the session's cached observation — a valid model
+    overwrites it, an invalid/missing one clears it — so absent evidence always
+    forwards `model: null` and never a stale prior value (see the correction
+    below). Only exact `ToolError` is forwarded for terminal/error signals;
+    `SessionIdle`/`SessionError`/`ServerDisposed` are not forwarded to the
+    adapter (its dispatch is a no-op for them) and `SessionDeleted` only clears
+    local model-cache state. `apply_patch` still has no live end-to-end coverage
+    (T01 credential gap) — unchanged, outstanding for `/validate` AC2.
+  - Verify outcomes:
+    - `config-lib-bun-tests` — `nix build .#checks.x86_64-linux.config-lib-bun-tests`:
+      PASS. Post-corrections: 26 tests across the two `config/lib` suites, 14 in
+      the mutation-scope suite: write-ahead forward + payload shape, non-zero
+      fail-closed throw, `ENOENT` fail-closed throw (corrected from an earlier
+      fail-open assertion — see the **T05 correctness correction** below),
+      `read`/`bash` ignored in `tool.execute.before`, `shell.env` bash Start,
+      `shell.env` fail-closed on missing/empty `sessionID`/`callID` (four
+      cases, corrected from an earlier fail-open no-op assertion — see the
+      **T05 shell.env identity correction** below), `shell.env` fail-closed on
+      adapter failure, best-effort Close never throws, tool-part `error` event
+      → `ToolError`, a later `chat.params` with no valid model clears rather
+      than reuses the cached session model, `title` agent model not observed.
+    - TypeScript typecheck — `bunx tsc --noEmit` in `config/lib`: the new plugin
+      source reports zero diagnostics (pre-existing `agent-trace` / `bash-policy`
+      files carry their own long-standing relaxed-typing errors, unaffected).
+      `nix build .#checks.x86_64-linux.config-lib-biome-check` /
+      `.config-lib-biome-format`: PASS.
+    - `nix run .#pkl-check-generated` — PASS: 142 files, inventory sha256
+      `2e62b83d7568197c4ef02e518d30c11c38247e37505b84c2c109ae0277d1e2ef`
+      (was 141, then `7803a2fb...` after the first correction). `nix build
+      .#checks.x86_64-linux.pkl-generated` /
+      `.cli-generated-input` / `.codex-hook-command`: PASS.
+      `bash scripts/test-check-generated.sh` /
+      `scripts/test-produce-cli-generated-input.sh`: PASS.
+    - setup merge / doctor tests — `nix build .#checks.x86_64-linux.cli-tests`:
+      PASS (includes the new `config_merge` ordering test, the `setup::mod`
+      install assertion, and the `inspect` two-case ordering-health test).
+      `.cli-clippy` / `.cli-fmt`: PASS.
+    - `nix flake check` — `all checks passed!` (exit 0).
+  - Context impact: additive + bounded. New generated OpenCode plugin surface
+    and a new `config/lib/` plugin package; the hidden `sce hooks
+    opencode-mutation-scope` command (T03/T04) is now reached in production. No
+    protocol, schema, Pkl model, Quint, or SQL change; no change to the generic
+    mutation-scope ingress or the OpenCode config-merge algorithm.
+    `context/sce/generated-opencode-plugin-registration.md`,
+    `context/sce/opencode-agent-trace-plugin-runtime.md`,
+    `context/cli/opencode-mutation-scope-integration.md`,
+    `context/cli/mutation-scope-hook-ingress.md`, `context/architecture.md`,
+    `context/context-map.md`, `context/glossary.md`, `context/overview.md` to be
+    verified during synchronization.
+  - Deviations / assumptions accepted:
+    - `shell.env` at `@opencode-ai/plugin@1.15.4` types `sessionID`/`callID` as
+      optional. T01 D4 proved both are present on the pinned version, so the
+      runtime is not expected to omit them; the plugin nonetheless throws the
+      same fail-closed message when either is missing/empty rather than
+      forwarding nothing, per the **T05 shell.env identity correction** below
+      — a mutation-capable Bash execution must never silently proceed when
+      SCE cannot establish its attribution scope, regardless of why the
+      identity is unusable.
+    - `spawnSync` timeout is 20s, above the adapter's 10s boundary-lock timeout,
+      so legitimate contention resolves before the plugin fails closed.
+    - The doctor ordering violation reuses `ProblemKind::OpenCodePluginRegistryInvalid`
+      rather than adding a new kind (avoids threading a new
+      `HealthProblemKind` mapping); the existing content-mismatch detection
+      already catches a reordered SCE fragment, this adds an explicit,
+      independently testable ordering signal.
+    - New TypeScript, tests, and adapter code are comment-free per
+      `feedback_no_comments_in_code`.
   - Context synchronization: pending
+  - **T05 correctness correction** (follow-up on `4d6a98d4`, same task):
+    - **Root cause 1 — fail-open on `ENOENT` contradicted the Done-when
+      contract.** The first cut's `forwardFailClosed` only threw when
+      `forwardToAdapter` returned `"failed"`; a `"cli-missing"` outcome
+      (`ENOENT` spawning `sce`) returned normally, so a tracked `write`/`edit`/
+      `apply_patch`/`bash` Start silently proceeded with **no** mutation scope
+      whenever the `sce` CLI was not on `PATH` — exactly the "failure to
+      establish Start prevents tracked mutation execution" property this task's
+      Done-when clause requires, and the accepted deviation had this backwards
+      by analogy by treating this Start boundary like `sce-bash-policy` /
+      `sce-agent-trace`'s already-fail-open advisory hooks. Fixed:
+      `forwardFailClosed` now throws whenever `forwardToAdapter` returns
+      anything other than `"ok"` — `"failed"` (non-zero adapter exit, spawn
+      failure, timeout) and `"cli-missing"` alike — so every transport failure
+      on a tracked Start blocks the tool. `ENOENT` still logs the
+      `sce CLI not found. Install it from ...` warning before throwing.
+    - **Root cause 2 — stale model provenance.** The `chat.params` handler only
+      ever called `observedModelBySessionId.set(...)` when the event carried a
+      valid `providerID` + `api.id`; a later non-`title` `chat.params` event for
+      the same session with no valid model left the previous turn's model
+      cached, so a tracked `Start` on that session forwarded a stale
+      `model_id` instead of `NULL` — a direct D8/AC10 violation ("unavailable
+      model evidence must produce `NULL`... never guessed... never backfilled").
+      Fixed: the handler now `delete`s the cached entry whenever a non-`title`
+      event's model is invalid/missing, so every observation event *replaces*
+      the session's current model state (set-or-clear), never merges into it.
+    - **Unnecessary adapter spawns for no-op broad events.** T04's dispatch
+      (`mod.rs` lines 480-483) already returns `Ok(String::new())` unconditionally
+      for `SessionIdle`/`SessionError`/`SessionDeleted`/`ServerDisposed` — none of
+      them resolve a checkout, touch state, or call the seam. The plugin was
+      nonetheless synchronously `spawnSync`-ing the adapter process for each of
+      these fire-and-forget OpenCode events for no behavioral effect. Fixed: the
+      plugin no longer forwards `SessionIdle`, `SessionError`, or
+      `ServerDisposed` to the adapter at all; `session.deleted` now only clears
+      the plugin's own local `observedModelBySessionId` entry (pure in-process
+      bookkeeping, no adapter spawn). Exact `ToolError` forwarding — which
+      drives real `abandon_and_consume` recovery — is unchanged. The adapter's
+      wire-format parser still accepts all four `hook_event_name` values
+      unmodified (a stable contract for any future caller), so this is a
+      plugin-side transport simplification, not a wire-contract change.
+    - **Files changed** (vs `4d6a98d4`):
+      `config/lib/mutation-scope-plugin/opencode-sce-mutation-scope-plugin.ts`
+      (fail-closed on every non-`"ok"` transport outcome; `chat.params` clears
+      instead of preserving a stale model; `AdapterPayload.hook_event_name`
+      narrowed to the four values the plugin still emits;
+      `SessionIdle`/`SessionError`/`ServerDisposed` forwarding removed;
+      `session.deleted` reduced to local cache bookkeeping),
+      `config/lib/mutation-scope-plugin/mutation-scope-runtime.test.ts`
+      (renamed the `ENOENT` test to assert fail-closed throw instead of
+      fail-open success; added
+      `a later chat.params with no valid model clears the cached session model
+      rather than reusing it`, replaying
+      `chat.params(session A, valid model X)` →
+      `chat.params(session A, model unavailable)` → tracked
+      `tool.execute.before(session A)` → asserts `model: null`); context:
+      `context/cli/opencode-mutation-scope-integration.md`,
+      `context/overview.md`, `context/context-map.md`, `context/glossary.md`,
+      `context/plans/opencode-mutation-scope-integration.md`. No Rust, Pkl,
+      Quint, or SQL change — the correction is entirely in the T05 TypeScript
+      transport layer; T03/T04's adapter and the generic mutation runtime are
+      untouched.
+    - **Verification.**
+      `nix run nixpkgs#bun -- test config/lib` — 23 passed, 0 failed (was 22;
+      +1 for the new model-replacement regression; the renamed `ENOENT` test
+      now asserts a throw). `bunx tsc --noEmit` in `config/lib` — zero
+      diagnostics against the mutation-scope-plugin source (the pre-existing
+      `agent-trace`/`bash-policy` relaxed-typing errors are unaffected, as
+      before). `nix run nixpkgs#biome -- check config/lib/mutation-scope-plugin`
+      — clean. `nix run .#pkl-check-generated` — PASS, 142 files (inventory
+      hash changed because the plugin source content changed; file count
+      unchanged). `nix flake check` (x86_64-linux) — `all checks passed!`,
+      including `cli-tests` (setup merge / doctor / targeted
+      `opencode_mutation_scope` Rust suites, all unchanged and still green
+      since no Rust code was touched), `cli-clippy`, `cli-fmt`,
+      `mutation-trace-quint-connect`, `pkl-generated`, and
+      `config-lib-bun-tests`.
+    - **macOS `nix flake check` investigation (pre-existing, unrelated to T05).**
+      The `Nix CI (macos-latest)` job on this PR (run `34543756402`, job
+      `103091833801`, commit `4d6a98d4`) fails
+      `checks.aarch64-darwin.mutation-trace-quint-connect` on
+      `services::mutation_trace::mbt::tests::mutation_cursor_generated_traces_refine_rust_protocol`
+      — the `#[quint_run(...)]`-generated-trace-refinement test that spawns 500
+      random Quint traces (seed `0xe88248b8` on this run) and replays them
+      through `protocol.rs`. The panic is a bare
+      `Quint returned non-zero code.` with no counterexample/state-mismatch
+      diagnostic printed — i.e. the `quint` subprocess itself is exiting
+      non-zero on macOS, not producing a semantic Rust/Quint disagreement.
+      Confirmed pre-existing and unrelated to T01-T05: the identical test fails
+      the same way (different random seed `0x63518d39`, same
+      `Quint returned non-zero code.` panic, no diagnostic) on the
+      `Nix CI (macos-latest)` job for commit `cc2fe862` — this plan's own
+      pre-T01 baseline, before any OpenCode mutation-scope work began. Every
+      other macOS check on this PR's run passes
+      (`config-lib-bun-tests`/`biome-check`/`biome-format`, `pkl-generated`,
+      `codex-hook-command`, `cli-clippy`, `cli-fmt`, `cli-generated-input`), and
+      `checks.x86_64-linux.mutation-trace-quint-connect` passes locally and in
+      the `Nix CI (ubuntu-latest)` job on the same commit — so this is an
+      aarch64-darwin-specific `quint`-runtime flake/incompatibility in the CI
+      environment, not a code defect introduced by this plan. No code change
+      was made for it; it is documented here rather than "fixed" because it
+      predates and is out of scope for T05.
+  - **T05 shell.env identity correction** (follow-up, same task):
+    - **Root cause — `shell.env` fail-open on missing/empty identity
+      contradicted the Done-when contract.** `@opencode-ai/plugin@1.15.4`
+      types `shell.env`'s `sessionID`/`callID` as optional. The prior cut
+      treated a missing or empty value the same as the previously-accepted
+      deviation (a conservative "forward nothing" no-op), so a tracked Bash
+      execution could reach OpenCode's shell spawn with **no** mutation scope
+      whenever SCE could not construct `ShellEnv`'s identity — the same
+      "failure to establish Start prevents tracked mutation execution"
+      property T05's Done-when clause already requires, and which the
+      `4d6a98d4` correction had already fixed for adapter-side transport
+      failures (`"failed"` / `"cli-missing"`). The gap was upstream of the
+      adapter: an unusable identity never reached `forwardFailClosed` at all.
+      Fixed: `shell.env` now throws `FAIL_CLOSED_MESSAGE` — the same
+      user-facing fail-closed message every other Start failure uses —
+      whenever `sessionID` or `callID` is missing, non-string, or empty,
+      before any attempt to spawn the adapter. Valid identity is unaffected:
+      `shell.env` still forwards `ShellEnv` exactly as before and the Rust
+      adapter's Start/spawn semantics, timeout, and `ENOENT` handling are
+      untouched.
+    - **Files changed:**
+      `config/lib/mutation-scope-plugin/opencode-sce-mutation-scope-plugin.ts`
+      (`shell.env`'s identity guard throws `FAIL_CLOSED_MESSAGE` instead of
+      returning), `config/lib/mutation-scope-plugin/mutation-scope-runtime.test.ts`
+      (replaced the single "shell.env without call identity forwards nothing"
+      test with four fail-closed regressions — missing `sessionID`, empty
+      `sessionID`, missing `callID`, empty `callID` — each asserting the
+      `FAIL_CLOSED_MESSAGE` throw and zero adapter spawns; the existing
+      "anchors the bash Start to shell.env" test continues to cover the valid-
+      identity forwarding path), this plan document (deviation bullet updated
+      to match — the plan and implementation now agree that no `shell.env`
+      identity gap fails open). No Rust, Pkl, Quint, or SQL change — the
+      pinned OpenCode v1.15.4 runtime is still expected to always supply both
+      values (T01 D4); this closes the theoretical gap for when it doesn't,
+      it does not change the supported-runtime assumption.
+    - **Verification.** `nix run nixpkgs#bun -- test config/lib/mutation-scope-plugin`
+      — 14 passed, 0 failed (was 11; net +3 for the fail-closed split of the
+      former single no-op test into four regressions). `nix run nixpkgs#bun --
+      test config/lib` — 26 passed, 0 failed across both suites (was 23).
+      `bunx tsc --noEmit` in `config/lib` — zero diagnostics against the
+      mutation-scope-plugin source (pre-existing `bash-policy-plugin` relaxed-
+      typing errors unaffected). `nix run nixpkgs#biome -- check
+      config/lib/mutation-scope-plugin` — clean. `nix run .#pkl-check-generated`
+      — PASS, 142 files (inventory hash changed because the plugin source
+      content changed; file count unchanged). `nix build
+      .#checks.x86_64-linux.config-lib-bun-tests` — PASS. `nix flake check`
+      (x86_64-linux) — `all checks passed!`, including `cli-tests`,
+      `cli-clippy`, `cli-fmt`, `mutation-trace-quint-connect`, `pkl-generated`,
+      `codex-hook-command`, `cli-generated-input`, `config-lib-biome-check`,
+      `config-lib-biome-format`, `npm-bun-tests`, `npm-biome-check`,
+      `npm-biome-format`, and `workflow-actionlint` (all unchanged and still
+      green since no Rust/Pkl code was touched). The pre-existing
+      aarch64-darwin `mutation-trace-quint-connect` flake documented above is
+      unrelated and unaffected.
 
 - [ ] T06: `Add end-to-end OpenCode mutation attribution regressions` (status:todo)
   - Task ID: T06
