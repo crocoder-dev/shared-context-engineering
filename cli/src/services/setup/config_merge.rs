@@ -543,7 +543,11 @@ mod tests {
     fn generated_opencode_config() -> Value {
         json!({
             "$schema": "https://opencode.ai/config.json",
-            "plugin": ["./plugins/sce-bash-policy.ts", "./plugins/sce-agent-trace.ts"]
+            "plugin": [
+                "./plugins/sce-bash-policy.ts",
+                "./plugins/sce-agent-trace.ts",
+                "./plugins/sce-mutation-scope.ts"
+            ]
         })
     }
 
@@ -563,10 +567,48 @@ mod tests {
         assert_eq!(merged["mcp"]["my-server"]["command"], "my-server");
 
         let plugin = merged["plugin"].as_array().unwrap();
-        assert_eq!(plugin.len(), 3);
+        assert_eq!(plugin.len(), 4);
         assert_eq!(plugin[0], "./plugins/my-plugin.ts");
         assert!(plugin.contains(&json!("./plugins/sce-bash-policy.ts")));
         assert!(plugin.contains(&json!("./plugins/sce-agent-trace.ts")));
+        assert_eq!(
+            plugin.last().unwrap(),
+            "./plugins/sce-mutation-scope.ts",
+            "the mutation-scope plugin must remain the final plugin after merging user plugins"
+        );
+    }
+
+    #[test]
+    fn opencode_merge_keeps_mutation_scope_last_after_arbitrary_user_plugins() {
+        let existing = json!({
+            "plugin": [
+                "./plugins/user-a.ts",
+                "./plugins/sce-bash-policy.ts",
+                "./plugins/user-b.ts"
+            ]
+        });
+
+        let merged =
+            merge_opencode_config(&existing, &generated_opencode_config(), "opencode.json")
+                .unwrap();
+
+        let plugin = merged["plugin"].as_array().unwrap();
+        assert_eq!(plugin.last().unwrap(), "./plugins/sce-mutation-scope.ts");
+        let sce_positions: Vec<usize> = plugin
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                entry
+                    .as_str()
+                    .filter(|path| path.starts_with("./plugins/sce-"))
+                    .map(|_| index)
+            })
+            .collect();
+        assert_eq!(
+            sce_positions,
+            vec![plugin.len() - 3, plugin.len() - 2, plugin.len() - 1],
+            "the three SCE plugins are appended contiguously after every user plugin"
+        );
     }
 
     #[test]
@@ -579,7 +621,7 @@ mod tests {
             merge_opencode_config(&once, &generated_opencode_config(), "opencode.json").unwrap();
 
         assert_eq!(once, twice);
-        assert_eq!(twice["plugin"].as_array().unwrap().len(), 2);
+        assert_eq!(twice["plugin"].as_array().unwrap().len(), 3);
     }
 
     #[test]
@@ -628,7 +670,7 @@ mod tests {
             merge_opencode_config(&existing, &generated_opencode_config(), "opencode.json")
                 .unwrap();
 
-        assert_eq!(merged["plugin"].as_array().unwrap().len(), 2);
+        assert_eq!(merged["plugin"].as_array().unwrap().len(), 3);
     }
 
     #[test]

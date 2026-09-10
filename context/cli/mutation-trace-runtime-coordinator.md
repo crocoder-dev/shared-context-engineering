@@ -14,8 +14,9 @@ submodule is declared privately in `runtime/mod.rs`, which re-exports
 in [`mutation-scope-runtime.md`](mutation-scope-runtime.md). `coordinate()` and
 `abandon_scope()` are now driven by the generic `sce hooks mutation-scope` CLI
 ingress. `reconcile_worktree` stays `runtime`-internal and unwired, and the
-mutation runtime does not itself insert into `diff_traces`. Concrete Claude Code
-and Codex adapters are wired to the seam; OpenCode and Pi remain future work.
+mutation runtime does not itself insert into `diff_traces`. Concrete Claude Code,
+Codex, and OpenCode adapters are wired to the seam (OpenCode reachable in
+production via a generated plugin installed by `sce setup`); Pi remains future work.
 
 `runtime` depends on `protocol`/`store`/`types` only, and has no dependency
 on any checkout-identity service — that service was removed from SCE
@@ -323,8 +324,9 @@ driven together; an inherited external-taint marker is overlaid onto
 `database_failure` recovery on the next invocation. The generic
 `sce hooks mutation-scope` CLI ingress now drives both entrypoints
 (`start`/`advance`/`close`/`flush` → `coordinate()`, `abandon` → `abandon_scope()`);
-the concrete Claude Code and Codex lifecycle adapters drive that ingress, while
-OpenCode and Pi remain future work.
+the concrete Claude Code, Codex, and OpenCode lifecycle adapters drive that
+ingress (OpenCode via a generated plugin installed by `sce setup`), while Pi
+remains future work.
 
 See also: [`mutation-trace-protocol.md`](mutation-trace-protocol.md),
 [`mutation-trace-store.md`](mutation-trace-store.md),
