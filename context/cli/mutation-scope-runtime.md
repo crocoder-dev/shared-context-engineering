@@ -244,11 +244,17 @@ recovery barrier but has no plugin/`sce setup` registration yet
 ([`opencode-mutation-scope-integration.md`](opencode-mutation-scope-integration.md)).
 Because OpenCode scopes are confirmation-required and legitimately concurrent,
 that adapter does not rely on `abandon_scope()` alone to make a preceding
-interval safe: on an exact `ToolError` it drives an ineligible `Flush` (while the
+interval safe: on an exact `ToolError` it first persists the doomed attempt as
+`PendingAbandon` (durable terminal intent, written *before* any seam call and
+alongside the recovery generation), then drives an ineligible `Flush` (while the
 doomed scope and any live siblings still resolve it to `IneligibleUnscoped`)
-*before* `abandon_scope()`, then a second `Flush` to clear the abandon's
-`needs_rebaseline` so surviving siblings keep their future intervals. Broad
-asynchronous OpenCode lifecycle events abandon nothing.
+*before* `abandon_scope()`, removes the attempt only once `abandon_scope()`
+succeeds, then drives a second `Flush` to clear the abandon's `needs_rebaseline`
+so surviving siblings keep their future intervals. A transient failure of any of
+those seam steps leaves the attempt `PendingAbandon` and recovery unresolved, so
+the operation is retried on the next recovery-capable boundary instead of the
+scope being silently forgotten. Broad asynchronous OpenCode lifecycle events
+abandon nothing.
 Pi has no adapter and still owns its own `ScopeId` / `EventId` derivation and
 stale-process detection; repository-scoped unowned-checkout cleanup is still
 open.
