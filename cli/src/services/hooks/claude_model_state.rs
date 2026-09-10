@@ -16,13 +16,12 @@ const SESSION_START_EVENT: &str = "SessionStart";
 const POST_MODEL_SWITCH_EVENT: &str = "PostModelSwitch";
 const ERROR_EVENT: &str = "sce.hooks.claude_model_state.error";
 const DB_OPEN_FAILED_EVENT: &str = "sce.hooks.claude_model_state.agent_trace_db_open_failed";
-const DB_READ_FAILED_EVENT: &str = "sce.hooks.claude_model_state.agent_trace_db_read_failed";
 const DB_WRITE_FAILED_EVENT: &str = "sce.hooks.claude_model_state.agent_trace_db_write_failed";
 
 struct BridgeInheritanceCandidate {
     session: String,
     agent: String,
-    sibling_session: String,
+    transcript_path: PathBuf,
 }
 
 pub(super) fn run_claude_model_state_subcommand(
@@ -169,29 +168,14 @@ where
     } else {
         let candidate = bridge_candidate
             .expect("bridge candidate must exist when no direct observation exists");
-        let sibling_state = match db.claude_model_state_by_session_and_agent(
-            &prefixed_diff_trace_session_id(CLAUDE_TOOL_NAME, &candidate.sibling_session),
-            "",
-        ) {
-            Ok(sibling_state) => sibling_state,
-            Err(error) => {
-                log_fail_open(
-                    logger,
-                    DB_READ_FAILED_EVENT,
-                    &error,
-                    Some(&candidate.session),
-                );
-                return String::new();
-            }
-        };
-        let Some(sibling_state) = sibling_state else {
+        let Some(model_id) = newest_bridge_chain_model(&db, &candidate.transcript_path) else {
             return String::new();
         };
 
         ClaudeModelStateObservation {
             session_id: candidate.session,
             agent_id: candidate.agent,
-            model_id: sibling_state.model_id,
+            model_id,
             observation_kind: ObservationKind::SessionStart,
             source: String::from("bridge_inherited"),
             observed_at_ms,
@@ -219,7 +203,6 @@ fn bridge_inheritance_candidate(stdin_payload: &str) -> Result<Option<BridgeInhe
         return Ok(None);
     }
 
-    // Keep the same required lifecycle fields as the ordinary SessionStart path.
     required_non_empty_string(payload, "source")?;
     let session_id = prefixed_diff_trace_session_id(
         CLAUDE_TOOL_NAME,
@@ -235,24 +218,14 @@ fn bridge_inheritance_candidate(stdin_payload: &str) -> Result<Option<BridgeInhe
     else {
         return Ok(None);
     };
-    let Some(bridge_session_id) =
-        super::claude_bridge_session::extract_claude_bridge_session_id(&transcript_path)
-    else {
+    if super::claude_bridge_session::extract_claude_bridge_session_id(&transcript_path).is_none() {
         return Ok(None);
-    };
-    let Some(sibling_session_id) =
-        super::claude_bridge_session::find_claude_bridge_sibling_session_id(
-            &transcript_path,
-            &bridge_session_id,
-        )
-    else {
-        return Ok(None);
-    };
+    }
 
     Ok(Some(BridgeInheritanceCandidate {
         session: session_id,
         agent: agent_id,
-        sibling_session: sibling_session_id,
+        transcript_path,
     }))
 }
 
