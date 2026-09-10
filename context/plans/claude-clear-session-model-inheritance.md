@@ -195,39 +195,39 @@ performs final validation.
   Claude-specific/local-only/non-exported/no-generic-abstraction guardrails from
   the `2026-09-01-claude-model-attribution-state` decision.
   - Validate: inspect the decision file for each listed element.
-- [ ] AC6: A raw structured Claude `PostToolUse` diff-trace event in a session with
+- [x] AC6: A raw structured Claude `PostToolUse` diff-trace event in a session with
   no `claude_model_state` row of its own, whose transcript is bridge-linked to chain
   members that do have state, persists `diff_traces.model_id` from that chain and
   writes a `claude_model_state` row for the current session with
   `source="bridge_inherited"`.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_attribution`.
-- [ ] AC7: Chain selection resolves the newest `claude_model_state` observation by
+- [x] AC7: Chain selection resolves the newest `claude_model_state` observation by
   `observed_at_ms`, not the chain origin and not the newest transcript file: for a
   chain whose root holds sonnet-5, whose mid-chain member holds opus-5 from a later
   switch, and whose cleared member's mtime-newest sibling is the root, the resolved
   model is opus-5.
   - Validate: focused regression under the same test command as AC6.
-- [ ] AC8: Every discovery and state branch fails open exactly as today — absent
+- [x] AC8: Every discovery and state branch fails open exactly as today — absent
   `transcript_path`, missing or unreadable transcript, absent or malformed bridge
   record, no other chain member, no member state, and DB read or write failure each
   leave `diff_traces.model_id` as it would have been, write no state row, keep hook
   success, and emit zero stdout.
   - Validate: focused per-branch tests under the same test command as AC6.
-- [ ] AC9: `transcript_path` carried for this resolution stays ephemeral: it is never
+- [x] AC9: `transcript_path` carried for this resolution stays ephemeral: it is never
   written to `diff_traces`, any other column, or any exported payload.
   - Validate: parser regression asserting the field is absent from the stored row, in
     the shape of the existing `claude_diff_trace_parser_keeps_agent_id_ephemeral_and_storage_free` test.
-- [ ] AC10: The second and later diff traces of a seeded session resolve from the
+- [x] AC10: The second and later diff traces of a seeded session resolve from the
   session's own exact-scope state with no repeated bridge discovery and no second
   state write.
   - Validate: focused regression asserting one discovery and one state write across
     two consecutive diff-trace events in one session.
-- [ ] AC11: Discovery stays bounded and local-only — leading records only, no
+- [x] AC11: Discovery stays bounded and local-only — leading records only, no
   full-transcript scan, no network — and one shared selection rule serves both the
   `SessionStart` and diff-trace call sites, with no second rule left in the code.
   - Validate: inspect the discovery and selection helpers for a bounded read and a
     single selection implementation; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_bridge_session` and `claude_model` pass alongside new coverage.
-- [ ] AC12: A decision record documents the amended attribution precedence
+- [x] AC12: A decision record documents the amended attribution precedence
   (`direct > exact transcript > exact state > bridge-derived chain state > NULL`),
   that a resolution path now writes state, the measured transcript-creation race that
   makes `SessionStart` unable to read its own transcript, the origin-vs-newest
@@ -646,7 +646,7 @@ Second phase:
     inspect the mandatory root context files before another task starts.
   - Context synchronization: synced
 
-- [ ] T08: `Point SessionStart at the shared selection and drop the superseded picker` (status:todo)
+- [x] T08: `Point SessionStart at the shared selection and drop the superseded picker` (status:done)
   - Task ID: T08
   - Scope: In — switch the model-less `SessionStart` bridge path in
     `cli/src/services/hooks/claude_model_state.rs` to T07's shared
@@ -659,7 +659,45 @@ Second phase:
     AC11 holds, and the `claude_model_state` suite passes with its bridge coverage
     updated to the shared rule.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_state`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_bridge_session`; `nix flake check`.
-  - Context synchronization: pending
+  - Completed: 2026-09-10
+  - Files changed: `cli/src/services/hooks/claude_model_state.rs`,
+    `cli/src/services/hooks/claude_bridge_session.rs`
+  - Result: The model-less `SessionStart` bridge path now resolves its model
+    through T07's shared `newest_bridge_chain_model` selection rule instead of a
+    private sibling lookup. `bridge_inheritance_candidate` keeps only the cheap
+    bounded `extract_claude_bridge_session_id` guard (so a non-bridge or
+    not-yet-created transcript still fails open before any DB open) and now
+    carries the event's `transcript_path`; after the DB opens, the no-direct-
+    observation branch calls `newest_bridge_chain_model(&db, &candidate.transcript_path)`
+    and falls through to today's silent no-op on `None`. The superseded
+    mtime-newest `find_claude_bridge_sibling_session_id` picker, its doc comment,
+    and its two unit tests are removed, along with the now-unused
+    `DB_READ_FAILED_EVENT` constant and the `SystemTime`/`thread`/`Duration`
+    test imports left unreferenced. The `SessionStart` bridge attempt itself is
+    unchanged. Per a mid-task instruction, comments in the touched code were
+    also dropped (the `// Keep the same required lifecycle fields` note and the
+    relocated doc comment).
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_state`
+    -> exit 0 (16 passed, 0 failed); `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_bridge_session`
+    -> exit 0 (7 passed, 0 failed — the two sibling-picker tests removed, chain
+    coverage retained); `nix flake check` -> all checks passed (clippy, fmt,
+    tests). Also `claude_model_attribution` -> exit 0 (3 passed, incl. the
+    end-to-end `SessionStart` bridge-inheritance regression unchanged) and
+    `cargo clippy --all-targets` -> exit 0 (no warnings).
+  - Done checks: All satisfied — exactly one selection rule
+    (`newest_bridge_chain_model`) exists in the code and both call sites
+    (`claude_model_state.rs` `SessionStart`, `mod.rs` diff-trace) use it;
+    AC11 holds (discovery still reads leading records only via
+    `take(MAX_LEADING_RECORDS)`, no full-transcript scan, no network, single
+    selection implementation); the `claude_model_state` suite passes with its
+    bridge behavior now exercised through the shared rule.
+  - Context impact: cross-cutting implementation boundary — the `SessionStart`
+    model-less bridge path and the diff-trace state-miss path now share one
+    newest-chain-observation selection rule, and the earlier mtime-newest
+    single-sibling picker no longer exists; context synchronization must
+    reconcile that the two call sites are unified on one rule and inspect the
+    mandatory root context files before final validation.
+  - Context synchronization: synced
 
 ## Open questions
 
@@ -695,25 +733,37 @@ Second phase:
 
 ## Validation Report
 
-**Status:** validated
-**Date:** 2026-09-08
+**Status:** validated  
+**Date:** 2026-09-10
 
 ### Commands run
 
 - `nix run .#pkl-check-generated` -> exit 0 (ephemeral Pkl generation passed: 141 files)
 - `nix flake check` -> exit 0 (all checks passed)
-- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_bridge_session` -> exit 0 (5 passed, 0 failed)
-- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_state` -> exit 0 (16 passed, 0 failed)
-- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model` -> exit 0 (22 passed, 0 failed)
 - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_attribution` -> exit 0 (3 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model` -> exit 0 (22 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_diff_trace` -> exit 0 (10 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_bridge_session` -> exit 0 (7 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_state` -> exit 0 (16 passed, 0 failed)
+- Inspection: `context/decisions/2026-09-08-claude-bridge-session-model-inheritance.md` against AC5
+- Inspection: `context/decisions/2026-09-10-claude-bridge-seeding-on-diff-trace.md` against AC12
+- Inspection: `cli/src/services/hooks/claude_bridge_session.rs`, `claude_model_state.rs`, `mod.rs` for bounded reads and a single shared selection rule
+- `git status` -> working tree clean of leftover artifacts (`db`, `db-wal`, `fix-direction.md` removed; committed in `cbec39f8`)
 
 ### Success-criteria verification
 
-- [x] AC1: Model-less `SessionStart` inherits the sibling model and persists `source="bridge_inherited"` -> persisted-row regression passed in `claude_model_attribution_bridge_inheritance_seeds_state_and_diff_trace`.
-- [x] AC2: Discovery and state-missing/error branches fail open without output or destructive state changes -> focused model-state and bridge-session failure-path tests passed; implementation inspection confirmed missing/unreadable/malformed/unmatched inputs and missing sibling state return without writes.
-- [x] AC3: Discovery is bounded/local-only and attribution precedence plus existing model suites remain unchanged -> bounded-reader regression passed, helper uses `take(MAX_LEADING_RECORDS)`, and `claude_bridge_session`, `claude_model`, and `claude_model_attribution` suites passed.
-- [x] AC4: Inherited state supplies diff-trace model attribution -> persisted-row regression passed with `diff_traces.model_id=claude/inherited-model`.
-- [x] AC5: Required production evidence, mechanism, caveat, and guardrails are documented -> inspected `context/decisions/2026-09-08-claude-bridge-session-model-inheritance.md`.
+- [x] AC1: Model-less `SessionStart` with a bridge-linked sibling holding state persists `source="bridge_inherited"` -> `claude_model_attribution` + `claude_model_state` suites pass (T03 regressions).
+- [x] AC2: Discovery/state failure branches fail open, zero stdout, no destructive writes -> `claude_bridge_session` and `claude_model_state` failure-path tests pass; helper inspection confirms fail-open returns.
+- [x] AC3: Bounded local-only discovery; `PostModelSwitch` and diff-trace precedence unchanged -> `take(MAX_LEADING_RECORDS)` in `claude_bridge_session.rs`; `claude_model`, `claude_model_attribution` pass unchanged.
+- [x] AC4: Inherited state feeds diff-trace `model_id` -> persisted-row regression in `claude_model_attribution` passes.
+- [x] AC5: 2026-09-08 decision documents the production evidence, mechanism, caveat, guardrails -> file inspection confirms each element.
+- [x] AC6: Raw structured Claude diff-trace state miss on a bridge-linked chain persists `model_id` and a `bridge_inherited` row -> `claude_diff_trace_seeds_bridge_chain_state_on_state_miss_and_reuses_it` passes.
+- [x] AC7: Chain selection resolves the newest `observed_at_ms` observation, not origin and not newest transcript file -> `claude_diff_trace_bridge_chain_selects_newest_observation_across_members` passes (opus-5 wins over the mtime-newest sonnet-5 sibling).
+- [x] AC8: Every discovery/state branch fails open, no state row, hook success, zero stdout -> `claude_diff_trace_bridge_chain_fails_open_without_write_or_attribution` and `newest_bridge_chain_model` fail-open branches pass.
+- [x] AC9: `transcript_path` stays ephemeral, absent from the stored row and every serialized payload -> `claude_diff_trace_parser_keeps_transcript_path_ephemeral_and_storage_free`, `..._leaves_transcript_path_none_without_the_field`, `..._normalized_opencode_payload_carries_no_transcript_path` pass; field carries `#[serde(skip)]`.
+- [x] AC10: Second and later diff traces resolve from the session's own state, no repeated discovery, no second write -> reuse assertion in `..._seeds_bridge_chain_state_on_state_miss_and_reuses_it` plus `claude_diff_trace_bridge_chain_does_not_seed_subagent_scope` pass.
+- [x] AC11: Bounded local-only discovery and one shared selection rule for both call sites -> `find_claude_bridge_sibling_session_id` removed; only `newest_bridge_chain_model` remains, used by both `claude_model_state.rs` `SessionStart` and `mod.rs` diff-trace; `claude_bridge_session`, `claude_model` pass.
+- [x] AC12: 2026-09-10 decision documents the amended precedence, the read-path state write, the measured transcript-creation race, the origin-vs-newest selection evidence, and guardrail compliance -> file inspection confirms each element.
 
 ### Failed checks and follow-ups
 
@@ -721,4 +771,5 @@ Second phase:
 
 ### Residual risks
 
-- Bridge inheritance remains best-effort and may inherit a stale model if a model switch races the first tool call.
+- Bridge inheritance stays best-effort: a session that clears and switches models before its first tool call inherits the previous model and is attributed to it rather than staying `NULL`. The newest-observation rule narrows but does not close this window.
+- One diff-trace resolution branch now performs a state write; it is exact-scope, guarded, and bounded to once per session.

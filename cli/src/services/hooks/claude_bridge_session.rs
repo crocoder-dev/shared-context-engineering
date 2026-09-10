@@ -1,7 +1,6 @@
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
 use std::path::Path;
-use std::time::SystemTime;
 
 use serde_json::Value;
 
@@ -14,77 +13,6 @@ const BRIDGE_SESSION_RECORD_TYPE: &str = "bridge-session";
 /// records are read so discovery never scans a complete transcript.
 pub fn extract_claude_bridge_session_id(transcript_path: &Path) -> Option<String> {
     extract_claude_bridge_session_id_from_reader(File::open(transcript_path).map(BufReader::new))
-}
-
-/// Find the most recently modified sibling transcript sharing a bridge-session
-/// identifier and return its session ID from the filename stem.
-///
-/// Directory access, metadata, transcript reads, and JSON parsing are all
-/// fail-open. The source transcript itself is excluded from the candidates.
-pub fn find_claude_bridge_sibling_session_id(
-    transcript_path: &Path,
-    bridge_session_id: &str,
-) -> Option<String> {
-    let bridge_session_id = bridge_session_id.trim();
-    if bridge_session_id.is_empty() {
-        return None;
-    }
-
-    let directory = transcript_path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let source_file_name = transcript_path.file_name();
-    let mut newest_match: Option<(SystemTime, String)> = None;
-
-    for entry in fs::read_dir(directory).ok()?.flatten() {
-        let candidate_path = entry.path();
-        if candidate_path.file_name() == source_file_name
-            || candidate_path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                != Some("jsonl")
-        {
-            continue;
-        }
-
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        if !metadata.is_file() {
-            continue;
-        }
-
-        let Some(candidate_session_id) = candidate_path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .map(str::trim)
-            .filter(|session_id| !session_id.is_empty())
-            .map(str::to_string)
-        else {
-            continue;
-        };
-
-        if extract_claude_bridge_session_id(&candidate_path).as_deref() != Some(bridge_session_id) {
-            continue;
-        }
-
-        let Ok(modified) = metadata.modified() else {
-            continue;
-        };
-        let should_replace = match &newest_match {
-            None => true,
-            Some((newest_modified, newest_session_id)) => {
-                modified > *newest_modified
-                    || (modified == *newest_modified && candidate_session_id > *newest_session_id)
-            }
-        };
-        if should_replace {
-            newest_match = Some((modified, candidate_session_id));
-        }
-    }
-
-    newest_match.map(|(_, session_id)| session_id)
 }
 
 pub fn find_claude_bridge_chain_session_ids(
@@ -184,8 +112,7 @@ mod tests {
         fs,
         io::Cursor,
         path::{Path, PathBuf},
-        thread,
-        time::{Duration, SystemTime, UNIX_EPOCH},
+        time::{SystemTime, UNIX_EPOCH},
     };
 
     use super::*;
@@ -256,53 +183,6 @@ mod tests {
             extract_claude_bridge_session_id_from_reader(Ok(Cursor::new(content))),
             None
         );
-    }
-
-    #[test]
-    fn finds_the_most_recent_matching_sibling_and_excludes_the_source() {
-        let directory = unique_temp_dir("siblings");
-        let source = directory.join("session-current.jsonl");
-        let older = directory.join("session-older.jsonl");
-        let newer = directory.join("session-newer.jsonl");
-        let unrelated = directory.join("session-unrelated.jsonl");
-
-        fs::write(&older, transcript("cse_shared", "session-older"))
-            .expect("older transcript should be written");
-        thread::sleep(Duration::from_millis(20));
-        fs::write(&newer, transcript("cse_shared", "session-newer"))
-            .expect("newer transcript should be written");
-        thread::sleep(Duration::from_millis(20));
-        fs::write(&source, transcript("cse_shared", "session-current"))
-            .expect("source transcript should be written");
-        fs::write(&unrelated, transcript("cse_other", "session-unrelated"))
-            .expect("unrelated transcript should be written");
-
-        assert_eq!(
-            find_claude_bridge_sibling_session_id(&source, "cse_shared"),
-            Some(String::from("session-newer"))
-        );
-        assert_eq!(
-            find_claude_bridge_sibling_session_id(&source, "cse_missing"),
-            None
-        );
-
-        fs::remove_dir_all(directory).expect("temporary directory should be removed");
-    }
-
-    #[test]
-    fn sibling_discovery_fails_open_for_invalid_source_and_empty_bridge_id() {
-        let directory = unique_temp_dir("invalid");
-        let source = directory.join("session-current.jsonl");
-        fs::write(&source, transcript("cse_shared", "session-current"))
-            .expect("source transcript should be written");
-
-        assert_eq!(find_claude_bridge_sibling_session_id(&source, "   "), None);
-        assert_eq!(
-            find_claude_bridge_sibling_session_id(&directory.join("missing.jsonl"), "cse_shared"),
-            Some(String::from("session-current"))
-        );
-
-        fs::remove_dir_all(directory).expect("temporary directory should be removed");
     }
 
     #[test]
