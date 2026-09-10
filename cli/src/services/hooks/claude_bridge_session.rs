@@ -87,7 +87,6 @@ pub fn find_claude_bridge_sibling_session_id(
     newest_match.map(|(_, session_id)| session_id)
 }
 
-#[allow(dead_code)]
 pub fn find_claude_bridge_chain_session_ids(
     transcript_path: &Path,
     bridge_session_id: &str,
@@ -363,13 +362,11 @@ mod tests {
 
         assert!(find_claude_bridge_chain_session_ids(&source, "cse_shared").is_empty());
         assert!(find_claude_bridge_chain_session_ids(&source, "   ").is_empty());
-        assert!(
-            find_claude_bridge_chain_session_ids(
-                Path::new("/does/not/exist/session.jsonl"),
-                "cse_shared"
-            )
-            .is_empty()
-        );
+        assert!(find_claude_bridge_chain_session_ids(
+            Path::new("/does/not/exist/session.jsonl"),
+            "cse_shared"
+        )
+        .is_empty());
 
         fs::remove_dir_all(directory).expect("temporary directory should be removed");
     }

@@ -576,7 +576,7 @@ Second phase:
     pass still required before the next task.
   - Context synchronization: synced
 
-- [ ] T07: `Seed and resolve Claude model state on the diff-trace state miss` (status:todo)
+- [x] T07: `Seed and resolve Claude model state on the diff-trace state miss` (status:done)
   - Task ID: T07
   - Scope: In — add a shared newest-chain-observation resolver (chain members from
     T06, one exact-scope state read per member, winner by greatest `observed_at_ms`
@@ -593,7 +593,58 @@ Second phase:
     `claude_model_state`, `claude_model`, `claude_bridge_session`, and
     `claude_model_attribution` suites pass unchanged alongside the new coverage.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_attribution`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model`; `nix flake check`.
-  - Context synchronization: pending
+  - Completed: 2026-09-10
+  - Files changed: `cli/src/services/hooks/claude_bridge_session.rs`,
+    `cli/src/services/hooks/claude_model_state.rs`,
+    `cli/src/services/hooks/mod.rs`
+  - Result: Added `newest_bridge_chain_model` in `claude_model_state.rs` — the
+    single newest-chain-observation selection rule: chain members from T06's
+    `find_claude_bridge_chain_session_ids`, one exact-scope `(cc_<member>, "")`
+    state read per member, winner by greatest `observed_at_ms` with the prefixed
+    session ID as a deterministic tie-break, fail-open to `None` at every step.
+    Wired it into the diff-trace persistence flow: `resolve_diff_trace_model_id`
+    now, on an exact-scope state miss for a raw structured Claude payload that
+    carries T05's `transcript_path`, calls `seed_diff_trace_model_from_bridge_chain`,
+    which resolves the chain model, persists a `claude_model_state` row for the
+    current session with `source="bridge_inherited"` and
+    `observation_kind=SessionStart` through the existing guarded
+    `upsert_claude_model_state` path, and returns that model for the trace in
+    hand. Seeding is confined to the exact main-session scope (`agent_id` empty),
+    so subagent traces never inherit main-session state. Any failure — absent
+    `transcript_path`, unreadable transcript, absent bridge record, no other
+    chain member, no member state, or a write failure — falls through to today's
+    `NULL`. Removed the now-unused `#[allow(dead_code)]` from the T06 chain
+    helper. The `SessionStart` call site and the superseded single-sibling picker
+    are untouched (T08).
+  - Verify: `claude_model_attribution` -> exit 0 (3 passed, 0 failed);
+    `claude_model` -> exit 0 (22 passed, 0 failed); `nix flake check` -> all
+    checks passed. Also `claude_diff_trace` -> exit 0 (10 passed, incl. 4 new
+    regressions), `claude_bridge_session` -> exit 0 (9 passed), `claude_model_state`
+    -> exit 0 (16 passed), `cargo clippy --all-targets` -> exit 0 (no warnings).
+  - Done checks: All satisfied — AC6 proven by
+    `claude_diff_trace_seeds_bridge_chain_state_on_state_miss_and_reuses_it`
+    (diff trace attributed from chain state, `bridge_inherited` row written for
+    the current session); AC7 by
+    `claude_diff_trace_bridge_chain_selects_newest_observation_across_members`
+    (newer `observed_at_ms` opus-5 wins over the mtime-newest sibling holding
+    sonnet-5); AC8 by
+    `claude_diff_trace_bridge_chain_fails_open_without_write_or_attribution`
+    (absent transcript and stateless chain both leave `model_id` NULL and write
+    no state row) plus the fail-open branches in `newest_bridge_chain_model`;
+    AC10 by the same first test (second trace resolves from the session's own
+    seeded state, `observed_at_ms` unchanged, no second row) and
+    `claude_diff_trace_bridge_chain_does_not_seed_subagent_scope`. Existing
+    `claude_model_state`, `claude_model`, `claude_bridge_session`, and
+    `claude_model_attribution` suites pass unchanged.
+  - Context impact: cross-cutting implementation boundary — adds a Claude
+    diff-trace resolution path that now writes `claude_model_state`, amends the
+    effective attribution precedence to
+    `direct > exact transcript > exact state > bridge-derived chain state > NULL`,
+    and establishes the newest-chain-observation selection rule shared with the
+    `SessionStart` path in T08; context synchronization must reconcile the
+    amended precedence, the read-path state write, and the selection rule, and
+    inspect the mandatory root context files before another task starts.
+  - Context synchronization: synced
 
 - [ ] T08: `Point SessionStart at the shared selection and drop the superseded picker` (status:todo)
   - Task ID: T08
