@@ -1032,7 +1032,7 @@ before the first load-bearing probe.
     - New code is comment-free per `feedback_no_comments_in_code`.
   - Context synchronization: synced
 
-- [ ] T04: `Implement OpenCode scope lifecycle and recovery` (status:todo)
+- [x] T04: `Implement OpenCode scope lifecycle and recovery` (status:done)
   - Task ID: T04
   - Scope: In — durable checkout-local OpenCode attempt bookkeeping in a state
     file under `<git-dir>/sce/` with its own lock never held across a seam call
@@ -1053,7 +1053,201 @@ before the first load-bearing probe.
     covering Start replay, concurrent attempts, Close replay, Abandon, delayed
     error cleanup, recovery failure, process/session cleanup, and zero-footprint
     untracked events.
-  - Context synchronization: pending
+  - Completed: 2026-09-10
+  - Files changed (vs baseline `4f95be85`):
+    - `cli/src/services/hooks/opencode_mutation_scope/os_lock.rs` (new — OS
+      advisory lock primitive, mirrors the Codex adapter)
+    - `cli/src/services/hooks/opencode_mutation_scope/boundary_lock.rs` (new —
+      per-`git-dir` boundary lock + 3 lock tests)
+    - `cli/src/services/hooks/opencode_mutation_scope/state.rs` (new —
+      `AdapterState`/`AdapterAttempt` keyed by `(session_id, call_id)`,
+      `AttemptPhase`, generation-tracked `RecoveryState`, `admit_tracked_attempt`,
+      `mark_active`, `remove_attempt`, `arm_recovery` /
+      `complete_recovery_flush` / `relinquish_recovery_flush` /
+      `normalize_recovery_after_boundary_lock_acquired`, durable
+      temp-file+rename writer, and 25 unit tests)
+    - `cli/src/services/hooks/opencode_mutation_scope/mod.rs` (wire
+      `mod state/os_lock/boundary_lock`; `dispatch_opencode_hook_event`
+      lifecycle, `establish_tracked_start`, `admit_or_recover` /
+      `readmit_after_flush`, `establish_start`, `handle_close`, seam payload
+      builders, `with_boundary_lock`; the ambiguity-consuming
+      `abandon_and_consume` (see **T04 soundness correction**) replaced the
+      first cut's `cleanup_attempts_matching` / `abandon_attempt`;
+      `run_opencode_mutation_scope_from_payload` now
+      resolves the checkout and drives the real generic seam;
+      `run_opencode_mutation_scope_from_payload_at_state_root` +
+      `_with_seams` test entrypoints; one T03 neutrality test replaced by a
+      fail-closed test; `lifecycle_tests` + `runtime_seam_tests`)
+  - Result: `sce hooks opencode-mutation-scope` now drives a full scope
+    lifecycle over the generic in-process ingress seam
+    (`hooks::mutation_scope::run_mutation_scope_from_payload`). Bash `Start` is
+    anchored to `ShellEnv` (post-permission, pre-spawn — `ToolExecuteBefore` for
+    `bash` is inert, so rejected bash creates no scope, D4); `write`/`edit`/
+    `apply_patch` `Start` is write-ahead on `ToolExecuteBefore` (D5); `Close` is
+    a successful `ToolExecuteAfter`; `ToolError` abandons exactly its
+    `(session_id, call_id)` attempt and consumes that attempt's ambiguous
+    filesystem interval before any surviving scope can confirm itself (see the
+    **T04 soundness correction** below); the broad asynchronous events
+    `SessionIdle`/`SessionError`/`SessionDeleted`/`ServerDisposed` are parsed
+    for a stable T05 wire contract but drive **no** live-scope abandonment
+    (D10/D11). Durable state is a
+    checkout-local `<git-dir>/sce/opencode-mutation-scope-state.json` guarded by
+    `opencode-mutation-scope-state.lock` (held only for individual file ops,
+    never across a seam call) with all boundary processing serialised by
+    `opencode-mutation-scope-boundary.lock`. Attempts are keyed solely by the
+    D1-frozen `(session_id, call_id)` `ScopeId` — no turn/agent identity, no
+    `attempt_seq`, and **no same-session predecessor sweep**: a second call in a
+    live session is admitted alongside the first (D9). `admit` fails closed on
+    its own recovery barrier (generation-tracked `Pending`/`Flushing`, Codex
+    model) and on a lingering foreign `PendingStart` (crash residue). Any
+    failure to durably establish `Start` — checkout resolution, admit denial,
+    seam error, `mark_active` error — returns a non-zero `Err` carrying
+    `FAIL_CLOSED_MESSAGE` so the T05 plugin throws and blocks the tracked tool;
+    `Close`/terminal paths are best-effort and fall back to `Abandon` on seam
+    failure. No TTL / staleness heuristic anywhere (D11). Duplicate `Start`,
+    `Close`, and terminal deliveries are idempotent. Untracked/delegation events
+    (`read`, `task`, MCP-shaped, unknown) never resolve a checkout, touch state,
+    or call the seam.
+  - Verify outcomes:
+    - `cargo test -p sce opencode_mutation_scope` state-machine tests — run as
+      the repo-canonical `nix build .#checks.x86_64-linux.cli-tests` (direct
+      `cargo test` is bash-policy-blocked; per `project_sce_cargo_test_invocation`
+      the fallback build is the real invocation): PASS. 73
+      `opencode_mutation_scope` tests, all green (25 `state::tests`, 3
+      `boundary_lock::tests`, 15 `lifecycle_tests`, 3 `runtime_seam_tests`, plus
+      the pre-existing parser/classification suite). Coverage: write-ahead Start
+      replay, bash Start anchored to `ShellEnv`, concurrent same-session scopes
+      staying separate, Close replay as a no-op, and three real-runtime
+      Start/Close/Abandon assertions against a repository Agent Trace DB. The
+      abandonment / broad-event / ambiguity-consumption coverage was corrected
+      and expanded — see **T04 soundness correction** (final suite: 1482 passed,
+      0 failed, 1 ignored).
+    - `nix build .#checks.x86_64-linux.cli-clippy` — PASS (clean).
+    - `nix build .#checks.x86_64-linux.cli-fmt` — PASS (`cargo fmt` applied).
+    - `git diff --cached --check` — CLEAN (4 files, +2243 / −9).
+  - Context impact: additive. New leaf modules under
+    `cli/src/services/hooks/opencode_mutation_scope/` (picked up by
+    `craneLib.fileset.commonCargoSources`; no `flake.nix` `workspaceSrc` entry —
+    tests use inline payloads and a temp repo, not `include_str!` fixtures). No
+    new hidden CLI surface (T03's `sce hooks opencode-mutation-scope` is now
+    live rather than inert). No protocol, schema, Pkl, Quint, or SQL change; no
+    change to the generic ingress seam itself.
+    `context/cli/mutation-scope-hook-ingress.md`,
+    `context/cli/mutation-scope-runtime.md`,
+    `context/cli/opencode-mutation-scope-integration.md` (new, expected),
+    `context/architecture.md`, `context/context-map.md`, `context/glossary.md`,
+    `context/overview.md` to be verified during synchronization.
+  - Deviations / assumptions accepted:
+    - State-file shape and locking strategy (delegated to this task by the plan)
+      mirror the Codex adapter's structure and per-adapter file layout:
+      `opencode-mutation-scope-state.json` / `.lock` /
+      `-boundary.lock`. `os_lock` / `boundary_lock` are duplicated into the
+      module rather than promoted to a shared location, matching the existing
+      `claude_mutation_scope` / `codex_mutation_scope` layout.
+    - Adapter↔plugin fail-closed contract: a non-zero adapter exit on a tracked
+      `Start` event means "block the tool"; consumed by the T05 plugin. Internal
+      SCE interface, following the Codex deny precedent adapted to OpenCode's
+      throw-based transport.
+    - Recovery uses generation-tracked `Pending`/`Flushing` (Codex model), not a
+      bare boolean, for the D11 multi-writer case.
+    - `ScopeId` keeps the T03 scheme with no `n=<attempt_seq>` component; a
+      lingering `PendingStart` from a crashed invocation blocks new tracked
+      Starts in that checkout until a terminal/session event clears it — a
+      deliberate fail-closed availability cost per D11.
+    - `apply_patch` still has no live end-to-end coverage here (T01 credential
+      gap); its lifecycle is identical to `write`/`edit` in the adapter and the
+      outstanding live-coverage item for `/validate` is unchanged.
+    - New code is comment-free per `feedback_no_comments_in_code`.
+  - Context synchronization: synced
+  - **T04 soundness correction** (follow-up on `84dcd8d2`, same task):
+    - **Root cause.** The first T04 cut used `abandon_scope()` alone to retire an
+      uncertain scope. `abandon_scope()` transitions scope state and arms
+      `needs_rebaseline` but does not itself consume the filesystem interval the
+      abandoned scope's possible mutations occupy. With a concurrent survivor:
+      `Start(A) Start(B) mutate(A) mutate(B) Abandon(A) Close(B)` — once A left
+      the live set, B became the sole live scope and its own `Close` confirmed
+      it, so the interval that could contain A's changes was attributable
+      `AiExclusive(B)`. The adapter's own recovery barrier forbade the
+      ambiguity-clearing `Flush` while any attempt remained live
+      (`Pending + non-empty attempts ⇒ Flush forbidden`), which is exactly what
+      allowed the contamination. Broad asynchronous events
+      (`SessionIdle`/`SessionError`/`SessionDeleted` → sweep the session,
+      `ServerDisposed` → sweep the checkout) were also unsafe: OpenCode's
+      `event(...)` is fire-and-forget (D10), so a delayed event can retire a
+      newer live call, and `ServerDisposed` carries only checkout identity so one
+      process's disposal cannot be proven to refer to another's scopes.
+    - **New recovery/Flush semantics.** `abandon_and_consume` (mod.rs), run under
+      the per-`git-dir` boundary lock: (1) `arm_and_begin_recovery_flush` →
+      `Flushing{gen}`; (2) ingress `flush` while the doomed scope **and any live
+      siblings** are still registered — the generalized confirmation-required
+      rule makes the runtime resolve it `IneligibleUnscoped` and advance the
+      cursor past the ambiguous interval; (3) ingress `abandon` for each doomed
+      scope, then `remove_attempt`; (4) a second ingress `flush` to consume the
+      `needs_rebaseline` that step 3 arms, so surviving siblings keep their
+      **future** intervals; (5) `complete_recovery_flush(gen)` → `Clear`.
+      Surviving attempts stay `Active` and are never swept.
+      `admit_tracked_attempt` no longer forbids the flush while attempts remain
+      (`Pending ⇒ FlushClaimed` unconditionally): a new `Start` retries a
+      previously-failed consume, and stays fail-closed until it succeeds. A
+      failed `flush` `relinquish`es to `Pending` (recovery-required); generation
+      ownership still prevents a stale `flush` completion from clearing a newer
+      recovery requirement (`complete_recovery_flush` guards `owned == gen`).
+    - **Broad async events now handled** as non-authoritative: `SessionIdle`,
+      `SessionError`, `SessionDeleted`, and `ServerDisposed` are parsed (stable
+      T05 wire contract) but abandon nothing. Lingering unconfirmed scopes after
+      a crash / missing terminal event are accepted (D3 keeps them non-AI); no
+      TTL. Only exact `ToolError` causal evidence retires an attempt.
+    - **`ToolError` gained `tool_name`.** T01's `message.part.updated` tool part
+      carries `part.tool` on the `error` transition
+      (`captures/*-perm-ask.jsonl`), so the wire contract now carries
+      `tool_name` on `ToolError`; the adapter classifies before `resolve_git_dir`
+      / boundary lock / state access, so a `Delegation` or `Untracked`
+      `ToolError` is genuinely zero-footprint.
+    - **Tests added / rewritten** (`opencode_mutation_scope`): `state::tests` —
+      `admit_claims_the_flush_even_while_attempts_remain_outstanding`,
+      `arm_and_begin_recovery_flush_claims_flushing_regardless_of_pending_generation`,
+      `a_stale_flush_completion_never_clears_a_newer_recovery_generation` (the
+      gen-4-vs-gen-5 case); `lifecycle_tests` —
+      `tool_error_retires_the_named_attempt_and_consumes_the_ambiguous_interval`,
+      `exact_error_retires_only_the_named_sibling`,
+      `a_close_before_start_confirmation_consumes_rather_than_closes`,
+      `session_idle_is_non_destructive`,
+      `delayed_session_idle_cannot_retire_a_newer_call`,
+      `server_disposed_cannot_sweep_another_processes_attempt`,
+      `a_failed_sibling_does_not_retire_survivors_or_block_new_starts`,
+      `a_terminal_failure_consumes_the_interval_and_the_next_start_proceeds`,
+      `a_failed_ambiguity_flush_stays_recovery_pending_and_fails_closed_starts`,
+      `close_seam_failure_falls_back_to_consume`, plus `tool_error` untracked
+      cases in the zero-footprint test; `runtime_seam_tests` (real temp Git repo
+      + real Agent Trace DB) — `regression_a_failed_concurrent_scope_cannot_contaminate_a_survivor`
+      (asserts an `ineligible_unscoped` event and **no** `ai_exclusive` for B),
+      `regression_b_survivor_still_attributes_its_later_mutations` (B gets
+      `ai_exclusive` for post-consume work),
+      `regression_c_exact_error_does_not_sweep_siblings_through_the_real_runtime`,
+      `regression_d_delayed_session_idle_cannot_kill_a_newer_call`,
+      `regression_e_server_disposed_cannot_sweep_another_process`,
+      `regression_f_untracked_tool_error_is_zero_footprint`.
+    - **Verification.** `nix build .#checks.x86_64-linux.cli-tests` —
+      `test result: ok. 1482 passed; 0 failed; 1 ignored`.
+      `nix build .#checks.x86_64-linux.cli-clippy` / `.cli-fmt` — PASS.
+      `nix run .#quint -- typecheck spec/mutation_cursor.qnt` — clean.
+      `nix build .#checks.x86_64-linux.mutation-trace-quint-connect` —
+      `16 passed; 0 failed`. `nix run .#pkl-check-generated` — 141 files,
+      inventory sha256 `b5967aeccf044184f8e6aaab0a863254726e849664f95abdc733c77065dcb34e`.
+      `git diff --check` — clean.
+    - **No protocol / Quint / Pkl / SQL change.** The fix is entirely in the
+      OpenCode adapter recovery layer plus the `ToolError` wire contract; the
+      generic runtime's `flush` / `abandon` / `coordinate` semantics and the
+      `requires_boundary_confirmation` predicate are unchanged, so no Quint
+      semantic change was necessary — the existing Quint checks are re-run only
+      to prove no regression.
+    - **Files changed** (vs `84dcd8d2`):
+      `cli/src/services/hooks/opencode_mutation_scope/mod.rs`,
+      `cli/src/services/hooks/opencode_mutation_scope/state.rs`; context:
+      `context/cli/opencode-mutation-scope-integration.md`,
+      `context/cli/mutation-scope-hook-ingress.md`,
+      `context/cli/mutation-scope-runtime.md`, `context/overview.md`,
+      `context/context-map.md`, `context/plans/opencode-mutation-scope-integration.md`.
 
 - [ ] T05: `Wire the OpenCode mutation-scope plugin` (status:todo)
   - Task ID: T05
