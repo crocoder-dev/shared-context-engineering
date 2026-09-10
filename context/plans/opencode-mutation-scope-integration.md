@@ -1248,6 +1248,133 @@ before the first load-bearing probe.
       `context/cli/mutation-scope-hook-ingress.md`,
       `context/cli/mutation-scope-runtime.md`, `context/overview.md`,
       `context/context-map.md`, `context/plans/opencode-mutation-scope-integration.md`.
+  - **T04 soundness/liveness correction — durable terminal-cleanup intent**
+    (follow-up on `5995391a`, same task):
+    - **Root cause.** `abandon_and_consume` removed the doomed attempt from
+      adapter state even when the generic ingress `abandon` seam call failed —
+      the abandon error was only logged, then `remove_attempt` ran
+      unconditionally. That produced *adapter state: A forgotten / mutation
+      protocol: A still Active + unconfirmed*: because OpenCode scopes are
+      confirmation-required, the orphaned protocol scope suppressed positive
+      attribution indefinitely (a permanent false negative) and — worse — the
+      adapter had discarded the exact durable information needed to retry the
+      terminal cleanup. A related gap: after a first ambiguity-`flush` failure,
+      recovery state remembered only `Pending { generation }`, not "scope A is
+      known terminal and still needs cleanup", so a later generic recovery flush
+      could clear recovery and admit new work while silently dropping the
+      responsibility to retire A.
+    - **Final attempt state machine.** `AttemptPhase` is now
+      `PendingStart → Active → PendingAbandon`. `PendingAbandon` means exact
+      terminal evidence was observed, the OpenCode execution is finished, the
+      protocol scope may still be live, and cleanup/rebaseline is outstanding;
+      such an attempt never returns to `Active`, is never a reusable `Start`, and
+      is not removed until the generic `abandon` definitely succeeds. No elapsed
+      time, no TTL.
+    - **`PendingAbandon` durability ordering.** On an exact tracked `ToolError`
+      under the boundary lock: (1) `state::begin_terminal_cleanup` persists the
+      doomed attempt(s) as `PendingAbandon` **and** the recovery generation
+      (`Flushing{g}`) in a single durable write — before any seam call;
+      (2) `resolve_recovery` drives the ineligible ambiguity `flush` while the
+      doomed scope + siblings are still live; (3) drives the generic `abandon`
+      for each doomed scope; (4) `state::remove_attempt` runs **only after** that
+      `abandon` returns `Ok`; (5) drives the rebaseline `flush`;
+      (6) `complete_recovery_flush(g)` clears recovery only if `g` still owns it.
+      Terminal intent is persisted before any cleanup call that can fail; the
+      attempt is removed only after `abandon` has definitely succeeded.
+    - **First ambiguity `flush` fails.** `resolve_recovery` relinquishes
+      `Flushing{g} → Pending{g}` and returns; the doomed attempt stays
+      `PendingAbandon`, siblings stay `Active`, recovery stays unresolved,
+      nothing is removed. A new tracked `Start` while recovery is unresolved
+      hits `FlushClaimed{g}` and replays the whole `flush`/`abandon`/`flush`
+      sequence before it can itself be admitted (fails closed until it
+      completes). A replayed `Start` for the `PendingAbandon` identity itself is
+      refused (`TerminalAttemptBlocked`) and fails closed.
+    - **`abandon` fails.** `resolve_recovery` relinquishes to `Pending{g}` and
+      returns before `remove_attempt`; the attempt stays `PendingAbandon` and
+      stays in durable adapter state; the protocol scope is not falsely
+      considered cleaned. Retry replays the idempotent sequence (repeating the
+      ambiguity `flush` for safety) until `abandon` succeeds, then removes the
+      attempt and clears recovery.
+    - **Rebaseline `flush` fails after a successful `abandon`.** The doomed
+      attempt was already removed (its `abandon` succeeded); recovery stays
+      `Pending{g}`, which alone carries the "finish the rebaseline" obligation.
+      The next recovery-capable boundary re-runs `resolve_recovery`: with no
+      `PendingAbandon` attempts left it just replays `flush` (consuming the
+      `needs_rebaseline` that `abandon` armed) and clears recovery. No permanent
+      poison; the smaller state machine (recovery generation, not an extra
+      per-attempt cleanup phase) is sufficient because `abandon` is idempotent.
+    - **Recovery retries known terminal attempts.** `admit_or_recover`'s
+      `FlushClaimed{g}` branch no longer does a bare `flush` + `complete` +
+      admit. It calls `resolve_recovery(g)`, which reads the current
+      `PendingAbandon` set and drives `flush` → `abandon` each → remove each →
+      `flush` → `complete`. Recovery is "complete" only when every terminal
+      protocol scope for that generation has been retired and the rebaseline
+      `flush` has succeeded. `normalize_recovery_after_boundary_lock_acquired`
+      still demotes an orphaned `Flushing{g}` (crashed mid-flush) to `Pending{g}`.
+    - **Surviving parallel scopes preserved.** `resolve_recovery` only touches
+      attempts whose phase is `PendingAbandon`; siblings stay `Active` and are
+      never swept. The concurrent
+      `Start(A) Start(B) mutate mutate ToolError(A)` scenario still consumes the
+      A/B interval as `IneligibleUnscoped` and lets a later `Close(B)` produce
+      `AiExclusive(B)` for B's post-recovery interval. No same-session
+      predecessor sweep. Broad async `SessionIdle`/`SessionError`/
+      `SessionDeleted`/`ServerDisposed` events remain non-destructive.
+    - **Duplicate `ToolError` / late `ToolError` after `Close`.** Duplicate while
+      `PendingAbandon` re-enters `resolve_recovery` for the same generation
+      (idempotent: no new attempt, no new scope, generation not incremented, no
+      sibling sweep). After a completed `Close` the attempt is gone, so
+      `abandon_and_consume` finds nothing and returns a harmless no-op.
+    - **State model / API.** `state.rs`: `AttemptPhase::PendingAbandon`;
+      `AdmitDecision::TerminalAttemptBlocked`; `admit_tracked_attempt` checks the
+      exact-key match *before* the recovery-state match (so a `PendingAbandon`
+      identity is refused terminally and an `Active`/`PendingStart` duplicate is
+      reused) and treats a lingering `PendingAbandon` like a `PendingStart` for
+      the uncertain-attempt fail-closed guard; new `begin_terminal_cleanup`
+      (atomic phase-mark + generation arm). `mod.rs`: `RecoveryResolution` enum;
+      `resolve_recovery` replaces the inline flush/abandon/flush in both
+      `abandon_and_consume` and the `FlushClaimed` branch; `handle_close` routes
+      `PendingAbandon` (like `PendingStart`) to `abandon_and_consume`.
+    - **Tests added** (`opencode_mutation_scope`): `lifecycle_tests` —
+      `regression_a_abandon_failure_preserves_terminal_intent_then_recovers`,
+      `regression_b_ambiguity_flush_failure_blocks_new_starts_then_recovers`,
+      `regression_c_rebaseline_flush_failure_is_recoverable_without_poison`,
+      `regression_e_duplicate_tool_error_is_idempotent`,
+      `regression_f_start_replay_for_a_pending_abandon_identity_never_reactivates`,
+      `regression_g_late_tool_error_after_close_is_a_harmless_no_op`,
+      `regression_h_siblings_stay_active_through_a_transient_cleanup_failure`;
+      `runtime_seam_tests` (real temp Git repo + real Agent Trace DB) —
+      `regression_d_concurrent_survivor_stays_usable_after_a_transient_cleanup_failure`
+      (injects one transient `abandon` seam failure, retries via a duplicate
+      healthy `ToolError`, then asserts the A/B interval is `ineligible_unscoped`,
+      A's protocol scope ends `abandoned`, and B's later mutation is
+      `ai_exclusive`). `RecordingSeam` gained `failing_once_on` /
+      `failing_on_nth_occurrence`; `OpenCodeRepo` gained
+      `drive_failing_seam_operation_once`. The existing stale-generation
+      regression (`a_stale_flush_completion_never_clears_a_newer_recovery_generation`)
+      is retained.
+    - **Verification.** `nix build .#checks.x86_64-linux.cli-tests` — ok (exit 0;
+      `opencode_mutation_scope` suite 91 passed / 0 failed run directly).
+      `nix build .#checks.x86_64-linux.cli-clippy` / `.cli-fmt` — PASS.
+      `nix run .#quint -- typecheck spec/mutation_cursor.qnt` — clean;
+      `nix run .#quint -- test spec/mutation_cursor.qnt` — exit 0 (no spec
+      change). `nix build .#checks.x86_64-linux.mutation-trace-quint-connect` —
+      exit 0. `nix run .#pkl-check-generated` — 141 files, inventory sha256
+      `b5967aeccf044184f8e6aaab0a863254726e849664f95abdc733c77065dcb34e`
+      (unchanged). `git diff --check` — clean.
+    - **No protocol / Quint / Pkl / SQL / wire-contract change.** The fix is
+      entirely OpenCode adapter recovery bookkeeping (`mod.rs` + `state.rs`); the
+      `ToolError` wire contract from the previous correction is unchanged. The
+      generic runtime's `flush` / `abandon` (idempotent) / `coordinate` semantics
+      and `requires_boundary_confirmation` already suffice — existing Quint
+      checks re-run only as regression verification.
+    - **Files changed** (vs `5995391a`):
+      `cli/src/services/hooks/opencode_mutation_scope/mod.rs`,
+      `cli/src/services/hooks/opencode_mutation_scope/state.rs`; context:
+      `context/cli/opencode-mutation-scope-integration.md`,
+      `context/cli/mutation-scope-hook-ingress.md`,
+      `context/cli/mutation-scope-runtime.md`, `context/architecture.md`,
+      `context/overview.md`, `context/context-map.md`,
+      `context/plans/opencode-mutation-scope-integration.md`.
 
 - [ ] T05: `Wire the OpenCode mutation-scope plugin` (status:todo)
   - Task ID: T05
