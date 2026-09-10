@@ -87,6 +87,67 @@ pub fn find_claude_bridge_sibling_session_id(
     newest_match.map(|(_, session_id)| session_id)
 }
 
+#[allow(dead_code)]
+pub fn find_claude_bridge_chain_session_ids(
+    transcript_path: &Path,
+    bridge_session_id: &str,
+) -> Vec<String> {
+    let bridge_session_id = bridge_session_id.trim();
+    if bridge_session_id.is_empty() {
+        return Vec::new();
+    }
+
+    let directory = transcript_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let source_file_name = transcript_path.file_name();
+
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Vec::new();
+    };
+
+    let mut session_ids = Vec::new();
+    for entry in entries.flatten() {
+        let candidate_path = entry.path();
+        if candidate_path.file_name() == source_file_name
+            || candidate_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                != Some("jsonl")
+        {
+            continue;
+        }
+
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+
+        let Some(candidate_session_id) = candidate_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(str::trim)
+            .filter(|session_id| !session_id.is_empty())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+
+        if extract_claude_bridge_session_id(&candidate_path).as_deref() != Some(bridge_session_id) {
+            continue;
+        }
+
+        session_ids.push(candidate_session_id);
+    }
+
+    session_ids.sort();
+    session_ids.dedup();
+    session_ids
+}
+
 fn extract_claude_bridge_session_id_from_reader<R: BufRead>(
     reader: io::Result<R>,
 ) -> Option<String> {
@@ -241,6 +302,95 @@ mod tests {
             find_claude_bridge_sibling_session_id(&directory.join("missing.jsonl"), "cse_shared"),
             Some(String::from("session-current"))
         );
+
+        fs::remove_dir_all(directory).expect("temporary directory should be removed");
+    }
+
+    #[test]
+    fn returns_every_chain_member_session_id_in_deterministic_order() {
+        let directory = unique_temp_dir("chain-multi");
+        let source = directory.join("session-current.jsonl");
+        let member_b = directory.join("session-b.jsonl");
+        let member_a = directory.join("session-a.jsonl");
+        let unrelated = directory.join("session-unrelated.jsonl");
+
+        fs::write(&source, transcript("cse_shared", "session-current"))
+            .expect("source transcript should be written");
+        fs::write(&member_b, transcript("cse_shared", "session-b"))
+            .expect("member transcript should be written");
+        fs::write(&member_a, transcript("cse_shared", "session-a"))
+            .expect("member transcript should be written");
+        fs::write(&unrelated, transcript("cse_other", "session-unrelated"))
+            .expect("unrelated transcript should be written");
+
+        assert_eq!(
+            find_claude_bridge_chain_session_ids(&source, "cse_shared"),
+            vec![String::from("session-a"), String::from("session-b")]
+        );
+
+        fs::remove_dir_all(directory).expect("temporary directory should be removed");
+    }
+
+    #[test]
+    fn returns_the_single_chain_member_when_only_one_sibling_matches() {
+        let directory = unique_temp_dir("chain-single");
+        let source = directory.join("session-current.jsonl");
+        let member = directory.join("session-only.jsonl");
+
+        fs::write(&source, transcript("cse_shared", "session-current"))
+            .expect("source transcript should be written");
+        fs::write(&member, transcript("cse_shared", "session-only"))
+            .expect("member transcript should be written");
+
+        assert_eq!(
+            find_claude_bridge_chain_session_ids(&source, "cse_shared"),
+            vec![String::from("session-only")]
+        );
+
+        fs::remove_dir_all(directory).expect("temporary directory should be removed");
+    }
+
+    #[test]
+    fn chain_discovery_fails_open_to_an_empty_result() {
+        let directory = unique_temp_dir("chain-none");
+        let source = directory.join("session-current.jsonl");
+        let unrelated = directory.join("session-unrelated.jsonl");
+
+        fs::write(&source, transcript("cse_shared", "session-current"))
+            .expect("source transcript should be written");
+        fs::write(&unrelated, transcript("cse_other", "session-unrelated"))
+            .expect("unrelated transcript should be written");
+
+        assert!(find_claude_bridge_chain_session_ids(&source, "cse_shared").is_empty());
+        assert!(find_claude_bridge_chain_session_ids(&source, "   ").is_empty());
+        assert!(
+            find_claude_bridge_chain_session_ids(
+                Path::new("/does/not/exist/session.jsonl"),
+                "cse_shared"
+            )
+            .is_empty()
+        );
+
+        fs::remove_dir_all(directory).expect("temporary directory should be removed");
+    }
+
+    #[test]
+    fn chain_discovery_ignores_a_sibling_whose_bridge_record_is_past_the_leading_bound() {
+        let directory = unique_temp_dir("chain-bounded");
+        let source = directory.join("session-current.jsonl");
+        let late = directory.join("session-late.jsonl");
+
+        fs::write(&source, transcript("cse_shared", "session-current"))
+            .expect("source transcript should be written");
+
+        let mut late_content = String::new();
+        for _ in 0..MAX_LEADING_RECORDS {
+            late_content.push_str("{\"type\":\"user\"}\n");
+        }
+        late_content.push_str(&transcript("cse_shared", "session-late"));
+        fs::write(&late, late_content).expect("late transcript should be written");
+
+        assert!(find_claude_bridge_chain_session_ids(&source, "cse_shared").is_empty());
 
         fs::remove_dir_all(directory).expect("temporary directory should be removed");
     }

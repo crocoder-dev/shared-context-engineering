@@ -538,7 +538,7 @@ Second phase:
     change. Root-context pass still required before the next task.
   - Context synchronization: synced
 
-- [ ] T06: `Return all bridge-linked chain members from discovery` (status:todo)
+- [x] T06: `Return all bridge-linked chain members from discovery` (status:done)
   - Task ID: T06
   - Scope: In — in `cli/src/services/hooks/claude_bridge_session.rs`, add a fail-open
     function returning every sibling `.jsonl` session ID sharing the transcript's
@@ -551,7 +551,30 @@ Second phase:
     failure branches still return an empty result fail-open, and reads remain bounded
     with a regression proving records past the leading-record limit are not scanned.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_bridge_session`.
-  - Context synchronization: pending
+  - Completed: 2026-09-10
+  - Files changed: `cli/src/services/hooks/claude_bridge_session.rs`
+  - Result: Added `find_claude_bridge_chain_session_ids`, a fail-open helper that
+    returns every sibling `.jsonl` session ID whose bounded leading records share
+    the transcript's `bridgeSessionId`, excluding the source file, sorted and
+    deduplicated for deterministic order. Empty/whitespace bridge id, an
+    unreadable directory, and any per-candidate metadata/read/parse failure each
+    contribute no member rather than aborting. Marked `#[allow(dead_code)]` (repo
+    precedent) until T07 wires the call site. Added four tests: multi-member
+    deterministic order, single member, fail-open-to-empty (no match, empty id,
+    missing directory), and a bounded-read regression proving a sibling whose
+    bridge record sits past `MAX_LEADING_RECORDS` is not matched.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_bridge_session`
+    -> exit 0 (9 passed, 0 failed, incl. the 4 new tests); `clippy` -> exit 0
+    (no warnings).
+  - Done checks: All satisfied — real-shaped multi-member fixtures return the
+    chain members in deterministic order, every failure branch returns an empty
+    `Vec` fail-open, and the bounded-read regression proves records past the
+    leading-record limit are not scanned.
+  - Context impact: local — adds one unused (until T07) bounded, local-only,
+    fail-open discovery helper in the existing Claude bridge module; no
+    user-visible behavior, interface, schema, or terminology change. Root-context
+    pass still required before the next task.
+  - Context synchronization: synced
 
 - [ ] T07: `Seed and resolve Claude model state on the diff-trace state miss` (status:todo)
   - Task ID: T07
