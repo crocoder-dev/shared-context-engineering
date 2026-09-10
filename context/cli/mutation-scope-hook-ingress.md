@@ -226,13 +226,18 @@ registered by `sce setup --codex`. An OpenCode adapter
 `sce hooks opencode-mutation-scope`) now drives this seam too, through the same
 `pub(crate)` in-process entrypoint: parsing, classification, `(sessionID,
 callID) → ScopeId`/`EventId` derivation, and a full `Start`/`Close`/`Abandon`
-lifecycle with checkout-local durable state and a generation-tracked recovery
-barrier. It only abandons a scope on exact `ToolError` causal evidence, and
-consumes the abandoned scope's ambiguous filesystem interval with an ineligible
-`flush` (driven while surviving live scopes still make it `IneligibleUnscoped`)
-before any surviving scope can confirm itself — broad asynchronous OpenCode
-lifecycle events retire nothing. It has no plugin or `sce setup` registration
-yet, so no real OpenCode session reaches it. Still out of scope for this seam itself: the OpenCode plugin
+lifecycle with checkout-local durable state (attempt phases `PendingStart` →
+`Active` → `PendingAbandon`) and a generation-tracked recovery barrier. It only
+abandons a scope on exact `ToolError` causal evidence: it durably records the
+doomed attempt as `PendingAbandon` **before** any seam call, consumes the
+abandoned scope's ambiguous filesystem interval with an ineligible `flush`
+(driven while surviving live scopes still make it `IneligibleUnscoped`) before
+any surviving scope can confirm itself, and removes the attempt only after the
+generic `abandon` has succeeded. A transient seam failure keeps the attempt
+`PendingAbandon` with recovery unresolved so the cleanup is retried, never
+silently dropped. Broad asynchronous OpenCode lifecycle events retire nothing.
+It has no plugin or `sce setup` registration yet, so no real OpenCode session
+reaches it. Still out of scope for this seam itself: the OpenCode plugin
 and `sce setup` integration; the whole Pi extension (its settings generation,
 `SubagentStart`/`SubagentStop`/`PostToolUse`/tool-call translation, and PID /
 process-supervisor staleness detection).
