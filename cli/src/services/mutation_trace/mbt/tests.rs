@@ -103,6 +103,33 @@ fn mutation_cursor_closed_scope_cannot_reactivate() -> impl Driver {
     MutationCursorDriver::default()
 }
 
+#[quint_test(
+    spec = "../spec/mutation_cursor.qnt",
+    test = "testOpenCodeCloseConfirmsExclusiveAttribution",
+    max_samples = 1
+)]
+fn mutation_cursor_opencode_close_confirms_exclusive_attribution() -> impl Driver {
+    MutationCursorDriver::default()
+}
+
+#[quint_test(
+    spec = "../spec/mutation_cursor.qnt",
+    test = "testOpenCodeCloseConfirmsContendedAttribution",
+    max_samples = 1
+)]
+fn mutation_cursor_opencode_close_confirms_contended_attribution() -> impl Driver {
+    MutationCursorDriver::default()
+}
+
+#[quint_test(
+    spec = "../spec/mutation_cursor.qnt",
+    test = "testUnconfirmedOpenCodeScopeBlocksCrossHarnessAttribution",
+    max_samples = 1
+)]
+fn mutation_cursor_unconfirmed_opencode_scope_blocks_cross_harness_attribution() -> impl Driver {
+    MutationCursorDriver::default()
+}
+
 /// Guarded-no-op regression: replays
 /// `testMbtGuardedPrepareInvokesRealPrepare`
 /// (`init.then(prepare(Attempt0, Start(...))).then(prepare(Attempt0,

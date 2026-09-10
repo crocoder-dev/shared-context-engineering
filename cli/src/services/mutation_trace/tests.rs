@@ -44,6 +44,10 @@ fn codex_scope(status: ScopeStatus, worktree_id: WorktreeId) -> ScopeState {
     scope_with_actor(status, ActorKind::Codex, worktree_id)
 }
 
+fn opencode_scope(status: ScopeStatus, worktree_id: WorktreeId) -> ScopeState {
+    scope_with_actor(status, ActorKind::OpenCode, worktree_id)
+}
+
 fn scope_with_actor(
     status: ScopeStatus,
     actor_kind: ActorKind,
@@ -1219,6 +1223,168 @@ fn a_terminal_codex_scope_does_not_suppress_later_attribution() {
             event.attribution,
             Attribution::AiExclusive(scope("claude-c")),
             "a {terminal:?} Codex scope is not live and must not suppress attribution"
+        );
+    }
+}
+
+#[test]
+fn an_unconfirmed_opencode_scope_makes_another_harness_boundary_ineligible_instead_of_contended() {
+    let state = state_with_scopes(&[
+        (
+            "opencode-a",
+            opencode_scope(ScopeStatus::Active, worktree("wt0")),
+        ),
+        (
+            "claude-c",
+            scope_with_status(ScopeStatus::Active, worktree("wt0")),
+        ),
+    ]);
+
+    let event = commit_boundary(
+        &state,
+        Boundary::Advance {
+            scope: scope("claude-c"),
+            event: event("event0"),
+        },
+        tree("tree1"),
+    );
+
+    assert_eq!(
+        event.active_scopes,
+        BTreeSet::from([scope("opencode-a"), scope("claude-c")])
+    );
+    assert_eq!(event.attribution, Attribution::IneligibleUnscoped);
+    assert_ne!(event.attribution, Attribution::AiContended);
+}
+
+#[test]
+fn an_opencode_close_confirms_its_own_scope_and_still_attributes_exclusively() {
+    let state = state_with_scopes(&[(
+        "opencode-a",
+        opencode_scope(ScopeStatus::Active, worktree("wt0")),
+    )]);
+
+    let event = commit_boundary(
+        &state,
+        Boundary::Close {
+            scope: scope("opencode-a"),
+            event: event("event0"),
+        },
+        tree("tree1"),
+    );
+
+    assert_eq!(event.active_scopes, BTreeSet::from([scope("opencode-a")]));
+    assert_eq!(
+        event.attribution,
+        Attribution::AiExclusive(scope("opencode-a"))
+    );
+}
+
+#[test]
+fn an_opencode_close_overlapping_a_live_non_required_scope_still_attributes_contention() {
+    let state = state_with_scopes(&[
+        (
+            "opencode-a",
+            opencode_scope(ScopeStatus::Active, worktree("wt0")),
+        ),
+        (
+            "claude-c",
+            scope_with_status(ScopeStatus::Active, worktree("wt0")),
+        ),
+    ]);
+
+    let event = commit_boundary(
+        &state,
+        Boundary::Close {
+            scope: scope("opencode-a"),
+            event: event("event0"),
+        },
+        tree("tree1"),
+    );
+
+    assert_eq!(
+        event.active_scopes,
+        BTreeSet::from([scope("opencode-a"), scope("claude-c")])
+    );
+    assert_eq!(event.attribution, Attribution::AiContended);
+}
+
+#[test]
+fn a_live_opencode_scope_and_a_live_codex_scope_stay_mutually_unconfirmed_at_either_close() {
+    for closing in ["opencode-a", "codex-b"] {
+        let state = state_with_scopes(&[
+            (
+                "opencode-a",
+                opencode_scope(ScopeStatus::Active, worktree("wt0")),
+            ),
+            ("codex-b", codex_scope(ScopeStatus::Active, worktree("wt0"))),
+        ]);
+
+        let event = commit_boundary(
+            &state,
+            Boundary::Close {
+                scope: scope(closing),
+                event: event("event0"),
+            },
+            tree("tree1"),
+        );
+
+        assert_eq!(
+            event.active_scopes,
+            BTreeSet::from([scope("opencode-a"), scope("codex-b")])
+        );
+        assert_eq!(
+            event.attribution,
+            Attribution::IneligibleUnscoped,
+            "closing {closing} confirms only itself; the other confirmation-required scope stays unconfirmed"
+        );
+    }
+}
+
+#[test]
+fn a_flush_never_confirms_a_live_opencode_scope() {
+    let state = state_with_scopes(&[(
+        "opencode-a",
+        opencode_scope(ScopeStatus::Active, worktree("wt0")),
+    )]);
+
+    let event = commit_boundary(
+        &state,
+        Boundary::Flush {
+            worktree: worktree("wt0"),
+        },
+        tree("tree1"),
+    );
+
+    assert_eq!(event.active_scopes, BTreeSet::from([scope("opencode-a")]));
+    assert_eq!(event.attribution, Attribution::IneligibleUnscoped);
+}
+
+#[test]
+fn a_terminal_opencode_scope_does_not_suppress_later_attribution() {
+    for terminal in [ScopeStatus::Closed, ScopeStatus::Abandoned] {
+        let state = state_with_scopes(&[
+            ("opencode-a", opencode_scope(terminal, worktree("wt0"))),
+            (
+                "claude-c",
+                scope_with_status(ScopeStatus::Active, worktree("wt0")),
+            ),
+        ]);
+
+        let event = commit_boundary(
+            &state,
+            Boundary::Advance {
+                scope: scope("claude-c"),
+                event: event("event0"),
+            },
+            tree("tree1"),
+        );
+
+        assert_eq!(event.active_scopes, BTreeSet::from([scope("claude-c")]));
+        assert_eq!(
+            event.attribution,
+            Attribution::AiExclusive(scope("claude-c")),
+            "a {terminal:?} OpenCode scope is not live and must not suppress attribution"
         );
     }
 }

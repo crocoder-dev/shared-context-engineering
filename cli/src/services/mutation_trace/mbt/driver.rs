@@ -77,12 +77,13 @@ impl MutationCursorDriver {
             worktree_trees.insert(id.clone(), tree("tree0"));
         }
 
-        let scope_partition: [(&str, &WorktreeId, ActorKind); 5] = [
+        let scope_partition: [(&str, &WorktreeId, ActorKind); 6] = [
             ("scope0", &wt0, ActorKind::ClaudeCode),
             ("scope1", &wt0, ActorKind::ClaudeCode),
             ("scope2", &wt0, ActorKind::Codex),
             ("scope3", &wt1, ActorKind::OpenCode),
             ("scope4", &wt0, ActorKind::Codex),
+            ("scope5", &wt0, ActorKind::OpenCode),
         ];
         let mut scopes = BTreeMap::new();
         for (id, owning_worktree, actor_kind) in scope_partition {

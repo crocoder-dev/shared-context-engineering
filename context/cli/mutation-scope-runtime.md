@@ -213,10 +213,10 @@ likewise means two or more scopes overlapped, not that two humans disagreed.
 
 Consumers building human-vs-AI authorship claims need evidence beyond this
 signal; the protocol deliberately does not supply it. The complementary states
-are `AiContended` (more than one live scope when no unconfirmed live Codex scope
-remains at the boundary) and `IneligibleUnscoped` (no live scope, an
-unconfirmed live Codex scope, or the worktree is unhealthy, externally tainted,
-or needs rebaseline).
+are `AiContended` (more than one live scope when no unconfirmed live
+confirmation-required scope remains at the boundary) and `IneligibleUnscoped`
+(no live scope, an unconfirmed live confirmation-required scope, or the worktree
+is unhealthy, externally tainted, or needs rebaseline).
 
 ## Status
 
