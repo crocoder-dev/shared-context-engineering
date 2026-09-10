@@ -111,6 +111,8 @@ struct DiffTracePayload {
     model_id: Option<String>,
     #[serde(skip)]
     agent_id: Option<String>,
+    #[serde(skip)]
+    transcript_path: Option<String>,
     tool_name: String,
     tool_version: Option<String>,
     payload_type: String,
@@ -958,6 +960,7 @@ fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTraceParseResult>
         time,
         model_id,
         agent_id: None,
+        transcript_path: None,
         tool_name,
         tool_version,
         payload_type: PAYLOAD_TYPE_PATCH.to_string(),
@@ -993,6 +996,8 @@ fn parse_claude_diff_trace_payload(
                 time: patch.time,
                 model_id: resolve_claude_model_id(payload),
                 agent_id: extract_claude_agent_id(payload)?,
+                transcript_path: non_empty_string(payload.get("transcript_path"))
+                    .map(str::to_string),
                 tool_name: patch.tool_name,
                 tool_version: patch.tool_version,
                 payload_type: PAYLOAD_TYPE_STRUCTURED.to_string(),
@@ -2718,6 +2723,7 @@ mod tests {
             time: 1_800_000_000_000_u64,
             model_id: model_id.map(String::from),
             agent_id: None,
+            transcript_path: None,
             tool_name: String::from(tool_name),
             tool_version: tool_version.map(String::from),
             payload_type: String::from(payload_type),
@@ -2916,6 +2922,58 @@ mod tests {
             .expect("internal payload should serialize")
             .get("agent_id")
             .is_none());
+    }
+
+    #[test]
+    fn claude_diff_trace_parser_keeps_transcript_path_ephemeral_and_storage_free() {
+        let transcript_path = Path::new("/virtual/session-123.jsonl");
+        let event = claude_model_test_event(transcript_path, "tool-123");
+
+        let payload = parsed_claude_diff_trace(&event);
+
+        assert_eq!(
+            payload.transcript_path.as_deref(),
+            Some("/virtual/session-123.jsonl")
+        );
+        assert!(serde_json::to_value(&payload)
+            .expect("internal payload should serialize")
+            .get("transcript_path")
+            .is_none());
+    }
+
+    #[test]
+    fn claude_diff_trace_parser_leaves_transcript_path_none_without_the_field() {
+        let mut event = claude_model_test_event(Path::new("/virtual/missing.jsonl"), "tool-123");
+        event
+            .as_object_mut()
+            .expect("test event should be an object")
+            .remove("transcript_path");
+
+        assert_eq!(parsed_claude_diff_trace(&event).transcript_path, None);
+    }
+
+    #[test]
+    fn claude_diff_trace_normalized_opencode_payload_carries_no_transcript_path() {
+        let stdin_payload = serde_json::json!({
+            "sessionID": "session-123",
+            "diff": "diff text",
+            "time": 1_800_000_000_000_u64,
+            "model_id": "anthropic/claude-opus-4",
+            "tool_name": "opencode",
+            "tool_version": null
+        })
+        .to_string();
+
+        let parsed = parse_diff_trace_payload(&stdin_payload)
+            .expect("normalized OpenCode diff-trace payload should parse");
+        let payload = match parsed {
+            DiffTraceParseResult::Persist(payload) => payload,
+            DiffTraceParseResult::NoOp(message) => {
+                panic!("normalized OpenCode payload should persist, got no-op: {message}")
+            }
+        };
+
+        assert_eq!(payload.transcript_path, None);
     }
 
     #[test]
