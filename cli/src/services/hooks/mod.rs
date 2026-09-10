@@ -15,9 +15,9 @@ use crate::services::agent_trace::{
 };
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::agent_trace_db::{
-    AgentTraceInsert, DiffTraceInsert, InsertMessageInsert, InsertPartInsert, MessageRole,
-    PartType, PostCommitPatchIntersectionInsert, RecentDiffTracePatches, PAYLOAD_TYPE_PATCH,
-    PAYLOAD_TYPE_STRUCTURED,
+    AgentTraceInsert, ClaudeModelStateObservation, DiffTraceInsert, InsertMessageInsert,
+    InsertPartInsert, MessageRole, ObservationKind, PartType, PostCommitPatchIntersectionInsert,
+    RecentDiffTracePatches, PAYLOAD_TYPE_PATCH, PAYLOAD_TYPE_STRUCTURED,
 };
 #[cfg(test)]
 use crate::services::agent_trace_storage::{
@@ -1377,9 +1377,43 @@ fn resolve_diff_trace_model_id(
 
     let session_id = prefixed_diff_trace_session_id(CLAUDE_TOOL_NAME, &payload.session_id);
     let agent_id = payload.agent_id.as_deref().unwrap_or("");
-    Ok(db
-        .claude_model_state_by_session_and_agent(&session_id, agent_id)?
-        .map(|state| state.model_id))
+    if let Some(state) = db.claude_model_state_by_session_and_agent(&session_id, agent_id)? {
+        return Ok(Some(state.model_id));
+    }
+
+    Ok(seed_diff_trace_model_from_bridge_chain(
+        db,
+        payload,
+        &session_id,
+        agent_id,
+    ))
+}
+
+fn seed_diff_trace_model_from_bridge_chain(
+    db: &RepositoryAgentTraceDb,
+    payload: &DiffTracePayload,
+    session_id: &str,
+    agent_id: &str,
+) -> Option<String> {
+    if !agent_id.is_empty() {
+        return None;
+    }
+
+    let transcript_path = payload.transcript_path.as_deref()?;
+    let model_id = claude_model_state::newest_bridge_chain_model(db, Path::new(transcript_path))?;
+
+    let observed_at_ms = current_unix_time_ms().ok()?;
+    match db.upsert_claude_model_state(ClaudeModelStateObservation {
+        session_id: session_id.to_string(),
+        agent_id: String::new(),
+        model_id: model_id.clone(),
+        observation_kind: ObservationKind::SessionStart,
+        source: String::from("bridge_inherited"),
+        observed_at_ms,
+    }) {
+        Ok(_) => Some(model_id),
+        Err(_) => None,
+    }
 }
 
 #[cfg(test)]
@@ -2383,7 +2417,8 @@ mod tests {
         fs,
         path::{Path, PathBuf},
         process::Command,
-        time::{SystemTime, UNIX_EPOCH},
+        thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use super::*;
@@ -3386,6 +3421,225 @@ mod tests {
         drop(db);
         fs::remove_dir_all(db_path.parent().expect("test DB should have a parent"))
             .expect("test DB directory should be removed");
+    }
+
+    fn write_bridge_transcript(path: &Path, bridge_session_id: &str) {
+        fs::write(
+            path,
+            format!(
+                concat!(
+                    "{{\"type\":\"file-history-snapshot\"}}\n",
+                    "{{\"type\":\"bridge-session\",\"sessionId\":\"s\",",
+                    "\"bridgeSessionId\":\"{bridge_session_id}\"}}\n"
+                ),
+                bridge_session_id = bridge_session_id,
+            ),
+        )
+        .expect("bridge transcript fixture should be written");
+    }
+
+    #[test]
+    fn claude_diff_trace_seeds_bridge_chain_state_on_state_miss_and_reuses_it() {
+        let db_path = unique_attribution_db_path("bridge-chain-seed");
+        let dir = db_path
+            .parent()
+            .expect("test DB should have a parent")
+            .to_path_buf();
+        fs::create_dir_all(&dir).expect("test DB directory should be created");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+
+        db.upsert_claude_model_state(ClaudeModelStateObservation {
+            session_id: String::from("cc_session-member"),
+            agent_id: String::new(),
+            model_id: String::from("claude/chain-model"),
+            observation_kind: ObservationKind::SessionStart,
+            source: String::from("startup"),
+            observed_at_ms: 100,
+        })
+        .expect("chain member state should seed");
+
+        let current_transcript = dir.join("session-current.jsonl");
+        let member_transcript = dir.join("session-member.jsonl");
+        write_bridge_transcript(&current_transcript, "cse_chain");
+        write_bridge_transcript(&member_transcript, "cse_chain");
+
+        let payload = parsed_claude_diff_trace(&claude_model_test_event(&current_transcript, "a"));
+        persist_diff_trace_payload_to_agent_trace_db_with_db(&db, &payload)
+            .expect("bridge chain seeding should persist");
+
+        assert_eq!(
+            persisted_model_ids(&db),
+            vec![Some(String::from("claude/chain-model"))]
+        );
+        let seeded = db
+            .claude_model_state_by_session_and_agent("cc_session-123", "")
+            .expect("seeded lookup should succeed")
+            .expect("current session should be seeded");
+        assert_eq!(seeded.model_id, "claude/chain-model");
+        assert_eq!(seeded.source, "bridge_inherited");
+
+        fs::remove_file(&member_transcript).expect("member transcript should be removed");
+        let payload_two =
+            parsed_claude_diff_trace(&claude_model_test_event(&current_transcript, "b"));
+        persist_diff_trace_payload_to_agent_trace_db_with_db(&db, &payload_two)
+            .expect("second diff trace should persist");
+        assert_eq!(
+            persisted_model_ids(&db),
+            vec![
+                Some(String::from("claude/chain-model")),
+                Some(String::from("claude/chain-model")),
+            ]
+        );
+        let after = db
+            .claude_model_state_by_session_and_agent("cc_session-123", "")
+            .expect("lookup should succeed")
+            .expect("row should still exist");
+        assert_eq!(after.observed_at_ms, seeded.observed_at_ms);
+
+        drop(db);
+        fs::remove_dir_all(&dir).expect("test DB directory should be removed");
+    }
+
+    #[test]
+    fn claude_diff_trace_bridge_chain_selects_newest_observation_across_members() {
+        let db_path = unique_attribution_db_path("bridge-chain-newest");
+        let dir = db_path
+            .parent()
+            .expect("test DB should have a parent")
+            .to_path_buf();
+        fs::create_dir_all(&dir).expect("test DB directory should be created");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+
+        db.upsert_claude_model_state(ClaudeModelStateObservation {
+            session_id: String::from("cc_session-root"),
+            agent_id: String::new(),
+            model_id: String::from("claude/sonnet-5"),
+            observation_kind: ObservationKind::SessionStart,
+            source: String::from("startup"),
+            observed_at_ms: 10,
+        })
+        .expect("root state should seed");
+        db.upsert_claude_model_state(ClaudeModelStateObservation {
+            session_id: String::from("cc_session-mid"),
+            agent_id: String::new(),
+            model_id: String::from("claude/opus-5"),
+            observation_kind: ObservationKind::PostModelSwitch,
+            source: String::from("picker"),
+            observed_at_ms: 20,
+        })
+        .expect("mid state should seed");
+
+        let current_transcript = dir.join("session-current.jsonl");
+        let root_transcript = dir.join("session-root.jsonl");
+        let mid_transcript = dir.join("session-mid.jsonl");
+        write_bridge_transcript(&mid_transcript, "cse_chain");
+        write_bridge_transcript(&current_transcript, "cse_chain");
+        thread::sleep(Duration::from_millis(15));
+        write_bridge_transcript(&root_transcript, "cse_chain");
+
+        let payload = parsed_claude_diff_trace(&claude_model_test_event(&current_transcript, "x"));
+        persist_diff_trace_payload_to_agent_trace_db_with_db(&db, &payload)
+            .expect("newest-observation resolution should persist");
+
+        assert_eq!(
+            persisted_model_ids(&db),
+            vec![Some(String::from("claude/opus-5"))]
+        );
+
+        drop(db);
+        fs::remove_dir_all(&dir).expect("test DB directory should be removed");
+    }
+
+    #[test]
+    fn claude_diff_trace_bridge_chain_fails_open_without_write_or_attribution() {
+        let db_path = unique_attribution_db_path("bridge-chain-fail-open");
+        let dir = db_path
+            .parent()
+            .expect("test DB should have a parent")
+            .to_path_buf();
+        fs::create_dir_all(&dir).expect("test DB directory should be created");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+
+        let mut event =
+            claude_model_test_event(Path::new("/virtual/missing.jsonl"), "no-transcript");
+        event
+            .as_object_mut()
+            .expect("event should be an object")
+            .remove("transcript_path");
+        persist_diff_trace_payload_to_agent_trace_db_with_db(
+            &db,
+            &parsed_claude_diff_trace(&event),
+        )
+        .expect("missing transcript should fail open");
+
+        let current_transcript = dir.join("session-current.jsonl");
+        let member_transcript = dir.join("session-member.jsonl");
+        write_bridge_transcript(&current_transcript, "cse_chain");
+        write_bridge_transcript(&member_transcript, "cse_chain");
+        persist_diff_trace_payload_to_agent_trace_db_with_db(
+            &db,
+            &parsed_claude_diff_trace(&claude_model_test_event(&current_transcript, "no-state")),
+        )
+        .expect("stateless chain should fail open");
+
+        assert_eq!(persisted_model_ids(&db), vec![None, None]);
+        assert!(
+            db.claude_model_state_by_session_and_agent("cc_session-123", "")
+                .expect("lookup should succeed")
+                .is_none(),
+            "no state row should be written on a fail-open branch"
+        );
+
+        drop(db);
+        fs::remove_dir_all(&dir).expect("test DB directory should be removed");
+    }
+
+    #[test]
+    fn claude_diff_trace_bridge_chain_does_not_seed_subagent_scope() {
+        let db_path = unique_attribution_db_path("bridge-chain-subagent");
+        let dir = db_path
+            .parent()
+            .expect("test DB should have a parent")
+            .to_path_buf();
+        fs::create_dir_all(&dir).expect("test DB directory should be created");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+
+        db.upsert_claude_model_state(ClaudeModelStateObservation {
+            session_id: String::from("cc_session-member"),
+            agent_id: String::new(),
+            model_id: String::from("claude/chain-model"),
+            observation_kind: ObservationKind::SessionStart,
+            source: String::from("startup"),
+            observed_at_ms: 100,
+        })
+        .expect("chain member state should seed");
+
+        let current_transcript = dir.join("session-current.jsonl");
+        let member_transcript = dir.join("session-member.jsonl");
+        write_bridge_transcript(&current_transcript, "cse_chain");
+        write_bridge_transcript(&member_transcript, "cse_chain");
+
+        let mut event = claude_model_test_event(&current_transcript, "subagent");
+        event
+            .as_object_mut()
+            .expect("event should be an object")
+            .insert("agent_id".to_string(), json!("subagent-1"));
+        persist_diff_trace_payload_to_agent_trace_db_with_db(
+            &db,
+            &parsed_claude_diff_trace(&event),
+        )
+        .expect("subagent diff trace should persist");
+
+        assert_eq!(persisted_model_ids(&db), vec![None]);
+        assert!(
+            db.claude_model_state_by_session_and_agent("cc_session-123", "subagent-1")
+                .expect("lookup should succeed")
+                .is_none(),
+            "subagent scope must not inherit main-session chain state"
+        );
+
+        drop(db);
+        fs::remove_dir_all(&dir).expect("test DB directory should be removed");
     }
 
     #[test]

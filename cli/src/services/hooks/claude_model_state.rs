@@ -256,6 +256,40 @@ fn bridge_inheritance_candidate(stdin_payload: &str) -> Result<Option<BridgeInhe
     }))
 }
 
+pub(super) fn newest_bridge_chain_model(
+    db: &RepositoryAgentTraceDb,
+    transcript_path: &Path,
+) -> Option<String> {
+    let bridge_session_id =
+        super::claude_bridge_session::extract_claude_bridge_session_id(transcript_path)?;
+    let members = super::claude_bridge_session::find_claude_bridge_chain_session_ids(
+        transcript_path,
+        &bridge_session_id,
+    );
+
+    let mut winner: Option<(i64, String, String)> = None;
+    for member in members {
+        let member_session_id = prefixed_diff_trace_session_id(CLAUDE_TOOL_NAME, &member);
+        let Ok(Some(state)) = db.claude_model_state_by_session_and_agent(&member_session_id, "")
+        else {
+            continue;
+        };
+
+        let should_replace = match &winner {
+            None => true,
+            Some((best_ms, best_session_id, _)) => {
+                state.observed_at_ms > *best_ms
+                    || (state.observed_at_ms == *best_ms && member_session_id > *best_session_id)
+            }
+        };
+        if should_replace {
+            winner = Some((state.observed_at_ms, member_session_id, state.model_id));
+        }
+    }
+
+    winner.map(|(_, _, model_id)| model_id)
+}
+
 fn persist_claude_model_state(
     db: &RepositoryAgentTraceDb,
     observation: ClaudeModelStateObservation,
