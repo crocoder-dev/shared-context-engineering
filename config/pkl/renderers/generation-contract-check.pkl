@@ -22,6 +22,7 @@ hidden expectedArtifactPaths = new Mapping {
   ["config/.opencode/lib/bash-policy-presets.json"] = true
   ["config/.opencode/plugins/sce-bash-policy.ts"] = true
   ["config/.opencode/plugins/sce-agent-trace.ts"] = true
+  ["config/.opencode/plugins/sce-mutation-scope.ts"] = true
   ["config/.opencode/opencode.json"] = true
 
   for (slug, _ in claude.commands) {
@@ -504,7 +505,7 @@ local forbiddenWorkflowReferenceTokens = new Listing {
 /// workflow, excluding `sce-decision`). Stating the total as a literal makes
 /// an unintended inventory change fail here instead of silently becoming the
 /// new expectation.
-local expectedArtifactPathCount = 141
+local expectedArtifactPathCount = 142
 
 local assertExactArtifactPaths = (actual: Mapping) ->
   if (

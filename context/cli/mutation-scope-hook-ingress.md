@@ -236,11 +236,12 @@ any surviving scope can confirm itself, and removes the attempt only after the
 generic `abandon` has succeeded. A transient seam failure keeps the attempt
 `PendingAbandon` with recovery unresolved so the cleanup is retried, never
 silently dropped. Broad asynchronous OpenCode lifecycle events retire nothing.
-It has no plugin or `sce setup` registration yet, so no real OpenCode session
-reaches it. Still out of scope for this seam itself: the OpenCode plugin
-and `sce setup` integration; the whole Pi extension (its settings generation,
-`SubagentStart`/`SubagentStop`/`PostToolUse`/tool-call translation, and PID /
-process-supervisor staleness detection).
+A generated `sce-mutation-scope.ts` plugin, installed as the final OpenCode
+plugin by `sce setup`, now routes real OpenCode tool-lifecycle events to it
+([`opencode-mutation-scope-integration.md`](opencode-mutation-scope-integration.md)).
+Still out of scope for this seam itself: the whole Pi extension (its settings
+generation, `SubagentStart`/`SubagentStop`/`PostToolUse`/tool-call translation,
+and PID / process-supervisor staleness detection).
 
 Each adapter still owns its own `ScopeId` / `EventId` / `actor_kind`
 derivation and its own stale-process detection, and targets this ingress (or,

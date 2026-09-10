@@ -10,6 +10,7 @@ import "base/bash-policy-presets.pkl" as bash_policy_presets
 local bashPolicyPresetCatalogSource = bash_policy_presets.output.text
 local opencodeBashPolicyPluginSource = read("../lib/bash-policy-plugin/opencode-bash-policy-plugin.ts").text
 local opencodeAgentTracePluginSource = read("../lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts").text
+local opencodeMutationScopePluginSource = read("../lib/mutation-scope-plugin/opencode-sce-mutation-scope-plugin.ts").text
 local piExtensionSource = read("../lib/pi-plugin/sce-pi-extension.ts").text
 output {
   files {
@@ -77,6 +78,9 @@ output {
     }
     ["config/.opencode/plugins/sce-agent-trace.ts"] {
       text = opencodeAgentTracePluginSource
+    }
+    ["config/.opencode/plugins/sce-mutation-scope.ts"] {
+      text = opencodeMutationScopePluginSource
     }
     ["config/.opencode/opencode.json"] {
       text = opencode.opencodeConfig.rendered
