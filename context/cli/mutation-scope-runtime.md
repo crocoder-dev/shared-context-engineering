@@ -3,10 +3,12 @@
 The crate-visible surface of `cli/src/services/mutation_trace/runtime/` and the lifecycle contract every Codex, Claude Code, OpenCode, and Pi adapter must uphold.
 
 Built by the `mutation-scope-runtime-integration` plan (`context/plans/mutation-scope-runtime-integration.md`). The generic
-[`sce hooks mutation-scope` ingress](mutation-scope-hook-ingress.md), shipped
-Claude Code adapter, and Codex adapter (`sce hooks codex-mutation-scope`, registered by `sce setup --codex`; OpenCode/Pi: none yet) drive this seam. This
-file records the adapter contract; the Codex-specific mapping is in
-[`codex-mutation-scope-integration.md`](codex-mutation-scope-integration.md).
+[`sce hooks mutation-scope` ingress](mutation-scope-hook-ingress.md), the shipped
+Claude Code and Codex adapters, and the OpenCode adapter (lifecycle wired, no
+plugin/`sce setup` registration yet; Pi: none) drive this seam. This file
+records the adapter contract; the harness-specific mappings are in
+[`codex-mutation-scope-integration.md`](codex-mutation-scope-integration.md) and
+[`opencode-mutation-scope-integration.md`](opencode-mutation-scope-integration.md).
 
 The mechanics live in [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md) (`coordinate()`), [`mutation-trace-scope-abandonment.md`](mutation-trace-scope-abandonment.md) (`abandon_scope()`), [`mutation-trace-protected-worktree.md`](mutation-trace-protected-worktree.md) (safety prefix), and [`mutation-trace-protocol.md`](mutation-trace-protocol.md) (pure protocol). This file records what adapters must do and why.
 
@@ -231,18 +233,25 @@ A generic ingress existing is not full harness integration existing. The shipped
 Claude Code adapter (`cli/src/services/hooks/claude_mutation_scope/`, hidden
 `sce hooks claude-mutation-scope`) maps Claude's hook events onto this contract
 via the `pub(crate)` in-process seam
-`mutation_scope::run_mutation_scope_from_payload` and is registered by
-`sce setup`; its full contract is in
-[`claude-mutation-scope-integration.md`](claude-mutation-scope-integration.md).
-A Codex adapter (`cli/src/services/hooks/codex_mutation_scope/`, hidden
-`sce hooks codex-mutation-scope`) also maps onto this contract through the same
-seam and is now registered by `sce setup --codex`; its full contract (the
-tracked/delegation/untracked tool classification, the partial-by-tool-surface
-coverage boundary, and the checkout-local recovery bookkeeping) is in
-[`codex-mutation-scope-integration.md`](codex-mutation-scope-integration.md).
-OpenCode and Pi have no adapter; each remaining harness still owns the
-`ScopeId` / `EventId` derivation and stale-process detection this contract
-requires, and repository-scoped unowned-checkout cleanup is still open.
+`mutation_scope::run_mutation_scope_from_payload`, registered by `sce setup`
+([`claude-mutation-scope-integration.md`](claude-mutation-scope-integration.md)).
+The Codex adapter maps through the same seam and is registered by `sce setup
+--codex`; its full contract (tool classification, the partial-by-tool-surface
+coverage boundary, checkout-local recovery bookkeeping) is in
+[`codex-mutation-scope-integration.md`](codex-mutation-scope-integration.md). The
+OpenCode adapter maps the same way with checkout-local durable state and a
+recovery barrier but has no plugin/`sce setup` registration yet
+([`opencode-mutation-scope-integration.md`](opencode-mutation-scope-integration.md)).
+Because OpenCode scopes are confirmation-required and legitimately concurrent,
+that adapter does not rely on `abandon_scope()` alone to make a preceding
+interval safe: on an exact `ToolError` it drives an ineligible `Flush` (while the
+doomed scope and any live siblings still resolve it to `IneligibleUnscoped`)
+*before* `abandon_scope()`, then a second `Flush` to clear the abandon's
+`needs_rebaseline` so surviving siblings keep their future intervals. Broad
+asynchronous OpenCode lifecycle events abandon nothing.
+Pi has no adapter and still owns its own `ScopeId` / `EventId` derivation and
+stale-process detection; repository-scoped unowned-checkout cleanup is still
+open.
 
 Real Claude and Codex `Bash` regressions exercise the complete runtime path
 through commit and persisted Agent Trace JSON. They confirm that

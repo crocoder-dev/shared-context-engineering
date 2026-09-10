@@ -1,22 +1,28 @@
 # OpenCode mutation-scope integration
 
-OpenCode is the third planned concrete mutation-scope producer, after
+OpenCode is the third concrete mutation-scope producer, after
 [Claude Code](claude-mutation-scope-integration.md) and
 [Codex](codex-mutation-scope-integration.md). As of the
-`opencode-mutation-scope-integration` plan's **T03**, the *lifecycle evidence*
-(T01), the *protocol generalization* (T02), and the adapter's *identity and
-classification layer* (T03) exist. The adapter still makes **no ingress-seam
-call, keeps no durable state, and is not registered by setup**, and there is no
-generated plugin, so OpenCode remains **unwired** at the runtime seam
-([`mutation-scope-hook-ingress.md`](mutation-scope-hook-ingress.md) already
-reserves the `"opencode"` actor value and the `oc_` session prefix via
+`opencode-mutation-scope-integration` plan's **T04**, the *lifecycle evidence*
+(T01), the *protocol generalization* (T02), the adapter's *identity and
+classification layer* (T03), and its *scope lifecycle and recovery* (T04) all
+exist: the adapter now drives the generic in-process ingress seam with a full
+`Start`/`Close`/`Abandon` lifecycle and checkout-local durable state. It is
+**not yet generated as a plugin or registered by `sce setup`** (T05), so no
+real OpenCode session reaches it
+([`mutation-scope-hook-ingress.md`](mutation-scope-hook-ingress.md) reserves the
+`"opencode"` actor value and the `oc_` session prefix via
 [`mutation-scope-provenance.md`](mutation-scope-provenance.md)).
 
 This document records what T01 froze about OpenCode's tool lifecycle so the
-adapter tasks (T04–T06) and any later revision inherit it without re-probing,
-plus the identity/encoding contract T03 froze — see **Adapter identity and
-encoding** below. T02 (the protocol generalization) has shipped — see
-**Attribution boundary**.
+remaining tasks (T05–T06) and any later revision inherit it without re-probing,
+the identity/encoding contract T03 froze (see **Adapter identity and
+encoding**), and the lifecycle/recovery behavior T04 shipped (see **Adapter
+lifecycle and recovery**) — including T04's soundness correction: an abandoned
+uncertain scope's ambiguous filesystem interval is consumed with an ineligible
+`flush` before any surviving scope can confirm itself, and broad asynchronous
+lifecycle events no longer retire live attempts. T02 (the protocol
+generalization) has shipped — see **Attribution boundary**.
 
 ## Evidence base
 
@@ -75,9 +81,14 @@ lifecycle, T05 the plugin.
   `ToolExecuteBefore` / `ShellEnv` / `ToolExecuteAfter` carry
   `session_id`, `call_id`, `cwd` (`ToolExecuteBefore`/`ToolExecuteAfter` also
   `tool_name`; the two start-boundary events also an optional `model`);
-  the terminal signals `ToolError` (`session_id`, `call_id`, `cwd`),
-  `SessionIdle` / `SessionError` / `SessionDeleted` (`session_id`, `cwd`), and
-  `ServerDisposed` (`cwd`). Every field is strictly validated: a missing,
+  `ToolError` carries `session_id`, `call_id`, `cwd`, and `tool_name`
+  (the OpenCode `message.part.updated` tool part carries `part.tool` on the
+  `error` transition — T01, `captures/*-perm-ask.jsonl` — so the adapter can
+  classify a `ToolError` before resolving Git or opening adapter state);
+  the broad lifecycle signals `SessionIdle` / `SessionError` / `SessionDeleted`
+  (`session_id`, `cwd`) and `ServerDisposed` (`cwd`) are still parsed for a
+  stable T05 contract but drive **no** live-scope abandonment (see **Adapter
+  lifecycle and recovery**). Every field is strictly validated: a missing,
   blank, or wrong-typed required field is rejected as
   `Invalid OpenCode hook event payload from STDIN: <detail>.` with no
   fabricated identity.
@@ -131,6 +142,70 @@ flowchart TD
   write after OpenCode was gone). No elapsed-time signal can distinguish an
   abandoned scope from an orphan still mutating — **no TTL is safe**.
 
+## Adapter lifecycle and recovery
+
+T04 wired the boundaries above onto the runtime. The adapter processes one hook
+event at a time under a per-`git-dir` boundary lock
+(`opencode-mutation-scope-boundary.lock`), serialising boundary work across
+concurrent OpenCode processes.
+
+- **Start** is durable before the seam call: a `PendingStart` attempt is
+  persisted, the ingress `start` boundary is driven, then the attempt flips to
+  `Active`. `bash` starts on `ShellEnv` only; `write`/`edit`/`apply_patch` start
+  write-ahead on `ToolExecuteBefore`.
+- **Close** is a successful `ToolExecuteAfter` — it drives the ingress `close`
+  and removes the attempt. An `After` that finds only a `PendingStart` consumes
+  the interval and abandons instead (see **Abandon**).
+- **Abandon (exact only) + ambiguity consumption.** `ToolError` for a tracked
+  tool retires exactly its `(session_id, call_id)` attempt. Removing an
+  uncertain scope does **not by itself** make the preceding filesystem interval
+  attributable: `abandon_and_consume` (under the boundary lock) first drives an
+  ineligible ingress `flush` while the doomed scope and any siblings are still
+  live — the runtime resolves it to `IneligibleUnscoped` and advances the cursor
+  past the ambiguous interval — then drives the ingress `abandon` for each
+  doomed scope, then a second `flush` to clear the rebaseline that `abandon`
+  arms so surviving scopes keep their **future** intervals. Surviving attempts
+  stay `Active` and untouched. So
+
+  ```text
+  Start(A)  Start(B)  mutate(A)  mutate(B)  Abandon(A)  Close(B)
+  ```
+
+  can never yield `AiExclusive(B)` for the interval that could contain A's
+  changes, while B may still attribute mutations it makes **after** the
+  consuming flush.
+- **Broad asynchronous events are non-authoritative.** `SessionIdle`,
+  `SessionError`, `SessionDeleted`, and `ServerDisposed` are asynchronous /
+  fire-and-forget relative to the synchronous mutation boundary (D10), so a
+  delayed one can arrive after a newer tracked call already started, and one
+  OpenCode process's `ServerDisposed` cannot be distinguished from another's
+  (the wire event carries only checkout identity). They therefore drive **no**
+  live-scope abandonment — only exact `ToolError` causal evidence retires an
+  attempt. Lingering unconfirmed scopes after a crash or a missing terminal
+  event are accepted (D3 keeps them non-AI); this trades availability for
+  soundness, consistent with D10/D11. No TTL recovers from this.
+- **Recovery barrier.** Durable state under
+  `<git-dir>/sce/opencode-mutation-scope-state.json` (guarded by
+  `opencode-mutation-scope-state.lock`, held only for individual file ops,
+  **never across a seam call**) carries a generation-tracked
+  `Clear`/`Pending`/`Flushing` recovery state. The ambiguity-consuming `flush`
+  runs at abandon time, alongside surviving live attempts — it is **not**
+  deferred until `attempts.is_empty()`. A successful consume returns recovery to
+  `Clear` with survivors still `Active`; a failed `flush` retains
+  `Pending`/recovery-required, and any new tracked `Start` while recovery is
+  unresolved stays fail-closed (and retries the consume). Generation ownership
+  prevents an old `flush` completion from clearing a newer recovery requirement.
+- **Fail-closed.** Any failure to durably establish a tracked `Start` exits the
+  adapter non-zero (`SCE could not establish OpenCode mutation attribution for
+  this tool execution.`); T05's plugin turns that into a thrown hook that blocks
+  the tool. `Close`/terminal paths are best-effort, falling back to
+  `abandon_and_consume` on seam failure.
+- **No same-session sweep, no TTL.** Attempts are keyed only by `(session_id,
+  call_id)`; a second live call runs alongside the first (D9). Nothing retires a
+  scope on elapsed time (D11) — an interrupted tool's interval stays
+  `IneligibleUnscoped` rather than risk a false positive while an orphan child
+  mutates.
+
 ## Attribution boundary
 
 Because a tracked OpenCode `Start` is reachable without any confirming `Close`
@@ -150,16 +225,18 @@ at any Claude, Codex, Pi, Flush, or other-OpenCode boundary, and a confirming
 `AiContended` when the other live scopes are confirmation-safe. Codex outcomes
 are unchanged bit-for-bit. The public `Attribution` variants, `ProtocolState`,
 `ScopeState`, `MutationEvent`, and the Quint scope state are untouched. The
-Rust adapter (T03–T04) still has to drive this boundary; the protocol accepts
-it now. The generalized rule is also documented in
+Rust adapter drives this boundary as of T04 (see **Adapter lifecycle and
+recovery**). The generalized rule is also documented in
 [`codex-mutation-scope-integration.md`](codex-mutation-scope-integration.md) and
 [`mutation-scope-runtime.md`](mutation-scope-runtime.md).
 
 ## Model and session provenance
 
 The construction helper `opencode_scope_provenance` exists as of T03 (see
-**Adapter identity and encoding**); T05 supplies the observed `model` from the
-plugin's `chat.params` map, and T04 stamps the result onto the `Start` ingress.
+**Adapter identity and encoding**); as of T04 the adapter stamps its result onto
+every tracked `Start` ingress boundary. T05 supplies the observed `model` from
+the plugin's `chat.params` map (until then the forwarded `model` is whatever the
+wire payload carries, else `NULL`).
 
 `chat.params` (`packages/opencode/src/session/llm.ts` L162) fires before every
 LLM call — before that turn's `tool.execute.before` — carrying
@@ -195,11 +272,12 @@ after arbitrary user plugins (T05).
 
 - OpenCode persistence is **global-user-scoped** (`~/.local/share/opencode/`,
   keyed by a `projectID` hash of the directory) and schema-coupled to the CLI
-  version — **not checkout-local**. The adapter must keep its own
-  checkout-local attempt bookkeeping under `<git-dir>/sce/` (T04) and must not
-  assume a single OpenCode writer per checkout.
+  version — **not checkout-local**. The adapter keeps its own checkout-local
+  attempt bookkeeping under `<git-dir>/sce/` (T04) and does not assume a single
+  OpenCode writer per checkout — the boundary lock serialises concurrent
+  processes.
 - Live `apply_patch` fixtures (AC2) are outstanding: they need a `gpt-`-class
-  OpenCode credential and should be recorded during T03–T06 before `/validate`.
+  OpenCode credential and should be recorded during T05–T06 before `/validate`.
   This is a credential gap, not a soundness gap — `apply_patch` satisfies the
   contract on the pinned versions per source.
 - `AiExclusive(scope)` will continue to mean tracked-scope exclusivity, never a
