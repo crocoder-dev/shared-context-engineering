@@ -157,25 +157,24 @@ and cursor.
 
 ## Concurrency and attribution confirmation
 
-Codex built-in tracked tools were observed serially, so no Codex-only overlap
-was observed; a tracked Codex scope can currently overlap a Claude Code scope on
-the same worktree. Generic runtime and `ActorKind` support future OpenCode/Pi adapters once wired.
+Codex built-in tracked tools were observed serially (no Codex-only overlap), but
+a tracked Codex scope can overlap a Claude Code scope on the same worktree.
 
-The accepted boundary-aware rule is important: Codex `Start` is write-ahead
-admission, not positive execution confirmation, because an arbitrary sibling
-`PreToolUse` hook can deny after SCE's hook succeeds. While an active Codex
-scope remains unconfirmed, a mutation observed at any non-confirming boundary
-is `IneligibleUnscoped`, including at another harness's boundary. Only that
-exact Codex scope's own proven `PostToolUse` → `Close` confirms it for the
-current boundary. Then ordinary `AiExclusive`/`AiContended` rules apply if no
-other unconfirmed Codex scope remains. A second unconfirmed live Codex scope
-keeps the result ineligible. The complete live scope set remains in the
-mutation event; no `confirmed` bit is persisted.
+The accepted boundary-aware rule: Codex `Start` is write-ahead admission, not
+execution confirmation — an arbitrary sibling `PreToolUse` hook can deny after
+SCE's hook succeeds. While an active Codex scope remains unconfirmed, a mutation
+observed at any non-confirming boundary is `IneligibleUnscoped`, including at
+another harness's boundary. Only that exact Codex scope's own proven
+`PostToolUse` → `Close` confirms it; then ordinary `AiExclusive`/`AiContended`
+rules apply if no other unconfirmed Codex scope remains. The complete live scope
+set remains in the mutation event; no `confirmed` bit is persisted.
 
 This conservative rule prefers false negatives to false-positive authorship
-claims. It is the only accepted protocol/Quint follow-up; T07 adds no further
-protocol, runtime-semantic, attribution-algorithm, SQL, or Agent Trace schema
-change.
+claims. As of the `opencode-mutation-scope-integration` plan's T02 it is no
+longer Codex-specific: `protocol.rs` / `spec/mutation_cursor.qnt` express it as
+the generic `requires_boundary_confirmation(ActorKind)` predicate covering Codex
+and OpenCode, Codex outcomes unchanged — see
+[`opencode-mutation-scope-integration.md`](opencode-mutation-scope-integration.md).
 
 ## Configuration, trust, and ownership
 

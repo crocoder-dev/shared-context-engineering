@@ -830,7 +830,7 @@ before the first load-bearing probe.
     ```
   - Context synchronization: synced
 
-- [ ] T02: `Generalize boundary-confirmed attribution to OpenCode` (status:todo)
+- [x] T02: `Generalize boundary-confirmed attribution to OpenCode` (status:done)
   - Task ID: T02
   - Scope: In — replace Codex-specific unconfirmed-scope logic with a generic
     confirmation-required-actor predicate covering Codex and OpenCode in
@@ -848,7 +848,88 @@ before the first load-bearing probe.
     `nix run .#quint -- typecheck spec/mutation_cursor.qnt`;
     `nix run .#quint -- test spec/mutation_cursor.qnt`;
     `checks.mutation-trace-quint-connect`.
-  - Context synchronization: pending
+  - Completed: 2026-09-10
+  - Files changed (vs baseline `2201ce87`):
+    - `cli/src/services/mutation_trace/protocol.rs` — `is_codex_scope` →
+      `requires_boundary_confirmation(ActorKind)` + `scope_requires_confirmation`;
+      `has_unconfirmed_codex_scope` → `has_unconfirmed_required_scope`;
+      `attribution_for_boundary` calls the generalized predicate.
+    - `spec/mutation_cursor.qnt` — `isCodexScope`/`hasUnconfirmedCodexScope` →
+      `requiresBoundaryConfirmation`/`scopeRequiresConfirmation`/
+      `hasUnconfirmedRequiredScope`; three `SafetyAttribution` invariants and the
+      `AttributionMatchesObservedScopes` branch generalized; `HasOpenCode*`
+      reachability witnesses added; `Scope5` (OpenCode on `WT0`) added to
+      `ScopeId`/`SCOPES`/`scopeWorktree`/`scopeActor`/`singleScope`; five new
+      `testOpenCode*` deterministic runs.
+    - `spec/mutation_cursor.md` — "Unconfirmed Codex scopes" section and the
+      attribution/verification prose generalized to confirmation-required actors.
+    - `cli/src/services/mutation_trace/mbt/model.rs`,
+      `cli/src/services/mutation_trace/mbt/driver.rs` — `WireScopeId::Scope5` and
+      the `scope5 → OpenCode/wt0` partition entry.
+    - `cli/src/services/mutation_trace/mbt/tests.rs` — three named replay
+      wrappers for the new OpenCode scenarios.
+    - `cli/src/services/mutation_trace/tests.rs` — `opencode_scope` helper and
+      six OpenCode-actor protocol tests mirroring the Codex suite.
+    - `cli/src/services/mutation_trace/runtime/coordinator.rs` — the
+      `ac5-different-actor` contention case switched from `OpenCode` (now
+      confirmation-required, so it suppresses) to `Pi`; two new OpenCode
+      cross-harness coordinator tests.
+  - Result: The unconfirmed-scope rule is now a harness-independent
+    `requiresBoundaryConfirmation(actor)` property — `Codex` and `OpenCode` →
+    `true`, `ClaudeCode` and `Pi` → `false` — in both the Quint model and the
+    Rust kernel. `attribution_for_boundary` suppresses positive attribution to
+    `IneligibleUnscoped` whenever any live confirmation-required scope is not
+    confirmed by its own exact `Close`, exactly as the Codex-only rule did.
+    Codex outcomes are unchanged: every pre-existing Codex `run` and Rust test
+    keeps its original expectation and passes. OpenCode
+    `AiExclusive`/`AiContended` positive attribution is reachable and witnessed
+    (`HasOpenCodeConfirmedExclusiveEvidence`/`...ContendedEvidence`,
+    `testOpenCodeCloseConfirms{Exclusive,Contended}Attribution`), and a mixed
+    OpenCode+Codex live pair stays mutually unconfirmed at either `Close`. No
+    change to the public `Attribution` variants, `ProtocolState`, `ScopeState`,
+    `MutationEvent`, or the Quint scope state; no SQL/schema change.
+  - Verify outcomes:
+    - `cargo test -p sce mutation_trace` — run as
+      `cargo test --manifest-path cli/Cargo.toml mutation_trace` with
+      `SCE_CLI_PACKAGE_FALLBACK=1`: 370 passed, 0 failed (includes the 6 new
+      OpenCode protocol tests, 2 new coordinator tests, 3 new MBT wrappers, the
+      `all_named_scenarios` backstop replaying all 5 new `testOpenCode*` runs,
+      and the 6-scope generated-trace refinement).
+    - `nix run .#quint -- typecheck spec/mutation_cursor.qnt` — clean.
+    - `nix run .#quint -- test spec/mutation_cursor.qnt` — 36 passing (all
+      Codex runs preserved; 5 new OpenCode runs green).
+    - `checks.mutation-trace-quint-connect` — `nix build
+      .#checks.x86_64-linux.mutation-trace-quint-connect`: 16 passed, 0 failed.
+    - Extra: `cargo clippy --all-targets` clean. The nightly deep symbolic
+      check (`quint verify --invariant=SafetyAttribution`) is outside this
+      task's required verify set and outside the required PR path; not run to
+      completion here.
+  - Context impact: additive + bounded refactor. The mutation-protocol change
+    is limited to which `ActorKind`s require boundary confirmation, per the plan
+    constraint. `context/cli/mutation-trace-protocol.md` (generalized
+    confirmation rule) and `spec/mutation_cursor.md` need synchronization;
+    `context/cli/mutation-scope-runtime.md`, `context/architecture.md`,
+    `context/context-map.md`, `context/glossary.md`, `context/overview.md` to be
+    verified. No new context doc for this task (the new
+    `context/cli/opencode-mutation-scope-integration.md` is owned by later
+    tasks' adapter/plugin work).
+  - Deviations / assumptions accepted:
+    - Predicate naming: `requires_boundary_confirmation` /
+      `requiresBoundaryConfirmation`, `scope_requires_confirmation` /
+      `scopeRequiresConfirmation`, `has_unconfirmed_required_scope` /
+      `hasUnconfirmedRequiredScope` — follows existing snake/camel conventions.
+    - Reachability modeling: added one representative scope (`Scope5`,
+      OpenCode/`WT0`) rather than repointing an existing scope, so every
+      pre-existing Codex/Claude `run` keeps its exact scope identities and
+      expectations. `VERIFY_SCOPES` stays `= SCOPES` (now cardinality 6); the
+      resulting increase in nightly symbolic-verification cost is accepted as it
+      is outside the required PR path.
+    - `cargo test` was run against the deterministic
+      `SCE_CLI_PACKAGE_FALLBACK=1` build because the repo build requires a
+      pre-generated Pkl payload; `cli/package-fallback` was already current.
+    - New code and Quint runs are comment-free per
+      `feedback_no_comments_in_code`.
+  - Context synchronization: synced
 
 - [ ] T03: `Add OpenCode adapter identity and classification` (status:todo)
   - Task ID: T03
