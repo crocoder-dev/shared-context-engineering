@@ -63,24 +63,32 @@ pub fn attribution_for(state: &ProtocolState, worktree: &WorktreeId) -> Attribut
     }
 }
 
-pub fn is_codex_scope(state: &ProtocolState, scope: &ScopeId) -> bool {
+pub fn requires_boundary_confirmation(actor_kind: ActorKind) -> bool {
+    match actor_kind {
+        ActorKind::Codex | ActorKind::OpenCode => true,
+        ActorKind::ClaudeCode | ActorKind::Pi => false,
+    }
+}
+
+pub fn scope_requires_confirmation(state: &ProtocolState, scope: &ScopeId) -> bool {
     state
         .scopes
         .get(scope)
-        .is_some_and(|scope_state| scope_state.actor_kind == ActorKind::Codex)
+        .is_some_and(|scope_state| requires_boundary_confirmation(scope_state.actor_kind))
 }
 
 pub fn boundary_confirms_scope(boundary: &Boundary, scope: &ScopeId) -> bool {
     is_close(boundary) && boundary_scope(boundary).as_ref() == Some(scope)
 }
 
-pub fn has_unconfirmed_codex_scope(
+pub fn has_unconfirmed_required_scope(
     state: &ProtocolState,
     live: &BTreeSet<ScopeId>,
     boundary: &Boundary,
 ) -> bool {
-    live.iter()
-        .any(|scope| is_codex_scope(state, scope) && !boundary_confirms_scope(boundary, scope))
+    live.iter().any(|scope| {
+        scope_requires_confirmation(state, scope) && !boundary_confirms_scope(boundary, scope)
+    })
 }
 
 pub fn attribution_for_boundary(
@@ -89,7 +97,7 @@ pub fn attribution_for_boundary(
     boundary: &Boundary,
 ) -> Attribution {
     let live = live_scopes_on(state, worktree);
-    if has_unconfirmed_codex_scope(state, &live, boundary) {
+    if has_unconfirmed_required_scope(state, &live, boundary) {
         return Attribution::IneligibleUnscoped;
     }
     attribution_for(state, worktree)
