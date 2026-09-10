@@ -221,16 +221,16 @@ reaches it. Its full contract is in
 [`claude-mutation-scope-integration.md`](claude-mutation-scope-integration.md).
 A Codex adapter (`cli/src/services/hooks/codex_mutation_scope/`, hidden
 `sce hooks codex-mutation-scope`) has since been built the same way and is
-registered by `sce setup --codex`. Still out of scope for this seam itself,
-and left as future work for the remaining harnesses:
+registered by `sce setup --codex`. An OpenCode adapter
+(`cli/src/services/hooks/opencode_mutation_scope/`, hidden
+`sce hooks opencode-mutation-scope`) has its parsing, classification, and
+`(sessionID, callID) → ScopeId`/`EventId` derivation but does not yet drive this
+seam or register with setup. Still out of scope for this seam itself:
 
-- OpenCode plugin, Pi extension;
-- `SubagentStart` / `SubagentStop` / `PostToolUse` / tool-call translation for
-  OpenCode and Pi;
-- `session → ScopeId` or `tool-call → EventId` derivation for OpenCode and Pi;
-- PID tracking, process supervisors, staleness detection, automatic scope
-  abandonment;
-- harness settings generation or `sce setup` integration for OpenCode/Pi.
+- Pi extension; OpenCode lifecycle drive, plugin, and `sce setup` integration;
+- `SubagentStart`/`SubagentStop`/`PostToolUse`/tool-call translation for Pi;
+- PID tracking, process supervisors, staleness detection, scope abandonment;
+- harness settings generation or `sce setup` integration for Pi.
 
 Each adapter still owns its own `ScopeId` / `EventId` / `actor_kind`
 derivation and its own stale-process detection, and targets this ingress (or,

@@ -3,17 +3,20 @@
 OpenCode is the third planned concrete mutation-scope producer, after
 [Claude Code](claude-mutation-scope-integration.md) and
 [Codex](codex-mutation-scope-integration.md). As of the
-`opencode-mutation-scope-integration` plan's **T01**, only the *lifecycle
-evidence* exists: no Rust adapter, no `sce hooks opencode-mutation-scope`
-command, no generated plugin. OpenCode remains **unwired** at the runtime seam
+`opencode-mutation-scope-integration` plan's **T03**, the *lifecycle evidence*
+(T01), the *protocol generalization* (T02), and the adapter's *identity and
+classification layer* (T03) exist. The adapter still makes **no ingress-seam
+call, keeps no durable state, and is not registered by setup**, and there is no
+generated plugin, so OpenCode remains **unwired** at the runtime seam
 ([`mutation-scope-hook-ingress.md`](mutation-scope-hook-ingress.md) already
 reserves the `"opencode"` actor value and the `oc_` session prefix via
 [`mutation-scope-provenance.md`](mutation-scope-provenance.md)).
 
 This document records what T01 froze about OpenCode's tool lifecycle so the
-adapter tasks (T03–T06) and any later revision inherit it without re-probing.
-T02 (the protocol generalization) has shipped — see **Attribution boundary**
-below.
+adapter tasks (T04–T06) and any later revision inherit it without re-probing,
+plus the identity/encoding contract T03 froze — see **Adapter identity and
+encoding** below. T02 (the protocol generalization) has shipped — see
+**Attribution boundary**.
 
 ## Evidence base
 
@@ -57,6 +60,39 @@ model (`packages/opencode/src/tool/registry.ts`). So **`apply_patch` and
 `edit`/`write` are mutually exclusive within one session**. The four tracked tool
 *names* are all real; a single session exposes at most three of them
 (`{bash, write, edit}` or `{bash, apply_patch}`) plus always-present `task`.
+
+## Adapter identity and encoding
+
+The adapter lives in
+[`../../cli/src/services/hooks/opencode_mutation_scope/`](../../cli/src/services/hooks/opencode_mutation_scope/)
+and is reached by the hidden `sce hooks opencode-mutation-scope` command
+(`HookSubcommand::OpenCodeMutationScope`, kept out of `sce hooks --help` like the
+Claude and Codex adapter commands). T03 built the pure layer only; T04 adds the
+lifecycle, T05 the plugin.
+
+- **Wire contract (plugin → adapter).** The T05 TypeScript plugin sends one JSON
+  object per hook, discriminated by `hook_event_name`:
+  `ToolExecuteBefore` / `ShellEnv` / `ToolExecuteAfter` carry
+  `session_id`, `call_id`, `cwd` (`ToolExecuteBefore`/`ToolExecuteAfter` also
+  `tool_name`; the two start-boundary events also an optional `model`);
+  the terminal signals `ToolError` (`session_id`, `call_id`, `cwd`),
+  `SessionIdle` / `SessionError` / `SessionDeleted` (`session_id`, `cwd`), and
+  `ServerDisposed` (`cwd`). Every field is strictly validated: a missing,
+  blank, or wrong-typed required field is rejected as
+  `Invalid OpenCode hook event payload from STDIN: <detail>.` with no
+  fabricated identity.
+- **Classification** is the closed allowlist in the **Scope model** table,
+  keyed on the exact tool string.
+- **`AttemptKey`** is `(session_id, call_id)` — no turn or agent component.
+- **`ScopeId`** is the frozen, hash-free, length-prefixed encoding
+  `oc-tool-v1|s=<len>:<sessionID>|c=<len>:<callID>`. There is no
+  attempt-sequence component (T01 proved `callID` is never reused); a future
+  generational need bumps the scheme to `oc-tool-v2`. `EventId` is
+  `<scope_id>|start` / `<scope_id>|close`.
+- **Provenance** is built by `opencode_scope_provenance`:
+  `session_id = oc_<sessionID>` (via the shared `prefixed_diff_trace_session_id`),
+  `model_id = normalize_opencode_model_id(model)` — trim, `None` on blank —
+  else `NULL`.
 
 ## Lifecycle boundaries
 
@@ -119,7 +155,11 @@ it now. The generalized rule is also documented in
 [`codex-mutation-scope-integration.md`](codex-mutation-scope-integration.md) and
 [`mutation-scope-runtime.md`](mutation-scope-runtime.md).
 
-## Model and session provenance (planned)
+## Model and session provenance
+
+The construction helper `opencode_scope_provenance` exists as of T03 (see
+**Adapter identity and encoding**); T05 supplies the observed `model` from the
+plugin's `chat.params` map, and T04 stamps the result onto the `Start` ingress.
 
 `chat.params` (`packages/opencode/src/session/llm.ts` L162) fires before every
 LLM call — before that turn's `tool.execute.before` — carrying

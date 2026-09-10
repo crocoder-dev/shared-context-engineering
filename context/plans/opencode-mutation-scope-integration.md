@@ -931,7 +931,7 @@ before the first load-bearing probe.
       `feedback_no_comments_in_code`.
   - Context synchronization: synced
 
-- [ ] T03: `Add OpenCode adapter identity and classification` (status:todo)
+- [x] T03: `Add OpenCode adapter identity and classification` (status:done)
   - Task ID: T03
   - Scope: In — add hidden `sce hooks opencode-mutation-scope` command routing
     (`cli_schema.rs`, `parse::command_runtime`, `services::hooks`), strict event
@@ -949,7 +949,88 @@ before the first load-bearing probe.
   - Verify: `cargo test -p sce opencode_mutation_scope` covering malformed
     payloads, duplicate events, parallel call IDs, task child-session
     identities, and model-present/model-absent provenance.
-  - Context synchronization: pending
+  - Completed: 2026-09-10
+  - Files changed (vs baseline `ccd4cabd`):
+    - `cli/src/services/hooks/opencode_mutation_scope/mod.rs` (new — event
+      parsing, `classify_tool`, `AttemptKey`, `format_opencode_scope_id` +
+      start/close event-id helpers, `opencode_scope_provenance`, the inert
+      `run_opencode_mutation_scope_*` entry points, and 28 unit tests)
+    - `cli/src/services/hooks/mod.rs` (`pub mod opencode_mutation_scope`;
+      `HookSubcommand::OpenCodeMutationScope` variant + dispatch arm +
+      `hook_runtime_invocation_name` arm; `normalize_opencode_model_id` + 2
+      tests)
+    - `cli/src/cli_schema.rs` (hidden `opencode-mutation-scope`
+      `HooksSubcommand::OpenCodeMutationScope` with an explicit
+      `name = "opencode-mutation-scope"`)
+    - `cli/src/services/parse/command_runtime.rs` (mapping arm + 2 tests:
+      parses to the hook subcommand; hidden from `sce hooks --help`)
+  - Result: `sce hooks opencode-mutation-scope` is registered and hidden. The
+    new adapter module turns a plugin→adapter wire event
+    (`hook_event_name` discriminator over `ToolExecuteBefore` / `ShellEnv` /
+    `ToolExecuteAfter` plus the T01-enumerated terminal signals `ToolError`,
+    `SessionIdle`, `SessionError`, `SessionDeleted`, `ServerDisposed`) into a
+    deterministic normalized representation. `classify_tool` is a closed
+    allowlist — `{bash, write, edit, apply_patch}` → `TrackedMutation`, `task` →
+    `Delegation`, everything else (read-only tools, plugin tools, MCP-shaped
+    names, unknown/future, empty) → `Untracked` (D2). `AttemptKey` is
+    `(session_id, call_id)` only (D1 — no turn/agent identity; child `task`
+    sessions carry their own `sessionID`, D9). `format_opencode_scope_id`
+    emits the D1-frozen `oc-tool-v1|s=<len>:<sid>|c=<len>:<callID>` with no
+    attempt-sequence component; `EventId` is `<scope_id>|start` / `|close`.
+    `opencode_scope_provenance` canonicalizes to `oc_<sessionID>` via the
+    existing `prefixed_diff_trace_session_id` and normalizes the observed model
+    through `normalize_opencode_model_id` (trim, `None` on blank) — absent
+    evidence is `NULL`, never guessed (D8). No ingress seam call, no Git
+    resolution, no durable state: `run_opencode_mutation_scope_from_payload`
+    parses strictly (surfacing malformed input) and returns neutral output for
+    every event; the Start/Close/Abandon lifecycle is T04.
+  - Verify outcomes:
+    - `cargo test -p sce opencode_mutation_scope` — run as the canonical
+      `nix build .#checks.x86_64-linux.cli-tests` (per the repo verification
+      preference; `cargo test` is bash-policy-blocked): PASS. Coverage includes
+      malformed payloads (empty / non-JSON / non-object / unknown
+      `hook_event_name` / missing / blank / wrong-typed fields), duplicate
+      events reuse the same `ScopeId`, parallel `call_id`s stay distinguishable,
+      `task` child-session identity flows through the `AttemptKey`, and
+      model-present / model-absent (and already-`oc_`-prefixed) provenance. 32
+      new tests total (28 adapter + 2 `command_runtime` routing + 2
+      `normalize_opencode_model_id`).
+    - `nix build .#checks.x86_64-linux.cli-clippy` — PASS (clean).
+    - `nix build .#checks.x86_64-linux.cli-fmt` — PASS (`cargo fmt` applied).
+    - `git diff --cached --check` — CLEAN (4 files, +907, additions only).
+  - Context impact: additive. New leaf module under
+    `cli/src/services/hooks/opencode_mutation_scope/` (picked up by
+    `craneLib.fileset.commonCargoSources`; no `flake.nix` `workspaceSrc` entry
+    needed because the tests use inline payloads, not `include_str!` fixtures).
+    New hidden CLI surface `sce hooks opencode-mutation-scope`, inert until the
+    T05 plugin (which depends on T04) routes real events to it.
+    `context/cli/mutation-scope-hook-ingress.md`,
+    `context/cli/opencode-mutation-scope-integration.md` (new, expected),
+    `context/architecture.md`, `context/context-map.md`, `context/glossary.md`,
+    `context/overview.md` to be verified during synchronization. No protocol,
+    schema, Pkl, Quint, or SQL change.
+  - Deviations / assumptions accepted:
+    - Plugin↔adapter wire JSON (`hook_event_name` discriminator; `session_id`,
+      `call_id`, `cwd`, `tool_name`, `model` fields; PascalCase event names) is
+      an internal SCE interface defined in this task and consumed by T05,
+      following the Codex adapter's payload-shape precedent.
+    - `ScopeId` omits the Codex/Claude-style `n=<attempt_seq>` component: T01
+      proved `callID` is collision-safe and never reused; a future generational
+      need bumps the scheme to `oc-tool-v2`.
+    - `run_opencode_mutation_scope_from_payload` is intentionally inert for
+      tracked tools (parses, returns neutral) pending T04. Safe because the
+      invoking T05 plugin depends on T04; nothing invokes the command in
+      production between T03 and T05.
+    - Terminal-event parsing (`ToolError`/`SessionIdle`/`SessionError`/
+      `SessionDeleted`/`ServerDisposed`) is included now — T01 froze these
+      signals — so T04 need not touch the parser; their field sets are the
+      lightest defensible shape (`session_id` + `cwd`, or `cwd` only for
+      `ServerDisposed`).
+    - `normalize_opencode_model_id` mirrors `normalize_codex_model_id`
+      (lenient trim / non-blank); the T05 plugin composes `providerID/api.id`
+      before forwarding.
+    - New code is comment-free per `feedback_no_comments_in_code`.
+  - Context synchronization: synced
 
 - [ ] T04: `Implement OpenCode scope lifecycle and recovery` (status:todo)
   - Task ID: T04
