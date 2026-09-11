@@ -44,6 +44,7 @@ pub mod claude_model_state;
 pub mod claude_mutation_scope;
 pub mod claude_transcript;
 pub mod codex;
+pub mod codex_mutation_scope;
 pub mod command;
 pub mod lifecycle;
 pub mod mutation_scope;
@@ -105,6 +106,7 @@ pub enum HookSubcommand {
     ClaudeModelState,
     MutationScope,
     ClaudeMutationScope,
+    CodexMutationScope,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -253,6 +255,9 @@ fn run_hooks_subcommand_in_repo(
         }
         HookSubcommand::ClaudeMutationScope => {
             claude_mutation_scope::run_claude_mutation_scope_subcommand(logger)
+        }
+        HookSubcommand::CodexMutationScope => {
+            codex_mutation_scope::run_codex_mutation_scope_subcommand(logger)
         }
     }
 }
@@ -2003,6 +2008,7 @@ fn hook_runtime_invocation_name(subcommand: &HookSubcommand) -> &'static str {
         HookSubcommand::ClaudeModelState => "Claude model-state runtime invocation",
         HookSubcommand::MutationScope => "mutation-scope runtime invocation",
         HookSubcommand::ClaudeMutationScope => "Claude mutation-scope runtime invocation",
+        HookSubcommand::CodexMutationScope => "Codex mutation-scope runtime invocation",
     }
 }
 

@@ -1,18 +1,17 @@
 # Mutation-scope hook ingress: the harness-neutral transport seam
 
-`sce hooks mutation-scope` is the one generic CLI ingress that drives the
-mutation-scope runtime (`coordinate()` / `abandon_scope()`, documented in
-[`mutation-scope-runtime.md`](mutation-scope-runtime.md)). It reads a single
-normalized JSON lifecycle object from STDIN, strictly parses and validates it,
-translates it into one `RuntimeBoundary` or one `abandon_scope()` call, and
-invokes the existing runtime with a lazy DB provider.
+`sce hooks mutation-scope` is the generic CLI ingress for the mutation-scope
+runtime (`coordinate()` / `abandon_scope()`, documented in
+[`mutation-scope-runtime.md`](mutation-scope-runtime.md)). It strictly parses
+one normalized JSON lifecycle object from STDIN, translates it into one runtime
+call, and invokes the existing runtime with a lazy DB provider.
 
 Built by the `mutation-scope-hook-ingress` plan
 (`context/plans/mutation-scope-hook-ingress.md`). It lives in
 `cli/src/services/hooks/mutation_scope.rs` and is the transport/normalization
-seam every future Claude Code, Codex, OpenCode, and Pi adapter will target. It
-contains **no** concrete harness mapping and **no** lifecycle-event translation —
-see [Generic ingress vs harness adapter](#generic-ingress-vs-harness-adapter).
+seam used by shipped Claude Code/Codex adapters and intended for future
+OpenCode/Pi adapters. It contains **no** concrete mapping or lifecycle
+translation — see [Generic ingress vs harness adapter](#generic-ingress-vs-harness-adapter).
 
 ## Command routing
 
@@ -218,18 +217,21 @@ than by re-invoking this CLI command, and `sce setup` registers its hooks
 (`config/pkl/renderers/claude-content.pkl`) so a real Claude Code session
 reaches it. Its full contract is in
 [`claude-mutation-scope-integration.md`](claude-mutation-scope-integration.md).
-Still out of scope for this seam itself, and left as future work for every
-non-Claude harness:
+A Codex adapter (`cli/src/services/hooks/codex_mutation_scope/`, hidden
+`sce hooks codex-mutation-scope`) has since been built the same way and is
+registered by `sce setup --codex`. Still out of scope for this seam itself,
+and left as future work for the remaining harnesses:
 
-- Codex hook mapping, OpenCode plugin, Pi extension;
+- OpenCode plugin, Pi extension;
 - `SubagentStart` / `SubagentStop` / `PostToolUse` / tool-call translation for
-  those harnesses;
-- `session → ScopeId` or `tool-call → EventId` derivation for those harnesses;
+  OpenCode and Pi;
+- `session → ScopeId` or `tool-call → EventId` derivation for OpenCode and Pi;
 - PID tracking, process supervisors, staleness detection, automatic scope
   abandonment;
-- harness settings generation or `sce setup` integration for any of these
-  hooks (Claude's own registration now ships; Codex/OpenCode/Pi remain
-  unregistered).
+- harness settings generation or `sce setup` integration for OpenCode/Pi
+  (Claude's and Codex's registrations now ship — the Codex adapter lives in
+  `cli/src/services/hooks/codex_mutation_scope/` and is installed by
+  `sce setup --codex`; OpenCode/Pi remain unregistered).
 
 Each adapter still owns its own `ScopeId` / `EventId` / `actor_kind`
 derivation and its own stale-process detection, and targets this ingress (or,
@@ -237,8 +239,9 @@ for an in-process consumer like the Claude driver, the same seam directly) as
 its transport. See [`mutation-scope-runtime.md`](mutation-scope-runtime.md)
 for the lifecycle obligations every such adapter must uphold.
 
-## Related context
+The Codex mapping and partial coverage are in [`codex-mutation-scope-integration.md`](codex-mutation-scope-integration.md).
 
+## Related context
 - [Mutation-scope runtime: the harness-adapter contract](mutation-scope-runtime.md)
 - [Claude mutation-scope integration: the first concrete harness adapter](claude-mutation-scope-integration.md)
 - [Mutation-trace runtime coordinator](mutation-trace-runtime-coordinator.md)

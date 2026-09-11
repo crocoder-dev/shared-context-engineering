@@ -1,0 +1,24 @@
+{
+  "probe": "probe09-self-detaching-descendant",
+  "purpose": "D16 — prove a foreground Codex shell tool call returns PostToolUse while a self-detaching descendant it spawned is still running and later performs a Git-observable mutation outside the tool's closed scope.",
+  "codex_version": "codex-cli 0.153.4",
+  "model": "gpt-5.6-sol",
+  "captured_utc": "2026-09-07",
+  "session_id": "see probe09-self-detaching-descendant.pre_tool_use.json",
+  "command_run_by_shell_tool": "bash detach-probe.sh",
+  "detach_probe_sh": "rm -f detached-descendant.marker; setsid bash -c 'sleep 4; date -u ... > detached-descendant.marker' </dev/null >/dev/null 2>&1 & disown; echo parent-returned <ts>",
+  "observed_timestamps_utc": {
+    "t1_pre_tool_use_capture": "2026-09-07T14:01:27.853331Z",
+    "t2_post_tool_use_capture": "2026-09-07T14:01:27.920478Z",
+    "t2_parent_returned_stdout": "2026-09-07T14:01:27.888217Z",
+    "t3_descendant_marker_write": "2026-09-07T14:01:31.894147Z"
+  },
+  "derived_ordering": "t1 < t2 < t3 — the detached descendant wrote to the repository ~4s AFTER PostToolUse fired.",
+  "git_observability": {
+    "marker_path": "detached-descendant.marker (repository root)",
+    "git_check_ignore": "no match (exit 1) — NOT gitignored",
+    "git_status_short": "?? detached-descendant.marker — an untracked path Git reports",
+    "conclusion": "The descendant's write changes the tree an SCE GitSnapshotService::capture_tree() would observe, and it lands strictly after the shell tool's scope would close at PostToolUse."
+  },
+  "disposition": "D16 self-detaching-descendant boundary: CONFIRMED for Codex 0.153.4 with setsid-based shell detachment. Same class as the Claude adapter's D20. The adapter adds no PID supervision / process-group tracking / shell static analysis / staleness polling; PostToolUse is not treated as proof every descendant stopped mutating. Does not generalize to nohup / double-fork / daemonize, which this probe did not exercise."
+}

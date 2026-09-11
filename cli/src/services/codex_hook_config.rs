@@ -12,25 +12,70 @@ use serde_json::{Map, Value};
 const CODEX_HOOKS_ROOT: &str = "hooks";
 const CODEX_HELPER_PATH: &str = ".codex/hooks/run-sce-or-show-install-guidance.sh";
 const CODEX_ROOTED_HELPER_PATH: &str = "$root/.codex/hooks/run-sce-or-show-install-guidance.sh";
-const CODEX_COMMAND_WORDS: [&str; 3] = ["sce", "hooks", "codex"];
-const REQUIRED_EVENTS: [(&str, Option<&str>); 4] = [
-    ("UserPromptSubmit", None),
-    ("Stop", None),
-    ("PreToolUse", Some("Bash")),
-    ("PostToolUse", Some("apply_patch")),
+
+pub(crate) const CODEX_MUTATION_SCOPE_TOOL_MATCHER: &str = "^(Bash|apply_patch)$";
+
+const CODEX_PRE_TOOL_USE_FAIL_CLOSED_ASSIGNMENT: &str = "SCE_CODEX_PRE_TOOL_USE_FAIL_CLOSED=1";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CodexHookCommand {
+    Codex,
+    MutationScope,
+}
+
+impl CodexHookCommand {
+    const ALL: [Self; 2] = [Self::Codex, Self::MutationScope];
+
+    const fn command_words(self) -> &'static [&'static str] {
+        match self {
+            Self::Codex => &["sce", "hooks", "codex"],
+            Self::MutationScope => &["sce", "hooks", "codex-mutation-scope"],
+        }
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Codex => "sce hooks codex",
+            Self::MutationScope => "sce hooks codex-mutation-scope",
+        }
+    }
+}
+
+const REQUIRED_EVENTS: [(CodexHookCommand, &str, Option<&str>); 10] = [
+    (CodexHookCommand::Codex, "UserPromptSubmit", None),
+    (CodexHookCommand::Codex, "Stop", None),
+    (CodexHookCommand::Codex, "PreToolUse", Some("Bash")),
+    (CodexHookCommand::Codex, "PostToolUse", Some("apply_patch")),
+    (
+        CodexHookCommand::MutationScope,
+        "PreToolUse",
+        Some(CODEX_MUTATION_SCOPE_TOOL_MATCHER),
+    ),
+    (
+        CodexHookCommand::MutationScope,
+        "PostToolUse",
+        Some(CODEX_MUTATION_SCOPE_TOOL_MATCHER),
+    ),
+    (CodexHookCommand::MutationScope, "Stop", None),
+    (CodexHookCommand::MutationScope, "Interrupt", None),
+    (CodexHookCommand::MutationScope, "SubagentStop", None),
+    (CodexHookCommand::MutationScope, "SessionEnd", None),
 ];
 
-/// The persisted hook-state key label for one of SCE's four required Codex
-/// event names, matching upstream `hooks::hook_event_key_label`
-/// (`openai/codex` commit `8e649e3afa5cdddfb09a1b85a090b94775045d9b`,
-/// `hooks/src/lib.rs`). Only covers the events SCE registers; any other input
-/// is a programming error.
+pub(crate) fn required_registrations(
+) -> [(CodexHookCommand, &'static str, Option<&'static str>); 10] {
+    REQUIRED_EVENTS
+}
+
 pub(crate) fn hook_event_key_label(event: &str) -> &'static str {
     match event {
         "UserPromptSubmit" => "user_prompt_submit",
         "Stop" => "stop",
         "PreToolUse" => "pre_tool_use",
         "PostToolUse" => "post_tool_use",
+        "Interrupt" => "interrupt",
+        "SubagentStop" => "subagent_stop",
+        "SessionEnd" => "session_end",
         other => unreachable!("unexpected Codex hook event name '{other}'"),
     }
 }
@@ -68,6 +113,7 @@ pub(crate) fn merge_or_create(
 
 #[derive(Clone)]
 struct Registration {
+    command: CodexHookCommand,
     event: &'static str,
     matcher: Option<&'static str>,
     group: Value,
@@ -97,6 +143,7 @@ pub(crate) enum RegistrationStructuralState {
 /// own trust hash for it without re-parsing the document.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RegistrationDiagnosis {
+    pub(crate) command: CodexHookCommand,
     pub(crate) event: &'static str,
     pub(crate) matcher: Option<&'static str>,
     pub(crate) state: RegistrationStructuralState,
@@ -160,9 +207,6 @@ pub(crate) fn diagnose_document(
     Ok(HooksDocumentDiagnosis::Registrations(diagnoses))
 }
 
-/// One SCE-owned handler found while scanning every matcher group for an
-/// event, tagged with where it sits and whether that group is the
-/// registration's canonical matcher group.
 struct OwnedHandlerSighting {
     group_index: usize,
     handler_index: usize,
@@ -182,6 +226,7 @@ fn diagnose_registration(
     registration: &Registration,
 ) -> RegistrationDiagnosis {
     let missing = || RegistrationDiagnosis {
+        command: registration.command,
         event: registration.event,
         matcher: registration.matcher,
         state: RegistrationStructuralState::Missing,
@@ -205,7 +250,7 @@ fn diagnose_registration(
             continue;
         };
         for (handler_index, handler) in handlers.iter().enumerate() {
-            if !handler_is_sce_owned(handler) {
+            if !handler_owned_by(handler, registration.command) {
                 continue;
             }
             sightings.push(OwnedHandlerSighting {
@@ -220,10 +265,8 @@ fn diagnose_registration(
     let Some((only, [])) = sightings.split_first() else {
         return match sightings.first() {
             None => missing(),
-            // More than one SCE-owned handler anywhere for this event:
-            // always stale, whatever their placement. Surface the first as
-            // diagnostic context; it is not necessarily "the" canonical one.
             Some(first) => RegistrationDiagnosis {
+                command: registration.command,
                 event: registration.event,
                 matcher: registration.matcher,
                 state: RegistrationStructuralState::Stale,
@@ -235,6 +278,7 @@ fn diagnose_registration(
 
     if only.in_canonical_group && only.handler == registration.handler {
         RegistrationDiagnosis {
+            command: registration.command,
             event: registration.event,
             matcher: registration.matcher,
             state: RegistrationStructuralState::PresentAndCurrent,
@@ -242,9 +286,8 @@ fn diagnose_registration(
             position: Some((only.group_index, only.handler_index)),
         }
     } else {
-        // Exactly one owned handler, but either in the wrong matcher group
-        // or not byte-identical to the canonical generated handler.
         RegistrationDiagnosis {
+            command: registration.command,
             event: registration.event,
             matcher: registration.matcher,
             state: RegistrationStructuralState::Stale,
@@ -287,6 +330,8 @@ struct CodexHookEvents {
     subagent_stop: Vec<CodexMatcherGroup>,
     #[serde(rename = "Stop", default)]
     stop: Vec<CodexMatcherGroup>,
+    #[serde(rename = "Interrupt", default)]
+    interrupt: Vec<CodexMatcherGroup>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -315,54 +360,70 @@ fn validate_generated_document_value(generated: &Value) -> Result<Vec<Registrati
         .context("Generated Codex hook config key 'hooks' must be a JSON object")?;
 
     let mut registrations = Vec::with_capacity(REQUIRED_EVENTS.len());
-    for (event, matcher) in REQUIRED_EVENTS {
+    for (command, event, matcher) in REQUIRED_EVENTS {
         let groups = hooks
             .get(event)
-            .with_context(|| format!("Generated Codex hook config is missing '{event}'"))?
+            .with_context(|| {
+                format!(
+                    "Generated Codex hook config is missing '{event}' for '{}'",
+                    command.label()
+                )
+            })?
             .as_array()
             .with_context(|| {
                 format!("Generated Codex hook config key 'hooks.{event}' must be a JSON array")
             })?;
-        if groups.len() != 1 {
-            bail!(
-                "Generated Codex hook config key 'hooks.{event}' must contain exactly one matcher group"
-            );
-        }
-        let group = groups[0].as_object().with_context(|| {
-            format!("Generated Codex hook config 'hooks.{event}[0]' must be a JSON object")
-        })?;
-        validate_matcher(group, event, matcher)?;
-        let handlers = group
-            .get("hooks")
-            .with_context(|| {
-                format!("Generated Codex hook config '{event}' group must contain 'hooks'")
-            })?
-            .as_array()
-            .with_context(|| {
-                format!("Generated Codex hook config '{event}' group 'hooks' must be a JSON array")
+
+        let mut found: Option<Value> = None;
+        for group in groups {
+            let group_object = group.as_object().with_context(|| {
+                format!("Generated Codex hook config 'hooks.{event}' group must be a JSON object")
             })?;
-        if handlers.len() != 1 {
-            bail!("Generated Codex hook config '{event}' must contain exactly one handler");
-        }
-        validate_handler(&handlers[0], "generated Codex hook config", event, 0, 0)?;
-        let handler = handlers[0].as_object().expect("validated handler object");
-        let command = handler
-            .get("command")
-            .and_then(Value::as_str)
-            .with_context(|| {
-                format!(
-                    "Generated Codex hook config '{event}' handler must have a string 'command'"
-                )
-            })?;
-        if !command_is_current_sce_contract(command) {
-            bail!("Generated Codex hook config '{event}' handler does not use the current SCE command contract");
+            if group_object.get("matcher").and_then(Value::as_str) != matcher {
+                continue;
+            }
+            let handlers = group_object
+                .get("hooks")
+                .and_then(Value::as_array)
+                .with_context(|| {
+                    format!(
+                        "Generated Codex hook config '{event}' group must contain a 'hooks' array"
+                    )
+                })?;
+            for handler in handlers {
+                if !handler_owned_by(handler, command) {
+                    continue;
+                }
+                validate_handler(handler, "generated Codex hook config", event, 0, 0)?;
+                if found.is_some() {
+                    bail!(
+                        "Generated Codex hook config '{event}' contains more than one '{}' handler",
+                        command.label()
+                    );
+                }
+                found = Some(handler.clone());
+            }
         }
 
+        let handler = found.with_context(|| {
+            format!(
+                "Generated Codex hook config is missing the '{}' registration for '{event}'",
+                command.label()
+            )
+        })?;
+        let canonical_group = match matcher {
+            Some(matcher) => {
+                serde_json::json!({ "matcher": matcher, "hooks": [handler.clone()] })
+            }
+            None => serde_json::json!({ "hooks": [handler.clone()] }),
+        };
+
         registrations.push(Registration {
+            command,
             event,
             matcher,
-            group: Value::Object(group.clone()),
-            handler: Value::Object(handler.clone()),
+            group: canonical_group,
+            handler,
         });
     }
 
@@ -387,6 +448,7 @@ fn validate_document(document: &Value, source_path: &str) -> Result<()> {
         ("SubagentStart", typed.hooks.subagent_start),
         ("SubagentStop", typed.hooks.subagent_stop),
         ("Stop", typed.hooks.stop),
+        ("Interrupt", typed.hooks.interrupt),
     ];
     for (event, groups) in event_groups {
         for (group_index, group) in groups.iter().enumerate() {
@@ -584,17 +646,6 @@ fn toml_json_kind(value: &Value) -> Option<TomlJsonKind> {
     }
 }
 
-fn validate_matcher(group: &Map<String, Value>, event: &str, expected: Option<&str>) -> Result<()> {
-    let actual = group.get("matcher").and_then(Value::as_str);
-    if actual != expected {
-        if expected.is_some() {
-            bail!("Generated Codex hook config '{event}' group must have matcher '{expected:?}'");
-        }
-        bail!("Generated Codex hook config '{event}' group must not have a non-null matcher");
-    }
-    Ok(())
-}
-
 fn merge_document(
     mut existing: Value,
     registrations: &[Registration],
@@ -620,6 +671,7 @@ fn merge_document(
             Value::Array(merge_event_groups(
                 existing_groups,
                 registration.matcher,
+                registration.command,
                 &registration.handler,
                 &registration.group,
             )),
@@ -630,51 +682,40 @@ fn merge_document(
     Ok(existing)
 }
 
-/// Merge one event's matcher groups so the result matches exactly what
-/// `diagnose_registration` calls `PresentAndCurrent`: if the existing
-/// document already has exactly one SCE-owned handler, it sits in a matcher
-/// group that satisfies `matcher`, and it is byte-identical to
-/// `current_handler`, the groups are returned completely untouched —
-/// wherever that handler already lives, including a non-first matching
-/// group. Relocating an already-canonical handler merely because an earlier
-/// matcher group happens to exist would make `merge_or_create` rewrite a
-/// document `diagnose_document` calls current, breaking the
-/// `PresentAndCurrent` ⇒ no-op invariant those two functions must share.
-///
-/// Otherwise every SCE-owned handler across every group is removed and
-/// exactly one canonical handler is (re)inserted at a deterministic
-/// position: preferring the first matcher-matching group that already held
-/// an owned handler (replacing it in place), then the first
-/// matcher-matching group at all (appending to it), then a freshly appended
-/// `canonical_group` when no matcher-matching group exists. No group is
-/// ever deleted, and non-owned handlers/groups are never touched.
 fn merge_event_groups(
     groups: Vec<Value>,
     matcher: Option<&str>,
+    command: CodexHookCommand,
     current_handler: &Value,
     canonical_group: &Value,
 ) -> Vec<Value> {
     let mut owned_sightings: Vec<(usize, usize)> = Vec::new();
     let mut canonical_group_sightings: Vec<(usize, usize)> = Vec::new();
-    let mut first_matching_group_index: Option<usize> = None;
+    let mut first_appendable_group_index: Option<usize> = None;
 
     for (group_index, group) in groups.iter().enumerate() {
         let Some(group_object) = group.as_object() else {
             continue;
         };
-        let is_canonical_group = group_matches(group_object, matcher);
-        if is_canonical_group && first_matching_group_index.is_none() {
-            first_matching_group_index = Some(group_index);
+        let matcher_matches = group_matches(group_object, matcher);
+        let handlers = group_object.get("hooks").and_then(Value::as_array);
+        let holds_other_command = handlers.is_some_and(|handlers| {
+            handlers.iter().any(|handler| {
+                handler_owning_command(handler).is_some_and(|owner| owner != command)
+            })
+        });
+        if matcher_matches && !holds_other_command && first_appendable_group_index.is_none() {
+            first_appendable_group_index = Some(group_index);
         }
-        let Some(handlers) = group_object.get("hooks").and_then(Value::as_array) else {
+        let Some(handlers) = handlers else {
             continue;
         };
         for (handler_index, handler) in handlers.iter().enumerate() {
-            if !handler_is_sce_owned(handler) {
+            if !handler_owned_by(handler, command) {
                 continue;
             }
             owned_sightings.push((group_index, handler_index));
-            if is_canonical_group {
+            if matcher_matches {
                 canonical_group_sightings.push((group_index, handler_index));
             }
         }
@@ -694,15 +735,10 @@ fn merge_event_groups(
         }
     }
 
-    // Repair. Prefer the (first, by document order) group that already held
-    // a canonical-matcher owned handler, so collapsing duplicates keeps the
-    // earliest one in place; otherwise the first group whose matcher
-    // already matches, even if it never held an owned handler; otherwise
-    // fall back to appending a fresh canonical group below.
     let target_group_index = canonical_group_sightings
         .first()
         .map(|(group_index, _)| *group_index)
-        .or(first_matching_group_index);
+        .or(first_appendable_group_index);
 
     let mut merged_groups = groups;
     let mut insert_at_in_target: Option<usize> = None;
@@ -715,9 +751,11 @@ fn merge_event_groups(
             continue;
         };
         if target_group_index == Some(group_index) {
-            insert_at_in_target = handlers.iter().position(handler_is_sce_owned);
+            insert_at_in_target = handlers
+                .iter()
+                .position(|handler| handler_owned_by(handler, command));
         }
-        handlers.retain(|handler| !handler_is_sce_owned(handler));
+        handlers.retain(|handler| !handler_owned_by(handler, command));
     }
 
     match target_group_index {
@@ -725,9 +763,6 @@ fn merge_event_groups(
             let group_object = merged_groups[group_index]
                 .as_object_mut()
                 .expect("validated group object");
-            // A defaulted group (upstream's `#[serde(default)] hooks: Vec<...>`)
-            // may carry no "hooks" key at all; create an empty array so there
-            // is somewhere to insert the canonical handler.
             let handlers = group_object
                 .entry("hooks".to_string())
                 .or_insert_with(|| Value::Array(Vec::new()))
@@ -750,22 +785,36 @@ fn group_matches(group: &Map<String, Value>, matcher: Option<&str>) -> bool {
     group.get("matcher").and_then(Value::as_str) == matcher
 }
 
-fn handler_is_sce_owned(handler: &Value) -> bool {
-    handler
-        .as_object()
-        .and_then(|handler| handler.get("command"))
-        .and_then(Value::as_str)
-        .is_some_and(command_is_current_sce_contract)
+fn handler_owned_by(handler: &Value, command: CodexHookCommand) -> bool {
+    handler_owning_command(handler) == Some(command)
 }
 
-fn command_is_current_sce_contract(command: &str) -> bool {
-    command.split(';').any(|segment| {
-        let tokens: Vec<&str> = segment.split_whitespace().collect();
+fn handler_owning_command(handler: &Value) -> Option<CodexHookCommand> {
+    let command = handler
+        .as_object()
+        .and_then(|handler| handler.get("command"))
+        .and_then(Value::as_str)?;
+    command_owning_contract(command)
+}
+
+fn command_owning_contract(command: &str) -> Option<CodexHookCommand> {
+    command.split(';').find_map(|segment| {
+        let all_tokens: Vec<&str> = segment.split_whitespace().collect();
+        let tokens: &[&str] = match all_tokens.split_first() {
+            Some((first, rest)) if *first == CODEX_PRE_TOOL_USE_FAIL_CLOSED_ASSIGNMENT => rest,
+            _ => all_tokens.as_slice(),
+        };
         let offset = usize::from(tokens.first() == Some(&"exec"));
-        tokens.len() == offset + 5
-            && tokens.get(offset) == Some(&"bash")
-            && helper_path_token_is_valid(tokens[offset + 1])
-            && tokens[offset + 2..] == CODEX_COMMAND_WORDS
+        if tokens.len() != offset + 5 || tokens.get(offset) != Some(&"bash") {
+            return None;
+        }
+        if !helper_path_token_is_valid(tokens[offset + 1]) {
+            return None;
+        }
+        let words = &tokens[offset + 2..];
+        CodexHookCommand::ALL
+            .into_iter()
+            .find(|contract| contract.command_words() == words)
     })
 }
 
@@ -779,18 +828,81 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn generated() -> Vec<u8> {
-        let mut generated = serde_json::to_string_pretty(&json!({
+    const CANONICAL_COMMAND: &str = "root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || exit 0; exec bash \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" sce hooks codex";
+    const MUTATION_SCOPE_COMMAND: &str = "root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || exit 0; exec bash \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" sce hooks codex-mutation-scope";
+    const MUTATION_SCOPE_PRE_TOOL_USE_COMMAND: &str = "sce_deny(){ printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"SCE could not establish mutation attribution for this tool execution.\"}}'; exit 0; }; root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || sce_deny; test -r \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" || sce_deny; SCE_CODEX_PRE_TOOL_USE_FAIL_CLOSED=1 exec bash \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" sce hooks codex-mutation-scope";
+
+    fn codex_handler() -> Value {
+        json!({"type": "command", "command": CANONICAL_COMMAND})
+    }
+
+    fn mutation_scope_handler() -> Value {
+        json!({"type": "command", "command": MUTATION_SCOPE_COMMAND})
+    }
+
+    fn mutation_scope_pre_tool_use_handler() -> Value {
+        json!({"type": "command", "command": MUTATION_SCOPE_PRE_TOOL_USE_COMMAND})
+    }
+
+    fn canonical_document() -> Value {
+        json!({
             "hooks": {
-                "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || exit 0; exec bash \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" sce hooks codex"}]}],
-                "Stop": [{"hooks": [{"type": "command", "command": "root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || exit 0; exec bash \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" sce hooks codex"}]}],
-                "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || exit 0; exec bash \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" sce hooks codex"}]}],
-                "PostToolUse": [{"matcher": "apply_patch", "hooks": [{"type": "command", "command": "root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || exit 0; exec bash \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" sce hooks codex"}]}]
+                "UserPromptSubmit": [{"hooks": [codex_handler()]}],
+                "Stop": [{"hooks": [codex_handler()]}, {"hooks": [mutation_scope_handler()]}],
+                "PreToolUse": [
+                    {"matcher": "Bash", "hooks": [codex_handler()]},
+                    {"matcher": CODEX_MUTATION_SCOPE_TOOL_MATCHER, "hooks": [mutation_scope_pre_tool_use_handler()]}
+                ],
+                "PostToolUse": [
+                    {"matcher": "apply_patch", "hooks": [codex_handler()]},
+                    {"matcher": CODEX_MUTATION_SCOPE_TOOL_MATCHER, "hooks": [mutation_scope_handler()]}
+                ],
+                "Interrupt": [{"hooks": [mutation_scope_handler()]}],
+                "SubagentStop": [{"hooks": [mutation_scope_handler()]}],
+                "SessionEnd": [{"hooks": [mutation_scope_handler()]}]
             }
-        }))
-        .unwrap();
+        })
+    }
+
+    fn generated() -> Vec<u8> {
+        let mut generated = serde_json::to_string_pretty(&canonical_document()).unwrap();
         generated.push('\n');
         generated.into_bytes()
+    }
+
+    fn with_mutation_scope_registrations(mut doc: Value) -> Value {
+        let hooks = doc["hooks"].as_object_mut().expect("hooks object");
+        hooks
+            .entry("PreToolUse".to_string())
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
+            .expect("event array")
+            .push(json!({
+                "matcher": CODEX_MUTATION_SCOPE_TOOL_MATCHER,
+                "hooks": [mutation_scope_pre_tool_use_handler()]
+            }));
+        hooks
+            .entry("PostToolUse".to_string())
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
+            .expect("event array")
+            .push(json!({
+                "matcher": CODEX_MUTATION_SCOPE_TOOL_MATCHER,
+                "hooks": [mutation_scope_handler()]
+            }));
+        hooks
+            .entry("Stop".to_string())
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
+            .expect("event array")
+            .push(json!({"hooks": [mutation_scope_handler()]}));
+        for event in ["Interrupt", "SubagentStop", "SessionEnd"] {
+            hooks.insert(
+                event.to_string(),
+                json!([{"hooks": [mutation_scope_handler()]}]),
+            );
+        }
+        doc
     }
 
     #[test]
@@ -832,13 +944,19 @@ mod tests {
         .expect("valid handlers should survive");
         let value: Value = serde_json::from_slice(&merged).unwrap();
         assert_eq!(value["description"], "user hooks");
-        assert_eq!(value["hooks"]["PostToolUse"].as_array().unwrap().len(), 2);
+        let post_tool_use = value["hooks"]["PostToolUse"].as_array().unwrap();
+        assert_eq!(post_tool_use.len(), 3);
+        assert_eq!(post_tool_use[0]["matcher"], "Write");
+        assert_eq!(post_tool_use[0]["hooks"].as_array().unwrap().len(), 4);
+        assert_eq!(post_tool_use[1]["matcher"], "apply_patch");
+        assert_eq!(post_tool_use[1]["hooks"][0]["command"], CANONICAL_COMMAND);
         assert_eq!(
-            value["hooks"]["PostToolUse"][0]["hooks"]
-                .as_array()
-                .unwrap()
-                .len(),
-            4
+            post_tool_use[2]["matcher"],
+            CODEX_MUTATION_SCOPE_TOOL_MATCHER
+        );
+        assert_eq!(
+            post_tool_use[2]["hooks"][0]["command"],
+            MUTATION_SCOPE_COMMAND
         );
     }
 
@@ -1014,20 +1132,48 @@ mod tests {
 
     #[test]
     fn ownership_requires_a_bounded_helper_invocation_shape() {
-        assert!(command_is_current_sce_contract(
-            "bash .codex/hooks/run-sce-or-show-install-guidance.sh sce hooks codex"
-        ));
-        assert!(command_is_current_sce_contract(
-            r#"root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0; exec bash "$root/.codex/hooks/run-sce-or-show-install-guidance.sh" sce hooks codex"#
-        ));
+        assert_eq!(
+            command_owning_contract(
+                "bash .codex/hooks/run-sce-or-show-install-guidance.sh sce hooks codex"
+            ),
+            Some(CodexHookCommand::Codex)
+        );
+        assert_eq!(
+            command_owning_contract(
+                r#"root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0; exec bash "$root/.codex/hooks/run-sce-or-show-install-guidance.sh" sce hooks codex"#
+            ),
+            Some(CodexHookCommand::Codex)
+        );
+        assert_eq!(
+            command_owning_contract(
+                r#"root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0; exec bash "$root/.codex/hooks/run-sce-or-show-install-guidance.sh" sce hooks codex-mutation-scope"#
+            ),
+            Some(CodexHookCommand::MutationScope)
+        );
+        assert_eq!(
+            command_owning_contract(MUTATION_SCOPE_PRE_TOOL_USE_COMMAND),
+            Some(CodexHookCommand::MutationScope),
+            "the fail-closed PreToolUse bootstrap is still MutationScope-owned"
+        );
+        assert_eq!(
+            command_owning_contract(
+                r#"SCE_CODEX_PRE_TOOL_USE_FAIL_CLOSED=1 exec bash ".codex/hooks/run-sce-or-show-install-guidance.sh" sce hooks codex-mutation-scope"#
+            ),
+            Some(CodexHookCommand::MutationScope)
+        );
         for command in [
             "echo .codex/hooks/run-sce-or-show-install-guidance.sh sce hooks codex",
             "printf '%s' '.codex/hooks/run-sce-or-show-install-guidance.sh sce hooks codex'",
             "foo='.codex/hooks/run-sce-or-show-install-guidance.sh'; echo sce hooks codex",
             "bash .codex/hooks/run-sce-or-show-install-guidance.sh sce hooks codex && echo user",
+            "bash .codex/hooks/run-sce-or-show-install-guidance.sh sce hooks codex-other",
+            "FOO=1 exec bash .codex/hooks/run-sce-or-show-install-guidance.sh sce hooks codex-mutation-scope",
+            "SCE_CODEX_PRE_TOOL_USE_FAIL_CLOSED=1 SCE_OTHER=1 exec bash .codex/hooks/run-sce-or-show-install-guidance.sh sce hooks codex-mutation-scope",
+            "SCE_CODEX_PRE_TOOL_USE_FAIL_CLOSED=1 bash .codex/hooks/run-sce-or-show-install-guidance.sh sce hooks codex-mutation-scope && echo user",
+            "sce hooks codex-mutation-scope",
         ] {
             assert!(
-                !command_is_current_sce_contract(command),
+                command_owning_contract(command).is_none(),
                 "claimed ownership for {command}"
             );
         }
@@ -1049,6 +1195,17 @@ mod tests {
             .iter()
             .find(|diagnosis| diagnosis.event == event)
             .unwrap_or_else(|| panic!("no diagnosis for event '{event}'"))
+    }
+
+    fn registration_of<'a>(
+        diagnoses: &'a [RegistrationDiagnosis],
+        command: CodexHookCommand,
+        event: &str,
+    ) -> &'a RegistrationDiagnosis {
+        diagnoses
+            .iter()
+            .find(|diagnosis| diagnosis.command == command && diagnosis.event == event)
+            .unwrap_or_else(|| panic!("no {} diagnosis for event '{event}'", command.label()))
     }
 
     #[test]
@@ -1089,12 +1246,15 @@ mod tests {
         let HooksDocumentDiagnosis::Registrations(diagnoses) = document_diagnosis else {
             panic!("expected a validated document with per-registration diagnoses");
         };
-        assert_eq!(diagnoses.len(), 4);
+        assert_eq!(diagnoses.len(), REQUIRED_EVENTS.len());
         for diagnosis in &diagnoses {
             assert_eq!(diagnosis.state, RegistrationStructuralState::Missing);
             assert!(diagnosis.owned_handler.is_none());
             assert!(diagnosis.position.is_none());
         }
+        assert!(diagnoses.iter().any(|diagnosis| diagnosis.command
+            == CodexHookCommand::MutationScope
+            && diagnosis.event == "SessionEnd"));
     }
 
     #[test]
@@ -1110,8 +1270,23 @@ mod tests {
                 RegistrationStructuralState::PresentAndCurrent
             );
             assert!(diagnosis.owned_handler.is_some());
-            assert_eq!(diagnosis.position, Some((0, 0)));
         }
+        assert_eq!(
+            registration_of(&diagnoses, CodexHookCommand::Codex, "Stop").position,
+            Some((0, 0))
+        );
+        assert_eq!(
+            registration_of(&diagnoses, CodexHookCommand::MutationScope, "Stop").position,
+            Some((1, 0))
+        );
+        assert_eq!(
+            registration_of(&diagnoses, CodexHookCommand::MutationScope, "PreToolUse").position,
+            Some((1, 0))
+        );
+        assert_eq!(
+            registration_of(&diagnoses, CodexHookCommand::MutationScope, "Interrupt").position,
+            Some((0, 0))
+        );
     }
 
     #[test]
@@ -1183,8 +1358,6 @@ mod tests {
             RegistrationStructuralState::Stale
         );
     }
-
-    const CANONICAL_COMMAND: &str = "root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || exit 0; exec bash \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" sce hooks codex";
 
     #[test]
     fn diagnose_document_reports_stale_for_a_canonical_handler_duplicated_in_a_second_matcher_group(
@@ -1383,6 +1556,7 @@ mod tests {
         ];
 
         for (label, existing) in cases {
+            let existing = with_mutation_scope_registrations(existing);
             let existing_bytes = serde_json::to_vec(&existing).unwrap();
             let document_diagnosis =
                 diagnose_document(Some(&existing_bytes), &generated()).unwrap();
@@ -1446,5 +1620,276 @@ mod tests {
             registration(&diagnoses, "PreToolUse").state,
             RegistrationStructuralState::PresentAndCurrent
         );
+    }
+
+    fn canonical_four_document() -> Value {
+        json!({
+            "hooks": {
+                "UserPromptSubmit": [{"hooks": [codex_handler()]}],
+                "Stop": [{"hooks": [codex_handler()]}],
+                "PreToolUse": [{"matcher": "Bash", "hooks": [codex_handler()]}],
+                "PostToolUse": [{"matcher": "apply_patch", "hooks": [codex_handler()]}]
+            }
+        })
+    }
+
+    #[test]
+    fn upgrading_the_canonical_four_document_preserves_existing_trust_identity() {
+        let mut existing = canonical_four_document();
+        existing["hooks"]["Stop"][0]["hooks"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, json!({"type": "command", "command": "echo user stop"}));
+        existing["hooks"]["SessionEnd"] =
+            json!([{"hooks": [{"type": "command", "command": "echo user session end"}]}]);
+        let existing_bytes = serde_json::to_vec(&existing).unwrap();
+
+        let merged =
+            merge_or_create(Some(&existing_bytes), &generated(), ".codex/hooks.json").unwrap();
+        let value: Value = serde_json::from_slice(&merged).unwrap();
+
+        let HooksDocumentDiagnosis::Registrations(diagnoses) =
+            diagnose_document(Some(&merged), &generated()).unwrap()
+        else {
+            panic!("expected per-registration diagnoses");
+        };
+
+        for (event, expected_position) in [
+            ("UserPromptSubmit", (0usize, 0usize)),
+            ("Stop", (0, 1)),
+            ("PreToolUse", (0, 0)),
+            ("PostToolUse", (0, 0)),
+        ] {
+            let registration = registration_of(&diagnoses, CodexHookCommand::Codex, event);
+            assert_eq!(
+                registration.state,
+                RegistrationStructuralState::PresentAndCurrent,
+                "{event} must stay present and current"
+            );
+            assert_eq!(
+                registration.position,
+                Some(expected_position),
+                "{event} identity tuple (group/handler index) must not move"
+            );
+            assert_eq!(
+                registration.owned_handler.as_ref().unwrap(),
+                &codex_handler()
+            );
+        }
+
+        for event in [
+            "PreToolUse",
+            "PostToolUse",
+            "Stop",
+            "Interrupt",
+            "SubagentStop",
+            "SessionEnd",
+        ] {
+            let registration = registration_of(&diagnoses, CodexHookCommand::MutationScope, event);
+            assert_eq!(
+                registration.state,
+                RegistrationStructuralState::PresentAndCurrent,
+                "mutation-scope {event} must be added"
+            );
+        }
+
+        let mutation_scope_count = value["hooks"]
+            .as_object()
+            .unwrap()
+            .values()
+            .flat_map(|groups| groups.as_array().unwrap())
+            .flat_map(|group| group["hooks"].as_array().unwrap())
+            .filter(|handler| {
+                handler["command"]
+                    .as_str()
+                    .and_then(command_owning_contract)
+                    == Some(CodexHookCommand::MutationScope)
+            })
+            .count();
+        assert_eq!(
+            mutation_scope_count, 6,
+            "each mutation-scope handler must appear exactly once"
+        );
+        let fail_closed_pre_tool_use_count = value["hooks"]["PreToolUse"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|group| group["hooks"].as_array().unwrap())
+            .filter(|handler| handler["command"] == MUTATION_SCOPE_PRE_TOOL_USE_COMMAND)
+            .count();
+        assert_eq!(
+            fail_closed_pre_tool_use_count, 1,
+            "the tracked-mutation PreToolUse registration uses the fail-closed bootstrap"
+        );
+
+        assert_eq!(
+            value["hooks"]["Stop"][0]["hooks"][0]["command"],
+            "echo user stop"
+        );
+        assert!(value["hooks"]["SessionEnd"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|group| group["hooks"].as_array().unwrap())
+            .any(|handler| handler["command"] == "echo user session end"));
+
+        let merged_again =
+            merge_or_create(Some(&merged), &generated(), ".codex/hooks.json").unwrap();
+        assert_eq!(
+            merged, merged_again,
+            "a second merge over the upgraded document must be byte-identical"
+        );
+    }
+
+    #[test]
+    fn merge_appends_the_mutation_scope_pre_tool_use_group_without_touching_the_bash_group() {
+        let existing = serde_json::to_vec(&canonical_four_document()).unwrap();
+        let merged = merge_or_create(Some(&existing), &generated(), ".codex/hooks.json").unwrap();
+        let value: Value = serde_json::from_slice(&merged).unwrap();
+
+        let pre_tool_use = value["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre_tool_use.len(), 2);
+        assert_eq!(pre_tool_use[0]["matcher"], "Bash");
+        assert_eq!(pre_tool_use[0]["hooks"][0]["command"], CANONICAL_COMMAND);
+        assert_eq!(
+            pre_tool_use[1]["matcher"],
+            CODEX_MUTATION_SCOPE_TOOL_MATCHER
+        );
+        assert_eq!(
+            pre_tool_use[1]["hooks"][0]["command"],
+            MUTATION_SCOPE_PRE_TOOL_USE_COMMAND
+        );
+    }
+
+    #[test]
+    fn the_two_unmatched_stop_groups_diagnose_independently_by_command() {
+        let installed = merge_or_create(None, &generated(), ".codex/hooks.json").unwrap();
+        let HooksDocumentDiagnosis::Registrations(diagnoses) =
+            diagnose_document(Some(&installed), &generated()).unwrap()
+        else {
+            panic!("expected per-registration diagnoses");
+        };
+        let codex_stop = registration_of(&diagnoses, CodexHookCommand::Codex, "Stop");
+        let mutation_stop = registration_of(&diagnoses, CodexHookCommand::MutationScope, "Stop");
+        assert_eq!(
+            codex_stop.state,
+            RegistrationStructuralState::PresentAndCurrent
+        );
+        assert_eq!(
+            mutation_stop.state,
+            RegistrationStructuralState::PresentAndCurrent
+        );
+        assert_eq!(codex_stop.position, Some((0, 0)));
+        assert_eq!(mutation_stop.position, Some((1, 0)));
+    }
+
+    #[test]
+    fn mutation_scope_tool_hooks_carry_the_tracked_only_matcher() {
+        for (command, event, matcher) in required_registrations() {
+            match (command, event) {
+                (CodexHookCommand::MutationScope, "PreToolUse" | "PostToolUse") => {
+                    assert_eq!(
+                        matcher,
+                        Some("^(Bash|apply_patch)$"),
+                        "{event} mutation-scope hook must gate on exactly the tracked tools"
+                    );
+                }
+                (CodexHookCommand::MutationScope, _) => assert_eq!(
+                    matcher, None,
+                    "{event} mutation-scope lifecycle hook stays unmatched"
+                ),
+                (CodexHookCommand::Codex, _) => {}
+            }
+        }
+    }
+
+    #[test]
+    fn a_legacy_unmatched_mutation_scope_tool_hook_is_stale_and_repairs_to_the_tracked_matcher() {
+        let existing = json!({
+            "hooks": {
+                "PreToolUse": [{"hooks": [mutation_scope_pre_tool_use_handler()]}],
+                "PostToolUse": [{"hooks": [mutation_scope_handler()]}]
+            }
+        });
+        let existing_bytes = serde_json::to_vec(&existing).unwrap();
+
+        let HooksDocumentDiagnosis::Registrations(diagnoses) =
+            diagnose_document(Some(&existing_bytes), &generated()).unwrap()
+        else {
+            panic!("expected per-registration diagnoses");
+        };
+        for event in ["PreToolUse", "PostToolUse"] {
+            assert_eq!(
+                registration_of(&diagnoses, CodexHookCommand::MutationScope, event).state,
+                RegistrationStructuralState::Stale,
+                "an unmatched {event} mutation-scope hook is stale under the tracked-tool matcher"
+            );
+        }
+
+        let merged =
+            merge_or_create(Some(&existing_bytes), &generated(), ".codex/hooks.json").unwrap();
+        let value: Value = serde_json::from_slice(&merged).unwrap();
+        for event in ["PreToolUse", "PostToolUse"] {
+            let groups = value["hooks"][event].as_array().unwrap();
+            let scoped: Vec<&Value> = groups
+                .iter()
+                .filter(|group| {
+                    group["hooks"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .any(|handler| {
+                            handler["command"]
+                                .as_str()
+                                .and_then(command_owning_contract)
+                                == Some(CodexHookCommand::MutationScope)
+                        })
+                })
+                .collect();
+            assert_eq!(
+                scoped.len(),
+                1,
+                "{event} keeps exactly one mutation-scope group"
+            );
+            assert_eq!(scoped[0]["matcher"], CODEX_MUTATION_SCOPE_TOOL_MATCHER);
+        }
+
+        let HooksDocumentDiagnosis::Registrations(after) =
+            diagnose_document(Some(&merged), &generated()).unwrap()
+        else {
+            panic!("expected per-registration diagnoses");
+        };
+        for event in ["PreToolUse", "PostToolUse"] {
+            assert_eq!(
+                registration_of(&after, CodexHookCommand::MutationScope, event).state,
+                RegistrationStructuralState::PresentAndCurrent
+            );
+        }
+        assert_eq!(
+            merge_or_create(Some(&merged), &generated(), ".codex/hooks.json").unwrap(),
+            merged
+        );
+    }
+
+    #[test]
+    fn interrupt_event_key_label_matches_upstream() {
+        assert_eq!(hook_event_key_label("Interrupt"), "interrupt");
+    }
+
+    #[test]
+    fn subagent_stop_event_key_label_matches_upstream() {
+        assert_eq!(hook_event_key_label("SubagentStop"), "subagent_stop");
+    }
+
+    #[test]
+    fn session_end_event_key_label_matches_upstream() {
+        assert_eq!(hook_event_key_label("SessionEnd"), "session_end");
+    }
+
+    #[test]
+    fn every_required_event_has_an_upstream_key_label() {
+        for (_, event, _) in REQUIRED_EVENTS {
+            let _ = hook_event_key_label(event);
+        }
     }
 }

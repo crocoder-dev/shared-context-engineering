@@ -1,7 +1,12 @@
 # Codex hook runtime (SCE)
 
-Rust-side runtime behind `sce hooks codex`, the single dispatcher subcommand
-every registered `.codex/hooks.json` event routes to. Source: `cli/src/services/hooks/codex/`.
+Rust-side runtime behind `sce hooks codex`, the dispatcher subcommand the four
+conversation/diff `.codex/hooks.json` registrations route to. Source:
+`cli/src/services/hooks/codex/`. `.codex/hooks.json` also carries six
+mutation-scope registrations routed to the separate
+`sce hooks codex-mutation-scope` command (the generic mutation-scope ingress,
+[../cli/mutation-scope-hook-ingress.md](../cli/mutation-scope-hook-ingress.md)) —
+not part of this dispatcher.
 See [Codex generated assets](../architecture.md) for the Pkl-authored
 `.codex/hooks.json`/hook-script side of this integration and
 [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md)
@@ -9,29 +14,41 @@ for how the other three tools intake conversation/diff evidence.
 
 ## Generated hook invocation
 
-The generated `.codex/hooks.json` routes all four registrations through the
-same command. That command resolves `git rev-parse --show-toplevel` at
-invocation time, then invokes the repository-root
-`.codex/hooks/run-sce-or-show-install-guidance.sh` helper with quoted
-expansions. It therefore works from the repository root, arbitrary nested
-Codex working directories, and repository paths containing spaces. Git-root
-resolution failures exit successfully without stdout; the helper retains its
-existing missing-`sce` stderr guidance and forwards the hook JSON STDIN
-unchanged. The exact four-registration and invocation contract is covered by
-the generated contract and `codex-hook-command` flake check. See [the ADR](../decisions/2026-08-23-codex-root-aware-hook-invocation.md).
+The generated `.codex/hooks.json` routes its four conversation/diff
+registrations through `sce hooks codex` and its six mutation-scope registrations
+through `sce hooks codex-mutation-scope`. The mutation-scope `PreToolUse` and
+`PostToolUse` groups use matcher `^(Bash|apply_patch)$`; `Stop`, `Interrupt`,
+`SubagentStop`, and `SessionEnd` omit matcher and are unmatched. The existing
+conversation/diff command resolves `git rev-parse --show-toplevel` at invocation
+time, then invokes the repository-root helper with quoted expansions. It works
+from nested Codex working directories and repository paths containing spaces,
+and remains fail-open where designed when Git-root resolution fails. The
+tracked mutation `PreToolUse` bootstrap is separate and fails closed when SCE
+cannot establish attribution; mutation-scope `PostToolUse` and cleanup hooks do
+not use that bootstrap behavior. The exact registration set and invocation
+contract are covered by the generated contract and `codex-hook-command` flake
+check. See [the ADR](../decisions/2026-08-23-codex-root-aware-hook-invocation.md).
 
 ## Non-destructive hook configuration ownership
 
 `.codex/hooks.json` is a user-owned document. `sce setup --codex` and
 `--all` merge the generated SCE fragment instead of replacing the whole file.
 The shared `cli/src/services/codex_hook_config.rs` service mirrors current
-Codex deserialization: top-level `description`/`hooks` only, the eleven
+Codex deserialization: top-level `description`/`hooks` only, the twelve
 supported event names, defaulted matcher groups, and `command`, `mcp_tool`,
 `prompt`, or `agent` handlers with their typed fields. It preserves unrelated
-valid Codex fields, event groups, matcher groups, and handlers, and replaces stale or duplicate SCE-owned handlers with
-one current handler for each of the four required registrations. Ownership
-requires both `.codex/hooks/run-sce-or-show-install-guidance.sh` and the
-`sce hooks codex` command contract; a generic `sce` substring is not enough.
+valid Codex fields, event groups, matcher groups, and handlers. Merge is
+command-aware over two contracts: it replaces stale or duplicate handlers with
+one current handler per required registration — the four `sce hooks codex`
+registrations and six `sce hooks codex-mutation-scope` registrations. Within
+the mutation-scope contract, `PreToolUse` and `PostToolUse` use matcher
+`^(Bash|apply_patch)$`, while `Stop`, `Interrupt`, `SubagentStop`, and
+`SessionEnd` are appended in unmatched groups. Each group is appended after the
+existing groups so an already-trusted handler keeps its `(event, matcher, group
+index, handler index)` identity and computed Codex trust key — touching only the
+matching command's handlers. Ownership requires the helper path plus one of the `sce hooks codex` /
+`sce hooks codex-mutation-scope` command contracts; a generic `sce` substring is
+not enough.
 Malformed or structurally invalid existing documents fail before staging, so
 the existing file remains untouched. Doctor diagnoses each required
 registration structurally (present-and-current, missing, or stale, with a
@@ -60,7 +77,7 @@ instead asks the installed `codex` binary for its own composed answer over
 `codex app-server --stdio`'s read-only `configRequirements/read` method,
 bounded by a strict timeout with the child process always terminated and
 reaped. Doctor probes this exactly once per invocation and reuses the result
-for all four registrations. A structurally current registration is only
+for every required registration. A structurally current registration is only
 `Match`/healthy when policy allows project hooks *and* it is durably trusted;
 `allow_managed_hooks_only = true` reports it `PolicyBlocked` (an
 Error-severity, manual-only problem) even when fully trusted, and a probe
@@ -76,7 +93,7 @@ managed/enterprise policy and never attempts to.
 - `classify_codex_event` matches `(hook_event_name, tool_name)` into one of
   four dispatch arms — `UserPromptSubmit`, `Stop`, `PreToolUse(Bash)`,
   `PostToolUse(apply_patch)` — with every other combination (`apply_patch`
-  under `PreToolUse` — no such registration exists in `.codex/hooks.json` —
+  under `PreToolUse` — no `sce hooks codex` registration matches it —
   unknown tool, `Bash` under `PostToolUse`, unrecognized `hook_event_name`)
   falling through to a deterministic `NoOp` success with empty stdout.
 - Malformed/non-JSON STDIN is logged through `sce.hooks.codex.error` and the
@@ -155,109 +172,34 @@ no reimplemented matching and no Codex-specific DB adapter:
   rather than by calling that Claude-specific function.
 
 Neither branch reads or writes `diff_traces`, a snapshot, or any
-pending-state file; Bash-triggered filesystem mutations remain untracked for
-Codex (see "Explicit non-goals" in
-[agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md)).
+pending-state file. The existing `sce hooks codex` diff-evidence pipeline does
+not convert Bash filesystem effects into `diff_traces`, and its apply-patch
+evidence has the operation limitations documented separately. The
+`sce hooks codex-mutation-scope` adapter nevertheless tracks Bash executions as
+`TrackedMutation` scopes; that scope does not prove Bash authored every
+mutation in its interval. See "Explicit non-goals" in
+[agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md).
 
 ## `PostToolUse(apply_patch)` diff capture
 
-`cli/src/services/hooks/codex/apply_patch/` implements the
-`PostToolUse(apply_patch)` arm: `parser.rs` parses Codex's own `apply_patch`
-text format (`*** Begin Patch` ... `*** End Patch`, with `Add File`/`Delete
-File`/`Update File` operations and an optional `Update File` + `Move to`)
-into a typed `CodexPatch`; `path.rs` resolves its paths from the event cwd to
-safe repository-relative paths; `normalize.rs` normalizes it into SCE
-`Index:`-form unified-diff text `crate::services::patch::parse_patch` already
-accepts; `mod.rs`'s `handle` wires the stages together and persists the result:
-
-- Reads the raw patch text from `tool_input.command` (a working assumption
-  mirroring `PreToolUse(Bash)`'s own `tool_input.command` shape); a missing or
-  non-string `command` fails open with no evidence.
-- Before canonical parsing, outer intake preserves raw patch input and unwraps
-  exactly the upstream-compatible `<<EOF`, `<<'EOF'`, and `<<\"EOF\"` forms.
-  The wrapper is removed only when it has a complete canonical patch body;
-  unsupported shell prefixes or quoting, missing/malformed delimiters, and
-  trailing garbage fail open. Boundary-marker whitespace, environment IDs,
-  empty/context-only patches, multiple operations/hunks, and end-of-file
-  markers remain supported by the canonical parser.
-- After parsing, the handler discovers the real Git root rather than assuming
-  the process cwd is the repository root. It requires `cwd` to be a valid
-  absolute directory inside that root, resolves every source and move
-  destination independently from that cwd, and emits only lossless
-  repository-relative UTF-8 paths. Valid `..` components and absolute paths
-  are accepted when canonical resolution remains inside the worktree. Missing
-  targets are checked through their nearest existing prefix, so Add File paths
-  can remain absent while existing and missing symlink escapes are rejected.
-  Outside-repository cwd, outside paths, malformed/NUL paths, and ambiguous
-  mappings are logged as
-  `sce.hooks.codex.apply_patch.path_resolution_failed` and fail open before
-  normalization or database access. This canonical worktree containment rule
-  is an accepted compatibility and security decision; see [the ADR](../decisions/2026-08-23-codex-canonical-worktree-path-resolution.md).
-- A parse failure is logged (`sce.hooks.codex.apply_patch.parse_failed`) and
-  fails open with no evidence — never a deny response, since `apply_patch`
-  tracing is `PostToolUse`-only.
-- Normalization keeps only the touched (`+`/`-`) lines of each `Add`/`Update`
-  operation under deterministic, event-scoped synthetic line identities. The
-  bounded range is derived from the stable `tool_use_id`, and checked local
-  offsets are allocated across all emitted operations, hunks, and files so
-  separate events do not collide in the existing `combine_patches` identity
-  key. These positions are evidence identities, not source line numbers;
-  missing/invalid identities or exhausted ranges fail open. After cwd-aware
-  path resolution, Codex's unchanged context lines are dropped entirely and
-  never persisted or claimed as real filesystem positions. `Delete File`
-  operations, and an `Update File` + `Move to` with no changed lines, produce
-  no evidence; a wholly-empty normalized result (e.g. delete-only) is a
-  successful no-op with no `diff_traces` insert.
-- A non-empty result is persisted as exactly one `diff_traces` row via the
-  existing `insert_diff_trace` — `session_id = cx_<session_id>` after required
-  trimmed non-empty validation, `model_id = normalize_codex_model_id(event.model)`
-  when a model is reported, `tool_name = "codex"`, `tool_version = None`,
-  `payload_type = "patch"` — no new persistence adapter. The event-scoped
-  synthetic identity scheme is an accepted durable decision; see [the ADR](../decisions/2026-08-23-codex-event-scoped-apply-patch-evidence-identities.md).
-- The timestamp comes from `current_unix_time_ms()`; a timestamp-acquisition
-  failure here skips the insert entirely (fails open) rather than
-  substituting a fabricated epoch-zero value, matching `UserPromptSubmit`
-  and `Stop`'s own fail-open timestamp behavior above.
-- Every path — success, empty-normalize no-op, and every fail-open branch —
-  returns exactly empty stdout; Bash denial is the only structured Codex
-  response.
-
-Once committed, Codex evidence still attributes correctly through the
-existing, unmodified `intersect_patches` historical `kind`+`content` fallback
-(`cli/src/services/patch.rs`) even when the real committed lines land at
-different real line numbers. Multiple same-content events retain separate
-synthetic identities through the existing `combine_patches` behavior and can
-match corresponding committed additions. This module does not touch the
-fallback or combination semantics, and no `diff_traces`/Agent Trace schema
-migration was added to support it.
-
-## Conservative attribution boundary
-
-This pipeline proves supplied touched content, not the physical occurrence of
-that content in the repository. Codex provides no true source line ranges, and
-SCE intentionally takes no filesystem snapshot or maintains pending tool state.
-When repeated identical lines occur, `combine_patches` preserves separate
-event-scoped evidence identities, but the existing content-based intersection
-can only match available occurrences deterministically; it cannot prove which
-identical physical occurrence came from which event. The focused regression test
-covers this ambiguity and deliberately does not claim that issue 8 is solved.
-
-The complete supported path is therefore `PostToolUse apply_patch` →
-`tool_input.command` outer normalization and parsing → event-cwd/real-Git-root
-path resolution → SCE `payload_type = "patch"` `diff_traces` persistence →
-existing recent-row parsing, `combine_patches`, and post-commit intersection →
-Agent Trace. Delete File, pure rename, and Bash-created filesystem mutations
-remain without line-level evidence. There is no snapshot, pending-state,
-Codex-specific Agent Trace builder, schema migration, or generic intersection
-redesign in this path; malformed or unsafe inputs fail open silently.
+The existing Codex `PostToolUse(apply_patch)` evidence path remains separate
+from mutation-scope attribution. Its parser, cwd-aware path containment,
+event-scoped synthetic line identities, and `diff_traces` persistence contract
+are documented in
+[`codex-apply-patch-diff-runtime.md`](codex-apply-patch-diff-runtime.md).
+Malformed or unsafe input remains fail-open and Bash denial remains the only
+structured response from this dispatcher.
 
 ## No remaining stub arms
 
-All four registered dispatch arms (`UserPromptSubmit`, `Stop`,
+All four `sce hooks codex` dispatch arms (`UserPromptSubmit`, `Stop`,
 `PreToolUse(Bash)`, `PostToolUse(apply_patch)`) now have real behavior.
-`PreToolUse(apply_patch)` is deliberately never registered (see plan
+`PreToolUse(apply_patch)` is deliberately not a `sce hooks codex` arm (see plan
 `context/plans/codex-cli-integration.md`'s no-snapshot design) and falls
-open as a `NoOp` like any other unsupported combination.
+open as a `NoOp` like any other unsupported combination; the separate
+mutation-scope `PreToolUse` registration matched by `^(Bash|apply_patch)$` and
+routed to `sce hooks codex-mutation-scope` is a separate concern handled by
+that command.
 
 ## Verification
 
@@ -265,8 +207,9 @@ open as a `NoOp` like any other unsupported combination.
   (also runnable narrowed per-arm, e.g. `hooks::codex::user_prompt_submit`).
   This includes the realistic repository-scoped PostToolUse/post-commit
   regression and the repeated-identical-content ambiguity test.
-- `nix run .#pkl-check-generated` verifies the four generated Codex hook
-  registrations and root-aware invocation contract.
+- `nix run .#pkl-check-generated` verifies the generated Codex hook
+  registrations (four `sce hooks codex` plus six `sce hooks codex-mutation-scope`)
+  and root-aware invocation contract.
 - `nix flake check` runs the same tests plus clippy/fmt/generated-asset checks.
 
 See also: [agent-trace-db.md](agent-trace-db.md),

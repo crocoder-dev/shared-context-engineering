@@ -64,19 +64,40 @@ local assertCodexHookInvocationContract = (artifacts: Mapping) ->
       && text.split("\"Stop\"").length == 2
       && text.split("\"PreToolUse\"").length == 2
       && text.split("\"PostToolUse\"").length == 2
-      && text.split("\"type\": \"command\"").length == 5
+      && text.split("\"Interrupt\"").length == 2
+      && text.split("\"SubagentStop\"").length == 2
+      && text.split("\"SessionEnd\"").length == 2
+      && text.split("\"type\": \"command\"").length == 11
       && text.split("\"matcher\": \"Bash\"").length == 2
       && text.split("\"matcher\": \"apply_patch\"").length == 2
+      && text.split("\"matcher\": \"^(Bash|apply_patch)$\"").length == 3
+      && text.split("sce hooks codex\"").length == 5
+      && text.split("sce hooks codex-mutation-scope\"").length == 7
+      && text.split("SCE_CODEX_PRE_TOOL_USE_FAIL_CLOSED=1").length == 2
+      && text.contains("\\\"permissionDecision\\\":\\\"deny\\\"")
+      && text.contains("\\\"permissionDecisionReason\\\":\\\"SCE could not establish mutation attribution for this tool execution.\\\"")
+      && !text.contains("mcp__")
+      && !text.contains("collaborationspawn_agent")
       && !text.contains("\"$schema\"")
       && text.contains("git rev-parse --show-toplevel")
       && text.contains("2>/dev/null")
       && text.contains("|| exit 0")
       && text.contains("exec bash")
       && text.contains("$root/.codex/hooks/run-sce-or-show-install-guidance.sh")
-      && text.contains("sce hooks codex")
       && !text.contains("eval")
-    ) "Codex hook invocation: four registrations use safe repository-root resolution"
-    else throw("Codex hook invocation must resolve the Git root safely and preserve the exact four registrations")
+    ) "Codex hook invocation: four sce-hooks-codex plus six mutation-scope registrations use safe repository-root resolution, with a tracked-tool matcher and fail-closed PreToolUse bootstrap"
+    else throw("Codex hook invocation must resolve the Git root safely, gate mutation-scope tool hooks on the ^(Bash|apply_patch)$ matcher, fail closed on the tracked PreToolUse bootstrap, and preserve the four sce-hooks-codex plus six mutation-scope registrations")
+
+local assertCodexHelperFailClosedMode = (artifacts: Mapping) ->
+  let (text = artifacts["config/.codex/hooks/run-sce-or-show-install-guidance.sh"])
+    if (
+      text.contains("SCE_CODEX_PRE_TOOL_USE_FAIL_CLOSED")
+      && text.contains("sce_pre_tool_use_deny")
+      && text.contains("\"permissionDecision\":\"deny\"")
+      && text.contains("exec \"$@\"")
+      && text.split("command -v sce").length == 3
+    ) "Codex hook helper: fail-closed PreToolUse mode plus the retained fail-open exec path"
+    else throw("Codex hook helper must carry a fail-closed PreToolUse mode alongside the retained fail-open exec path")
 
 /// Current upstream Codex skill loading provides no Claude/OpenCode-style
 /// `$ARGUMENTS` substitution, so a literal, unsubstituted token in generated
@@ -1244,6 +1265,7 @@ contractChecks {
   ["compact-execution-contract-negative-fixtures"] = assertCompactExecutionContractFixtures
   ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
   ["codex-hook-invocation"] = assertCodexHookInvocationContract.apply(generatedArtifacts)
+  ["codex-hook-helper-fail-closed"] = assertCodexHelperFailClosedMode.apply(generatedArtifacts)
   ["codex-skills-exclude-arguments"] = assertCodexSkillsExcludeArguments.apply(generatedArtifacts)
   ["codex-skill-invocation-examples"] = assertCodexSkillInvocationExamples.apply(generatedArtifacts)
   ["codex-skill-metadata"] = assertCodexSkillMetadataContract.apply(generatedArtifacts)
