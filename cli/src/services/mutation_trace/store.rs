@@ -110,6 +110,25 @@ pub enum AttributionKind {
     AiContended,
 }
 
+/// Maximum number of mutation-event rows returned by one attribution-history
+/// page request.
+pub const MUTATION_ATTRIBUTION_PAGE_SIZE: usize = 32;
+
+/// The cold-path subset of a historical mutation event needed by attribution.
+///
+/// This deliberately omits boundary data and active scopes: attribution only
+/// needs the tree transition and the event's health/attribution state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MutationEventPageRow {
+    pub revision: u64,
+    pub before_tree: TreeId,
+    pub after_tree: TreeId,
+    pub tainted: bool,
+    pub failure_kind: FailureKind,
+    pub attribution_kind: AttributionKind,
+    pub attribution_scope_id: Option<ScopeId>,
+}
+
 /// The discriminant of an [`Attribution`] value.
 pub fn attribution_kind(attribution: &Attribution) -> AttributionKind {
     match attribution {
@@ -199,6 +218,23 @@ const SELECT_PROCESSED_EVENT_SQL: &str =
 const SELECT_MUTATION_EVENT_SQL: &str = "SELECT before_tree, after_tree, tainted, failure_kind,
             attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id
      FROM mutation_trace_events WHERE worktree_id = ?1 AND revision = ?2";
+const SELECT_MUTATION_EVENT_PAGE_SQL: &str = "SELECT revision, before_tree, after_tree, tainted,
+            failure_kind, attribution_kind, attribution_scope_id
+     FROM mutation_trace_events
+     WHERE worktree_id = ?1
+     ORDER BY revision DESC
+     LIMIT ?2";
+const SELECT_MUTATION_EVENT_PAGE_AFTER_SQL: &str =
+    "SELECT revision, before_tree, after_tree, tainted,
+            failure_kind, attribution_kind, attribution_scope_id
+     FROM mutation_trace_events
+     WHERE worktree_id = ?1 AND revision < ?2
+     ORDER BY revision DESC
+     LIMIT ?3";
+const SELECT_LATEST_MUTATION_EVENT_REVISION_SQL: &str = "SELECT revision FROM mutation_trace_events
+     WHERE worktree_id = ?1
+     ORDER BY revision DESC
+     LIMIT 1";
 const SELECT_MUTATION_EVENT_ACTIVE_SCOPES_SQL: &str =
     "SELECT scope_id FROM mutation_trace_event_active_scopes WHERE worktree_id = ?1 AND revision = ?2";
 /// One worktree's complete durable tree root set — its cursor tree plus the
@@ -668,6 +704,58 @@ impl<'a> MutationTraceStore<'a> {
         }))
     }
 
+    /// Reads one descending page of the historical mutation events for exactly
+    /// `worktree`. When `revision_cursor` is present, only revisions strictly
+    /// below it are returned, so the caller can continue from the last row of
+    /// a prior page without duplicates. The requested limit is always capped
+    /// at [`MUTATION_ATTRIBUTION_PAGE_SIZE`].
+    ///
+    /// This is a read-only cold path. It does not load active scopes, processed
+    /// events, boundary data, or any timestamp column.
+    pub fn load_mutation_event_page(
+        &self,
+        worktree: &WorktreeId,
+        revision_cursor: Option<u64>,
+        requested_limit: usize,
+    ) -> Result<Vec<MutationEventPageRow>> {
+        let limit = requested_limit.min(MUTATION_ATTRIBUTION_PAGE_SIZE);
+        let rows = match revision_cursor {
+            Some(cursor) => {
+                let cursor_blob = encode_revision(cursor);
+                self.db.query_map(
+                    SELECT_MUTATION_EVENT_PAGE_AFTER_SQL,
+                    (
+                        worktree.0.as_str(),
+                        cursor_blob.as_slice(),
+                        limit_as_i64(limit),
+                    ),
+                    mutation_event_page_row_from_turso,
+                )?
+            }
+            None => self.db.query_map(
+                SELECT_MUTATION_EVENT_PAGE_SQL,
+                (worktree.0.as_str(), limit_as_i64(limit)),
+                mutation_event_page_row_from_turso,
+            )?,
+        };
+
+        Ok(rows)
+    }
+
+    pub fn latest_mutation_event_revision(&self, worktree: &WorktreeId) -> Result<Option<u64>> {
+        let rows = self.db.query_map(
+            SELECT_LATEST_MUTATION_EVENT_REVISION_SQL,
+            (worktree.0.as_str(),),
+            |row| {
+                let blob: Vec<u8> = row
+                    .get(0)
+                    .context("failed to read mutation_trace_events.revision")?;
+                decode_revision(&blob)
+            },
+        )?;
+        Ok(rows.into_iter().next())
+    }
+
     /// Reads `worktree`'s complete durable tree root set: its
     /// `mutation_trace_worktrees.cursor_tree`, plus the `before_tree` and
     /// `after_tree` of every `mutation_trace_events` row for `worktree`,
@@ -902,6 +990,10 @@ fn attribution_scope_id(attribution: &Attribution) -> Option<&str> {
     }
 }
 
+fn limit_as_i64(limit: usize) -> i64 {
+    i64::try_from(limit).expect("mutation attribution page limit should fit in i64")
+}
+
 fn boundary_payload(boundary: &Boundary) -> (Option<&str>, Option<&str>) {
     match boundary {
         Boundary::Start { scope, event }
@@ -987,6 +1079,43 @@ fn scope_row_from_turso(row: &turso::Row) -> Result<(ScopeId, ScopeState)> {
             worktree_id: WorktreeId(worktree_id),
         },
     ))
+}
+
+fn mutation_event_page_row_from_turso(row: &turso::Row) -> Result<MutationEventPageRow> {
+    let revision_blob: Vec<u8> = row
+        .get(0)
+        .context("failed to read mutation_trace_events.revision")?;
+    let before_tree: String = row
+        .get(1)
+        .context("failed to read mutation_trace_events.before_tree")?;
+    let after_tree: String = row
+        .get(2)
+        .context("failed to read mutation_trace_events.after_tree")?;
+    let tainted: bool = row
+        .get(3)
+        .context("failed to read mutation_trace_events.tainted")?;
+    let failure_kind: String = row
+        .get(4)
+        .context("failed to read mutation_trace_events.failure_kind")?;
+    let attribution_kind: String = row
+        .get(5)
+        .context("failed to read mutation_trace_events.attribution_kind")?;
+    let attribution_scope_id: Option<String> = row
+        .get(6)
+        .context("failed to read mutation_trace_events.attribution_scope_id")?;
+    let attribution_kind = decode_attribution_kind(&attribution_kind)?;
+    reconstruct_attribution(attribution_kind, attribution_scope_id.clone())?;
+    let attribution_scope_id = attribution_scope_id.map(ScopeId);
+
+    Ok(MutationEventPageRow {
+        revision: decode_revision(&revision_blob)?,
+        before_tree: TreeId(before_tree),
+        after_tree: TreeId(after_tree),
+        tainted,
+        failure_kind: decode_failure_kind(&failure_kind)?,
+        attribution_kind,
+        attribution_scope_id,
+    })
 }
 
 /// Raw decoded `mutation_trace_events` row fields, prior to reconstructing
@@ -4126,5 +4255,119 @@ mod tests {
             "the single-statement snapshot always retains T (via before_tree)"
         );
         assert!(roots.contains(&TreeId("tree-x".to_string())));
+    }
+
+    mod mutation_attribution {
+        use super::*;
+
+        #[test]
+        fn page_reader_orders_big_endian_revisions_and_isolates_worktrees() {
+            let db_fixture = test_db_path("mutation-attribution-ordering");
+            let db = RepositoryAgentTraceDb::new_at(db_fixture.path())
+                .expect("repository DB should open");
+            let store = MutationTraceStore::new(&db);
+
+            for revision in [1, 255, 256, u64::MAX] {
+                insert_mutation_event(
+                    &db,
+                    "wt-1",
+                    revision,
+                    "before",
+                    "after",
+                    "ai_exclusive",
+                    Some("scope-1"),
+                    "flush",
+                    None,
+                    None,
+                    &[],
+                );
+            }
+            insert_mutation_event(
+                &db,
+                "wt-2",
+                999,
+                "foreign-before",
+                "foreign-after",
+                "ai_exclusive",
+                Some("foreign-scope"),
+                "flush",
+                None,
+                None,
+                &[],
+            );
+
+            let rows = store
+                .load_mutation_event_page(&WorktreeId("wt-1".to_string()), None, 100)
+                .expect("mutation event page should load");
+
+            assert_eq!(
+                rows.iter().map(|row| row.revision).collect::<Vec<_>>(),
+                vec![u64::MAX, 256, 255, 1]
+            );
+            assert_eq!(rows[0].before_tree, TreeId("before".to_string()));
+            assert_eq!(rows[0].after_tree, TreeId("after".to_string()));
+            assert!(!rows[0].tainted);
+            assert_eq!(rows[0].failure_kind, FailureKind::Healthy);
+            assert_eq!(rows[0].attribution_kind, AttributionKind::AiExclusive);
+            assert_eq!(
+                rows[0].attribution_scope_id,
+                Some(ScopeId("scope-1".to_string()))
+            );
+        }
+
+        #[test]
+        fn page_reader_caps_limits_and_continues_with_an_exclusive_cursor() {
+            let db_fixture = test_db_path("mutation-attribution-pagination");
+            let db = RepositoryAgentTraceDb::new_at(db_fixture.path())
+                .expect("repository DB should open");
+            let store = MutationTraceStore::new(&db);
+
+            for revision in 1..=33 {
+                insert_mutation_event(
+                    &db,
+                    "wt-1",
+                    revision,
+                    "before",
+                    "after",
+                    "ineligible_unscoped",
+                    None,
+                    "flush",
+                    None,
+                    None,
+                    &[],
+                );
+            }
+
+            let first_page = store
+                .load_mutation_event_page(&WorktreeId("wt-1".to_string()), None, 100)
+                .expect("first mutation event page should load");
+            assert_eq!(first_page.len(), MUTATION_ATTRIBUTION_PAGE_SIZE);
+            assert_eq!(first_page.first().map(|row| row.revision), Some(33));
+            assert_eq!(first_page.last().map(|row| row.revision), Some(2));
+
+            let cursor = first_page
+                .last()
+                .expect("the capped page should not be empty")
+                .revision;
+            let second_page = store
+                .load_mutation_event_page(
+                    &WorktreeId("wt-1".to_string()),
+                    Some(cursor),
+                    MUTATION_ATTRIBUTION_PAGE_SIZE,
+                )
+                .expect("second mutation event page should load");
+            assert_eq!(
+                second_page
+                    .iter()
+                    .map(|row| row.revision)
+                    .collect::<Vec<_>>(),
+                vec![1]
+            );
+
+            let empty_page = store
+                .load_mutation_event_page(&WorktreeId("wt-1".to_string()), Some(1), 1)
+                .expect("page after the final cursor should load");
+            assert!(empty_page.is_empty());
+        }
     }
 }
