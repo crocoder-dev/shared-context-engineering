@@ -30,6 +30,41 @@
   - `collect_db_path_health()` emits common parent/path health problems for DB-backed services.
   - `bootstrap_db_parent()` creates the resolved DB parent directory for repair/setup flows.
 
+## Transactional primitives
+
+`TursoDb<M>` offers two generic multi-statement transaction primitives beyond
+the single-statement `execute()`/`query()`/`query_map()` wrappers. Both are
+public on `TursoDb<M>` only (not `EncryptedTursoDb<M>`), and both route
+retryability through the same `run_with_retry_sync` seam used everywhere
+else in this module, with a local classification layer so a deterministic
+failure is never retried like a transient one:
+
+- `execute_transactional_insert_pair_if_absent(operation_name, retry_hint,
+  exists_sql, exists_params, first_sql, first_params, second_sql,
+  second_params, fail_before_second) -> Result<bool>`: checks an existence
+  query, then conditionally runs two inserts inside one transaction only when
+  the row is absent — the original idle-insert-pair primitive.
+- `execute_transactional_cas_batch(operation_name, retry_hint, guard: &
+  TransactionStatement, statements: &[TransactionStatement]) -> Result<bool>`:
+  a generic optimistic-concurrency batch. `guard` runs first inside one
+  `BEGIN IMMEDIATE` transaction; its affected-row count is the CAS outcome —
+  `0` rows commits as a no-op and returns `Ok(false)` (a normal conflict,
+  never retried) without running `statements`; `1` row runs every
+  `statements` entry in order and returns `Ok(true)`; more than `1` row is a
+  deterministic invariant violation (rolled back, `Err`, never retried).
+  `TransactionStatement::new(sql, params)` pairs SQL with pre-converted
+  params; its builder `expect_rows_affected(n)` makes a statement's own
+  affected-row count part of the deterministic-failure check (a mismatch
+  rolls back the whole transaction and returns `Err` without retrying),
+  while a statement with no expectation accepts any row count. `BEGIN`, the
+  guard, every statement, and `COMMIT` all classify a `turso::Error` through
+  one shared classifier: only `Busy`/`BusySnapshot` is retryable (retries the
+  whole attempt from a fresh `BEGIN IMMEDIATE`, never an individual
+  statement); every other variant is deterministic and fails after exactly
+  one attempt. The first production caller is
+  `cli/src/services/mutation_trace/store.rs`'s `MutationTraceStore::commit`
+  (see [mutation-trace-store.md](../cli/mutation-trace-store.md)).
+
 ## Encryption key management
 
 `cli/src/services/db/encryption_key.rs` exposes
