@@ -3,21 +3,27 @@
 OpenCode is the third concrete mutation-scope producer, after
 [Claude Code](claude-mutation-scope-integration.md) and
 [Codex](codex-mutation-scope-integration.md). As of the
-`opencode-mutation-scope-integration` plan's **T05**, the *lifecycle evidence*
+`opencode-mutation-scope-integration` plan's **T06**, the *lifecycle evidence*
 (T01), the *protocol generalization* (T02), the adapter's *identity and
-classification layer* (T03), its *scope lifecycle and recovery* (T04), and the
-*generated plugin and `sce setup` registration* (T05) all exist: a generated
-`sce-mutation-scope.ts` plugin routes real OpenCode tool-lifecycle events to the
-adapter, which drives the generic in-process ingress seam with a full
-`Start`/`Close`/`Abandon` lifecycle and checkout-local durable state
+classification layer* (T03), its *scope lifecycle and recovery* (T04), the
+*generated plugin and `sce setup` registration* (T05), and *end-to-end
+production-path regressions* (T06) all exist: a generated `sce-mutation-scope.ts`
+plugin routes real OpenCode tool-lifecycle events to the adapter, which drives
+the generic in-process ingress seam with a full `Start`/`Close`/`Abandon`
+lifecycle and checkout-local durable state
 ([`mutation-scope-hook-ingress.md`](mutation-scope-hook-ingress.md) reserves the
 `"opencode"` actor value and the `oc_` session prefix via
-[`mutation-scope-provenance.md`](mutation-scope-provenance.md)). End-to-end
-production regressions are **T06**.
+[`mutation-scope-provenance.md`](mutation-scope-provenance.md)), and real Git/DB
+regressions in `cli/src/services/hooks/mod.rs`
+(`services::hooks::tests::mutation_provenance_e2e`) prove the full stack —
+tracked-tool success, model-present/model-missing provenance, task/unknown-tool
+zero-footprint, concurrent reject-and-confirm, and OpenCode+Codex/Claude
+overlap — down to `mutation_ai_patch` and persisted Agent Trace output, the
+same production path already proven for Claude and Codex.
 
-This document records what T01 froze about OpenCode's tool lifecycle so the
-remaining task (T06) and any later revision inherit it without re-probing,
-the identity/encoding contract T03 froze (see **Adapter identity and
+This document records what T01 froze about OpenCode's tool lifecycle so any
+later revision inherits it without re-probing, the identity/encoding contract
+T03 froze (see **Adapter identity and
 encoding**), and the lifecycle/recovery behavior T04 shipped (see **Adapter
 lifecycle and recovery**) — including T04's soundness/liveness corrections: an
 abandoned uncertain scope's ambiguous filesystem interval is consumed with an
@@ -111,7 +117,8 @@ T05 the generated plugin and `sce setup` registration.
   (see **Adapter lifecycle and recovery**); as of T05's correction the generated
   plugin no longer spawns the adapter for them at all — only `SessionDeleted`
   drives local, adapter-independent bookkeeping (clearing the plugin's own
-  cached model for that session; see **Model and session provenance**). Every
+  cached model for that session; see
+  [`opencode-mutation-scope-plugin-transport.md`](opencode-mutation-scope-plugin-transport.md)). Every
   field is strictly validated: a missing,
   blank, or wrong-typed required field is rejected as
   `Invalid OpenCode hook event payload from STDIN: <detail>.` with no
@@ -202,70 +209,12 @@ recovery**). The generalized rule is also documented in
 [`codex-mutation-scope-integration.md`](codex-mutation-scope-integration.md) and
 [`mutation-scope-runtime.md`](mutation-scope-runtime.md).
 
-## Model and session provenance
+## Model and session provenance, generated plugin, and ordering
 
-The construction helper `opencode_scope_provenance` exists as of T03 (see
-**Adapter identity and encoding**); as of T04 the adapter stamps its result onto
-every tracked `Start` ingress boundary. As of T05 the generated plugin supplies
-the observed `model` from its per-session `chat.params` map (`providerID/api.id`,
-ignoring the internal `title` agent); absent evidence forwards `model: null`.
-
-`chat.params` (`packages/opencode/src/session/llm.ts` L162) fires before every
-LLM call — before that turn's `tool.execute.before` — carrying
-`{ sessionID, agent, model, provider }` with `model.providerID` + `model.api.id`.
-An ephemeral per-`sessionID` model map populated on `chat.params` is always ready
-before that session's next tracked `Start`. Subagents get their own child-session
-`chat.params`. At `Start`: `session_id = oc_<sessionID>`,
-`model_id = normalized(providerID + "/" + api.id)` from the live observation,
-else `NULL` — never guessed, never copied from another session, never backfilled
-(consistent with [`mutation-scope-provenance.md`](mutation-scope-provenance.md)'s
-insert-once semantics). The internal `title` agent's `chat.params` must be
-ignored so it does not pollute the map. Every non-`title` `chat.params` event for
-a session **replaces** that session's cached observation rather than merging
-into it: a valid `providerID` + `api.id` overwrites the previous entry, and an
-invalid/missing model on a later event **deletes** the cached entry rather than
-leaving the prior model in place — a model switch (or a turn with unavailable
-model evidence) can never resurrect a stale observation from an earlier turn.
-
-## Generated plugin and ordering
-
-The plugin (`config/lib/mutation-scope-plugin/opencode-sce-mutation-scope-plugin.ts`,
-copied verbatim to `config/.opencode/plugins/sce-mutation-scope.ts` by
-`config/pkl/generate.pkl`) is a pure transport adapter — no protocol state, no
-business logic. It observes the model per turn from `chat.params` (see **Model
-and session provenance**), maps `write`/`edit`/`apply_patch`
-`tool.execute.before` → fail-closed `ToolExecuteBefore`, `shell.env` →
-fail-closed `ShellEnv` bash `Start`, `tool.execute.after` → best-effort
-`ToolExecuteAfter` `Close`, and a tool-part `error` event → best-effort `ToolError`. It calls
-`sce hooks opencode-mutation-scope` synchronously (`spawnSync`, 20s timeout) and
-**throws** on any failure to establish a tracked `Start` — non-zero adapter
-exit, spawn failure, timeout, or the `sce` CLI being absent (`ENOENT`) — so
-OpenCode always blocks the tool when Start cannot be established; `ENOENT`
-additionally logs a one-line installation warning, but still fails closed like
-every other transport failure. The broad asynchronous events `SessionIdle` /
-`SessionError` / `ServerDisposed` are not forwarded at all — T04's adapter
-dispatch is a genuine no-op for them, so the plugin does not spawn the adapter
-process for a signal it knows will do nothing; `session.deleted` only clears the
-plugin's own local per-session model cache (see **Model and session
-provenance**).
-
-OpenCode runs plugin hooks **sequentially in merged `plugin` config-array order**
-(`packages/opencode/src/plugin/index.ts`): an earlier plugin that throws in
-`tool.execute.before` blocks later plugins and the tool
-(`captures/probeC-order-throw.jsonl`); a failing `shell.env` blocks the spawn
-(`captures/probeB-shellenv-throw.jsonl`). `config/pkl/renderers/common.pkl` lists
-`sce-mutation-scope` last, and the config merge
-(`cli/src/services/setup/config_merge.rs`) appends the SCE entries after every
-surviving user plugin, so the installed order is
-`[<user plugins…>, sce-bash-policy, sce-agent-trace, sce-mutation-scope]` for any
-configuration — mutation-scope stays last, so an earlier policy/user plugin
-rejects a tool before its `Start` is established. `sce doctor`
-(`inspect_opencode_plugin_ordering_health`) flags an installed `opencode.json`
-that lists `./plugins/sce-mutation-scope.ts` anywhere but last. SCE keeps
-explicit array entries because auto-discovered `.opencode/plugin(s)/*` order is
-unsorted glob order; an explicit entry and its auto-discovered file dedupe
-correctly (`captures/dup.jsonl`). See
-[`generated-opencode-plugin-registration.md`](../sce/generated-opencode-plugin-registration.md).
+How the T05 generated plugin observes per-turn model provenance from
+`chat.params`, replaces (never merges into) its per-session model cache, and is
+wired last into OpenCode's sequential plugin ordering is documented in
+[`opencode-mutation-scope-plugin-transport.md`](opencode-mutation-scope-plugin-transport.md).
 
 ## Boundaries and open items
 
@@ -275,10 +224,15 @@ correctly (`captures/dup.jsonl`). See
   attempt bookkeeping under `<git-dir>/sce/` (T04) and does not assume a single
   OpenCode writer per checkout — the boundary lock serialises concurrent
   processes.
-- Live `apply_patch` fixtures (AC2) are outstanding: they need a `gpt-`-class
-  OpenCode credential and should be recorded during T06 before `/validate`. This
-  is a credential gap, not a soundness gap — `apply_patch` satisfies the contract
-  on the pinned versions per source.
+- Live `apply_patch` fixtures against a real, credentialed OpenCode CLI session
+  (AC2) remain outstanding for `/validate`: they need a `gpt-`-class OpenCode
+  credential the probe/test environment does not have. This is a credential
+  gap, not a soundness gap — `apply_patch` satisfies the contract on the pinned
+  versions per source, and T06 already added a Rust-adapter-level `apply_patch`
+  production-path regression (`opencode_apply_patch_mutation_with_missing_model_persists_no_model_in_agent_trace`
+  in `cli/src/services/hooks/mod.rs`) that exercises the real classification,
+  lifecycle, provenance, and Agent Trace code paths without needing OpenCode's
+  model-gated tool registration.
 - `AiExclusive(scope)` will continue to mean tracked-scope exclusivity, never a
   claim that no human, MCP, plugin, or detached process also mutated the
   worktree.
