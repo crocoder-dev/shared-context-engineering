@@ -31,8 +31,9 @@ All three adapters attach optional `ScopeProvenance` at admission (OpenCode
 stamps `oc_<sessionID>` and the observed model, else `NULL`). The verified
 mutation protocol still decides scope ownership and `AiExclusive(scope)`;
 provenance is observational metadata resolved later into mutation-derived
-Agent Trace evidence. Real Claude/Codex `Bash` regressions cover this boundary
-through commit and persisted `agent_traces.trace_json`.
+Agent Trace evidence. Real Claude/Codex/OpenCode regressions cover this
+boundary through commit and persisted `agent_traces.trace_json`, including
+OpenCode's concurrent reject-and-confirm and cross-harness overlap cases.
 
 ## Config generation boundary (current approved design)
 
