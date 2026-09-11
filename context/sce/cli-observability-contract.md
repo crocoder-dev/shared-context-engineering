@@ -3,7 +3,7 @@
 ## Scope
 
 This document defines the implemented structured observability baseline for `sce` runtime execution.
-It covers deterministic stderr logger controls, default-backed log-directory routing with a one-time file fallback and bounded retention, the current logger and telemetry trait boundaries, config-backed runtime resolution, startup degradation behavior for invalid discovered config, and event emission boundaries in `cli/src/services/observability.rs`, `cli/src/services/config/mod.rs`, and `cli/src/app.rs`.
+It covers deterministic logger controls and terminal-routing behavior, default-backed log-directory routing with a one-time file fallback and bounded retention, the current logger and telemetry trait boundaries, config-backed runtime resolution, startup degradation behavior for invalid discovered config, and event emission boundaries in `cli/src/services/observability.rs`, `cli/src/services/config/mod.rs`, and `cli/src/app.rs`.
 
 Runtime observability consumes the shared resolved observability config from `cli/src/services/config/mod.rs`: env values still win where supported, config-file values act as fallback, and defaults apply when higher-precedence layers are absent. The concrete logger stores the resolved `log_file_retention_limit` and uses it for creation-triggered primary and v2 cleanup. When default-discovered config files are invalid JSON, fail schema validation, or are not top-level JSON objects, observability resolution skips those files, collects the failure text in `validation_errors`, and continues with defaults; explicit `--config` / `SCE_CONFIG_FILE` selections remain fatal. Startup therefore keeps running with degraded observability defaults instead of turning discovered invalid config into a startup failure. Those resolved values are surfaced to operators through `sce config show`; `sce config validate` uses the same validation path but reports only validation status plus any errors or warnings.
 
@@ -12,13 +12,13 @@ Runtime observability consumes the shared resolved observability config from `cl
 - `SCE_LOG_LEVEL` selects log threshold with allowed values `error`, `warn`, `info`, `debug`.
 - `SCE_LOG_FORMAT` selects log format with allowed values `text`, `json`.
 - `SCE_LOG_DIR` configures the log-directory value used by the logger configuration surface and overrides config/default values.
-- `log_to_file` is a flat config-file boolean that defaults to `true`; it explicitly controls whether records are written to the configured log directory while tracing and stderr routing remain separate concerns for the current logger. It resolves independently from `log_dir`.
+- `log_to_file` is a flat config-file boolean that defaults to `true`; it explicitly controls whether records are written to the configured log directory and whether normal logger records are routed to `stderr`. When `true`, normal logger records are not routed to `stderr`; when `false`, only error-level logger records are routed to `stderr`. It resolves independently from `log_dir`.
 - Defaults are deterministic: `log_level=error`, `log_format=text`, `log_to_file=true`, and `log_dir=<state_root>/sce/logs` when higher-precedence env/config inputs are unset. Omitting either file-logging property is valid.
 - `log_file_retention_limit` is a flat config-file/default-only value with minimum `1` and default `10`; it has no environment variable or CLI flag, merges local over global, and appears in `sce config show` with provenance.
 - The default `log_dir` is resolved by `cli/src/services/default_paths.rs` through `observability_log_dir()`; on Linux this is `$XDG_STATE_HOME/sce/logs`, or `~/.local/state/sce/logs` when `XDG_STATE_HOME` is unset.
 - Invalid observability env values still fail invocation validation with actionable error text.
 - Invalid default-discovered observability config files no longer block runtime config resolution by themselves; they are skipped and resolution falls back to defaults.
-- After degraded observability config is constructed, startup emits one `warn`-level log per skipped discovered-file failure before command dispatch continues.
+- After degraded observability config is constructed, startup emits one forced `warn`-level log per skipped discovered-file failure before command dispatch continues. With the default `log_to_file=true`, that logger record is written to the log file rather than `stderr`; the separate startup guidance remains a user-facing `stderr` diagnostic on successful command completion.
 ## Repository-local default in this repo
 
 - This repository now ships a repo-local config at `.sce/config.json`.
@@ -27,8 +27,8 @@ Runtime observability consumes the shared resolved observability config from `cl
 
 ## Emission contract
 
-- Command result payloads remain on `stdout`; non-error log records and file-write diagnostics are emitted to `stderr`.
-- Error records are emitted to tracing in all cases. When `log_to_file=true`, they are written to the configured log file and their logger emission is suppressed on `stderr` to avoid duplicate output; when `log_to_file=false`, error records remain on `stderr` and are not written to a file.
+- Command result payloads remain on `stdout`; user-facing diagnostics and text-mode sync progress remain on `stderr`.
+- Emitted logger records are sent to tracing. When `log_to_file=true`, emitted logger records are written to the configured log file and are not emitted to `stderr`; when `log_to_file=false`, only error-level logger records are emitted to `stderr`, and no logger records are written to a file. This includes the forced invalid-discovered-config warning: it is not a terminal logger line under either file-routing mode.
 - Each enabled or forced log operation appends the redacted rendered record to a file selected at emit time from the resolved `log_dir`, machine-local date, and optional caller-provided session ID, except when file logging is disabled.
 - Sessionless file logs route to `<log_dir>/sce-<dd_mm_yyyy>.log`; session-aware file logs route to `<log_dir>/sce-<dd_mm_yyyy>-<sanitized_session_id>.log`.
 - Session filename sanitization preserves ASCII letters, digits, `-`, and `_`; percent-encodes every other UTF-8 byte as uppercase `%HH`; and represents an explicitly empty `Some("")` session ID with the reserved `%EMPTY` token.
@@ -62,8 +62,8 @@ Runtime observability consumes the shared resolved observability config from `cl
 - `json` format emits a single-line object with fixed top-level keys: `timestamp`, `log_format`, `level`, `event_id`, `message`, `fields`.
 - Timestamps are UTC ISO8601 with millisecond precision (e.g., `2026-03-20T14:30:00.123Z`) generated via `chrono::Utc::now()`.
 - Logger threshold behavior is deterministic and severity-based (`error < warn < info < debug`).
-- Startup invalid-config diagnostics use an explicit warn-emission path so the warning is still rendered even when degraded defaults resolve to `log_level=error`.
-- Rendered records remain deterministic line-based strings on `stderr`; log-directory files contain the same redacted rendered lines, do not add session IDs to the record schema automatically, and are bounded by creation-triggered `*.log` retention.
+- Startup invalid-config diagnostics use an explicit warn-emission path so the warning is still recorded even when degraded defaults resolve to `log_level=error`; normal logger stderr routing still follows `log_to_file` and severity.
+- Rendered records remain deterministic line-based strings. Logger records are routed according to `log_to_file`; log-directory files contain the same redacted rendered lines, do not add session IDs to the record schema automatically, and are bounded by creation-triggered `*.log` retention.
 
 ## Observability trait boundaries
 

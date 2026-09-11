@@ -334,7 +334,7 @@ mod tests {
 
         let rendered = String::from_utf8(stderr).expect("stderr is valid utf8");
         let redacted_message =
-            services::security::redact_sensitive_text(&UserError::NotAuthenticated.message());
+            services::security::redact_sensitive_text(UserError::NotAuthenticated.message());
         assert!(rendered.contains(&redacted_message));
     }
 

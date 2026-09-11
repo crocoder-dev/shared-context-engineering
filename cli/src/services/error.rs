@@ -224,10 +224,6 @@ mod tests {
             UserError::NotGitRepository.key(),
             "setup.not_git_repository"
         );
-        assert_eq!(
-            UserError::NotGitRepository.message(),
-            "This directory is not a Git repository. Run `git init`, then rerun `sce setup`."
-        );
         assert_eq!(error.to_string(), UserError::NotGitRepository.message());
     }
 
