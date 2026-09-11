@@ -24,6 +24,7 @@ const CANONICAL_GENERATOR_INPUTS: &[&str] = &[
     "config/pkl",
     "config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts",
     "config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts",
+    "config/lib/mutation-scope-plugin/opencode-sce-mutation-scope-plugin.ts",
     "config/lib/pi-plugin/sce-pi-extension.ts",
 ];
 
@@ -862,6 +863,11 @@ mod tests {
             &repository_root,
             "config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts",
             "bash policy",
+        );
+        write_file(
+            &repository_root,
+            "config/lib/mutation-scope-plugin/opencode-sce-mutation-scope-plugin.ts",
+            "mutation scope",
         );
         write_file(
             &repository_root,

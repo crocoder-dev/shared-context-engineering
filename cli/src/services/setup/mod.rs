@@ -2661,6 +2661,11 @@ mod tests {
         assert!(plugin.contains(&json!("./plugins/sce-bash-policy.ts")));
         assert!(plugin.contains(&json!("./plugins/sce-agent-trace.ts")));
         assert!(!plugin.contains(&json!("./plugins/sce-old-feature.ts")));
+        assert_eq!(
+            plugin.last().and_then(serde_json::Value::as_str),
+            Some("./plugins/sce-mutation-scope.ts"),
+            "the mutation-scope plugin must be installed as the final plugin"
+        );
 
         install_embedded_setup_assets(&repo, SetupTarget::OpenCode, &selection)
             .expect("second install should succeed");

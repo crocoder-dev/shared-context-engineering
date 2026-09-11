@@ -14,8 +14,9 @@ submodule is declared privately in `runtime/mod.rs`, which re-exports
 in [`mutation-scope-runtime.md`](mutation-scope-runtime.md). `coordinate()` and
 `abandon_scope()` are now driven by the generic `sce hooks mutation-scope` CLI
 ingress. `reconcile_worktree` stays `runtime`-internal and unwired, and the
-mutation runtime does not itself insert into `diff_traces`. Concrete Claude Code
-and Codex adapters are wired to the seam; OpenCode and Pi remain future work.
+mutation runtime does not itself insert into `diff_traces`. Concrete Claude Code,
+Codex, and OpenCode adapters are wired to the seam (OpenCode reachable in
+production via a generated plugin installed by `sce setup`); Pi remains future work.
 
 `runtime` depends on `protocol`/`store`/`types` and on `services::checkout`,
 never the reverse — this is a structural module boundary, not merely a
@@ -183,8 +184,9 @@ observation establishes a baseline with no evidence; an edit observed between
 `Start` and `Advance` commits exactly one `AiExclusive` event; replaying an
 identical `(scope, event)` boundary is a no-op, not a duplicate; `Close`
 attributes to the scope it is about to close; two live scopes yield
-`AiContended` when no unconfirmed live Codex scope remains at the boundary,
-regardless of matching or differing `ActorKind`; a CAS conflict
+`AiContended` when no unconfirmed live confirmation-required scope (Codex or
+OpenCode) remains at the boundary, regardless of matching or differing
+`ActorKind`; a CAS conflict
 reloads and recomputes without a second capture or pin; `needs_rebaseline`
 recovery preserves live scopes while taint recovery abandons them; and the
 taint-retry loop taints an existing worktree, survives a losing CAS before
@@ -233,8 +235,9 @@ driven together; an inherited external-taint marker is overlaid onto
 `database_failure` recovery on the next invocation. The generic
 `sce hooks mutation-scope` CLI ingress now drives both entrypoints
 (`start`/`advance`/`close`/`flush` → `coordinate()`, `abandon` → `abandon_scope()`);
-the concrete Claude Code and Codex lifecycle adapters drive that ingress, while
-OpenCode and Pi remain future work.
+the concrete Claude Code, Codex, and OpenCode lifecycle adapters drive that
+ingress (OpenCode via a generated plugin installed by `sce setup`), while Pi
+remains future work.
 
 See also: [`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md)
 (the per-worktree snapshot-ref maintenance pass under the same `WorktreeLock`),

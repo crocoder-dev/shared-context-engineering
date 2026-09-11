@@ -15,7 +15,8 @@ class RenderedTextFile {
 
 sceGeneratedOpenCodePlugins = List(
   opencode.sce_bash_policy_plugin,
-  opencode.sce_agent_trace_plugin
+  opencode.sce_agent_trace_plugin,
+  opencode.sce_mutation_scope_plugin
 )
 sceGeneratedOpenCodePluginPathsJson = sceGeneratedOpenCodePlugins
   .map((plugin) -> plugin.path_json)

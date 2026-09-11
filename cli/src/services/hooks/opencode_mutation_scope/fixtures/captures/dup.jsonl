@@ -1,0 +1,6 @@
+{"tag":"dup","plugin":"order-first","wall":"2026-09-10T13:28:25.847Z","pid":183044,"kind":"plugin.init"}
+{"seq":1,"tag":"dup","plugin":"capture","mono_us":825,"wall":"2026-09-10T13:28:25.848Z","pid":183044,"kind":"plugin.init","directory":"<PROBE_REPO>","worktree":"<PROBE_REPO>"}
+{"tag":"dup","plugin":"order-last","wall":"2026-09-10T13:28:25.848Z","pid":183044,"kind":"plugin.init"}
+{"tag":"dup","plugin":"customtool","wall":"2026-09-10T13:28:25.848Z","kind":"plugin.init"}
+{"plugin":"dup","kind":"plugin.init","wall":1789046905848}
+{"seq":2,"tag":"dup","plugin":"capture","mono_us":1183,"wall":"2026-09-10T13:28:25.848Z","pid":183044,"kind":"hook","hook":"config","pluginList":["file://<PROBE_REPO>/.opencode/probe/order-first.ts","file://<PROBE_REPO>/.opencode/probe/capture.ts","file://<PROBE_REPO>/.opencode/probe/order-last.ts","file://<PROBE_REPO>/.opencode/probe/customtool.ts","file://<PROBE_REPO>/.opencode/plugin/dup.ts"]}

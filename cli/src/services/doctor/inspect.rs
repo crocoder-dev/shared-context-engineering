@@ -985,6 +985,7 @@ fn inspect_opencode_integration_health(
     push_opencode_integration_mismatch_problems(integration_groups, problems);
     push_opencode_integration_read_fail_problems(integration_groups, problems);
     inspect_opencode_plugin_registry_health(repository_root, problems);
+    inspect_opencode_plugin_ordering_health(repository_root, problems);
 
     let install_targets = InstallTargetPaths::new(repository_root);
     inspect_opencode_plugin_dependency_health(&install_targets, problems);
@@ -1629,6 +1630,59 @@ fn push_codex_integration_read_fail_problems(
             });
         }
     }
+}
+
+const OPENCODE_MUTATION_SCOPE_PLUGIN_ENTRY: &str = "./plugins/sce-mutation-scope.ts";
+
+fn inspect_opencode_plugin_ordering_health(
+    repository_root: &Path,
+    problems: &mut Vec<DoctorProblem>,
+) {
+    let repo_paths = RepoPaths::new(repository_root);
+    let manifest_path = repo_paths.opencode_manifest_file();
+    let Ok(bytes) = fs::read(&manifest_path) else {
+        return;
+    };
+    let Ok(manifest) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return;
+    };
+    let Some(plugins) = manifest.get("plugin").and_then(serde_json::Value::as_array) else {
+        return;
+    };
+    let entries: Vec<&str> = plugins
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    let Some(position) = entries
+        .iter()
+        .position(|entry| *entry == OPENCODE_MUTATION_SCOPE_PLUGIN_ENTRY)
+    else {
+        return;
+    };
+    if position + 1 == entries.len() {
+        return;
+    }
+
+    let trailing = entries[position + 1..].join(", ");
+    problems.push(DoctorProblem {
+        kind: ProblemKind::OpenCodePluginRegistryInvalid,
+        category: ProblemCategory::RepoAssets,
+        severity: ProblemSeverity::Error,
+        fixability: ProblemFixability::ManualOnly,
+        summary: format!(
+            "OpenCode plugin registry '{}' lists '{OPENCODE_MUTATION_SCOPE_PLUGIN_ENTRY}' before other plugins ({trailing}); it must be the final plugin so an earlier plugin can reject a tool before the mutation-scope Start is established.",
+            manifest_path.display()
+        ),
+        remediation: format!(
+            "Move '{OPENCODE_MUTATION_SCOPE_PLUGIN_ENTRY}' to the end of the 'plugin' array in '{}', or reinstall OpenCode assets, then rerun 'sce doctor'.",
+            manifest_path.display()
+        ),
+        next_action: "manual_steps",
+        scope: Some(IntegrationGroupKey::new(
+            IntegrationTarget::OpenCode,
+            IntegrationArea::Plugins,
+        )),
+    });
 }
 
 fn inspect_opencode_plugin_registry_health(
@@ -2324,10 +2378,10 @@ mod tests {
         collect_claude_integration_groups, collect_codex_integration_groups,
         collect_hook_file_health, collect_opencode_integration_groups,
         collect_pi_integration_groups, inspect_claude_integration_health,
-        inspect_codex_integration_health, resolve_doctor_integration_targets,
-        CodexHookPolicyReadiness, HookContentState, IntegrationArea, IntegrationContentState,
-        IntegrationGroupHealth, IntegrationGroupKey, IntegrationTarget, ProblemKind,
-        ProblemSeverity,
+        inspect_codex_integration_health, inspect_opencode_plugin_ordering_health,
+        resolve_doctor_integration_targets, CodexHookPolicyReadiness, HookContentState,
+        IntegrationArea, IntegrationContentState, IntegrationGroupHealth, IntegrationGroupKey,
+        IntegrationTarget, ProblemKind, ProblemSeverity,
     };
     use crate::services::config::IntegrationTargetId;
     use crate::services::setup::OPTIONAL_WORKFLOWS;
@@ -3072,6 +3126,56 @@ mod tests {
         assert!(plugin.contains(&serde_json::json!("./plugins/my-plugin.ts")));
         assert!(plugin.contains(&serde_json::json!("./plugins/sce-bash-policy.ts")));
         assert!(plugin.contains(&serde_json::json!("./plugins/sce-agent-trace.ts")));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn opencode_plugin_ordering_health_flags_mutation_scope_not_last() {
+        let root = unique_temp_repository_root("opencode-plugin-order");
+        let opencode_dir = root.join(".opencode");
+        std::fs::create_dir_all(&opencode_dir).unwrap();
+        let manifest_path = opencode_dir.join("opencode.json");
+
+        let ordered = serde_json::json!({
+            "$schema": "https://opencode.ai/config.json",
+            "plugin": [
+                "./plugins/my-plugin.ts",
+                "./plugins/sce-bash-policy.ts",
+                "./plugins/sce-agent-trace.ts",
+                "./plugins/sce-mutation-scope.ts"
+            ]
+        });
+        std::fs::write(&manifest_path, serde_json::to_vec_pretty(&ordered).unwrap()).unwrap();
+        let mut problems = Vec::new();
+        inspect_opencode_plugin_ordering_health(&root, &mut problems);
+        assert!(
+            problems.is_empty(),
+            "mutation-scope last is a valid ordering: {problems:?}"
+        );
+
+        let misordered = serde_json::json!({
+            "$schema": "https://opencode.ai/config.json",
+            "plugin": [
+                "./plugins/sce-bash-policy.ts",
+                "./plugins/sce-mutation-scope.ts",
+                "./plugins/sce-agent-trace.ts",
+                "./plugins/my-plugin.ts"
+            ]
+        });
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&misordered).unwrap(),
+        )
+        .unwrap();
+        let mut problems = Vec::new();
+        inspect_opencode_plugin_ordering_health(&root, &mut problems);
+        assert_eq!(problems.len(), 1, "misordered registry must be flagged");
+        assert!(matches!(
+            problems[0].kind,
+            ProblemKind::OpenCodePluginRegistryInvalid
+        ));
+        assert!(problems[0].summary.contains("sce-agent-trace.ts"));
 
         std::fs::remove_dir_all(&root).ok();
     }

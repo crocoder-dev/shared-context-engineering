@@ -48,6 +48,7 @@ pub mod codex_mutation_scope;
 pub mod command;
 pub mod lifecycle;
 pub mod mutation_scope;
+pub mod opencode_mutation_scope;
 
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
@@ -107,6 +108,7 @@ pub enum HookSubcommand {
     MutationScope,
     ClaudeMutationScope,
     CodexMutationScope,
+    OpenCodeMutationScope,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -249,6 +251,9 @@ fn run_hooks_subcommand_in_repo(
         }
         HookSubcommand::CodexMutationScope => {
             codex_mutation_scope::run_codex_mutation_scope_subcommand(logger)
+        }
+        HookSubcommand::OpenCodeMutationScope => {
+            opencode_mutation_scope::run_opencode_mutation_scope_subcommand(logger)
         }
     }
 }
@@ -1089,6 +1094,15 @@ fn normalize_claude_model_id(model: &str) -> Option<String> {
 }
 
 fn normalize_codex_model_id(model: &str) -> Option<String> {
+    let normalized = model.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    Some(normalized.to_string())
+}
+
+fn normalize_opencode_model_id(model: &str) -> Option<String> {
     let normalized = model.trim();
     if normalized.is_empty() {
         return None;
@@ -1973,6 +1987,7 @@ fn hook_runtime_invocation_name(subcommand: &HookSubcommand) -> &'static str {
         HookSubcommand::MutationScope => "mutation-scope runtime invocation",
         HookSubcommand::ClaudeMutationScope => "Claude mutation-scope runtime invocation",
         HookSubcommand::CodexMutationScope => "Codex mutation-scope runtime invocation",
+        HookSubcommand::OpenCodeMutationScope => "OpenCode mutation-scope runtime invocation",
     }
 }
 
@@ -3692,6 +3707,27 @@ mod tests {
     }
 
     #[test]
+    fn normalize_opencode_model_id_preserves_qualified_and_unqualified_ids() {
+        for model in [
+            "opencode/big-pickle",
+            "anthropic/claude-sonnet-4",
+            "custom-model",
+        ] {
+            assert_eq!(normalize_opencode_model_id(model).as_deref(), Some(model));
+        }
+        assert_eq!(
+            normalize_opencode_model_id("  opencode/big-pickle  ").as_deref(),
+            Some("opencode/big-pickle")
+        );
+    }
+
+    #[test]
+    fn normalize_opencode_model_id_returns_none_for_blank_model_ids() {
+        assert_eq!(normalize_opencode_model_id(""), None);
+        assert_eq!(normalize_opencode_model_id("   "), None);
+    }
+
+    #[test]
     fn pi_normalized_diff_trace_payload_persists_with_pi_prefixed_session_id() {
         let stdin_payload = serde_json::json!({
             "sessionID": "session-123",
@@ -4720,6 +4756,7 @@ mod tests {
         };
         use crate::services::hooks::claude_mutation_scope;
         use crate::services::hooks::codex_mutation_scope;
+        use crate::services::hooks::opencode_mutation_scope;
         use crate::services::mutation_trace::runtime::resolve_post_commit_mutation_ai_patch;
 
         fn git(repo: &Path, args: &[&str]) -> String {
@@ -4810,6 +4847,23 @@ mod tests {
                 git(&self.root, &["commit", "-qm", "AI mutation"]);
             }
 
+            fn mutation_events(&self) -> Vec<(String, Option<String>)> {
+                self.db()
+                    .query_map(
+                        "SELECT attribution_kind, attribution_scope_id \
+                         FROM mutation_trace_events ORDER BY revision",
+                        (),
+                        |row| {
+                            let attribution_kind =
+                                row.get::<String>(0).map_err(anyhow::Error::from)?;
+                            let attribution_scope_id =
+                                row.get::<Option<String>>(1).map_err(anyhow::Error::from)?;
+                            Ok((attribution_kind, attribution_scope_id))
+                        },
+                    )
+                    .expect("mutation-events query should succeed")
+            }
+
             fn run_post_commit(&self) -> Value {
                 let db = self.db();
                 run_post_commit_subcommand_with(
@@ -4888,6 +4942,524 @@ mod tests {
                 trace["metadata"]["sce"]["line_changes"]["unknown"]["added"],
                 json!(0)
             );
+        }
+
+        fn opencode_before(
+            cwd: &str,
+            session_id: &str,
+            call_id: &str,
+            tool_name: &str,
+            model: Option<&str>,
+        ) -> String {
+            let mut payload = json!({
+                "hook_event_name": "ToolExecuteBefore",
+                "session_id": session_id,
+                "call_id": call_id,
+                "cwd": cwd,
+                "tool_name": tool_name,
+            });
+            if let Some(model) = model {
+                payload["model"] = json!(model);
+            }
+            payload.to_string()
+        }
+
+        fn opencode_shell_env(
+            cwd: &str,
+            session_id: &str,
+            call_id: &str,
+            model: Option<&str>,
+        ) -> String {
+            let mut payload = json!({
+                "hook_event_name": "ShellEnv",
+                "session_id": session_id,
+                "call_id": call_id,
+                "cwd": cwd,
+            });
+            if let Some(model) = model {
+                payload["model"] = json!(model);
+            }
+            payload.to_string()
+        }
+
+        fn opencode_after(cwd: &str, session_id: &str, call_id: &str, tool_name: &str) -> String {
+            json!({
+                "hook_event_name": "ToolExecuteAfter",
+                "session_id": session_id,
+                "call_id": call_id,
+                "cwd": cwd,
+                "tool_name": tool_name,
+            })
+            .to_string()
+        }
+
+        fn opencode_tool_error(
+            cwd: &str,
+            session_id: &str,
+            call_id: &str,
+            tool_name: &str,
+        ) -> String {
+            json!({
+                "hook_event_name": "ToolError",
+                "session_id": session_id,
+                "call_id": call_id,
+                "cwd": cwd,
+                "tool_name": tool_name,
+            })
+            .to_string()
+        }
+
+        fn drive_opencode(repo: &ProvenanceE2eRepo, payload: &str) -> Result<String> {
+            opencode_mutation_scope::run_opencode_mutation_scope_from_payload_at_state_root(
+                &repo.state_root,
+                payload,
+                None,
+            )
+        }
+
+        #[test]
+        fn opencode_bash_mutation_persists_model_and_session_in_agent_trace() {
+            let repo = ProvenanceE2eRepo::new("opencode-bash");
+            let session_id = "ses_opencode_bash";
+            let cwd = repo.cwd();
+
+            drive_opencode(
+                &repo,
+                &opencode_shell_env(&cwd, session_id, "call_bash", Some("opencode/big-pickle")),
+            )
+            .expect("OpenCode shell.env should establish the bash scope");
+
+            repo.write_change("one\nopencode bash mutation\n");
+
+            drive_opencode(
+                &repo,
+                &opencode_after(&cwd, session_id, "call_bash", "bash"),
+            )
+            .expect("OpenCode ToolExecuteAfter should close the bash scope");
+            repo.commit_change();
+
+            let trace = repo.run_post_commit();
+            assert_mutation_trace_provenance(&trace, "opencode/big-pickle", "oc_ses_opencode_bash");
+            assert_eq!(row_count(&repo.db(), "diff_traces"), 0);
+            assert_eq!(row_count(&repo.db(), "post_commit_patch_intersections"), 1);
+            assert_eq!(row_count(&repo.db(), "mutation_trace_events"), 1);
+            assert_eq!(row_count(&repo.db(), "agent_traces"), 1);
+        }
+
+        #[test]
+        fn opencode_apply_patch_mutation_with_missing_model_persists_no_model_in_agent_trace() {
+            let repo = ProvenanceE2eRepo::new("opencode-apply-patch");
+            let session_id = "ses_opencode_no_model";
+            let cwd = repo.cwd();
+
+            drive_opencode(
+                &repo,
+                &opencode_before(&cwd, session_id, "call_patch", "apply_patch", None),
+            )
+            .expect("OpenCode ToolExecuteBefore should establish the apply_patch scope");
+
+            repo.write_change("one\npatched without model evidence\n");
+
+            drive_opencode(
+                &repo,
+                &opencode_after(&cwd, session_id, "call_patch", "apply_patch"),
+            )
+            .expect("OpenCode ToolExecuteAfter should close the apply_patch scope");
+            repo.commit_change();
+
+            let trace = repo.run_post_commit();
+            assert_eq!(trace["files"][0]["path"], json!("file.txt"));
+            let contributor = &trace["files"][0]["conversations"][0]["contributor"];
+            assert_eq!(contributor["type"], json!("ai"));
+            assert!(
+                contributor.get("model_id").is_none(),
+                "absent model evidence must never be guessed or fabricated"
+            );
+            assert_eq!(
+                trace["files"][0]["conversations"][0]["related"],
+                json!([{
+                    "type": "session",
+                    "url": "https://sce.crocoder.dev/sessions/oc_ses_opencode_no_model",
+                }])
+            );
+        }
+
+        #[test]
+        fn opencode_write_mutation_persists_model_while_task_delegation_stays_zero_footprint() {
+            let repo = ProvenanceE2eRepo::new("opencode-write-task");
+            let session_id = "ses_opencode_write";
+            let cwd = repo.cwd();
+
+            drive_opencode(
+                &repo,
+                &opencode_before(&cwd, session_id, "call_task", "task", None),
+            )
+            .expect("task delegation ToolExecuteBefore is neutral");
+            drive_opencode(
+                &repo,
+                &opencode_after(&cwd, session_id, "call_task", "task"),
+            )
+            .expect("task delegation ToolExecuteAfter is neutral");
+
+            assert_eq!(
+                row_count(&repo.db(), "mutation_trace_scopes"),
+                0,
+                "a delegation event must create no mutation scope"
+            );
+
+            drive_opencode(
+                &repo,
+                &opencode_before(
+                    &cwd,
+                    session_id,
+                    "call_write",
+                    "write",
+                    Some("opencode/big-pickle"),
+                ),
+            )
+            .expect("OpenCode write ToolExecuteBefore should establish the scope");
+            repo.write_change("one\nwrite mutation\n");
+            drive_opencode(
+                &repo,
+                &opencode_after(&cwd, session_id, "call_write", "write"),
+            )
+            .expect("OpenCode write ToolExecuteAfter should close the scope");
+            repo.commit_change();
+
+            let trace = repo.run_post_commit();
+            assert_mutation_trace_provenance(
+                &trace,
+                "opencode/big-pickle",
+                "oc_ses_opencode_write",
+            );
+            assert_eq!(
+                row_count(&repo.db(), "mutation_trace_scopes"),
+                1,
+                "only the tracked write call created a scope"
+            );
+        }
+
+        #[test]
+        fn opencode_unknown_tool_events_create_no_scope_or_mutation_state() {
+            let repo = ProvenanceE2eRepo::new("opencode-untracked");
+            let session_id = "ses_opencode_untracked";
+            let cwd = repo.cwd();
+
+            for tool_name in ["read", "custom_mcp_tool", "totally_unknown_future_tool"] {
+                let call_id = format!("call_{tool_name}");
+                drive_opencode(
+                    &repo,
+                    &opencode_before(&cwd, session_id, &call_id, tool_name, None),
+                )
+                .unwrap_or_else(|_| panic!("{tool_name} ToolExecuteBefore should be neutral"));
+                drive_opencode(
+                    &repo,
+                    &opencode_after(&cwd, session_id, &call_id, tool_name),
+                )
+                .unwrap_or_else(|_| panic!("{tool_name} ToolExecuteAfter should be neutral"));
+                drive_opencode(
+                    &repo,
+                    &opencode_tool_error(&cwd, session_id, &call_id, tool_name),
+                )
+                .unwrap_or_else(|_| panic!("{tool_name} ToolError should be neutral"));
+            }
+
+            assert_eq!(row_count(&repo.db(), "mutation_trace_scopes"), 0);
+            assert_eq!(row_count(&repo.db(), "mutation_trace_events"), 0);
+        }
+
+        #[test]
+        fn opencode_child_task_session_gets_its_own_independent_scope_and_provenance() {
+            let repo = ProvenanceE2eRepo::new("opencode-child-session");
+            let parent_session = "ses_opencode_parent";
+            let child_session = "ses_opencode_child";
+            let cwd = repo.cwd();
+
+            drive_opencode(
+                &repo,
+                &opencode_before(&cwd, parent_session, "call_task", "task", None),
+            )
+            .expect("the parent's task delegation is neutral");
+
+            drive_opencode(
+                &repo,
+                &opencode_before(
+                    &cwd,
+                    child_session,
+                    "call_child_write",
+                    "write",
+                    Some("opencode/child-model"),
+                ),
+            )
+            .expect("the child session's write ToolExecuteBefore should establish its own scope");
+            repo.write_change("one\nchild session mutation\n");
+            drive_opencode(
+                &repo,
+                &opencode_after(&cwd, child_session, "call_child_write", "write"),
+            )
+            .expect("the child session's write ToolExecuteAfter should close its own scope");
+            repo.commit_change();
+
+            let trace = repo.run_post_commit();
+            assert_mutation_trace_provenance(
+                &trace,
+                "opencode/child-model",
+                "oc_ses_opencode_child",
+            );
+            assert_eq!(
+                row_count(&repo.db(), "mutation_trace_scopes"),
+                1,
+                "the parent's task delegation created no scope; only the child session's write did"
+            );
+        }
+
+        #[test]
+        fn opencode_concurrent_reject_and_confirm_keeps_only_the_confirmed_mutation_ai() {
+            let repo = ProvenanceE2eRepo::new("opencode-concurrent-reject");
+            let session_id = "ses_opencode_concurrent";
+            let cwd = repo.cwd();
+
+            drive_opencode(
+                &repo,
+                &opencode_before(
+                    &cwd,
+                    session_id,
+                    "call_a_edit",
+                    "edit",
+                    Some("opencode/big-pickle"),
+                ),
+            )
+            .expect("A's edit ToolExecuteBefore should establish a scope");
+            drive_opencode(
+                &repo,
+                &opencode_before(
+                    &cwd,
+                    session_id,
+                    "call_b_write",
+                    "write",
+                    Some("opencode/big-pickle"),
+                ),
+            )
+            .expect("B's write ToolExecuteBefore should establish a distinct concurrent scope");
+
+            fs::write(repo.root.join("rejected.txt"), "rejected mutation\n")
+                .expect("A's mutation should write");
+            fs::write(
+                repo.root.join("ambiguous.txt"),
+                "B's mutation before recovery\n",
+            )
+            .expect("B's pre-recovery mutation should write");
+
+            drive_opencode(
+                &repo,
+                &opencode_tool_error(&cwd, session_id, "call_a_edit", "edit"),
+            )
+            .expect(
+                "A's ToolError should abandon A's scope and consume the shared ambiguous interval",
+            );
+
+            fs::write(
+                repo.root.join("confirmed.txt"),
+                "B's mutation after recovery\n",
+            )
+            .expect("B's post-recovery mutation should write");
+            drive_opencode(
+                &repo,
+                &opencode_after(&cwd, session_id, "call_b_write", "write"),
+            )
+            .expect("B's ToolExecuteAfter should confirm exactly B's own surviving scope");
+
+            git(&repo.root, &["add", "-A"]);
+            git(&repo.root, &["commit", "-qm", "concurrent mutation"]);
+
+            let db = repo.db();
+            let post_commit_data = capture_post_commit_patch_from_git(&repo.root)
+                .expect("capturing the post-commit patch should succeed");
+            let mutation_ai_patch = resolve_post_commit_mutation_ai_patch(
+                &repo.root,
+                &db,
+                &ParsedPatch { files: Vec::new() },
+                &post_commit_data.parsed_patch,
+            );
+
+            let ai_paths: Vec<&str> = mutation_ai_patch
+                .files
+                .iter()
+                .map(|file| file.new_path.as_str())
+                .collect();
+            assert!(
+                !ai_paths.contains(&"rejected.txt"),
+                "the abandoned scope's own mutation must never enter mutation_ai_patch"
+            );
+            assert!(
+                !ai_paths.contains(&"ambiguous.txt"),
+                "B's mutation made before the ambiguity-consuming flush is genuinely \
+                 indistinguishable from A's and must stay non-AI, not merely non-A"
+            );
+            assert!(
+                ai_paths.contains(&"confirmed.txt"),
+                "B's own later mutation, made after A's interval was consumed and confirmed \
+                 by B's own Close, must be attributed AI"
+            );
+        }
+
+        #[test]
+        fn opencode_and_codex_unconfirmed_overlap_stays_ineligible_until_codex_confirms() {
+            let repo = ProvenanceE2eRepo::new("opencode-codex-overlap");
+            let oc_session = "ses_opencode_overlap";
+            let codex_session = "codex-overlap-session";
+            let cwd = repo.cwd();
+
+            drive_opencode(
+                &repo,
+                &opencode_before(
+                    &cwd,
+                    oc_session,
+                    "call_oc",
+                    "write",
+                    Some("opencode/big-pickle"),
+                ),
+            )
+            .expect("OpenCode write should establish a scope");
+
+            let codex_pre = json!({
+                "hook_event_name": "PreToolUse",
+                "session_id": codex_session,
+                "turn_id": "codex-overlap-turn",
+                "cwd": cwd,
+                "tool_name": "Bash",
+                "tool_use_id": "codex-overlap-bash",
+                "model": "gpt-5.6-sol",
+                "tool_input": {"command": "true"},
+            });
+            codex_mutation_scope::run_codex_mutation_scope_from_payload_at_state_root(
+                &repo.state_root,
+                &codex_pre.to_string(),
+                None,
+            )
+            .expect("Codex Bash PreToolUse should establish a concurrent scope");
+
+            repo.write_change("one\nopencode overlap mutation\n");
+
+            drive_opencode(&repo, &opencode_after(&cwd, oc_session, "call_oc", "write"))
+                .expect("OpenCode ToolExecuteAfter should close its own scope");
+
+            let attribution_after_first_close = repo.mutation_events();
+            assert_eq!(
+                attribution_after_first_close
+                    .last()
+                    .map(|(kind, _)| kind.as_str()),
+                Some("ineligible_unscoped"),
+                "an unconfirmed live Codex scope must suppress OpenCode's own confirming close"
+            );
+
+            let codex_post = json!({
+                "hook_event_name": "PostToolUse",
+                "session_id": codex_session,
+                "turn_id": "codex-overlap-turn",
+                "cwd": cwd,
+                "tool_name": "Bash",
+                "tool_use_id": "codex-overlap-bash",
+            });
+            codex_mutation_scope::run_codex_mutation_scope_from_payload_at_state_root(
+                &repo.state_root,
+                &codex_post.to_string(),
+                None,
+            )
+            .expect("Codex PostToolUse should close its own scope");
+
+            drive_opencode(
+                &repo,
+                &opencode_before(
+                    &cwd,
+                    oc_session,
+                    "call_oc_2",
+                    "write",
+                    Some("opencode/big-pickle"),
+                ),
+            )
+            .expect("a fresh OpenCode write should establish a new scope");
+            repo.write_change("one\nopencode overlap mutation\nsecond change\n");
+            drive_opencode(
+                &repo,
+                &opencode_after(&cwd, oc_session, "call_oc_2", "write"),
+            )
+            .expect("the fresh OpenCode scope should close cleanly once Codex is confirmed");
+
+            let attribution_after_second_close = repo.mutation_events();
+            assert_eq!(
+                attribution_after_second_close
+                    .last()
+                    .map(|(kind, _)| kind.as_str()),
+                Some("ai_exclusive"),
+                "once every other live scope is confirmation-safe, a solo confirming close is AiExclusive"
+            );
+        }
+
+        #[test]
+        fn opencode_and_claude_overlap_produces_ai_contended() {
+            let repo = ProvenanceE2eRepo::new("opencode-claude-overlap");
+            let oc_session = "ses_opencode_contended";
+            let claude_session = "claude-overlap-session";
+            let cwd = repo.cwd();
+
+            drive_opencode(
+                &repo,
+                &opencode_before(
+                    &cwd,
+                    oc_session,
+                    "call_oc_contended",
+                    "write",
+                    Some("opencode/big-pickle"),
+                ),
+            )
+            .expect("OpenCode write should establish a scope");
+
+            let claude_pre = json!({
+                "hook_event_name": "PreToolUse",
+                "session_id": claude_session,
+                "cwd": cwd,
+                "tool_name": "Bash",
+                "tool_use_id": "claude-overlap-bash",
+                "tool_input": {"command": "printf mutation"},
+            });
+            claude_mutation_scope::run_claude_mutation_scope_from_payload_at_state_root(
+                &repo.state_root,
+                &claude_pre.to_string(),
+                None,
+            )
+            .expect(
+                "Claude Bash PreToolUse should establish a concurrent, non-confirmation-required scope",
+            );
+
+            repo.write_change("one\ncontended mutation\n");
+
+            drive_opencode(
+                &repo,
+                &opencode_after(&cwd, oc_session, "call_oc_contended", "write"),
+            )
+            .expect("OpenCode ToolExecuteAfter should confirm its own scope");
+
+            let attribution = repo.mutation_events();
+            assert_eq!(
+                attribution.last().map(|(kind, _)| kind.as_str()),
+                Some("ai_contended"),
+                "a confirmed OpenCode close alongside a live non-confirmation-required Claude scope is contended, not suppressed"
+            );
+
+            let claude_post = json!({
+                "hook_event_name": "PostToolUse",
+                "session_id": claude_session,
+                "cwd": cwd,
+                "tool_name": "Bash",
+                "tool_use_id": "claude-overlap-bash",
+            });
+            claude_mutation_scope::run_claude_mutation_scope_from_payload_at_state_root(
+                &repo.state_root,
+                &claude_post.to_string(),
+                None,
+            )
+            .expect("Claude PostToolUse should close its own scope");
         }
 
         #[test]

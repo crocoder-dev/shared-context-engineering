@@ -186,6 +186,7 @@ required_paths=(
   "config/.opencode/lib/bash-policy-presets.json"
   "config/.opencode/plugins/sce-bash-policy.ts"
   "config/.opencode/plugins/sce-agent-trace.ts"
+  "config/.opencode/plugins/sce-mutation-scope.ts"
   "config/.opencode/opencode.json"
   "config/.claude/commands"
   "config/.claude/skills"

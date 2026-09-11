@@ -1,7 +1,7 @@
 module mutation_cursor {
   type WorktreeId = WT0 | WT1
   type ActorKind = ClaudeCode | Codex | OpenCode | Pi
-  type ScopeId = Scope0 | Scope1 | Scope2 | Scope3 | Scope4
+  type ScopeId = Scope0 | Scope1 | Scope2 | Scope3 | Scope4 | Scope5
   type TreeId = Tree0 | Tree1 | Tree2 | Tree3
   type EventId =
     | Event0
@@ -134,7 +134,7 @@ module mutation_cursor {
     | MbtStutter
 
   val WORKTREES: Set[WorktreeId] = Set(WT0, WT1)
-  val SCOPES: Set[ScopeId] = Set(Scope0, Scope1, Scope2, Scope3, Scope4)
+  val SCOPES: Set[ScopeId] = Set(Scope0, Scope1, Scope2, Scope3, Scope4, Scope5)
   val TREES: Set[TreeId] = Set(Tree0, Tree1, Tree2, Tree3)
   val EVENTS: Set[EventId] = Set(
     Event0,
@@ -172,6 +172,7 @@ module mutation_cursor {
       | Scope2 => WT0
       | Scope3 => WT1
       | Scope4 => WT0
+      | Scope5 => WT0
     }
 
   pure def scopeActor(scope: ScopeId): ActorKind =
@@ -181,6 +182,7 @@ module mutation_cursor {
       | Scope2 => Codex
       | Scope3 => OpenCode
       | Scope4 => Codex
+      | Scope5 => OpenCode
     }
 
   pure def isLive(status: ScopeStatus): bool = status == Active
@@ -261,8 +263,10 @@ module mutation_cursor {
       Scope2
     } else if (scopes.contains(Scope3)) {
       Scope3
-    } else {
+    } else if (scopes.contains(Scope4)) {
       Scope4
+    } else {
+      Scope5
     }
 
   var worktrees: WorktreeId -> WorktreeState
@@ -322,19 +326,27 @@ module mutation_cursor {
     }
   }
 
-  def isCodexScope(scope: ScopeId): bool =
-    scopes.get(scope).actorKind == Codex
+  pure def requiresBoundaryConfirmation(actor: ActorKind): bool =
+    match actor {
+      | Codex => true
+      | OpenCode => true
+      | ClaudeCode => false
+      | Pi => false
+    }
+
+  def scopeRequiresConfirmation(scope: ScopeId): bool =
+    requiresBoundaryConfirmation(scopes.get(scope).actorKind)
 
   pure def boundaryConfirmsScope(boundary: Boundary, scope: ScopeId): bool =
     isClose(boundary) and boundaryScope(boundary) == scope
 
-  def hasUnconfirmedCodexScope(live: Set[ScopeId], boundary: Boundary): bool =
+  def hasUnconfirmedRequiredScope(live: Set[ScopeId], boundary: Boundary): bool =
     live.exists(scope =>
-      isCodexScope(scope) and not(boundaryConfirmsScope(boundary, scope))
+      scopeRequiresConfirmation(scope) and not(boundaryConfirmsScope(boundary, scope))
     )
 
   def attributionForBoundary(worktree: WorktreeId, boundary: Boundary): Attribution =
-    if (hasUnconfirmedCodexScope(liveScopesOn(worktree), boundary)) {
+    if (hasUnconfirmedRequiredScope(liveScopesOn(worktree), boundary)) {
       IneligibleUnscoped
     } else {
       attributionFor(worktree)
@@ -1272,7 +1284,7 @@ module mutation_cursor {
       event.attribution == IneligibleUnscoped
     } else if (event.activeScopes.size() == 0) {
       event.attribution == IneligibleUnscoped
-    } else if (hasUnconfirmedCodexScope(event.activeScopes, event.boundary)) {
+    } else if (hasUnconfirmedRequiredScope(event.activeScopes, event.boundary)) {
       event.attribution == IneligibleUnscoped
     } else if (event.activeScopes.size() == 1) {
       match event.attribution {
@@ -1305,28 +1317,28 @@ module mutation_cursor {
       | AiContended => true
     }
 
-  val NoPositiveAttributionWithUnconfirmedCodexScope =
+  val NoPositiveAttributionWithUnconfirmedRequiredScope =
     mutationEvents.forall(event =>
       isPositiveAttribution(event.attribution) implies
-        not(hasUnconfirmedCodexScope(event.activeScopes, event.boundary))
+        not(hasUnconfirmedRequiredScope(event.activeScopes, event.boundary))
     )
 
-  val UnconfirmedCodexScopeBlocksCrossHarnessAttribution =
+  val UnconfirmedRequiredScopeBlocksCrossHarnessAttribution =
     mutationEvents.forall(event => {
-      val liveCodex = event.activeScopes.filter(scope => isCodexScope(scope))
-      val confirmsSome = liveCodex.exists(scope =>
+      val liveRequired = event.activeScopes.filter(scope => scopeRequiresConfirmation(scope))
+      val confirmsSome = liveRequired.exists(scope =>
         boundaryConfirmsScope(event.boundary, scope)
       )
 
-      (liveCodex.size() > 0 and not(confirmsSome)) implies
+      (liveRequired.size() > 0 and not(confirmsSome)) implies
         event.attribution == IneligibleUnscoped
     })
 
-  val MultipleLiveCodexScopesSuppressPositiveAttribution =
+  val MultipleLiveRequiredScopesSuppressPositiveAttribution =
     mutationEvents.forall(event => {
-      val liveCodex = event.activeScopes.filter(scope => isCodexScope(scope))
+      val liveRequired = event.activeScopes.filter(scope => scopeRequiresConfirmation(scope))
 
-      liveCodex.size() >= 2 implies event.attribution == IneligibleUnscoped
+      liveRequired.size() >= 2 implies event.attribution == IneligibleUnscoped
     })
 
   val StartDoesNotAbandonExistingScopes =
@@ -1364,18 +1376,30 @@ module mutation_cursor {
 
   val HasCodexConfirmedExclusiveEvidence = mutationEvents.exists(event =>
     isClose(event.boundary) and
-    isCodexScope(boundaryScope(event.boundary)) and
+    scopes.get(boundaryScope(event.boundary)).actorKind == Codex and
     event.attribution == AiExclusive(boundaryScope(event.boundary))
   )
 
   val HasCodexConfirmedContendedEvidence = mutationEvents.exists(event =>
     isClose(event.boundary) and
-    isCodexScope(boundaryScope(event.boundary)) and
+    scopes.get(boundaryScope(event.boundary)).actorKind == Codex and
     event.attribution == AiContended
   )
 
-  val HasUnconfirmedCodexSuppressedEvidence = mutationEvents.exists(event =>
-    hasUnconfirmedCodexScope(event.activeScopes, event.boundary) and
+  val HasOpenCodeConfirmedExclusiveEvidence = mutationEvents.exists(event =>
+    isClose(event.boundary) and
+    scopes.get(boundaryScope(event.boundary)).actorKind == OpenCode and
+    event.attribution == AiExclusive(boundaryScope(event.boundary))
+  )
+
+  val HasOpenCodeConfirmedContendedEvidence = mutationEvents.exists(event =>
+    isClose(event.boundary) and
+    scopes.get(boundaryScope(event.boundary)).actorKind == OpenCode and
+    event.attribution == AiContended
+  )
+
+  val HasUnconfirmedRequiredScopeSuppressedEvidence = mutationEvents.exists(event =>
+    hasUnconfirmedRequiredScope(event.activeScopes, event.boundary) and
     event.activeScopes.size() >= 1 and
     event.attribution == IneligibleUnscoped
   )
@@ -1424,9 +1448,9 @@ module mutation_cursor {
     AttributionMatchesObservedScopes,
     AiExclusiveRequiresExactlyOneActiveScope,
     AiContendedRequiresMultipleActiveScopes,
-    NoPositiveAttributionWithUnconfirmedCodexScope,
-    UnconfirmedCodexScopeBlocksCrossHarnessAttribution,
-    MultipleLiveCodexScopesSuppressPositiveAttribution,
+    NoPositiveAttributionWithUnconfirmedRequiredScope,
+    UnconfirmedRequiredScopeBlocksCrossHarnessAttribution,
+    MultipleLiveRequiredScopesSuppressPositiveAttribution,
     StartDoesNotAbandonExistingScopes,
   }
 
@@ -1847,7 +1871,7 @@ module mutation_cursor {
           event.attribution == IneligibleUnscoped
         )
       )
-      .expect(HasUnconfirmedCodexSuppressedEvidence)
+      .expect(HasUnconfirmedRequiredScopeSuppressedEvidence)
       .expect(Safety)
 
   run testUnconfirmedCodexScopeBlocksExclusiveAttribution =
@@ -1936,6 +1960,99 @@ module mutation_cursor {
           event.afterTree == Tree1 and
           event.activeScopes == Set(Scope0) and
           event.attribution == AiExclusive(Scope0)
+        )
+      )
+      .expect(Safety)
+
+  run testOpenCodeCloseConfirmsExclusiveAttribution =
+    init
+      .then(prepare(Attempt0, Start({ scope: Scope5, event: Event0 })))
+      .then(commitAttempt(Attempt0))
+      .then(mutate(WT0, Tree1))
+      .then(prepare(Attempt1, Close({ scope: Scope5, event: Event1 })))
+      .then(commitAttempt(Attempt1))
+      .expect(scopes.get(Scope5).status == Closed)
+      .expect(
+        mutationEvents.exists(event =>
+          event.afterTree == Tree1 and
+          event.activeScopes == Set(Scope5) and
+          event.attribution == AiExclusive(Scope5)
+        )
+      )
+      .expect(HasOpenCodeConfirmedExclusiveEvidence)
+      .expect(Safety)
+
+  run testOpenCodeCloseConfirmsContendedAttribution =
+    init
+      .then(prepare(Attempt0, Start({ scope: Scope5, event: Event0 })))
+      .then(commitAttempt(Attempt0))
+      .then(prepare(Attempt1, Start({ scope: Scope0, event: Event1 })))
+      .then(commitAttempt(Attempt1))
+      .then(mutate(WT0, Tree1))
+      .then(prepare(Attempt2, Close({ scope: Scope5, event: Event2 })))
+      .then(commitAttempt(Attempt2))
+      .expect(scopes.get(Scope0).status == Active)
+      .expect(
+        mutationEvents.exists(event =>
+          event.afterTree == Tree1 and
+          event.activeScopes == Set(Scope0, Scope5) and
+          event.attribution == AiContended
+        )
+      )
+      .expect(HasOpenCodeConfirmedContendedEvidence)
+      .expect(Safety)
+
+  run testUnconfirmedOpenCodeScopeBlocksCrossHarnessAttribution =
+    init
+      .then(prepare(Attempt0, Start({ scope: Scope5, event: Event0 })))
+      .then(commitAttempt(Attempt0))
+      .then(prepare(Attempt1, Start({ scope: Scope0, event: Event1 })))
+      .then(commitAttempt(Attempt1))
+      .then(mutate(WT0, Tree1))
+      .then(prepare(Attempt2, Advance({ scope: Scope0, event: Event2 })))
+      .then(commitAttempt(Attempt2))
+      .expect(scopes.get(Scope5).status == Active)
+      .expect(
+        mutationEvents.exists(event =>
+          event.afterTree == Tree1 and
+          event.activeScopes == Set(Scope0, Scope5) and
+          event.attribution == IneligibleUnscoped
+        )
+      )
+      .expect(HasUnconfirmedRequiredScopeSuppressedEvidence)
+      .expect(Safety)
+
+  run testOpenCodeAndCodexScopesStayMutuallyUnconfirmedAtEitherClose =
+    init
+      .then(prepare(Attempt0, Start({ scope: Scope5, event: Event0 })))
+      .then(commitAttempt(Attempt0))
+      .then(prepare(Attempt1, Start({ scope: Scope2, event: Event1 })))
+      .then(commitAttempt(Attempt1))
+      .then(mutate(WT0, Tree1))
+      .then(prepare(Attempt2, Close({ scope: Scope5, event: Event2 })))
+      .then(commitAttempt(Attempt2))
+      .expect(scopes.get(Scope2).status == Active)
+      .expect(
+        mutationEvents.exists(event =>
+          event.afterTree == Tree1 and
+          event.activeScopes == Set(Scope2, Scope5) and
+          event.attribution == IneligibleUnscoped
+        )
+      )
+      .expect(Safety)
+
+  run testFlushDoesNotConfirmOpenCodeScope =
+    init
+      .then(prepare(Attempt0, Start({ scope: Scope5, event: Event0 })))
+      .then(commitAttempt(Attempt0))
+      .then(mutate(WT0, Tree1))
+      .then(prepare(Attempt1, Flush(WT0)))
+      .then(commitAttempt(Attempt1))
+      .expect(
+        mutationEvents.exists(event =>
+          event.afterTree == Tree1 and
+          event.activeScopes == Set(Scope5) and
+          event.attribution == IneligibleUnscoped
         )
       )
       .expect(Safety)
