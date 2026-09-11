@@ -9,9 +9,13 @@ use crate::services::agent_trace_storage::{
     resolve_agent_trace_storage_at_state_root, AgentTraceStorageContext,
 };
 use crate::services::checkout::{read_checkout_id, resolve_git_dir};
-use crate::services::mutation_trace::store::{encode_revision, MutationTraceStore};
+use crate::services::mutation_trace::protocol;
+use crate::services::mutation_trace::store::{
+    encode_revision, CasResult, DurableTransition, MutationTraceStore,
+};
 use crate::services::mutation_trace::types::{
-    ActorKind, EventId, FailureKind, ScopeId, ScopeStatus,
+    boundary_event_key, boundary_scope, ActorKind, AttemptId, Boundary, EventId, FailureKind,
+    ScopeId, ScopeStatus,
 };
 
 use super::coordinator::{coordinate, coordinate_inner, CoordinateError, RuntimeBoundary};
@@ -19,6 +23,9 @@ use super::external_taint::ExternalTaintMarker;
 use super::git_snapshot::GitSnapshotService;
 use super::ref_reconciliation::{
     reconcile_worktree, reconcile_worktree_inner, ReconcileError, ReconciliationOutcome,
+};
+use super::scope_runtime::{
+    abandon_scope, abandon_scope_inner, AbandonScopeError, AbandonScopeOutcome,
 };
 use super::worktree_lock::{acquire_inner, WorktreeLock};
 
@@ -1847,5 +1854,415 @@ fn missing_checkout_identity_through_the_public_entrypoint_returns_skipped_outco
             .expect("reading the checkout-id file should succeed")
             .is_none(),
         "the skip must not create a checkout identity"
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn an_abandoned_scope_rebaselines_the_successor_start_without_evidence_for_the_gap() {
+    let repo = TestRepo::new("public-abandon-then-successor-start");
+    let ok_db = || repo.open_db();
+
+    let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .expect("the baseline observation should materialize the worktree");
+    let worktree_id = baseline.worktree_id.clone();
+    let tree_a = baseline.observed_tree.clone();
+
+    let scope_a = ScopeId("scope-dead-execution".to_string());
+    let started = coordinate(
+        &repo.repo_root,
+        &RuntimeBoundary::Start {
+            scope: scope_a.clone(),
+            event: EventId("evt-a-start".to_string()),
+            actor_kind: ActorKind::ClaudeCode,
+        },
+        ok_db,
+    )
+    .expect("starting scope A should succeed");
+    let first_gap_revision = started.revision;
+
+    std::fs::write(
+        repo.repo_root.join("edited-by-a.txt"),
+        b"a mutation scope A made but never closed",
+    )
+    .expect("the edit inside scope A should write");
+
+    let abandoned = abandon_scope(&repo.repo_root, &scope_a, ok_db)
+        .expect("abandoning the stale scope should succeed");
+    let AbandonScopeOutcome::Abandoned {
+        revision: abandon_revision,
+        ..
+    } = abandoned
+    else {
+        panic!("expected a durable abandonment, got {abandoned:?}");
+    };
+    assert_eq!(
+        abandon_revision,
+        first_gap_revision + 1,
+        "abandonment advances the worktree revision by exactly one"
+    );
+
+    std::fs::write(
+        repo.repo_root.join("edited-after-a-died.txt"),
+        b"a mutation nobody observed a boundary for",
+    )
+    .expect("the unobserved edit after abandonment should write");
+
+    let scope_b = ScopeId("scope-successor".to_string());
+    let successor = coordinate(
+        &repo.repo_root,
+        &RuntimeBoundary::Start {
+            scope: scope_b.clone(),
+            event: EventId("evt-b-start".to_string()),
+            actor_kind: ActorKind::ClaudeCode,
+        },
+        ok_db,
+    )
+    .expect("the successor Start must rebaseline over the abandoned scope's gap");
+    let tree_c = successor.observed_tree.clone();
+    assert_ne!(
+        tree_c, tree_a,
+        "the working tree must have moved across the abandoned interval"
+    );
+    assert!(
+        successor.mutation_event.is_none(),
+        "no evidence may be emitted for the A -> B interval, whose final boundary was never observed"
+    );
+
+    let db = repo.db();
+    let store = MutationTraceStore::new(&db);
+    let projection = store
+        .load_worktree(&worktree_id, Some(&scope_b), None)
+        .expect("loading the worktree row should succeed")
+        .expect("the worktree row should exist");
+    assert_eq!(
+        projection.worktree_state.cursor_tree, tree_c,
+        "the cursor must sit at the tree observed at Start(B), not at the pre-abandonment tree"
+    );
+    assert!(!projection.worktree_state.needs_rebaseline);
+    assert!(!projection.worktree_state.tainted);
+    assert_eq!(projection.worktree_state.failure_kind, FailureKind::Healthy);
+
+    let statuses = store
+        .load_worktree(&worktree_id, Some(&scope_a), None)
+        .expect("loading the worktree row should succeed")
+        .expect("the worktree row should exist");
+    assert_eq!(
+        statuses.scopes.get(&scope_a).map(|state| state.status),
+        Some(ScopeStatus::Abandoned),
+        "the abandoned scope must stay Abandoned across the successor's recovery"
+    );
+    assert_eq!(
+        projection.scopes.get(&scope_b).map(|state| state.status),
+        Some(ScopeStatus::Active),
+        "the successor scope must be Active after its Start"
+    );
+
+    assert_eq!(
+        row_count(&db, "mutation_trace_events"),
+        0,
+        "an interval bounded by an abandonment and a rebaseline can produce no MutationEvent"
+    );
+    for revision in first_gap_revision..=successor.revision {
+        assert!(
+            store
+                .load_mutation_event(&worktree_id, revision)
+                .expect("loading a mutation event should succeed")
+                .is_none(),
+            "revision {revision} spans the unobserved A -> B interval and must carry no evidence"
+        );
+    }
+}
+
+#[test]
+fn abandoning_a_stale_scope_leaves_an_unrelated_live_scope_active_through_the_recovery() {
+    let repo = TestRepo::new("public-abandon-preserves-live-scope");
+    let ok_db = || repo.open_db();
+
+    let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .expect("the baseline observation should materialize the worktree");
+    let worktree_id = baseline.worktree_id.clone();
+
+    let stale = ScopeId("scope-stale".to_string());
+    let live = ScopeId("scope-live".to_string());
+    coordinate(
+        &repo.repo_root,
+        &RuntimeBoundary::Start {
+            scope: stale.clone(),
+            event: EventId("evt-stale-start".to_string()),
+            actor_kind: ActorKind::ClaudeCode,
+        },
+        ok_db,
+    )
+    .expect("starting the scope that will go stale should succeed");
+    coordinate(
+        &repo.repo_root,
+        &RuntimeBoundary::Start {
+            scope: live.clone(),
+            event: EventId("evt-live-start".to_string()),
+            actor_kind: ActorKind::Codex,
+        },
+        ok_db,
+    )
+    .expect("starting the unrelated live scope should succeed");
+
+    let abandoned = abandon_scope(&repo.repo_root, &stale, ok_db)
+        .expect("abandoning the stale scope should succeed");
+    assert!(
+        matches!(abandoned, AbandonScopeOutcome::Abandoned { .. }),
+        "expected a durable abandonment, got {abandoned:?}"
+    );
+
+    std::fs::write(
+        repo.repo_root.join("edited-by-the-live-scope.txt"),
+        b"the surviving scope keeps working",
+    )
+    .expect("the live scope's edit should write");
+
+    let advanced = coordinate(
+        &repo.repo_root,
+        &RuntimeBoundary::Advance {
+            scope: live.clone(),
+            event: EventId("evt-live-advance".to_string()),
+            actor_kind: ActorKind::Codex,
+        },
+        ok_db,
+    )
+    .expect("the live scope must still be able to advance after the unrelated abandonment");
+    assert!(
+        advanced.mutation_event.is_none(),
+        "the needs_rebaseline recovery consumes the ambiguous interval rather than attributing it"
+    );
+
+    let db = repo.db();
+    let store = MutationTraceStore::new(&db);
+    let projection = store
+        .load_worktree(&worktree_id, Some(&live), None)
+        .expect("loading the worktree row should succeed")
+        .expect("the worktree row should exist");
+    assert_eq!(
+        projection.scopes.get(&live).map(|state| state.status),
+        Some(ScopeStatus::Active),
+        "abandoning one scope must not abandon an unrelated scope that is legitimately live"
+    );
+
+    let stale_projection = store
+        .load_worktree(&worktree_id, Some(&stale), None)
+        .expect("loading the worktree row should succeed")
+        .expect("the worktree row should exist");
+    assert_eq!(
+        stale_projection
+            .scopes
+            .get(&stale)
+            .map(|state| state.status),
+        Some(ScopeStatus::Abandoned),
+        "only the named scope may be abandoned"
+    );
+}
+
+#[test]
+fn abandoning_a_scope_through_another_worktrees_checkout_is_rejected_without_writing() {
+    let repo = LinkedTestRepo::new("public-abandon-wrong-checkout");
+    let ok_db = || repo.open_db();
+
+    let main = coordinate(&repo.main_root, &RuntimeBoundary::Flush, ok_db)
+        .expect("the main worktree should materialize");
+    let linked = coordinate(&repo.linked_root, &RuntimeBoundary::Flush, ok_db)
+        .expect("the linked worktree should materialize");
+    assert_ne!(main.worktree_id, linked.worktree_id);
+
+    let scope = ScopeId("scope-on-main".to_string());
+    let started = coordinate(
+        &repo.main_root,
+        &RuntimeBoundary::Start {
+            scope: scope.clone(),
+            event: EventId("evt-main-start".to_string()),
+            actor_kind: ActorKind::ClaudeCode,
+        },
+        ok_db,
+    )
+    .expect("starting a scope on the main worktree should succeed");
+
+    let error = abandon_scope(&repo.linked_root, &scope, ok_db)
+        .expect_err("a scope may only be abandoned through its own checkout");
+    match &error {
+        AbandonScopeError::WorktreeIdentityMismatch {
+            scope: rejected,
+            scope_worktree_id,
+            invoking_worktree_id,
+        } => {
+            assert_eq!(rejected, &scope);
+            assert_eq!(scope_worktree_id, &main.worktree_id);
+            assert_eq!(invoking_worktree_id, &linked.worktree_id);
+        }
+        other => panic!("expected WorktreeIdentityMismatch, got {other:?}"),
+    }
+
+    let db = repo.db();
+    let store = MutationTraceStore::new(&db);
+    let main_projection = store
+        .load_worktree(&main.worktree_id, Some(&scope), None)
+        .expect("loading the main worktree row should succeed")
+        .expect("the main worktree row should exist");
+    assert_eq!(
+        main_projection.worktree_state.revision, started.revision,
+        "a rejected cross-checkout abandonment may not advance the target worktree's revision"
+    );
+    assert_eq!(
+        main_projection.scopes.get(&scope).map(|state| state.status),
+        Some(ScopeStatus::Active),
+        "the target scope must stay Active after the rejection"
+    );
+
+    let linked_projection = store
+        .load_worktree(&linked.worktree_id, None, None)
+        .expect("loading the linked worktree row should succeed")
+        .expect("the linked worktree row should exist");
+    assert_eq!(
+        linked_projection.worktree_state.revision, linked.revision,
+        "a rejected cross-checkout abandonment may not advance the invoking worktree's revision"
+    );
+
+    let linked_git_dir = resolve_git_dir(&repo.linked_root).expect("linked git dir should resolve");
+    assert!(
+        ExternalTaintMarker::new(&linked_git_dir)
+            .exists()
+            .expect("marker existence should resolve"),
+        "a failed abandonment leaves the invoking worktree's fence armed for the next recovery"
+    );
+    let main_git_dir = resolve_git_dir(&repo.main_root).expect("main git dir should resolve");
+    assert!(
+        !ExternalTaintMarker::new(&main_git_dir)
+            .exists()
+            .expect("marker existence should resolve"),
+        "the rejection touched only the invoking worktree's fence"
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn a_real_thread_cas_race_settles_on_the_competitors_terminal_status() {
+    let repo = TestRepo::new("public-abandon-cas-race");
+    let ok_db = || repo.open_db();
+
+    let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .expect("the baseline observation should materialize the worktree");
+    let worktree_id = baseline.worktree_id.clone();
+
+    let scope = ScopeId("scope-raced".to_string());
+    coordinate(
+        &repo.repo_root,
+        &RuntimeBoundary::Start {
+            scope: scope.clone(),
+            event: EventId("evt-race-start".to_string()),
+            actor_kind: ActorKind::ClaudeCode,
+        },
+        ok_db,
+    )
+    .expect("starting the raced scope should succeed");
+
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let (closed_tx, closed_rx) = mpsc::channel::<u64>();
+    let competitor_db_path = repo.db_path.clone();
+    let competitor_worktree = worktree_id.clone();
+    let competitor_scope = scope.clone();
+    let competitor = thread::spawn(move || {
+        release_rx
+            .recv()
+            .expect("the abandoning thread should release the competitor");
+        let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&competitor_db_path)
+            .expect("the competing writer should open its own DB handle");
+        let store = MutationTraceStore::new(&db);
+        let boundary = Boundary::Close {
+            scope: competitor_scope.clone(),
+            event: EventId("evt-race-close".to_string()),
+        };
+        let scope_ref = boundary_scope(&boundary);
+        let event_key = boundary_event_key(&boundary);
+        let projection = store
+            .load_worktree(&competitor_worktree, scope_ref.as_ref(), event_key.as_ref())
+            .expect("the competitor's load should succeed")
+            .expect("the worktree row should exist");
+        let state = projection.into_protocol_state();
+        let observed_tree = state
+            .worktrees
+            .get(&competitor_worktree)
+            .expect("the competitor's worktree state should be present")
+            .cursor_tree
+            .clone();
+        let attempt = AttemptId("attempt-competing-close".to_string());
+        let prepared = protocol::prepare(&state, attempt.clone(), boundary, observed_tree);
+        let outcome = protocol::commit(&prepared, &attempt);
+        let transition = DurableTransition::between(&state, &outcome.state, &competitor_worktree)
+            .expect("the competitor's transition should diff")
+            .expect("a Close must produce a durable transition");
+        assert!(
+            matches!(
+                store
+                    .commit(&transition)
+                    .expect("the competitor's commit should run"),
+                CasResult::Applied
+            ),
+            "the competitor wins the race while the abandonment is still between load and commit"
+        );
+        let revision = outcome
+            .state
+            .worktrees
+            .get(&competitor_worktree)
+            .expect("the competitor's committed worktree state should be present")
+            .revision;
+        closed_tx
+            .send(revision)
+            .expect("the abandoning thread should still be waiting");
+    });
+
+    let mut release_tx = Some(release_tx);
+    let mut competitor_revision = None;
+    let settled = abandon_scope_inner(&repo.repo_root, &scope, ok_db, |attempt| {
+        if attempt == 0 {
+            release_tx
+                .take()
+                .expect("the competitor is released exactly once")
+                .send(())
+                .expect("the competitor thread should still be listening");
+            competitor_revision = Some(
+                closed_rx
+                    .recv()
+                    .expect("the competitor should report its committed revision"),
+            );
+        }
+    })
+    .expect("a lost CAS against a competing Close should settle, not fail");
+    let competitor_revision =
+        competitor_revision.expect("the competitor must have run on the first attempt");
+    competitor
+        .join()
+        .expect("the competing writer thread should not panic");
+
+    assert_eq!(
+        settled,
+        AbandonScopeOutcome::AlreadyTerminal {
+            worktree_id: worktree_id.clone(),
+            scope: scope.clone(),
+            status: ScopeStatus::Closed,
+            revision: competitor_revision,
+        },
+        "the retry must settle on the competitor's terminal status rather than abandon again"
+    );
+
+    let db = repo.db();
+    let store = MutationTraceStore::new(&db);
+    let projection = store
+        .load_worktree(&worktree_id, Some(&scope), None)
+        .expect("loading the worktree row should succeed")
+        .expect("the worktree row should exist");
+    assert_eq!(
+        projection.scopes.get(&scope).map(|state| state.status),
+        Some(ScopeStatus::Closed),
+        "a competitor's durable Close must never be overwritten by a second abandonment"
+    );
+    assert_eq!(
+        projection.worktree_state.revision, competitor_revision,
+        "the settled no-op writes nothing, so the revision stays at the competitor's"
     );
 }
