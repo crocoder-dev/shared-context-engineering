@@ -47,6 +47,14 @@ externalTaint: Set[WorktreeId]
 
 `externalTaint` is the abstract external durability boundary: conceptually, the filesystem `TAINTED` marker that can survive an unavailable database. It is not a database row and does not model marker paths or filesystem syscalls. Its concrete refinement in the CLI is the worktree-local marker file `<git-dir>/sce/mutation-cursor-tainted`, armed write-ahead at the start of the protected runtime section — before Agent Trace DB acquisition — and cleared only after a proven durable completion; it becomes protocol `externalTaint` (overlaid onto `databaseFailure` recovery) only when a later invocation inherits it. If that trailing clear fails *after* the boundary has committed durably, the CLI keeps the marker armed and returns the committed outcome inside a distinct error rather than reporting a boundary failure, so the next invocation still recovers conservatively. See `context/cli/mutation-trace-external-taint.md`.
 
+The SCE-owned Git snapshot refs that protect durable cursor/evidence trees
+(`refs/sce/mutation-cursor/<worktree-id>/<tree-sha>`) are **never modeled**.
+They are reclaimed by an imperative per-worktree maintenance pass that deletes
+only a ref whose tree is a durable root of no worktree in the repository; that
+pass deletes **only SCE's own refs, never Git objects directly**, and Git
+performs object garbage collection itself on its normal schedule. See
+`context/cli/mutation-trace-ref-reconciliation.md`.
+
 Thus the model does **not** perform this contradictory transition:
 
 ```text
