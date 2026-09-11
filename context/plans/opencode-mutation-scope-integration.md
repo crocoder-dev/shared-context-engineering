@@ -451,7 +451,7 @@ How this plan is proven complete. Each criterion is observable and names the
 check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation.
 
-- [ ] AC1: Exact OpenCode lifecycle evidence exists for the runtime/API version
+- [x] AC1: Exact OpenCode lifecycle evidence exists for the runtime/API version
   this integration supports, covering success, failure, permission rejection,
   interruption, concurrency, subagents, model identity, plugin ordering,
   synchronous plugin execution-barrier behavior, and process/session
@@ -464,77 +464,77 @@ performs final validation.
     failure, and earlier-plugin-failure execution-barrier properties are each
     recorded `PROVEN`.
 
-- [ ] AC2: `bash`, `write`, `edit`, and `apply_patch` each create one
+- [x] AC2: `bash`, `write`, `edit`, and `apply_patch` each create one
   independently identified mutation scope when their proven Start boundary is
   reached.
   - Validate: targeted adapter/plugin tests plus real temporary-worktree tests
     for all four tools (`cargo test -p sce opencode_mutation_scope`).
 
-- [ ] AC3: `task`, MCP, custom tools, unknown tools, and known non-mutating
+- [x] AC3: `task`, MCP, custom tools, unknown tools, and known non-mutating
   tools create no mutation-scope state or runtime Start.
   - Validate: zero-footprint classification tests covering representative
     inputs (`cargo test -p sce opencode_mutation_scope::classify`).
 
-- [ ] AC4: an OpenCode mutation scope cannot produce positive attribution before
+- [x] AC4: an OpenCode mutation scope cannot produce positive attribution before
   its own confirming successful Close boundary.
   - Validate: Rust protocol tests in
     `cli/src/services/mutation_trace/tests.rs` and Quint invariants in
     `spec/mutation_cursor.qnt` for an unconfirmed OpenCode scope.
 
-- [ ] AC5: an unconfirmed OpenCode scope suppresses positive attribution at
+- [x] AC5: an unconfirmed OpenCode scope suppresses positive attribution at
   Claude, Codex, Pi, Flush, or another OpenCode scope's boundary.
   - Validate: protocol/runtime cross-harness tests plus Quint deterministic
     scenarios (`nix run .#quint -- test spec/mutation_cursor.qnt`).
 
-- [ ] AC6: a successful `Close(OpenCode A)` can produce `AiExclusive(A)` when A
+- [x] AC6: a successful `Close(OpenCode A)` can produce `AiExclusive(A)` when A
   is the only live scope and `AiContended` when all other live scopes are
   already confirmation-safe.
   - Validate: protocol/runtime tests plus Quint reachability witnesses in
     `spec/mutation_cursor.qnt`.
 
-- [ ] AC7: permission rejection or tool failure after OpenCode Start cannot
+- [x] AC7: permission rejection or tool failure after OpenCode Start cannot
   create false positive AI attribution, even if terminal cleanup is delayed.
   - Validate: failure-path regression with a mutation/other-harness boundary
     occurring before cleanup arrives.
 
-- [ ] AC8: legitimate parallel OpenCode executions remain separate live scopes
+- [x] AC8: legitimate parallel OpenCode executions remain separate live scopes
   and are never retired merely because another tool starts in the same session.
   - Validate: parallel-attempt adapter/runtime regression derived from T01
     evidence.
 
-- [ ] AC9: Bash uses a post-permission/pre-process Start boundary if T01
+- [x] AC9: Bash uses a post-permission/pre-process Start boundary if T01
   confirms the `shell.env` ordering; rejected Bash commands create no scope.
   - Validate: live fixture and plugin regression asserting ordering and zero
     Start on rejected Bash.
 
-- [ ] AC10: OpenCode Start provenance stores `oc_<sessionID>` and the exact
+- [x] AC10: OpenCode Start provenance stores `oc_<sessionID>` and the exact
   observed normalized model when available; unavailable model evidence produces
   `NULL` rather than an inferred value.
   - Validate: DB-level provenance tests against a real repository Agent Trace DB
     plus the resulting Agent Trace regression.
 
-- [ ] AC11: existing OpenCode Agent Trace and Bash policy behavior remains
+- [x] AC11: existing OpenCode Agent Trace and Bash policy behavior remains
   unchanged.
   - Validate: existing `config-lib-bun-tests` plus targeted regressions for
     `config/lib/agent-trace-plugin/` and `config/lib/bash-policy-plugin/`.
 
-- [ ] AC12: the generated mutation-scope plugin is the final OpenCode plugin
+- [x] AC12: the generated mutation-scope plugin is the final OpenCode plugin
   after setup merging, including configurations containing arbitrary user
   plugins, and doctor detects an ordering violation.
   - Validate: Pkl generation tests (`nix run .#pkl-check-generated`) plus
     `config_merge` / doctor fixtures.
 
-- [ ] AC13: `IneligibleUnscoped` OpenCode intervals never enter
+- [x] AC13: `IneligibleUnscoped` OpenCode intervals never enter
   `mutation_ai_patch`; confirmed exclusive OpenCode evidence does.
   - Validate: production mutation-attribution Git/DB tests in
     `cli/src/services/hooks/mod.rs`.
 
-- [ ] AC14: no Agent Trace schema change or new mutation-trace SQL migration is
+- [x] AC14: no Agent Trace schema change or new mutation-trace SQL migration is
   introduced.
   - Validate: `git diff origin/mutation-scope-provenance -- config/schema/agent-trace.schema.json cli/migrations/agent-trace-repository/`
     is empty.
 
-- [ ] AC15: the protocol/Quint diff is limited to replacing Codex-specific
+- [x] AC15: the protocol/Quint diff is limited to replacing Codex-specific
   confirmation logic with the generalized confirmation-required actor rule and
   its OpenCode cases.
   - Validate: inspect the branch diff for `spec/mutation_cursor.qnt`,
@@ -1829,3 +1829,53 @@ before the first load-bearing probe.
   load-bearing probe; the open Dependabot bump does not change that — changing
   either version after probing begins is a deliberate replan-and-reprobe step,
   not an open question.
+
+## Validation Report
+
+**Status:** validated
+**Date:** 2026-09-11
+
+### Commands run
+
+- `nix run .#quint -- typecheck spec/mutation_cursor.qnt` -> exit 0 (specification typechecked)
+- `nix run .#quint -- test spec/mutation_cursor.qnt` -> exit 0 (deterministic Quint scenarios passed)
+- `nix build .#checks.x86_64-linux.mutation-trace-quint-connect` -> exit 0 (deep Rust/Quint refinement check passed)
+- `nix run .#pkl-check-generated` -> exit 0 (142 generated files matched; inventory `2e62b83d7568197c4ef02e518d30c11c38247e37505b84c2c109ae0277d1e2ef`)
+- `nix flake check` -> exit 0 (all configured x86_64-linux checks passed)
+- `git diff --check` -> exit 0 (no whitespace errors)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml opencode_mutation_scope` -> exit 0 (91 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` -> exit 0 (370 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::` -> exit 0 (622 passed, 1 ignored)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml classification` -> exit 0 (4 classification tests passed, including both OpenCode classification tests)
+- `nix run nixpkgs#bun -- test config/lib` -> exit 0 (26 passed)
+- `for file in cli/src/services/hooks/opencode_mutation_scope/fixtures/captures/*.jsonl; do nix run nixpkgs#jq -- -c . "$file" >/dev/null || exit 1; done` -> exit 0 (all 23 capture files contain valid JSONL)
+- `git diff origin/mutation-scope-provenance -- config/schema/agent-trace.schema.json cli/migrations/agent-trace-repository/` -> exit 0 (empty diff)
+- `git diff --name-status origin/mutation-scope-provenance -- spec/mutation_cursor.qnt spec/mutation_cursor.md cli/src/services/mutation_trace/protocol.rs cli/src/services/mutation_trace/mbt/` -> exit 0 (only the six expected protocol/model/refinement files changed)
+- `git diff --check && git status --short` -> exit 0 (final report diff is whitespace-clean; only this plan file is modified)
+
+### Success-criteria verification
+
+- [x] AC1: Exact pinned-version OpenCode lifecycle evidence covers the required matrix -> 23 valid captures plus `NOTES.md` dispositions for D1-D11; Probes A, B, and C are each `PROVEN`, with pinned v1.15.4 source citations where authorized.
+- [x] AC2: All four tracked tools create independent scopes at their proven boundaries -> the 91-test adapter suite covers all four classifications and lifecycle boundaries; real temporary-repository hooks regressions cover Bash, write/edit flows, and `apply_patch` through the production adapter, generic ingress, DB, and Agent Trace path.
+- [x] AC3: Delegation and untracked tools create zero mutation-scope footprint -> four focused classification tests plus lifecycle/runtime zero-footprint regressions passed.
+- [x] AC4: OpenCode attribution requires its own successful Close -> Rust mutation-trace tests passed and the Quint confirmation-required invariant/scenarios passed.
+- [x] AC5: Unconfirmed OpenCode scopes suppress other boundaries -> 370 mutation-trace tests, 622 hooks tests, and Quint scenarios passed.
+- [x] AC6: Confirmed OpenCode exclusive and contended outcomes remain reachable -> Rust regressions and Quint `HasOpenCodeConfirmedExclusiveEvidence` / `HasOpenCodeConfirmedContendedEvidence` witnesses passed.
+- [x] AC7: Rejected or failed executions cannot create false positive attribution -> failure/cleanup and concurrent-survivor regressions passed through runtime and production Git/DB paths.
+- [x] AC8: Parallel OpenCode calls stay separate -> adapter state, runtime, and production regressions passed; `parallel-forced.jsonl` records distinct overlapping call IDs.
+- [x] AC9: Bash starts at `shell.env` after permission and before spawn -> lifecycle/plugin regressions passed; rejected Bash and Probe B evidence show zero Start/spawn.
+- [x] AC10: Provenance stores `oc_<sessionID>` and observed model or NULL -> adapter and production Agent Trace DB regressions passed for model-present and model-absent cases.
+- [x] AC11: Existing Agent Trace and Bash policy behavior remains unchanged -> all 26 config-lib Bun tests and the full flake check passed.
+- [x] AC12: Mutation-scope plugin remains last and doctor detects violations -> setup/doctor tests passed through `nix flake check`; generated-output parity passed.
+- [x] AC13: Only confirmed exclusive OpenCode evidence reaches `mutation_ai_patch` -> production Git/DB hooks regressions passed.
+- [x] AC14: No schema or mutation-trace migration was introduced -> baseline diff over the named paths is empty.
+- [x] AC15: Protocol/Quint changes are bounded to generalized confirmation-required behavior and OpenCode cases -> baseline diff inspection found only the six expected protocol, model, documentation, and refinement files with no unrelated semantic change.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- Live OpenCode CLI `apply_patch` probing remains credential-blocked; pinned v1.15.4 source evidence establishes its lifecycle, while production adapter and temporary-repository regressions establish SCE behavior for the tool name.
+- The pre-existing aarch64-darwin `mutation-trace-quint-connect` runtime failure documented under T05 was not exercised by this x86_64-linux validation.
