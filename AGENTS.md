@@ -110,6 +110,17 @@ Run from repo root through Nix (do not call bare `bun` on the host). Working dir
 - Config/plugin validation from repo root: `nix develop -c sh -c 'cd config/lib/bash-policy-plugin && bun test'`
 - Generated-config validation from repo root: `nix run .#pkl-check-generated`
 
+### Reading SCE Turso databases
+
+- Use the Turso CLI packaged by this repository, not a host `sqlite3`, a generic nixpkgs Turso package, or another Turso version. `nix run .#turso -- --version` must report the version pinned in `flake.nix` (currently `0.7.0`).
+- Discover the active repository-scoped Agent Trace DB with `nix run .#sce -- doctor --format json` and read `agent_trace_db.path`. Do not guess the repository ID or inspect legacy `<state-root>/sce/agent-trace.db` / `agent-trace-<checkout-id>.db` files; active storage is `<state-root>/sce/repos/<repository-id>/agent-trace.db`.
+- Always enable Turso's multiprocess WAL coordination when opening an SCE database that may also be used by hooks or another agent process: `nix run .#turso -- --experimental-multiprocess-wal --readonly "<agent-trace-db-path>"`.
+- Prefer `--readonly` for inspection. Add a SQL argument for non-interactive reads, for example: `nix run .#turso -- --experimental-multiprocess-wal --readonly "<agent-trace-db-path>" "PRAGMA quick_check;"`.
+- Verify the connection before interpreting data: run `PRAGMA quick_check;` (expect `ok`), `PRAGMA journal_mode;` (expect `wal`), and `SELECT id, applied_at FROM __sce_migrations ORDER BY id;`.
+- Useful Agent Trace checks include `SELECT COUNT(*) FROM agent_traces;`, `SELECT COUNT(*) FROM messages;`, `SELECT COUNT(*) FROM parts;`, and `SELECT actor_kind, status, COUNT(*) FROM mutation_trace_scopes GROUP BY actor_kind, status;`.
+- Concurrent inspection processes may temporarily appear as active OpenCode `bash` mutation scopes because the query command itself is a tracked tool call. After the commands finish, `.git/sce/opencode-mutation-scope-state.json` should normally show `"attempts": []` and a clear recovery phase.
+- Do not copy only `agent-trace.db` for inspection while writers are active: committed data may still be represented through WAL state. Open the canonical path with `--experimental-multiprocess-wal`, or stop all writers before making a database snapshot.
+
 ### Ad-hoc tool examples (non-coreutils)
 
 - Ripgrep: `nix shell nixpkgs#ripgrep -c rg <pattern> <path>`
