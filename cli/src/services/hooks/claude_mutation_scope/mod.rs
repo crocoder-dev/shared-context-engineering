@@ -334,6 +334,10 @@ const EXPLICIT_BACKGROUND_SHELL_DENY_REASON: &str =
 
 const PRE_TOOL_USE_FAIL_CLOSED_EVENT: &str =
     "sce.hooks.claude_mutation_scope.pre_tool_use_fail_closed";
+const MODEL_STATE_UNAVAILABLE_EVENT: &str =
+    "sce.hooks.claude_mutation_scope.model_state_unavailable";
+
+type ClaudeModelStateResolver<'a> = &'a dyn Fn(&Path, &str, &str) -> Result<Option<String>>;
 
 fn log_pre_tool_use_fail_closed(logger: Option<&dyn Logger>, context: &str, error: &anyhow::Error) {
     if let Some(log) = logger {
@@ -356,56 +360,103 @@ pub(crate) fn run_claude_mutation_scope_from_payload(
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
     let resolve_git_dir_fn = |cwd: &str| checkout::resolve_git_dir(Path::new(cwd));
+    let model_state_resolver =
+        |repository_root: &Path, session_id: &str, agent_id: &str| -> Result<Option<String>> {
+            let db = super::open_agent_trace_db_for_hook_runtime(
+                repository_root,
+                "Failed to open Agent Trace DB for Claude mutation-scope model resolution.",
+            )?;
+            Ok(db
+                .claude_model_state_by_session_and_agent(session_id, agent_id)?
+                .map(|state| state.model_id))
+        };
     let seam_fn = |repository_root: &Path, payload: &str, logger: Option<&dyn Logger>| {
         super::mutation_scope::run_mutation_scope_from_payload(repository_root, payload, logger)
     };
 
-    run_claude_mutation_scope_from_payload_with(
+    run_claude_mutation_scope_from_payload_with_resolver(
         stdin_payload,
         logger,
         &resolve_git_dir_fn,
+        &model_state_resolver,
         &seam_fn,
     )
 }
 
 #[cfg(test)]
-fn run_claude_mutation_scope_from_payload_at_state_root(
+pub(crate) fn run_claude_mutation_scope_from_payload_at_state_root(
     state_root: &Path,
     stdin_payload: &str,
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
     let resolve_git_dir_fn = |cwd: &str| checkout::resolve_git_dir(Path::new(cwd));
+    let model_state_root = state_root.to_path_buf();
+    let seam_state_root = state_root.to_path_buf();
+    let model_state_resolver =
+        move |repository_root: &Path, session_id: &str, agent_id: &str| -> Result<Option<String>> {
+            let db = super::open_agent_trace_db_for_hook_runtime_at_state_root(
+                repository_root,
+                &model_state_root,
+                "Failed to open Agent Trace DB for Claude mutation-scope model resolution.",
+            )?;
+            Ok(db
+                .claude_model_state_by_session_and_agent(session_id, agent_id)?
+                .map(|state| state.model_id))
+        };
     let seam_fn = |repository_root: &Path, payload: &str, logger: Option<&dyn Logger>| {
         super::mutation_scope::run_mutation_scope_from_payload_at_state_root(
             repository_root,
-            state_root,
+            &seam_state_root,
             payload,
             logger,
         )
     };
 
-    run_claude_mutation_scope_from_payload_with(
+    run_claude_mutation_scope_from_payload_with_resolver(
         stdin_payload,
         logger,
         &resolve_git_dir_fn,
+        &model_state_resolver,
         &seam_fn,
     )
 }
 
+#[cfg(test)]
 fn run_claude_mutation_scope_from_payload_with(
     stdin_payload: &str,
     logger: Option<&dyn Logger>,
     resolve_git_dir: GitDirResolver,
     seam: IngressSeam,
 ) -> Result<String> {
+    let unavailable_model_state = |_repository_root: &Path,
+                                   _session_id: &str,
+                                   _agent_id: &str|
+     -> Result<Option<String>> { Ok(None) };
+    run_claude_mutation_scope_from_payload_with_resolver(
+        stdin_payload,
+        logger,
+        resolve_git_dir,
+        &unavailable_model_state,
+        seam,
+    )
+}
+
+fn run_claude_mutation_scope_from_payload_with_resolver(
+    stdin_payload: &str,
+    logger: Option<&dyn Logger>,
+    resolve_git_dir: GitDirResolver,
+    model_state_resolver: ClaudeModelStateResolver,
+    seam: IngressSeam,
+) -> Result<String> {
     let event = parse_claude_hook_event(stdin_payload)?;
-    dispatch_claude_hook_event(event, logger, resolve_git_dir, seam)
+    dispatch_claude_hook_event(event, logger, resolve_git_dir, model_state_resolver, seam)
 }
 
 fn dispatch_claude_hook_event(
     event: ClaudeHookEvent,
     logger: Option<&dyn Logger>,
     resolve_git_dir: GitDirResolver,
+    model_state_resolver: ClaudeModelStateResolver,
     seam: IngressSeam,
 ) -> Result<String> {
     match event {
@@ -413,6 +464,7 @@ fn dispatch_claude_hook_event(
             &execution,
             logger,
             resolve_git_dir,
+            model_state_resolver,
             seam,
         )),
         ClaudeHookEvent::PostToolUse(identity) | ClaudeHookEvent::PostToolUseFailure(identity) => {
@@ -483,6 +535,7 @@ fn handle_pre_tool_use(
     execution: &ClaudeToolExecution,
     logger: Option<&dyn Logger>,
     resolve_git_dir: GitDirResolver,
+    model_state_resolver: ClaudeModelStateResolver,
     seam: IngressSeam,
 ) -> String {
     let identity = &execution.identity;
@@ -514,7 +567,14 @@ fn handle_pre_tool_use(
         return pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON);
     }
 
-    match establish_start(&git_dir, repository_root, identity, logger, seam) {
+    match establish_start(
+        &git_dir,
+        repository_root,
+        identity,
+        logger,
+        model_state_resolver,
+        seam,
+    ) {
         Ok(()) => String::new(),
         Err(error) => {
             log_pre_tool_use_fail_closed(logger, "establish_start", &error);
@@ -574,12 +634,34 @@ fn establish_start(
     repository_root: &Path,
     identity: &ClaudeToolIdentity,
     logger: Option<&dyn Logger>,
+    model_state_resolver: ClaudeModelStateResolver,
     seam: IngressSeam,
 ) -> Result<()> {
     let allocated = state::allocate_attempt(git_dir, &identity.attempt_key(), &identity.tool_name)?;
     let scope_id = &allocated.attempt.scope_id;
-    let start_payload =
-        scope_boundary_payload("start", scope_id, &claude_scope_start_event_id(scope_id));
+    let canonical_session_id =
+        super::prefixed_diff_trace_session_id(super::CLAUDE_TOOL_NAME, &identity.session_id);
+    let agent_id = identity.agent_id.as_deref().unwrap_or("");
+    let model_id = match model_state_resolver(repository_root, &canonical_session_id, agent_id) {
+        Ok(model_id) => model_id.and_then(|model| super::normalize_claude_model_id(&model)),
+        Err(error) => {
+            if let Some(log) = logger {
+                log.warn(
+                    MODEL_STATE_UNAVAILABLE_EVENT,
+                    &error.to_string(),
+                    &[("agent_id", agent_id)],
+                    Some(&canonical_session_id),
+                );
+            }
+            None
+        }
+    };
+    let start_payload = scope_start_payload(
+        scope_id,
+        &claude_scope_start_event_id(scope_id),
+        &canonical_session_id,
+        model_id.as_deref(),
+    );
 
     seam(repository_root, &start_payload, logger)?;
     state::mark_active(git_dir, scope_id)?;
@@ -690,6 +772,25 @@ fn scope_boundary_payload(operation: &str, scope_id: &str, event_id: &str) -> St
         "scope_id": scope_id,
         "event_id": event_id,
         "actor_kind": ACTOR_KIND_CLAUDE_CODE,
+    })
+    .to_string()
+}
+
+fn scope_start_payload(
+    scope_id: &str,
+    event_id: &str,
+    session_id: &str,
+    model_id: Option<&str>,
+) -> String {
+    json!({
+        "operation": "start",
+        "scope_id": scope_id,
+        "event_id": event_id,
+        "actor_kind": ACTOR_KIND_CLAUDE_CODE,
+        "provenance": {
+            "session_id": session_id,
+            "model_id": model_id,
+        },
     })
     .to_string()
 }
@@ -1370,7 +1471,7 @@ mod tests {
     }
 
     mod driver {
-        use std::cell::RefCell;
+        use std::cell::{Cell, RefCell};
         use std::path::PathBuf;
         use std::sync::atomic::{AtomicU64, Ordering};
         use std::sync::{Arc, Mutex};
@@ -1433,6 +1534,22 @@ mod tests {
             move |_cwd| Ok(git_dir.clone())
         }
 
+        fn start_with_model_resolver(
+            payload: &str,
+            logger: Option<&dyn Logger>,
+            resolve_git_dir: GitDirResolver,
+            model_state_resolver: ClaudeModelStateResolver,
+            seam: IngressSeam,
+        ) -> Result<String> {
+            run_claude_mutation_scope_from_payload_with_resolver(
+                payload,
+                logger,
+                resolve_git_dir,
+                model_state_resolver,
+                seam,
+            )
+        }
+
         #[derive(Clone, Default)]
         struct RecordingLogger {
             warnings: Arc<Mutex<Vec<(String, String)>>>,
@@ -1475,6 +1592,176 @@ mod tests {
             );
             object.insert(CWD_FIELD.to_string(), Value::String(cwd.to_string()));
             Value::Object(object).to_string()
+        }
+
+        #[test]
+        fn pre_tool_use_resolves_main_and_subagent_model_state_exactly_at_admission() {
+            let git_dir = unique_test_git_dir("model-state-admission");
+            let git_dir_resolver = fixed_resolver(git_dir.clone());
+            let resolver_calls: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
+            let model_state_resolver = |_: &Path, session_id: &str, agent_id: &str| {
+                resolver_calls
+                    .borrow_mut()
+                    .push((session_id.to_string(), agent_id.to_string()));
+                Ok(Some(if agent_id.is_empty() {
+                    "claude/sonnet".to_string()
+                } else {
+                    "claude/opus".to_string()
+                }))
+            };
+            let starts: RefCell<Vec<Value>> = RefCell::new(Vec::new());
+            let seam =
+                |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| -> Result<String> {
+                    let value: Value = serde_json::from_str(payload).expect("payload is JSON");
+                    if value.get("operation") == Some(&Value::String("start".to_string())) {
+                        starts.borrow_mut().push(value);
+                    }
+                    Ok(String::new())
+                };
+
+            let main_payload = pre_tool_use_json(&[]);
+            let subagent_payload = pre_tool_use_json(&[
+                (
+                    TOOL_USE_ID_FIELD,
+                    Value::String("toolu_subagent".to_string()),
+                ),
+                (AGENT_ID_FIELD, Value::String("agent-1".to_string())),
+            ]);
+            start_with_model_resolver(
+                &main_payload,
+                None,
+                &git_dir_resolver,
+                &model_state_resolver,
+                &seam,
+            )
+            .expect("main-agent Start should succeed");
+            start_with_model_resolver(
+                &subagent_payload,
+                None,
+                &git_dir_resolver,
+                &model_state_resolver,
+                &seam,
+            )
+            .expect("subagent Start should succeed");
+
+            assert_eq!(
+                resolver_calls.into_inner(),
+                vec![
+                    ("cc_session-1".to_string(), String::new()),
+                    ("cc_session-1".to_string(), "agent-1".to_string()),
+                ]
+            );
+            let starts = starts.into_inner();
+            assert_eq!(starts.len(), 2);
+            assert_eq!(
+                starts[0]["provenance"],
+                json!({"session_id": "cc_session-1", "model_id": "claude/sonnet"})
+            );
+            assert_eq!(
+                starts[1]["provenance"],
+                json!({"session_id": "cc_session-1", "model_id": "claude/opus"})
+            );
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn subagent_without_exact_model_state_does_not_inherit_main_model() {
+            let git_dir = unique_test_git_dir("subagent-model-state-missing");
+            let git_dir_resolver = fixed_resolver(git_dir.clone());
+            let starts: RefCell<Vec<Value>> = RefCell::new(Vec::new());
+            let model_state_resolver = |_: &Path, _: &str, agent_id: &str| {
+                Ok(if agent_id.is_empty() {
+                    Some("claude/sonnet".to_string())
+                } else {
+                    None
+                })
+            };
+            let seam =
+                |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| -> Result<String> {
+                    starts
+                        .borrow_mut()
+                        .push(serde_json::from_str(payload).expect("payload is JSON"));
+                    Ok(String::new())
+                };
+
+            for (tool_use_id, agent_id) in
+                [("toolu_main", None), ("toolu_subagent", Some("agent-1"))]
+            {
+                let overrides = agent_id
+                    .map(|agent_id| vec![(AGENT_ID_FIELD, Value::String(agent_id.to_string()))])
+                    .unwrap_or_default();
+                let mut overrides = overrides;
+                overrides.push((TOOL_USE_ID_FIELD, Value::String(tool_use_id.to_string())));
+                let payload = pre_tool_use_json(&overrides);
+                start_with_model_resolver(
+                    &payload,
+                    None,
+                    &git_dir_resolver,
+                    &model_state_resolver,
+                    &seam,
+                )
+                .expect("both Starts should succeed");
+            }
+
+            let starts = starts.into_inner();
+            assert_eq!(starts.len(), 2);
+            assert_eq!(starts[0]["provenance"]["model_id"], "claude/sonnet");
+            assert_eq!(starts[1]["provenance"]["session_id"], "cc_session-1");
+            assert_eq!(starts[1]["provenance"]["model_id"], Value::Null);
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn missing_or_failed_model_resolution_keeps_session_provenance_and_allows_start() {
+            let git_dir = unique_test_git_dir("model-state-unavailable");
+            let git_dir_resolver = fixed_resolver(git_dir.clone());
+            let starts: RefCell<Vec<Value>> = RefCell::new(Vec::new());
+            let seam =
+                |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| -> Result<String> {
+                    starts
+                        .borrow_mut()
+                        .push(serde_json::from_str(payload).expect("payload is JSON"));
+                    Ok(String::new())
+                };
+            let response_index = Cell::new(0);
+            let model_state_resolver = |_: &Path, _: &str, _: &str| -> Result<Option<String>> {
+                let index = response_index.get();
+                response_index.set(index + 1);
+                if index == 0 {
+                    Ok(None)
+                } else {
+                    Err(anyhow!("local model-state DB is unavailable"))
+                }
+            };
+
+            for tool_use_id in ["toolu_missing", "toolu_failed"] {
+                let payload = pre_tool_use_json(&[(
+                    TOOL_USE_ID_FIELD,
+                    Value::String(tool_use_id.to_string()),
+                )]);
+                let output = start_with_model_resolver(
+                    &payload,
+                    None,
+                    &git_dir_resolver,
+                    &model_state_resolver,
+                    &seam,
+                )
+                .expect("model unavailability must not fail Start");
+                assert_eq!(output, "");
+            }
+
+            let starts = starts.into_inner();
+            assert_eq!(starts.len(), 2);
+            for start in starts {
+                assert_eq!(
+                    start["provenance"],
+                    json!({"session_id": "cc_session-1", "model_id": null})
+                );
+            }
+
+            remove_test_git_dir(&git_dir);
         }
 
         #[test]
@@ -2661,6 +2948,7 @@ mod tests {
 
         use super::*;
         use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
+        use crate::services::agent_trace_db::{ClaudeModelStateObservation, ObservationKind};
         use crate::services::agent_trace_storage::{
             resolve_agent_trace_storage_at_state_root, AgentTraceStorageContext,
         };
@@ -2875,6 +3163,25 @@ mod tests {
                 },
             )
             .expect("scope query should succeed")
+            .into_iter()
+            .next()
+        }
+
+        fn scope_provenance(
+            db: &RepositoryAgentTraceDb,
+            scope_id: &str,
+        ) -> Option<(String, Option<String>)> {
+            db.query_map(
+                "SELECT session_id, model_id FROM mutation_trace_scope_provenance \
+                 WHERE scope_id = ?1",
+                (scope_id,),
+                |row| {
+                    let session_id = row.get::<String>(0).map_err(anyhow::Error::from)?;
+                    let model_id = row.get::<Option<String>>(1).map_err(anyhow::Error::from)?;
+                    Ok((session_id, model_id))
+                },
+            )
+            .expect("scope-provenance query should succeed")
             .into_iter()
             .next()
         }
@@ -3876,6 +4183,57 @@ mod tests {
             assert_eq!(count(&db, "mutation_trace_events"), 0);
 
             assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test18_model_switch_does_not_rewrite_scope_provenance() {
+            let repo = ClaudeRepo::new("model-switch-provenance");
+            let session_id = "session-model-switch";
+            let db = repo.db();
+            db.upsert_claude_model_state(ClaudeModelStateObservation {
+                session_id: "cc_session-model-switch".to_string(),
+                agent_id: String::new(),
+                model_id: "claude/sonnet".to_string(),
+                observation_kind: ObservationKind::SessionStart,
+                source: "test".to_string(),
+                observed_at_ms: 1,
+            })
+            .expect("initial Claude model state should persist");
+
+            let pre_payload =
+                pre_tool_use_for(&repo.cwd(), session_id, "Bash", "toolu_model_switch", None);
+            repo.drive(&pre_payload)
+                .expect("initial PreToolUse should establish a scope");
+            let scope_id = repo
+                .adapter_state()
+                .attempts
+                .first()
+                .expect("the scope should remain live")
+                .scope_id
+                .clone();
+            let before = scope_provenance(&repo.db(), &scope_id);
+            assert_eq!(
+                before,
+                Some((
+                    "cc_session-model-switch".to_string(),
+                    Some("claude/sonnet".to_string()),
+                ))
+            );
+
+            repo.db()
+                .upsert_claude_model_state(ClaudeModelStateObservation {
+                    session_id: "cc_session-model-switch".to_string(),
+                    agent_id: String::new(),
+                    model_id: "claude/opus".to_string(),
+                    observation_kind: ObservationKind::PostModelSwitch,
+                    source: "test".to_string(),
+                    observed_at_ms: 2,
+                })
+                .expect("model switch should persist");
+            repo.drive(&pre_payload)
+                .expect("replayed PreToolUse should remain idempotent");
+
+            assert_eq!(scope_provenance(&repo.db(), &scope_id), before);
         }
 
         #[test]

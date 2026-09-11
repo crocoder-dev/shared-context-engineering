@@ -13,6 +13,9 @@ use crate::services::checkout;
 use crate::services::hooks::codex::bash_policy::{
     bash_command_from_tool_input, evaluate_codex_bash_policy, CodexBashPolicyDecision,
 };
+use crate::services::hooks::{
+    normalize_codex_model_id, prefixed_diff_trace_session_id, CODEX_TOOL_NAME,
+};
 use crate::services::observability::traits::Logger;
 
 use boundary_lock::{AdapterBoundaryLock, DEFAULT_BOUNDARY_LOCK_TIMEOUT};
@@ -23,6 +26,8 @@ const TURN_ID_FIELD: &str = "turn_id";
 const CWD_FIELD: &str = "cwd";
 const AGENT_ID_FIELD: &str = "agent_id";
 const AGENT_TYPE_FIELD: &str = "agent_type";
+const MODEL_FIELD: &str = "model";
+const PROVENANCE_FIELD: &str = "provenance";
 const TOOL_NAME_FIELD: &str = "tool_name";
 const TOOL_USE_ID_FIELD: &str = "tool_use_id";
 const TOOL_INPUT_FIELD: &str = "tool_input";
@@ -74,6 +79,7 @@ impl CodexToolIdentity {
 pub(crate) struct CodexToolExecution {
     pub identity: CodexToolIdentity,
     pub agent_type: Option<String>,
+    pub model: Option<String>,
     pub tool_input: Option<Value>,
 }
 
@@ -198,6 +204,7 @@ fn parse_pre_tool_use(object: &Map<String, Value>) -> Result<CodexToolExecution>
     Ok(CodexToolExecution {
         identity: parse_tool_identity(object)?,
         agent_type: optional_non_blank_str(object, AGENT_TYPE_FIELD)?,
+        model: tolerated_model(object),
         tool_input: object.get(TOOL_INPUT_FIELD).cloned(),
     })
 }
@@ -273,6 +280,13 @@ fn optional_non_blank_str(object: &Map<String, Value>, field: &str) -> Result<Op
     }
 }
 
+fn tolerated_model(object: &Map<String, Value>) -> Option<String> {
+    object
+        .get(MODEL_FIELD)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
 fn validation_error(detail: &str) -> String {
     format!("Invalid Codex hook event payload from STDIN: {detail}.")
 }
@@ -284,6 +298,22 @@ type IngressSeam<'a> = &'a dyn Fn(&Path, &str, Option<&dyn Logger>) -> Result<St
 type BashPolicyEvaluator<'a> = &'a dyn Fn(&Path, &str) -> Result<CodexBashPolicyDecision>;
 
 const ACTOR_KIND_CODEX: &str = "codex";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CodexScopeProvenance {
+    pub session_id: String,
+    pub model_id: Option<String>,
+}
+
+fn codex_scope_provenance(execution: &CodexToolExecution) -> CodexScopeProvenance {
+    CodexScopeProvenance {
+        session_id: prefixed_diff_trace_session_id(CODEX_TOOL_NAME, &execution.identity.session_id),
+        model_id: execution
+            .model
+            .as_deref()
+            .and_then(normalize_codex_model_id),
+    }
+}
 
 const FAIL_CLOSED_DENY_REASON: &str =
     "SCE could not establish mutation attribution for this tool execution.";
@@ -329,7 +359,7 @@ pub(crate) fn run_codex_mutation_scope_from_payload(
 }
 
 #[cfg(test)]
-fn run_codex_mutation_scope_from_payload_at_state_root(
+pub(crate) fn run_codex_mutation_scope_from_payload_at_state_root(
     state_root: &Path,
     stdin_payload: &str,
     logger: Option<&dyn Logger>,
@@ -526,6 +556,7 @@ fn handle_pre_tool_use(
 
     let key = identity.attempt_key();
     let turn_id = identity.turn_id.as_str();
+    let provenance = codex_scope_provenance(execution);
     let outcome = with_boundary_lock(&git_dir, || {
         state::normalize_recovery_after_boundary_lock_acquired(&git_dir)?;
 
@@ -541,7 +572,14 @@ fn handle_pre_tool_use(
             seam,
         )? {
             Admission::Admitted(allocated) => {
-                establish_start(&git_dir, repository_root, &allocated, logger, seam)?;
+                establish_start(
+                    &git_dir,
+                    repository_root,
+                    &allocated,
+                    &provenance,
+                    logger,
+                    seam,
+                )?;
                 Ok(PreToolUseOutcome::Continue)
             }
             Admission::Denied => Ok(PreToolUseOutcome::Deny),
@@ -670,6 +708,7 @@ fn establish_start(
     git_dir: &Path,
     repository_root: &Path,
     allocated: &state::AllocatedAttempt,
+    provenance: &CodexScopeProvenance,
     logger: Option<&dyn Logger>,
     seam: IngressSeam,
 ) -> Result<()> {
@@ -680,7 +719,7 @@ fn establish_start(
     }
 
     let start_payload =
-        scope_boundary_payload("start", scope_id, &codex_scope_start_event_id(scope_id));
+        scope_start_payload(scope_id, &codex_scope_start_event_id(scope_id), provenance);
 
     seam(repository_root, &start_payload, logger)?;
     state::mark_active(git_dir, scope_id)?;
@@ -770,6 +809,24 @@ fn scope_boundary_payload(operation: &str, scope_id: &str, event_id: &str) -> St
         "scope_id": scope_id,
         "event_id": event_id,
         "actor_kind": ACTOR_KIND_CODEX,
+    })
+    .to_string()
+}
+
+fn scope_start_payload(
+    scope_id: &str,
+    event_id: &str,
+    provenance: &CodexScopeProvenance,
+) -> String {
+    json!({
+        "operation": "start",
+        "scope_id": scope_id,
+        "event_id": event_id,
+        "actor_kind": ACTOR_KIND_CODEX,
+        PROVENANCE_FIELD: {
+            "session_id": provenance.session_id,
+            "model_id": provenance.model_id,
+        },
     })
     .to_string()
 }
@@ -1036,6 +1093,65 @@ mod tests {
         );
         assert!(execution.identity.is_subagent());
         assert_eq!(execution.agent_type.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn ac3_pre_tool_use_fixtures_retain_the_codex_model() {
+        for fixture in [
+            PROBE01_SHELL_PRE,
+            PROBE01_APPLY_PATCH_PRE,
+            PROBE05_SHELL_PRE,
+            PROBE08_AGENT_APPLY_PATCH_PRE,
+        ] {
+            assert_eq!(pre_tool_use(fixture).model.as_deref(), Some("gpt-5.6-sol"));
+        }
+    }
+
+    #[test]
+    fn ac3_scope_provenance_canonicalizes_the_session_and_normalizes_the_model() {
+        let provenance = codex_scope_provenance(&pre_tool_use(PROBE01_SHELL_PRE));
+        assert_eq!(
+            provenance.session_id,
+            "cx_01a07c1e-e08e-7172-8032-cb9d62af21d9"
+        );
+        assert_eq!(provenance.model_id.as_deref(), Some("gpt-5.6-sol"));
+
+        let apply_patch = codex_scope_provenance(&pre_tool_use(PROBE01_APPLY_PATCH_PRE));
+        assert_eq!(apply_patch, provenance);
+    }
+
+    #[test]
+    fn ac3_scope_provenance_keeps_an_already_prefixed_session_id() {
+        let execution = pre_tool_use(&pre_tool_use_json(&[(
+            SESSION_ID_FIELD,
+            Value::String("cx_session-1".to_string()),
+        )]));
+        assert_eq!(
+            codex_scope_provenance(&execution).session_id,
+            "cx_session-1"
+        );
+    }
+
+    #[test]
+    fn ac3_an_unusable_model_yields_no_model_id_without_rejecting_the_event() {
+        for model in [
+            Value::Null,
+            Value::String(String::new()),
+            Value::String("   ".to_string()),
+            Value::Bool(true),
+            json!(7),
+            json!({ "id": "gpt-5.6-sol" }),
+        ] {
+            let payload = pre_tool_use_json(&[(MODEL_FIELD, model.clone())]);
+            let execution = pre_tool_use(&payload);
+            let provenance = codex_scope_provenance(&execution);
+            assert_eq!(provenance.model_id, None, "model {model:?}");
+            assert_eq!(provenance.session_id, "cx_session-1", "model {model:?}");
+        }
+
+        let absent = pre_tool_use(&pre_tool_use_json(&[]));
+        assert_eq!(absent.model, None);
+        assert_eq!(codex_scope_provenance(&absent).model_id, None);
     }
 
     #[test]
@@ -1615,6 +1731,96 @@ mod tests {
             let final_state = read_state(&git_dir);
             assert_eq!(final_state.attempts.len(), 1);
             assert_eq!(final_state.attempts[0].phase, state::AttemptPhase::Active);
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        fn boundary_payload_field(payload: &str, field: &str) -> Option<Value> {
+            let object: Map<String, Value> =
+                serde_json::from_str(payload).expect("a boundary payload is a JSON object");
+            object.get(field).cloned()
+        }
+
+        fn start_provenance(payload: &str) -> Value {
+            assert_eq!(
+                boundary_payload_field(payload, "operation"),
+                Some(Value::String("start".to_string()))
+            );
+            boundary_payload_field(payload, PROVENANCE_FIELD)
+                .expect("a Codex start payload carries provenance")
+        }
+
+        fn drive_recording_start(label: &str, payload: &str) -> Vec<String> {
+            let git_dir = unique_test_git_dir(label);
+            let resolver = fixed_resolver(git_dir.clone());
+            let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+            drive(payload, &resolver, &recording_seam(Arc::clone(&recorded)));
+
+            let calls = recorded.lock().expect("recording seam mutex").clone();
+            remove_test_git_dir(&git_dir);
+            calls
+        }
+
+        #[test]
+        fn ac3_tracked_start_carries_scope_provenance_for_both_tracked_tools() {
+            for tool in TRACKED_MUTATION_TOOL_NAMES {
+                let payload = pre_tool_use_json(&[
+                    (TOOL_NAME_FIELD, Value::String((*tool).to_string())),
+                    (MODEL_FIELD, Value::String("gpt-5.6-sol".to_string())),
+                ]);
+                let calls = drive_recording_start(&format!("provenance-{tool}"), &payload);
+
+                assert_eq!(calls.len(), 1, "{tool} should drive exactly one boundary");
+                assert_eq!(
+                    start_provenance(&calls[0]),
+                    json!({ "session_id": "cx_session-1", "model_id": "gpt-5.6-sol" }),
+                    "AC3: {tool} must carry its canonical session and normalized model"
+                );
+            }
+        }
+
+        #[test]
+        fn ac3_a_start_without_a_usable_model_still_carries_its_session() {
+            let cases: [(&str, Option<Value>); 4] = [
+                ("absent", None),
+                ("null", Some(Value::Null)),
+                ("blank", Some(Value::String("   ".to_string()))),
+                ("non-string", Some(Value::Bool(true))),
+            ];
+
+            for (label, model) in cases {
+                let overrides = model.map_or_else(Vec::new, |value| vec![(MODEL_FIELD, value)]);
+                let payload = pre_tool_use_json(&overrides);
+                let calls = drive_recording_start(&format!("provenance-model-{label}"), &payload);
+
+                assert_eq!(calls.len(), 1, "{label} should drive exactly one boundary");
+                assert_eq!(
+                    start_provenance(&calls[0]),
+                    json!({ "session_id": "cx_session-1", "model_id": Value::Null }),
+                    "AC3: a {label} model records no model without losing the session"
+                );
+            }
+        }
+
+        #[test]
+        fn ac3_only_the_start_boundary_carries_provenance() {
+            let git_dir = unique_test_git_dir("provenance-start-only");
+            let resolver = fixed_resolver(git_dir.clone());
+            let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let seam = recording_seam(Arc::clone(&recorded));
+
+            drive(&pre_tool_use_json(&[]), &resolver, &seam);
+            drive(&post_tool_use_json(&[]), &resolver, &seam);
+
+            let calls = recorded.lock().expect("recording seam mutex").clone();
+            assert_eq!(calls.len(), 2);
+            assert!(boundary_payload_field(&calls[0], PROVENANCE_FIELD).is_some());
+            assert_eq!(
+                boundary_payload_field(&calls[1], "operation"),
+                Some(Value::String("close".to_string()))
+            );
+            assert_eq!(boundary_payload_field(&calls[1], PROVENANCE_FIELD), None);
 
             remove_test_git_dir(&git_dir);
         }
@@ -3843,6 +4049,25 @@ mod tests {
             .expect("mutation-events query should succeed")
         }
 
+        fn scope_provenance(
+            db: &RepositoryAgentTraceDb,
+            scope_id: &str,
+        ) -> Option<(String, Option<String>)> {
+            db.query_map(
+                "SELECT session_id, model_id FROM mutation_trace_scope_provenance \
+                 WHERE scope_id = ?1",
+                (scope_id,),
+                |row| {
+                    let session_id = row.get::<String>(0).map_err(anyhow::Error::from)?;
+                    let model_id = row.get::<Option<String>>(1).map_err(anyhow::Error::from)?;
+                    Ok((session_id, model_id))
+                },
+            )
+            .expect("scope-provenance query should succeed")
+            .into_iter()
+            .next()
+        }
+
         fn active_scopes_for(db: &RepositoryAgentTraceDb, worktree_id: &str) -> Vec<String> {
             db.query_map(
                 "SELECT scope_id FROM mutation_trace_event_active_scopes \
@@ -5154,6 +5379,82 @@ mod tests {
                 "AC10/D14: a second unconfirmed live Codex scope suppresses attribution back to \
                  IneligibleUnscoped even at a confirming Codex Close"
             );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test27_tracked_fixtures_persist_scope_provenance_ac3() {
+            for (label, fixture) in [
+                ("bash", PROBE01_SHELL_PRE),
+                ("apply-patch", PROBE01_APPLY_PATCH_PRE),
+            ] {
+                let repo = CodexRepo::new(&format!("test27-provenance-{label}"));
+                let cwd = repo.cwd();
+
+                repo.drive(&fixture_at(fixture, &cwd))
+                    .expect("a tracked PreToolUse should Start");
+                let scope_id = repo.live_scope_id();
+
+                let db = repo.db();
+                assert_eq!(
+                    scope_provenance(&db, &scope_id),
+                    Some((
+                        "cx_01a07c1e-e08e-7172-8032-cb9d62af21d9".to_string(),
+                        Some("gpt-5.6-sol".to_string())
+                    )),
+                    "AC3: the {label} fixture must persist its cx_ session and normalized model"
+                );
+                assert_eq!(count(&db, "mutation_trace_scope_provenance"), 1);
+                assert_eq!(
+                    scope_status(&db, &scope_id),
+                    Some(("codex".to_string(), "active".to_string()))
+                );
+
+                assert_raw_agent_trace_tables_untouched(&db);
+            }
+        }
+
+        #[test]
+        fn test28_a_tracked_execution_without_a_model_persists_a_null_model_ac3() {
+            let repo = CodexRepo::new("test28-provenance-no-model");
+            let cwd = repo.cwd();
+            let call = bash_call(&cwd, "session-no-model", "exec-no-model");
+
+            repo.drive(&call.pre())
+                .expect("a tracked PreToolUse without a model should still Start");
+            let scope_id = repo.live_scope_id();
+
+            let db = repo.db();
+            assert_eq!(
+                scope_provenance(&db, &scope_id),
+                Some(("cx_session-no-model".to_string(), None)),
+                "AC3: a missing model records model_id = NULL without losing the session"
+            );
+
+            assert_raw_agent_trace_tables_untouched(&db);
+        }
+
+        #[test]
+        fn test29_untracked_and_delegation_tools_persist_no_provenance_ac3() {
+            let repo = CodexRepo::new("test29-untracked-no-provenance");
+            let cwd = repo.cwd();
+
+            for fixture in [
+                PROBE12_MCP_PRE,
+                PROBE08_SPAWN_AGENT_PRE,
+                PROBE08_WAIT_AGENT_PRE,
+            ] {
+                assert_eq!(
+                    repo.drive(&fixture_at(fixture, &cwd))
+                        .expect("an untracked or delegation PreToolUse should succeed"),
+                    ""
+                );
+            }
+
+            let db = repo.db();
+            assert_eq!(count(&db, "mutation_trace_scopes"), 0);
+            assert_eq!(count(&db, "mutation_trace_scope_provenance"), 0);
 
             assert_raw_agent_trace_tables_untouched(&db);
         }
