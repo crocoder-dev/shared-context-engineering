@@ -41,6 +41,7 @@ use crate::services::structured_patch::{
 use crate::services::sync::auto_sync;
 pub mod claude_bridge_session;
 pub mod claude_model_state;
+pub mod claude_mutation_scope;
 pub mod claude_transcript;
 pub mod codex;
 pub mod command;
@@ -103,6 +104,7 @@ pub enum HookSubcommand {
     Codex,
     ClaudeModelState,
     MutationScope,
+    ClaudeMutationScope,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -248,6 +250,9 @@ fn run_hooks_subcommand_in_repo(
         ),
         HookSubcommand::MutationScope => {
             mutation_scope::run_mutation_scope_subcommand(repository_root, logger)
+        }
+        HookSubcommand::ClaudeMutationScope => {
+            claude_mutation_scope::run_claude_mutation_scope_subcommand(logger)
         }
     }
 }
@@ -1997,6 +2002,7 @@ fn hook_runtime_invocation_name(subcommand: &HookSubcommand) -> &'static str {
         HookSubcommand::Codex => "codex runtime invocation",
         HookSubcommand::ClaudeModelState => "Claude model-state runtime invocation",
         HookSubcommand::MutationScope => "mutation-scope runtime invocation",
+        HookSubcommand::ClaudeMutationScope => "Claude mutation-scope runtime invocation",
     }
 }
 
