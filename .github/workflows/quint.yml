@@ -40,7 +40,7 @@ jobs:
             exit 0
           fi
 
-          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -Eq '(\.qnt$|^\.github/workflows/quint\.yml$|^\.github/workflows/quint-deep-verify\.yml$|^flake\.nix$|^flake\.lock$)'; then
+          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -Eq '(\.qnt$|^cli/src/services/mutation_trace/|^cli/src/services/mod\.rs$|^cli/Cargo\.toml$|^cli/Cargo\.lock$|^\.github/workflows/quint\.yml$|^\.github/workflows/quint-deep-verify\.yml$|^flake\.nix$|^flake\.lock$)'; then
             echo "quint=true" >> "$GITHUB_OUTPUT"
           else
             echo "quint=false" >> "$GITHUB_OUTPUT"
@@ -55,7 +55,9 @@ jobs:
     needs: detect
     if: needs.detect.outputs.quint == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The Quint Connect Nix check compiles the CLI crate, so this needs more
+    # headroom than the pure-Quint steps alone required.
+    timeout-minutes: 30
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
@@ -78,7 +80,11 @@ jobs:
         run: nix run .#quint -- typecheck spec/mutation_cursor.qnt
 
       - name: Run Quint tests
-        run: nix run .#quint -- test spec/mutation_cursor.qnt
+        # `quint test` without `--match` silently selects zero tests (exit 0,
+        # no output) on this spec instead of running every named `run`
+        # scenario — matching every top-level `test...`-named `run` is the
+        # explicit selection that actually exercises them.
+        run: nix run .#quint -- test spec/mutation_cursor.qnt --match '^test.*'
 
       - name: Randomized Quint safety check
         run: >
@@ -88,6 +94,13 @@ jobs:
           --invariants SafetyCore SafetyAttribution SafetyHistory
           --max-samples=5000
           --max-steps=20
+
+      - name: Quint Connect model-based tests (Nix-pinned Rust + Quint)
+        # The entire MBT invocation goes through this Nix check rather than
+        # `cargo test` on the runner's own Cargo, so both the Rust toolchain
+        # and the Quint binary come from the repository's pinned flake
+        # inputs, never a second, unpinned Rust installation.
+        run: nix build .#checks.x86_64-linux.mutation-trace-quint-connect --print-build-logs
 
   gate:
     name: Quint gate

@@ -116,6 +116,23 @@ module mutation_cursor {
     mutationEvents: Set[MutationEvent],
   }
 
+  // Verification-only transport for Quint Connect: identifies the semantic
+  // operation and concrete arguments each step invoked, including on a
+  // guarded/no-op path, so the Rust driver can dispatch on it. Every
+  // argument-carrying variant is a record, even single-field ones, to match
+  // Quint Connect's unit-vs-record action decoder. Never read by any other
+  // action, value, or invariant.
+  type MbtAction =
+    | MbtInit
+    | MbtMutate({ worktree: WorktreeId, tree: TreeId })
+    | MbtPrepare({ attempt: AttemptId, boundary: Boundary })
+    | MbtCommit({ attempt: AttemptId })
+    | MbtTaint({ worktree: WorktreeId })
+    | MbtDatabaseFailure({ worktree: WorktreeId })
+    | MbtAbandon({ scope: ScopeId })
+    | MbtRecover({ worktree: WorktreeId })
+    | MbtStutter
+
   val WORKTREES: Set[WorktreeId] = Set(WT0, WT1)
   val SCOPES: Set[ScopeId] = Set(Scope0, Scope1, Scope2, Scope3)
   val TREES: Set[TreeId] = Set(Tree0, Tree1, Tree2, Tree3)
@@ -261,6 +278,7 @@ module mutation_cursor {
   var taintHistory: Set[DurableProtocolCheckpoint]
   var evidenceAttempts: Set[AttemptId]
   var mutationEvents: Set[MutationEvent]
+  var mbtAction: MbtAction
 
   def liveScopesOn(worktree: WorktreeId): Set[ScopeId] =
     SCOPES.filter(scope => {
@@ -372,9 +390,14 @@ module mutation_cursor {
     taintHistory' = Set(),
     evidenceAttempts' = Set(),
     mutationEvents' = Set(),
+    mbtAction' = MbtInit,
   }
 
-  action stutter: bool = all {
+  // Shared no-semantic-change transition, parameterized on the MbtAction to
+  // record. `stutter` itself is the only caller that passes MbtStutter; every
+  // guarded/no-op action passes its own operation-specific variant instead,
+  // so the invoked operation is never erased by falling through to `stutter`.
+  action mbtStutterAs(taken: MbtAction): bool = all {
     worktrees' = worktrees,
     scopes' = scopes,
     worktreeTrees' = worktreeTrees,
@@ -392,7 +415,10 @@ module mutation_cursor {
     taintHistory' = taintHistory,
     evidenceAttempts' = evidenceAttempts,
     mutationEvents' = mutationEvents,
+    mbtAction' = taken,
   }
+
+  action stutter: bool = mbtStutterAs(MbtStutter)
 
   action mutate(worktree: WorktreeId, newTree: TreeId): bool = all {
     worktrees' = worktrees,
@@ -412,6 +438,7 @@ module mutation_cursor {
     taintHistory' = taintHistory,
     evidenceAttempts' = evidenceAttempts,
     mutationEvents' = mutationEvents,
+    mbtAction' = MbtMutate({ worktree: worktree, tree: newTree }),
   }
 
   action prepareAvailable(attempt: AttemptId, boundary: Boundary): bool = {
@@ -442,12 +469,13 @@ module mutation_cursor {
       taintHistory' = taintHistory,
       evidenceAttempts' = evidenceAttempts,
       mutationEvents' = mutationEvents,
+      mbtAction' = MbtPrepare({ attempt: attempt, boundary: boundary }),
     }
   }
 
   action prepare(attempt: AttemptId, boundary: Boundary): bool =
     if (attempts.get(attempt).status != Available) {
-      stutter
+      mbtStutterAs(MbtPrepare({ attempt: attempt, boundary: boundary }))
     } else {
       prepareAvailable(attempt, boundary)
     }
@@ -525,6 +553,7 @@ module mutation_cursor {
         taintHistory' = taintHistory,
         evidenceAttempts' = evidenceAttempts,
         mutationEvents' = mutationEvents,
+        mbtAction' = MbtCommit({ attempt: attempt }),
       }
     } else {
       val nextScope =
@@ -656,6 +685,7 @@ module mutation_cursor {
         taintHistory' = taintHistory,
         evidenceAttempts' = nextEvidenceAttempts,
         mutationEvents' = mutationEvents.union(emitted),
+        mbtAction' = MbtCommit({ attempt: attempt }),
       }
     }
   }
@@ -696,6 +726,7 @@ module mutation_cursor {
       taintHistory' = taintHistory,
       evidenceAttempts' = evidenceAttempts,
       mutationEvents' = mutationEvents,
+      mbtAction' = MbtTaint({ worktree: worktree }),
     }
   }
 
@@ -704,7 +735,7 @@ module mutation_cursor {
       worktrees.get(worktree).tainted or
       externalTaint.contains(worktree)
     ) {
-      stutter
+      mbtStutterAs(MbtTaint({ worktree: worktree }))
     } else {
       taintHealthy(worktree)
     }
@@ -727,11 +758,12 @@ module mutation_cursor {
     taintHistory' = taintHistory.union(Set(durableProtocolStateFor(worktree))),
     evidenceAttempts' = evidenceAttempts,
     mutationEvents' = mutationEvents,
+    mbtAction' = MbtDatabaseFailure({ worktree: worktree }),
   }
 
   action databaseFailure(worktree: WorktreeId): bool =
     if (externalTaint.contains(worktree)) {
-      stutter
+      mbtStutterAs(MbtDatabaseFailure({ worktree: worktree }))
     } else {
       recordDatabaseFailure(worktree)
     }
@@ -788,6 +820,7 @@ module mutation_cursor {
       taintHistory' = taintHistory,
       evidenceAttempts' = evidenceAttempts,
       mutationEvents' = mutationEvents,
+      mbtAction' = MbtAbandon({ scope: scope }),
     }
   }
 
@@ -798,7 +831,7 @@ module mutation_cursor {
       not(isLive(oldScope.status)) or
       externalTaint.contains(oldScope.worktreeId)
     ) {
-      stutter
+      mbtStutterAs(MbtAbandon({ scope: scope }))
     } else {
       abandonLiveScope(scope)
     }
@@ -868,6 +901,7 @@ module mutation_cursor {
       taintHistory' = taintHistory,
       evidenceAttempts' = evidenceAttempts,
       mutationEvents' = mutationEvents,
+      mbtAction' = MbtRecover({ worktree: worktree }),
     }
   }
 
@@ -879,7 +913,7 @@ module mutation_cursor {
       not(externalTaint.contains(worktree)) and
       not(state.needsRebaseline)
     ) {
-      stutter
+      mbtStutterAs(MbtRecover({ worktree: worktree }))
     } else {
       recoverNeeded(worktree)
     }
@@ -891,6 +925,11 @@ module mutation_cursor {
     mutate(worktree, tree)
   }
 
+  // Stays a single top-level `step` alternative. `prepare` already sets
+  // `mbtAction' = MbtPrepare({ attempt, boundary })` on every path, and
+  // `boundary` here is the exact concrete value passed to whichever inner
+  // `any` branch fires, so Quint Connect already exposes which boundary kind
+  // was selected without a dedicated `PrepareKind` choice.
   action randomPrepare: bool = {
     nondet attempt = ATTEMPTS.oneOf()
     nondet scope = SCOPES.oneOf()
@@ -1733,5 +1772,52 @@ module mutation_cursor {
       .expect(scopes.get(Scope0).status == Active)
       .expect(worktrees.get(WT1).cursorTree == Tree2)
       .expect(scopes.get(Scope3).status == Abandoned)
+      .expect(Safety)
+
+  // Non-default-values smoke scenario for the Rust MBT driver (T04): proves
+  // that a worktree/tree/attempt/boundary combination other than the
+  // WT0/Tree0-Tree1/Attempt0/Flush(WT0) defaults used throughout the runs
+  // above is transported end to end. `#[quint_test]` replays this exact
+  // scenario through `protocol::prepare`/`protocol::commit` and compares the
+  // resulting Rust state against the state asserted below.
+  run testMbtDriverTransportsNonDefaultArguments =
+    init
+      .then(mutate(WT1, Tree3))
+      .then(prepare(Attempt5, Flush(WT1)))
+      .then(commitAttempt(Attempt5))
+      .expect(worktrees.get(WT1).cursorTree == Tree3)
+      .expect(worktrees.get(WT1).revision == 1)
+      .expect(attempts.get(Attempt5).status == Committed)
+      .expect(Safety)
+
+  // Guarded-no-op regression: re-preparing Attempt0 after
+  // it is already Prepared hits `prepare`'s guarded branch
+  // (`attempts.get(attempt).status != Available`), which must still record
+  // `MbtPrepare({attempt: Attempt0, boundary: Advance(...)})` — the second
+  // call's own operation and arguments — rather than falling through to
+  // `MbtStutter`. `#[quint_test]` replays this through the real
+  // `protocol::prepare`, proving the Rust driver calls it a second time
+  // (never skipping the call because Quint's semantic state is unchanged)
+  // and independently reaches the same no-op outcome.
+  run testMbtGuardedPrepareInvokesRealPrepare =
+    init
+      .then(prepare(Attempt0, Start({ scope: Scope0, event: Event0 })))
+      .then(prepare(Attempt0, Advance({ scope: Scope0, event: Event1 })))
+      .expect(attempts.get(Attempt0).status == Prepared)
+      .expect(attempts.get(Attempt0).boundary == Start({ scope: Scope0, event: Event0 }))
+      .expect(Safety)
+
+  // Guarded-no-op regression: `recover(WT0)` on a worktree
+  // that is neither tainted, externally tainted, nor needing rebaseline hits
+  // `recover`'s guarded branch, which must still record
+  // `MbtRecover({worktree: WT0})` rather than `MbtStutter`. `#[quint_test]`
+  // replays this through the real `protocol::recover`, proving the Rust
+  // driver calls it (never skipping the call) and independently reaches the
+  // same no-op outcome.
+  run testMbtGuardedRecoverInvokesRealRecover =
+    init
+      .then(recover(WT0))
+      .expect(worktrees.get(WT0).cursorTree == Tree0)
+      .expect(worktrees.get(WT0).revision == 0)
       .expect(Safety)
 }
