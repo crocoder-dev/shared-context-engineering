@@ -1531,7 +1531,7 @@ before the first load-bearing probe.
       independently testable ordering signal.
     - New TypeScript, tests, and adapter code are comment-free per
       `feedback_no_comments_in_code`.
-  - Context synchronization: pending
+  - Context synchronization: synced
   - **T05 correctness correction** (follow-up on `4d6a98d4`, same task):
     - **Root cause 1 — fail-open on `ENOENT` contradicted the Done-when
       contract.** The first cut's `forwardFailClosed` only threw when
@@ -1688,7 +1688,7 @@ before the first load-bearing probe.
       aarch64-darwin `mutation-trace-quint-connect` flake documented above is
       unrelated and unaffected.
 
-- [ ] T06: `Add end-to-end OpenCode mutation attribution regressions` (status:todo)
+- [x] T06: `Add end-to-end OpenCode mutation attribution regressions` (status:done)
   - Task ID: T06
   - Scope: In — production-path Git/DB tests in `cli/src/services/hooks/mod.rs`
     from OpenCode lifecycle through the generic ingress, snapshot coordination,
@@ -1705,7 +1705,118 @@ before the first load-bearing probe.
     semantics.
   - Verify: `cargo test -p sce hooks::` targeted Git/DB regression suite;
     Agent Trace schema validation for resulting traces; `nix flake check`.
-  - Context synchronization: pending
+  - Completed: 2026-09-11
+  - Files changed (vs baseline `dca587ad`):
+    - `cli/src/services/hooks/mod.rs` (extends the existing
+      `services::hooks::tests::mutation_provenance_e2e` module — the same
+      real-Git/real-DB harness already proving Claude/Codex production-path
+      attribution — with 8 new OpenCode regressions and 3 small `ProvenanceE2eRepo`
+      additions: `opencode_mutation_scope` import, a `mutation_events()` reader,
+      and OpenCode wire-payload builders `opencode_before`/`opencode_shell_env`/
+      `opencode_after`/`opencode_tool_error` + a `drive_opencode` helper)
+  - Result: Eight new `hooks::tests::mutation_provenance_e2e` tests drive the
+    real OpenCode adapter (`opencode_mutation_scope::run_opencode_mutation_scope_from_payload_at_state_root`)
+    through real Git commits, the real post-commit intersection/Agent-Trace
+    flow, and a real repository-scoped Agent Trace DB — the same production
+    path already proven for Claude/Codex in this module, now proven for
+    OpenCode: (1) `opencode_bash_mutation_persists_model_and_session_in_agent_trace`
+    — bash Start on `ShellEnv`, Close on `ToolExecuteAfter`, full Agent Trace
+    provenance (`oc_<sessionID>`, observed model); (2)
+    `opencode_apply_patch_mutation_with_missing_model_persists_no_model_in_agent_trace`
+    — `apply_patch` tool with no `model` field, asserting `contributor.model_id`
+    is absent (never fabricated) while session provenance still resolves; (3)
+    `opencode_write_mutation_persists_model_while_task_delegation_stays_zero_footprint`
+    — a `task` Before/After pair creates zero `mutation_trace_scopes` rows, then
+    a `write` call in the same session creates exactly one; (4)
+    `opencode_unknown_tool_events_create_no_scope_or_mutation_state` — MCP/
+    unknown/future tool names create zero scope or event rows across
+    Before/After/Error; (5)
+    `opencode_child_task_session_gets_its_own_independent_scope_and_provenance`
+    — a parent's `task` delegation is neutral while a child (subagent) session's
+    tracked `write` gets its own scope and its own `oc_<child sessionID>`
+    provenance; (6)
+    `opencode_concurrent_reject_and_confirm_keeps_only_the_confirmed_mutation_ai`
+    — two concurrent OpenCode calls in one session (distinct `call_id`), one
+    rejected (`ToolError`) and one surviving: the rejected scope's own mutation
+    and the survivor's *pre-recovery* mutation (written before the abandoning
+    scope's ambiguity-consuming flush, genuinely indistinguishable from the
+    rejected scope's own filesystem effect) both correctly stay out of
+    `mutation_ai_patch`, while the survivor's *later* mutation — made after the
+    ambiguous interval was consumed and then confirmed by its own Close — is
+    attributed AI; this reproduces and confirms the exact `Start(A) Start(B)
+    mutate mutate Abandon(A) Close(B)` scenario from the T04 soundness
+    correction's own written analysis, now proven end-to-end through
+    `mutation_ai_patch`, not just at the adapter/runtime-seam level; (7)
+    `opencode_and_codex_unconfirmed_overlap_stays_ineligible_until_codex_confirms`
+    — a live unconfirmed Codex scope suppresses a confirming OpenCode Close to
+    `ineligible_unscoped`; once Codex also confirms, a fresh solo OpenCode Close
+    is `ai_exclusive` (asserted directly against `mutation_trace_events.attribution_kind`,
+    since a coarse per-boundary event cannot itself carry file-level
+    discrimination); (8) `opencode_and_claude_overlap_produces_ai_contended` — a
+    live Claude scope (not confirmation-required) alongside a confirming
+    OpenCode Close produces `ai_contended`, not suppression, per D3. Every test
+    uses only the already-shipped T01–T05 adapter/plugin/protocol surface; no
+    production semantics were introduced or changed.
+  - Verify outcomes:
+    - `cargo test -p sce hooks::` targeted Git/DB regression suite — direct
+      `cargo test`/`cargo check` are bash-policy-blocked in this repo (per
+      `project_sce_cargo_test_invocation`); run as the canonical
+      `nix build .#checks.x86_64-linux.cli-tests`: PASS, `1500 passed; 0 failed;
+      1 ignored` (includes the 8 new `mutation_provenance_e2e` tests). The
+      first draft of test (6)
+      exposed a genuine authoring error, not a product bug: it assumed the
+      survivor's *concurrent* pre-recovery mutation would be cleanly attributed
+      to it; the real runtime correctly swept that pre-recovery mutation into
+      the same non-AI ambiguous interval as the rejected scope's own mutation
+      (exactly per the T04 soundness-correction design), and the test was
+      corrected to assert that true, more conservative behavior rather than
+      the incorrect assumption.
+    - Agent Trace schema validation for resulting traces — every
+      `run_post_commit()`-driving test (tests 1, 2, 3, 5 above) passes through
+      the same `validate_agent_trace_value` schema gate the production
+      post-commit flow uses before persisting; no schema violation.
+    - `nix flake check` — `all checks passed!` (x86_64-linux), including
+      `cli-tests`, `cli-clippy`, `cli-fmt`, `mutation-trace-quint-connect`,
+      `pkl-generated`, `cli-generated-input`, `codex-hook-command`,
+      `config-lib-bun-tests`/`biome-check`/`biome-format`,
+      `npm-bun-tests`/`biome-check`/`biome-format`, `workflow-actionlint`,
+      `native-portability-audit`, `flatpak-static-validation`,
+      `cargo-sources-parity`, `flatpak-manifest-parity`.
+    - `git diff --check` — clean (1 file, +536, additions only).
+  - Context impact: local. New test coverage only, in the same existing
+    `hooks::tests::mutation_provenance_e2e` module and following its established
+    pattern; no new adapter, plugin, protocol, Pkl, Quint, or SQL surface, and no
+    change to any production code path. No context file names a specific test
+    inventory for this module, so no context edit is expected beyond noting (if
+    warranted during synchronization) that OpenCode now has the same
+    production-path Agent Trace regression coverage as Claude and Codex.
+  - Deviations / assumptions accepted:
+    - The `apply_patch` case here is a Rust-adapter-level regression (`sce hooks
+      opencode-mutation-scope` driven directly with an `apply_patch` tool name),
+      not a live OpenCode CLI session — the Rust adapter has no knowledge of
+      OpenCode's `gpt-`-model patch gate, so this is unaffected by the T01
+      credential gap and it fully exercises the adapter's real classification,
+      lifecycle, provenance, and Agent Trace code paths for `apply_patch`. It
+      does not itself close the outstanding T01 credential gap for a live,
+      real-OpenCode-CLI `apply_patch` probe/fixture, which remains a distinct,
+      separately-tracked item for `/validate` (a credential gap, not a
+      soundness gap, per T01/T04's existing notes).
+    - Cross-harness overlap tests (7, 8) assert directly against
+      `mutation_trace_events.attribution_kind` rather than walking all the way
+      to Agent Trace JSON, because the line-level `mutation_ai_patch` consumer
+      necessarily collapses `ai_contended` and `ineligible_unscoped` into the
+      same non-AI line provenance (`MutationNonAi`) — the distinct protocol
+      outcome AC5/AC6 describe is only observable at the `mutation_trace_events`
+      row itself. The single-actor success/model tests (1, 2, 3, 5) and the
+      concurrent-reject test (6) already prove the full stack down to Agent
+      Trace/`mutation_ai_patch`.
+    - `edit` and one additional `write`/`bash`/`apply_patch` combination are
+      exercised across tests 1, 2, 3, 6 rather than one dedicated test per tool
+      name; per-tool-name classification exhaustiveness is already covered by
+      `cargo test -p sce opencode_mutation_scope` (T03/T04), which is AC2's
+      named validation command, not this task's.
+    - New test code is comment-free per `feedback_no_comments_in_code`.
+  - Context synchronization: synced
 
 ## Open questions
 
