@@ -66,6 +66,12 @@ Both functions wrap `serde_json::from_str`/`serde_json::from_slice` and map serd
 - **Determinism**: the same inputs in the same order always produce the same output
 - **Consumed by**: the post-commit hook runtime combines recent DB diff-trace patches before intersecting (see `agent-trace-hooks-command-routing.md`).
 
+### Direct matching vs. causal mutation lineage
+
+`intersect_patches` and `combine_patches` are the **direct-evidence** matchers and are unchanged: their historical `(kind, content)` fallback is deliberately permissive so canonical post-commit lines still reconcile with earlier incremental `diff_traces`, even where repeated content stays physically ambiguous.
+
+Mutation-history attribution does **not** reuse them and does **not** match historical patches against the committed patch at all. `cli/src/services/mutation_trace/lineage.rs` applies each reconstructed transition's hunks structurally to a per-line provenance vector and propagates provenance forward; `attribution.rs` only supplies `exclude_direct_coverage` (drop directly covered lines) and `patch_for_locations` (rebuild a target-shaped patch from selected line locations). File identity for mutation lineage is **exact logical repository path** equality only — the lineage keys tracked files by that path (`new_path` when non-empty, otherwise `old_path`), so a reconstructed transition touching a path that is not byte-equal to a committed target path contributes no provenance. There is no normalized-suffix or basename fallback in the mutation matcher; suffix equivalence stays confined to the direct-evidence matchers above. A committed line is AI only if the line an AI event introduced survives every later transition into the committed tree. See [mutation-trace-agent-attribution.md](mutation-trace-agent-attribution.md).
+
 ### Codex apply_patch boundary
 
 Codex `PostToolUse(apply_patch)` evidence enters this service only after the
