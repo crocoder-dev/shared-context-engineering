@@ -45,7 +45,7 @@ Database unavailability is different. `databaseFailure(worktree)` changes only:
 externalTaint: Set[WorktreeId]
 ```
 
-`externalTaint` is the abstract external durability boundary: conceptually, the filesystem `TAINTED` marker that can survive an unavailable database. It is not a database row and does not model marker paths or filesystem syscalls.
+`externalTaint` is the abstract external durability boundary: conceptually, the filesystem `TAINTED` marker that can survive an unavailable database. It is not a database row and does not model marker paths or filesystem syscalls. Its concrete refinement in the CLI is the worktree-local marker file `<git-dir>/sce/mutation-cursor-tainted`, armed write-ahead at the start of the protected runtime section — before Agent Trace DB acquisition — and cleared only after a proven durable completion; it becomes protocol `externalTaint` (overlaid onto `databaseFailure` recovery) only when a later invocation inherits it. If that trailing clear fails *after* the boundary has committed durably, the CLI keeps the marker armed and returns the committed outcome inside a distinct error rather than reporting a boundary failure, so the next invocation still recovers conservatively. See `context/cli/mutation-trace-external-taint.md`.
 
 Thus the model does **not** perform this contradictory transition:
 

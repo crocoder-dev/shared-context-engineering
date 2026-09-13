@@ -22,11 +22,10 @@ documented convention.
 ## Current code surface
 
 The per-worktree runtime lock, the isolated Git snapshot service, the
-coordinator's internal protocol-integration pipeline, and the public,
-lock-wrapped `coordinate()` entrypoint that drives the lock and checkout
-identity around that pipeline all exist, with cross-module integration tests
-in `runtime/tests.rs` exercising the public API end to end. Only
-harness/command wiring remains.
+coordinator's protocol-integration pipeline, and the public `coordinate()`
+entrypoint (lock, external-taint fence, checkout identity, and DB provider
+around that pipeline) all exist, with `runtime/tests.rs` exercising the public
+API end to end. Only harness/command wiring remains.
 
 - `cli/src/services/mutation_trace/runtime/worktree_lock.rs` —
   `WorktreeLock::acquire(git_dir: &Path, timeout: Duration) ->
@@ -88,34 +87,44 @@ harness/command wiring remains.
   `Flush` carries nothing — its worktree is always the invocation's own
   already-resolved one, never caller-supplied) and documents the
   `(ScopeId, EventId)` replay-identity contract a future harness adapter must
-  uphold. The public `coordinate(repository_root, db, boundary) ->
-  Result<CoordinateOutcome, CoordinateError>` entrypoint takes an
-  already-resolved `RepositoryAgentTraceDb` from its caller — it never
-  resolves or opens the repository-scoped Agent Trace DB itself — and owns
-  the critical section: resolve `git_dir` via `checkout::resolve_git_dir`,
-  acquire the `WorktreeLock` (bounded 10s, held for the whole call), resolve
+  uphold. The public `coordinate(repository_root, boundary, open_db) ->
+  Result<CoordinateOutcome, CoordinateError>` entrypoint owns the whole
+  protected operation. It does **not** receive an already-open DB handle:
+  `open_db: impl FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>` is a
+  caller-supplied provider it invokes itself, so DB acquisition falls inside
+  the external-taint fence. The critical section: resolve `git_dir` via
+  `checkout::resolve_git_dir`, acquire the `WorktreeLock` (bounded 10s, held
+  for the whole call), arm the `ExternalTaintMarker` write-ahead, resolve
   checkout identity via `checkout::get_or_create_checkout_id` and wrap it as
   `WorktreeId` — no caller-supplied `WorktreeId` or `Boundary` is ever
-  accepted — then construct `GitSnapshotService` and delegate to the internal,
-  generic-over-`SnapshotCapture` pipeline. Identity flows
-  `repository_root → git_dir → WorktreeLock → checkout ID → WorktreeId`;
-  the `RepositoryAgentTraceDb` is not on that chain. (`coordinate()` is a one-line
-  delegation to a private `coordinate_inner(.., on_lock_contention:
-  impl FnOnce())` test seam; production passes a no-op closure.) A
-  `WorktreeLock` acquisition failure (timeout or I/O) surfaces as
-  `CoordinateError::LockAcquisition`. The
-  pipeline does, per invocation: capture and pin
+  accepted — invoke `open_db()`, construct `GitSnapshotService`, delegate to
+  the internal generic-over-`SnapshotCapture` pipeline, and clear the marker
+  only on a successful outcome. Identity flows
+  `repository_root → git_dir → WorktreeLock → checkout ID → WorktreeId`; the
+  DB is not on that chain. (`coordinate()` is a one-line delegation to a
+  private `coordinate_inner(.., open_db, on_lock_contention: impl FnOnce(),
+  after_recovery: impl FnMut(u32) -> Result<()>)` test seam; production passes a
+  no-op contention closure and `|_| Ok(())`.) A `WorktreeLock`
+  acquisition failure surfaces as `CoordinateError::LockAcquisition`; pre-commit
+  marker-I/O and DB-provider failures have their own fail-closed variants, and a
+  post-commit `marker.clear()` failure surfaces as
+  `CoordinateError::MarkerClearAfterCommit { source, committed }` — the boundary
+  did commit, so the durable `CoordinateOutcome` (with any `MutationEvent`) rides
+  along in `committed` rather than being lost, and the marker stays armed. See
+  [`mutation-trace-external-taint.md`](mutation-trace-external-taint.md) for the
+  fence ordering, the safety invariant, and the `CoordinateError` variants it
+  adds. The pipeline does, per invocation: capture and pin
   exactly one Git snapshot; on failure, run a bounded taint-retry loop instead
   (below) and return without touching the rest of the pipeline; on success,
   idempotently materialize the worktree row and, for hook boundaries, the
   scope row; then loop (bounded, `MAX_CAS_RETRY_ATTEMPTS = 5`, no backoff):
-  load durable state fresh, recover first if the worktree is tainted or needs
-  rebaseline (its own CAS commit, reusing the one captured tree as the
-  rebaseline target), then `prepare`/`commit` the triggering boundary against
-  that state (a second CAS commit) — reloading and recomputing from scratch
-  on `Conflict`, without ever re-capturing or re-pinning. A settled no-op
-  result (a stale, rejected, or replayed attempt) is a successful return, not
-  an error.
+  load durable state fresh, recover first if the worktree is tainted, needs
+  rebaseline, or inherited an external-taint marker (overlaid as
+  `database_failure`; its CAS commit reuses the one captured tree), then
+  `prepare`/`commit` the triggering boundary against that state (a second CAS
+  commit) — reloading and recomputing from scratch on `Conflict`, without ever
+  re-capturing or re-pinning. A settled no-op result (a stale, rejected, or
+  replayed attempt) is a successful return, not an error.
 
   A capture or pin failure is handled by its own bounded taint-retry loop: a
   fresh `load_worktree` on every iteration, always evaluated after the
@@ -128,11 +137,12 @@ harness/command wiring remains.
   `Conflict`, reporting `persisted_taint: false` only once every bounded
   attempt has been exhausted.
 
-The runtime lock guards the coordinator's own critical section (snapshot
-capture, worktree/scope materialization, recovery, and the CAS retry loop):
-`coordinate()` acquires it before resolving checkout identity and holds it
-until the call returns. It is held on every `coordinate()` call, unlike the
-checkout-identity-creation lock.
+The runtime lock guards the coordinator's own critical section (external-taint
+marker arming/clearing, snapshot capture, worktree/scope materialization,
+recovery, and the CAS retry loop): `coordinate()` acquires it before arming the
+marker and resolving checkout identity, and holds it until the call returns. It
+is held on every `coordinate()` call, unlike the checkout-identity-creation
+lock.
 
 ## Two distinct locks, two distinct invariants
 
@@ -153,6 +163,7 @@ On-disk layout so far:
 ├── checkout-id                 (services::checkout)
 ├── checkout-id.lock            (services::checkout)
 ├── mutation-cursor.lock        (runtime::worktree_lock)
+├── mutation-cursor-tainted     (runtime::external_taint, empty; existence = fence armed)
 └── tmp/
     └── index-<uuid>            (runtime::git_snapshot, ephemeral per capture)
 
@@ -199,16 +210,22 @@ taint-retry loop taints an existing worktree, survives a losing CAS before
 committing on retry, reports `persisted_taint: false` once exhausted, makes
 no write when no worktree row exists yet, and still finds and taints a
 worktree another caller materializes concurrently during this invocation's
-own failing capture. One further test proves the critical-section
-serialization with a real happens-before ordering: `coordinate()` delegates
-to a private `coordinate_inner(.., on_lock_contention: impl FnOnce())` that
-takes the lock via `worktree_lock::acquire_inner` (T02's seam, `pub(super)`),
-and with a first `WorktreeLock` held, a worker's `coordinate_inner` call
-observes the real `TryLockError::WouldBlock` branch (signalling a channel
-from `on_lock_contention`) while that first guard is still alive, then — once
-the guard is dropped — the same invocation acquires the lock and returns
-`Ok`. Production `coordinate()` passes a no-op closure, so its code path,
-signature, and lock semantics are unchanged.
+own failing capture. Further tests drive the public `coordinate()` against
+real repositories: the critical-section serialization (a worker's
+`coordinate_inner(.., open_db, on_lock_contention)` observes the real
+`TryLockError::WouldBlock` branch while a first `WorktreeLock` is held, then
+acquires and returns `Ok` once it drops); and the external-taint fence — a
+successful call clears the marker, while a snapshot failure, a non-snapshot
+failure, a DB-provider `Err`, and an un-armable marker each leave it present
+(the last failing closed before the DB provider runs). A further test drives the
+private `after_recovery` seam to inject a failure at the exact
+recovery-committed / boundary-not-yet-prepared transition and proves the
+recovery is durable, the boundary unprocessed with no `MutationEvent`, the
+on-disk marker still present, and a later `coordinate()` re-recovering
+conservatively off it; `runtime/tests.rs` separately proves an attributable
+`Advance` that commits durably then fails its trailing `marker.clear()` surfaces
+`MarkerClearAfterCommit` carrying the matching committed outcome (including its
+`MutationEvent`).
 
 `runtime/tests.rs` is `runtime`'s own `#[cfg(test)] mod tests`, holding
 cross-module integration tests that drive only the public `coordinate()` API
@@ -218,30 +235,29 @@ precedent: two linked worktrees of one repository (different `git_dir` →
 different lock paths → different `WorktreeId`s) are proven independently
 locked by holding one worktree's `WorktreeLock` across a synchronous
 `coordinate()` call for the other and observing that call return `Ok` before
-the held guard is dropped — a shared lock could not be acquired while the
-guard is alive, and no wall-clock timing is used. The test opens one
-repository-scoped DB path itself and hands a separate handle to each
-`coordinate()` call (`coordinate()` does not resolve the DB), then asserts
-both distinct worktree rows coexist in that one supplied DB, and that a tree
-pinned by one worktree's coordinator resolves through the other's `GIT_DIR`.
-A first-ever `agent_trace_storage` resolution and a `coordinate()` call on
-the same checkout converge on one checkout identity (matching the on-disk
-`checkout-id` file); and a full failure/recovery cycle — baseline call, a
-snapshot-failing call that durably taints the worktree, then a recovery call
-that clears the taint before processing its boundary — runs entirely through
-the public entrypoint.
+the held guard is dropped. Each call is handed a provider closure that opens
+the one shared repository-scoped DB path (`coordinate()` never resolves the
+DB), and both distinct worktree rows then coexist in it. A first-ever
+`agent_trace_storage` resolution and a `coordinate()` call on the same
+checkout converge on one checkout identity; and a full failure/recovery
+cycle — baseline call, a snapshot-failing call that durably taints the
+worktree, then a recovery call that clears the taint before processing its
+boundary — runs entirely through the public entrypoint.
 
 ## Status
 
-The per-worktree runtime lock, the isolated Git snapshot service, the
-coordinator's internal protocol-integration pipeline (above), and the public,
-lock-wrapped `coordinate()` entrypoint (resolving `git_dir`, acquiring
-`WorktreeLock`, resolving checkout identity, deriving `WorktreeId`, delegating
-to the pipeline) are all implemented, and `runtime/tests.rs` covers the
-public `coordinate()` API end to end (above). A `pub(crate)` re-export of
-`coordinate()` beyond `runtime` and any harness/command wiring remain future
-work tracked by the `mutation-cursor-runtime-coordinator` plan's follow-ups.
+The lock, snapshot service, protocol-integration pipeline, and the public
+`coordinate()` entrypoint (resolve `git_dir` → `WorktreeLock` → arm the
+external-taint marker → checkout identity → caller-supplied DB provider →
+pipeline → clear the marker on success) are all implemented, with
+`runtime/tests.rs` covering the public API end to end; an inherited external-taint
+marker is now overlaid onto `database_failure` recovery on the next invocation. A
+`pub(crate)` re-export of `coordinate()` beyond `runtime` and harness/command
+wiring remain future work tracked by the `mutation-cursor-external-taint` and
+`mutation-cursor-runtime-coordinator` plans.
 
 See also: [`mutation-trace-protocol.md`](mutation-trace-protocol.md),
 [`mutation-trace-store.md`](mutation-trace-store.md),
-[`checkout-identity.md`](checkout-identity.md).
+[`mutation-trace-external-taint.md`](mutation-trace-external-taint.md)
+(the `<git-dir>/sce/mutation-cursor-tainted` write-ahead fence armed by
+`coordinate()`), [`checkout-identity.md`](checkout-identity.md).
