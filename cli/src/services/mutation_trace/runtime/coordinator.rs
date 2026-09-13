@@ -5,9 +5,12 @@ use uuid::Uuid;
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::mutation_trace::protocol;
-use crate::services::mutation_trace::store::{CasResult, DurableTransition, MutationTraceStore};
+use crate::services::mutation_trace::store::{
+    CasResult, DurableTransition, MutationTraceStore, ScopeProvenance,
+};
 use crate::services::mutation_trace::types::{
-    self, ActorKind, AttemptId, Boundary, EventId, MutationEvent, ScopeId, TreeId, WorktreeId,
+    self, ActorKind, AttemptId, Boundary, EventId, MutationEvent, ScopeId, ScopeStatus, TreeId,
+    WorktreeId,
 };
 
 use super::git_snapshot::GitSnapshotService;
@@ -17,12 +20,19 @@ pub use super::protected_worktree::ExternalTaintOperation;
 
 pub(super) const MAX_CAS_RETRY_ATTEMPTS: u32 = 5;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StartProvenance {
+    pub session_id: String,
+    pub model_id: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub enum RuntimeBoundary {
     Start {
         scope: ScopeId,
         event: EventId,
         actor_kind: ActorKind,
+        provenance: Option<StartProvenance>,
     },
     Advance {
         scope: ScopeId,
@@ -53,6 +63,7 @@ pub enum CoordinateError {
         source: anyhow::Error,
     },
     ScopeIdentityConflict(anyhow::Error),
+    ScopeProvenanceRegistration(anyhow::Error),
     CasConflictExhausted {
         attempts: u32,
     },
@@ -123,6 +134,7 @@ impl std::fmt::Display for CoordinateError {
                 write!(f, "Repository Agent Trace DB is unavailable: {source}")
             }
             CoordinateError::ScopeIdentityConflict(source)
+            | CoordinateError::ScopeProvenanceRegistration(source)
             | CoordinateError::LockAcquisition(source)
             | CoordinateError::Other(source) => write!(f, "{source}"),
         }
@@ -289,11 +301,16 @@ where
         .initialize_worktree(worktree_id, &observed_tree)
         .map_err(CoordinateError::Other)?;
 
-    if let Some((scope, actor_kind)) = hook_identity(boundary) {
-        store
-            .register_scope(scope, worktree_id, actor_kind)
-            .map_err(CoordinateError::ScopeIdentityConflict)?;
-    }
+    let registered_scope = match hook_identity(boundary) {
+        Some((scope, actor_kind)) => Some(
+            store
+                .register_scope(scope, worktree_id, actor_kind)
+                .map_err(CoordinateError::ScopeIdentityConflict)?,
+        ),
+        None => None,
+    };
+
+    register_start_provenance(&store, boundary, registered_scope.as_ref())?;
 
     let type_boundary = into_protocol_boundary(boundary, worktree_id);
     let scope_ref = types::boundary_scope(&type_boundary);
@@ -372,6 +389,47 @@ where
     })
 }
 
+/// Applies the admission-bounded provenance rule for a `Start` carrying
+/// provenance, using the durable [`types::ScopeState`] that `register_scope`
+/// just returned.
+///
+/// An existing provenance row is always re-registered, so the store's immutable
+/// session identity and first-observed model semantics stay authoritative on
+/// every replay. A row may only be *created* while the durable scope is still
+/// `NeverSeen` — a retry whose earlier attempt never committed the protocol
+/// `Start`. Once the scope has crossed protocol admission, absent provenance
+/// stays absent permanently: provenance describes its scope as observed at
+/// admission, so it is never attached retroactively.
+fn register_start_provenance(
+    store: &MutationTraceStore<'_>,
+    boundary: &RuntimeBoundary,
+    registered_scope: Option<&types::ScopeState>,
+) -> Result<(), CoordinateError> {
+    let Some((scope, provenance)) = start_provenance(boundary) else {
+        return Ok(());
+    };
+
+    let stored = store
+        .load_scope_provenance(scope)
+        .map_err(CoordinateError::ScopeProvenanceRegistration)?;
+    let before_admission =
+        registered_scope.is_some_and(|scope_state| scope_state.status == ScopeStatus::NeverSeen);
+
+    if stored.is_none() && !before_admission {
+        return Ok(());
+    }
+
+    store
+        .register_scope_provenance(&ScopeProvenance {
+            scope_id: scope.clone(),
+            session_id: provenance.session_id.clone(),
+            model_id: provenance.model_id.clone(),
+        })
+        .map_err(CoordinateError::ScopeProvenanceRegistration)?;
+
+    Ok(())
+}
+
 fn needs_recovery(state: &types::ProtocolState, worktree_id: &WorktreeId) -> bool {
     state.external_taint.contains(worktree_id)
         || state
@@ -419,6 +477,17 @@ fn into_protocol_boundary(boundary: &RuntimeBoundary, worktree_id: &WorktreeId) 
         RuntimeBoundary::Flush => Boundary::Flush {
             worktree: worktree_id.clone(),
         },
+    }
+}
+
+fn start_provenance(boundary: &RuntimeBoundary) -> Option<(&ScopeId, &StartProvenance)> {
+    match boundary {
+        RuntimeBoundary::Start {
+            scope,
+            provenance: Some(provenance),
+            ..
+        } => Some((scope, provenance)),
+        _ => None,
     }
 }
 
@@ -757,6 +826,7 @@ mod tests {
                 scope: scope.clone(),
                 event: EventId("evt-start".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
+                provenance: None,
             },
             false,
         )
@@ -801,6 +871,7 @@ mod tests {
                 scope: scope.clone(),
                 event: EventId("evt-start".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
+                provenance: None,
             },
             false,
         )
@@ -848,6 +919,7 @@ mod tests {
                 scope: scope.clone(),
                 event: EventId("evt-start".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
+                provenance: None,
             },
             false,
         )
@@ -902,6 +974,7 @@ mod tests {
                 scope: ScopeId("scope-a".to_string()),
                 event: EventId("evt-start-a".to_string()),
                 actor_kind: actor_a,
+                provenance: None,
             },
             false,
         )
@@ -914,6 +987,7 @@ mod tests {
                 scope: ScopeId("scope-b".to_string()),
                 event: EventId("evt-start-b".to_string()),
                 actor_kind: actor_b,
+                provenance: None,
             },
             false,
         )
@@ -971,6 +1045,7 @@ mod tests {
                 scope: codex.clone(),
                 event: EventId("evt-codex-start".to_string()),
                 actor_kind: ActorKind::Codex,
+                provenance: None,
             },
             false,
         )
@@ -983,6 +1058,7 @@ mod tests {
                 scope: claude.clone(),
                 event: EventId("evt-claude-start".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
+                provenance: None,
             },
             false,
         )
@@ -1054,6 +1130,7 @@ mod tests {
                 scope: codex.clone(),
                 event: EventId("evt-codex-start".to_string()),
                 actor_kind: ActorKind::Codex,
+                provenance: None,
             },
             false,
         )
@@ -1066,6 +1143,7 @@ mod tests {
                 scope: claude.clone(),
                 event: EventId("evt-claude-start".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
+                provenance: None,
             },
             false,
         )
@@ -1179,6 +1257,7 @@ mod tests {
                 scope: live_scope.clone(),
                 event: EventId("evt-start-live".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
+                provenance: None,
             },
             false,
         )
@@ -1191,6 +1270,7 @@ mod tests {
                 scope: abandoned_scope.clone(),
                 event: EventId("evt-start-abandoned".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
+                provenance: None,
             },
             false,
         )
@@ -1274,6 +1354,7 @@ mod tests {
                 scope: live_scope.clone(),
                 event: EventId("evt-start".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
+                provenance: None,
             },
             false,
         )
@@ -1363,6 +1444,7 @@ mod tests {
                 scope: scope.clone(),
                 event: event.clone(),
                 actor_kind: ActorKind::ClaudeCode,
+                provenance: None,
             },
             false,
         )
@@ -1401,6 +1483,360 @@ mod tests {
             projection.processed_events.is_empty(),
             "the triggering boundary's event must never have been recorded as processed"
         );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn start_registers_provenance_after_its_owning_scope_and_before_the_protocol_commits() {
+        let (db, db_path) = test_db("provenance-start-ordering");
+        let worktree = WorktreeId("wt-1".to_string());
+        let scope = ScopeId("scope-1".to_string());
+        let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
+
+        coordinate_boundary(
+            &db,
+            &capture,
+            &worktree,
+            &RuntimeBoundary::Start {
+                scope: scope.clone(),
+                event: EventId("evt-start".to_string()),
+                actor_kind: ActorKind::Codex,
+                provenance: Some(StartProvenance {
+                    session_id: "cx_session-1".to_string(),
+                    model_id: Some("gpt-5-codex".to_string()),
+                }),
+            },
+            false,
+        )
+        .expect("a start carrying provenance for a first-seen scope should succeed");
+
+        let store = MutationTraceStore::new(&db);
+        assert_eq!(
+            store
+                .load_scope_provenance(&scope)
+                .expect("provenance load should succeed"),
+            Some(ScopeProvenance {
+                scope_id: scope.clone(),
+                session_id: "cx_session-1".to_string(),
+                model_id: Some("gpt-5-codex".to_string()),
+            }),
+            "provenance is registered against the scope row the same Start just created"
+        );
+
+        let projection = store
+            .load_worktree(&worktree, Some(&scope), None)
+            .expect("load should succeed")
+            .expect("worktree should exist");
+        assert_eq!(
+            projection.scopes.get(&scope).map(|state| state.status),
+            Some(ScopeStatus::Active),
+            "the pure protocol Start must have committed after provenance was registered"
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn start_without_provenance_then_replay_with_provenance_does_not_backfill() {
+        let (db, db_path) = test_db("provenance-no-late-backfill");
+        let worktree = WorktreeId("wt-1".to_string());
+        let scope = ScopeId("scope-1".to_string());
+        let event = EventId("evt-start".to_string());
+        let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
+
+        coordinate_boundary(
+            &db,
+            &capture,
+            &worktree,
+            &RuntimeBoundary::Start {
+                scope: scope.clone(),
+                event: event.clone(),
+                actor_kind: ActorKind::ClaudeCode,
+                provenance: None,
+            },
+            false,
+        )
+        .expect("a start without provenance should succeed");
+
+        let store = MutationTraceStore::new(&db);
+        let admitted = store
+            .load_worktree(&worktree, Some(&scope), None)
+            .expect("load should succeed")
+            .expect("worktree should exist");
+        assert_eq!(
+            admitted.scopes.get(&scope).map(|state| state.status),
+            Some(ScopeStatus::Active),
+            "the provenance-free start must have admitted the scope"
+        );
+        assert_eq!(
+            store
+                .load_scope_provenance(&scope)
+                .expect("provenance load should succeed"),
+            None,
+            "a start without provenance persists no row"
+        );
+
+        coordinate_boundary(
+            &db,
+            &capture,
+            &worktree,
+            &RuntimeBoundary::Start {
+                scope: scope.clone(),
+                event: event.clone(),
+                actor_kind: ActorKind::ClaudeCode,
+                provenance: Some(StartProvenance {
+                    session_id: "cc_session-1".to_string(),
+                    model_id: Some("claude/opus".to_string()),
+                }),
+            },
+            false,
+        )
+        .expect("replaying the start with provenance follows normal replay semantics");
+
+        assert_eq!(
+            store
+                .load_scope_provenance(&scope)
+                .expect("provenance load should succeed"),
+            None,
+            "provenance is admission-bounded: an already-admitted scope never gains it later"
+        );
+
+        let replayed = store
+            .load_worktree(&worktree, Some(&scope), None)
+            .expect("load should succeed")
+            .expect("worktree should exist");
+        assert_eq!(
+            replayed.worktree_state.revision, admitted.worktree_state.revision,
+            "a replay must not advance the worktree revision"
+        );
+        assert_eq!(
+            replayed.processed_events, admitted.processed_events,
+            "a replay must not change the processed-event set"
+        );
+        assert_eq!(
+            replayed.scopes.get(&scope).map(|state| state.status),
+            Some(ScopeStatus::Active)
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn never_seen_scope_can_receive_provenance_before_successful_start() {
+        let (db, db_path) = test_db("provenance-retry-before-admission");
+        let worktree = WorktreeId("wt-1".to_string());
+        let scope = ScopeId("scope-1".to_string());
+        let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
+
+        let store = MutationTraceStore::new(&db);
+        store
+            .initialize_worktree(&worktree, &TreeId("tree-a".to_string()))
+            .expect("worktree initialization should succeed");
+        let seeded = store
+            .register_scope(&scope, &worktree, ActorKind::ClaudeCode)
+            .expect("seeding the owning scope row should succeed");
+        assert_eq!(
+            seeded.status,
+            ScopeStatus::NeverSeen,
+            "the seeded scope stands in for a first attempt that never reached the protocol"
+        );
+        assert_eq!(
+            store
+                .load_scope_provenance(&scope)
+                .expect("provenance load should succeed"),
+            None
+        );
+
+        coordinate_boundary(
+            &db,
+            &capture,
+            &worktree,
+            &RuntimeBoundary::Start {
+                scope: scope.clone(),
+                event: EventId("evt-start".to_string()),
+                actor_kind: ActorKind::ClaudeCode,
+                provenance: Some(StartProvenance {
+                    session_id: "cc_session-1".to_string(),
+                    model_id: Some("claude/opus".to_string()),
+                }),
+            },
+            false,
+        )
+        .expect("retrying a start against a still-NeverSeen scope should succeed");
+
+        assert_eq!(
+            store
+                .load_scope_provenance(&scope)
+                .expect("provenance load should succeed"),
+            Some(ScopeProvenance {
+                scope_id: scope.clone(),
+                session_id: "cc_session-1".to_string(),
+                model_id: Some("claude/opus".to_string()),
+            }),
+            "a scope that has not crossed admission may still gain provenance"
+        );
+
+        let projection = store
+            .load_worktree(&worktree, Some(&scope), None)
+            .expect("load should succeed")
+            .expect("worktree should exist");
+        assert_eq!(
+            projection.scopes.get(&scope).map(|state| state.status),
+            Some(ScopeStatus::Active),
+            "the retried start must commit the protocol transition"
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn an_admitted_scope_with_provenance_still_rejects_a_different_session() {
+        let (db, db_path) = test_db("provenance-admitted-session-conflict");
+        let worktree = WorktreeId("wt-1".to_string());
+        let scope = ScopeId("scope-1".to_string());
+        let event = EventId("evt-start".to_string());
+        let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
+
+        coordinate_boundary(
+            &db,
+            &capture,
+            &worktree,
+            &RuntimeBoundary::Start {
+                scope: scope.clone(),
+                event: event.clone(),
+                actor_kind: ActorKind::ClaudeCode,
+                provenance: Some(StartProvenance {
+                    session_id: "cc_session-1".to_string(),
+                    model_id: Some("claude/opus".to_string()),
+                }),
+            },
+            false,
+        )
+        .expect("the admitting start should succeed");
+
+        let store = MutationTraceStore::new(&db);
+        let admitted = store
+            .load_worktree(&worktree, Some(&scope), None)
+            .expect("load should succeed")
+            .expect("worktree should exist");
+        assert_eq!(
+            admitted.scopes.get(&scope).map(|state| state.status),
+            Some(ScopeStatus::Active)
+        );
+        let stored = store
+            .load_scope_provenance(&scope)
+            .expect("provenance load should succeed");
+
+        let failure = coordinate_boundary(
+            &db,
+            &capture,
+            &worktree,
+            &RuntimeBoundary::Start {
+                scope: scope.clone(),
+                event,
+                actor_kind: ActorKind::ClaudeCode,
+                provenance: Some(StartProvenance {
+                    session_id: "cc_session-2".to_string(),
+                    model_id: Some("claude/opus".to_string()),
+                }),
+            },
+            false,
+        )
+        .expect_err("an existing provenance row is checked even after admission");
+
+        assert!(
+            matches!(failure, CoordinateError::ScopeProvenanceRegistration(_)),
+            "unexpected error: {failure:?}"
+        );
+
+        assert_eq!(
+            store
+                .load_scope_provenance(&scope)
+                .expect("provenance load should succeed"),
+            stored,
+            "a rejected replay must never rewrite the stored provenance row"
+        );
+
+        let after = store
+            .load_worktree(&worktree, Some(&scope), None)
+            .expect("load should succeed")
+            .expect("worktree should exist");
+        assert_eq!(
+            after.worktree_state.revision,
+            admitted.worktree_state.revision
+        );
+        assert_eq!(after.processed_events, admitted.processed_events);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn a_provenance_registration_failure_rejects_the_start_before_the_protocol_commits() {
+        let (db, db_path) = test_db("provenance-registration-failure");
+        let worktree = WorktreeId("wt-1".to_string());
+        let scope = ScopeId("scope-1".to_string());
+        let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
+
+        let store = MutationTraceStore::new(&db);
+        store
+            .initialize_worktree(&worktree, &TreeId("tree-a".to_string()))
+            .expect("worktree initialization should succeed");
+        store
+            .register_scope(&scope, &worktree, ActorKind::ClaudeCode)
+            .expect("seeding the owning scope row should succeed");
+        let seeded = store
+            .register_scope_provenance(&ScopeProvenance {
+                scope_id: scope.clone(),
+                session_id: "cc_session-1".to_string(),
+                model_id: Some("claude/opus".to_string()),
+            })
+            .expect("seeding provenance should succeed");
+
+        let failure = coordinate_boundary(
+            &db,
+            &capture,
+            &worktree,
+            &RuntimeBoundary::Start {
+                scope: scope.clone(),
+                event: EventId("evt-start".to_string()),
+                actor_kind: ActorKind::ClaudeCode,
+                provenance: Some(StartProvenance {
+                    session_id: "cc_session-2".to_string(),
+                    model_id: Some("claude/opus".to_string()),
+                }),
+            },
+            false,
+        )
+        .expect_err("a conflicting provenance session must reject the start");
+
+        assert!(
+            matches!(failure, CoordinateError::ScopeProvenanceRegistration(_)),
+            "unexpected error: {failure:?}"
+        );
+
+        assert_eq!(
+            store
+                .load_scope_provenance(&scope)
+                .expect("provenance load should succeed"),
+            Some(seeded),
+            "a rejected start must never rewrite the stored provenance row"
+        );
+
+        let projection = store
+            .load_worktree(&worktree, Some(&scope), None)
+            .expect("load should succeed")
+            .expect("worktree should exist");
+        assert_eq!(
+            projection.scopes.get(&scope).map(|state| state.status),
+            Some(ScopeStatus::NeverSeen),
+            "a failed provenance registration leaves at most the owning NeverSeen scope row"
+        );
+        assert!(
+            projection.processed_events.is_empty(),
+            "the rejected start's event must never have been recorded as processed"
+        );
+        assert_eq!(projection.worktree_state.revision, 0);
 
         remove_test_db(&db_path);
     }
@@ -1920,6 +2356,7 @@ mod tests {
                 scope: scope.clone(),
                 event: EventId("evt-start".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
+                provenance: None,
             },
             false,
         )
@@ -2024,6 +2461,7 @@ mod tests {
                 scope: scope.clone(),
                 event: EventId("evt-start".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
+                provenance: None,
             },
             false,
         )
@@ -2107,6 +2545,7 @@ mod tests {
                 scope: scope.clone(),
                 event: EventId("evt-start".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
+                provenance: None,
             },
             false,
         )
@@ -2182,6 +2621,7 @@ mod tests {
                 scope: scope.clone(),
                 event: EventId("evt-start".to_string()),
                 actor_kind: ActorKind::ClaudeCode,
+                provenance: None,
             },
             ok_db,
         )

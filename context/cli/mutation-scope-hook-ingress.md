@@ -44,7 +44,7 @@ exactly five operations are supported.
 
 | `operation` | Other accepted keys | Maps to |
 | --- | --- | --- |
-| `start` | `scope_id`, `event_id`, `actor_kind` (all required, non-blank) | `RuntimeBoundary::Start` |
+| `start` | `scope_id`, `event_id`, `actor_kind` (all required, non-blank), plus an optional [`provenance`](mutation-scope-provenance.md#optional-on-the-start-ingress) object | `RuntimeBoundary::Start` |
 | `advance` | `scope_id`, `event_id`, `actor_kind` (all required, non-blank) | `RuntimeBoundary::Advance` |
 | `close` | `scope_id`, `event_id`, `actor_kind` (all required, non-blank) | `RuntimeBoundary::Close` |
 | `flush` | *(none)* | `RuntimeBoundary::Flush` |
@@ -67,20 +67,22 @@ The parser (`parse_mutation_scope_payload`) is strict and rejects, each with a
   (`field 'worktree_id' is not accepted; worktree identity is derived from the
   invoking checkout`);
 - `flush` carrying any `scope_id` / `event_id` / `actor_kind` field;
-- `abandon` carrying anything but `scope_id`.
+- `abandon` carrying anything but `scope_id`;
+- a `provenance` key on any operation but `start`, a non-object `provenance`, an
+  unexpected `provenance.<key>`, or a blank `session_id` / `model_id` inside it.
 
-Unexpected fields and `worktree_id` are validated explicitly against each
-operation's allowed key set. The hook transport remains local to
-`mutation_scope.rs`; no serde representation is added to the mutation-domain
-types.
-
+The hook transport remains local to `mutation_scope.rs`; no serde representation is added to the mutation-domain types. End-to-end regressions verify that this remains the harness-neutral transport: Claude and Codex supply canonical provenance at `Start`, while the ingress only forwards it and does not decide authorship or mutation attribution.
 ## Operation mapping
 
 `start` / `advance` / `close` build the matching `RuntimeBoundary` variant,
 forwarding `ScopeId(scope_id)`, `EventId(event_id)`, and the mapped `ActorKind`
 **verbatim** — no trimming, prefixing, hashing, normalization, UUID generation,
 or timestamping. A `scope_id` of `"  scope-A  "` reaches the runtime as
-`ScopeId("  scope-A  ")` unchanged.
+`ScopeId("  scope-A  ")` unchanged. `start` forwards its optional `provenance`
+the same way, as `StartProvenance`; whether that provenance is durably persisted
+is the runtime's admission-bounded decision, not the ingress's — a `start`
+replayed against an already-admitted scope that has no provenance row still
+succeeds and still persists none.
 
 `flush` builds `RuntimeBoundary::Flush`, which carries no scope, event, or actor
 identity. It drives the runtime's real observed-flush behavior: against a
@@ -228,10 +230,7 @@ and left as future work for the remaining harnesses:
 - `session → ScopeId` or `tool-call → EventId` derivation for OpenCode and Pi;
 - PID tracking, process supervisors, staleness detection, automatic scope
   abandonment;
-- harness settings generation or `sce setup` integration for OpenCode/Pi
-  (Claude's and Codex's registrations now ship — the Codex adapter lives in
-  `cli/src/services/hooks/codex_mutation_scope/` and is installed by
-  `sce setup --codex`; OpenCode/Pi remain unregistered).
+- harness settings generation or `sce setup` integration for OpenCode/Pi.
 
 Each adapter still owns its own `ScopeId` / `EventId` / `actor_kind`
 derivation and its own stale-process detection, and targets this ingress (or,
@@ -247,4 +246,5 @@ The Codex mapping and partial coverage are in [`codex-mutation-scope-integration
 - [Mutation-trace runtime coordinator](mutation-trace-runtime-coordinator.md)
 - [Mutation-trace scope abandonment](mutation-trace-scope-abandonment.md)
 - [Mutation-trace protected worktree](mutation-trace-protected-worktree.md)
+- [Mutation-scope provenance](mutation-scope-provenance.md)
 - [Agent Trace hooks command routing](../sce/agent-trace-hooks-command-routing.md)

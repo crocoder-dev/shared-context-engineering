@@ -13,6 +13,7 @@ mod tests;
 #[allow(unused_imports)]
 pub(crate) use coordinator::{
     coordinate, CoordinateError, CoordinateOutcome, ExternalTaintOperation, RuntimeBoundary,
+    StartProvenance,
 };
 #[allow(unused_imports)]
 pub(crate) use mutation_attribution::{
