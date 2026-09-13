@@ -11,9 +11,11 @@ Git worktree, built by the `mutation-cursor-runtime-coordinator` plan
 same `#[allow(dead_code)]` precedent as the rest of `mutation_trace`. Every
 submodule is declared privately in `runtime/mod.rs`, which re-exports
 `coordinate` and `abandon_scope` at `pub(crate)` — reachable crate-wide, contract
-in [`mutation-scope-runtime.md`](mutation-scope-runtime.md) — while
-`reconcile_worktree` stays `runtime`-internal and nothing under `runtime/` is
-wired into any hook, command, or `diff_traces` insertion yet.
+in [`mutation-scope-runtime.md`](mutation-scope-runtime.md). `coordinate()` and
+`abandon_scope()` are now driven by the generic `sce hooks mutation-scope` CLI
+ingress. `reconcile_worktree` stays `runtime`-internal and unwired, and the
+mutation runtime does not itself insert into `diff_traces`. No concrete Claude
+Code, Codex, OpenCode, or Pi lifecycle adapter is wired to the seam yet.
 
 `runtime` depends on `protocol`/`store`/`types` and on `services::checkout`,
 never the reverse — this is a structural module boundary, not merely a
@@ -235,8 +237,11 @@ that prefix are all implemented and both `pub(crate)` re-exported from
 `runtime/mod.rs` ([`mutation-scope-runtime.md`](mutation-scope-runtime.md)),
 with `runtime/tests.rs` covering `coordinate()` end to end and both entrypoints
 driven together; an inherited external-taint marker is overlaid onto
-`database_failure` recovery on the next invocation. Harness/command wiring
-remains future work.
+`database_failure` recovery on the next invocation. The generic
+`sce hooks mutation-scope` CLI ingress now drives both entrypoints
+(`start`/`advance`/`close`/`flush` → `coordinate()`, `abandon` → `abandon_scope()`);
+concrete harness lifecycle adapters (Claude Code, Codex, OpenCode, Pi) remain
+future work.
 
 See also: [`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md)
 (the per-worktree snapshot-ref maintenance pass under the same `WorktreeLock`),
