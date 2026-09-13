@@ -1,23 +1,10 @@
-//! Pure transition logic for the mutation-cursor protocol.
-//!
-//! Refines `liveScopesOn`/`attributionFor` (`spec/mutation_cursor.qnt:265-301`),
-//! `mkMutationEvent` (`spec/mutation_cursor.qnt:303-323`),
-//! `prepareAvailable`/`prepare`/`commitAttempt`
-//! (`spec/mutation_cursor.qnt:417-661`), and
-//! `taintHealthy`/`taint`/`recordDatabaseFailure`/`databaseFailure`
-//! (`spec/mutation_cursor.qnt:663-737`), `abandonLiveScope`/`abandon`
-//! (`spec/mutation_cursor.qnt:739-805`), and `recoverNeeded`/`recover`
-//! (`spec/mutation_cursor.qnt:807-886`). Every function here takes and
-//! returns plain [`super::types::ProtocolState`] values; none performs Git,
-//! database, filesystem, environment, network, async, or lock I/O.
-
 use std::collections::BTreeSet;
 
 use super::types::{
     boundary_event_key, boundary_scope, boundary_worktree, is_advance, is_close, is_flush, is_hook,
-    is_start, AttemptId, AttemptState, AttemptStatus, Attribution, Boundary, FailureKind,
-    MutationEvent, ProtocolState, ScopeId, ScopeState, ScopeStatus, TreeId, WorktreeId,
-    WorktreeState,
+    is_start, ActorKind, AttemptId, AttemptState, AttemptStatus, Attribution, Boundary,
+    FailureKind, MutationEvent, ProtocolState, ScopeId, ScopeState, ScopeStatus, TreeId,
+    WorktreeId, WorktreeState,
 };
 
 /// Advances a worktree revision counter by one, refusing to wrap past
@@ -74,6 +61,38 @@ pub fn attribution_for(state: &ProtocolState, worktree: &WorktreeId) -> Attribut
     } else {
         Attribution::AiContended
     }
+}
+
+pub fn is_codex_scope(state: &ProtocolState, scope: &ScopeId) -> bool {
+    state
+        .scopes
+        .get(scope)
+        .is_some_and(|scope_state| scope_state.actor_kind == ActorKind::Codex)
+}
+
+pub fn boundary_confirms_scope(boundary: &Boundary, scope: &ScopeId) -> bool {
+    is_close(boundary) && boundary_scope(boundary).as_ref() == Some(scope)
+}
+
+pub fn has_unconfirmed_codex_scope(
+    state: &ProtocolState,
+    live: &BTreeSet<ScopeId>,
+    boundary: &Boundary,
+) -> bool {
+    live.iter()
+        .any(|scope| is_codex_scope(state, scope) && !boundary_confirms_scope(boundary, scope))
+}
+
+pub fn attribution_for_boundary(
+    state: &ProtocolState,
+    worktree: &WorktreeId,
+    boundary: &Boundary,
+) -> Attribution {
+    let live = live_scopes_on(state, worktree);
+    if has_unconfirmed_codex_scope(state, &live, boundary) {
+        return Attribution::IneligibleUnscoped;
+    }
+    attribution_for(state, worktree)
 }
 
 /// Prepares `attempt` against `boundary`, snapshotting the worktree's current
@@ -158,36 +177,6 @@ pub struct CommitOutcome {
     pub state: ProtocolState,
 }
 
-/// Evaluates and commits `attempt`, refining `commitAttempt`
-/// (`spec/mutation_cursor.qnt:455-661`) for all four boundary kinds
-/// (`Start`/`Advance`/`Close`/`Flush`) in one pass.
-///
-/// On rejection (`accepted == false`), only the attempt's own status moves to
-/// `Rejected` (or stays as-is if it was never `Prepared`); no other durable
-/// state changes, so a rejected or stale attempt never advances the
-/// revision, moves the cursor, marks its event processed, or emits mutation
-/// evidence.
-///
-/// On acceptance, applies scope lifecycle transitions
-/// (`NeverSeen`→`Active` on an accepted, observing `Start`; →`Closed` on an
-/// accepted, observing `Close`), cursor advancement (`after_tree` when
-/// `observes and not needs_rebaseline`, otherwise unchanged), revision
-/// advancement and the attempt's `Committed` status, processed-event-key
-/// recording for hook boundaries, and — when `changed` — materializes exactly
-/// one `MutationEvent` (refining `mkMutationEvent`,
-/// `spec/mutation_cursor.qnt:303-323`) whose `active_scopes`/`attribution`
-/// are computed by [`live_scopes_on`]/[`attribution_for`] against the
-/// **pre-transition** state passed into this call, exactly as `commitAttempt`
-/// computes `live`/`attribution` before applying `nextScope`
-/// (`spec/mutation_cursor.qnt:484-485` precede the `nextScope` `val` at line
-/// 530): a `Start` boundary's emitted event never attributes the mutation to
-/// the scope it is about to activate, and a `Close` boundary's emitted event
-/// still attributes to the scope it is about to close.
-///
-/// A no-op (evaluation flags all `false`, state unchanged) when `attempt` has
-/// no prepared record or its boundary's worktree cannot be resolved — an
-/// attempt only reaches this state via [`prepare`], which already refuses to
-/// prepare against an unresolvable worktree.
 pub fn commit(state: &ProtocolState, attempt: &AttemptId) -> CommitOutcome {
     let Some(resolved) = ResolvedAttempt::resolve(state, attempt) else {
         return CommitOutcome {
@@ -366,7 +355,7 @@ impl ResolvedAttempt {
                 active_scopes: live_scopes_on(state, &self.worktree),
                 tainted: self.worktree_state.tainted,
                 failure_kind: self.worktree_state.failure_kind,
-                attribution: attribution_for(state, &self.worktree),
+                attribution: attribution_for_boundary(state, &self.worktree, &self.boundary),
                 boundary: self.boundary.clone(),
             });
         }

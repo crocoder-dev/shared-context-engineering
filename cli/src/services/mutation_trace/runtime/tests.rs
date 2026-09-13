@@ -14,8 +14,8 @@ use crate::services::mutation_trace::store::{
     encode_revision, CasResult, DurableTransition, MutationTraceStore,
 };
 use crate::services::mutation_trace::types::{
-    boundary_event_key, boundary_scope, ActorKind, AttemptId, Boundary, EventId, FailureKind,
-    ScopeId, ScopeStatus, WorktreeId,
+    boundary_event_key, boundary_scope, ActorKind, AttemptId, Attribution, Boundary, EventId,
+    FailureKind, ScopeId, ScopeStatus, WorktreeId,
 };
 use crate::services::patch::{parse_patch, ParsedPatch};
 
@@ -2392,4 +2392,135 @@ fn a_relevant_event_behind_128_newer_events_is_never_loaded_or_reconstructed() {
             .all(|file| file.hunks.iter().all(|hunk| hunk.lines.is_empty())),
         "the committed line stays unresolved because its only match was never inspected"
     );
+}
+
+fn patch_is_empty(patch: &ParsedPatch) -> bool {
+    patch
+        .files
+        .iter()
+        .all(|file| file.hunks.iter().all(|hunk| hunk.lines.is_empty()))
+}
+
+fn drive_codex_overlap_transition(
+    label: &str,
+    closing_scope: &ScopeId,
+    closing_actor: ActorKind,
+) -> (Attribution, ParsedPatch, ParsedPatch) {
+    let repo = TestRepo::new(label);
+    let git_dir = resolve_git_dir(&repo.repo_root).expect("git dir should resolve");
+    let checkout_id =
+        get_or_create_checkout_id(&git_dir).expect("checkout identity should resolve");
+    let snapshot =
+        GitSnapshotService::new(&repo.repo_root).expect("a snapshot service should build");
+    let ok_db = || repo.open_db();
+
+    std::fs::write(repo.repo_root.join("file.rs"), b"one\n").expect("the baseline write");
+    coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .expect("the baseline observation should materialize the worktree");
+
+    let codex = ScopeId("codex-a".to_string());
+    let claude = ScopeId("claude-c".to_string());
+    coordinate(
+        &repo.repo_root,
+        &RuntimeBoundary::Start {
+            scope: codex.clone(),
+            event: EventId("evt-codex-start".to_string()),
+            actor_kind: ActorKind::Codex,
+        },
+        ok_db,
+    )
+    .expect("starting the Codex scope should succeed");
+    coordinate(
+        &repo.repo_root,
+        &RuntimeBoundary::Start {
+            scope: claude.clone(),
+            event: EventId("evt-claude-start".to_string()),
+            actor_kind: ActorKind::ClaudeCode,
+        },
+        ok_db,
+    )
+    .expect("starting the Claude scope should succeed");
+
+    std::fs::write(repo.repo_root.join("file.rs"), b"one\ntwo\n").expect("the mutating write");
+    let outcome = coordinate(
+        &repo.repo_root,
+        &RuntimeBoundary::Close {
+            scope: closing_scope.clone(),
+            event: EventId("evt-close".to_string()),
+            actor_kind: closing_actor,
+        },
+        ok_db,
+    )
+    .expect("the closing boundary should succeed");
+
+    let event = outcome
+        .mutation_event
+        .expect("the observed tree change should commit a mutation event");
+    assert_eq!(
+        event.active_scopes,
+        std::collections::BTreeSet::from([codex, claude]),
+        "the full protocol live set is still recorded on the event"
+    );
+
+    let after = snapshot
+        .capture_tree()
+        .expect("capturing the committed tree should succeed");
+    let db = repo.db();
+    let store = MutationTraceStore::new(&db);
+    let committed = parse_patch(
+        "diff --git a/file.rs b/file.rs\n--- a/file.rs\n+++ b/file.rs\n@@ -1,1 +1,2 @@\n one\n+two\n",
+        None,
+    )
+    .expect("the committed patch should parse");
+    let attribution = resolve_bounded_mutation_attribution(
+        &store,
+        &snapshot,
+        &WorktreeId(checkout_id),
+        &ParsedPatch { files: Vec::new() },
+        &committed,
+        &after,
+        None,
+    );
+
+    (
+        event.attribution,
+        attribution.result.mutation_ai_patch,
+        attribution.result.resolved_non_ai_patch,
+    )
+}
+
+#[test]
+fn an_unconfirmed_codex_overlap_never_reaches_the_mutation_ai_patch() {
+    let (attribution, ai_patch, non_ai_patch) = drive_codex_overlap_transition(
+        "codex-unconfirmed-lineage",
+        &ScopeId("claude-c".to_string()),
+        ActorKind::ClaudeCode,
+    );
+
+    assert_eq!(attribution, Attribution::IneligibleUnscoped);
+    assert_ne!(attribution, Attribution::AiContended);
+    assert!(
+        patch_is_empty(&ai_patch),
+        "an ambiguous transition must never become AI mutation lineage"
+    );
+    assert!(
+        !patch_is_empty(&non_ai_patch),
+        "the line is still resolved, just not as AI"
+    );
+}
+
+#[test]
+fn a_confirmed_codex_close_overlap_is_contended_and_still_not_ai_lineage() {
+    let (attribution, ai_patch, non_ai_patch) = drive_codex_overlap_transition(
+        "codex-confirmed-lineage",
+        &ScopeId("codex-a".to_string()),
+        ActorKind::Codex,
+    );
+
+    assert_eq!(attribution, Attribution::AiContended);
+    assert!(
+        patch_is_empty(&ai_patch),
+        "only AiExclusive becomes AI mutation lineage"
+    );
+    assert!(!patch_is_empty(&non_ai_patch));
 }

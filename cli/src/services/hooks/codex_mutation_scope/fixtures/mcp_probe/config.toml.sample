@@ -1,0 +1,24 @@
+model = "gpt-5.6-sol"
+model_reasoning_effort = "low"
+
+[projects."<WORK>/probe-repo"]
+trust_level = "trusted"
+
+[mcp_servers.probe]
+command = "<PYTHON3>"
+args = ["<MCP_PROBE_DIR>/server.py"]
+startup_timeout_sec = 90
+tool_timeout_sec = 240
+[mcp_servers.probe.env]
+MCP_PROBE_DIR = "<WORK>/probe-repo"
+MCP_PROBE_SLOW_SECONDS = "8"
+
+[mcp_servers.probe_par]
+command = "<PYTHON3>"
+args = ["<MCP_PROBE_DIR>/server.py"]
+supports_parallel_tool_calls = true
+startup_timeout_sec = 90
+tool_timeout_sec = 240
+[mcp_servers.probe_par.env]
+MCP_PROBE_DIR = "<WORK>/probe-repo"
+MCP_PROBE_SLOW_SECONDS = "8"
