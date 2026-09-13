@@ -1022,11 +1022,7 @@ mod tests {
             ActorKind::ClaudeCode,
             ActorKind::ClaudeCode,
         );
-        assert_contended_attribution(
-            "ac5-different-actor",
-            ActorKind::ClaudeCode,
-            ActorKind::OpenCode,
-        );
+        assert_contended_attribution("ac5-different-actor", ActorKind::ClaudeCode, ActorKind::Pi);
     }
 
     #[test]
@@ -1167,6 +1163,149 @@ mod tests {
             .mutation_event
             .expect("a real tree change observed at the Codex Close should commit an event");
         assert_eq!(event.active_scopes, BTreeSet::from([codex, claude]));
+        assert_eq!(event.attribution, Attribution::AiContended);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn an_unconfirmed_opencode_scope_makes_another_harness_boundary_ineligible() {
+        let (db, db_path) = test_db("opencode-unconfirmed-cross-harness");
+        let worktree = WorktreeId("wt-1".to_string());
+        let opencode = ScopeId("opencode-a".to_string());
+        let claude = ScopeId("claude-c".to_string());
+        let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
+
+        coordinate_boundary(
+            &db,
+            &capture,
+            &worktree,
+            &RuntimeBoundary::Start {
+                scope: opencode.clone(),
+                event: EventId("evt-opencode-start".to_string()),
+                actor_kind: ActorKind::OpenCode,
+                provenance: None,
+            },
+            false,
+        )
+        .expect("starting the OpenCode scope should succeed");
+        coordinate_boundary(
+            &db,
+            &capture,
+            &worktree,
+            &RuntimeBoundary::Start {
+                scope: claude.clone(),
+                event: EventId("evt-claude-start".to_string()),
+                actor_kind: ActorKind::ClaudeCode,
+                provenance: None,
+            },
+            false,
+        )
+        .expect("starting the Claude scope should succeed");
+
+        capture.push_success(TreeId("tree-b".to_string()));
+        let outcome = coordinate_boundary(
+            &db,
+            &capture,
+            &worktree,
+            &RuntimeBoundary::Close {
+                scope: claude.clone(),
+                event: EventId("evt-claude-close".to_string()),
+                actor_kind: ActorKind::ClaudeCode,
+            },
+            false,
+        )
+        .expect("closing the Claude scope should succeed");
+
+        let event = outcome
+            .mutation_event
+            .expect("a real tree change with two live scopes should still commit an event");
+        assert_eq!(
+            event.active_scopes,
+            BTreeSet::from([opencode.clone(), claude.clone()])
+        );
+        assert_eq!(event.attribution, Attribution::IneligibleUnscoped);
+        assert_ne!(event.attribution, Attribution::AiContended);
+
+        capture.push_success(TreeId("tree-c".to_string()));
+        let confirmed = coordinate_boundary(
+            &db,
+            &capture,
+            &worktree,
+            &RuntimeBoundary::Close {
+                scope: opencode.clone(),
+                event: EventId("evt-opencode-close".to_string()),
+                actor_kind: ActorKind::OpenCode,
+            },
+            false,
+        )
+        .expect("closing the OpenCode scope should succeed");
+
+        let confirmed_event = confirmed
+            .mutation_event
+            .expect("the OpenCode Close should commit its own observed change");
+        assert_eq!(confirmed_event.active_scopes, BTreeSet::from([opencode]));
+        assert_eq!(
+            confirmed_event.attribution,
+            Attribution::AiExclusive(ScopeId("opencode-a".to_string()))
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn a_confirming_opencode_close_contends_with_a_live_non_opencode_scope() {
+        let (db, db_path) = test_db("opencode-confirmed-cross-harness");
+        let worktree = WorktreeId("wt-1".to_string());
+        let opencode = ScopeId("opencode-a".to_string());
+        let claude = ScopeId("claude-c".to_string());
+        let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
+
+        coordinate_boundary(
+            &db,
+            &capture,
+            &worktree,
+            &RuntimeBoundary::Start {
+                scope: opencode.clone(),
+                event: EventId("evt-opencode-start".to_string()),
+                actor_kind: ActorKind::OpenCode,
+                provenance: None,
+            },
+            false,
+        )
+        .expect("starting the OpenCode scope should succeed");
+        coordinate_boundary(
+            &db,
+            &capture,
+            &worktree,
+            &RuntimeBoundary::Start {
+                scope: claude.clone(),
+                event: EventId("evt-claude-start".to_string()),
+                actor_kind: ActorKind::ClaudeCode,
+                provenance: None,
+            },
+            false,
+        )
+        .expect("starting the Claude scope should succeed");
+
+        capture.push_success(TreeId("tree-b".to_string()));
+        let outcome = coordinate_boundary(
+            &db,
+            &capture,
+            &worktree,
+            &RuntimeBoundary::Close {
+                scope: opencode.clone(),
+                event: EventId("evt-opencode-close".to_string()),
+                actor_kind: ActorKind::OpenCode,
+            },
+            false,
+        )
+        .expect("closing the OpenCode scope should succeed");
+
+        let event = outcome
+            .mutation_event
+            .expect("a real tree change observed at the OpenCode Close should commit an event");
+        assert_eq!(event.active_scopes, BTreeSet::from([opencode, claude]));
         assert_eq!(event.attribution, Attribution::AiContended);
 
         remove_test_db(&db_path);
