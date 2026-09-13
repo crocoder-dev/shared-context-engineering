@@ -12,11 +12,6 @@ use crate::services::mutation_trace::types::{TreeId, WorktreeId};
 use super::git_snapshot::{GitSnapshotService, PinInventoryError, PinnedRef};
 use super::worktree_lock::{acquire_inner, WorktreeLockError};
 
-/// Bounded wait for the worktree's `WorktreeLock` before a reconciliation pass
-/// gives up. Its value intentionally matches the coordinator's private
-/// `WORKTREE_LOCK_TIMEOUT` but is deliberately **not** a shared abstraction:
-/// there is no semantic reason the two timeouts must always stay identical, so
-/// each module owns its own constant.
 const RECONCILIATION_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Outcome counts of one successful reconciliation pass.
