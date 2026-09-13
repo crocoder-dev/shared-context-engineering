@@ -34,7 +34,7 @@ The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor comm
 - default global/local config-file location reporting, plus validation of existing global and repo-local `sce/config.json` readability and schema compliance (delegated to `ConfigLifecycle::diagnose`)
 - startup config resolution no longer blocks doctor on invalid default-discovered config files; doctor reaches its own config-validation path, reports those files as problems, and keeps invalid-config remediation manual-only
 - local DB location reporting, DB parent-directory readiness checks, and existing-DB health validation (delegated to `LocalDbLifecycle::diagnose`)
-- local DB reporting plus checkout-aware Agent Trace DB diagnostics; healthy identity and path metadata stay in JSON while human text summarizes them under `Environment` → `Repository identity`
+- local DB reporting plus repository-scoped Agent Trace DB diagnostics; healthy identity and path metadata stay in JSON while human text summarizes them under `Environment` → `Repository identity`
 - explicit git-unavailable, outside-repo, and bare-repo repository-targeting failures
 - effective hook-path source (`default`, local `core.hooksPath`, global `core.hooksPath`)
 - repository root and hooks directory resolution when a repository target is detected
@@ -129,7 +129,7 @@ The broadened contract for `sce doctor` must cover the following problem invento
 - local DB and repository-scoped Agent Trace DB parent directories are missing or not writable
 - local DB and repository-scoped Agent Trace DB bootstrap or health is broken
 - Agent Trace DB file exists but cannot be opened (connection failure) or has incomplete schema (missing/unapplied migrations) — reported as `AgentTraceDbConnectionFailed` / `AgentTraceDbSchemaNotReady` with manual-only remediation directing to `sce setup`
-- Agent Trace checkout ID plus repository-scoped DB path/health remain in the complete report and JSON; human text summarizes them under `Environment` → `Repository identity` without exposing healthy identity metadata. Repository DB records include repository ID, identity source, safe canonical identity, configured remote name, and never raw remote URLs
+- Repository-scoped DB path/health remains in the complete report and JSON; human text summarizes it under `Environment` → `Repository identity` without exposing healthy identity metadata. Repository DB records include repository ID, identity source, safe canonical identity, configured remote name, and never raw remote URLs. Checkout identity was removed by the `remove-checkout-id` plan and is no longer reported (see `context/cli/checkout-identity.md`)
 
 ### Repository targeting and git readiness
 
@@ -213,7 +213,7 @@ Services implementing `ServiceLifecycle`:
 - `HooksLifecycle` in `cli/src/services/hooks/lifecycle.rs`: checks hook rollout integrity, required-hook presence/executability/content
 - `LocalDbLifecycle` in `cli/src/services/local_db/lifecycle.rs`: validates DB path/health, bootstraps DB parent directory
 - `AuthDbLifecycle` in `cli/src/services/auth_db/lifecycle.rs`: validates encrypted auth DB path/health, bootstraps DB parent directory
-- `AgentTraceDbLifecycle` in `cli/src/services/agent_trace_db/lifecycle.rs`: validates repository-scoped Agent Trace DB path/health from resolved repository identity, reports checkout identity as diagnostics when available, and bootstraps the resolved DB parent directory
+- `AgentTraceDbLifecycle` in `cli/src/services/agent_trace_db/lifecycle.rs`: validates repository-scoped Agent Trace DB path/health from resolved repository identity, and bootstraps the resolved DB parent directory
 
 The `doctor` command aggregates `diagnose` and `fix` across all registered providers.
 The `setup` command aggregates `setup` across all registered providers in order (config → local_db → auth_db → agent_trace_db → hooks).

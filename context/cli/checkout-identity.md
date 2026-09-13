@@ -1,31 +1,7 @@
-# Checkout Identity Service
+# Checkout Identity Service (removed)
 
-The checkout identity service lives in `cli/src/services/checkout/`.
+The checkout identity service (`cli/src/services/checkout/`: `resolve_git_dir`, `read_checkout_id`, `get_or_create_checkout_id`) was removed by the `remove-checkout-id` plan. SCE no longer creates or reads `<git-dir>/sce/checkout-id`; there is no per-clone/worktree identity anywhere in the current code, and `agent_trace_storage::ResolvedAgentTraceStorage` no longer carries a `checkout_id` field. `sce setup` and `sce doctor` (text and JSON) no longer mention checkout identity.
 
-It assigns a stable identity to a local Git checkout or linked Git worktree. Checkout identity remains per clone/worktree, but active Agent Trace persistence is now repository-scoped through `agent_trace_storage`: checkout ID is diagnostic metadata and is not stored on Agent Trace rows. The former per-checkout Agent Trace DB opener and its path helper were removed by the `retire-legacy-agent-trace-db` plan; there is no checkout-scoped DB code path.
+Repository-scoped Agent Trace persistence never depended on checkout identity for correctness: it was diagnostic metadata only, never stored on Agent Trace rows and never used to select the active DB (see `context/cli/agent-trace-storage.md`). Any pre-existing `<git-dir>/sce/checkout-id` file left on disk from before this removal is inert and untouched by SCE, the same convention already applied to legacy `agent-trace-<checkout-id>.db` files (see `context/sce/agent-trace-db.md`).
 
-## Current code surface
-
-- `cli/src/services/checkout/mod.rs`
-  - `resolve_git_dir(repo_root)` runs `git rev-parse --git-dir` from the supplied repository root.
-  - `read_checkout_id(git_dir)` reads `<git-dir>/sce/checkout-id` and validates non-empty UUID syntax.
-  - `get_or_create_checkout_id(git_dir)` reuses an existing ID or writes a new UUIDv7 checkout ID to `<git-dir>/sce/checkout-id`.
-
-## Current integration state
-
-The module is registered through `cli/src/services/mod.rs` and is consumed by `agent_trace_storage` during repository-scoped storage resolution.
-
-During setup and hook runtime:
-
-- Config resolution provides `agent_trace.repository_id` and `agent_trace.repository_remote` (default `origin`).
-- `agent_trace_storage::resolve_agent_trace_storage(...)` resolves repository identity, calls `checkout::resolve_git_dir(repo_root)`, and creates/reuses `<git-dir>/sce/checkout-id` for diagnostics.
-- The active DB path is `<state_root>/sce/repos/<repository-id>/agent-trace.db`.
-- `RepositoryAgentTraceDb` opens through the repository fast-path-then-migrate flow and validates `repository_metadata.repository_id`.
-
-`sce doctor` still displays checkout identity where available. The former Agent Trace list/status/status-all/shell UX is no longer available; `sce sync` operates on the current repository-scoped DB. Any pre-migration `<state_root>/sce/agent-trace-*.db` checkout-scoped files left on disk are never touched by SCE and are no longer inspectable through the CLI.
-
-## Testing boundary
-
-No unit tests are currently included for this filesystem/Git-facing service. Filesystem, Git repository, and database behaviors should be covered in integration tests rather than unit tests per `context/patterns.md`.
-
-See also: `context/cli/agent-trace-storage.md`, `context/cli/default-path-catalog.md`, `context/sce/agent-trace-db.md`, `context/sce/agent-trace-hooks-command-routing.md`.
+See also: `context/glossary.md` (`checkout identity` entry), `context/cli/agent-trace-storage.md`, `context/sce/agent-trace-db.md`.

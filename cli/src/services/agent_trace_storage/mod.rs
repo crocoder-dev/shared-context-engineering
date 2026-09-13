@@ -1,21 +1,10 @@
-//! Repository-scoped Agent Trace storage resolution.
-//!
-//! Resolves the active Agent Trace database for a Git repository checkout:
-//! one logical Git repository maps to exactly one database at
-//! `<state-root>/sce/repos/<repository-id>/agent-trace.db`. Clones and linked
-//! worktrees of the same logical repository share that database while keeping
-//! their own distinct checkout IDs. Legacy checkout-scoped
-//! `agent-trace-<checkout-id>.db` files are never selected, created, or
-//! touched by this resolver.
-
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use crate::services::agent_trace_db::repository::{RepositoryAgentTraceDb, RepositoryMetadata};
-use crate::services::checkout::{get_or_create_checkout_id, resolve_git_dir};
 use crate::services::default_paths::{
     agent_trace_db_path_for_repository, agent_trace_db_path_for_repository_at,
 };
@@ -46,9 +35,6 @@ pub struct ResolvedAgentTraceStorage {
     /// Repository identity (canonical identity plus repository ID) and the
     /// source it was resolved from.
     pub repository_identity: ResolvedRepositoryIdentity,
-    /// Stable identity of this clone/worktree. Kept for diagnostics only;
-    /// never persisted on Agent Trace rows.
-    pub checkout_id: String,
     /// Repository-scoped database path
     /// `<state-root>/sce/repos/<repository-id>/agent-trace.db`.
     pub db_path: PathBuf,
@@ -67,7 +53,7 @@ pub fn resolve_agent_trace_storage(
 ) -> Result<ResolvedAgentTraceStorage> {
     let repository_identity = resolve_identity(context)?;
     let db_path = agent_trace_db_path_for_repository(&repository_identity.identity.repository_id)?;
-    open_storage(context, repository_identity, db_path)
+    open_storage(repository_identity, db_path)
 }
 
 /// Resolution core against an explicit state root, so tests can exercise the
@@ -81,7 +67,7 @@ pub fn resolve_agent_trace_storage_at_state_root(
         state_root,
         &repository_identity.identity.repository_id,
     )?;
-    open_storage(context, repository_identity, db_path)
+    open_storage(repository_identity, db_path)
 }
 
 /// Resolves repository-scoped Agent Trace storage for high-frequency hook
@@ -97,7 +83,7 @@ pub fn resolve_agent_trace_storage_for_hook_runtime(
 ) -> Result<ResolvedAgentTraceStorage> {
     let repository_identity = resolve_identity(context)?;
     let db_path = agent_trace_db_path_for_repository(&repository_identity.identity.repository_id)?;
-    open_storage_for_hook_runtime(context, repository_identity, db_path)
+    open_storage_for_hook_runtime(repository_identity, db_path)
 }
 
 /// Hook-runtime resolution core against an explicit state root, so tests can
@@ -111,7 +97,7 @@ pub fn resolve_agent_trace_storage_for_hook_runtime_at_state_root(
         state_root,
         &repository_identity.identity.repository_id,
     )?;
-    open_storage_for_hook_runtime(context, repository_identity, db_path)
+    open_storage_for_hook_runtime(repository_identity, db_path)
 }
 
 fn resolve_identity(context: &AgentTraceStorageContext<'_>) -> Result<ResolvedRepositoryIdentity> {
@@ -124,16 +110,10 @@ fn resolve_identity(context: &AgentTraceStorageContext<'_>) -> Result<ResolvedRe
 }
 
 fn open_storage(
-    context: &AgentTraceStorageContext<'_>,
     repository_identity: ResolvedRepositoryIdentity,
     db_path: PathBuf,
 ) -> Result<ResolvedAgentTraceStorage> {
-    // Opening the database creates `repos/<repository-id>/` when missing;
-    // directory creation is idempotent and first-time schema initialization may
-    // briefly race on SQLite metadata locks, so retry the fast-path/migrate
-    // sequence a small bounded number of times.
     open_storage_with(
-        context,
         repository_identity,
         db_path,
         open_repository_db_concurrently_safe,
@@ -141,12 +121,10 @@ fn open_storage(
 }
 
 fn open_storage_for_hook_runtime(
-    context: &AgentTraceStorageContext<'_>,
     repository_identity: ResolvedRepositoryIdentity,
     db_path: PathBuf,
 ) -> Result<ResolvedAgentTraceStorage> {
     open_storage_with(
-        context,
         repository_identity,
         db_path,
         open_repository_db_for_hook_runtime,
@@ -154,30 +132,15 @@ fn open_storage_for_hook_runtime(
 }
 
 fn open_storage_with(
-    context: &AgentTraceStorageContext<'_>,
     repository_identity: ResolvedRepositoryIdentity,
     db_path: PathBuf,
     open_db: impl FnOnce(&Path, &str) -> Result<(RepositoryAgentTraceDb, RepositoryMetadata)>,
 ) -> Result<ResolvedAgentTraceStorage> {
-    let git_dir = resolve_git_dir(context.repository_root).with_context(|| {
-        format!(
-            "failed to resolve git directory for Agent Trace repository DB from '{}'",
-            context.repository_root.display()
-        )
-    })?;
-    let checkout_id = get_or_create_checkout_id(&git_dir).with_context(|| {
-        format!(
-            "failed to get or create checkout identity under '{}'",
-            git_dir.display()
-        )
-    })?;
-
     let repository_id = &repository_identity.identity.repository_id;
     let (db, metadata) = open_db(&db_path, repository_id)?;
 
     Ok(ResolvedAgentTraceStorage {
         repository_identity,
-        checkout_id,
         db_path,
         db,
         metadata,
@@ -345,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn clones_of_the_same_repository_share_the_db_path_with_distinct_checkout_ids() {
+    fn clones_of_the_same_repository_share_the_db_path() {
         let state_root = unique_temp_dir("state-clones");
         // Equivalent SSH and HTTPS remotes for the same logical repository.
         let clone_a = init_git_repo_with_remote("clone-a", "git@github.com:acme/widgets.git");
@@ -363,7 +326,6 @@ mod tests {
             storage_b.repository_identity.identity.repository_id
         );
         assert_eq!(storage_a.db_path, storage_b.db_path);
-        assert_ne!(storage_a.checkout_id, storage_b.checkout_id);
         assert_no_legacy_db_paths(&state_root);
 
         std::fs::remove_dir_all(&state_root).expect("clean up state root");
@@ -372,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn linked_worktree_shares_the_db_path_with_a_distinct_checkout_id() {
+    fn linked_worktree_shares_the_db_path() {
         let state_root = unique_temp_dir("state-worktree");
         let repo = init_git_repo_with_remote("worktree-main", "git@github.com:acme/widgets.git");
         git(&repo, &["config", "user.email", "test@example.com"]);
@@ -399,7 +361,6 @@ mod tests {
                 .expect("worktree storage should resolve");
 
         assert_eq!(storage_main.db_path, storage_worktree.db_path);
-        assert_ne!(storage_main.checkout_id, storage_worktree.checkout_id);
         assert_no_legacy_db_paths(&state_root);
 
         std::fs::remove_dir_all(&state_root).expect("clean up state root");
@@ -445,7 +406,6 @@ mod tests {
             .expect("second resolution should succeed");
 
         assert_eq!(first.db_path, second.db_path);
-        assert_eq!(first.checkout_id, second.checkout_id);
         assert_eq!(
             first.repository_identity.identity.repository_id,
             second.repository_identity.identity.repository_id
@@ -551,7 +511,6 @@ mod tests {
             resolve_agent_trace_storage_at_state_root(&context_for(&clone_b), &state_root)
                 .expect("clone B storage should resolve");
         assert_eq!(storage_a.db_path, storage_b.db_path);
-        assert_ne!(storage_a.checkout_id, storage_b.checkout_id);
 
         let patches = storage_b
             .db

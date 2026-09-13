@@ -80,7 +80,6 @@ struct RepositoryDatabaseSetup {
     canonical_identity: String,
     identity_source: String,
     configured_remote: Option<String>,
-    checkout_id: String,
     source_instance_id: String,
     database_path: PathBuf,
 }
@@ -107,7 +106,6 @@ fn initialize_repository_agent_trace_db(repo_root: &Path) -> Result<RepositoryDa
         canonical_identity: storage.repository_identity.identity.canonical_identity,
         identity_source,
         configured_remote,
-        checkout_id: storage.checkout_id,
         source_instance_id: storage.metadata.source_instance_id,
         database_path: storage.db_path,
     })
@@ -120,12 +118,11 @@ fn format_repository_storage_setup_message(setup: &RepositoryDatabaseSetup) -> S
         .map(|remote| format!("\nAgent Trace configured remote: {remote}"))
         .unwrap_or_default();
     format!(
-        "Agent Trace repository ID: {}\nAgent Trace identity source: {}\nAgent Trace canonical identity: {}{}\nAgent Trace checkout identity: {}\nAgent Trace source-instance ID: {}\nAgent Trace repository-scoped database initialized at '{}'.",
+        "Agent Trace repository ID: {}\nAgent Trace identity source: {}\nAgent Trace canonical identity: {}{}\nAgent Trace source-instance ID: {}\nAgent Trace repository-scoped database initialized at '{}'.",
         setup.repository_id,
         setup.identity_source,
         setup.canonical_identity,
         remote_line,
-        setup.checkout_id,
         setup.source_instance_id,
         setup.database_path.display()
     )
@@ -237,7 +234,6 @@ mod tests {
             canonical_identity: String::from("github.com/example/repo"),
             identity_source: String::from("remote_url"),
             configured_remote: configured_remote.map(String::from),
-            checkout_id: String::from("checkout-abc"),
             source_instance_id: String::from("11111111-2222-3333-4444-555555555555"),
             database_path: PathBuf::from("/tmp/agent-trace.db"),
         }
