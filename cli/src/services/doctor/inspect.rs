@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::services::agent_trace_db::lifecycle::diagnose_agent_trace_db_health;
-use crate::services::checkout;
 use crate::services::codex_hook_config;
 use crate::services::codex_hook_policy::CodexHookPolicyReadiness;
 use crate::services::codex_hook_trust;
@@ -24,12 +23,11 @@ use crate::services::setup::{
 };
 
 use super::types::{
-    AgentTraceDbHealth, CheckoutIdentityHealth, DoctorFixResultRecord, DoctorProblem,
-    FileLocationHealth, FixResult, GlobalStateHealth, HookContentState, HookDoctorReport,
-    HookFileHealth, HookPathSource, IntegrationArea, IntegrationChildHealth,
-    IntegrationContentState, IntegrationGroupHealth, IntegrationGroupKey, IntegrationTarget,
-    PostCommitAutoSyncHealth, PostCommitAutoSyncState, ProblemCategory, ProblemFixability,
-    ProblemKind, ProblemSeverity, Readiness,
+    AgentTraceDbHealth, DoctorFixResultRecord, DoctorProblem, FileLocationHealth, FixResult,
+    GlobalStateHealth, HookContentState, HookDoctorReport, HookFileHealth, HookPathSource,
+    IntegrationArea, IntegrationChildHealth, IntegrationContentState, IntegrationGroupHealth,
+    IntegrationGroupKey, IntegrationTarget, PostCommitAutoSyncHealth, PostCommitAutoSyncState,
+    ProblemCategory, ProblemFixability, ProblemKind, ProblemSeverity, Readiness,
 };
 use super::{is_executable, DoctorDependencies, DoctorMode, REQUIRED_HOOKS};
 
@@ -47,7 +45,6 @@ pub(super) fn build_report_with_lifecycle_problems(
         lifecycle_problems,
         codex_policy_readiness,
     );
-    report.checkout_identity = collect_checkout_identity_health(repository_root);
     report.agent_trace_db = collect_agent_trace_db_health(repository_root, &mut report.problems);
     report.readiness = if report
         .problems
@@ -69,7 +66,6 @@ fn build_report_without_service_owned_problem_checks(
     codex_policy_readiness: &CodexHookPolicyReadiness,
 ) -> HookDoctorReport {
     let global_state = collect_global_state_locations(repository_root, dependencies);
-    let checkout_identity = collect_checkout_identity_health(repository_root);
     let agent_trace_db = collect_agent_trace_db_health(repository_root, &mut problems);
     let git_available = (dependencies.check_git_available)();
 
@@ -157,7 +153,6 @@ fn build_report_without_service_owned_problem_checks(
         mode,
         readiness: Readiness::Ready,
         state_root: global_state.state_root,
-        checkout_identity,
         agent_trace_db,
         repository_root: detected_repository_root,
         hook_path_source,
@@ -265,13 +260,6 @@ fn collect_global_state_locations(
         state_root,
         config_locations,
     }
-}
-
-fn collect_checkout_identity_health(repository_root: &Path) -> Option<CheckoutIdentityHealth> {
-    let git_dir = checkout::resolve_git_dir(repository_root).ok()?;
-    let checkout_id = checkout::read_checkout_id(&git_dir).ok()??;
-
-    Some(CheckoutIdentityHealth { checkout_id })
 }
 
 fn collect_agent_trace_db_health(

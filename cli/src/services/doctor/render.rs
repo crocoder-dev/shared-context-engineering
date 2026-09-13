@@ -776,9 +776,6 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
             "canonical_identity": location.canonical_identity,
             "configured_remote": location.configured_remote,
         })),
-        "checkout_identity": report.checkout_identity.as_ref().map(|identity| json!({
-            "checkout_id": identity.checkout_id,
-        })),
         "hook_path_source": match report.hook_path_source {
             HookPathSource::Default => "default",
             HookPathSource::LocalConfig => "local_config",
