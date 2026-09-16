@@ -335,6 +335,13 @@ pub enum HooksSubcommand {
         hide = true
     )]
     CodexMutationScope,
+
+    #[command(
+        name = "opencode-mutation-scope",
+        about = "Run the OpenCode mutation-scope adapter (reads JSON payload from STDIN)",
+        hide = true
+    )]
+    OpenCodeMutationScope,
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]

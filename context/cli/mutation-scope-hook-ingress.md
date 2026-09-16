@@ -221,16 +221,27 @@ reaches it. Its full contract is in
 [`claude-mutation-scope-integration.md`](claude-mutation-scope-integration.md).
 A Codex adapter (`cli/src/services/hooks/codex_mutation_scope/`, hidden
 `sce hooks codex-mutation-scope`) has since been built the same way and is
-registered by `sce setup --codex`. Still out of scope for this seam itself,
-and left as future work for the remaining harnesses:
-
-- OpenCode plugin, Pi extension;
-- `SubagentStart` / `SubagentStop` / `PostToolUse` / tool-call translation for
-  OpenCode and Pi;
-- `session → ScopeId` or `tool-call → EventId` derivation for OpenCode and Pi;
-- PID tracking, process supervisors, staleness detection, automatic scope
-  abandonment;
-- harness settings generation or `sce setup` integration for OpenCode/Pi.
+registered by `sce setup --codex`. An OpenCode adapter
+(`cli/src/services/hooks/opencode_mutation_scope/`, hidden
+`sce hooks opencode-mutation-scope`) now drives this seam too, through the same
+`pub(crate)` in-process entrypoint: parsing, classification, `(sessionID,
+callID) → ScopeId`/`EventId` derivation, and a full `Start`/`Close`/`Abandon`
+lifecycle with checkout-local durable state (attempt phases `PendingStart` →
+`Active` → `PendingAbandon`) and a generation-tracked recovery barrier. It only
+abandons a scope on exact `ToolError` causal evidence: it durably records the
+doomed attempt as `PendingAbandon` **before** any seam call, consumes the
+abandoned scope's ambiguous filesystem interval with an ineligible `flush`
+(driven while surviving live scopes still make it `IneligibleUnscoped`) before
+any surviving scope can confirm itself, and removes the attempt only after the
+generic `abandon` has succeeded. A transient seam failure keeps the attempt
+`PendingAbandon` with recovery unresolved so the cleanup is retried, never
+silently dropped. Broad asynchronous OpenCode lifecycle events retire nothing.
+A generated `sce-mutation-scope.ts` plugin, installed as the final OpenCode
+plugin by `sce setup`, now routes real OpenCode tool-lifecycle events to it
+([`opencode-mutation-scope-integration.md`](opencode-mutation-scope-integration.md)).
+Still out of scope for this seam itself: the whole Pi extension (its settings
+generation, `SubagentStart`/`SubagentStop`/`PostToolUse`/tool-call translation,
+and PID / process-supervisor staleness detection).
 
 Each adapter still owns its own `ScopeId` / `EventId` / `actor_kind`
 derivation and its own stale-process detection, and targets this ingress (or,

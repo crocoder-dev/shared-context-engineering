@@ -5,8 +5,13 @@ The generated-config pipeline now has one canonical Pkl-authored source for Open
 ## Source of truth
 
 - `config/pkl/base/opencode.pkl` defines canonical `CanonicalOpenCodePluginRegistration` entries.
-- The current canonical entries are `sce_bash_policy_plugin` (`./plugins/sce-bash-policy.ts`) and `sce_agent_trace_plugin` (`./plugins/sce-agent-trace.ts`).
+- The current canonical entries are `sce_bash_policy_plugin` (`./plugins/sce-bash-policy.ts`), `sce_agent_trace_plugin` (`./plugins/sce-agent-trace.ts`), and `sce_mutation_scope_plugin` (`./plugins/sce-mutation-scope.ts`).
 - The current registration scope is intentionally limited to SCE-generated OpenCode plugins emitted by this repository.
+
+## Plugin order is load-bearing
+
+- OpenCode runs plugin hooks sequentially in `plugin`-array order. `sceGeneratedOpenCodePlugins` lists `sce-mutation-scope` **last**, and the OpenCode config merge (`cli/src/services/setup/config_merge.rs`) appends the generated SCE entries after every surviving user plugin, so the installed order is `[<user plugins…>, sce-bash-policy, sce-agent-trace, sce-mutation-scope]`.
+- The mutation-scope plugin must stay last so an earlier policy or user plugin can reject a tool before the mutation-scope `Start` is established. `sce doctor` reports an installed `opencode.json` that lists `./plugins/sce-mutation-scope.ts` anywhere other than last (`inspect_opencode_plugin_ordering_health`). See [../cli/opencode-mutation-scope-integration.md](../cli/opencode-mutation-scope-integration.md).
 
 ## Renderer handoff
 
@@ -18,8 +23,8 @@ The generated-config pipeline now has one canonical Pkl-authored source for Open
 
 - `config/pkl/renderers/opencode-content.pkl` renders the `opencodeConfig` artifact with the shared plugin registration.
 - `config/pkl/generate.pkl` writes that artifact to payload-relative `config/.opencode/opencode.json` beneath the selected temporary/`OUT_DIR` root.
-- The generated OpenCode profile serializes `plugin: ["./plugins/sce-bash-policy.ts", "./plugins/sce-agent-trace.ts"]`.
-- The registered generated plugin files are `config/.opencode/plugins/sce-bash-policy.ts` and `config/.opencode/plugins/sce-agent-trace.ts`. The removed `config/automated/.opencode` profile has no plugin manifest or generated plugin copies.
+- The generated OpenCode profile serializes `plugin: ["./plugins/sce-bash-policy.ts", "./plugins/sce-agent-trace.ts", "./plugins/sce-mutation-scope.ts"]`.
+- The registered generated plugin files are `config/.opencode/plugins/sce-bash-policy.ts`, `config/.opencode/plugins/sce-agent-trace.ts`, and `config/.opencode/plugins/sce-mutation-scope.ts`, each copied verbatim from its `config/lib/*-plugin/` source by `config/pkl/generate.pkl`. The removed `config/automated/.opencode` profile has no plugin manifest or generated plugin copies.
 
 ## Claude boundary
 

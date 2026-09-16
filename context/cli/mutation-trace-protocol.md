@@ -227,9 +227,9 @@ The plan's file split anticipated three seams beyond `protocol.rs`. `store.rs`,
 entrypoint) now all exist as real call sites, covered by cross-module
 integration tests. The generic command ingress is implemented — the
 `sce hooks mutation-scope` command drives `coordinate()` / `abandon_scope()` —
-so only concrete Claude Code, Codex, OpenCode, and Pi lifecycle adapters remain
-future work; `protocol.rs` itself stays pure and unaware of any CLI or harness
-concept:
+the Claude Code, Codex, and OpenCode lifecycle adapters are wired (OpenCode via a
+generated plugin installed by `sce setup`), so only the Pi adapter remains future
+work; `protocol.rs` itself stays pure and unaware of any CLI or harness concept:
 
 ```mermaid
 flowchart LR

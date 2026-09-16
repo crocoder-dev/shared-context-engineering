@@ -251,7 +251,7 @@ probe 11 : … → PreToolUse(Bash) → Interrupt → SessionEnd   ← still no 
 - **D15 — raw hook `cwd` is authoritative:** `PROVEN`. Every payload's `cwd` was
   the `codex exec -C` directory; running against a linked `git worktree` (probe
   10) reported the worktree path in `cwd`, and the write landed in the worktree,
-  not the main checkout. `checkout::resolve_git_dir(cwd)` resolves the
+  not the main checkout. `runtime::resolve_git_dir(cwd)` resolves the
   worktree-specific `.git/worktrees/<name>` directory. Codex exposes **no**
   worktree-lifecycle event (no `WorktreeRemove` equivalent among the 12 event
   names); worktree-scoped cleanup relies on the `SessionEnd` / `Interrupt` /
