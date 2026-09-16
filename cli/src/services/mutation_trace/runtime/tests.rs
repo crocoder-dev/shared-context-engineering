@@ -11,7 +11,7 @@ use crate::services::mutation_trace::store::{
 };
 use crate::services::mutation_trace::types::{
     boundary_event_key, boundary_scope, ActorKind, AttemptId, Attribution, Boundary, EventId,
-    FailureKind, ScopeId, ScopeStatus, WorktreeId,
+    FailureKind, ScopeId, ScopeStatus,
 };
 use crate::services::patch::{parse_patch, ParsedPatch};
 
@@ -2316,9 +2316,8 @@ fn drive_codex_overlap_transition(
     closing_actor: ActorKind,
 ) -> (Attribution, ParsedPatch, ParsedPatch) {
     let repo = TestRepo::new(label);
-    let git_dir = resolve_git_dir(&repo.repo_root).expect("git dir should resolve");
-    let checkout_id =
-        get_or_create_checkout_id(&git_dir).expect("checkout identity should resolve");
+    let worktree_id =
+        resolve_worktree_id(&repo.repo_root).expect("worktree identity should resolve");
     let snapshot =
         GitSnapshotService::new(&repo.repo_root).expect("a snapshot service should build");
     let ok_db = || repo.open_db();
@@ -2384,7 +2383,7 @@ fn drive_codex_overlap_transition(
     let attribution = resolve_bounded_mutation_attribution(
         &store,
         &snapshot,
-        &WorktreeId(checkout_id),
+        &worktree_id,
         &ParsedPatch { files: Vec::new() },
         &committed,
         &after,
