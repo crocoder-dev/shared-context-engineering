@@ -4165,8 +4165,8 @@ mod tests {
 
     mod mutation_attribution_e2e {
         use super::*;
-        use crate::services::checkout::{get_or_create_checkout_id, resolve_git_dir};
         use crate::services::mutation_trace::runtime::resolve_post_commit_mutation_ai_patch;
+        use crate::services::mutation_trace::runtime::resolve_worktree_id;
         use crate::services::mutation_trace::store::encode_revision;
 
         fn git(repo: &Path, args: &[&str]) -> String {
@@ -4248,8 +4248,9 @@ mod tests {
             }
 
             fn checkout_id(&self) -> String {
-                let git_dir = resolve_git_dir(&self.root).expect("git dir should resolve");
-                get_or_create_checkout_id(&git_dir).expect("checkout identity should resolve")
+                resolve_worktree_id(&self.root)
+                    .expect("worktree identity should resolve")
+                    .0
             }
         }
 
@@ -4543,10 +4544,9 @@ mod tests {
 
             let db = repo.db();
             let current_worktree = repo.checkout_id();
-            let linked_git_dir =
-                resolve_git_dir(&linked_root).expect("the linked git dir should resolve");
-            let foreign_worktree = get_or_create_checkout_id(&linked_git_dir)
-                .expect("the linked worktree's checkout identity should resolve");
+            let foreign_worktree = resolve_worktree_id(&linked_root)
+                .expect("the linked worktree's identity should resolve")
+                .0;
             assert_ne!(
                 current_worktree, foreign_worktree,
                 "the linked worktree must derive its own distinct identity"
