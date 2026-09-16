@@ -5,14 +5,13 @@ use anyhow::Result;
 use uuid::Uuid;
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
-use crate::services::checkout::{get_or_create_checkout_id, resolve_git_dir};
 use crate::services::mutation_trace::protocol;
 use crate::services::mutation_trace::store::{CasResult, DurableTransition, MutationTraceStore};
 use crate::services::mutation_trace::types::{
     self, ActorKind, AttemptId, Boundary, EventId, MutationEvent, ScopeId, TreeId, WorktreeId,
 };
 
-use super::git_snapshot::GitSnapshotService;
+use super::git_snapshot::{resolve_git_dir, resolve_worktree_id, GitSnapshotService};
 use super::worktree_lock::{acquire_inner, WorktreeLockError};
 
 const MAX_CAS_RETRY_ATTEMPTS: u32 = 5;
@@ -133,8 +132,7 @@ where
     let _lock = acquire_inner(&git_dir, WORKTREE_LOCK_TIMEOUT, on_lock_contention)
         .map_err(lock_acquisition)?;
 
-    let checkout_id = get_or_create_checkout_id(&git_dir).map_err(CoordinateError::Other)?;
-    let worktree_id = WorktreeId(checkout_id);
+    let worktree_id = resolve_worktree_id(repository_root).map_err(CoordinateError::Other)?;
 
     let snapshot = GitSnapshotService::new(repository_root).map_err(CoordinateError::Other)?;
 
