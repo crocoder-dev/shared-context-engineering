@@ -88,6 +88,56 @@ than merely a documented convention. `checkout/` remains its own top-level
 service, unmoved, since other Agent Trace storage paths already depend on it
 independently of the mutation-cursor runtime.
 
+A fifth revision (PR #244 fix, post-landing) removes the dependency on
+`services::checkout` this plan's fourth revision described above. That
+dependency was a structural error: `services::checkout` (the checkout
+identity service `resolve_git_dir`/`read_checkout_id`/
+`get_or_create_checkout_id`) had already been removed from SCE entirely on
+`main`, before this plan's branch point, by the `remove-checkout-id` plan
+(see `context/cli/checkout-identity.md`). T01 and T05 below reintroduced
+`cli/src/services/checkout/mod.rs` on this branch without ever re-registering
+it as `pub mod checkout;` in `services/mod.rs`, so the branch could not
+compile. This revision deletes `cli/src/services/checkout/` again — for
+good, this time — and replaces every use of checkout identity as this
+coordinator's `WorktreeId` with an identity derived directly from Git's own
+worktree topology.
+
+The mutation-cursor protocol still legitimately needs a `WorktreeId`, because
+different Git worktrees need separate mutation-cursor state; only the
+*mechanism* for obtaining one changes. `runtime/git_snapshot.rs` now exposes
+`resolve_worktree_id(repository_root) -> Result<WorktreeId>` alongside the
+now-`pub(super)` `resolve_git_dir` it already computed internally (reused by
+the coordinator instead of duplicated, closing the very duplication T03's
+own Result section above justified at the time): it additionally resolves
+`git rev-parse --path-format=absolute --git-common-dir` and compares it
+against `resolve_git_dir`'s `--absolute-git-dir` result. Equal → the main
+checkout → `WorktreeId("main")`. Different → a linked worktree, whose
+`--absolute-git-dir` is `<git-common-dir>/worktrees/<name>` for a `<name>`
+Git itself assigns and keeps stable for that worktree's lifetime →
+`WorktreeId("worktrees/<name>")`, with `<name>` restricted to
+ASCII-alphanumeric/`-`/`_`/`.` for ref safety. This is deterministic, persists
+no identity file anywhere, generates no UUID, gives the same worktree the
+same identity across repeated resolutions, and gives distinct linked
+worktrees distinct identities — the same properties `get_or_create_checkout_id`
+provided, without a durable identity registry of any kind. Identity now flows
+`repository_root → git_dir / git_common_dir → WorktreeLock → Git-derived
+WorktreeId`, not `repository_root → git_dir → WorktreeLock → checkout ID →
+WorktreeId`.
+
+The per-worktree `mutation-cursor.lock` (T02) is unaffected and remains
+worktree-specific, since `git_dir` itself is already worktree-specific for a
+linked worktree — the lock never depended on checkout identity for its own
+scoping. Only the identity-creation lock `<git-dir>/sce/checkout-id.lock`
+(T01) is gone, along with the rest of `services::checkout`.
+
+This revision supersedes T01 entirely (see its task entry below) and AC12/AC13
+(see Acceptance criteria above), which tested checkout-ID persistence,
+locking, and cross-caller convergence — a mechanism that no longer exists.
+T05's "Result" narrative below still accurately describes what was built at
+the time against the (mistaken) reintroduced checkout service; it is left
+as historical record rather than rewritten, per this plan's task context
+synchronization lifecycle, superseded by the new T07 task below.
+
 ## Acceptance criteria
 
 - [x] AC1: A worktree observed for the first time establishes the currently
@@ -135,8 +185,9 @@ independently of the mutation-cursor runtime.
   worktrees, including linked worktrees of the same repository, are not
   serialized against each other, derive distinct `WorktreeId`s, and persist
   independently into the same caller-supplied repository-scoped Agent Trace
-  DB. `coordinate()` resolves `git_dir`, checkout identity, and `WorktreeId`
-  from its `repository_root` argument; the `RepositoryAgentTraceDb` is
+  DB. `coordinate()` resolves `git_dir` and `WorktreeId` (from Git's own
+  worktree topology, per the fifth revision above) from its
+  `repository_root` argument; the `RepositoryAgentTraceDb` is
   supplied by the caller, not resolved by the coordinator.
   - Validate: `runtime::worktree_lock::tests::*` (contention, distinct-path independence); `runtime::tests::linked_worktrees_have_independent_locks_and_worktree_ids`
 - [x] AC10: A worktree whose durable state is `SnapshotFailure`-tainted or
@@ -158,20 +209,28 @@ independently of the mutation-cursor runtime.
   caller materializes concurrently, while this invocation's own Git snapshot
   is still being captured, is still found and correctly tainted.
   - Validate: `runtime::coordinator::tests::snapshot_failure_taints_an_existing_worktree`, `runtime::coordinator::tests::snapshot_failure_taint_survives_a_losing_cas_and_commits_on_retry`, `runtime::coordinator::tests::snapshot_failure_taint_reports_not_persisted_after_retries_are_exhausted`, `runtime::coordinator::tests::snapshot_failure_before_any_baseline_makes_no_durable_write`, `runtime::coordinator::tests::snapshot_failure_taints_a_worktree_materialized_concurrently_during_capture`
-- [x] AC12: All concurrent first-time callers of
-  `checkout::get_or_create_checkout_id` for one physical checkout — whether
-  through the coordinator, `agent_trace_storage`, or any other caller —
-  converge on exactly one checkout ID, and the on-disk `checkout-id` file
-  ends up containing that same value.
-  - Validate: `checkout::tests::concurrent_first_time_callers_converge_on_one_checkout_id`, `runtime::tests::agent_trace_storage_and_coordinator_observe_the_same_checkout_id`
-- [x] AC13: For cooperating SCE processes, the canonical `checkout-id` path
-  is at every observable point either absent or contains exactly one
-  complete, valid checkout ID — never a partially written or truncated
-  value — including immediately after a process is interrupted between
-  creating its temporary identity file and renaming it into place, and an
-  orphaned temporary file left behind by such an interruption never
-  prevents a later call from converging on the canonical ID.
-  - Validate: `checkout::tests::interruption_before_rename_leaves_the_canonical_path_absent`, `checkout::tests::completed_rename_leaves_the_canonical_path_with_a_complete_id`, `checkout::tests::an_orphaned_temp_file_does_not_block_convergence_on_the_canonical_id`
+- [SUPERSEDED — see fifth revision, T07] ~~AC12: All concurrent first-time
+  callers of `checkout::get_or_create_checkout_id` for one physical
+  checkout — whether through the coordinator, `agent_trace_storage`, or any
+  other caller — converge on exactly one checkout ID, and the on-disk
+  `checkout-id` file ends up containing that same value.~~ `services::checkout`
+  no longer exists; there is no checkout ID to converge on. Replaced by the
+  requirement that `resolve_worktree_id` is stable across repeated
+  resolutions of the same worktree, with no persisted identity file of any
+  kind.
+  - Validate: `runtime::git_snapshot::tests::resolve_worktree_id_is_stable_and_named_main_for_a_normal_repository`, `runtime::git_snapshot::tests::resolve_worktree_id_persists_no_sce_identity_file`
+- [SUPERSEDED — see fifth revision, T07] ~~AC13: For cooperating SCE
+  processes, the canonical `checkout-id` path is at every observable point
+  either absent or contains exactly one complete, valid checkout ID — never
+  a partially written or truncated value — including immediately after a
+  process is interrupted between creating its temporary identity file and
+  renaming it into place, and an orphaned temporary file left behind by such
+  an interruption never prevents a later call from converging on the
+  canonical ID.~~ No identity file is ever written, so no crash-safety
+  invariant over its contents applies. Replaced by the requirement that a
+  linked worktree's `WorktreeId` is distinct from the main checkout's and
+  from every other linked worktree's.
+  - Validate: `runtime::git_snapshot::tests::resolve_worktree_id_distinguishes_main_and_linked_worktrees`
 
 ### Full validation
 
@@ -187,10 +246,10 @@ independently of the mutation-cursor runtime.
 - `context/cli/mutation-trace-store.md` — "Non-goals" currently states "no
   `coordinator.rs` or `git_snapshot.rs` exists yet"; update once they exist
   under `mutation_trace/runtime/`.
-- `context/cli/checkout-identity.md` — currently documents
-  `get_or_create_checkout_id` as a plain "reuses an existing ID or writes a
-  new one"; update to document the identity-creation lock and the
-  convergence guarantee it now provides to every caller.
+- `context/cli/checkout-identity.md` — unaffected by the fifth
+  revision/T07: it already documents the checkout-identity service as
+  removed from SCE (by the separate `remove-checkout-id` plan) and needs no
+  further change from this plan.
 - `context/overview.md` — the `mutation_trace` module description should
   mention the new runtime coordinator layer while preserving the accurate
   "not yet wired into any hook or command" framing.
@@ -216,15 +275,18 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Constraints and non-goals
 
-- **In scope:** `cli/src/services/checkout/mod.rs` (behavior change:
-  `get_or_create_checkout_id` becomes concurrency-safe),
-  `cli/src/services/mutation_trace/runtime/mod.rs` (new),
-  `cli/src/services/mutation_trace/runtime/worktree_lock.rs` (new),
-  `cli/src/services/mutation_trace/runtime/git_snapshot.rs` (new),
-  `cli/src/services/mutation_trace/runtime/coordinator.rs` (new),
-  `cli/src/services/mutation_trace/runtime/tests.rs` (new),
+- **In scope (as of the fifth revision/T07):**
+  `cli/src/services/mutation_trace/runtime/mod.rs`,
+  `cli/src/services/mutation_trace/runtime/worktree_lock.rs`,
+  `cli/src/services/mutation_trace/runtime/git_snapshot.rs` (including
+  `resolve_git_dir`/`resolve_worktree_id`, Git-topology-derived worktree
+  identity),
+  `cli/src/services/mutation_trace/runtime/coordinator.rs`,
+  `cli/src/services/mutation_trace/runtime/tests.rs`,
   `cli/src/services/mutation_trace/mod.rs` (module registration only, to
-  declare `pub(crate) mod runtime;`).
+  declare `pub(crate) mod runtime;`). `cli/src/services/checkout/` is
+  explicitly out of scope and must not be recreated — see the fifth revision
+  above.
 - **Out of scope:** Claude/Codex/OpenCode/Pi hook translation, Bash
   `PreToolUse`/`PostToolUse` wiring, final Agent Trace `diff_traces`
   insertion, commit attribution, auto-sync/remote sync, control-plane
@@ -260,7 +322,11 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [x] T01: `Make checkout-identity creation concurrency-safe and crash-safe` (status:done)
+- [x] T01: `Make checkout-identity creation concurrency-safe and crash-safe` (status:done, superseded by T07)
+  - **Superseded by the fifth revision/T07**: `services::checkout` — the
+    entire target of this task — no longer exists in SCE and must not be
+    recreated. This task's Result below is left as historical record of what
+    was actually built at the time, not a description of current behavior.
   - Task ID: T01
   - Scope: In — `cli/src/services/checkout/mod.rs`:
     `get_or_create_checkout_id` gains an internal, dedicated
@@ -919,7 +985,13 @@ Persist this field in every plan; this is durable plan state, not chat state:
     existing context files use for it.
   - Context synchronization: synced
 
-- [x] T05: `Wire the worktree lock and checkout identity into coordinate()` (status:done)
+- [x] T05: `Wire the worktree lock and checkout identity into coordinate()` (status:done, partially superseded by T07)
+  - **Partially superseded by the fifth revision/T07**: `coordinate()`'s
+    worktree-lock wiring described below is unaffected and still accurate;
+    its checkout-identity resolution (`get_or_create_checkout_id`) is gone,
+    replaced by `resolve_worktree_id` (Git-topology-derived). This task's
+    Result below is left as historical record of what was actually built at
+    the time, not a description of current behavior.
   - Task ID: T05
   - Scope: In — the public `coordinate(repository_root, db, boundary)`
     entrypoint: resolve `git_dir`, acquire `WorktreeLock`, resolve checkout
@@ -1242,9 +1314,150 @@ Persist this field in every plan; this is durable plan state, not chat state:
     accurate as verified in the original sync.
   - Context synchronization: synced
 
+- [x] T07: `Fix PR #244: replace checkout-identity-derived WorktreeId with Git-topology-derived WorktreeId` (status:done)
+  - Task ID: T07
+  - Scope: In — `cli/src/services/checkout/` (deleted, for good — see the
+    fifth revision above), `cli/src/services/mutation_trace/runtime/git_snapshot.rs`
+    (`resolve_git_dir` made `pub(super)` and reused rather than duplicated;
+    new `pub(super) fn resolve_worktree_id(repository_root) ->
+    Result<WorktreeId>` and its private `resolve_git_common_dir`/
+    `sanitize_ref_component`/`run_rev_parse` helpers),
+    `cli/src/services/mutation_trace/runtime/coordinator.rs` (`coordinate_inner`
+    now calls `resolve_worktree_id` instead of
+    `checkout::get_or_create_checkout_id`), `cli/src/services/mutation_trace/runtime/tests.rs`
+    (removed `agent_trace_storage_and_coordinator_observe_the_same_checkout_id`,
+    which tested cross-caller checkout-ID convergence with
+    `agent_trace_storage` — a comparison that no longer applies now that
+    `agent_trace_storage` is repository-scoped, not checkout-scoped, and
+    that already didn't compile against the current
+    `ResolvedAgentTraceStorage`, which carries no `checkout_id` field).
+    Out — any change to the mutation-cursor runtime lock's own scoping (T02,
+    already worktree-specific via `git_dir` and unaffected); any change to
+    `agent_trace_storage`, which was already migrated off checkout identity
+    to repository identity by the separate `remove-checkout-id`/
+    `repository-scoped-agent-trace-db` work, independently of this plan.
+  - Dependencies: T01–T06 (this task corrects a structural error T01/T05
+    introduced: `services::checkout` had already been removed from `main` by
+    the `remove-checkout-id` plan before this plan's branch point, and its
+    reintroduction here was never registered as `pub mod checkout;` in
+    `services/mod.rs`, so the branch could not compile).
+  - Done when: `cli/src/services/checkout/` does not exist; nothing under
+    `cli/src` references `services::checkout`, `get_or_create_checkout_id`,
+    `read_checkout_id`, or a `checkout-id` file/lock; `coordinate()` derives
+    `WorktreeId` entirely from Git's own worktree topology
+    (`resolve_worktree_id`) with no persisted identity file and no generated
+    UUID; a normal repository resolves to `WorktreeId("main")`, stable
+    across repeated resolutions; two linked worktrees of one repository
+    resolve to distinct `WorktreeId`s, each distinct from `"main"` and
+    stable across repeated resolutions; the per-worktree
+    `mutation-cursor.lock` remains worktree-specific; the existing
+    cross-module linked-worktree integration test
+    (`runtime::tests::linked_worktrees_have_independent_locks_and_worktree_ids`)
+    still proves mutation-cursor state does not collide between worktrees.
+  - Verify: `SCE_CLI_PACKAGE_FALLBACK=1 cargo test --manifest-path cli/Cargo.toml mutation_trace` (fast inner loop); `nix flake check` (canonical)
+  - Completed: 2026-09-16
+  - Files changed: `cli/src/services/checkout/mod.rs` (deleted),
+    `cli/src/services/mutation_trace/runtime/git_snapshot.rs`,
+    `cli/src/services/mutation_trace/runtime/coordinator.rs`,
+    `cli/src/services/mutation_trace/runtime/tests.rs`,
+    `context/cli/mutation-trace-runtime-coordinator.md`,
+    `context/plans/mutation-cursor-runtime-coordinator.md`.
+  - Result: Deleted `cli/src/services/checkout/` outright (it was never
+    re-registered as `pub mod checkout;` in `services/mod.rs` after the
+    `remove-checkout-id` plan removed that line on `main`, so the branch did
+    not compile). `git_snapshot.rs`'s existing private `resolve_git_dir`
+    (already `--absolute-git-dir`-based, already more correct than
+    `checkout::resolve_git_dir`'s relative-path-joining version) is now
+    `pub(super)`, reused directly by `coordinator.rs` instead of being
+    duplicated — closing the very duplication T03's own Result section
+    justified at the time by pointing at `checkout`'s version being
+    "scoped to that module's own concerns." Added
+    `resolve_worktree_id(repository_root) -> Result<WorktreeId>`
+    (`pub(super)`): resolves `git rev-parse --path-format=absolute
+    --git-common-dir` and compares it against `resolve_git_dir`'s
+    `--absolute-git-dir`; equal → `WorktreeId("main")`; different → a linked
+    worktree, whose `--absolute-git-dir`'s final path component is the name
+    Git itself assigns and keeps stable for that worktree (`<git-common-dir>/worktrees/<name>`),
+    restricted through `sanitize_ref_component` to
+    ASCII-alphanumeric/`-`/`_`/`.` (any other byte replaced with `_`) so the
+    result is always safe as a `refs/sce/mutation-cursor/<worktree-id>/...`
+    ref component → `WorktreeId("worktrees/<name>")`. Neither branch reads
+    or writes anything under `<git-dir>/sce/`; the entire function is two
+    Git subprocess calls and a comparison. `coordinator.rs`'s
+    `coordinate_inner` now calls `resolve_worktree_id(repository_root)`
+    directly in place of `get_or_create_checkout_id(&git_dir)` +
+    `WorktreeId(checkout_id)`.
+
+    Removed `runtime::tests::agent_trace_storage_and_coordinator_observe_the_same_checkout_id`,
+    which asserted `agent_trace_storage`'s resolved storage and the
+    coordinator's `WorktreeId` converged on one checkout ID — a comparison
+    between two now-unrelated identity domains (repository identity vs.
+    worktree identity, per this plan's brief) that no longer applies, and
+    that already referenced a `.checkout_id` field `ResolvedAgentTraceStorage`
+    no longer carries (that struct is `repository_identity`/`db_path`/`db`/
+    `metadata`, not checkout-scoped), so the test predated this fix without
+    ever having compiled against the current `agent_trace_storage`.
+    Strengthened `runtime::tests::linked_worktrees_have_independent_locks_and_worktree_ids`'s
+    assertion wording only (Git-derived worktree topology, not "its own
+    checkout identity"); its behavior and coverage — distinct `WorktreeId`s
+    for linked worktrees, independent locks, no state collision in the
+    shared DB — are unchanged.
+
+    Added three new inline tests to `git_snapshot.rs`:
+    `resolve_worktree_id_is_stable_and_named_main_for_a_normal_repository`
+    (a normal repository always resolves to `WorktreeId("main")`, and twice
+    in a row returns the same value);
+    `resolve_worktree_id_distinguishes_main_and_linked_worktrees` (a main
+    checkout plus two linked worktrees resolve to three distinct
+    `WorktreeId`s — main vs. A, main vs. B, A vs. B — with repeated
+    resolution of linked worktree A returning the same value both times);
+    and `resolve_worktree_id_persists_no_sce_identity_file` (resolving twice
+    never creates `<git-dir>/sce/` at all, proving no identity file or
+    directory is written as a side effect).
+  - Verify (actual): `SCE_CLI_PACKAGE_FALLBACK=1 cargo test --manifest-path
+    cli/Cargo.toml mutation_trace` and `nix build .#checks.x86_64-linux.cli-tests`
+    both pass (see this task's context-impact validation evidence).
+  - Context impact: `domain` — corrects the mutation-cursor-runtime-coordinator
+    domain file's description of a mechanism this task removed. Updated
+    `context/cli/mutation-trace-runtime-coordinator.md`: the module-boundary
+    statement (`runtime` no longer depends on `services::checkout`, which
+    doesn't exist), the `git_snapshot.rs` bullet (documents
+    `resolve_git_dir`/`resolve_worktree_id`), the `coordinator.rs` bullet and
+    identity-flow chain (`repository_root → git_dir / git_common_dir →
+    WorktreeLock → Git-derived WorktreeId`, not `→ checkout ID →
+    WorktreeId`), the "Two distinct locks" section (removed — there is only
+    one lock now, since the checkout-identity-creation lock never existed
+    alongside this coordinator on `main`), the on-disk layout diagram
+    (dropped `checkout-id`/`checkout-id.lock`), the Testing boundary section
+    (documents the three new `resolve_worktree_id` tests; drops the
+    cross-caller checkout-identity-convergence test), and the Status section.
+    Updated this plan's own Acceptance criteria (AC9's wording, AC12/AC13
+    marked superseded with replacement validation pointers), Constraints
+    (In-scope file list), Context sync notes, and Task stack (superseded
+    annotations on T01/T05) — all above. `context/cli/checkout-identity.md`
+    needed no change: it already documented the checkout-identity service as
+    removed by the separate `remove-checkout-id` plan, and this task's fix
+    only makes that already-true statement true on this branch too.
+    `context/overview.md`, `context/architecture.md`, `context/glossary.md`,
+    `context/patterns.md`, and `context/context-map.md` were checked against
+    this change: none named `services::checkout` in a way this fix
+    falsifies (the `remove-checkout-id` plan already cleaned those up on
+    `main`), so none needed editing.
+  - Context synchronization: synced
+
 ## Design decisions
 
 ### Checkout-identity concurrency: fixed at the primitive, not at each caller
+
+**Superseded by the fifth revision/T07 above.** `services::checkout` no
+longer exists in SCE — it was removed from `main` before this plan's branch
+point by the separate `remove-checkout-id` plan, then mistakenly
+reintroduced here by T01/T05, and has now been removed again for good.
+`WorktreeId` is derived directly from Git's own worktree topology
+(`git_snapshot::resolve_worktree_id`), not from a persisted checkout
+identity. The subsection below is left as historical design rationale for
+the (superseded) checkout-identity-based approach T01 actually implemented
+at the time, not a description of current behavior.
 
 `cli/src/services/checkout/mod.rs:109`'s `get_or_create_checkout_id` is
 confirmed read-then-write with no lock: `read_checkout_id` returns `None`,

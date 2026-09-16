@@ -1,20 +1,14 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Barrier};
-use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
-use crate::services::agent_trace_storage::{
-    resolve_agent_trace_storage_at_state_root, AgentTraceStorageContext,
-};
-use crate::services::checkout::{read_checkout_id, resolve_git_dir};
 use crate::services::mutation_trace::store::MutationTraceStore;
 use crate::services::mutation_trace::types::{ActorKind, EventId, ScopeId};
 
 use super::coordinator::{coordinate, CoordinateError, RuntimeBoundary};
-use super::git_snapshot::GitSnapshotService;
+use super::git_snapshot::{resolve_git_dir, GitSnapshotService};
 use super::worktree_lock::WorktreeLock;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
@@ -98,7 +92,7 @@ fn linked_worktrees_have_independent_locks_and_worktree_ids() {
 
     assert_ne!(
         main_outcome.worktree_id, linked_outcome.worktree_id,
-        "each linked worktree must derive a distinct WorktreeId from its own checkout identity"
+        "each linked worktree must derive a distinct WorktreeId from Git's own worktree topology"
     );
 
     let store = MutationTraceStore::new(&db_main);
@@ -125,65 +119,6 @@ fn linked_worktrees_have_independent_locks_and_worktree_ids() {
 
     cleanup(&linked_root);
     cleanup(&main_root);
-}
-
-#[test]
-fn agent_trace_storage_and_coordinator_observe_the_same_checkout_id() {
-    let repo_root = unique_path("cross-caller-repo");
-    init_repo(&repo_root);
-    run_git(
-        &repo_root,
-        &["remote", "add", "origin", "git@github.com:acme/widgets.git"],
-    );
-    let state_root = unique_path("cross-caller-state");
-    std::fs::create_dir_all(&state_root).expect("state root should be created");
-
-    let coordinator_db_path = repo_root.join("coordinator.db");
-    let db = RepositoryAgentTraceDb::new_at(&coordinator_db_path)
-        .expect("the coordinator's repository DB should open");
-
-    let barrier = Arc::new(Barrier::new(2));
-
-    let storage_thread = {
-        let repo_root = repo_root.clone();
-        let state_root = state_root.clone();
-        let barrier = Arc::clone(&barrier);
-        thread::spawn(move || {
-            let context = AgentTraceStorageContext {
-                repository_root: &repo_root,
-                explicit_repository_id: None,
-                repository_remote: "origin",
-            };
-            barrier.wait();
-            resolve_agent_trace_storage_at_state_root(&context, &state_root)
-                .expect("agent_trace_storage resolution should succeed")
-                .checkout_id
-        })
-    };
-
-    barrier.wait();
-    let outcome = coordinate(&repo_root, &db, &RuntimeBoundary::Flush)
-        .expect("the coordinator's first observation should succeed");
-
-    let storage_checkout_id = storage_thread
-        .join()
-        .expect("the storage thread should not panic");
-
-    assert_eq!(
-        outcome.worktree_id.0, storage_checkout_id,
-        "the coordinator and agent_trace_storage must converge on one checkout identity for the same physical checkout"
-    );
-
-    let on_disk = read_checkout_id(&resolve_git_dir(&repo_root).expect("git dir should resolve"))
-        .expect("reading the checkout-id file should succeed")
-        .expect("a checkout id must have been persisted");
-    assert_eq!(
-        on_disk, storage_checkout_id,
-        "the on-disk checkout-id file must contain the converged identity"
-    );
-
-    cleanup(&repo_root);
-    cleanup(&state_root);
 }
 
 #[test]

@@ -129,32 +129,11 @@ fn pin_ref_name(worktree_id: &WorktreeId, tree: &TreeId) -> String {
     format!("{REF_NAMESPACE}/{}/{}", worktree_id.0, tree.0)
 }
 
-fn resolve_git_dir(repository_root: &Path) -> Result<PathBuf> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--absolute-git-dir"])
-        .current_dir(repository_root)
-        .output()
-        .with_context(|| {
-            format!(
-                "Failed to run git rev-parse --absolute-git-dir in '{}'",
-                repository_root.display()
-            )
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(anyhow!(
-            "git rev-parse --absolute-git-dir failed in '{}': {}",
-            repository_root.display(),
-            stderr
-        ));
-    }
-
-    let git_dir = PathBuf::from(
-        String::from_utf8(output.stdout)
-            .with_context(|| "git rev-parse --absolute-git-dir emitted invalid UTF-8")?
-            .trim(),
-    );
+pub(super) fn resolve_git_dir(repository_root: &Path) -> Result<PathBuf> {
+    let git_dir = PathBuf::from(run_rev_parse(
+        repository_root,
+        &["rev-parse", "--absolute-git-dir"],
+    )?);
 
     debug_assert!(
         git_dir.is_absolute(),
@@ -163,6 +142,81 @@ fn resolve_git_dir(repository_root: &Path) -> Result<PathBuf> {
     );
 
     Ok(git_dir)
+}
+
+fn resolve_git_common_dir(repository_root: &Path) -> Result<PathBuf> {
+    let git_common_dir = PathBuf::from(run_rev_parse(
+        repository_root,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?);
+
+    debug_assert!(
+        git_common_dir.is_absolute(),
+        "git rev-parse --path-format=absolute --git-common-dir should always return an absolute path, got '{}'",
+        git_common_dir.display()
+    );
+
+    Ok(git_common_dir)
+}
+
+pub(super) fn resolve_worktree_id(repository_root: &Path) -> Result<WorktreeId> {
+    let git_dir = resolve_git_dir(repository_root)?;
+    let git_common_dir = resolve_git_common_dir(repository_root)?;
+
+    if git_dir == git_common_dir {
+        return Ok(WorktreeId("main".to_string()));
+    }
+
+    let worktree_name = git_dir.file_name().ok_or_else(|| {
+        anyhow!(
+            "linked worktree git dir '{}' has no final path component",
+            git_dir.display()
+        )
+    })?;
+
+    Ok(WorktreeId(format!(
+        "worktrees/{}",
+        sanitize_ref_component(&worktree_name.to_string_lossy())
+    )))
+}
+
+fn sanitize_ref_component(raw: &str) -> String {
+    raw.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn run_rev_parse(repository_root: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repository_root)
+        .output()
+        .with_context(|| {
+            format!(
+                "Failed to run git {args:?} in '{}'",
+                repository_root.display()
+            )
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(anyhow!(
+            "git {args:?} failed in '{}': {}",
+            repository_root.display(),
+            stderr
+        ));
+    }
+
+    Ok(String::from_utf8(output.stdout)
+        .with_context(|| format!("git {args:?} emitted invalid UTF-8"))?
+        .trim()
+        .to_string())
 }
 
 struct TempIndexGuard {
@@ -612,6 +666,92 @@ mod tests {
 
         let ls_tree = run(&repo_root, &["ls-tree", "-r", "--name-only", &tree.0]);
         assert!(ls_tree.contains("file.txt"));
+
+        remove_test_repo(&repo_root);
+    }
+
+    #[test]
+    fn resolve_worktree_id_is_stable_and_named_main_for_a_normal_repository() {
+        let repo_root = unique_test_repo("worktree-id-main");
+        init_repo(&repo_root);
+
+        let first = resolve_worktree_id(&repo_root).expect("worktree id should resolve");
+        let second = resolve_worktree_id(&repo_root).expect("worktree id should resolve again");
+
+        assert_eq!(first, WorktreeId("main".to_string()));
+        assert_eq!(
+            first, second,
+            "repeated resolution of the same worktree must return the same identity"
+        );
+
+        remove_test_repo(&repo_root);
+    }
+
+    #[test]
+    fn resolve_worktree_id_distinguishes_main_and_linked_worktrees() {
+        let main_root = unique_test_repo("worktree-id-main-with-links");
+        init_repo(&main_root);
+        let linked_root_a = unique_test_repo("worktree-id-linked-a");
+        let linked_root_b = unique_test_repo("worktree-id-linked-b");
+        run(
+            &main_root,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                linked_root_a
+                    .to_str()
+                    .expect("linked worktree path a should be UTF-8"),
+            ],
+        );
+        run(
+            &main_root,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                linked_root_b
+                    .to_str()
+                    .expect("linked worktree path b should be UTF-8"),
+            ],
+        );
+
+        let main_id = resolve_worktree_id(&main_root).expect("main worktree id should resolve");
+        let linked_id_a =
+            resolve_worktree_id(&linked_root_a).expect("linked worktree a id should resolve");
+        let linked_id_b =
+            resolve_worktree_id(&linked_root_b).expect("linked worktree b id should resolve");
+
+        assert_eq!(main_id, WorktreeId("main".to_string()));
+        assert_ne!(main_id, linked_id_a);
+        assert_ne!(main_id, linked_id_b);
+        assert_ne!(linked_id_a, linked_id_b);
+
+        assert_eq!(
+            resolve_worktree_id(&linked_root_a).expect("linked worktree a id should resolve again"),
+            linked_id_a,
+            "repeated resolution of the same linked worktree must return the same identity"
+        );
+
+        remove_test_repo(&linked_root_a);
+        remove_test_repo(&linked_root_b);
+        remove_test_repo(&main_root);
+    }
+
+    #[test]
+    fn resolve_worktree_id_persists_no_sce_identity_file() {
+        let repo_root = unique_test_repo("worktree-id-no-persistence");
+        init_repo(&repo_root);
+
+        let _ = resolve_worktree_id(&repo_root).expect("worktree id should resolve");
+        let _ = resolve_worktree_id(&repo_root).expect("worktree id should resolve again");
+
+        let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
+        let sce_dir = git_dir.join(SCE_RUNTIME_DIR);
+        assert!(
+            !sce_dir.exists(),
+            "resolving a worktree id must never create an SCE identity directory or file"
+        );
 
         remove_test_repo(&repo_root);
     }

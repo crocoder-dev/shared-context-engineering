@@ -15,18 +15,20 @@ only from within `runtime` itself (its own tests) for now; a `pub(crate)`
 re-export is deferred until a harness adapter needs it. Nothing under
 `runtime/` is wired into any hook, command, or `diff_traces` insertion yet.
 
-`runtime` depends on `protocol`/`store`/`types` and on `services::checkout`,
-never the reverse — this is a structural module boundary, not merely a
-documented convention.
+`runtime` depends on `protocol`/`store`/`types` only, and has no dependency
+on any checkout-identity service — that service was removed from SCE
+entirely (see [`checkout-identity.md`](checkout-identity.md)) and never
+existed alongside this coordinator on `main`. Worktree identity is derived
+directly from Git's own topology inside `runtime/git_snapshot.rs`.
 
 ## Current code surface
 
-The per-worktree runtime lock, the isolated Git snapshot service, the
-coordinator's internal protocol-integration pipeline, and the public,
-lock-wrapped `coordinate()` entrypoint that drives the lock and checkout
-identity around that pipeline all exist, with cross-module integration tests
-in `runtime/tests.rs` exercising the public API end to end. Only
-harness/command wiring remains.
+The per-worktree runtime lock, the isolated Git snapshot service (which also
+derives `WorktreeId` from Git topology), the coordinator's internal
+protocol-integration pipeline, and the public, lock-wrapped `coordinate()`
+entrypoint that drives the lock and worktree-identity resolution around that
+pipeline all exist, with cross-module integration tests in `runtime/tests.rs`
+exercising the public API end to end. Only harness/command wiring remains.
 
 - `cli/src/services/mutation_trace/runtime/worktree_lock.rs` —
   `WorktreeLock::acquire(git_dir: &Path, timeout: Duration) ->
@@ -75,7 +77,24 @@ harness/command wiring remains.
   --binary --full-index --no-ext-diff --no-textconv` between two tree SHAs,
   returning the raw diff text `patch.rs::parse_patch` already knows how to
   parse. `coordinator.rs` is its only caller, via the `SnapshotCapture` trait
-  below.
+  below. This file also exposes `resolve_git_dir(repository_root) ->
+  Result<PathBuf>` (`pub(super)`, the same `--absolute-git-dir` resolution
+  `GitSnapshotService::new` uses internally, now reusable by `coordinator.rs`
+  for lock-path resolution — one canonical Git-dir implementation, not a
+  duplicate) and `resolve_worktree_id(repository_root) ->
+  Result<WorktreeId>` (`pub(super)`): it additionally resolves `git rev-parse
+  --path-format=absolute --git-common-dir` and compares it against
+  `resolve_git_dir`'s result. When they match, the checkout is the main
+  worktree and the identity is `WorktreeId("main")`. When they differ, the
+  checkout is a linked worktree — Git's own `--absolute-git-dir` for a linked
+  worktree is `<git-common-dir>/worktrees/<name>`, a name Git assigns and
+  keeps stable for the life of that worktree — so the identity is
+  `WorktreeId("worktrees/<name>")`, with `<name>` restricted to
+  ASCII-alphanumeric/`-`/`_`/`.` (any other character replaced with `_`) so
+  it can never produce an invalid or surprising
+  `refs/sce/mutation-cursor/<worktree-id>/...` ref. This derivation reads
+  only Git's own state — no file is created or read under `<git-dir>/sce/`,
+  and no identity is generated or persisted anywhere.
 - `cli/src/services/mutation_trace/runtime/coordinator.rs` — the composition
   point that drives `protocol.rs`/`store.rs`/`git_snapshot.rs` together. Its
   `SnapshotCapture` trait (`capture(&self) -> Result<TreeId>`, `pin(&self,
@@ -92,14 +111,15 @@ harness/command wiring remains.
   Result<CoordinateOutcome, CoordinateError>` entrypoint takes an
   already-resolved `RepositoryAgentTraceDb` from its caller — it never
   resolves or opens the repository-scoped Agent Trace DB itself — and owns
-  the critical section: resolve `git_dir` via `checkout::resolve_git_dir`,
+  the critical section: resolve `git_dir` via `git_snapshot::resolve_git_dir`,
   acquire the `WorktreeLock` (bounded 10s, held for the whole call), resolve
-  checkout identity via `checkout::get_or_create_checkout_id` and wrap it as
-  `WorktreeId` — no caller-supplied `WorktreeId` or `Boundary` is ever
-  accepted — then construct `GitSnapshotService` and delegate to the internal,
-  generic-over-`SnapshotCapture` pipeline. Identity flows
-  `repository_root → git_dir → WorktreeLock → checkout ID → WorktreeId`;
-  the `RepositoryAgentTraceDb` is not on that chain. (`coordinate()` is a one-line
+  `WorktreeId` directly from Git topology via
+  `git_snapshot::resolve_worktree_id` — no caller-supplied `WorktreeId` or
+  `Boundary` is ever accepted — then construct `GitSnapshotService` and
+  delegate to the internal, generic-over-`SnapshotCapture` pipeline. Identity
+  flows `repository_root → git_dir / git_common_dir → WorktreeLock →
+  Git-derived WorktreeId`; the `RepositoryAgentTraceDb` is not on that chain.
+  (`coordinate()` is a one-line
   delegation to a private `coordinate_inner(.., on_lock_contention:
   impl FnOnce())` test seam; production passes a no-op closure.) A
   `WorktreeLock` acquisition failure (timeout or I/O) surfaces as
@@ -130,28 +150,19 @@ harness/command wiring remains.
 
 The runtime lock guards the coordinator's own critical section (snapshot
 capture, worktree/scope materialization, recovery, and the CAS retry loop):
-`coordinate()` acquires it before resolving checkout identity and holds it
-until the call returns. It is held on every `coordinate()` call, unlike the
-checkout-identity-creation lock.
-
-## Two distinct locks, two distinct invariants
-
-`<git-dir>/sce/mutation-cursor.lock` (this module) and
-`<git-dir>/sce/checkout-id.lock` (see
-[`checkout-identity.md`](checkout-identity.md)) are deliberately separate
-locks guarding separate invariants, not one lock reused for two purposes:
-
-| | Path | Guards | Held by | Blocking behavior |
-| --- | --- | --- | --- | --- |
-| Checkout-identity lock | `<git-dir>/sce/checkout-id.lock` | "this checkout has at most one durable identity" | any caller of `get_or_create_checkout_id` | blocks indefinitely, no timeout — the critical section is a handful of filesystem syscalls |
-| Mutation-cursor runtime lock | `<git-dir>/sce/mutation-cursor.lock` | the coordinator's entire runtime critical section | only the coordinator, on every invocation | bounded polling with a caller-supplied timeout — a stuck holder must not deadlock every future hook invocation |
+`coordinate()` acquires it before resolving `WorktreeId` and holds it until
+the call returns, on every `coordinate()` call. `<git-dir>/sce/mutation-cursor.lock`
+remains worktree-specific because `git_dir` itself is worktree-specific for
+linked worktrees (`resolve_git_dir` resolves each worktree's own
+`--absolute-git-dir`), so this one lock already gives each worktree its own
+independent critical section — there is no separate checkout-identity lock:
+that mechanism does not exist in SCE (see
+[`checkout-identity.md`](checkout-identity.md)).
 
 On-disk layout so far:
 
 ```text
 <worktree-git-dir>/sce/
-├── checkout-id                 (services::checkout)
-├── checkout-id.lock            (services::checkout)
 ├── mutation-cursor.lock        (runtime::worktree_lock)
 └── tmp/
     └── index-<uuid>            (runtime::git_snapshot, ephemeral per capture)
@@ -169,8 +180,8 @@ across distinct worktree paths, timing out with a distinct matchable error
 while the lock is still held, and a leftover lock file with no active OS lock
 held against it never blocking a fresh acquirer — each test uses a unique
 `std::env::temp_dir()` path, following the same filesystem-touching
-inline-unit-test precedent already used in `cli/src/services/checkout/mod.rs`
-and `cli/src/services/mutation_trace/store.rs` (see `context/patterns.md`).
+inline-unit-test precedent already used in
+`cli/src/services/mutation_trace/store.rs` (see `context/patterns.md`).
 
 `GitSnapshotService`'s inline `#[cfg(test)] mod tests` in `git_snapshot.rs`
 uses the same precedent, extended to real per-test `git init` repositories:
@@ -182,7 +193,12 @@ relative `repository_root` still resolving `git_dir` absolute, survival
 after the temp index file is gone, `git gc --prune=now`/`git prune
 --expire=now` survival for a pinned tree versus reclamation of a distinct
 unpinned tree in the same repository, `pin_tree` idempotency, and
-`diff_trees` output shape.
+`diff_trees` output shape. It also covers `resolve_worktree_id`: a normal
+repository always resolves to `WorktreeId("main")`, stable across repeated
+calls; two linked worktrees of one repository each resolve to a distinct
+`WorktreeId("worktrees/<name>")`, distinct from `"main"` and from each
+other, also stable across repeated calls; and resolving a worktree id never
+creates any file or directory under `<git-dir>/sce/`.
 
 `coordinator.rs`'s inline `#[cfg(test)] mod tests` exercises the internal
 pipeline against a real temp-file `RepositoryAgentTraceDb`, using a fake,
@@ -224,20 +240,19 @@ repository-scoped DB path itself and hands a separate handle to each
 `coordinate()` call (`coordinate()` does not resolve the DB), then asserts
 both distinct worktree rows coexist in that one supplied DB, and that a tree
 pinned by one worktree's coordinator resolves through the other's `GIT_DIR`.
-A first-ever `agent_trace_storage` resolution and a `coordinate()` call on
-the same checkout converge on one checkout identity (matching the on-disk
-`checkout-id` file); and a full failure/recovery cycle — baseline call, a
-snapshot-failing call that durably taints the worktree, then a recovery call
-that clears the taint before processing its boundary — runs entirely through
-the public entrypoint.
+A full failure/recovery cycle — baseline call, a snapshot-failing call that
+durably taints the worktree, then a recovery call that clears the taint
+before processing its boundary — also runs entirely through the public
+entrypoint.
 
 ## Status
 
-The per-worktree runtime lock, the isolated Git snapshot service, the
-coordinator's internal protocol-integration pipeline (above), and the public,
-lock-wrapped `coordinate()` entrypoint (resolving `git_dir`, acquiring
-`WorktreeLock`, resolving checkout identity, deriving `WorktreeId`, delegating
-to the pipeline) are all implemented, and `runtime/tests.rs` covers the
+The per-worktree runtime lock, the isolated Git snapshot service (including
+Git-topology-derived `WorktreeId` resolution), the coordinator's internal
+protocol-integration pipeline (above), and the public, lock-wrapped
+`coordinate()` entrypoint (resolving `git_dir`, acquiring `WorktreeLock`,
+resolving `WorktreeId` from Git topology, delegating to the pipeline) are all
+implemented, and `runtime/tests.rs` covers the
 public `coordinate()` API end to end (above). A `pub(crate)` re-export of
 `coordinate()` beyond `runtime` and any harness/command wiring remain future
 work tracked by the `mutation-cursor-runtime-coordinator` plan's follow-ups.
