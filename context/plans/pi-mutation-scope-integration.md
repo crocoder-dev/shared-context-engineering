@@ -19,16 +19,19 @@ The plan is based on Pi `0.80.6`. T01 freezes the lifecycle evidence for that ex
 ## Stack and base
 
 - **Predecessor:** PR #276 `opencode-mutation-scope-integration` (head branch
-  `opencode-mutation-scope-integration`, head commit `281a5290d35750f6952ea5646bd3aaefb08bb36c`;
-  based on `mutation-scope-provenance`). **PR #276 is currently open and unmerged.**
-- **This branch:** `pi-mutation-scope-integration` (PR #278) is already stacked
-  directly on `opencode-mutation-scope-integration`: PR #276's head
-  (`281a5290d`) is the merge base and the direct parent commit of this branch,
-  which is exactly one plan commit ahead of it. Confirmed at planning time:
-  the OpenCode mutation-scope adapter and the generalized per-`ActorKind`
-  confirmation-required predicate (covering `ActorKind::Codex` and
-  `ActorKind::OpenCode`) are already present in this branch's history via that
-  stacked base.
+  `opencode-mutation-scope-integration`, head commit `3e01f97f0154135b5b3ffe8aaa3b486bc26fff15`
+  as of T02's completion; based on `mutation-scope-provenance`). **PR #276 is
+  currently open and unmerged.**
+- **This branch:** `pi-mutation-scope-integration` (PR #278) is stacked
+  directly on `opencode-mutation-scope-integration`: PR #276's current head is
+  the merge base of this branch, and #278 contains only the Pi-layer plan
+  commits above it. The OpenCode mutation-scope adapter and the generalized
+  per-`ActorKind` confirmation-required predicate (covering `ActorKind::Codex`
+  and `ActorKind::OpenCode`) are already present in this branch's history via
+  that stacked base. The exact commit count above the predecessor head grows
+  as plan tasks land, so it is not recorded here; re-derive it with
+  `git log --oneline origin/opencode-mutation-scope-integration..pi-mutation-scope-integration`
+  when it matters.
 - **Stack invariant, not a plan task:** PR #276's current head must remain an
   ancestor of this branch for as long as #278 is stacked on it. Before
   beginning a task, if PR #276's head has moved (amended or rebased), update
@@ -1140,7 +1143,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     residual impact.
   - Context synchronization: synced
 
-- [ ] T02: `Make Pi a confirmation-required protocol actor` (status:todo)
+- [x] T02: `Make Pi a confirmation-required protocol actor` (status:done)
   - Task ID: T02
   - Scope: In — adding the Pi case to the existing generalized confirmation
     predicate (`ClaudeCode -> false`, `Codex -> true`, `OpenCode -> true`,
@@ -1393,7 +1396,247 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `nix run .#quint -- test spec/mutation_cursor.qnt`;
     `nix build .#checks.x86_64-linux.mutation-trace-quint-connect`;
     `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`.
-  - Context synchronization: pending
+  - Completed: 2026-09-17
+  - Files changed: `cli/src/services/mutation_trace/protocol.rs`;
+    `cli/src/services/mutation_trace/tests.rs`;
+    `cli/src/services/mutation_trace/mbt/model.rs`;
+    `cli/src/services/mutation_trace/mbt/driver.rs`;
+    `cli/src/services/mutation_trace/runtime/coordinator.rs`;
+    `spec/mutation_cursor.qnt`; `spec/mutation_cursor.md` (7 files; no other
+    paths touched).
+  - Result: `requires_boundary_confirmation`/`requiresBoundaryConfirmation` now
+    return `true` for `Pi` in both `protocol.rs` and `mutation_cursor.qnt`
+    (previously grouped with `ClaudeCode` under `false`); `mutation_cursor.md`'s
+    three confirmation-required-actor prose spots updated to name Pi
+    alongside Codex/OpenCode. A new mock `Scope6 -> Pi -> WT0` was added to the
+    Quint model (`ScopeId`, `SCOPES`, `scopeWorktree`, `scopeActor`) and the
+    four scenarios the task named were added as `run`s: `testUnconfirmedPiScopeBlocksCrossHarnessAttribution`
+    (`Start(Pi A)` + `Start(Claude B)` + mutation + `Advance(Claude B)` =>
+    `IneligibleUnscoped`), `testPiCloseConfirmsExclusiveAttribution`
+    (`Start(Pi A)` + mutation + `Close(Pi A)` => `AiExclusive(A)`),
+    `testPiCloseConfirmsContendedAttribution` (`Start(Pi A)` + `Start(Claude B)`
+    + mutation + `Close(Pi A)` => `AiContended`), and
+    `testPiAndCodexScopesStayMutuallyUnconfirmedAtEitherClose` (`Start(Pi A)` +
+    `Start(Codex B)` + mutation + `Close(Pi A)` => `IneligibleUnscoped`, Codex B
+    still unconfirmed) — all four auto-covered by the existing `test.*`
+    coverage-backstop `quint_test` in `mbt/tests.rs` with no new hand-written
+    Rust wrapper needed, matching that backstop's documented purpose. Adding
+    `Scope6` exposed a real pre-existing bug in `singleScope` (line ~259): a
+    fixed if/else chain over `Scope0..Scope4` with a bare `else { Scope5 }`
+    fallback that silently mis-attributed any live set containing only
+    `Scope6` as `Scope5` (`AiExclusive(Scope5)` instead of `AiExclusive(Scope6)`);
+    the fallback is now `else if (scopes.contains(Scope5)) { Scope5 } else {
+    Scope6 }`. `HasPiConfirmedExclusiveEvidence`/`HasPiConfirmedContendedEvidence`
+    `val`s were added alongside the existing Codex/OpenCode ones. In
+    `tests.rs`, a `pi_scope` helper was added and a new regression,
+    `a_tainted_live_pi_scope_is_abandoned_by_recover_and_a_fresh_pi_scope_can_still_confirm`,
+    proves the existing `database_failure`/`external_taint`/`recover`
+    mechanism composes correctly with `Pi -> true`: a live Pi scope on an
+    externally-tainted worktree is abandoned by `recover` and excluded from
+    confirmation, and a fresh Pi scope started afterward on the
+    recovered worktree still reaches `AiExclusive` at its own `Close`. The MBT
+    driver/model (`mbt/driver.rs`, `mbt/model.rs`) were extended with the
+    matching `scope6`/`Scope6`/`Pi` wiring so the Quint-Connect replay harness
+    stays in lockstep with the mock scope partition. Making Pi
+    confirmation-required broke the *premise*, not the correctness, of two
+    pre-existing tests that had used Pi as a stand-in for "a second
+    non-confirmation-required actor" (the only such actor now is `ClaudeCode`):
+    `tests.rs`'s `two_live_non_codex_scopes_still_attribute_contention` and
+    `coordinator.rs`'s `contended_scopes_yield_ai_contended_same_and_different_actor`
+    (via its `assert_contended_attribution` helper) both drove attribution
+    through a boundary (`Advance` on the *other* scope) that never confirms the
+    Pi scope, which is now correctly `IneligibleUnscoped` rather than a bug.
+    Both were updated to close the confirmation-required scope directly
+    (`Close(pi-b)` / `RuntimeBoundary::Close` on `scope-b`) — the same shape
+    already proven for Codex/OpenCode elsewhere in this suite — restoring
+    `AiContended` coverage for a live non-required scope overlapping a
+    confirmed Pi scope.
+
+    **No `protocol.rs`/Quint change is required for D13's lifetime-guard
+    mechanism**, after inspecting the corrected D13 supervisor design: it is
+    pure runtime/ingress composition of already-existing
+    `ProtectedWorktree`/`coordinate()`/`database_failure`/`recover`/`Flush`
+    primitives, the pre-existing `CoordinateError` variants, and ordinary OS
+    process/fd mechanics (spawning a child, duplicating a file descriptor
+    into it). It adds no new field to `ProtocolState`/`ScopeState`/
+    `Attribution`, no new Quint action or state component, and no
+    protocol-level behavior the current model does not already represent —
+    this task's Pi-actor `database_failure`/`recover` regression already
+    covers the load-bearing generic-protocol claim the guard depends on
+    (`Pi -> true` composes soundly with the existing recovery mechanism). The
+    new long-lived supervisor invocation itself, and Pi's own call site,
+    remain T03's and T05's responsibility.
+
+    **D13 dispositions restated (not merely inherited from D13):** platform
+    lifetime strategy = Option B (fd-duplication on Unix so the `WorktreeLock`
+    flock survives the supervisor's own death via the shell's inherited
+    duplicate descriptor; `user_bash` unconditionally refused on Windows,
+    tracked-tool attribution otherwise intact there). Dispatch/array admission
+    strategy = Option A per D13 "Corrected a fifth time": SCE's own launcher
+    owns `ResourceLoader` construction for the session via
+    `createRuntime`/`resourceLoaderOptions.extensionFactories`/`extensionsOverride`
+    (confirmed first-class, publicly-exported, typed constructor options on the
+    pinned package, not invented), so the exact array `ExtensionRunner` is
+    built from is SCE-governed, SCE-first, on every rebuild (initial load,
+    every `/reload`, every `/new`/`/resume`/`/fork` reusing the same
+    `createRuntime` factory) by construction, not by a runtime check that can
+    itself be absent when SCE is. Neither disposition is open or
+    upstream-blocked.
+
+    **D13's required invariant, restated verbatim:** "the authority... must
+    exist outside, or below, the replaceable Pi extension set... SCE's own
+    extension cannot be the sole watchdog for whether SCE is still present,
+    first, or active after an ExtensionRunner replacement." The
+    worktree-wide unsafe-mode rule: disabling Pi's own attribution does not
+    protect another harness's live scope on the same worktree — for any live
+    Claude/Codex/OpenCode/Pi scope, not only Pi's own. The one permanent,
+    worktree-unsafe boundary this plan does not close is any session whose
+    `ResourceLoader` was not constructed by SCE's launcher — a raw `pi`
+    invocation, or an SDK embedding that bypasses SCE's `ResourceLoader`
+    construction.
+
+    **18 pinned-evidence answers, independently re-confirmed against the
+    installed `config/lib/node_modules/@earendil-works/pi-coding-agent@0.80.6`
+    package (exact file/line citations; some line numbers differ slightly
+    from the amendment's approximate ones because this task re-derived them
+    directly rather than copying them):**
+    1. `dist/core/agent-session.js:132`: `this._resourceLoader =
+       config.resourceLoader;` — no `??` fallback, no self-construction;
+       the constructor requires the caller to supply it.
+    2. `dist/core/agent-session.js:2002`: `const extensionsResult =
+       this._resourceLoader.getExtensions();` inside `_buildRuntime()`.
+    3. `dist/core/agent-session.js:2008`: `new
+       ExtensionRunner(extensionsResult.extensions, extensionsResult.runtime,
+       this._cwd, this.sessionManager, this._modelRegistry)` — exactly
+       `extensionsResult.extensions`, unmodified.
+    4. `dist/core/resource-loader.d.ts:70` (`extensionFactories?:
+       InlineExtension[]`) and `:78` (`extensionsOverride?: (base:
+       LoadExtensionsResult) => LoadExtensionsResult`); consumed at
+       `dist/core/resource-loader.js:369` (inline factories pushed into the
+       final array inside `loadFinalExtensionSet`) and `:279`
+       (`this.extensionsResult = this.extensionsOverride ?
+       this.extensionsOverride(extensionsResult) : extensionsResult;`,
+       unconditional at the end of `reload()`).
+    5. `noExtensions?: boolean` (`resource-loader.d.ts:71`) only gates
+       discovery paths (`resource-loader.js:267`, `:351`); `extensionsOverride`
+       still runs unconditionally at `:279` regardless, so freezing discovery
+       is unnecessary — `extensionsOverride` governs the final array every
+       time.
+    6. `dist/core/agent-session.js:2023-2034` (`reload()`): calls
+       `this._resourceLoader.reload()` (line 2028) then `this._buildRuntime()`
+       (line 2029) — the same `ResourceLoader` instance, same bound options;
+       nothing replaces the instance itself.
+    7. Not disabled, does not need to be: `extensionsOverride` (bound to the
+       one instance at construction) intercepts every `reload()`'s result
+       unconditionally at `resource-loader.js:279`, with no extension-level
+       hook required.
+    8. `dist/index.d.ts:17` root-exports `createAgentSession`,
+       `createAgentSessionServices`, `createAgentSessionFromServices`,
+       `createAgentSessionRuntime` from `./core/sdk.ts`; `dist/main.js:501`
+       (`createAgentSessionServices`), `:570`
+       (`createAgentSessionFromServices`), `:593`
+       (`createAgentSessionRuntime`) show Pi's own production entry point
+       using exactly this composition, handing the result to
+       `runRpcMode`/`InteractiveMode`/`runPrintMode` (`main.js:652,655,686`),
+       which `dist/modes/index.d.ts:4,5,7` confirm are themselves
+       package-root-exported.
+    9. The `ResourceLoader` the caller supplies is the only seam:
+       `ExtensionRunner` is always and only built from its `getExtensions()`
+       result (answers 1-3).
+    10. For a launcher-hosted session this cannot happen (answer 1: no
+        fallback construction exists). For a session not hosted by SCE's
+        launcher, no in-extension mechanism can inspect how its own host
+        constructed the `ResourceLoader` it was handed.
+    11. None — no runtime mechanism inside `sce-pi-extension.ts` remains
+        depended on; the mechanism is the launcher's `ResourceLoader`
+        construction itself, external to the extension set.
+    12. `resource-loader.js:369`:
+        `extensionsResult.extensions.push(...inlineExtensions.extensions);`
+        inside `loadFinalExtensionSet` — an unconditional append, confirmed
+        not a replace/merge.
+    13. `resource-loader.js:401-403`, `addExtensionConflictDiagnostics`'s own
+        comment: "Keep all extensions loaded. Conflicts are reported as
+        diagnostics, and precedence is handled by load order." No
+        deduplication exists anywhere in the call chain.
+    14. `resource-loader.js:689`: `extensionPath =
+        \`<inline:${isNamed ? input.name : index + 1}>\`` inside
+        `loadExtensionFactories`; `dist/core/extensions/loader.js:369`
+        (`loadExtensionFromFactory`): `createExtension(extensionPath,
+        extensionPath)`; `loader.js:334`: `path: extensionPath` — for `{
+        name: "sce", factory }` this is exactly `<inline:sce>` for both
+        `Extension.path` and `.resolvedPath`.
+    15. `loader.js:345` (`loadExtension`): `resolvedPath =
+        resolvePath(extensionPath, cwd, { normalizeUnicodeSpaces: true })`;
+        `loader.js:352`: `createExtension(extensionPath, resolvedPath)` —
+        `.path` is the literal on-disk path string passed to discovery
+        (e.g. `.pi/extensions/sce/index.ts`), `.resolvedPath` is the
+        canonicalized absolute path.
+    16. The safe predicate is exact equality of `.resolvedPath` against the
+        canonical absolute path of the generated file (e.g.
+        `path.resolve(repoRoot, ".pi/extensions/sce/index.ts")`), never a
+        name/basename/substring heuristic: per answers 14-15, an inline
+        factory's `.resolvedPath` is never a filesystem path (`<inline:...>`)
+        and a foreign `sce`-named or `sce-custom` on-disk extension resolves
+        to a different absolute path, so exact-path equality alone
+        distinguishes all cases the plan named.
+    17. `resource-loader.js:270` (`loadFinalExtensionSet` populates
+        `extensionsResult` with both disk-discovered extensions and, per
+        answer 12, the pushed-in inline ones) flows directly into `:279`'s
+        `this.extensionsOverride(extensionsResult)` — the identical object,
+        not a filtered subset, is `base`.
+    18. `resource-loader.js:162-164`: `getExtensions() { return
+        this.extensionsResult; }` returns the exact value set at `:279`
+        verbatim; `agent-session.js:2002/2008` pass
+        `extensionsResult.extensions` straight into `new ExtensionRunner(...)`.
+        No further Pi-internal filtering, deduplication, or reordering occurs
+        between `extensionsOverride`'s return and `ExtensionRunner`
+        construction.
+  - Verify outcome: `nix run .#quint -- typecheck spec/mutation_cursor.qnt`
+    passed. `nix run .#quint -- test spec/mutation_cursor.qnt` passed all 40
+    named scenarios (including the 4 new Pi ones) after the `singleScope` fix
+    above — first attempt surfaced the real `singleScope` bug via
+    `testPiCloseConfirmsExclusiveAttribution` failing with `AiExclusive(Scope5)`
+    instead of `AiExclusive(Scope6)`, confirmed via an `--out-itf` trace dump,
+    then fixed and reverified green. `nix build
+    .#checks.x86_64-linux.mutation-trace-quint-connect` passed. `nix develop
+    -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    mutation_trace` passed 370/370 after fixing the two pre-existing tests
+    described above (368 passed, 2 failed on the first run for the reason
+    given; 370 passed, 0 failed after the fix).
+  - Context impact: durable-context classification `pending-review` — this is
+    a protocol/Quint semantic change (`Pi -> true`) plus a real spec bug fix
+    (`singleScope`'s fallback), but none of the five root context files
+    (`architecture.md`, `context-map.md`, `glossary.md`, `overview.md`,
+    `spec/mutation_cursor.md`) name Pi's confirmation-required status as a
+    fact needing correction beyond `spec/mutation_cursor.md` itself, which
+    this task already updated directly (it is the plan's living design
+    document, not a completed-task record). No other root context file
+    asserts Pi is non-confirmation-required. The Task context synchronization
+    phase should confirm this classification and record any residual impact.
+  - Context synchronization: synced
+  - Repair (post-completion review, 2026-09-17): `spec/mutation_cursor.md`
+    incorrectly generalized Codex/OpenCode's "post-tool signal absent on
+    denial" reasoning to Pi, implying Pi's terminal event is likewise absent
+    when execution is denied. It is not (T01 D5: the terminal event fires
+    unconditionally, even when Pi's own `tool_call` gate blocks or throws).
+    Corrected the prose to state that Pi's terminal event alone is not
+    execution evidence, and that only the `tool_result`-then-terminal-event
+    pairing (D6/D7) confirms a Pi scope — matching the implementation
+    unchanged. Separately,
+    `a_tainted_live_pi_scope_is_abandoned_by_recover_and_a_fresh_pi_scope_can_still_confirm`
+    was rewritten: it previously continued past `recover` by constructing a
+    fresh `ProtocolState::default()` and inserting the follow-up Pi scope
+    directly as `Active`, bypassing the real `Start` transition. It now
+    continues directly from `recover`'s own returned state, pre-registers the
+    follow-up scope as `NeverSeen` (as production seeds a scope row before
+    its first hook boundary), and drives it through a real `prepare`/`commit`
+    `Start`, an intermediate `attribution_for_boundary` check proving
+    `IneligibleUnscoped` before its own confirmation, and a real `Close`
+    reaching `AiExclusive(Pi)`. Neither repair touched
+    `requires_boundary_confirmation`/`requiresBoundaryConfirmation` or any
+    other `protocol.rs`/Quint semantics. Re-verified: `nix develop -c
+    ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    mutation_trace` (370 passed, 0 failed).
 
 - [ ] T03: `Add the Pi mutation-scope adapter` (status:todo)
   - Task ID: T03

@@ -127,7 +127,7 @@ new scope → Active
 
 Attribution is computed for the transition observed *at a boundary*, and is:
 
-- any unconfirmed live confirmation-required scope (Codex or OpenCode) on the worktree → `IneligibleUnscoped`;
+- any unconfirmed live confirmation-required scope (Codex, OpenCode, or Pi) on the worktree → `IneligibleUnscoped`;
 - otherwise zero active AI scopes → `IneligibleUnscoped`;
 - otherwise one active AI scope → `AiExclusive(scope)`;
 - otherwise two or more active AI scopes → `AiContended`.
@@ -136,11 +136,11 @@ Failure and external-taint states can only weaken attribution to `IneligibleUnsc
 
 ## Unconfirmed confirmation-required scopes
 
-Some actors are **confirmation-required**: `requiresBoundaryConfirmation` is `true` for `Codex` and `OpenCode`, `false` for `ClaudeCode` and `Pi`.
+Some actors are **confirmation-required**: `requiresBoundaryConfirmation` is `true` for `Codex`, `OpenCode`, and `Pi`, `false` for `ClaudeCode`.
 
-A confirmation-required actor's `Start` is a write-ahead admission boundary. It records that SCE established the scope before the harness's aggregate pre-tool decision was known — not that the tool ultimately executed. An arbitrary third-party sibling pre-tool hook can deny the execution after SCE's own `Start` succeeded, an OpenCode tool can fail its own in-tool permission or validation check after `tool.execute.before`, and neither harness exposes an aggregate-denial signal, so the resulting scope state is indistinguishable from a genuinely running one.
+A confirmation-required actor's `Start` is a write-ahead admission boundary. It records that SCE established the scope before the harness's aggregate pre-tool decision was known — not that the tool ultimately executed. An arbitrary third-party sibling pre-tool hook can deny the execution after SCE's own `Start` succeeded, an OpenCode tool can fail its own in-tool permission or validation check after `tool.execute.before`, a later Pi extension can still return `block: true` after SCE's own `tool_call` handler succeeded, and none of these harnesses exposes an aggregate-denial signal, so the resulting scope state is indistinguishable from a genuinely running one.
 
-A live confirmation-required scope is therefore **unconfirmed** at every boundary except its own `Close`. Its `Close` is driven by the post-tool signal, which a denied tool never reaches, so that boundary is positive evidence the tool actually executed. One boundary closes at most one scope, so any *other* live confirmation-required scope stays unconfirmed even there.
+A live confirmation-required scope is therefore **unconfirmed** at every boundary except its own `Close`. For Codex and OpenCode, `Close` is driven directly by the post-tool signal, and a denied tool never reaches it, so that signal's occurrence is itself positive evidence the tool executed. Pi's terminal event is not equivalent: it fires unconditionally for every tool call, including one Pi's own pre-execution gate blocked or threw on, so its mere occurrence is not execution evidence. Pi's `Close` instead requires a separate, earlier positive execution signal for the same call; only the pairing of that signal with the terminal event confirms the scope. A Pi terminal event reached without that prior signal is not a confirming `Close` — it is evidence the tool never executed, and the scope instead follows the non-executed abandonment path rather than any successful Close. A genuine runtime failure after real execution can still supply the required signal, since failure alone does not mean the tool never ran. One boundary closes at most one scope, so any *other* live confirmation-required scope stays unconfirmed even there.
 
 While a worktree has any unconfirmed live confirmation-required scope, the whole transition is `IneligibleUnscoped` — the uncertain scope is not merely dropped from the live set and the remaining scopes attributed, because that would still be a positive attribution claim made under incomplete knowledge. `MutationEvent.activeScopes` still records the complete actual live set; only attribution eligibility changes.
 
@@ -165,7 +165,7 @@ The model includes safety properties covering:
 - two or more live confirmation-required scopes suppressing attribution even at a confirming `Close`;
 - CAS/replay safety and cursor/evidence consistency.
 
-Deterministic runs cover database-unavailable state preservation, external-taint recovery, abandoned-scope non-reactivation, same-actor and different-actor contention, an unconfirmed Codex or OpenCode scope blocking cross-harness contention, a `Flush` never confirming a Codex or OpenCode scope, a Codex or OpenCode `Close` confirming both exclusive and contended attribution, a second live confirmation-required scope suppressing a confirming `Close` (including a mixed OpenCode + Codex pair), and a terminal Codex scope not suppressing later attribution.
+Deterministic runs cover database-unavailable state preservation, external-taint recovery, abandoned-scope non-reactivation, same-actor and different-actor contention, an unconfirmed Codex, OpenCode, or Pi scope blocking cross-harness contention, a `Flush` never confirming a Codex, OpenCode, or Pi scope, a Codex, OpenCode, or Pi `Close` confirming both exclusive and contended attribution, a second live confirmation-required scope suppressing a confirming `Close` (including a mixed OpenCode + Codex pair, and a mixed Pi + Codex pair), and a terminal Codex scope not suppressing later attribution.
 
 ## Implementation refinement
 
