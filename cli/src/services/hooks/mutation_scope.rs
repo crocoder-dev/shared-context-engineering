@@ -785,7 +785,7 @@ mod tests {
         use crate::services::agent_trace_storage::{
             resolve_agent_trace_storage_at_state_root, AgentTraceStorageContext,
         };
-        use crate::services::checkout::resolve_git_dir;
+        use crate::services::mutation_trace::runtime::resolve_git_dir;
         use crate::services::mutation_trace::store::decode_revision;
 
         fn git(dir: &Path, args: &[&str]) -> String {
