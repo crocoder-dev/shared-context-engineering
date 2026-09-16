@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Map, Value};
 
-use crate::services::checkout;
 use crate::services::observability::traits::Logger;
 
 const HOOK_EVENT_NAME_FIELD: &str = "hook_event_name";
@@ -355,7 +354,8 @@ pub(crate) fn run_claude_mutation_scope_from_payload(
     stdin_payload: &str,
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
-    let resolve_git_dir_fn = |cwd: &str| checkout::resolve_git_dir(Path::new(cwd));
+    let resolve_git_dir_fn =
+        |cwd: &str| crate::services::mutation_trace::runtime::resolve_git_dir(Path::new(cwd));
     let seam_fn = |repository_root: &Path, payload: &str, logger: Option<&dyn Logger>| {
         super::mutation_scope::run_mutation_scope_from_payload(repository_root, payload, logger)
     };
@@ -374,7 +374,8 @@ fn run_claude_mutation_scope_from_payload_at_state_root(
     stdin_payload: &str,
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
-    let resolve_git_dir_fn = |cwd: &str| checkout::resolve_git_dir(Path::new(cwd));
+    let resolve_git_dir_fn =
+        |cwd: &str| crate::services::mutation_trace::runtime::resolve_git_dir(Path::new(cwd));
     let seam_fn = |repository_root: &Path, payload: &str, logger: Option<&dyn Logger>| {
         super::mutation_scope::run_mutation_scope_from_payload_at_state_root(
             repository_root,
@@ -2664,7 +2665,7 @@ mod tests {
         use crate::services::agent_trace_storage::{
             resolve_agent_trace_storage_at_state_root, AgentTraceStorageContext,
         };
-        use crate::services::checkout::{get_or_create_checkout_id, resolve_git_dir};
+        use crate::services::mutation_trace::runtime::{resolve_git_dir, resolve_worktree_id};
         use crate::services::mutation_trace::store::decode_revision;
 
         fn git(dir: &Path, args: &[&str]) -> String {
@@ -2790,8 +2791,9 @@ mod tests {
             }
 
             fn worktree_id_at(root: &Path) -> String {
-                get_or_create_checkout_id(&Self::git_dir_at(root))
-                    .expect("checkout id should resolve")
+                resolve_worktree_id(root)
+                    .expect("worktree id should resolve")
+                    .0
             }
 
             fn worktree_id(&self) -> String {
