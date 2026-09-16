@@ -1,7 +1,7 @@
 module mutation_cursor {
   type WorktreeId = WT0 | WT1
   type ActorKind = ClaudeCode | Codex | OpenCode | Pi
-  type ScopeId = Scope0 | Scope1 | Scope2 | Scope3 | Scope4 | Scope5
+  type ScopeId = Scope0 | Scope1 | Scope2 | Scope3 | Scope4 | Scope5 | Scope6
   type TreeId = Tree0 | Tree1 | Tree2 | Tree3
   type EventId =
     | Event0
@@ -134,7 +134,7 @@ module mutation_cursor {
     | MbtStutter
 
   val WORKTREES: Set[WorktreeId] = Set(WT0, WT1)
-  val SCOPES: Set[ScopeId] = Set(Scope0, Scope1, Scope2, Scope3, Scope4, Scope5)
+  val SCOPES: Set[ScopeId] = Set(Scope0, Scope1, Scope2, Scope3, Scope4, Scope5, Scope6)
   val TREES: Set[TreeId] = Set(Tree0, Tree1, Tree2, Tree3)
   val EVENTS: Set[EventId] = Set(
     Event0,
@@ -173,6 +173,7 @@ module mutation_cursor {
       | Scope3 => WT1
       | Scope4 => WT0
       | Scope5 => WT0
+      | Scope6 => WT0
     }
 
   pure def scopeActor(scope: ScopeId): ActorKind =
@@ -183,6 +184,7 @@ module mutation_cursor {
       | Scope3 => OpenCode
       | Scope4 => Codex
       | Scope5 => OpenCode
+      | Scope6 => Pi
     }
 
   pure def isLive(status: ScopeStatus): bool = status == Active
@@ -265,8 +267,10 @@ module mutation_cursor {
       Scope3
     } else if (scopes.contains(Scope4)) {
       Scope4
-    } else {
+    } else if (scopes.contains(Scope5)) {
       Scope5
+    } else {
+      Scope6
     }
 
   var worktrees: WorktreeId -> WorktreeState
@@ -330,8 +334,8 @@ module mutation_cursor {
     match actor {
       | Codex => true
       | OpenCode => true
+      | Pi => true
       | ClaudeCode => false
-      | Pi => false
     }
 
   def scopeRequiresConfirmation(scope: ScopeId): bool =
@@ -1398,6 +1402,18 @@ module mutation_cursor {
     event.attribution == AiContended
   )
 
+  val HasPiConfirmedExclusiveEvidence = mutationEvents.exists(event =>
+    isClose(event.boundary) and
+    scopes.get(boundaryScope(event.boundary)).actorKind == Pi and
+    event.attribution == AiExclusive(boundaryScope(event.boundary))
+  )
+
+  val HasPiConfirmedContendedEvidence = mutationEvents.exists(event =>
+    isClose(event.boundary) and
+    scopes.get(boundaryScope(event.boundary)).actorKind == Pi and
+    event.attribution == AiContended
+  )
+
   val HasUnconfirmedRequiredScopeSuppressedEvidence = mutationEvents.exists(event =>
     hasUnconfirmedRequiredScope(event.activeScopes, event.boundary) and
     event.activeScopes.size() >= 1 and
@@ -2036,6 +2052,83 @@ module mutation_cursor {
         mutationEvents.exists(event =>
           event.afterTree == Tree1 and
           event.activeScopes == Set(Scope2, Scope5) and
+          event.attribution == IneligibleUnscoped
+        )
+      )
+      .expect(Safety)
+
+  run testUnconfirmedPiScopeBlocksCrossHarnessAttribution =
+    init
+      .then(prepare(Attempt0, Start({ scope: Scope6, event: Event0 })))
+      .then(commitAttempt(Attempt0))
+      .then(prepare(Attempt1, Start({ scope: Scope0, event: Event1 })))
+      .then(commitAttempt(Attempt1))
+      .then(mutate(WT0, Tree1))
+      .then(prepare(Attempt2, Advance({ scope: Scope0, event: Event2 })))
+      .then(commitAttempt(Attempt2))
+      .expect(scopes.get(Scope6).status == Active)
+      .expect(
+        mutationEvents.exists(event =>
+          event.afterTree == Tree1 and
+          event.activeScopes == Set(Scope0, Scope6) and
+          event.attribution == IneligibleUnscoped
+        )
+      )
+      .expect(HasUnconfirmedRequiredScopeSuppressedEvidence)
+      .expect(Safety)
+
+  run testPiCloseConfirmsExclusiveAttribution =
+    init
+      .then(prepare(Attempt0, Start({ scope: Scope6, event: Event0 })))
+      .then(commitAttempt(Attempt0))
+      .then(mutate(WT0, Tree1))
+      .then(prepare(Attempt1, Close({ scope: Scope6, event: Event1 })))
+      .then(commitAttempt(Attempt1))
+      .expect(scopes.get(Scope6).status == Closed)
+      .expect(
+        mutationEvents.exists(event =>
+          event.afterTree == Tree1 and
+          event.activeScopes == Set(Scope6) and
+          event.attribution == AiExclusive(Scope6)
+        )
+      )
+      .expect(HasPiConfirmedExclusiveEvidence)
+      .expect(Safety)
+
+  run testPiCloseConfirmsContendedAttribution =
+    init
+      .then(prepare(Attempt0, Start({ scope: Scope6, event: Event0 })))
+      .then(commitAttempt(Attempt0))
+      .then(prepare(Attempt1, Start({ scope: Scope0, event: Event1 })))
+      .then(commitAttempt(Attempt1))
+      .then(mutate(WT0, Tree1))
+      .then(prepare(Attempt2, Close({ scope: Scope6, event: Event2 })))
+      .then(commitAttempt(Attempt2))
+      .expect(scopes.get(Scope0).status == Active)
+      .expect(
+        mutationEvents.exists(event =>
+          event.afterTree == Tree1 and
+          event.activeScopes == Set(Scope0, Scope6) and
+          event.attribution == AiContended
+        )
+      )
+      .expect(HasPiConfirmedContendedEvidence)
+      .expect(Safety)
+
+  run testPiAndCodexScopesStayMutuallyUnconfirmedAtEitherClose =
+    init
+      .then(prepare(Attempt0, Start({ scope: Scope6, event: Event0 })))
+      .then(commitAttempt(Attempt0))
+      .then(prepare(Attempt1, Start({ scope: Scope2, event: Event1 })))
+      .then(commitAttempt(Attempt1))
+      .then(mutate(WT0, Tree1))
+      .then(prepare(Attempt2, Close({ scope: Scope6, event: Event2 })))
+      .then(commitAttempt(Attempt2))
+      .expect(scopes.get(Scope2).status == Active)
+      .expect(
+        mutationEvents.exists(event =>
+          event.afterTree == Tree1 and
+          event.activeScopes == Set(Scope2, Scope6) and
           event.attribution == IneligibleUnscoped
         )
       )

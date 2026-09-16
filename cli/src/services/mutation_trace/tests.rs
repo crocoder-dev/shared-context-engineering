@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::protocol::{
-    abandon, attribution_for, commit, database_failure, live_scopes_on, prepare, recover, taint,
-    CommitOutcome,
+    abandon, attribution_for, attribution_for_boundary, commit, database_failure, live_scopes_on,
+    prepare, recover, taint, CommitOutcome,
 };
 use super::types::*;
 
@@ -46,6 +46,10 @@ fn codex_scope(status: ScopeStatus, worktree_id: WorktreeId) -> ScopeState {
 
 fn opencode_scope(status: ScopeStatus, worktree_id: WorktreeId) -> ScopeState {
     scope_with_actor(status, ActorKind::OpenCode, worktree_id)
+}
+
+fn pi_scope(status: ScopeStatus, worktree_id: WorktreeId) -> ScopeState {
+    scope_with_actor(status, ActorKind::Pi, worktree_id)
 }
 
 fn scope_with_actor(
@@ -1149,8 +1153,8 @@ fn two_live_non_codex_scopes_still_attribute_contention() {
 
     let event = commit_boundary(
         &state,
-        Boundary::Advance {
-            scope: scope("claude-a"),
+        Boundary::Close {
+            scope: scope("pi-b"),
             event: event("event0"),
         },
         tree("tree1"),
@@ -1773,6 +1777,81 @@ fn recover_from_external_taint_abandons_live_scopes_and_clears_external_taint() 
         next.scopes.get(&scope("scope0")).unwrap().status,
         ScopeStatus::Abandoned
     );
+}
+
+#[test]
+fn a_tainted_live_pi_scope_is_abandoned_by_recover_and_a_fresh_pi_scope_can_still_confirm() {
+    let mut state = ProtocolState::default();
+    state
+        .worktrees
+        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 2));
+    state.external_taint.insert(worktree("wt0"));
+    state.scopes.insert(
+        scope("pi-a"),
+        pi_scope(ScopeStatus::Active, worktree("wt0")),
+    );
+    state.scopes.insert(
+        scope("pi-b"),
+        pi_scope(ScopeStatus::NeverSeen, worktree("wt0")),
+    );
+
+    let recovered = recover(&state, &worktree("wt0"), tree("tree1"));
+
+    assert_eq!(
+        recovered.scopes.get(&scope("pi-a")).unwrap().status,
+        ScopeStatus::Abandoned
+    );
+    assert!(live_scopes_on(&recovered, &worktree("wt0")).is_empty());
+
+    let recovered_worktree = recovered.worktrees.get(&worktree("wt0")).unwrap();
+    assert_eq!(recovered_worktree.cursor_tree, tree("tree1"));
+    assert!(!recovered_worktree.tainted);
+    assert_eq!(recovered_worktree.failure_kind, FailureKind::Healthy);
+    assert!(!recovered_worktree.needs_rebaseline);
+    assert!(!recovered.external_taint.contains(&worktree("wt0")));
+
+    let started = prepare_and_commit(
+        &recovered,
+        &attempt_id("attempt_pi_b_start"),
+        Boundary::Start {
+            scope: scope("pi-b"),
+            event: event("event_pi_b_start"),
+        },
+        tree("tree1"),
+    );
+    assert!(
+        started.evaluation.observes,
+        "Start must be accepted and observed from the recovered state"
+    );
+    assert_eq!(
+        started.state.scopes.get(&scope("pi-b")).unwrap().status,
+        ScopeStatus::Active
+    );
+
+    assert_eq!(
+        attribution_for_boundary(
+            &started.state,
+            &worktree("wt0"),
+            &Boundary::Advance {
+                scope: scope("pi-b"),
+                event: event("event_probe"),
+            },
+        ),
+        Attribution::IneligibleUnscoped,
+        "an unconfirmed live Pi scope must not be exclusive at another boundary"
+    );
+
+    let closed = commit_boundary(
+        &started.state,
+        Boundary::Close {
+            scope: scope("pi-b"),
+            event: event("event_pi_b_close"),
+        },
+        tree("tree2"),
+    );
+
+    assert_eq!(closed.active_scopes, BTreeSet::from([scope("pi-b")]));
+    assert_eq!(closed.attribution, Attribution::AiExclusive(scope("pi-b")));
 }
 
 #[test]
