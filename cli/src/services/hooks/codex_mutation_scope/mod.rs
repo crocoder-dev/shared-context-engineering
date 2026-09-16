@@ -9,10 +9,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Map, Value};
 
-use crate::services::checkout;
 use crate::services::hooks::codex::bash_policy::{
     bash_command_from_tool_input, evaluate_codex_bash_policy, CodexBashPolicyDecision,
 };
+use crate::services::mutation_trace::runtime::resolve_git_dir;
 use crate::services::observability::traits::Logger;
 
 use boundary_lock::{AdapterBoundaryLock, DEFAULT_BOUNDARY_LOCK_TIMEOUT};
@@ -311,7 +311,7 @@ pub(crate) fn run_codex_mutation_scope_from_payload(
     stdin_payload: &str,
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
-    let resolve_git_dir_fn = |cwd: &str| checkout::resolve_git_dir(Path::new(cwd));
+    let resolve_git_dir_fn = |cwd: &str| resolve_git_dir(Path::new(cwd));
     let seam_fn = |repository_root: &Path, payload: &str, logger: Option<&dyn Logger>| {
         super::mutation_scope::run_mutation_scope_from_payload(repository_root, payload, logger)
     };
@@ -334,7 +334,7 @@ fn run_codex_mutation_scope_from_payload_at_state_root(
     stdin_payload: &str,
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
-    let resolve_git_dir_fn = |cwd: &str| checkout::resolve_git_dir(Path::new(cwd));
+    let resolve_git_dir_fn = |cwd: &str| resolve_git_dir(Path::new(cwd));
     let seam_fn = |repository_root: &Path, payload: &str, logger: Option<&dyn Logger>| {
         super::mutation_scope::run_mutation_scope_from_payload_at_state_root(
             repository_root,
@@ -3547,7 +3547,7 @@ mod tests {
         use crate::services::agent_trace_storage::{
             resolve_agent_trace_storage_at_state_root, AgentTraceStorageContext,
         };
-        use crate::services::checkout::{get_or_create_checkout_id, resolve_git_dir};
+        use crate::services::mutation_trace::runtime::{resolve_git_dir, resolve_worktree_id};
         use crate::services::mutation_trace::store::decode_revision;
 
         const PROBE01_APPLY_PATCH_POST: &str = include_str!(
@@ -3713,8 +3713,9 @@ mod tests {
             }
 
             fn worktree_id_at(root: &Path) -> String {
-                get_or_create_checkout_id(&Self::git_dir_at(root))
-                    .expect("checkout id should resolve")
+                resolve_worktree_id(root)
+                    .expect("worktree id should resolve")
+                    .0
             }
 
             fn worktree_id(&self) -> String {
