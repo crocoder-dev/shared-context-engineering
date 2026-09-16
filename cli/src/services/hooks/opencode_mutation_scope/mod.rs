@@ -9,10 +9,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Map, Value};
 
-use crate::services::checkout;
 use crate::services::hooks::{
     normalize_opencode_model_id, prefixed_diff_trace_session_id, OPENCODE_TOOL_NAME,
 };
+use crate::services::mutation_trace::runtime::resolve_git_dir;
 use crate::services::observability::traits::Logger;
 
 use boundary_lock::{AdapterBoundaryLock, DEFAULT_BOUNDARY_LOCK_TIMEOUT};
@@ -339,7 +339,7 @@ pub(crate) fn run_opencode_mutation_scope_from_payload(
     stdin_payload: &str,
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
-    let resolve_git_dir_fn = |cwd: &str| checkout::resolve_git_dir(Path::new(cwd));
+    let resolve_git_dir_fn = |cwd: &str| resolve_git_dir(Path::new(cwd));
     let seam_fn = |repository_root: &Path, payload: &str, logger: Option<&dyn Logger>| {
         super::mutation_scope::run_mutation_scope_from_payload(repository_root, payload, logger)
     };
@@ -358,7 +358,7 @@ pub(crate) fn run_opencode_mutation_scope_from_payload_at_state_root(
     stdin_payload: &str,
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
-    let resolve_git_dir_fn = |cwd: &str| checkout::resolve_git_dir(Path::new(cwd));
+    let resolve_git_dir_fn = |cwd: &str| resolve_git_dir(Path::new(cwd));
     let seam_fn = |repository_root: &Path, payload: &str, logger: Option<&dyn Logger>| {
         super::mutation_scope::run_mutation_scope_from_payload_at_state_root(
             repository_root,
@@ -2126,7 +2126,7 @@ mod runtime_seam_tests {
     use crate::services::agent_trace_storage::{
         resolve_agent_trace_storage_at_state_root, AgentTraceStorageContext,
     };
-    use crate::services::checkout::resolve_git_dir;
+    use crate::services::mutation_trace::runtime::resolve_git_dir;
 
     use super::state::read_state;
     use super::*;
@@ -2145,7 +2145,7 @@ mod runtime_seam_tests {
     }
 
     struct OpenCodeRepo {
-        _temp: tempfile::TempDir,
+        temp: tempfile::TempDir,
         root: PathBuf,
         state_root: PathBuf,
     }
@@ -2182,7 +2182,7 @@ mod runtime_seam_tests {
             .expect("state-root storage should initialize the repository DB");
 
             Self {
-                _temp: temp,
+                temp,
                 root,
                 state_root,
             }
@@ -2345,6 +2345,70 @@ mod runtime_seam_tests {
 
         assert!(read_state(&repo.git_dir())
             .expect("adapter state readable")
+            .attempts
+            .is_empty());
+        assert_eq!(
+            repo.scope_status(&scope_id),
+            Some(("opencode".to_string(), "closed".to_string())),
+        );
+    }
+
+    #[test]
+    fn linked_worktree_uses_its_worktree_specific_git_dir_for_mutation_scope_state() {
+        let repo = OpenCodeRepo::new("linked-worktree");
+        let linked_root = repo.temp.path().join("linked");
+        git(
+            &repo.root,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                linked_root
+                    .to_str()
+                    .expect("linked worktree path should be UTF-8"),
+            ],
+        );
+
+        let main_git_dir = resolve_git_dir(&repo.root).expect("main git dir should resolve");
+        let linked_git_dir = resolve_git_dir(&linked_root).expect("linked git dir should resolve");
+        assert_ne!(
+            main_git_dir, linked_git_dir,
+            "linked worktrees must use distinct Git state locations",
+        );
+
+        let before = json!({
+            "hook_event_name": "ToolExecuteBefore",
+            "session_id": "ses_linked",
+            "call_id": "call_linked",
+            "cwd": linked_root,
+            "tool_name": "write",
+            "model": "opencode/big-pickle",
+        })
+        .to_string();
+        run_opencode_mutation_scope_from_payload_at_state_root(&repo.state_root, &before, None)
+            .expect("linked-worktree Start");
+
+        let scope_id = read_state(&linked_git_dir)
+            .expect("linked adapter state should be readable")
+            .attempts[0]
+            .scope_id
+            .clone();
+        fs::write(linked_root.join("file.txt"), "one\nlinked\n")
+            .expect("linked worktree file should be writable");
+
+        let after = json!({
+            "hook_event_name": "ToolExecuteAfter",
+            "session_id": "ses_linked",
+            "call_id": "call_linked",
+            "cwd": linked_root,
+            "tool_name": "write",
+        })
+        .to_string();
+        run_opencode_mutation_scope_from_payload_at_state_root(&repo.state_root, &after, None)
+            .expect("linked-worktree Close");
+
+        assert!(read_state(&linked_git_dir)
+            .expect("linked adapter state should be readable")
             .attempts
             .is_empty());
         assert_eq!(
