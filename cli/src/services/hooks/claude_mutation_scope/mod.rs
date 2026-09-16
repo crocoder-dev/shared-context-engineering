@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Map, Value};
 
+use crate::services::mutation_trace::runtime::resolve_git_dir;
 use crate::services::observability::traits::Logger;
 
 const HOOK_EVENT_NAME_FIELD: &str = "hook_event_name";
@@ -354,8 +355,7 @@ pub(crate) fn run_claude_mutation_scope_from_payload(
     stdin_payload: &str,
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
-    let resolve_git_dir_fn =
-        |cwd: &str| crate::services::mutation_trace::runtime::resolve_git_dir(Path::new(cwd));
+    let resolve_git_dir_fn = |cwd: &str| resolve_git_dir(Path::new(cwd));
     let seam_fn = |repository_root: &Path, payload: &str, logger: Option<&dyn Logger>| {
         super::mutation_scope::run_mutation_scope_from_payload(repository_root, payload, logger)
     };
@@ -374,8 +374,7 @@ fn run_claude_mutation_scope_from_payload_at_state_root(
     stdin_payload: &str,
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
-    let resolve_git_dir_fn =
-        |cwd: &str| crate::services::mutation_trace::runtime::resolve_git_dir(Path::new(cwd));
+    let resolve_git_dir_fn = |cwd: &str| resolve_git_dir(Path::new(cwd));
     let seam_fn = |repository_root: &Path, payload: &str, logger: Option<&dyn Logger>| {
         super::mutation_scope::run_mutation_scope_from_payload_at_state_root(
             repository_root,

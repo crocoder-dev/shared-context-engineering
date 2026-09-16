@@ -1,5 +1,15 @@
 {
   "hooks": {
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "command": "root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || exit 0; exec bash \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" sce hooks codex-mutation-scope",
+            "type": "command"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "hooks": [
@@ -9,6 +19,15 @@
           }
         ],
         "matcher": "apply_patch"
+      },
+      {
+        "hooks": [
+          {
+            "command": "root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || exit 0; exec bash \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" sce hooks codex-mutation-scope",
+            "type": "command"
+          }
+        ],
+        "matcher": "^(Bash|apply_patch)$"
       }
     ],
     "PreToolUse": [
@@ -20,6 +39,25 @@
           }
         ],
         "matcher": "Bash"
+      },
+      {
+        "hooks": [
+          {
+            "command": "sce_deny(){ printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"SCE could not establish mutation attribution for this tool execution.\"}}'; exit 0; }; root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || sce_deny; test -r \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" || sce_deny; SCE_CODEX_PRE_TOOL_USE_FAIL_CLOSED=1 exec bash \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" sce hooks codex-mutation-scope",
+            "type": "command"
+          }
+        ],
+        "matcher": "^(Bash|apply_patch)$"
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "command": "root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || exit 0; exec bash \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" sce hooks codex-mutation-scope",
+            "type": "command"
+          }
+        ]
       }
     ],
     "Stop": [
@@ -27,6 +65,24 @@
         "hooks": [
           {
             "command": "root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || exit 0; exec bash \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" sce hooks codex",
+            "type": "command"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "command": "root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || exit 0; exec bash \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" sce hooks codex-mutation-scope",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "command": "root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || exit 0; exec bash \"$root/.codex/hooks/run-sce-or-show-install-guidance.sh\" sce hooks codex-mutation-scope",
             "type": "command"
           }
         ]

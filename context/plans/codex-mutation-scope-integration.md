@@ -1,0 +1,3951 @@
+# Plan: codex-mutation-scope-integration
+
+## Change summary
+
+Add the **second** concrete mutation-scope producer for SCE: a Codex adapter
+that translates raw Codex hook lifecycle events into the normalized
+mutation-scope contract already implemented by `sce hooks mutation-scope`
+(`cli/src/services/hooks/mutation_scope.rs`, documented in
+`context/cli/mutation-scope-hook-ingress.md`) and proven end-to-end by the
+Claude adapter (`context/cli/claude-mutation-scope-integration.md`, PR #263).
+
+Data flow:
+
+```text
+Codex raw hook event
+  -> sce hooks codex-mutation-scope   (new, hidden — see T02 for the command decision)
+  -> normalize Codex lifecycle + identity, classify tool
+  -> hooks::mutation_scope generic ingress (in-process pub(crate) seam)
+  -> coordinate() / abandon_scope()
+  -> mutation cursor
+```
+
+The fundamental mapping is **one independently mutation-capable *tracked* Codex
+tool execution = one SCE mutation `ScopeId`**. "Tracked" is load-bearing: the
+Codex adapter v1 gives a mutation scope only to tool classes whose terminal
+lifecycle it can safely observe (`Bash`, `apply_patch`). A Codex session, turn,
+or delegated agent is never a scope; `session_id` / `turn_id` / any
+delegated-agent identity are only inputs that distinguish tool executions.
+
+**MCP calls and unknown/future Codex tools are deliberately *outside* Codex
+mutation-scope attribution coverage in v1** (re-planning direction B, chosen
+2026-09-08 — see D23 and Open questions). They execute normally; they may mutate;
+the adapter creates no mutation scope, no bookkeeping, and no `Start` for them.
+This is an attribution-coverage boundary, not a claim that MCP is read-only and
+not a lifecycle workaround — the T01 evidence that MCP *cannot* be safely modeled
+as a scope on Codex 0.153.4 (D10a Case C) is exactly why it is excluded.
+
+This extends the mutation-scope stack. The generic ingress, the runtime
+(`coordinate()` / `abandon_scope()`), and the `mutation-trace` protocol already
+exist, and the adapter itself is a new caller of them rather than a rewrite of
+them. `ActorKind::Codex` and the `"actor_kind":"codex"` wire value are already
+accepted by `parse_mutation_scope_payload` today. The one deliberate exception
+is the accepted fifth PR #268 follow-up, which refines the generic attribution
+semantics with the boundary-aware unconfirmed-Codex rule (D14) — see "Protocol
+scope" below. This change adds the Codex harness adapter layer the ingress
+explicitly deferred, its checkout-local bookkeeping, its hidden command/routing,
+and its generated `.codex/hooks.json` registrations through the existing shared
+Codex hook-config ownership/merge/doctor system.
+
+**The Claude adapter is a structural reference, not a lifecycle specification
+for Codex.** Codex's hook surface differs materially from Claude's: it has no
+`PostToolUseFailure`, no `PermissionDenied`, no `StopFailure`, and no
+`WorktreeRemove` event (the eleven event names `codex_hook_config.rs` accepts
+are `PreToolUse`, `PermissionRequest`, `PostToolUse`, `PreCompact`,
+`PostCompact`, `SessionStart`, `SessionEnd`, `UserPromptSubmit`,
+`SubagentStart`, `SubagentStop`, `Stop`). Every Codex lifecycle mapping in this
+plan is therefore **gated on T01 evidence** rather than copied from Claude. T01
+freezes the real Codex hook contract for the Codex version SCE chooses to
+support before any mapping is designed.
+
+The existing `sce hooks codex` integration (conversation tracing via
+`UserPromptSubmit`/`Stop`, `PreToolUse(Bash)` policy, `PostToolUse(apply_patch)`
+`diff_traces` evidence, `.codex/hooks.json` ownership/merge, doctor trust
+diagnosis) is preserved untouched and additive. Mutation-scope events continue
+to write only through the mutation runtime (`mutation_trace_*` tables); the
+`apply_patch -> diff_traces -> post-commit intersection` evidence pipeline is a
+complementary system and is not folded into mutation-scope storage.
+
+**Protocol scope (chronological — the plan's scope changed once, deliberately).**
+
+1. **Original adapter plan.** No mutation protocol, Quint model, mutation-trace
+   SQL migration, mutation-attribution algorithm, or Agent Trace schema change
+   was required: the adapter was to be a new caller of an existing seam. If T01
+   revealed Codex fundamentally could not be represented by the current
+   mutation-scope contract, T01 was to stop and record the contradiction rather
+   than modify the protocol.
+2. **The accepted protocol-level safety follow-up.** T04's lifecycle analysis
+   exposed an *unobservable* arbitrary-hook denial window: an arbitrary sibling
+   `PreToolUse` hook can deny a Codex tool after SCE has already driven
+   `Start(A)`, and SCE never learns that verdict — so a cross-harness boundary
+   observing a mutation during that window could produce **false positive**
+   attribution. No adapter-local fix exists (the observable state is identical
+   for "A is running" and "A was denied"). The **fifth PR #268 follow-up**
+   therefore intentionally refined the generic mutation protocol and the Quint
+   model with **boundary-aware unconfirmed-Codex attribution semantics** (D14):
+   `spec/mutation_cursor.qnt`, `spec/mutation_cursor.md`,
+   `cli/src/services/mutation_trace/protocol.rs`, and the mutation-trace
+   runtime/MBT tests that refine and validate the rule.
+3. **From that point onward (T06, T07).** No *further* protocol, Quint,
+   runtime-semantic, mutation-attribution-algorithm, mutation-trace SQL, or
+   Agent Trace schema change is expected or permitted. Any additional such
+   change becomes a separate, explicitly justified PR.
+
+**No mutation-trace SQL migration and no Agent Trace schema change is in scope
+at any point** — `cli/migrations/agent-trace-repository/` and
+`config/schema/agent-trace.schema.json` remain untouched by this PR (AC22).
+
+**T01 outcome (recorded 2026-09-08):** the built-in `Bash` / `apply_patch`
+surface *is* representable by the current contract; the MCP mutation-scope
+lifecycle *is not* (D10a Case C). Re-planning chose **direction B** — MCP and
+unknown tools remain usable but are outside the Codex adapter's mutation-scope
+coverage. That decision required **no** protocol / Quint / mutation-trace SQL /
+Agent Trace schema change (D23); it narrows the Codex adapter's coverage
+boundary only. T01 is done; T02 is unblocked. *(This records what was true at
+T01. The later protocol change has a different cause — cross-harness
+zombie-attribution, not the MCP coverage decision; see D14 and D23.)*
+
+## Stack and base
+
+- **Predecessor:** PR #263 `claude-mutation-scope-integration`
+  (head branch `claude-mutation-scope-integration`, itself based on
+  `mutation-scope-ingress` / #261).
+- **This branch:** `codex-mutation-scope-integration`, already created at #263's
+  head (no commits ahead of `claude-mutation-scope-integration` at plan time).
+- **Base for the PR while the stack is unmerged:**
+  `claude-mutation-scope-integration` (#263 head), **not** `main`.
+- **Final branch comparison** is against `claude-mutation-scope-integration`,
+  not `main`, for as long as #263 remains open. If the stack has changed by
+  execution time (e.g. #263 merged to `main`, or a new predecessor inserted),
+  re-check `gh pr list` and rebase onto the actual current predecessor, then
+  update this section and every `origin/claude-mutation-scope-integration`
+  reference below.
+
+## Design
+
+These are the design decisions the task stack and acceptance criteria reference
+by number. Decisions whose correctness depends on a Codex lifecycle signal
+actually firing (or on a payload field actually being present and stable) are
+marked **T01-GATED** and carry no committed mapping until T01 records a
+disposition (`PROVEN`, `DOCUMENTED — NON-LOAD-BEARING`, `ASSUMPTION — PROBE`,
+or `UNSUPPORTED`). T01 writes each disposition back into this Design section.
+
+### D1 — Scope = one independently mutation-capable *tracked* Codex tool execution
+
+**"Capable of mutating" and "covered by SCE mutation-scope attribution" are two
+different things for the Codex adapter.** A Codex tool execution can be
+independently capable of mutating the checkout and still not be represented as an
+SCE mutation scope, if the adapter cannot safely observe that tool class's
+terminal lifecycle.
+
+For the Codex adapter v1:
+
+```text
+one independently mutation-capable SUPPORTED / TRACKED Codex tool execution
+=
+one SCE mutation ScopeId
+```
+
+Concretely:
+
+```text
+Bash          -> scope   (TrackedMutation)
+apply_patch   -> scope   (TrackedMutation)
+MCP (mcp__*)  -> no scope (Untracked — still executes, may mutate)
+unknown tool  -> no scope (Untracked — still executes, may mutate)
+```
+
+A scope is exactly one such tracked execution attempt. Not a session, not a
+turn, not a delegated agent. Sequential tracked tool calls are sequential
+scopes. Whether two Codex mutation-capable executions can genuinely overlap
+(and therefore whether Codex alone can produce `AiContended`) is answered by
+T01 below. `AiContended` can still arise from a Codex *tracked* scope
+overlapping another harness's scope on the same worktree, but only at the Codex
+scope's own confirming `Close`; see D14.
+
+This is a **Codex adapter coverage policy**. It does **not** broaden or narrow
+the generic mutation-scope runtime contract, which already models exclusivity
+among the tracked scopes it is told about, not exhaustive filesystem authorship
+(D14, D23).
+
+**T01 disposition (codex-cli 0.153.4): scope-split by tool type.**
+- **Built-in `Bash` / `apply_patch`: ASSUMPTION — PROBE (leaning serial).**
+  Codex executed every built-in mutation-capable tool strictly serially in all
+  11 built-in probes (`PreToolUse → PostToolUse → PreToolUse → …`, never
+  interleaved), including across the parent/subagent boundary and when asked to
+  parallelise.
+- **MCP: PROVEN — parallel-capable, live-reproduced.** The T01 MCP extension
+  (probes 16/17) shows two mutation-capable MCP tool executions running
+  **genuinely concurrently** on 0.153.4 — `PreToolUse(A)` and `PreToolUse(B)`
+  ~1 ms apart, both before either `PostToolUse`, both scopes live for ~8 s,
+  confirmed by the MCP server's own execution log. Enabled by the
+  upstream-supported `[mcp_servers.<name>] supports_parallel_tool_calls = true`
+  config key **or** the tool's own `annotations.readOnlyHint`
+  (`McpHandler::supports_parallel_tool_calls()`,
+  `codex-rs/core/src/tools/handlers/mcp.rs:128-139` at `rust-v0.153.4`).
+- **Parallel MCP execution is a real operational fact and remains supported** —
+  the adapter never blocks it. But because MCP tools are **Untracked** in Codex
+  adapter v1 (D2, D23), two overlapping MCP executions produce **no MCP mutation
+  scopes**, and therefore **no MCP-derived `AiContended`**. A tracked `Bash` /
+  `apply_patch` scope overlapping an MCP execution may still yield
+  `AiExclusive(Bash)` from the runtime — this means "exactly one *tracked*
+  mutation scope was live", not "that scope authored every filesystem mutation
+  in the interval" (D14).
+- **Codex-alone `AiContended` from built-in tools only:** built-in
+  `Bash` / `apply_patch` executed strictly serially across all 11 built-in
+  probes, so built-in Codex-alone overlap was never observed. Cross-harness
+  `AiContended` (a Codex tracked scope overlapping a Claude/OpenCode/Pi scope)
+  remains reachable, but only at the Codex scope's own confirming `Close`; the
+  same overlap observed at the other harness's boundary is `IneligibleUnscoped`.
+  See D14.
+The adapter still never collapses two executions into one `ScopeId`. Evidence:
+`fixtures/probe01…`, `probe02…`, `probe08-subagent-delegation.*`,
+`probe16-mcp-parallel-server-optin.*`, `probe17-mcp-parallel-readonly-hint.*` +
+`fixtures/NOTES.md` ("T01 MCP lifecycle probe extension").
+
+**v1 resolution (D23):** MCP is not modeled as a mutation scope, so D1's
+"one execution = one `ScopeId`" rule simply does not range over MCP or unknown
+tools. No contradiction with the parallel-MCP evidence remains, because the
+adapter creates nothing for those executions.
+
+### D2 — Codex tool classification — three semantic classes
+
+The adapter classifies the raw Codex `tool_name` in Rust by **semantic intent**,
+not by mutability alone. Terminology equivalent to:
+
+```rust
+enum ToolClassification {
+    TrackedMutation,
+    Delegation,
+    Untracked,
+}
+```
+
+(exact Rust naming may still be adjusted in T02).
+
+#### TrackedMutation
+
+```text
+tool executes
++ adapter can safely observe its terminal lifecycle
++ adapter creates a mutation scope
+```
+
+v1 members: `Bash`, `apply_patch`. Each independently mutation-capable tracked
+execution establishes exactly one `ScopeId` (D1/D4). Fail-closed on `PreToolUse`
+(D8), terminal boundary on the proven terminal hook (D9/D10).
+
+#### Delegation
+
+```text
+the delegation tool itself does not receive a mutation scope;
+the delegated agent's own TrackedMutation tools do (carrying its agent_id).
+```
+
+v1 members: `collaborationspawn_agent`, `collaborationwait_agent` (a
+`collaboration` namespace prefix, no separator). `PreToolUse` for a delegation
+tool returns the neutral response, no scope.
+
+#### Untracked
+
+```text
+tool executes normally
++ may mutate the checkout
++ adapter creates NO mutation scope
++ mutations are OUTSIDE SCE mutation-scope coverage (D23)
+```
+
+v1 members: `mcp__*` (any `mcp__<server>__<tool>`), and **any unknown /
+unrecognised `tool_name`**.
+
+`Untracked` does **not** mean "read-only". It means exactly:
+
+```text
+allowed to execute  +  does not participate in SCE mutation-scope accounting
+```
+
+MCP tools may mutate. Unknown tools may mutate. The adapter neither asserts they
+are read-only nor guarantees their mutations are detected immediately — it simply
+does not attribute them (D23). The classifier must **not** carry the earlier
+language saying MCP/unknown are "mutation-capable therefore `Start`" — that
+classification is precisely what produced the D10a Case C contradiction.
+
+For `PreToolUse(mcp__…)` (and any unknown tool) the adapter conceptually does:
+
+```text
+classify as Untracked
+  -> return Codex-neutral continue response
+  -> no ScopeId, no EventId
+  -> no adapter attempt, no Start, no recovery_pending
+  -> no bookkeeping entry of any kind
+```
+
+Therefore successful, failed, interrupted, or parallel MCP/unknown executions
+require no `Close`, `Abandon`, or `Flush` from the adapter — there is nothing to
+retire. Existing normal Codex/SCE hooks unrelated to mutation-scope
+(conversation tracing, `diff_traces`, policy) are unchanged and still run for
+MCP calls.
+
+**T01 disposition (codex-cli 0.153.4): PROVEN for the `codex exec` surface.**
+- **TrackedMutation:** `apply_patch`, `Bash` (the shell tool — it also performs
+  reads / listing / search via shell commands, so it is always treated
+  mutation-capable; a read-only shell command merely creates a harmless scope).
+- **Delegation:** `collaborationspawn_agent`, `collaborationwait_agent`. The
+  delegated agent's own tool calls carry its `agent_id` and establish their own
+  (tracked) scopes.
+- **Untracked:** `mcp__<server>__<tool>` (T01 MCP extension, probes 12–17:
+  `mcp__probe__mutate_success`, `mcp__probe_par__slow_mutate`), and every unknown
+  `tool_name`. MCP `tool_use_id` is `exec-<uuid>` — the same shape as
+  shell / `apply_patch` — but the adapter never keys any state on it. Upstream:
+  `join_tool_name` / `MCP_TOOL_NAME_DELIMITER` / `ensure_mcp_prefix`,
+  `codex-rs/core/src/tools/handlers/mcp.rs` at `rust-v0.153.4`.
+- **Dedicated read-only tool names:** none — this Codex surface routes reads
+  through `Bash`. There is no separate "read-only, never a scope" class in v1;
+  the only never-a-scope classes are `Delegation` and `Untracked`.
+
+**Why MCP and unknown are `Untracked` (not `TrackedMutation`):** T01 proved that
+if MCP were modeled as a scope, Codex 0.153.4's lifecycle makes it unsafe — a
+mutation-capable MCP tool can mutate a git-visible file then return
+`is_error:true` with **no terminal hook** (probe 13), a successor `PreToolUse`
+can follow with **no cleanup signal between them** (probe 14), and same-lane MCP
+executions **genuinely overlap** (probes 16/17), so a successor cannot prove a
+predecessor stale. That is D10a Case C. Rather than ship an unsafe scope
+lifecycle, v1 does not create scopes for MCP at all (D10a, D23). Unknown tools
+get the same compatibility-oriented default so a future Codex tool never becomes
+unusable merely because SCE does not yet know its lifecycle; support is additive:
+
+```text
+new_tool: Untracked  --(lifecycle researched / proven)-->  TrackedMutation
+```
+
+without any protocol change.
+Evidence: `fixtures/probe05-tool-vocabulary.*`, `probe08-subagent-delegation.*`,
+`fixtures/probe12-mcp-mutate-success.*`, `probe13-mcp-mutate-then-error.*`,
+`probe14-mcp-failed-then-successor.*`, `probe16-mcp-parallel-server-optin.*`,
+`probe17-mcp-parallel-readonly-hint.*`, `fixtures/NOTES.md`.
+
+### D3 — Codex execution identity — T01-GATED
+
+The adapter needs the **smallest stable identity for one Codex tool execution**.
+Candidate inputs, to be confirmed by T01 evidence only:
+
+- `session_id` (present on Codex events today, stored `cx_`-prefixed elsewhere);
+- `tool_use_id` (used today by the `apply_patch` `diff_traces` path to derive
+  synthetic line identities — so present on at least `PostToolUse`);
+- `turn_id` (present on Codex events today);
+- a delegated-agent identifier **only if T01 proves Codex exposes one** — do not
+  invent an `agent_id` abstraction if Codex has no equivalent.
+
+T01 must establish: (a) which of these is present on `PreToolUse`, (b) which is
+present on `PostToolUse` (and any terminal/failure event), (c) whether the same
+execution identity appears in both the pre and post events for one tool call,
+(d) whether a raw Codex tool identifier can recur after that execution is
+terminal. T02 then freezes the execution key.
+
+**T01 disposition (codex-cli 0.153.4): PROVEN.** Execution key =
+`(session_id, agent_id?, tool_use_id)` — **for `TrackedMutation` tools only**.
+`Untracked` (MCP, unknown) and `Delegation` tools get no execution key because
+the adapter records no attempt for them (D2/D23).
+- `tool_use_id` is present on **both** `PreToolUse` and `PostToolUse` and is
+  identical for one call (`exec-<uuid>` for shell / `apply_patch`,
+  `call_<id>` for the delegation tools). Not observed to recur (UUID-based); the
+  D4 checkout-local `attempt_seq` guard is kept regardless.
+- `session_id` is stable for a whole session including subagents; `turn_id`
+  differs per turn and per subagent.
+- `agent_id` (a UUID) is present **only on subagent tool/lifecycle events** and
+  distinguishes a delegated agent from the main thread (absent = main thread).
+  Codex **does** expose a delegated-agent identity — use `agent_id`; do not
+  invent one where it is absent. `agent_type` ("default") is diagnostic only.
+Evidence: `fixtures/probe01…`, `probe08-subagent-delegation.*`, and the
+`pre-tool-use` / `post-tool-use` / `subagent-stop` generated schemas at
+`openai/codex` `rust-v0.153.4` (`agent_id`/`agent_type` present but not in
+`required`).
+
+### D4 — ScopeId / EventId derivation — depends on D3
+
+A raw Codex tool identifier that can recur after terminal execution forces a
+checkout-local monotonic attempt sequence, exactly as in the Claude adapter: the
+adapter keeps `next_attempt_seq` in its bookkeeping store and each new attempt
+draws a fresh `attempt_seq`. A terminal SCE `ScopeId` is **never reused**.
+
+`ScopeId` is a length-prefixed, hash-free encoding (no crypto dependency) in a
+Codex-specific versioned namespace. The conceptual shape, **not frozen until D3
+is resolved by T01**:
+
+```text
+cx-tool-v1|n=<attempt_seq>|<length-prefixed identity fields from D3>
+```
+
+`EventId`s derive deterministically from the `ScopeId`: `<scope-id>|start` and
+`<scope-id>|close`. Replaying the same hook event for one live attempt yields
+the same `ScopeId` and `EventId` (the runtime's replay/idempotency key). After
+an attempt is terminal, a later hook event for the same raw Codex tool
+identifier draws a new `attempt_seq` and a new `ScopeId`.
+
+### D5 — Checkout-local adapter bookkeeping — reasoned, not assumed
+
+Codex hooks are invoked as **independent OS processes** — the generated
+`.codex/hooks.json` command is `... exec bash "$root/.codex/hooks/
+run-sce-or-show-install-guidance.sh" sce hooks codex-mutation-scope`, a fresh
+process per hook event. A `PreToolUse` process and the later `PostToolUse`
+process for the same tool call share no in-memory state. Therefore the adapter
+**requires** durable cross-process bookkeeping to know which Codex-created
+scopes may still need a terminal action — the same conclusion the Claude adapter
+reached, for the same reason. T02/T03 must confirm this holds for the supported
+Codex version (Codex does not, for example, run all hooks for one turn in a
+single persistent process); if it does not, T03 records why the store shape
+changes.
+
+The store lives at `<git-dir>/sce/codex-mutation-scope-state.json` with lock
+`<git-dir>/sce/codex-mutation-scope-state.lock` (`<git-dir>` via
+`checkout::resolve_git_dir(cwd)` — worktree-specific for linked worktrees). It
+holds a versioned `{version, next_attempt_seq, recovery_pending, attempts[]}`,
+each attempt carrying `attempt_seq`, `scope_id`, the D3 identity fields,
+`tool_name`, and `phase` (`pending_start | active`). This is **adapter
+bookkeeping, never attribution evidence**: not exported, not synced, not part of
+Agent Trace, not authoritative for attribution. A malformed or wrong-version
+file is rejected, never fabricated.
+
+### D6 — Durable persistence and a separate state lock
+
+State writes follow the `checkout::persist_checkout_id_inner` durability pattern
+(lock, temp file, `sync_data`, atomic rename, best-effort parent-dir `sync_all`
+on Unix). The adapter-state lock protects bookkeeping only and is **never held
+across a `hooks::mutation_scope` seam invocation**, so no
+`adapter lock -> WorktreeLock` order can form. The adapter may call
+`checkout::resolve_git_dir` but not `read_checkout_id` /
+`get_or_create_checkout_id`, and never constructs a `WorktreeId`.
+
+**D6 follow-up (2026-09-08, PR #268).** The adapter now holds **two** distinct
+checkout-local OS advisory locks (both built on the shared
+`os_lock::OsAdvisoryLock` primitive):
+
+```text
+state lock     <git-dir>/sce/codex-mutation-scope-state.lock
+  protects individual reads / writes / transitions of the JSON state
+  NEVER held across the hooks::mutation_scope seam
+
+boundary lock  <git-dir>/sce/codex-mutation-scope-boundary.lock
+  serializes one complete adapter boundary transaction
+  (state -> mutation-scope ingress -> state)
+  MAY and SHOULD be held across the seam
+```
+
+The second T04 concurrency follow-up exposed one final Option-B routing
+asymmetry: Untracked/Delegation `PreToolUse` already short-circuited before
+git-dir resolution, but `PostToolUse` still entered the boundary-lock/no-op Close
+path. `PostToolUse` now classifies first and returns neutral for every
+non-tracked tool, so complete MCP/unknown/delegation lifecycles leave no adapter
+footprint.
+
+They are not interchangeable and the boundary lock does not replace the state
+lock. Lock hierarchy is frozen (D13c): **`boundary lock -> state lock`**; the
+boundary lock is never acquired while the state lock is held. Both use
+`flock`-equivalent OS ownership (not file existence), so a leftover lock file
+alone blocks nothing and process death releases ownership automatically. The
+`adapter lock -> WorktreeLock` argument is unchanged — neither adapter lock is
+held across the seam-driven `coordinate()` / `abandon_scope()` that take the
+`WorktreeLock`.
+
+### D7 — Write-ahead Start ordering
+
+Unless T01 proves a different safe ordering from Codex's hook semantics, the
+adapter preserves the write-ahead property for a new tracked mutation-capable
+tool:
+
+```text
+parse event -> resolve raw cwd -> resolve git_dir (bookkeeping only)
+  -> acquire state lock -> allocate attempt_seq -> persist phase=pending_start -> release lock
+  -> invoke generic ingress seam with { "operation":"start", "scope_id":<derived>,
+       "event_id":<scope>|start, "actor_kind":"codex" }, passing the raw cwd as repository_root
+  -> reacquire state lock -> phase pending_start -> active -> release lock
+  -> return (Codex-native "continue" — see D8)
+```
+
+A `TrackedMutation` tool must not execute after SCE has failed to establish its
+mutation scope. (`Untracked` and `Delegation` tools never reach this path — no
+`Start` is attempted for them; D2/D8.)
+
+### D8 — Codex-native fail-closed PreToolUse — T01-GATED
+
+D8 fail-closed behaviour applies **only** when SCE is trying to establish a
+**`TrackedMutation`** scope:
+
+```text
+TrackedMutation PreToolUse
+  -> failure to establish a durable Start  -> deny (block the tool)
+
+Untracked PreToolUse (mcp__*, unknown)
+  -> neutral continue
+  -> never attempts Start, so there is nothing to fail closed on
+  -> never denied merely because it is untracked
+
+Delegation PreToolUse
+  -> neutral continue, no scope
+```
+
+A `TrackedMutation` Codex `PreToolUse` is **fail-closed**: any failure to durably
+establish the scope (state-allocation failure, seam `Start` failure,
+unresolvable `cwd`, recovery-barrier denial) must **block the tool**, not let it
+run un-scoped. Do **not** deny MCP. Do **not** deny an unknown tool. The adapter
+also never emits an explicit **allow** for an `Untracked` tool — it returns the
+normal neutral / no-op hook result and lets Codex's own permission handling
+proceed unchanged.
+
+The exact Codex-native denial response and exit semantics are **T01-GATED**. Do
+**not** assume Claude's `{"hookSpecificOutput":{...,"permissionDecision":
+"deny",...}}` shape. Candidate shapes to disambiguate in T01 for the supported
+version: the Claude-identical `hookSpecificOutput.permissionDecision: "deny"`
+(the shape the existing `sce hooks codex` `PreToolUse(Bash)` policy arm returns
+today, per `openai/codex` issue #28437), or a `{"decision":"block","reason":
+"..."}` shape seen in some Codex versions, or a non-zero exit code. T01 records
+which one blocks the tool for the supported version; T04 emits exactly that.
+
+The detailed error is logged via `Logger::warn`
+(`sce.hooks.codex_mutation_scope.pre_tool_use_fail_closed`); the model-visible
+denial reason never carries it. The adapter never emits an explicit **allow**
+that bypasses Codex's own permission system — success returns Codex's neutral
+"continue" (empty stdout, or whatever T01 shows is the no-op response), and only
+failure returns the block.
+
+An `Untracked` or `Delegation` `PreToolUse` returns the neutral response, no
+scope, no bookkeeping.
+
+**T01 disposition (codex-cli 0.153.4): PROVEN.** **Both** denial shapes block
+the tool on 0.153.4 and both appear in the generated
+`pre-tool-use.command.output.schema.json` at `openai/codex` `rust-v0.153.4`:
+top-level `{"decision":"block","reason":"…"}` (`decision` enum `approve|block`),
+**and**
+`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"…"}}`
+(`permissionDecision` enum `allow|deny|ask`). T04 should emit the
+`hookSpecificOutput` shape, matching the existing `sce hooks codex`
+`PreToolUse(Bash)` policy arm. A blocked tool fires `PreToolUse` only —
+**no `PostToolUse`** — so a fail-closed denial leaves no scope needing a
+terminal action. This holds for a **blocked MCP call** too (probe 15:
+`permissionDecision:"deny"` on `mcp__probe__mutate_success` → `PreToolUse` only,
+no `PostToolUse`, `tools/call` never issued, nothing written). **v1 note:**
+because re-planning chose direction B (D23), the adapter does **not** deny MCP —
+probe 15 stays relevant only as evidence that a blocked `PreToolUse` (from any
+source) strands no scope, and as the shape a rejected direction (A) would have
+used. Evidence:
+`fixtures/probe03-pre-tool-use-hook-decision-block.*`,
+`fixtures/probe04-pre-tool-use-hook-hookspecificoutput-deny.*`,
+`fixtures/probe15-mcp-blocked-call.*`.
+
+### D8a — The generated bootstrap fail-closed boundary sits ahead of the Rust adapter (PR #268, 2026-09-08)
+
+D8's "failure to establish a durable Start denies the tool" is a property of the
+**T04 Rust adapter**. The generated `.codex/hooks.json` bootstrap can fail
+*before* the adapter runs — Git-root resolution, helper execution, or `sce`
+availability — and the original T05 registration used the fail-open
+conversation/diff bootstrap there, so a tracked `Bash` / `apply_patch`
+`PreToolUse` could `exit 0` neutrally with no scope. That is a D8 violation at
+the bootstrap layer.
+
+The fix has two parts, neither of which changes the adapter or Option B:
+
+1. **Matcher narrowing.** The generated mutation-scope `PreToolUse` and
+   `PostToolUse` hooks carry `matcher = "^(Bash|apply_patch)$"` (codex-cli
+   0.153.4 `hooks/src/events/common.rs` `matches_matcher`: regex-metacharacter
+   matchers compile with the `regex` crate and match with `is_match`, so this is
+   an anchored full-tool-name alternation). Codex therefore never dispatches the
+   generated mutation-scope tool hooks for `mcp__*`,
+   `collaborationspawn_agent`, `collaborationwait_agent`, or unknown tools —
+   they stay allowed / untracked under D23. This establishes the invariant: *if
+   the fail-closed `PreToolUse` bootstrap executes, the tool is a
+   TrackedMutation.* Narrowing (not a blanket bootstrap deny) is required —
+   a blanket deny would reject `PreToolUse(mcp__…)` and break Option B.
+
+2. **A fail-closed bootstrap mode.** The mutation-scope `PreToolUse` hook is a
+   separate generated command that emits the exact D8 deny contract (the same
+   `FAIL_CLOSED_DENY_REASON` string T04 uses) on stdout with `exit 0` when
+   Git-root resolution or the helper check fails, and sets
+   `SCE_CODEX_PRE_TOOL_USE_FAIL_CLOSED=1` so the shared helper converts a
+   missing `sce` or any non-zero adapter exit into that same deny — while
+   forwarding a successful adapter stdout (neutral, or a recovery-barrier deny)
+   unchanged. The blocking semantic comes from the Codex `PreToolUse` decision,
+   not from a non-zero process exit. The other five mutation-scope commands and
+   all four `sce hooks codex` commands keep the fail-open bootstrap — they are
+   observational / cleanup boundaries, not the point a mutation-capable tool
+   begins.
+
+Resulting invariant for `Bash` / `apply_patch` `PreToolUse`: either the
+bootstrap and adapter both succeed and a durable `Start` exists, or any
+bootstrap/adapter failure yields the exact Codex-native deny and the tool does
+not execute. There is no path where a tracked mutation tool runs while the
+mutation-scope `PreToolUse` never established `Start`.
+
+### D9 — Terminal boundary on success — T01-GATED
+
+Terminal boundary rules apply **only to `TrackedMutation` tools** (`Bash`,
+`apply_patch`). MCP and unknown tools have no scope, so they have no terminal
+boundary and no `Close`.
+
+For a successful `TrackedMutation` tool with an `active` tracked attempt, the
+terminal Codex hook maps to
+`{ "operation":"close", "scope_id":<same>, "event_id":<scope>|close,
+"actor_kind":"codex" }`. T01 must confirm **which** hook is the reliable
+terminal signal for a successful mutation-capable execution (`PostToolUse` for
+that tool, carrying the D3 identity that ties it to the `PreToolUse`). The
+attempt is removed from adapter state only after durable `Close` success;
+duplicate delivery after cleanup is a safe no-op.
+
+**T01 disposition (codex-cli 0.153.4): PROVEN.** `PostToolUse` is the reliable
+terminal signal for a **successful `TrackedMutation`** tool, carrying the same
+`tool_use_id` (and `agent_id`, for a subagent) as its `PreToolUse`. A
+**successful MCP call** also emits `PostToolUse` (probe 12), but **the adapter
+ignores it** — no scope was created, so there is nothing to close. The MCP
+lifecycle research (probes 12–17) is retained as the *reason MCP is excluded*
+(D2/D10a/D23), not as an MCP terminal-boundary mapping. Evidence:
+`fixtures/probe01-apply-patch-and-shell-success.*`,
+`fixtures/probe08-subagent-delegation.agent-apply-patch.*`,
+`fixtures/probe12-mcp-mutate-success.*`.
+
+### D10 — Failed-tool terminal observation — T01-GATED, likely no reliable signal
+
+Prior SCE research (`context/plans/codex-cli-integration.md` Assumptions) found
+Codex calls `PostToolUse` **only after a successful tool result**. Codex has
+**no `PostToolUseFailure` event**. If T01 confirms this for the supported
+version, then a mutation-capable tool that **wrote files then failed** produces
+**no terminal hook**, and the adapter must **not** design a Close-on-failure
+path.
+
+In that case the failed-tool partial-mutation interval is bounded conservatively
+by the next lifecycle signal (D11/D12): the stale `pending_start`/`active`
+attempt is `abandon`ed and, once quiescent, one `flush` re-baselines the
+worktree. The partial mutation is then attributed to nothing
+(`IneligibleUnscoped`) rather than misattributed. **False-negative attribution
+is preferable to false-positive attribution.**
+
+If — and only if — T01 proves Codex emits a reliable final observation for a
+failed mutation-capable tool (a `PostToolUse` with a failure-indicating
+`tool_response`, or another event carrying the D3 identity), D10 becomes a
+`Close` mapping like D9. T01 records which.
+
+**T01 disposition (codex-cli 0.153.4): scope this conclusion to the tool types
+actually proven — it does NOT hold globally.**
+- **`Bash`: PROVEN — bounded by a terminal hook.** A shell tool that wrote a file
+  then exited non-zero **does** fire `PostToolUse` (same `tool_use_id`) → map to
+  `close` exactly like D9 (probe 2).
+- **`apply_patch`: PROVEN — verification failure, no mutation.** Fires **no**
+  `PostToolUse`, but Codex verifies the patch before touching the working tree,
+  so nothing is written — there is no partial-mutation-without-terminal case for
+  it (probe 6).
+- **MCP: PROVEN — partial mutation with NO terminal hook.** A mutation-capable
+  MCP tool that **writes a git-visible file and then returns `is_error:true`**
+  receives **no terminal hook of any kind** (probe 13: `PreToolUse → Stop →
+  SessionEnd`); `git status` afterwards shows the file. An external MCP server is
+  not under Codex's atomicity control, so the side effect precedes the failure.
+  Upstream mechanism: `codex-rs/core/src/tools/registry.rs` ~line 674 —
+  `post_tool_use_payload = if success { … } else { None }` with
+  `success = result.success_for_logging()`; for MCP
+  `McpToolOutput::success_for_logging()` = `self.result.success()`
+  (`codex-rs/core/src/tools/context.rs:122-124`), false when
+  `CallToolResult.is_error == true`.
+  **v1 consequence (D23):** since MCP is `Untracked`, **no scope exists**, so
+  whether `PostToolUse` fires or not is **irrelevant to scope cleanup** — there
+  is no `pending_start`/`active` attempt to strand and nothing to `abandon` or
+  `flush`. This probe-13 lifecycle is exactly *why* MCP is excluded (D10a), not a
+  gap the adapter must bound.
+- **unknown: no tool-specific terminal guarantee, and no scope** — an unknown
+  tool is `Untracked` (D2), so like MCP it has no scope and its `PostToolUse`
+  presence/absence is irrelevant to scope cleanup.
+Prior SCE research's "`PostToolUse` fires only on a successful tool result" is
+true at the `success_for_logging()` layer; a non-zero-exit shell command still
+counts as a successful tool result, an `is_error:true` MCP result does not. The
+adapter needs **no Close-on-failure path for `Bash` / `apply_patch`** (the shell
+`PostToolUse` still fires; `apply_patch` verification failure writes nothing),
+and **no failure path for MCP / unknown** because it creates no scope for them.
+Evidence: `fixtures/probe02-shell-partial-write-then-nonzero-exit.*`,
+`fixtures/probe06-apply-patch-verification-failure-no-post.*`,
+`fixtures/probe13-mcp-mutate-then-error.*`.
+
+### D10a — Failed-tool -> successor-tool in the same turn — T01-GATED
+
+This decision applies only to **`TrackedMutation`** tools. `Untracked` tools
+(MCP, unknown) never enter `attempts[]`, so a failed `Untracked` tool followed
+by any successor creates no zombie scope — there is nothing in adapter state to
+strand (see the MCP disposition below).
+
+D10's "next lifecycle signal" is **not sufficient on its own** for the case where
+a failed `TrackedMutation` tool with no terminal hook is followed by **another
+`TrackedMutation` tool in the same turn**, before any `Stop` / `SessionEnd` /
+`UserPromptSubmit`:
+
+```text
+PreToolUse(A) -> Start(A) -> A mutates Git-visible state -> A fails -> NO terminal hook
+PreToolUse(B) -> ... (adapter state still: A.phase = active, recovery_pending = false)
+```
+
+At `PreToolUse(B)` the D13 barrier does nothing (nothing armed it), so if B
+starts normally SCE has a **zombie live scope A** alongside the real scope B.
+This can produce a false `AiContended` for any tree transition observed while
+both look live, or attribute B's (or later) mutations to A.
+
+Two invariants must both hold, and they are in tension:
+
+```text
+(i)  a mutation-capable successor must never Start while an older attempt that
+     may already be terminal remains "live" solely because Codex omitted its
+     terminal event;
+(ii) a still-legitimately-running parallel attempt must never be abandoned just
+     because another PreToolUse arrived.
+```
+
+Reconciling them requires a **T01-proven seriality boundary**. T01's new
+"failed tool followed by another tool in the same turn" probe (see T01 scope)
+records exactly one disposition:
+
+- **Case A — a reliable intermediate cleanup signal exists.** Codex emits
+  positive stale/terminal evidence for A between A's failure and `PreToolUse(B)`.
+  The adapter routes it through D12: signal -> `abandon` A -> `recovery_pending`
+  -> quiescent `flush` -> then `PreToolUse(B)` proceeds. T01 records which signal
+  is load-bearing. No successor-barrier logic is needed.
+- **Case B — no intermediate signal, but successor `PreToolUse` proves the
+  predecessor stale.** T01 proves Codex executes mutation-capable tools
+  **serially within a narrow, identity-defined lane** (candidate lane keys:
+  session, turn, or a proven delegated-agent identity — **not frozen until T01
+  proves the concurrency semantics**). Only then may `PreToolUse(B)` itself count
+  as positive evidence that an older outstanding attempt **in B's same proven
+  lane** cannot still be running. The adapter then does, on `PreToolUse(B)`,
+  before allocating B:
+
+  ```text
+  inspect existing attempts in B's proven-serial lane
+    -> a stale predecessor A found (same lane, not terminal in bookkeeping)
+    -> arm recovery_pending
+    -> abandon A
+    -> when quiescent, one flush through the seam
+    -> only then write-ahead Start(B)
+  ```
+
+  This is a **lane-scoped** sweep, never a global sweep. An attempt outside B's
+  proven lane (a legitimately concurrent execution, if T01 shows any exist) is
+  left untouched — invariant (ii).
+- **Case C — neither is safe.** No reliable intermediate signal **and** the
+  successor `PreToolUse` does not prove the predecessor stale because parallel
+  executions in the same lane are possible. The adapter cannot distinguish
+  `failed-and-dead A` from `still-running A`. T01 **marks this an architectural
+  contradiction / unsupported lifecycle and stops the plan for re-planning** —
+  it does not guess.
+
+T01 must define "same lane" using only identity/concurrency facts it actually
+established. T02 freezes the lane key and the successor-barrier design (if
+Case B); T04 implements it; T06 proves it.
+
+**T01 disposition (codex-cli 0.153.4): scope-split by tool type. Built-ins have a
+normal Case-A lifecycle plus an exceptional Case-B hook-block lifecycle; MCP is
+Case C *if MCP were modeled as a scope* — resolved in v1 by NOT modeling MCP as a
+scope (D23, re-planning direction B).**
+
+**Built-in `Bash` / `apply_patch` — normal lifecycle: Case A.**
+- A failed **shell** tool always emits `PostToolUse` (terminal) before the next
+  `PreToolUse` — Codex runs built-in mutation-capable tools serially (D1), so
+  predecessor A is already terminal in bookkeeping when successor B's
+  `PreToolUse` arrives.
+- A failed **`apply_patch`** never mutates the working tree (atomic
+  verification), so there is nothing to strand.
+- A tool blocked by the **SCE** Bash policy or the **SCE** mutation-scope
+  preflight never executes and never established a scope (D8 fail-closed / the
+  PR #268 Bash-policy preflight both happen before `start`).
+- The only built-in "partial mutation, no `PostToolUse`" case is **whole-turn
+  interruption** (SIGINT), which emits `Interrupt` then `SessionEnd` and ends the
+  turn — there is no in-turn successor `PreToolUse` to race.
+Evidence: `fixtures/probe02-*`, `probe06-*`, `probe07-*`, `probe11-*`.
+
+**Built-in `Bash` / `apply_patch` — exceptional hook-block lifecycle: Case B
+(PR #268 follow-up, 2026-09-08).** Codex v0.153.4 executes matching `PreToolUse`
+handlers concurrently and combines their verdicts afterwards. An *arbitrary
+user-owned / third-party* sibling `PreToolUse` hook can therefore DENY the
+aggregate execution *after* the SCE mutation-scope handler has already
+established `Start(A)`, leaving `Active(A)` with no `PostToolUse(A)`. Codex
+exposes no aggregate-denial event to the mutation adapter, so SCE cannot observe
+that denial directly. The "predecessor already terminal in bookkeeping"
+assumption of Case A does not hold for a non-SCE block.
+
+For this case, a later tracked built-in `PreToolUse(B)` in the same proven serial
+lane is positive evidence that an older outstanding built-in attempt A in that
+lane is stale (T01 proved built-in mutation-capable execution is serial within
+one lane, including across the parent/subagent boundary — D1). Before the
+successor may `Start`:
+
+```text
+stale same-lane predecessor -> arm recovery -> Abandon(A) -> quiescent Flush -> Start(B)
+```
+
+never `Start(A) -> Start(B) -> Abandon(A)`. `Abandon` (not `Close`) is used
+because A's terminal outcome is missing/uncertain. A failed `Abandon` or a failed
+`Flush` keeps the successor denied and fail-closed. Multiple stale attempts in
+the lane are all retired before B may `Start`. Duplicate delivery of the same
+`AttemptKey` is not a predecessor and is never swept (idempotency preserved). A
+defensive backstop in the state/admission layer (`AdmitDecision::
+StalePredecessorBlocked`) refuses `Start(B)` if a driver bug ever left an older
+different-`AttemptKey` same-lane attempt outstanding.
+
+**Lane key = `(session_id, turn_id)`.** `agent_id` is **not** part of the lane —
+T01 showed built-in mutation-capable execution stays serial across the
+parent/subagent boundary within one session+turn, so `parent Bash` then
+`subagent apply_patch` in the same session+turn share the built-in serial lane.
+`turn_id` is lane metadata persisted on each tracked attempt; it is **not** added
+to `AttemptKey` and does not change `ScopeId` / `EventId` formatting. Different
+`session_id` or different `turn_id` executions are never swept by this inference
+— normal `Stop` / `Interrupt` / `SessionEnd` cleanup (D12) owns turn/session
+boundary lifecycle. Evidence: `fixtures/probe08-*` (parent/subagent serial),
+`fixtures/probe02-*` / `probe11-*`; regressions in
+`codex_mutation_scope::tests::driver::regression1..9`.
+
+**MCP: the T01 finding is correct and stands — `MCP is D10a Case C *if modeled
+as a scope*`.** The T01 MCP extension establishes all three conditions of Case C
+simultaneously, and this evidence is **not** weakened by the v1 resolution:
+- **A mutation-capable MCP tool can mutate then fail with no terminal hook**
+  (probe 13: writes `mcp_b.txt`, returns `is_error:true`, then `PreToolUse →
+  Stop → SessionEnd` — no `PostToolUse`; the mutation survives). D10 above.
+- **No positive cleanup signal appears before a successor.** Probe 14:
+  `PreToolUse(A = mutate_then_error)` is followed **directly** by
+  `PreToolUse(B = mutate_success)` with **no event of any kind between them** —
+  no `PostToolUse(A)`, no `Interrupt`/`Stop`/`SubagentStop`/`SessionEnd`/
+  `PermissionRequest`/compaction. A's `tool_use_id` never recurs.
+- **Same-lane MCP executions genuinely overlap** (probes 16/17), so
+  `PreToolUse(B)` does **not** prove A stale — there is no narrower serial lane
+  than `(session_id, turn_id)` and executions overlap within it. Case B is
+  unavailable.
+If MCP were a scope, the adapter could not distinguish `failed-and-dead A` from
+`still-running A`, and no safe successor barrier exists. **That lifecycle did not
+become safe — the v1 resolution is to not put MCP in the scope model at all.**
+
+**v1 resolution (re-planning direction B, D23): the contradiction is resolved by
+not modeling MCP executions as scopes.** `PreToolUse(mcp__…)` is classified
+`Untracked` (D2): no `Start`, no bookkeeping. So the probe-13/14 sequence
+becomes:
+
+```text
+PreToolUse(A MCP)   -> Untracked -> no Start, no attempt recorded
+A mutates and fails -> no PostToolUse -> nothing in adapter state to strand
+PreToolUse(B)       -> normal classification
+                       (if B is Bash/apply_patch it Starts on its own merits;
+                        if B is MCP it is also Untracked)
+```
+
+No successor barrier is needed for MCP because **no MCP attempt exists in adapter
+state** — the D10a tension (invariants (i)/(ii)) only arises for tracked scopes,
+and there are none for MCP. This is a deliberate attribution-coverage boundary
+(D23), not a lifecycle workaround: the adapter does **not** claim the MCP
+lifecycle is safe, does **not** silently downgrade MCP/unknown to read-only, and
+does **not** pretend an MCP mutation was attributed.
+
+T02 originally recorded the D10a lane key as N/A. **Superseded by the PR #268
+follow-up (2026-09-08):** built-ins now ship a Case-B lane-scoped successor sweep
+keyed on `CodexBuiltInLane = (session_id, turn_id)`. `AttemptKey` and `ScopeId`
+formatting are unchanged; `turn_id` is persisted as adapter-attempt lane metadata
+only (adapter-state version bumped 2 -> 3). MCP/unknown remain `Untracked` and
+still ship no barrier and no scope. Evidence:
+`fixtures/probe13-mcp-mutate-then-error.*`,
+`fixtures/probe14-mcp-failed-then-successor.*`,
+`fixtures/probe15-mcp-blocked-call.*`,
+`fixtures/probe16-mcp-parallel-server-optin.*`,
+`fixtures/probe17-mcp-parallel-readonly-hint.*`,
+`fixtures/NOTES.md` ("T01 MCP lifecycle probe extension").
+
+### D11 — Uncertain-boundary abandonment rules
+
+Carried verbatim from the Claude adapter (D11/D12 there), because they are
+runtime-contract properties, not Claude lifecycle specifics:
+
+- **`pending_start` + terminal/cleanup signal -> abandon, not late-Start.** The
+  adapter cannot prove `Start` committed; a late `Start` after the tool ran
+  would observe the post-tool tree and misattribute the interval. `abandon` on
+  a committed `Start` is normal abandonment; `abandon` on a `Start` that never
+  committed hits the runtime's `MissingScope` / `NeverSeen` recovery path.
+- **Failed `Close` -> abandon + `recovery_pending`, not a replayed `Close`.**
+  The original observation time is lost; a later tree must never be presented as
+  the tool-completion tree. The two ingress carried-success variants
+  (`MarkerClearAfterCommit` / `MarkerClearAfterCompletion`) are durable success
+  and do not enter this path.
+
+### D12 — Codex lifecycle cleanup signals — T01-GATED
+
+The adapter retires outstanding attempts on positive staleness evidence only —
+**never** on absence of activity, and **never** inferred from `ActorKind`. The
+candidate Codex signals, each **T01-GATED** on actually firing with the identity
+fields the mapping needs:
+
+| Candidate Codex event | Would retire | T01 must establish |
+| --- | --- | --- |
+| `Stop` | outstanding attempts for that `session_id` (main turn) | fires on every turn end; carries `session_id` |
+| `SessionEnd` | every outstanding attempt for the session | fires on session/process termination; carries `session_id` |
+| `SubagentStop` | outstanding attempts owned by the ending delegated agent | fires; carries a delegated-agent identity distinguishable from the main thread (else it cannot be used for a scoped sweep) |
+| `PermissionRequest` (denied) | the one live attempt for that tool call | whether a denied `PermissionRequest` leaves a durably-established `Start` with no terminal event |
+| next `UserPromptSubmit` | stale main-turn attempts (interruption fallback) | whether Codex emits `Stop` on user interruption, or only the next prompt |
+| `PreCompact` / `PostCompact` | *(diagnostic only unless T01 shows a lifecycle gap)* | whether compaction can strand an attempt |
+
+Only signals T01 marks `PROVEN` (or `DOCUMENTED — NON-LOAD-BEARING` with a
+load-bearing backstop named) become adapter behavior. T01 must identify which
+signals provide **positive staleness evidence** suitable for `abandon`, and
+which single signal is the load-bearing backstop (the Claude adapter's backstop
+is `SessionEnd`).
+
+The failed-tool -> successor-tool sequence (D10a) is the one case where the
+"next lifecycle signal" backstop is too late **for a tracked tool**; for
+built-ins the normal path is Case A (a terminal `PostToolUse` always precedes the
+successor) and the exceptional arbitrary-hook-block path is Case B (a later
+same-lane tracked `PreToolUse` sweeps the stale predecessor before `Start`), and
+for MCP/unknown it does not arise because they are `Untracked` (no scope, no
+attempt). Owned by D10a, not this table.
+
+**T01 disposition (codex-cli 0.153.4): PROVEN.**
+
+| Signal | Fires | Identity | Adapter use |
+| --- | --- | --- | --- |
+| `SessionEnd` | clean exit **and** SIGINT | `session_id`, `cwd` (no `turn_id`/`agent_id`) | **load-bearing backstop** — whole-session sweep of every outstanding attempt |
+| `Stop` | clean main-turn end only (not interruption) | `session_id`, `turn_id` | main-turn sweep (`agent_id` absent) |
+| `Interrupt` | SIGINT, **before** `SessionEnd` | `session_id`, `turn_id` | earlier session/turn-scoped sweep — **newly discovered; not in the plan's original list** |
+| `SubagentStop` | delegated agent ends | `agent_id`, `agent_type` | sweep attempts owned by that `agent_id` |
+| `PermissionRequest` (deny) | interactive approval flows only; not reachable from `codex exec` | — | `DOCUMENTED — NON-LOAD-BEARING`; `SessionEnd` backstop covers it |
+| `PreCompact` / `PostCompact` | not observed | — | `DOCUMENTED — NON-LOAD-BEARING` (diagnostic only) |
+
+`SessionEnd` is the single load-bearing backstop (the Codex analogue of the
+Claude adapter's `SessionEnd`). Evidence:
+`fixtures/probe01-…​.stop.json` / `.session_end.json`,
+`fixtures/probe07-sigint-during-shell.session_end.json`,
+`fixtures/probe11-interrupt-event-on-sigint.{interrupt,session_end}.json`,
+`fixtures/probe08-subagent-delegation.subagent_stop.json`, and the generated
+`session-end` / `stop` / `interrupt` / `subagent-stop` / `permission-request`
+schemas at `openai/codex` `rust-v0.153.4`.
+
+**MCP caveat:** `Stop` and `SessionEnd` still fire at turn/session end for an
+MCP-only turn (probes 13/14: `PreToolUse → Stop → SessionEnd`). This backstop is
+**whole-turn-late** — it does not fire between a failed MCP tool and an in-turn
+successor `PreToolUse` (probe 14 shows *nothing* there). That gap is precisely
+why MCP cannot be safely modeled as a scope on 0.153.4 (D10a). In v1 there is
+**no stranded failed-MCP attempt** for any signal to retire, because MCP is
+`Untracked` and the adapter records no attempt for it (D2/D23). The D12 sweeps
+operate only over adapter-owned tracked attempts.
+
+### D13 — recovery_pending barrier and quiescent Flush
+
+Carried verbatim from the Claude adapter (D19 there). The recovery barrier
+operates **only over adapter-owned tracked attempts** — `Untracked` (MCP,
+unknown) executions never enter `attempts[]`, never set `recovery_pending`, and
+never participate in the abandon/flush lifecycle. Whenever an abandonment or an
+uncertain lifecycle of a **`TrackedMutation`** attempt sets
+`recovery_pending = true`:
+
+```text
+recovery_pending == true AND known (tracked) attempts still outstanding
+  -> deny every new TrackedMutation PreToolUse (D8 fail-closed shape)
+  -> an Untracked PreToolUse is NOT denied by the barrier (it never Starts)
+
+recovery_pending == true AND attempts.is_empty()
+  -> run one { "operation":"flush" } through the generic ingress
+  -> clear recovery_pending ONLY on durable flush success
+  -> a failed flush stays fail-closed
+```
+
+A failed abandonment leaves the attempt tracked and recovery armed
+(never silently allows a successor tracked-mutation execution).
+
+**Successor-Start invariant.** A `TrackedMutation` `PreToolUse` must never reach
+its write-ahead `Start` while a known-stale predecessor **tracked** attempt
+(D10a) remains `active`/`pending_start` in bookkeeping. For built-ins the normal
+path is Case A (a terminal `PostToolUse` precedes the successor). The exceptional
+arbitrary-hook-block path is Case B (PR #268 follow-up): before `Start(B)` the
+`PreToolUse(B)` driver sweeps every tracked built-in attempt that shares B's
+`(session_id, turn_id)` lane but not its `AttemptKey` — `arm recovery` ->
+`Abandon` -> quiescent `Flush` -> `Start(B)` — and the state/admission layer
+backstops this with `AdmitDecision::StalePredecessorBlocked` so a driver bug
+denies `Start(B)` rather than silently allowing overlap. MCP/unknown are
+`Untracked`, so they create no predecessor attempt and no barrier is needed. This
+invariant does **not** license abandoning an attempt that can legitimately run
+concurrently with the successor — the sweep is lane-scoped, so a different
+`session_id` or `turn_id` attempt is left untouched (D10a invariant (ii)).
+
+**D13a — inter-process concurrency semantics (T04 follow-up, 2026-09-08).**
+Codex runs every hook as an independent OS process, so the barrier and
+tracked-attempt admission must be atomic across processes, not merely
+lock-serialized field writes. The initial T04 driver composed the decision from
+an unlocked `read_state` recovery check followed by a separate `allocate_attempt`
+(no recovery re-check) plus a plain-boolean `recovery_pending` — a TOCTOU gap
+where a second process could arm recovery in between, a duplicate quiescent
+`flush`, and a stale `flush` completion clearing a newer recovery. The follow-up
+makes recovery **generation-aware** and moves admission into one locked
+transition:
+
+```text
+recovery state = Clear | Pending(generation) | Flushing(generation)
+                 + a monotonic next_recovery_generation
+
+admit_tracked_attempt(key, tool)  -- one adapter-state-lock transition:
+  Flushing(_)                        -> RecoveryBlocked
+  Pending(g) AND attempts non-empty  -> RecoveryBlocked
+  Pending(g) AND attempts empty      -> persist Flushing(g); return FlushClaimed(g)
+  Clear AND key already tracked       -> reuse that attempt (idempotent)
+  Clear AND an unrelated PendingStart -> UncertainAttemptBlocked
+  Clear otherwise                     -> persist a fresh PendingStart; return Admitted
+
+arm_recovery()  -- one transition:
+  Clear        -> Pending(next_recovery_generation++)
+  Pending(g)   -> Pending(g)                     (kept; not a downgrade)
+  Flushing(g)  -> Pending(next_recovery_generation++)   (supersedes the in-flight flush)
+
+complete_recovery_flush(g)  -- one transition, run AFTER the flush seam:
+  Flushing(g) -> Clear      (only when the generation still matches)
+  otherwise   -> no-op      (a newer recovery armed while the flush ran survives)
+
+relinquish_recovery_flush(g)  -- flush seam failed:
+  Flushing(g) -> Pending(g)   so a later PreToolUse re-claims and retries
+```
+
+The adapter-state lock is still **never** held across a `hooks::mutation_scope`
+seam call (I6). The driver drives at most one quiescent `flush` per
+`PreToolUse`: `FlushClaimed(g)` -> flush seam -> `complete_recovery_flush(g)` ->
+one re-entrant `admit_tracked_attempt`; a re-armed generation observed on
+re-entry is relinquished and the tool denied (the next `PreToolUse` owns it).
+
+**D13b — unresolved `PendingStart` is a conservative barrier (Problem 4).**
+`Start` seam success followed by a failed `mark_active` leaves a durable
+`PendingStart` attempt whose runtime `Start` may have committed. That attempt now
+blocks a successor tracked admission (`UncertainAttemptBlocked`) until a positive
+cleanup signal abandons it -> arms recovery -> quiescent `flush`. `PendingStart`
+means "the adapter cannot prove whether `Start` committed", never "`Start`
+definitely failed". A duplicate delivery for the same `AttemptKey` still reuses
+the same attempt and `ScopeId` (no second scope). **D13c follow-up:** a duplicate
+delivery whose reused attempt is already `Active` drives **no** second runtime
+`Start` boundary (`establish_start` early-returns); a duplicate whose reused
+attempt is still `PendingStart` re-drives `Start` (runtime-deduplicated on
+`(scope_id, <scope>|start)`) so an uncertain `Start` is retried.
+
+**D13c — checkout-local boundary lock for cross-process serializability
+(second T04 follow-up, 2026-09-08, PR #268).** The generation-aware state fix
+(D13a) removed the state-transition TOCTOU gaps but left two correctness gaps
+because the adapter still ran `durable state transition -> release state lock ->
+mutation-scope ingress -> durable state transition` across independent Codex
+hook processes:
+
+1. **Admission could race recovery before `Start`.** Between one process's
+   `admit(B)` / persist `PendingStart(B)` / release state lock and its `Start(B)`
+   seam call, a second process could `arm_recovery()` for an unrelated uncertain
+   lifecycle, so `B` reached runtime `Start` after recovery became required.
+2. **An orphaned `Flushing(g)` permanently wedged the checkout.** If the process
+   that persisted `Pending(g) -> Flushing(g)` died before
+   `complete_recovery_flush(g)` / `relinquish_recovery_flush(g)`, the durable
+   state stayed `Flushing(g)` and every future tracked admission returned
+   `RecoveryBlocked` with no owner-death recovery path.
+
+Fix: a second checkout-local OS advisory lock,
+`<git-dir>/sce/codex-mutation-scope-boundary.lock` (`AdapterBoundaryLock`),
+serializes the **complete** adapter boundary transaction — everything from the
+first durable read through the ingress seam to the final durable write — against
+every other adapter boundary transaction on the same checkout. It wraps: tracked
+`PreToolUse` / `Start`, `PostToolUse` / `Close`, `Stop` / `Interrupt` /
+`SubagentStop` / `SessionEnd` cleanup, `Abandon`, and the quiescent `Flush`. It
+is **not** taken for MCP / unknown / delegation tools (Option B `Untracked` /
+`Delegation` stay neutral and resolve no git dir). The state lock is unchanged
+and still never held across the seam; the boundary lock is held across the seam.
+
+Frozen lock hierarchy:
+
+```text
+boundary lock
+  -> state lock            (only when an individual JSON transition is needed)
+```
+
+Never acquire the boundary lock while holding the state lock.
+
+Because Codex hooks are independent short-lived OS processes and the boundary
+lock is released on process exit, holding it is the liveness proof for crash
+recovery. Immediately after acquiring the boundary lock, the tracked
+`PreToolUse` path calls
+`state::normalize_recovery_after_boundary_lock_acquired`, which conservatively
+rewrites any persisted `Flushing(g) -> Pending(g)` (generation preserved — it is
+neither assumed the crashed `Flush` succeeded nor that it failed). The existing
+quiescent-flush claim then re-runs `Flush(g)` exactly once and converges to
+`Clear`. Re-running `Flush` is safe under the **existing** runtime contract:
+`RuntimeBoundary::Flush` carries no `event_id`, is a pure snapshot-diff
+observation, is the runtime's own crash-recovery re-run path, and does not
+advance the revision when it observes no change (verified from
+`mutation_scope.rs` ingress `test5` and `coordinator.rs` flush tests — no
+runtime, protocol, or Quint change). A **live** `Flush` owner is never reclaimed
+because any contender blocks on the boundary lock before it can inspect or
+normalize state. Generation semantics (D13a) are unchanged and retained: the
+boundary lock solves ownership / liveness, the generation solves stale
+completion.
+
+This is checkout-local (`<git-dir>/sce/...`); linked worktrees with independent
+git dirs are independent (D15 preserved). No repo-global or machine-global lock;
+no daemon, PID probing, lease expiry, or polling. Timeouts are used only for
+OS-lock acquisition failure (fail-closed for tracked tools), never to infer
+lifecycle completion.
+
+### D14 — Concurrency and AiContended
+
+Two simultaneously-live **tracked** scopes (two tracked Codex executions per D1,
+or a tracked Codex execution overlapping a Claude/OpenCode/Pi execution on the
+same worktree) carry distinct `ScopeId`s. The adapter never collapses two
+executions into one `ScopeId`.
+
+**Refined by the fifth follow-up (2026-09-08, PR #268) — Codex `Start` is not
+execution confirmation.** The earlier statement that such an overlap can simply
+produce `AiContended` was too broad. **D14 is the authoritative record of the
+accepted cross-harness attribution semantics** and of the only
+protocol/formal-model change this PR introduces (AC22). In short:
+
+```text
+Codex Start is write-ahead admission, not positive execution confirmation.
+
+An unconfirmed live Codex scope suppresses positive attribution at any
+non-confirming boundary.
+
+The exact Codex scope's own Close confirms that scope for the current boundary.
+
+If another live Codex scope remains unconfirmed, attribution remains
+IneligibleUnscoped.
+```
+
+The rule as implemented in `spec/mutation_cursor.qnt` (`attributionForBoundary`)
+and `mutation_trace/protocol.rs` (`attribution_for_boundary`):
+
+```text
+Codex v1 Start is an admission/write-ahead scope boundary, not positive proof
+that the tool ultimately executed, because arbitrary sibling PreToolUse hooks
+can deny after SCE's Start hook succeeds.
+
+While a live Codex scope remains unconfirmed, any mutation transition observed
+at a boundary that does not positively confirm that Codex scope is attribution-
+ineligible. In particular, another harness boundary cannot produce
+AiContended merely by overlapping an unconfirmed Codex scope.
+
+A tracked Codex scope becomes positively confirmed for attribution at its own
+proven PostToolUse -> Close boundary. At that boundary, normal AiExclusive /
+AiContended semantics apply if no other unconfirmed Codex scope remains.
+```
+
+An **unconfirmed live Codex scope** is a scope that is live (`Active`), whose
+`actor_kind` is `Codex`, and which the *current* boundary does not confirm — the
+only confirming boundary being `Close` on that exact scope. `Flush`, a later
+`Start` (including `Start(B)` in the same lane), and any other harness's
+`Advance`/`Close`/`Start` confirm nothing. Confirmation is derived per boundary
+from existing durable state (`ScopeState.status`, `ScopeState.actor_kind`, and
+the boundary's own scope); **no `confirmed` bit is persisted**, and after `Close`
+the scope is terminal anyway, so no persistent confirmation state is needed.
+
+Any unconfirmed live Codex scope on the worktree forces `IneligibleUnscoped` for
+the whole transition — the uncertain scope is **not** merely dropped from the
+live set so the remaining harness can be attributed, because that would still be
+a positive claim under incomplete knowledge. `MutationEvent.active_scopes` still
+records the complete actual live set (e.g. `{codex-A, claude-C}` with
+`attribution = IneligibleUnscoped`); only attribution eligibility changes.
+
+**This is an intentional false negative.** When Codex A and Claude C are both
+genuinely running and a Claude boundary observes a mutation before
+`PostToolUse(A)`, SCE now reports `IneligibleUnscoped` rather than the true
+`AiContended`, because the same observable protocol state is equally compatible
+with "A was denied by an arbitrary sibling hook and never ran". This is the exact
+application of `false negatives > false positives` for mutation attribution.
+
+**The generic mutation-scope semantic is otherwise preserved exactly:**
+
+```text
+AiExclusive(scope) == exactly one tracked mutation scope was live in the interval
+```
+
+It does **not** mean:
+
+```text
+that scope authored every filesystem mutation in the interval
+```
+
+An MCP call, a human editor, or any other `Untracked` actor may mutate the
+worktree during an `AiExclusive` interval. This is already the generic runtime
+contract — the Codex adapter's `Untracked` policy does not change it and does not
+require a protocol or Quint change.
+
+**T01 disposition (codex-cli 0.153.4):**
+- **Built-in `Bash` / `apply_patch`: observed serial** (probes 1–11) — no
+  Codex-alone tracked-scope overlap observed.
+- **MCP: parallel MCP execution is real** (probes 16/17: two MCP executions
+  overlap for ~8 s via `supports_parallel_tool_calls` or the tool's own
+  `annotations.readOnlyHint`). But MCP is `Untracked` in v1, so:
+  - `MCP + MCP` overlap -> no MCP mutation scopes -> **no MCP-derived
+    `AiContended`**;
+  - `Bash + MCP` overlap -> only `Bash` is a tracked scope -> the runtime may
+    still report `AiExclusive(Bash)`, which per the semantic above means "the
+    only *tracked* scope live", **not** "MCP did not mutate". T06 documents this
+    explicitly (see the tracked-tool-plus-MCP-overlap regression).
+- **Cross-harness: `AiContended` remains reachable, but only at a confirming
+  Codex `Close`** — a tracked Codex scope overlapping a Claude/OpenCode/Pi scope
+  on the same worktree, where the observing boundary is `Close` on that Codex
+  scope. The same overlap observed at the *other* harness's boundary is
+  `IneligibleUnscoped`.
+The T06 concurrency regression (AC10) crosses harnesses and must exercise **both**
+directions. There is **no** MCP-overlap `AiContended` regression because MCP
+produces no tracked scopes; T06 instead adds a `Bash`-overlapping-MCP regression
+that asserts the `AiExclusive` = tracked-scope-exclusivity (not sole-authorship)
+semantic. MCP / unknown / delegation remain Option B (`Untracked`, allowed, no
+mutation scope) and neither confirm nor invalidate a live Codex scope; an MCP
+mutation may still occur while Codex A is unconfirmed and continues to follow the
+existing conservative/untracked attribution path.
+
+### D15 — Raw Codex hook cwd is authoritative — T01-GATED
+
+The mutation runtime's repository root is the raw Codex hook payload's `cwd`
+(Codex runs command hooks with `.current_dir(cwd)` and the event carries `cwd`).
+T01 must confirm the raw hook `cwd` is authoritative for the actual checkout
+being mutated (Codex has no known Claude-style `isolation: worktree` subagent,
+but T01 verifies, and checks whether Codex exposes any separate
+worktree-lifecycle event or path). The adapter passes the raw `cwd` to the seam
+as `repository_root`; the runtime derives `WorktreeId`. The adapter never
+accepts, derives, stores, or constructs a `WorktreeId`, and passes no
+`worktree_id` key to the seam. There is no Codex `WorktreeRemove` equivalent;
+worktree-scoped cleanup relies on the D12 session/agent signals.
+
+**T01 disposition (codex-cli 0.153.4): PROVEN.** Every hook payload's `cwd` was
+the `codex exec -C` directory. Running against a linked `git worktree` reported
+the worktree path in `cwd`, and the write landed inside the worktree, not the
+main checkout; `checkout::resolve_git_dir(cwd)` resolves the worktree-specific
+`.git/worktrees/<name>` directory. Codex exposes **no** worktree-lifecycle event
+(the 12 event names are `PreToolUse`, `PermissionRequest`, `PostToolUse`,
+`PreCompact`, `PostCompact`, `SessionStart`, `SessionEnd`, `UserPromptSubmit`,
+`SubagentStart`, `SubagentStop`, `Stop`, `Interrupt` — no `WorktreeRemove`).
+Evidence: `fixtures/probe10-linked-worktree-cwd.*`, and every other probe's
+`cwd`.
+
+### D16 — Background / detached shell is a correctness boundary — T01-GATED
+
+T01 must separate **Codex-managed background execution** (if Codex exposes a
+"run in background" tool option or a background-task lifecycle) from a
+**foreground shell command that spawns a self-detaching descendant** (already
+known to be fundamentally difficult without process supervision — the Claude
+adapter's D20 confirmed this is real and Git-observable).
+
+- If Codex exposes explicit background execution, and T01 shows its lifecycle
+  does **not** reliably bound the mutations, the adapter **denies** it in
+  `PreToolUse` (D8 shape) with a Codex-specific unsupported-execution message,
+  exactly as the Claude adapter denies `run_in_background = true`.
+- The self-detaching-descendant boundary is recorded, with **Codex-specific
+  evidence from T01**, as an explicit unsupported boundary: `PostToolUse` (or
+  whatever terminal signal exists) does not necessarily prove that every
+  descendant stopped mutating. The adapter adds **no** PID supervision,
+  process-group tracking, background-process ownership, shell-command static
+  analysis, or staleness polling.
+
+Do not claim support for any execution pattern unless T01 demonstrates its
+lifecycle actually bounds the mutations.
+
+**T01 disposition (codex-cli 0.153.4): PROVEN (self-detaching descendant);
+no Codex-managed background execution in this surface.**
+- The default `codex exec` shell tool has **no `run_in_background` parameter**
+  (params: `command`, `workdir`, `timeout_ms`, `with_escalated_permissions`,
+  `justification`). There is no explicit Codex-managed background execution to
+  deny in `PreToolUse` for this surface, so the adapter ships **no
+  background-execution classifier / deny** (unlike the Claude adapter's
+  `run_in_background = true` deny). If a future Codex surface adds one, revisit.
+- A foreground shell command that `setsid`-detaches a descendant **does** leave a
+  Git-observable mutation landing ~4s after `PostToolUse`
+  (`fixtures/probe09-self-detaching-descendant.{pre_tool_use,post_tool_use,evidence}.json`)
+  — same class as the Claude adapter's D20. Recorded as an explicit unsupported
+  boundary; the adapter adds no PID supervision, process-group tracking,
+  shell-command static analysis, or staleness polling, and does not treat
+  `PostToolUse` as proof every descendant stopped mutating. Not generalised to
+  `nohup` / double-fork / daemonize, which this probe did not exercise.
+
+### D17 — Command architecture: separate hidden command (recommended) — decided in T02
+
+Codex today funnels **every** registered hook event through the single
+`sce hooks codex` dispatcher, which is **fail-open** (errors -> empty stdout),
+and `codex_hook_config.rs` decides SCE ownership structurally by matching the
+exact trailing command tokens `["sce", "hooks", "codex"]`
+(`CODEX_COMMAND_WORDS`).
+
+The mutation-scope adapter is **non-fail-open** (fail-closed on `PreToolUse`,
+never-silently-drop on terminal boundaries). Two viable architectures:
+
+1. **Separate hidden command `sce hooks codex-mutation-scope`** (recommended
+   default). Its `.codex/hooks.json` registrations use a distinct command, so
+   Codex invokes the mutation-scope hook as its own process, independent of the
+   `sce hooks codex` policy/diff process for the same event — exactly how Claude
+   runs `sce policy bash` and `sce hooks claude-mutation-scope` side by side on
+   `PreToolUse`. `codex_hook_config.rs` gains a **second command contract**
+   (`CODEX_COMMAND_WORDS` becomes a set; `REQUIRED_EVENTS` records which command
+   owns each registration; ownership/merge/doctor become command-aware). This
+   keeps each evidence system's failure posture and diagnosability independent,
+   and no single `sce hooks codex` invocation has to do two jobs with two
+   failure postures.
+2. **Extend the `sce hooks codex` dispatcher** with mutation-scope arms, keyed
+   by matched tool groups so no event is double-invoked, and restructure the
+   dispatcher so mutation-scope arms propagate errors while conversation/diff
+   arms stay fail-open. Smaller `codex_hook_config.rs` change
+   (`CODEX_COMMAND_WORDS` unchanged, only `REQUIRED_EVENTS` grows), but couples
+   the two evidence systems' fate inside one process for `PreToolUse(shell)` and
+   `PostToolUse(apply_patch)`.
+
+T02 makes the final call against T01 findings and the code, defaulting to (1),
+and records the decision here. Every subsequent task's wording assumes (1); if
+T02 chooses (2), T02 revises D17, D8's routing, and T04/T05 scope accordingly.
+
+**T01 inputs (codex-cli 0.153.4):** the mutation-scope adapter needs
+registrations for at least `PreToolUse`, `PostToolUse`, `Stop`, `SessionEnd`,
+`SubagentStop` (optionally `Interrupt` as an earlier interruption sweep). The
+existing `sce hooks codex` dispatcher funnels 4 events (`UserPromptSubmit`,
+`Stop`, `PreToolUse` matcher `Bash`, `PostToolUse` matcher `apply_patch`) and is
+fail-open; the mutation-scope adapter is fail-closed on `PreToolUse` and
+never-silently-drop on terminal boundaries. `PreToolUse` and `Stop` would be
+double-registered (once per command). Live probes confirmed Codex runs each
+registered handler as its own process and that two `PreToolUse` handlers in one
+group both execute (dump + block). A **separate hidden
+`sce hooks codex-mutation-scope` command** (option 1) remains the recommended
+default; nothing in T01 argues against it. Evidence: `fixtures/NOTES.md`,
+`.codex/hooks.json` two-handler `PreToolUse` group used across probes 3–11.
+
+**T02 decision (2026-09-08): option 1 — a separate hidden
+`sce hooks codex-mutation-scope` command.** Confirmed against T01 and the code:
+
+- The mutation-scope adapter is fail-closed on `PreToolUse` and
+  never-silently-drop on terminal boundaries; the existing `sce hooks codex`
+  dispatcher (`hooks::codex`) is fail-open (errors -> empty stdout). Folding the
+  two into one process (option 2) would couple their failure postures for
+  `PreToolUse(shell)` and `PostToolUse(apply_patch)` — the exact events both
+  systems care about.
+- T01 proved Codex runs each registered handler as its own OS process and that
+  two `PreToolUse` handlers in one matcher group both execute (dump + block
+  across probes 3–11), so a distinct command registered alongside
+  `sce hooks codex` runs independently — the direct analogue of Claude running
+  `sce policy bash` and `sce hooks claude-mutation-scope` side by side.
+- `#263`'s Claude adapter set the precedent: a dedicated non-fail-open
+  `sce hooks claude-mutation-scope` command, not an arm of the fail-open
+  `sce hooks claude` dispatcher.
+
+Consequences for later tasks (unchanged from each task's current wording, which
+already assumes option 1): T04 adds the hidden `HooksSubcommand::CodexMutationScope`
+routed unwrapped like `mutation-scope`; T05 makes `codex_hook_config.rs`
+command-aware (`CODEX_COMMAND_WORDS` becomes a set; `REQUIRED_EVENTS` records
+which command owns each registration) and appends the mutation-scope
+registrations position-stably after the existing `sce hooks codex` ones (D20).
+D8's denial routing is unaffected — the mutation-scope command owns its own
+`PreToolUse` registration.
+
+### D18 — Adapter depends on hooks::mutation_scope only
+
+Dependency direction is strictly
+`codex_mutation_scope -> hooks::mutation_scope -> mutation_trace::runtime`. The
+Codex adapter's production code (everything in
+`cli/src/services/hooks/codex_mutation_scope/` outside `#[cfg(test)]`) imports
+no `crate::services::mutation_trace::{runtime,protocol,store}` and names no
+`RepositoryAgentTraceDb`, `WorktreeId`, `GitSnapshotService`, or
+`RepositoryAgentTraceDb`. Its only dependency into the mutation stack is the
+single `super::mutation_scope::run_mutation_scope_from_payload` seam import
+(already `pub(crate)` since #263's T05), reused verbatim by building the generic
+wire payload as a JSON string — no second `RuntimeBoundary` path, no spawned
+`sce` subprocess, no invocation of `coordinate()` / `abandon_scope()` directly.
+
+### D19 — Existing Codex integration stays additive
+
+The `sce hooks codex` pipeline (`UserPromptSubmit`/`Stop` conversation capture,
+`PreToolUse(Bash)` policy, `PostToolUse(apply_patch)` `diff_traces` evidence,
+`.codex/hooks.json` ownership/merge, doctor trust/policy diagnosis,
+`sce setup --codex`, `sce doctor`) is not replaced or redesigned. The
+`apply_patch -> diff_traces -> post-commit intersection` pipeline is a
+complementary evidence system and is **not** folded into mutation-scope storage.
+The new adapter writes only `mutation_trace_*` rows through the runtime. The raw
+Agent Trace tables `diff_traces`, `post_commit_patch_intersections`,
+`agent_traces`, `messages`, and `parts` are never written by the new adapter.
+Generated `.codex/hooks.json` must preserve every existing SCE-owned and
+user-owned registration; setup merge stays idempotent.
+
+### D20 — Existing Codex hook trust identity must survive the upgrade
+
+Codex hook-trust identity is not just handler bytes. Current SCE/Codex trust
+logic (`codex_hook_config.rs` + `codex_hook_policy.rs`, and upstream
+`hooks::version_for_toml` / state keying) identifies a hook by
+`event key label` + `matcher-group index` + `handler index` +
+`normalized handler contents/hash`. So **adding a mutation-scope handler can
+invalidate an existing hook's trust even though its JSON bytes are unchanged**:
+
+```text
+before:  Stop / group 0 / handler 0 -> sce hooks codex          (key stop:0:0, trusted)
+after (bad merge):
+         Stop / group 0 / handler 0 -> sce hooks codex-mutation-scope
+         Stop / group 0 / handler 1 -> sce hooks codex          (key stop:0:1 — re-trust needed)
+```
+
+T05 must preserve, for every existing SCE Codex registration, the tuple
+`(event, matcher, matcher-group index, handler index, handler contents/hash)`
+when upgrading a canonical four-registration document to one containing
+mutation-scope registrations. Insertion is **additive and position-stable**:
+
+- an existing handler keeps its index; a new mutation-scope handler is appended
+  **after** the existing handler in its group;
+- an existing matcher group keeps its index; a new matcher group is appended
+  **after** the existing groups.
+
+New SCE-owned handlers/groups are never prepended in a way that renumbers an
+already-trusted hook. If position preservation is genuinely impossible for some
+event/matcher structure (T01/T05 must say which, if any), the plan records it and
+`sce doctor` must surface that **re-trust is needed** — trust is never silently
+invalidated, and `sce doctor --fix` never writes, grants, or changes Codex trust
+or managed policy.
+
+**D20a — the PR #268 matcher change is inside the appended mutation-scope
+groups only (2026-09-08).** Adding `matcher = "^(Bash|apply_patch)$"` to the
+mutation-scope `PreToolUse` / `PostToolUse` groups changes those groups' Codex
+trust keys, but they are SCE-owned groups appended *after* the four
+`sce hooks codex` groups, so no `sce hooks codex` trust key moves — the four
+existing trusted registrations keep `(event, matcher, group index, handler
+index, handler contents/hash)` exactly. A mutation-scope group installed by the
+first T05 shape (unmatched) now diagnoses `Stale` and is migrated in place by
+`merge_or_create` (strip the owned handler from every group for the event,
+append one canonical `^(Bash|apply_patch)$` group), never by renumbering a
+`sce hooks codex` group. The canonical-four upgrade regression asserts this
+post-change.
+
+### D21 — Doctor: three-dimension health for mutation-scope registrations
+
+A structurally-current mutation-scope hook is useless if Codex never loads it —
+and unlike a fail-open diff/conversation hook, an unloaded mutation-scope hook
+means SCE **silently cannot fail closed**. So each mutation-scope registration
+participates in the full existing Codex health model, exactly as the four
+`sce hooks codex` registrations do:
+
+```text
+healthy  ==  structurally current  AND  trusted/enabled  AND  effective project-hook policy allows it
+```
+
+Never healthy: `PresentAndCurrent + Untrusted`, `+ Modified`, `+ Disabled`,
+`+ PolicyBlocked` (Error severity, manual-only), `+ PolicyUnknown` (Warning
+severity, manual-only). Doctor reports the actual readiness of each registration
+rather than flattening the mutation-scope hooks and the `sce hooks codex` hooks
+into one generic `.codex/hooks.json` status. The single per-invocation
+`configRequirements/read` policy probe (`codex_hook_policy.rs`) is reused, not
+re-run per registration.
+
+### D22 — New event key labels come from upstream, not from lowercasing
+
+`codex_hook_config::hook_event_key_label` currently maps only the four
+SCE-owned events. Every **newly** SCE-owned mutation-scope event (T01 decides the
+set — candidates `SessionEnd`, `SubagentStop`, `PermissionRequest`, an unmatched
+`PreToolUse` group, etc.) must be added with the **exact upstream Codex key
+label**, verified against `openai/codex` source (T01/T05), not by lowercasing the
+event name. Each newly registered event gets a `hook_event_key_label` test.
+
+**T01 disposition (codex-cli 0.153.4): PROVEN.** The upstream label map is
+`codex-rs/hooks/src/lib.rs` lines 96–108 at tag `rust-v0.153.4`
+(commit `3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`):
+`PreToolUse→pre_tool_use`, `PermissionRequest→permission_request`,
+`PostToolUse→post_tool_use`, `PreCompact→pre_compact`,
+`PostCompact→post_compact`, `SessionStart→session_start`,
+`SessionEnd→session_end`, `UserPromptSubmit→user_prompt_submit`,
+`SubagentStart→subagent_start`, `SubagentStop→subagent_stop`, `Stop→stop`,
+`Interrupt→interrupt`. **Codex 0.153.4 has 12 hook events, not the 11 this plan
+lists — it also has `Interrupt`** (fires on SIGINT before `SessionEnd`). T05
+must add a `hook_event_key_label` entry + test for every newly-registered
+mutation-scope event, citing this source file. The `$CODEX_HOME/config.toml`
+`[hooks.state]` keys observed live use exactly these labels
+(`…:pre_tool_use:0:0`, `…:post_tool_use:0:0`, `…:stop:0:0`,
+`…:user_prompt_submit:0:0`).
+
+### D23 — Codex mutation-scope attribution v1 is partial by tool surface
+
+**Decision (2026-09-08, re-planning direction B).** Codex mutation-scope
+attribution v1 is **deliberately partial**, split by tool surface:
+
+```text
+Covered (TrackedMutation — one execution -> one ScopeId):
+  Bash
+  apply_patch
+
+Delegation (no scope for the tool itself; the delegated agent's tracked tools get scopes):
+  collaborationspawn_agent
+  collaborationwait_agent
+
+Allowed but NOT covered (Untracked — executes, may mutate, no scope, no bookkeeping):
+  mcp__*  (any MCP tool)
+  unknown / future Codex tool names, until their lifecycle is explicitly researched
+```
+
+**Coverage meaning.** Codex mutation-scope attribution describes **exclusivity
+among the tracked scopes the adapter is told about**, not exhaustive authorship
+of every filesystem mutation. `AiExclusive(scope)` means exactly one tracked
+scope was live in the interval — an MCP call, a human editor, or another
+`Untracked` actor may have mutated the same worktree in that interval (D14).
+
+**Why MCP is `Untracked`, not a scope.** T01 (probes 12–17, codex-cli 0.153.4)
+proved that if MCP were represented as a mutation scope, the Codex 0.153.4 hook
+lifecycle makes it unsafe (D10a Case C):
+
+- **mutate-then-error has no terminal hook** — a mutation-capable MCP tool can
+  write a git-visible file and return `is_error:true` with no `PostToolUse`
+  (probe 13);
+- **a successor can start immediately** — `PreToolUse(A)` -> `PreToolUse(B)` with
+  no cleanup signal of any kind between them (probe 14);
+- **parallel MCP execution is real** — two mutation-capable MCP executions
+  genuinely overlap (probes 16/17), so a successor `PreToolUse` cannot prove a
+  predecessor stale.
+
+The adapter cannot safely retire a failed-MCP zombie scope, and there is no
+narrower serial lane than `(session_id, turn_id)`. **The resolution is to not
+model MCP executions as scopes at all.** MCP calls execute normally and are
+explicitly outside attribution coverage. This is a first-class coverage
+boundary, not a lifecycle workaround — the adapter does not claim the MCP
+lifecycle is safe, does not assert MCP is read-only, and does not guarantee MCP
+mutations are detected immediately.
+
+**What v1 must NOT do:**
+
+- must **not** deny an MCP or unknown `PreToolUse` merely because it is untracked
+  (D8);
+- must **not** silently downgrade MCP/unknown to "read-only";
+- must **not** silently pretend an MCP mutation was attributed;
+- must **not** create any `Start`, `attempt`, `recovery_pending`, `Close`,
+  `Abandon`, or `Flush` for an MCP or unknown execution.
+
+**No protocol / formal change is caused by *this* decision.** Direction B
+requires **no** `mutation_cursor.qnt` change, **no** mutation-trace protocol
+change, **no** mutation runtime semantic change, **no** SQL migration, and **no**
+Agent Trace schema change — the existing runtime already models exclusivity among
+tracked scopes, not global filesystem authorship. Direction B changes only the
+Codex adapter's coverage boundary.
+
+*Do not confuse this with the accepted fifth PR #268 follow-up.* That follow-up
+**did** intentionally change the protocol and Quint model, but for a distinct
+cause: `tracked Codex Start` + `arbitrary sibling hook denial` + a
+`cross-harness mutation boundary` could produce **false positive** attribution
+(D14). MCP's disposition here — `MCP / unknown -> Untracked -> no scope -> no
+adapter bookkeeping` — is unchanged by it, and MCP overlap still never becomes
+`AiContended`.
+
+**Rejected / deferred alternatives (historical rationale):**
+
+- **A — deny mutation-capable MCP `PreToolUse` fail-closed.** Rejected: too
+  disruptive (MCP tools become unusable inside Codex under SCE), and it needs a
+  rule to tell "mutation-capable MCP" from "read-only MCP" that cannot trust the
+  server's own `readOnlyHint`.
+- **B — allow MCP/unknown untracked.** **Chosen for Codex adapter v1.**
+- **C — a richer lifecycle/runtime mechanism** (e.g. a per-`tool_use_id` MCP
+  scope retired only by `PostToolUse` or an overlap-tolerant turn-boundary
+  sweep, plus an `AiContended`-aware successor policy). Deferred as possible
+  **future work** in a separate, explicitly justified PR — "investigate
+  first-class MCP mutation attribution using a richer lifecycle mechanism".
+
+**Durable-context requirement.** `context/cli/codex-mutation-scope-integration.md`
+(authored by T07) must state, in public/durable language, that **Codex MCP calls
+remain usable but their filesystem mutations are not individually attributed by
+the Codex mutation-scope adapter**, and must document why (the three T01
+probe findings above), avoiding any wording that implies SCE knows MCP is
+read-only, that MCP mutations are necessarily detected immediately, or that
+`AiExclusive` proves sole authorship.
+
+## Acceptance criteria
+
+How this plan is proven complete. Each criterion is observable and names the
+check that proves it. `/validate` runs these checks; no task in the stack
+performs final validation.
+
+- [x] AC1: `sce hooks codex-mutation-scope` exists, is hidden from `sce --help`
+  and `sce hooks --help`, and routes through the normal hook command stack
+  (`HooksSubcommand::CodexMutationScope` -> `convert_hooks_subcommand_request`
+  -> `HookSubcommand::CodexMutationScope` -> `run_hooks_subcommand_in_repo`,
+  **unwrapped / non-fail-open** like `mutation-scope`).
+  - Validate: `sce hooks codex-mutation-scope </dev/null` exits with the strict
+    parser's error (not "unknown subcommand"); `sce --help` and
+    `sce hooks --help` do not list it; routing test in `command_runtime.rs`.
+    (If T02 chooses D17 option 2, this AC instead asserts the new
+    `CodexDispatchArm` mutation-scope variants and their non-fail-open handling
+    inside `sce hooks codex`.)
+- [x] AC2: The raw Codex mutation-scope event parser strictly validates the
+  fields T01 freezes as required for a tracked `PreToolUse` and rejects an empty
+  payload, non-object JSON, and missing/blank/wrong-typed fields with a
+  `Invalid Codex hook event payload from STDIN: <detail>.` diagnostic, never
+  fabricating an identity.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml services::hooks::codex_mutation_scope` parser unit tests,
+    including a fixture per T01 probe.
+- [x] AC3: `classify_tool` returns exactly one of the three classes (D2) for
+  every Codex tool name T01 enumerated: `TrackedMutation` (`apply_patch`, the
+  shell/`Bash` tool), `Delegation` (`collaborationspawn_agent` /
+  `collaborationwait_agent` — no scope), `Untracked` (any `mcp__<server>__<tool>`
+  matching the proven shape, and any unknown/unrecognised `tool_name`). There is
+  no "read-only" class on the `codex exec` surface. No `Start`, `attempt`, or
+  bookkeeping entry is created for a `Delegation` or `Untracked` tool, nor for
+  `SessionStart` / `UserPromptSubmit` / `SubagentStart` / any non-tool lifecycle
+  event. The classifier must **not** contain language treating MCP/unknown as
+  "mutation-capable therefore Start".
+  - Validate: classification unit-test table (each tool name -> class); adapter
+    mapping unit tests asserting that `Untracked`/`Delegation` events produce no
+    processed-event keys.
+- [x] AC9b (MCP / unknown pass-through — direction B): A `PreToolUse(mcp__…)`
+  and a `PreToolUse(<unknown tool>)` are classified `Untracked` and produce a
+  **Codex-neutral continue response** — no `ScopeId`, no `EventId`, no
+  mutation-scope `Start`, no adapter attempt, no `recovery_pending`, no
+  bookkeeping row of any kind. The adapter never denies them for being untracked,
+  never emits an explicit allow, never downgrades them to "read-only", and never
+  records that their mutations were attributed. A successful MCP call produces
+  **no** mutation-scope rows or events attributable to that MCP execution.
+  - Validate: adapter unit tests — `PreToolUse(mcp__…)` and `PreToolUse(unknown)`
+    return the neutral response with the state store untouched; a full
+    successful-MCP lifecycle (`PreToolUse → PostToolUse`, probe 12 fixture)
+    leaves zero mutation-scope rows/events; the recorded D23 decision in this
+    plan.
+- [x] AC9c (MCP mutate-then-error leaves no stale state — direction B): Driving
+  the probe-13 lifecycle (`PreToolUse(mcp__…)` mutates a git-visible file, tool
+  returns an error, **no `PostToolUse`**, then `Stop`/`SessionEnd`) through the
+  adapter leaves **no stale attempt, no `recovery_pending`, no `abandon`, and no
+  zombie scope** — because no `Start` ever occurred. The subsequent `Stop` /
+  `SessionEnd` sweeps find nothing to retire.
+  - Validate: adapter unit test replaying the probe-13 fixture sequence and
+    asserting the state store is empty throughout and after; T06 row-count
+    assertion.
+- [x] AC9d (failed MCP A -> successor B — direction B): Using the probe-14
+  sequence (`A` = untracked MCP that mutates then errors, immediately followed by
+  `PreToolUse(B)` where `B` is a tracked `Bash`/`apply_patch` **or** another
+  MCP), A leaves **no mutation-scope bookkeeping** that can interfere with B: if
+  B is tracked it `Start`s normally as the only live scope; if B is MCP it is
+  also `Untracked`. No successor barrier runs because no MCP attempt exists.
+  - Validate: adapter unit test over the probe-14 fixture asserting B (tracked)
+    is the only live scope at its `Start` and no false `AiContended`; T06
+    regression.
+- [x] AC9e (parallel MCP — direction B): Using probes 16/17 (two MCP executions
+  genuinely overlap), neither MCP `PreToolUse` creates a mutation scope, there is
+  **no MCP/MCP `AiContended`**, and the adapter state store shows no leak (empty
+  before, during, and after).
+  - Validate: adapter unit test over the probe-16/17 fixtures; T06 regression
+    asserting zero mutation-scope rows for the overlapping MCP pair.
+- [x] AC9f (tracked tool overlapping MCP — semantics documented): With
+  `Start(Bash A)` live, an MCP call mutates the worktree, then `Close(Bash A)`.
+  The runtime may report `AiExclusive(A)` for the interval. The test and the
+  durable context must state this means **A was the only tracked scope live**,
+  **not** that MCP did not mutate. MCP remains `Untracked` and the accepted
+  protocol refinement does **not** convert MCP overlap into `AiContended`.
+  - Validate: T06 regression (`Bash` scope + real MCP mutation via
+    `fixtures/mcp_probe/`) asserting the `AiExclusive` result and a comment/doc
+    line recording the tracked-scope-exclusivity (not sole-authorship) reading;
+    AC22 confirms there is no SQL/schema change and that the only protocol/Quint
+    semantic change is the boundary-aware unconfirmed-Codex attribution rule
+    (D14), which leaves MCP's `Untracked` disposition untouched.
+- [x] AC4: The Codex execution key is exactly the field tuple T02 froze from
+  T01 evidence (recorded in D3). Duplicate delivery of the same live
+  `PreToolUse` reuses the same `attempt_seq`, `ScopeId`, and `Start` `EventId`.
+  - Validate: identity/formatter unit tests; state unit tests; T06 duplicate-
+    delivery regression.
+- [x] AC5: A later execution attempt of the same raw Codex tool identifier,
+  after the previous attempt became terminal, receives a new `attempt_seq` and a
+  new `ScopeId`; a terminal `ScopeId` is never reused; replaying a live
+  attempt's event is `ScopeId`/`EventId`-stable.
+  - Validate: state unit tests (terminal attempt then fresh `attempt_seq`);
+    formatter determinism tests; T06 reused-identifier regression.
+- [x] AC6: A `TrackedMutation` `PreToolUse` reaches durable
+  generic-ingress `Start` before the hook returns its "continue" response to
+  Codex (write-ahead `pending_start` -> ingress `Start` -> `active`), and the
+  seam receives the raw hook `cwd` as `repository_root` (never `git_dir`).
+  - Validate: adapter ordering unit test with an injected seam asserting the
+    persisted phase from inside the seam call and the `repository_root`
+    argument; T06 production-path confirmation.
+- [x] AC7: Any failure to establish adapter state or `Start` during a
+  `TrackedMutation` `PreToolUse` returns the exact Codex-native block response
+  T01 froze (D8), never a silent success and never an explicit allow; the
+  detailed error is logged via
+  `sce.hooks.codex_mutation_scope.pre_tool_use_fail_closed`. A `Delegation` or
+  `Untracked` `PreToolUse` is never subject to this fail-closed path.
+  - Validate: failure-classification unit tests asserting the exact response
+    JSON/exit; `RecordingLogger` assertion that the detail is logged and not
+    leaked into the model-visible reason.
+- [x] AC8: A successful `TrackedMutation` tool with an `active` attempt closes
+  its scope: `PreToolUse` -> real filesystem mutation -> terminal Codex hook
+  produces exactly one eligible tool interval and one terminal (`Closed`) scope
+  with attribution `AiExclusive`.
+  - Validate: T06 real-Git + real-Agent-Trace-DB regression.
+- [x] AC9: A `TrackedMutation` tool that partially mutated the checkout then
+  failed is handled per D10's T01 disposition:
+  - **`Bash`:** the terminal `PostToolUse` closes the scope (partial mutation
+    attributed to that scope).
+  - **`apply_patch`:** verification failure writes nothing — no scope to close.
+  - **MCP / unknown:** not applicable — they are `Untracked` (D2/D23), no scope
+    exists, so there is nothing to close, abandon, or flush; see AC9c.
+  - Validate: T06 failed-`Bash` and failed-`apply_patch` regressions whose
+    assertions match the D10 disposition recorded by T01.
+- [x] AC9a: A partially-mutating failed `TrackedMutation` tool A with **no
+  terminal event**, followed by another `TrackedMutation` `PreToolUse(B)` in the
+  same turn: B never `Start`s alongside a zombie A. Normal path (Case A) — a
+  terminal `PostToolUse` (or `Interrupt`/`SessionEnd`) precedes the successor.
+  Exceptional path (Case B, PR #268 arbitrary-hook-block follow-up) — the
+  `PreToolUse(B)` driver sweeps every same-lane (`session_id`, `turn_id`)
+  built-in attempt whose `AttemptKey != B` first: `Abandon(A)` -> quiescent
+  `Flush` -> `Start(B)`, with an `AdmitDecision::StalePredecessorBlocked`
+  backstop. The MCP form of this scenario is covered by AC9d, not here, because
+  MCP creates no attempt.
+  - Validate: `codex_mutation_scope::tests::driver::regression1..9` (Case-B
+    sweep, seam order, fail-closed, lane scoping); T06 built-in failed-A-then-B
+    regression (assert A `Abandoned` or `Closed` per tool, B the only live scope
+    at its `Start`, no false `AiContended`).
+- [x] AC10: Two simultaneously-live **tracked** scopes never collapse into one
+  shared `ScopeId`, and a tree transition observed while both are live is
+  attributed per the refined D14 confirmation rule:
+  1. observed at a boundary that does **not** confirm the live Codex scope
+     (the other harness's `Advance`/`Close`/`Start`, or a `Flush`) ->
+     `IneligibleUnscoped`, never `AiContended`, with `active_scopes` still
+     carrying both scopes;
+  2. observed at the Codex scope's own `Close` (its proven `PostToolUse`
+     terminus), with no other unconfirmed live Codex scope ->
+     `AiContended`.
+  A second live Codex scope suppresses (2) back to `IneligibleUnscoped`. There is
+  **no** MCP-derived `AiContended` (MCP is `Untracked`); the
+  `Bash`-overlapping-MCP case is AC9f, and asserts `AiExclusive` = tracked-scope
+  exclusivity, not sole authorship.
+  - Validate: T06 cross-harness concurrency regression exercising **both**
+    directions above; protocol/runtime regressions already landed with the fifth
+    follow-up (`mutation_trace::tests`
+    `an_unconfirmed_codex_scope_makes_another_harness_boundary_ineligible_instead_of_contended`,
+    `a_codex_close_overlapping_a_live_non_codex_scope_still_attributes_contention`,
+    `a_second_live_codex_scope_suppresses_attribution_at_a_confirming_codex_close`;
+    `mutation_trace::runtime::tests`
+    `an_unconfirmed_codex_overlap_never_reaches_the_mutation_ai_patch`,
+    `a_confirmed_codex_close_overlap_is_contended_and_still_not_ai_lineage`); the
+    plan records the D14 form exercised.
+- [x] AC11: An outstanding **tracked** execution with no terminal hook is
+  retired by exactly the Codex lifecycle signals T01 marked load-bearing (D12),
+  via `abandon_scope`, leaving the worktree `needs_rebaseline`. The D12 sweeps
+  operate only over adapter-owned tracked attempts; `Untracked` (MCP, unknown)
+  executions never enter `attempts[]` and are never swept.
+  - Validate: T06 regressions for each proven cleanup signal; adapter cleanup
+    unit tests including one asserting an `Untracked` execution left no attempt
+    for a sweep to touch.
+- [x] AC12: While `recovery_pending` is armed and known **tracked** attempts
+  remain outstanding, every new `TrackedMutation` `PreToolUse` is denied (D8
+  shape); an `Untracked` `PreToolUse` is not affected by the barrier; once
+  quiescent, exactly one `{"operation":"flush"}` runs through the seam and
+  `recovery_pending` clears only on durable flush success. (The D10a Case-B
+  built-in successor sweep also runs `Abandon` -> quiescent `flush` -> `Start`
+  through this same recovery machinery; MCP/unknown are `Untracked` and ship no
+  barrier.)
+  - Validate: adapter recovery-barrier unit tests (deny-while-outstanding,
+    flush-then-proceed, flush-failure-stays-closed); T06 recovery-barrier
+    regression.
+- [x] AC13: A failed abandonment leaves the attempt tracked and
+  `recovery_pending = true` (no successor mutation `Start` is allowed until
+  recovery succeeds).
+  - Validate: adapter unit test (failed `abandon` -> attempt retained, barrier
+    armed, next `PreToolUse` denied, seam not re-driven).
+- [x] AC14: A hook process whose raw payload `cwd` names checkout B drives
+  mutation state for checkout B only (its `WorktreeId`/cursor advances; another
+  checkout's cursor is unchanged); the adapter constructs no `WorktreeId` and
+  passes no `worktree_id` key.
+  - Validate: T06 worktree-isolation regression (real linked worktree);
+    dependency-boundary grep for `worktree_id` key construction.
+- [x] AC15: The background/detached execution boundary matches T01's finding
+  (D16): any Codex-managed background execution T01 shows is unbounded is denied
+  in `PreToolUse` with the recorded message; the self-detaching-descendant
+  boundary is documented with Codex-specific T01 evidence and the adapter adds
+  no detection or supervision.
+  - Validate: adapter classification unit test (if a deny applies); T06
+    documented unsupported-case regression; inspection of the T01 evidence
+    fixture and the D16 disposition.
+- [x] AC16: Generated `.codex/hooks.json` after `sce setup --codex` still
+  contains the four existing SCE registrations (`UserPromptSubmit`, `Stop`,
+  `PreToolUse` matcher `Bash`, `PostToolUse` matcher `apply_patch`) routed to
+  `sce hooks codex`, byte-for-byte, plus the new mutation-scope registrations;
+  user-owned Codex handlers and unrelated valid event groups are preserved.
+  - Validate: `nix run .#pkl-check-generated`; `codex_hook_config.rs` merge
+    tests (existing + new); inspection of the rendered `config/.codex/hooks.json`.
+- [x] AC16a: Upgrading a realistic already-installed, already-trusted SCE Codex
+  document (exactly the canonical four registrations) through the same
+  merge/setup path that adds mutation-scope hooks preserves, for every existing
+  registration, the tuple `(event, matcher, matcher-group index, handler index,
+  handler contents/hash)` — so its Codex trust identity stays valid (D20). New
+  mutation-scope handlers/groups are appended after existing ones, never
+  prepended in a way that renumbers a trusted hook; each new mutation-scope hook
+  appears exactly once; user-owned hooks are untouched; a second merge is
+  byte-identical. Where position preservation is genuinely impossible for some
+  structure, the plan says which and doctor surfaces that re-trust is needed.
+  - Validate: `codex_hook_config.rs` "canonical-four -> plus-mutation-hooks"
+    upgrade regression asserting each existing registration's identity tuple and
+    computed trust key are unchanged, the new hooks are appended once, user hooks
+    unchanged, and a second run is idempotent.
+- [x] AC17: `sce setup --codex` merge is idempotent for the mutation-scope
+  registrations (a second run produces byte-identical output) and a
+  structurally invalid existing `.codex/hooks.json` fails before the atomic swap
+  with the existing file untouched.
+  - Validate: `codex_hook_config.rs` idempotency + malformed-input tests.
+- [x] AC17a: Every newly SCE-owned mutation-scope event has a
+  `codex_hook_config::hook_event_key_label` entry whose label is the **exact
+  upstream Codex key label** (verified against `openai/codex` source in T01/T05,
+  not derived by lowercasing), with a dedicated test per newly registered event
+  (D22).
+  - Validate: `services::codex_hook_config` label tests, one per new event;
+    a comment or `NOTES.md` citation of the upstream source for each label.
+- [x] AC18: `sce doctor` gives each SCE-owned mutation-scope registration the
+  full three-dimension Codex health model (D21), reported independently of the
+  four existing `sce hooks codex` registrations, proving all of:
+  1. structural diagnosis (`PresentAndCurrent` / `Missing` / `Stale`,
+     `Malformed` for the whole document);
+  2. normal Codex trust diagnosis (`Trusted` / `Untrusted` / `Modified` /
+     `Disabled`);
+  3. effective project-hook policy diagnosis (`ProjectHooksAllowed` /
+     `PolicyBlocked` / `PolicyUnknown`), reusing the single per-invocation
+     `configRequirements/read` probe;
+  4. `PresentAndCurrent` combined with `Untrusted` / `Modified` / `Disabled` /
+     `PolicyBlocked` / `PolicyUnknown` is **never** reported healthy;
+  5. `sce doctor --fix` changes only SCE-owned `.codex/hooks.json` structure;
+  6. no `$CODEX_HOME/config.toml` or any trust-state / managed-policy mutation
+     occurs on any doctor path.
+  - Validate: `services::doctor::` tests covering a missing, a stale, an
+    untrusted, a modified, a disabled, a policy-blocked, and a policy-unknown
+    mutation-scope registration, plus the `--fix` path; an assertion that the
+    existing trusted `sce hooks codex` hooks and the new (untrusted) mutation
+    hooks are reported with distinct readiness rather than one flattened
+    `.codex/hooks.json` status; a filesystem assertion that no `$CODEX_HOME`
+    write occurs.
+- [x] AC19: Production Codex-adapter code (everything in
+  `cli/src/services/hooks/codex_mutation_scope/` outside `#[cfg(test)]`)
+  contains no `use` or qualified-path reference naming
+  `crate::services::mutation_trace::{runtime,protocol,store}`,
+  `RepositoryAgentTraceDb`, `WorktreeId`, or `GitSnapshotService`, and its only
+  dependency into the mutation stack is the single seam import from
+  `crate::services::hooks::mutation_scope`.
+  - Validate: `rg -n --type rust
+    '^\s*use\s+crate::services::mutation_trace::(runtime|protocol|store)|::(RepositoryAgentTraceDb|WorktreeId|GitSnapshotService)\b'
+    cli/src/services/hooks/codex_mutation_scope/` returns no match outside a
+    `#[cfg(test)]` module; manual check confirms exactly one `use` reaching
+    `crate::services::hooks::mutation_scope`.
+- [x] AC20: Codex mutation-scope-only regressions leave `diff_traces`,
+  `post_commit_patch_intersections`, `agent_traces`, `messages`, and `parts`
+  unchanged (before/after row-count assertions), and adapter state lives only
+  below `<git-dir>/sce/`.
+  - Validate: T06 regression with row-count assertions; state-module inspection.
+- [x] AC21: Crash/recovery invariants hold against the real runtime: (a) a
+  `pending_start` attempt whose `Start` never committed is abandoned then
+  recovered by the quiescent flush; (b) a `pending_start` attempt whose `Start`
+  did commit is abandoned as a real runtime abandonment, not a late `Start`;
+  (c) a `Close` that committed durably before local bookkeeping caught up is
+  replay-safe on redelivery (no second transition, revision unchanged).
+  - Validate: T06 regressions Test-crash-a/b/c driving real events after
+    simulating each crash point via the adapter's own bookkeeping helpers only.
+- [x] AC22: The **only** protocol / formal-model / mutation-attribution semantic
+  change introduced by the Codex integration is the accepted boundary-aware
+  unconfirmed-Codex attribution rule recorded in D14 / the fifth PR #268
+  follow-up. The diff against `origin/claude-mutation-scope-integration` may
+  therefore contain the intentional changes to `spec/mutation_cursor.qnt`,
+  `spec/mutation_cursor.md`, `cli/src/services/mutation_trace/protocol.rs`, and
+  the mutation-trace runtime, MBT harness, and refinement tests required to
+  refine and validate that rule — and nothing else of that kind. **No mutation-trace SQL migration is
+  introduced. No Agent Trace schema change is introduced.** The following must
+  remain unchanged against the predecessor: `cli/migrations/agent-trace-repository/`
+  and `config/schema/agent-trace.schema.json`. T06 and T07 introduce **no
+  further** production protocol, Quint, runtime-semantic,
+  mutation-attribution-algorithm, SQL, or schema change.
+  - Validate, in three parts:
+    1. Inspect the protocol / Quint diff
+       (`git diff origin/claude-mutation-scope-integration -- spec/
+       cli/src/services/mutation_trace/`) and verify every hunk is part of the
+       accepted unconfirmed-Codex attribution rule and its formal/refinement
+       tests (D14: `isCodexScope`, `boundaryConfirmsScope`,
+       `hasUnconfirmedCodexScope`, `attributionForBoundary` /
+       `is_codex_scope`, `boundary_confirms_scope`,
+       `has_unconfirmed_codex_scope`, `attribution_for_boundary`, the
+       `SafetyAttribution` invariants, the `scope4` MBT wiring, and their
+       regressions).
+    2. Assert empty: `git diff origin/claude-mutation-scope-integration --
+       cli/migrations/agent-trace-repository/
+       config/schema/agent-trace.schema.json`.
+    3. T06 baseline freeze — assert empty against the post-fifth-follow-up head
+       (`b72f6c2c`, "runtime+language: Prevent false mutation attribution for
+       unconfirmed Codex scopes"): `git diff b72f6c2c -- spec/mutation_cursor.qnt
+       spec/mutation_cursor.md cli/src/services/mutation_trace/protocol.rs
+       cli/src/services/mutation_trace/runtime/`.
+- [x] AC23: Durable context clearly separates the generic mutation-scope
+  ingress, the Codex mutation adapter, and the mutation runtime, and records:
+  the tool-execution scope model, the **three-class** Codex tool classification
+  (`TrackedMutation` / `Delegation` / `Untracked`) and the **partial-by-tool-
+  surface coverage boundary** (D23), execution identity,
+  `ScopeId`/`EventId` derivation, the fail-closed `PreToolUse` (tracked only) and
+  its exact Codex-native response, the terminal-boundary mappings, the
+  failed-tool handling, why MCP/unknown are `Untracked` (the three T01 probe
+  findings), the Codex lifecycle cleanup signals and the load-bearing backstop,
+  the recovery barrier, worktree/cwd ownership, the concurrency story (including
+  that `AiExclusive` is tracked-scope exclusivity, not sole authorship, **and**
+  the accepted boundary-aware unconfirmed-Codex attribution rule of D14 — Codex
+  `Start` is write-ahead admission, not execution confirmation; an unconfirmed
+  live Codex scope forces `IneligibleUnscoped` at any non-confirming boundary;
+  only that exact scope's own `Close` confirms it), the
+  exact background/detached execution limitations, and the Codex hook-config
+  coexistence contract (existing-registration trust-identity preservation, the
+  three-dimension doctor health model, upstream-verified event key labels) —
+  each stated as Codex-proven, Codex-documented, or Codex-unsupported, with the
+  tested Codex version. Durable context must include the coverage table:
+  `Tracked: Bash, apply_patch` / `Delegation: collaborationspawn_agent,
+  collaborationwait_agent` / `Allowed but untracked: mcp__*, unknown tools`, and
+  the sentence that **Codex MCP calls remain usable but their filesystem
+  mutations are not individually attributed by the Codex mutation-scope
+  adapter**.
+  - Validate: inspection of `context/cli/codex-mutation-scope-integration.md`
+    and the updated cross-reference files.
+- [x] AC24: The plan's exact unsupported / out-of-coverage limitations are
+  enumerated in durable context:
+  - **MCP tools and unknown/future Codex tools are outside Codex mutation-scope
+    attribution coverage** (D23, direction B). They execute and may mutate; the
+    adapter creates no scope. Durable context records *why*: on codex-cli
+    0.153.4, if MCP were modeled as a scope it would be D10a Case C
+    (mutate-then-error has no terminal hook; a successor can start with no
+    cleanup signal between; parallel MCP execution is real). This is a coverage
+    boundary, not a shipped-then-broken feature. Wording must not imply SCE knows
+    MCP is read-only, that MCP mutations are detected immediately, or that
+    `AiExclusive` proves sole authorship.
+  - No line-level attribution for mutations from a failed tool with no terminal
+    hook; the failed-tool -> successor-tool guarantee is Case A for built-in
+    `Bash` / `apply_patch` only.
+  - No attribution guarantee for self-detaching descendant processes; no
+    Codex-managed background execution SCE cannot bound; and whatever else T01
+    marks `UNSUPPORTED`.
+  - Future work is explicitly named: investigate first-class MCP mutation
+    attribution using a richer lifecycle mechanism in a separate PR.
+  - Validate: inspection of the "Unsupported / Coverage boundary" section of
+    `context/cli/codex-mutation-scope-integration.md`.
+
+### Full validation
+
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::codex_mutation_scope`
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::mutation_scope`
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::codex`
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::`
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::`
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::codex_hook_config`
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::doctor::`
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml`
+- `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
+- `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`
+- `nix run .#pkl-check-generated`
+- `nix flake check`
+- `git diff origin/claude-mutation-scope-integration -- cli/migrations/agent-trace-repository/ config/schema/agent-trace.schema.json` must be empty (AC22 SQL/schema half).
+- `git diff origin/claude-mutation-scope-integration -- spec/ cli/src/services/mutation_trace/` is **not** required to be empty; it is inspected and must be limited to the accepted boundary-aware unconfirmed-Codex attribution rule and its formal/refinement tests (D14, AC22).
+- `git diff b72f6c2c -- spec/mutation_cursor.qnt spec/mutation_cursor.md cli/src/services/mutation_trace/protocol.rs cli/src/services/mutation_trace/runtime/` must be empty (T06/T07 add no further production semantic change, AC22).
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::` (the accepted attribution rule's refinement/MBT regressions).
+
+Final branch comparison is against `claude-mutation-scope-integration`
+(#263 head), not `main`, while this PR remains stacked on #263.
+
+### Context sync
+
+- New: `context/cli/codex-mutation-scope-integration.md` (owns the Codex adapter
+  domain — see AC23/AC24). Must document, in public/durable language, the
+  **partial-by-tool-surface coverage boundary** (D23):
+
+  ```text
+  Tracked:            Bash, apply_patch
+  Delegation:         collaborationspawn_agent, collaborationwait_agent
+  Allowed but untracked:  mcp__*, unknown tools
+
+  Coverage meaning:  mutation-scope attribution describes tracked-scope
+                     exclusivity, not exhaustive authorship of every
+                     filesystem mutation.
+  ```
+
+  and *why* MCP is untracked, citing the T01 probes: mutate-then-error has no
+  terminal hook (probe 13); a successor can start immediately with no cleanup
+  signal (probe 14); parallel MCP execution is real (probes 16/17). Plus the
+  sentence: "Codex MCP calls remain usable, but their filesystem mutations are
+  not individually attributed by the Codex mutation-scope adapter."
+- Update: `context/cli/mutation-scope-runtime.md` (a second concrete adapter now
+  exists; Codex is no longer "unwired"),
+  `context/cli/mutation-scope-hook-ingress.md` (a second in-process seam
+  consumer now exists),
+  `context/sce/agent-trace-hooks-command-routing.md` (new
+  `codex-mutation-scope` route, or the new `sce hooks codex` mutation-scope
+  arms if T02 chooses D17 option 2),
+  `context/sce/codex-integration-runtime.md` (the Codex hook runtime now also
+  drives mutation-scope; keep the existing conversation/diff pipeline
+  description intact and additive),
+  `context/context-map.md`, `context/overview.md`, `context/architecture.md`
+  (line 135's hook-runtime paragraph names the new adapter).
+- Not a target: `context/sce/generated-opencode-plugin-registration.md`,
+  `context/cli/claude-mutation-scope-integration.md` (Claude-only — unchanged),
+  and any `context/decisions/2026-08-23-codex-*` ADR unless T02/T05's ownership
+  extension materially changes the accepted non-destructive-ownership contract
+  (in which case a **new dated** ADR is written, never an edit to the existing
+  one).
+- `context/sce/doctor-human-text-contract.md` — update only if T05's
+  three-dimension mutation-scope health rows change the documented `sce doctor`
+  human text layout.
+- ADR: only if T01/T02/T05 reveals a genuinely new system-wide architectural
+  constraint meeting the repository's ADR threshold (e.g. the Codex hook-config
+  ownership model must become permanently multi-command, or existing-hook trust
+  identity must be a first-class merge invariant). A routine extension of
+  `REQUIRED_EVENTS` / `CODEX_COMMAND_WORDS` / `hook_event_key_label` does not
+  qualify.
+
+## Task context synchronization lifecycle
+
+Persist this field in every plan; this is durable plan state, not chat state:
+
+- **Task context synchronization:** every task carries `pending | synced | blocked`.
+  A completed task must be `synced` before another task can start or the plan can
+  finish.
+- For `blocked`, record **Blocker**, **Required action**, and **Retry condition**
+  beside the status. Never infer `synced` from conversation history; write every
+  lifecycle transition to the plan file.
+
+## Constraints and non-goals
+
+- **In scope:** `cli/src/cli_schema.rs`,
+  `cli/src/services/parse/command_runtime.rs`,
+  `cli/src/services/hooks/mod.rs`,
+  `cli/src/services/hooks/mutation_scope.rs` (no change expected beyond the
+  already-`pub(crate)` seam; touch only if T04 finds a genuine gap),
+  `cli/src/services/hooks/codex_mutation_scope/mod.rs` (new — event model, tool
+  classification, identity, `ScopeId`/`EventId` derivation, adapter driver),
+  `cli/src/services/hooks/codex_mutation_scope/state.rs` (new — durable
+  checkout-local bookkeeping),
+  `cli/src/services/hooks/codex_mutation_scope/fixtures/` (new — T01 raw Codex
+  hook-event fixtures + `NOTES.md`),
+  `cli/src/services/codex_hook_config.rs` (command-aware ownership/merge per
+  D17; additive position-stable insertion preserving existing trust identity per
+  D20; `hook_event_key_label` coverage for new events per D22),
+  `config/pkl/renderers/codex-content.pkl` (mutation-scope `.codex/hooks.json`
+  registrations, appended after the existing SCE registrations),
+  `cli/src/services/doctor/` (three-dimension structural + trust + effective-
+  policy diagnosis for each mutation-scope registration per D21),
+  and the context files listed under Context sync.
+  **Added by the accepted fifth PR #268 follow-up only** (D14; closed, not
+  reopened by T06/T07): `spec/mutation_cursor.qnt`, `spec/mutation_cursor.md`,
+  `cli/src/services/mutation_trace/protocol.rs`, and the
+  `cli/src/services/mutation_trace/runtime/` + MBT tests that refine and
+  validate the boundary-aware unconfirmed-Codex attribution rule.
+- **Out of scope:** OpenCode/Pi mutation-scope adapters; a generic
+  adapter-framework extraction; **any protocol / Quint / `mutation_trace`
+  runtime-semantic / mutation-attribution-algorithm change beyond the one
+  accepted boundary-aware unconfirmed-Codex attribution rule** (D14, fifth PR
+  #268 follow-up — `spec/mutation_cursor.qnt`, `spec/mutation_cursor.md`,
+  `mutation_trace/protocol.rs`, and the runtime/MBT tests that refine and
+  validate it); any change to `mutation_trace/store.rs`; any mutation-trace SQL
+  migration; any Agent Trace schema migration or
+  `config/schema/agent-trace.schema.json` change; the existing `sce hooks codex`
+  conversation/diff pipeline behavior (`UserPromptSubmit`/`Stop`/
+  `PreToolUse(Bash)`/`PostToolUse(apply_patch)` slices — unchanged); folding
+  `apply_patch -> diff_traces` into mutation-scope storage; PID/process-group
+  supervision, background-process ownership, shell-command static analysis,
+  staleness polling; a Codex App Server / `codex exec --json` integration for
+  mutation-scope; writing Codex hook-trust or auto-trust state.
+- **Constraints:** the adapter depends only on `hooks::mutation_scope`, never on
+  `mutation_trace::runtime` / `::protocol` / `::store` directly
+  (`codex_mutation_scope -> mutation_scope -> mutation_trace::runtime`); it may
+  call `checkout::resolve_git_dir(cwd)` but not `read_checkout_id` /
+  `get_or_create_checkout_id` / `resolve_checkout_id_for_repo` and must not
+  construct a `WorktreeId`; the adapter-state lock is never held across a
+  `hooks::mutation_scope` invocation; `ScopeId` uses a length-prefixed tuple
+  encoding, no hashing / no crypto dependency; latest deps pinned exactly,
+  node24 for any new JS work per `context/plans/feedback_deps.md` (no new deps
+  expected here); reuse the shared `codex_hook_config.rs` ownership/merge and
+  the shared doctor structural/trust/policy diagnosis — no second Codex
+  hook-config implementation; reuse `ActorKind::Codex` /
+  `"actor_kind":"codex"`, already accepted by the generic ingress.
+- **Non-goal:** copying Claude's `PostToolUseFailure` / `PermissionDenied` /
+  `StopFailure` / `WorktreeRemove` mappings into Codex without T01 evidence that
+  the equivalent Codex signal exists and fires; designing a Close-on-failure
+  path around an event Codex does not reliably emit; treating any terminal hook
+  as proof that every descendant process has stopped mutating; turning `abandon`
+  into a `RuntimeBoundary`; a long-lived Codex "session" or "agent" scope;
+  inventing a Codex `agent_id` abstraction if Codex exposes no delegated-agent
+  identity; **modeling an MCP call or an unknown Codex tool as a mutation scope**
+  (D23 — they are `Untracked` in v1: allowed, may mutate, no scope, no
+  bookkeeping); **denying an MCP or unknown `PreToolUse` for being untracked**;
+  **claiming MCP is read-only or that its mutations are individually attributed**;
+  first-class MCP mutation attribution (direction C — deferred to a separate PR).
+
+## Assumptions
+
+- Task numbering is `T01..T07`. T04 and T05 of the change request's suggested
+  shape (driver, and command/routing) are combined into this plan's T04, because
+  the D17 command decision is made in T02 and the Claude adapter's own precedent
+  combined driver + command wiring in one task (#263 T06).
+- The generic seam is the existing
+  `hooks::mutation_scope::run_mutation_scope_from_payload(repository_root,
+  stdin_payload, logger) -> Result<String>`, already `pub(crate)` since #263's
+  T05, reused verbatim by constructing the `{"operation":...}` JSON wire string.
+  No new payload operation and no `sce` subprocess.
+- `ActorKind::Codex` and the `"actor_kind":"codex"` wire value are already
+  accepted by `parse_mutation_scope_payload` (per
+  `context/cli/mutation-scope-hook-ingress.md`), so the Codex adapter needs no
+  ingress change to identify itself.
+- Adapter state path is `<git-dir>/sce/codex-mutation-scope-state.json` with
+  lock `<git-dir>/sce/codex-mutation-scope-state.lock`, following the
+  `checkout::persist_checkout_id_inner` durability pattern.
+- Generated Codex mutation-scope hook registrations carry the matchers T01
+  proves Codex requires (an unmatched group if Codex supports it, else
+  per-tool matched groups); the exact set of registered events is the minimum
+  the adapter actually uses after T01, not Claude's ten.
+- The user has explicitly allowed assumptions for ordinary local choices
+  (module naming, test-helper shape, fixture layout) — these follow the Claude
+  adapter's precedent and are not blocking.
+- The Codex version SCE supports is pinned by T01 (`codex --version` plus the
+  inspected upstream commit), the same way #263's T01 pinned Claude Code
+  `2.1.258`.
+
+## Task stack
+
+- [x] T01: `Freeze the real Codex hook and lifecycle contract` (status:done)
+  - Task ID: T01
+  - Built-in probes completed: 2026-09-07
+  - MCP lifecycle extension completed: 2026-09-07 (probes 12–17)
+  - Re-planning resolution recorded: 2026-09-08
+  - **Re-planning resolution (2026-09-08) — direction B chosen.** T01 discovered
+    D10a **Case C for MCP** on codex-cli 0.153.4: a mutation-capable MCP tool can
+    mutate a git-visible file then return `is_error:true` with **no terminal
+    hook** (probe 13); no cleanup signal reaches the adapter before a successor
+    `PreToolUse` (probe 14); same-lane MCP executions **overlap** (probes 16/17).
+    Re-planning chose **direction B**: MCP tools and unknown/future Codex tools
+    remain usable but are **outside the Codex adapter's mutation-scope
+    attribution coverage** (D23) — classified `Untracked`, no scope, no
+    bookkeeping. The Case C finding is **retained** and is exactly *why* MCP is
+    excluded: "if MCP were represented as a mutation scope, Codex 0.153.4 makes
+    the lifecycle unsafe." No protocol / Quint / mutation-trace SQL / Agent Trace
+    schema change is required (D23). Design decisions updated: D1, D2, D8, D9,
+    D10, D10a, D12, D13, D14, new D23; ACs updated: AC3, AC9, AC9a, AC9b (now
+    "MCP/unknown pass-through"), AC9c–AC9f (new), AC10, AC11, AC12, AC23, AC24;
+    tasks updated: T02 unblocked, T06 matrix. The built-in `Bash` / `apply_patch`
+    evidence and all non-MCP dispositions (D3, D8, D9-built-in, D10-built-in,
+    D10a-built-in, D12, D15, D16, D17-inputs, D22) remain valid and are **not**
+    re-opened.
+  - **T01 → done; T02 → unblocked** (not started as part of this re-planning).
+  - Files changed:
+    - `cli/src/services/hooks/codex_mutation_scope/fixtures/` (new — 35 raw
+      byte-for-byte built-in hook-event captures across 11 probes + one
+      `probe09-*.evidence.json`; **plus 21 raw MCP hook-event captures + 5
+      `probe1[3-7]-*.evidence.json` files across MCP probes 12–17**; `NOTES.md`)
+    - `cli/src/services/hooks/codex_mutation_scope/fixtures/mcp_probe/` (new —
+      probe-only, not runtime: `server.py` zero-dep stdio MCP server, `dump.sh`,
+      `block.sh`, `run-probes.sh` driver, `config.toml.sample`,
+      `hooks.json.sample`)
+    - `flake.nix` (`./cli/src/services/hooks/codex_mutation_scope/fixtures`
+      already in `workspaceSrc`; `mcp_probe/` is under it — no change needed)
+    - `context/plans/codex-mutation-scope-integration.md` (T01 dispositions
+      written into D1, D2, D3, D8, D9, D10, D10a, D12, D15, D16, D17-inputs,
+      D22; MCP extension dispositions written into D1/D2/D8/D9/D10/D10a/D14;
+      **2026-09-08 re-planning direction B written into the Change summary, D1,
+      D2, D8, D9, D10, D10a, D12, D13, D14, new D23, AC3/AC9/AC9a/AC9b/
+      AC9c–AC9f/AC10/AC11/AC12/AC23/AC24, T02/T06, Open questions**; this task
+      record)
+  - Result: Froze the Codex hook/lifecycle contract for **codex-cli 0.153.4**
+    (model `gpt-5.6-sol`), cross-checked against upstream `openai/codex` tag
+    `rust-v0.153.4` (commit `3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`) —
+    generated hook JSON schemas, `codex-rs/hooks/src/{schema.rs,lib.rs}`,
+    `codex-rs/core/src/{tools/registry.rs,hook_runtime.rs}`. All 11 live probes
+    captured (normal apply_patch + shell success, shell partial-write-then-fail,
+    two `PreToolUse`-hook denial shapes, tool vocabulary, apply_patch
+    verification failure, SIGINT with/without an `Interrupt` hook, subagent
+    delegation, self-detaching descendant with Git-observability evidence,
+    linked-worktree cwd). Built-in key findings: **D10a is Case A for
+    `Bash` / `apply_patch`** (a failed shell tool still fires `PostToolUse`; a
+    failed `apply_patch` writes nothing; interruption ends the turn);
+    **`SessionEnd` is the load-bearing cleanup backstop**, `Interrupt` is a
+    newly-discovered earlier interruption signal (**Codex has 12 hook events,
+    not 11**); **both** `{"decision":"block"}` and
+    `hookSpecificOutput.permissionDecision:"deny"` block a tool; Codex runs
+    **built-in** mutation-capable tools serially; Codex **does** expose a
+    delegated-agent identity (`agent_id`, subagent events only); raw hook `cwd`
+    is authoritative including for linked worktrees; the default `codex exec`
+    shell tool has **no `run_in_background` parameter** but a self-detaching
+    descendant is an unsupported boundary as for Claude.
+
+    **MCP lifecycle extension (probes 12–17, codex-cli 0.153.4, cross-checked
+    against `codex-rs/core/src/tools/{registry.rs,context.rs,handlers/mcp.rs}`
+    and `codex-rs/config/src/mcp_types.rs` at `rust-v0.153.4`)** — a tiny local
+    stdio MCP server (`fixtures/mcp_probe/server.py`) exposing deliberately
+    mutation-capable tools was wired into a scratch repo and driven with
+    `codex exec`. Findings: MCP tool naming is `mcp__<server>__<tool>` with an
+    `exec-<uuid>` `tool_use_id` (D2/D3 unchanged for MCP); a **successful** MCP
+    call emits `PostToolUse` (D9); a **blocked** MCP call emits `PreToolUse`
+    only (D8); **but a mutation-capable MCP tool that mutates a git-visible file
+    and then returns `is_error:true` receives NO terminal hook** (probe 13), a
+    failed MCP tool is followed **directly** by a successor MCP tool with **no
+    intervening cleanup signal** (probe 14), and **two mutation-capable MCP
+    executions run genuinely concurrently** (probes 16/17,
+    `supports_parallel_tool_calls` config key / `annotations.readOnlyHint`).
+    **This is D10a Case C for MCP if MCP were modeled as a scope.** Re-planning
+    (2026-09-08) chose **direction B**: MCP and unknown tools are `Untracked` —
+    they execute and may mutate, but the adapter creates no scope, so the Case C
+    lifecycle can never produce a zombie scope (D23). Built-in `Bash` /
+    `apply_patch` evidence is unaffected. Parallel MCP execution remains real
+    operationally but produces no tracked scopes and therefore no
+    MCP-derived `AiContended`.
+  - Verify:
+    - `nix run .#pkl-check-generated` — **passed** (built-in probes; re-run
+      after the MCP-extension fixtures land).
+    - `nix flake check` — **passed** ("all checks passed!"; incompatible
+      non-Linux systems omitted as usual; re-run after the MCP-extension
+      fixtures land).
+    - Built-in fixtures committed under
+      `cli/src/services/hooks/codex_mutation_scope/fixtures/`; `NOTES.md` lists
+      the manifest and per-probe disposition; all JSON fixture files parse; CLI
+      build input list already includes the fixtures directory (`flake.nix`).
+    - MCP-extension: 21 raw MCP hook payloads + 5 `evidence.json` files + the
+      `mcp_probe/` probe harness committed under the same fixtures tree; all
+      parse; the six MCP probes were driven live against `codex exec`
+      (`codex-cli 0.153.4`).
+  - Context impact: domain — a new adapter-domain fixture corpus + frozen Codex
+    hook-contract facts now exist; no code, no user-visible behavior, no public
+    interface yet. Durable Codex-adapter context (`context/cli/
+    codex-mutation-scope-integration.md`) is authored by T07 once behavior
+    ships; T01's facts live in the plan's Design section and the fixtures
+    `NOTES.md` until then.
+  - Scope: In — capture raw Codex hook-event fixtures from the Codex version SCE
+    chooses to support, commit them under
+    `cli/src/services/hooks/codex_mutation_scope/fixtures/` (one file per probe,
+    named for the probe) with a `NOTES.md` recording the tested `codex --version`
+    and the inspected `openai/codex` commit; inspect current upstream Codex
+    source/documentation where a live probe is not possible. For each probe
+    record, in `NOTES.md` and back into this plan's Design section, a
+    disposition of `PROVEN` / `DOCUMENTED — NON-LOAD-BEARING` /
+    `ASSUMPTION — PROBE` / `UNSUPPORTED`. Probes:
+    - **Normal mutation-capable execution** — `apply_patch` success, shell/`Bash`
+      command success, and any other checkout-mutating Codex tool: capture
+      `PreToolUse` and the terminal hook, recording `tool_use_id`,
+      `session_id` / `turn_id`, `cwd`, `tool_name`, `tool_input`,
+      `tool_response`, `model`, and any timestamp. Establish whether the same
+      stable execution identity appears in both the pre and post events (D3/D9).
+    - **Tool failure** — a tool that writes files then exits non-zero / fails:
+      determine the exact event sequence, whether `PostToolUse` fires at all on
+      failure, and whether any event carries a reliable final mutation
+      observation. Do **not** assume success and failure use the same sequence
+      (D10).
+    - **Failed tool followed by another tool in the same turn** (D10a — the
+      hard case): (1) execute mutation-capable tool A; (2) make A mutate
+      Git-visible repository state; (3) make A fail; (4) do **not** end the
+      turn; (5) cause mutation-capable tool B to execute; (6) capture every
+      hook/lifecycle event between A's failure and `PreToolUse(B)`. Establish
+      whether Codex emits any **positive** stale/terminal evidence for A before
+      B, and record exactly one disposition:
+      - **Case A** — a reliable intermediate cleanup signal exists between A's
+        failure and `PreToolUse(B)`; record which signal is load-bearing.
+      - **Case B** — no intermediate signal, but Codex is proven to execute
+        mutation-capable tools **serially within a narrow, identity-defined
+        lane** (candidate lane keys: session / turn / a proven delegated-agent
+        identity), so `PreToolUse(B)` itself proves an older same-lane attempt
+        cannot still be running. Record the exact concurrency evidence and the
+        lane key it licenses. Codex tools have historically run serially — this
+        case needs a positive proof of the seriality boundary, not an
+        assumption.
+      - **Case C** — neither: no reliable intermediate signal **and** same-lane
+        parallel executions are possible, so the adapter cannot distinguish
+        `failed-and-dead A` from `still-running A`. Mark this an architectural
+        contradiction / unsupported lifecycle, record it in Open questions, and
+        **stop the plan for re-planning** — do not guess.
+    - **Tool denial** — SCE `PreToolUse` policy denies; Codex itself denies;
+      `PermissionRequest` denied; another hook denies (if applicable):
+      determine whether a `Start` could have been durably established with no
+      corresponding terminal event, and the exact Codex-native denial/block
+      response shape and exit semantics for the supported version (D8/D12).
+    - **Interrupted execution / turn / session lifecycle** — user interruption,
+      turn completion, session termination, process termination: which of
+      `Stop` / `SessionEnd` / `SubagentStop` / `PreCompact` fire, with what
+      identity fields, and which provide **positive** staleness evidence
+      suitable for `abandon` (not absence of activity) (D12).
+    - **Parallel execution** — whether Codex can have two mutation-capable
+      executions overlapping; if yes, capture evidence of two coexisting
+      independent tool executions (D1/D14). **Done for MCP** — probes 16/17
+      reproduce genuine overlap; the plan may not conclude seriality from the
+      built-in probes alone.
+    - **MCP lifecycle (probes 12–17)** — a local MCP server exposing
+      mutation-capable tools (`mutate_success`, `mutate_then_error`,
+      `slow_mutate`, `read_only_liar`): capture the full hook lifecycle for a
+      successful MCP call, a blocked MCP call, a mutate-then-error MCP call, a
+      failed MCP call followed by a successor MCP call in the same turn, and two
+      MCP calls forced to run in parallel; record git-observable mutation
+      evidence (not just the MCP result) distinguishing "tool did not mutate"
+      from "tool mutated then returned failure"; determine whether `PostToolUse`
+      fires and whether any positive cleanup signal precedes a successor; pin the
+      Codex version and cite the upstream `success_for_logging` /
+      `supports_parallel_tool_calls` source. Record the D10a MCP disposition
+      (Case A / B / C) explicitly and, for Case C, stop the plan for re-planning.
+    - **Subagents / delegated execution** — whether Codex exposes nested/
+      delegated agent execution and whether hook payloads carry enough identity
+      to distinguish a delegated agent from the main thread (D3). Do not invent
+      an `agent_id` if Codex has none.
+    - **Worktrees / cwd** — whether the raw hook `cwd` is authoritative for the
+      actual checkout being mutated, and whether Codex exposes any separate
+      worktree-lifecycle event or path (D15).
+    - **Background / detached shell** — separate Codex-managed background
+      execution (if any) from a foreground command spawning a self-detaching
+      descendant; capture Git-observable evidence for the descendant case, as
+      #263's T04 did for Claude, before making any Codex-specific claim (D16).
+    - **Tool vocabulary** — enumerate every `tool_name` Codex emits on
+      `PreToolUse` / `PostToolUse`, including MCP tool naming and the delegation
+      tool name, for the D2 classification table.
+    Out — any production code, any Rust module, any settings change, any Design
+    decision that is not backed by a captured fixture or an upstream source
+    citation.
+  - Dependencies: none
+  - Done when: fixtures exist for every probe correctness depends on (or an
+    upstream-source citation where a live probe is impossible), `NOTES.md`
+    records the tested Codex version and per-probe dispositions, and every
+    T01-GATED decision (D1, D2, D3, D8, D9, D10, D10a, D12, D15, D16,
+    D17-inputs) carries an explicit disposition written back into this plan's
+    Design section — D10a specifically records Case A / Case B / Case C with its
+    evidence. **Met:** all fixtures committed; `NOTES.md` complete; D10a records
+    Case A (built-ins) and Case C *if modeled as a scope* (MCP). The Case C
+    finding triggered the re-planning that chose direction B (D23) — MCP/unknown
+    are `Untracked` and need no protocol change, so the plan proceeds to T02.
+  - Verify (planned): fixtures committed and referenced from this plan;
+    `NOTES.md` lists the manifest and per-probe disposition;
+    `nix run .#pkl-check-generated` and `nix flake check` still pass (fixtures
+    are inert data — confirm the CLI build input list includes the new fixtures
+    directory, as #263's T01 needed for Claude).
+  - Context synchronization: synced
+    - T01 ships **no code, no public interface, and no user-visible behaviour** —
+      only the fixture corpus, the frozen Design-section dispositions, and (as of
+      2026-09-08) the recorded re-planning direction B (D23). The durable
+      cross-reference files (`context/cli/...`, `context/sce/...`) are authored
+      by **T07** once behaviour ships; there is nothing for T01 to sync into them
+      now, exactly as recorded under "Context impact". The re-planning facts live
+      in this plan's Design section, Open questions, and
+      `cli/src/services/hooks/codex_mutation_scope/fixtures/NOTES.md`.
+
+- [x] T02: `Command architecture, Codex event model, classification, and identity` (status:done)
+  - Task ID: T02
+  - Completed: 2026-09-08
+  - **Unblocked (2026-09-08).** The T01 D10a Case C blocker is resolved by
+    re-planning direction B (D23): MCP tools and unknown tool names are
+    `Untracked` — they execute and may mutate, but the adapter creates no scope,
+    no `Start`, and no bookkeeping for them, so no zombie-scope lifecycle exists.
+    `classify_tool` is now a three-way decision (`TrackedMutation` /
+    `Delegation` / `Untracked`, D2) with a frozen membership; no protocol change
+    is required. T02 has not been started.
+  - Scope: In — (1) decide the D17 command architecture against T01 + the code,
+    defaulting to a separate hidden `sce hooks codex-mutation-scope` command,
+    and write the decision into D17; (2) `cli/src/services/hooks/
+    codex_mutation_scope/mod.rs`: the strict raw Codex mutation-scope event
+    parser (rejecting empty/non-object/missing/blank/wrong-typed with
+    `Invalid Codex hook event payload from STDIN: <detail>.`), the supported
+    mutation-scope hook-event enum (only the events T01 proved), the D2
+    **three-class** `classify_tool` (`TrackedMutation` = `Bash` / `apply_patch`;
+    `Delegation` = `collaborationspawn_agent` / `collaborationwait_agent`;
+    `Untracked` = `mcp__*` and any unknown `tool_name`) with no
+    "mutation-capable therefore Start" language for MCP/unknown, the D3
+    execution-key type frozen from T01 evidence (tracked tools only), the D4
+    length-prefixed `cx-tool-v1|n=..|...` `ScopeId` formatter, and the
+    `<scope-id>|start` / `<scope-id>|close` `EventId` formatters, plus any
+    background-execution classifier T01 shows is needed (model/classify only —
+    the denial is T04's). Out — any durable state, any runtime/ingress call, any
+    CLI wiring, any generated settings; **no D10a successor-barrier / lane-key
+    work** (Case A for built-ins ships none; MCP/unknown are `Untracked`).
+  - Dependencies: T01
+  - Done when: the module compiles behind the existing `hooks` module tree; the
+    D17 decision is recorded in this plan; the D10a lane key is explicitly N/A
+    (recorded in D10a); unit tests prove AC2, AC3 (the three-class table,
+    including `Untracked` for `mcp__*` and unknown names, producing no
+    processed-event keys), AC4 (formatter determinism), AC5 (formatter is a
+    function of `attempt_seq`), against T01's tool vocabulary.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml services::hooks::codex_mutation_scope`; `clippy` /
+    `fmt` clean.
+  - Files changed:
+    - `cli/src/services/hooks/codex_mutation_scope/mod.rs` (new — event model,
+      strict parser, three-class `classify_tool`, D3 `AttemptKey`, D4
+      `cx-tool-v1` `ScopeId` / `EventId` formatters, 23 unit tests over the T01
+      fixture corpus)
+    - `cli/src/services/hooks/mod.rs` (one line — `pub mod codex_mutation_scope;`
+      module-tree declaration; no CLI wiring)
+    - `context/plans/codex-mutation-scope-integration.md` (D17 T02 decision =
+      option 1; D10a lane-key N/A confirmation; this task record)
+  - Result: Froze the Codex mutation-scope adapter's foundation layer. D17
+    decided as **option 1** — a separate hidden `sce hooks codex-mutation-scope`
+    command — recorded in D17 with the failure-posture, process-isolation, and
+    `#263`-precedent rationale. `codex_mutation_scope/mod.rs` contains:
+    `parse_codex_hook_event` (strict — empty / non-object / invalid-JSON /
+    unsupported `hook_event_name` / missing / blank / wrong-typed all rejected
+    with `Invalid Codex hook event payload from STDIN: <detail>.`, no fabricated
+    identity); `CodexHookEvent` limited to the six events the adapter registers
+    (`PreToolUse`, `PostToolUse`, `Stop`, `Interrupt`, `SubagentStop`,
+    `SessionEnd`); identity types carrying Codex's `turn_id` and subagent-only
+    `agent_id` / `agent_type`; `classify_tool` -> `TrackedMutation`
+    (`Bash`, `apply_patch`) / `Delegation` (`collaborationspawn_agent`,
+    `collaborationwait_agent`) / `Untracked` (`mcp__*` + any unknown name), with
+    no "mutation-capable therefore Start" path; `AttemptKey`
+    `(session_id, agent_id?, tool_use_id)` (turn_id excluded); `format_codex_scope_id`
+    (`cx-tool-v1|n=<seq>|s=<len>:<sid>|a=<len>:<aid>|t=<len>:<tuid>`, length-prefixed,
+    hash-free) and `codex_scope_{start,close}_event_id`. No durable state, no
+    ingress call, no CLI wiring, no generated settings, no D10a successor-barrier
+    (D10a lane key confirmed **N/A**). No background-execution classifier — T01
+    D16 proved the `codex exec` shell tool has no `run_in_background` parameter.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::hooks::codex_mutation_scope` — **passed** (23
+      tests: AC2 parser/fixtures, AC3 classification table + delegation/untracked
+      fixtures, AC4 formatter determinism + length-prefix disambiguation, AC5
+      fresh-seq / turn_id-excluded).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::hooks::` — **passed** (354 tests; existing
+      `sce hooks codex` / mutation-scope suites unaffected).
+    - `clippy --all-targets -- -D warnings` — **clean**.
+    - `cargo fmt -- --check` — **clean** (after `cargo fmt`).
+  - Context impact: domain — new adapter-domain Rust module (event model,
+    classifier, identity/formatter contract) plus the D17 command-architecture
+    decision and the D10a N/A confirmation now exist in the plan's Design
+    section. No user-visible behaviour, no public CLI interface, no generated
+    config yet (all deferred to T04/T05). Durable Codex-adapter context
+    (`context/cli/codex-mutation-scope-integration.md`) is authored by T07 once
+    behaviour ships; the frozen contract lives in the plan's Design section
+    (D2/D3/D4/D17) and this record until then.
+  - Context synchronization: synced
+    - T02 ships an internal Rust foundation module with **no non-test caller**
+      (no CLI wiring, no ingress call, no `sce setup` registration), no
+      user-visible behaviour, no public interface, and no generated config. The
+      D17 / D10a decisions are plan-internal design state, not durable context.
+      The durable Codex-adapter context
+      (`context/cli/codex-mutation-scope-integration.md` and the cross-reference
+      edits to `context/overview.md`, `context/context-map.md`,
+      `context/cli/mutation-scope-hook-ingress.md`, etc.) is authored by **T07**
+      once behaviour ships — exactly as recorded for T01. Mandatory five-root
+      pass done: `overview.md`, `architecture.md`, `glossary.md`, `patterns.md`,
+      `context-map.md` all read and confirmed not contradicted (each still
+      correctly states Codex has no wired mutation-scope adapter). No
+      architecture decision qualified for an ADR.
+
+- [x] T03: `Durable checkout-local Codex adapter state and recovery bookkeeping` (status:done)
+  - Task ID: T03
+  - Completed: 2026-09-08
+  - Scope: In — `cli/src/services/hooks/codex_mutation_scope/state.rs`: the
+    versioned `{version, next_attempt_seq, recovery_pending, attempts[]}` store
+    at `<git-dir>/sce/codex-mutation-scope-state.json`, the
+    `checkout::persist_checkout_id_inner`-style durable write with its own lock
+    at `<git-dir>/sce/codex-mutation-scope-state.lock` (never held across a seam
+    call), the `pending_start | active` phase model, `allocate_attempt` /
+    `mark_active` / `remove_attempt` / `mark_recovery_pending` /
+    `clear_recovery_pending` helpers (the same set #263's Claude adapter needed
+    after its follow-up), malformed/wrong-version rejection, and the D5 reasoning
+    (confirm Codex hook invocations are independent processes for the supported
+    version and record it). Out — any event parsing, any runtime/ingress call,
+    any driver logic.
+  - Dependencies: T01, T02
+  - Done when: unit tests prove attempt allocation is monotonic and
+    checkout-local, a terminal attempt is followed by a fresh `attempt_seq` (AC5
+    state half), the store round-trips durably, a malformed/wrong-version file is
+    rejected not fabricated, and the state lock is provably released before any
+    external call boundary (helper-level test).
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml services::hooks::codex_mutation_scope`.
+  - Files changed:
+    - `cli/src/services/hooks/codex_mutation_scope/state.rs` (new — the versioned
+      `{version, next_attempt_seq, recovery_pending, attempts[]}` store at
+      `<git-dir>/sce/codex-mutation-scope-state.json` with its own lock at
+      `<git-dir>/sce/codex-mutation-scope-state.lock`; `pending_start | active`
+      phase model; `allocate_attempt` / `mark_active` / `remove_attempt` /
+      `mark_recovery_pending` / `clear_recovery_pending` helpers; the
+      `checkout::persist_checkout_id_inner`-style lock → temp file → `sync_data`
+      → atomic rename → best-effort parent-dir `sync_all` durable write;
+      malformed / wrong-version rejection; 20 unit tests)
+    - `cli/src/services/hooks/codex_mutation_scope/mod.rs` (one line —
+      `pub(crate) mod state;`)
+  - Result: Added the Codex adapter's durable checkout-local bookkeeping layer,
+    structurally mirroring #263's `claude_mutation_scope::state` (post-follow-up
+    helper set). The store is `AdapterState` (`version` = 1, `next_attempt_seq`,
+    `recovery_pending`, `attempts: Vec<AdapterAttempt>`); each `AdapterAttempt`
+    carries `attempt_seq`, the D4 `scope_id` (from `format_codex_scope_id`), the
+    D3 identity fields (`session_id`, `agent_id?`, `tool_use_id`), `tool_name`,
+    and `phase` (`PendingStart | Active`). `allocate_attempt` reuses a live
+    attempt on a duplicate key (same `attempt_seq` / `ScopeId`, no counter
+    advance) and otherwise draws a fresh monotonic `attempt_seq`; a removed
+    (terminal) attempt is never reused — a later same-`tool_use_id` execution
+    draws a new `attempt_seq` and a new `ScopeId` (AC5 state half). Writes go
+    through a `try_lock`-based `AdapterStateLock` (separate `.lock` file, D6) and
+    the durable temp-file/`sync_data`/atomic-rename pattern; the lock is released
+    before each helper returns and is never held across an external boundary
+    (D6). Malformed JSON and any `version != 1` file are rejected, never
+    fabricated (D5). **D5 process-isolation reasoning confirmed and recorded
+    here:** T01 proved Codex runs every registered hook handler as its own
+    short-lived OS process (plan line ~972), so a `PreToolUse` process and the
+    later `PostToolUse` process share no memory — the durable cross-process
+    store is required, exactly as for Claude; the store shape does not change.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::hooks::codex_mutation_scope` — **passed** (43
+      tests: 20 new `state::tests` covering monotonic + checkout-local
+      allocation, duplicate-key reuse, terminal→fresh non-reuse, phase
+      transition, unknown-`scope_id` rejection, durable round-trip,
+      malformed / wrong-version rejection, interrupted-before-rename atomicity,
+      leftover-lock-file, parallel writers, lock contention, lock-released-
+      between-helpers, and the `<git-dir>/sce/` path boundary; plus the 23
+      pre-existing T02 tests).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::hooks::` — **passed** (374 tests; existing
+      `sce hooks codex` / mutation-scope / Claude-adapter suites unaffected).
+    - `clippy --all-targets -- -D warnings` — **clean**.
+    - `cargo fmt -- --check` — **clean** (after `cargo fmt`).
+  - Context impact: domain — a new adapter-domain Rust module (durable state
+    store + helpers) with **no non-test caller** (no event parsing, no
+    runtime/ingress call, no driver, no CLI wiring — all deferred to T04). No
+    user-visible behaviour, no public interface, no generated config. The D5/D6
+    durability contract lives in the plan's Design section and the module doc
+    comment; durable Codex-adapter context
+    (`context/cli/codex-mutation-scope-integration.md`) is authored by T07 once
+    behaviour ships, as for T01/T02.
+  - Context synchronization: synced
+    - T03 ships an internal Rust state module (`codex_mutation_scope::state`)
+      with **no non-test caller** — no event parsing wiring, no runtime/ingress
+      call, no driver, no CLI command, no `sce setup` registration — and no
+      user-visible behaviour, public interface, or generated config. The D5/D6
+      durability and process-isolation contract is plan-internal design state,
+      not durable context. The durable Codex-adapter
+      context (`context/cli/codex-mutation-scope-integration.md` and the
+      cross-reference edits to `context/overview.md`, `context/context-map.md`,
+      `context/cli/mutation-scope-hook-ingress.md`, etc.) is authored by **T07**
+      once behaviour ships — exactly as recorded for T01/T02. Mandatory
+      five-root pass done: `overview.md` (its "Codex … still have no adapter"
+      statement remains accurate — nothing is wired), `architecture.md` (its
+      `sce hooks codex` description is untouched and additive), `glossary.md`,
+      `patterns.md`, `context-map.md` all read and confirmed not contradicted.
+      No architecture decision qualified for an ADR — a durable adapter-state
+      file mirroring the existing `claude_mutation_scope::state` pattern is a
+      routine, reversible implementation detail with no boundary, interface,
+      persistence-contract, or security-posture change (the store is explicitly
+      not attribution evidence, not exported, not synced).
+
+- [x] T04: `Codex mutation-scope driver + hidden command routing` (status:done)
+  - Task ID: T04
+  - Completed: 2026-09-08
+  - Scope: In — per the D17 decision (default: separate command),
+    `cli_schema::HooksSubcommand::CodexMutationScope` (hidden via
+    `#[command(hide = true)]`), the `convert_hooks_subcommand_request` arm,
+    `services::hooks::HookSubcommand::CodexMutationScope`, the
+    `run_hooks_subcommand_in_repo` dispatch arm **unwrapped / non-fail-open**
+    (mirroring the `MutationScope` and `ClaudeMutationScope` arms),
+    `hook_runtime_invocation_name`, and the adapter driver in
+    `codex_mutation_scope/mod.rs`: read one raw Codex hook JSON object from
+    STDIN via `super::read_hook_stdin()`; resolve the raw `cwd` as
+    `repository_root` and `git_dir` (bookkeeping only) as two independent
+    parameters, never substituted; map each proven event —
+    **`TrackedMutation`** `PreToolUse` -> D7 write-ahead `Start` + D8 fail-closed
+    Codex-native block on any failure + D16 background-execution deny if
+    applicable; **`Untracked`** (`mcp__*`, unknown) and **`Delegation`**
+    `PreToolUse` -> Codex-neutral continue response, no `Start`, no attempt, no
+    bookkeeping (D2/D8/D23); the proven success terminal hook for a tracked tool
+    -> `Close` (D9); the proven tracked failure disposition from D10 (built-in
+    Case A, no Close-on-failure path); the proven denial signal(s) -> `abandon`
+    (D12); the proven session/turn/agent cleanup signals -> scoped `abandon`
+    sweeps over adapter-owned tracked attempts only (D12, never global, never
+    touching `Untracked` executions — there are none in state); D11
+    uncertain-boundary rules and the D13 successor-Start invariant; the D13
+    recovery barrier + one quiescent `flush`. **No D10a successor-barrier /
+    lane-key code ships** (built-ins are Case A; MCP/unknown are `Untracked`).
+    The driver reaches the runtime
+    **only** through
+    `super::mutation_scope::run_mutation_scope_from_payload` by building the
+    generic wire payload as a string (D18/AC19). Inject the git-dir resolver and
+    the seam as `&dyn Fn` parameters so every mapping is unit-testable without a
+    real repo or DB. Fail-closed `PreToolUse` failures log via
+    `sce.hooks.codex_mutation_scope.pre_tool_use_fail_closed`. Out — generated
+    `.codex/hooks.json` / `sce setup` wiring (T05), real Git/DB regressions
+    (T06). If T02 chose D17 option 2, this task instead adds the mutation-scope
+    `CodexDispatchArm` variants and the non-fail-open handling inside
+    `run_codex_subcommand`, and the AC1/AC7 assertions target that surface.
+  - Dependencies: T02, T03
+  - Done when: focused unit tests with an injected seam cover every proven
+    event-to-operation mapping, fail-closed `TrackedMutation` `PreToolUse` (exact
+    Codex-native response JSON/exit, AC7), the `Untracked`/`Delegation`
+    neutral-pass-through with an untouched state store (AC9b), the probe-13/14
+    MCP sequences leaving no stale state / no zombie scope (AC9c/AC9d),
+    write-ahead ordering (AC6), `pending_start` + terminal -> abandon (D11),
+    failed `Close` -> abandon + `recovery_pending` (D11/AC13), the recovery
+    barrier's branches (AC12), and the built-in Case A failed-A-then-B path
+    (AC9a) — and, if T01 proved a deny applies, the background-execution deny
+    (AC15). AC1 routing test passes;
+    `sce hooks codex-mutation-scope </dev/null` shows the strict-parser error
+    and `sce hooks --help` omits it. AC19 dependency-boundary grep is clean.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml services::hooks::codex_mutation_scope`; `nix develop -c
+    ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    services::hooks::mutation_scope`; `services::parse::` routing tests; live
+    binary check of the hidden command; AC19 grep.
+  - Files changed:
+    - `cli/src/cli_schema.rs` (new hidden `HooksSubcommand::CodexMutationScope`
+      variant, `#[command(hide = true)]`)
+    - `cli/src/services/parse/command_runtime.rs`
+      (`convert_hooks_subcommand_request` arm →
+      `HookSubcommand::CodexMutationScope`; two routing/hidden-help tests)
+    - `cli/src/services/hooks/mod.rs` (`HookSubcommand::CodexMutationScope`
+      variant; unwrapped / non-fail-open `run_hooks_subcommand_in_repo` dispatch
+      arm mirroring `MutationScope` / `ClaudeMutationScope`;
+      `hook_runtime_invocation_name` arm)
+    - `cli/src/services/hooks/codex_mutation_scope/mod.rs` (adapter driver:
+      `GitDirResolver` / `IngressSeam` injected `&dyn Fn` aliases, `ACTOR_KIND_CODEX`,
+      `run_codex_mutation_scope_subcommand` / `_from_payload` / `_from_payload_with`
+      (+ `#[cfg(test)] _at_state_root`), `dispatch_codex_hook_event`,
+      `handle_pre_tool_use`, `admit_or_recover` / `readmit_after_flush` /
+      `Admission` (superseding the initial `apply_recovery_barrier` /
+      `BarrierOutcome` — see the concurrency follow-up),
+      `establish_start`, `handle_close`, `cleanup_attempts_matching`,
+      `abandon_attempt`, `attempt_matches_key`, `scope_boundary_payload` /
+      `abandon_payload` / `flush_payload`, `pre_tool_use_deny_json`,
+      `log_pre_tool_use_fail_closed`; `mod driver` unit tests including the
+      inter-process concurrency regressions Test A–F)
+    - `cli/src/services/hooks/codex_mutation_scope/state.rs` (T03's durable store,
+      materially revised by the concurrency follow-up — see below)
+  - Result: Wired the hidden `sce hooks codex-mutation-scope` command through the
+    normal hook stack unwrapped (non-fail-open), exactly as `mutation-scope` /
+    `claude-mutation-scope`, and implemented the Codex adapter driver as a close
+    structural mirror of #263's `claude_mutation_scope` driver, adapted to Codex's
+    six-event surface (`PreToolUse`, `PostToolUse`, `Stop`, `Interrupt`,
+    `SubagentStop`, `SessionEnd` — no `PermissionDenied` / `StopFailure` /
+    `UserPromptSubmit` / `WorktreeRemove`). Mappings: `TrackedMutation`
+    (`Bash` / `apply_patch`) `PreToolUse` → D13 recovery barrier → D7 write-ahead
+    `Start` (`pending_start` → ingress `start` with `actor_kind:"codex"` and the
+    raw hook `cwd` as `repository_root` → `active`) → D8 fail-closed
+    `hookSpecificOutput` `permissionDecision:"deny"` on any failure (resolver,
+    barrier, allocation, seam), detail logged via
+    `sce.hooks.codex_mutation_scope.pre_tool_use_fail_closed`, never leaked to the
+    model; `Untracked` (`mcp__*`, unknown) and `Delegation`
+    (`collaborationspawn_agent` / `collaborationwait_agent`) `PreToolUse` →
+    neutral empty continue, no `Start`, no attempt, no bookkeeping, never denied
+    for being untracked, never affected by the recovery barrier (D2/D8/D23);
+    `PostToolUse` for a tracked `active` attempt → `close` then `remove_attempt`,
+    a `pending_start` attempt → `abandon`, a failed `close` → `abandon` +
+    `recovery_pending` (D9/D11); no `Close`-on-failure path (built-in Case A);
+    `Stop` → main-turn (`agent_id` none) scoped abandon sweep; `Interrupt` →
+    whole-session sweep (SIGINT tears down the session, strictly covered by the
+    `SessionEnd` backstop); `SubagentStop` → `agent_id`-scoped sweep; `SessionEnd`
+    → whole-session sweep — all sweeps over adapter-owned tracked attempts only
+    (D12); D13 recovery barrier denies new `TrackedMutation` `PreToolUse` while
+    tracked attempts remain and runs exactly one quiescent `flush`, clearing
+    `recovery_pending` only on durable flush success. (T04 shipped no D10a
+    successor-barrier / lane-key code; **superseded by the fourth concurrency
+    follow-up below**, which adds the Case-B lane-scoped built-in successor sweep
+    keyed on `(session_id, turn_id)`.) The driver's only
+    mutation-stack dependency in non-test code is
+    `super::mutation_scope::run_mutation_scope_from_payload`, wire payload built
+    as a JSON string (D18/AC19). Injected git-dir resolver + seam make every
+    mapping unit-testable without a real repo or DB. No background-execution
+    classifier/deny ships (D16 — the `codex exec` shell tool has no
+    `run_in_background`); AC15's live-check for that path is therefore N/A for
+    this Codex surface.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::hooks::codex_mutation_scope` — **passed** (73
+      tests: 30 new `tests::driver` covering the `Untracked` / `Delegation`
+      pass-through with an untouched state store (AC9b), a full successful-MCP
+      lifecycle leaving no scope (AC9b), write-ahead `Start` ordering + `cwd` as
+      `repository_root` observed from inside the seam (AC6), duplicate-delivery
+      `ScopeId` reuse (AC4), resolver/`Start`-seam fail-closed with the exact
+      deny JSON + logged detail + never-allow (AC7), `Delegation`/`Untracked`
+      never fail-closed (AC7), successful `close` (AC8), `pending_start` → abandon
+      and failed `close` → abandon + `recovery_pending` (D11/AC13), failed
+      `close` + failed `abandon` keep the attempt tracked (D11), `PostToolUse`
+      with no matching attempt is a no-op, `Stop` / `Interrupt` / `SubagentStop`
+      / `SessionEnd` scoped sweeps + a failed-abandon sweep keeping the attempt
+      tracked (D12), recovery-barrier deny-while-outstanding / untracked-unaffected
+      / flush-then-start / flush-failure-stays-closed (AC12), probe-13
+      mutate-then-error leaves no stale state (AC9c), probe-14 failed-MCP →
+      tracked successor starts clean (AC9d), probes-16/17 parallel MCP creates no
+      scopes (AC9e), built-in failed-A-then-B never leaves a zombie (AC9a),
+      malformed / unsupported-event payloads propagate as real errors; plus the
+      43 pre-existing T02/T03 tests).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::hooks::mutation_scope` — **passed** (36 tests;
+      generic ingress unaffected).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::parse::` — **passed** (15 tests, incl. the new
+      `codex_mutation_scope_hook_parses_to_hook_subcommand` and
+      `codex_mutation_scope_hook_is_hidden_from_hooks_help`).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::hooks::` — **passed** (404 tests; existing
+      `sce hooks codex` / Claude-adapter / mutation-scope suites unaffected and
+      additive).
+    - Live binary (AC1): `sce hooks codex-mutation-scope </dev/null` →
+      `Error [SCE-ERR-RUNTIME]: Invalid Codex hook event payload from STDIN:
+      expected a JSON object, got an empty payload.` exit 4 (strict parser, not
+      "unknown subcommand", not fail-open); `sce hooks --help` lists `codex` and
+      `mutation-scope` but **not** `codex-mutation-scope`; `sce --help` does not
+      list it.
+    - AC19 grep
+      (`^\s*use\s+crate::services::mutation_trace::(runtime|protocol|store)|::(RepositoryAgentTraceDb|WorktreeId|GitSnapshotService)\b`
+      over `cli/src/services/hooks/codex_mutation_scope/`) — **clean**; the only
+      non-test mutation-stack import is
+      `super::mutation_scope::run_mutation_scope_from_payload`.
+    - `clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` —
+      **clean**.
+    - `cargo fmt --manifest-path cli/Cargo.toml -- --check` — **clean** (after
+      `cargo fmt`).
+  - Follow-up (2026-09-08 — inter-process concurrency correctness, PR #268):
+    The initial T04 driver implementation exposed an inter-process TOCTOU gap
+    between recovery-barrier inspection and tracked-attempt allocation, plus
+    duplicate quiescent `flush` and stale-`flush`-clear risks. `apply_recovery_barrier`
+    did an unlocked `read_state` recovery check and then a separate
+    `allocate_attempt` that never re-checked recovery, and `recovery_pending` was a
+    bare boolean. The follow-up moved recovery ownership and tracked admission into
+    **generation-aware atomic adapter-state transitions** (see D13a/D13b):
+    `state.rs` bumps `ADAPTER_STATE_VERSION` to `2`, replaces `recovery_pending: bool`
+    with `recovery: RecoveryState` (`Clear | Pending{generation} | Flushing{generation}`)
+    + a monotonic `next_recovery_generation`, and replaces `allocate_attempt` /
+    `mark_recovery_pending` / `clear_recovery_pending` with `admit_tracked_attempt`
+    (one locked transition: recovery check + duplicate-key reuse + unresolved-
+    `PendingStart` barrier + fresh `PendingStart` persist, returning
+    `Admitted | RecoveryBlocked | UncertainAttemptBlocked | FlushClaimed{generation}`),
+    `arm_recovery` (`Clear→Pending(new)`, `Pending(g)` kept, `Flushing(g)→Pending(new)`),
+    `complete_recovery_flush(g)` (clears only while still `Flushing(g)`), and
+    `relinquish_recovery_flush(g)` (failed flush → `Pending(g)` for retry). The
+    driver's `admit_or_recover` runs at most one quiescent `flush` per `PreToolUse`
+    with the state lock never held across the seam (I6). A `Start`-succeeded-then-
+    `mark_active`-failed attempt stays `PendingStart` and conservatively blocks a
+    successor Start until a cleanup signal abandons it → recovery → `flush`
+    (Problem 4 / D13b).
+    - New durable state shape: `{ version:2, next_attempt_seq, next_recovery_generation,
+      recovery: RecoveryState, attempts[] }`; a v1-shaped or unknown-version file is
+      rejected, never fabricated.
+    - `state.rs` state-machine tests: `Clear→Pending(g)`, `Pending(g)→Flushing(g)`,
+      one-claimer-per-generation (concurrent), `Flushing(g)→Clear` only on matching
+      generation, stale/superseded completion is a safe no-op, `Flushing(g1)` +
+      newer recovery survives completion(g1), recovery survives serialization/reload,
+      atomic admission refuses recovery state and persists `PendingStart` before
+      returning, blocks an unrelated `PendingStart`, allows a new key alongside an
+      `Active` attempt; retained: parallel admission converges without lost updates,
+      monotonic `attempt_seq`, checkout-local, durable write, malformed/version
+      rejection, OS lock behaviour + lock-released-between-helpers.
+    - `mod.rs` inter-process concurrency regressions (deterministic, channel-gated
+      seams — no probabilistic sleeps): **Test A** recovery armed mid-abandon blocks
+      a concurrent tracked `PreToolUse` and no `start` payload for it reaches the
+      seam; **Test B** two quiescent recovery callers emit exactly one `flush(g)`;
+      **Test C** recovery re-armed while `flush(g1)` is in flight → final state
+      `Pending(g2)`, the stale completion cannot clear it; **Test D** `Start` ok +
+      `mark_active` fails → successor denied, then cleanup → abandon → recovery →
+      one `flush` then `start`; **Test E** duplicate `AttemptKey` reuses the same
+      `ScopeId`; **Test F** `mcp__*` / unknown / delegation stay neutral while
+      recovery is `Pending`/`Flushing`.
+    - Re-validated: `services::hooks::codex_mutation_scope` — **passed** (87 tests);
+      `services::hooks::mutation_scope` — **passed** (36); `services::hooks::` —
+      **passed** (418); `services::hooks::codex` — **passed** (216, existing
+      dispatcher unaffected); `services::mutation_trace::` — **passed** (323, no
+      protocol/runtime change); `clippy --all-targets -- -D warnings` — **clean**;
+      `cargo fmt -- --check` — **clean**. AC19 boundary still clean (only
+      `super::mutation_scope::run_mutation_scope_from_payload`); no
+      `spec/mutation_cursor.qnt` / `mutation_trace/protocol.rs` /
+      `mutation_trace/runtime/` / `mutation_trace/store.rs` /
+      `cli/migrations/agent-trace-repository/` / `agent-trace.schema.json` change
+      *(this describes **this** follow-up's own diff; the fifth follow-up below
+      intentionally changes the protocol/Quint attribution semantics)*;
+      MCP Option B classification unchanged; no daemon, PID supervision, polling, or
+      new DB; the adapter-state lock is never held across the generic ingress seam.
+      Changes are confined to `codex_mutation_scope/{state,mod}.rs` and this plan.
+  - Second concurrency follow-up (2026-09-08 — boundary-lock serialization + orphaned
+    `Flushing(g)` recovery, PR #268): the generation-aware state fix removed the
+    state-transition TOCTOU gaps but left the `state -> ingress -> state` operation
+    non-serializable across independent hook processes (a second process could
+    `arm_recovery` between one process's `admit(B)` and its `Start(B)`), and left a
+    durable `Flushing(g)` orphanable if the claiming process died before
+    `complete_recovery_flush(g)` / `relinquish_recovery_flush(g)` — wedging every
+    future tracked admission with `RecoveryBlocked`. The follow-up adds a
+    **checkout-local OS boundary lock** at
+    `<git-dir>/sce/codex-mutation-scope-boundary.lock` (`AdapterBoundaryLock`, built
+    on the shared `os_lock::OsAdvisoryLock` primitive that the adapter-state lock now
+    also uses — `try_lock`/poll/timeout, `flock`-equivalent OS ownership, leftover
+    file safe, released on process exit). The boundary lock wraps the **complete**
+    adapter boundary transaction (`normalize` → `admit_or_recover` → quiescent
+    `flush` → `establish_start`, and every terminal/cleanup path:
+    `PostToolUse`/`Close`, `Stop`, `Interrupt`, `SubagentStop`, `SessionEnd`,
+    `Abandon`). It is **not** taken for `Untracked` / `Delegation` / MCP tools — they
+    still return neutral without resolving the git dir. The adapter-state lock is
+    unchanged in responsibility (individual JSON transitions) and still **never**
+    held across the ingress seam; the boundary lock MAY and SHOULD be held across the
+    seam. Lock hierarchy is frozen: **`boundary lock -> state lock`**, never the
+    inverse (D13c). Boundary-lock ownership doubles as crash detection: once a
+    process holds it, no prior adapter boundary transaction — hence no prior `Flush`
+    owner — is still executing, so `state::normalize_recovery_after_boundary_lock_acquired`
+    (called immediately after acquiring the boundary lock, in the tracked
+    `PreToolUse` path) conservatively rewrites a persisted `Flushing(g) -> Pending(g)`
+    with the generation preserved; the existing quiescent-flush claim then re-runs
+    `Flush(g)` exactly once and converges to `Clear`. Re-running `Flush` is safe
+    under the existing runtime contract — `RuntimeBoundary::Flush` carries no
+    `event_id`, is a pure snapshot-diff observation, is the runtime's own
+    crash-recovery re-run path (`coordinator.rs`), and does not advance the revision
+    when it observes no change (verified from `mutation_scope.rs` ingress `test5` and
+    `coordinator.rs` flush tests — no runtime change needed). A live `Flush` owner is
+    never reclaimed because a contender blocks on the boundary lock before it can
+    inspect state. Duplicate `PreToolUse` delivery for an already-`Active` attempt
+    now drives **no** second logical `Start` (`establish_start` early-returns on
+    `reused && phase == Active`); a duplicate `PendingStart` still re-drives `Start`
+    (runtime-deduplicated on `(scope_id, <scope>|start)`).
+    - New files: `codex_mutation_scope/os_lock.rs` (shared OS advisory-lock
+      primitive), `codex_mutation_scope/boundary_lock.rs` (`AdapterBoundaryLock` +
+      cross-process tests). `state.rs` adds
+      `normalize_recovery_after_boundary_lock_acquired` (precondition: caller owns
+      the boundary lock) and exposes `adapter_state_dir`; `AdapterStateLock` now
+      wraps the shared primitive. No state-file shape or version change (still `2`).
+    - Deterministic regressions added (channel-gated seams + one real child-process
+      test): **Test G** admission completed, another process cannot `arm_recovery`
+      before `Start`; **Test H** (supersedes the old Test A) cleanup owning the
+      boundary lock blocks admission until recovery is processed
+      (`abandon -> flush -> start` serialized order); **Test I** orphaned
+      `Flushing(g)` reclaimed and `Flush` retried exactly once, generation
+      preserved; **Test J** a live `Flush` owner is never reclaimed by a blocked
+      process (exactly one `Flush`); **Test K** crash after durable `Flush` before
+      the completion write converges with one retry `Flush`; **Test L** duplicate
+      `Active` delivery drives no second `Start`; **Test M** `mcp__*` / unknown /
+      delegation never resolve a git dir, take a state lock, take the boundary lock,
+      or reach the ingress; **`process_death_releases_the_boundary_lock`** spawns a
+      real child process that acquires the boundary lock and exits without
+      unlocking, and the parent then reacquires it. The old Test B (two quiescent
+      callers, one flush) is subsumed by Tests H and J.
+    - Re-validated: `services::hooks::codex_mutation_scope` — **passed** (98 tests,
+      1 ignored subprocess helper); `services::hooks::mutation_scope` — **passed**;
+      `services::hooks::` — **passed** (429); full `cargo test --manifest-path
+      cli/Cargo.toml` — **passed** (1247); `clippy --all-targets -- -D warnings` —
+      **clean**; `cargo fmt -- --check` — **clean**. AC19 boundary still clean; no
+      `spec/mutation_cursor.qnt` / `mutation_trace/protocol.rs` /
+      `mutation_trace/runtime/` / `mutation_trace/store.rs` /
+      `cli/migrations/agent-trace-repository/` / `agent-trace.schema.json` change
+      *(this follow-up's own diff; the fifth follow-up below intentionally
+      changes the protocol/Quint attribution semantics)*;
+      no daemon, PID supervision, lease expiry, or polling — timeouts are used only
+      for OS-lock acquisition failure, never to infer lifecycle completion. Changes
+      confined to `codex_mutation_scope/{mod,state,os_lock,boundary_lock}.rs` and
+      this plan.
+  - Third concurrency follow-up (2026-09-08 — SCE-owned Bash-policy race, PR #268):
+    Codex executes matching `PreToolUse` handlers concurrently. The generated
+    `PreToolUse(Bash)` therefore runs the existing `sce hooks codex` Bash-policy
+    handler concurrently with the mutation-scope handler. The initial integration
+    could establish `Start` before the policy handler denied the `Bash` call,
+    leaving an `Active` mutation scope for a tool Codex never executed; a
+    successor tracked execution could then create another scope before
+    `Stop` / `SessionEnd`, producing false overlap or attribution. Registration
+    order does not help — matching local handlers run concurrently.
+    The mutation-scope `Bash` `PreToolUse` path now performs the same SCE
+    Bash-policy preflight itself before any adapter admission or `Start`. A
+    blocked policy returns the existing Codex-native policy denial
+    (`permissionDecision:"deny"` with the policy id + message) with no
+    mutation-scope state — no `PendingStart`, `Start`, `Active`, recovery,
+    `Abandon`, or `Flush`, and the git dir is never resolved and the boundary
+    lock never taken. Policy-evaluation failures and a malformed
+    `tool_input.command` fail closed with the generic mutation-scope deny and a
+    `sce.hooks.codex_mutation_scope.pre_tool_use_fail_closed` warning. The
+    policy is evaluated twice for `Bash` (`sce hooks codex` handler + this
+    preflight); acceptable because the evaluation is a read-only deterministic
+    decision over the same repository config and command. `apply_patch` is
+    unchanged (no Bash `tool_input.command` dependency). The existing
+    `sce hooks codex` Bash-policy registration and its generated command / Codex
+    trust identity are unchanged; `.codex/hooks.json` and
+    `config/pkl/renderers/codex-content.pkl` have no diff.
+    The shared Bash-policy evaluation lives in
+    `cli/src/services/hooks/codex/bash_policy.rs` as `evaluate_codex_bash_policy`
+    (→ `CodexBashPolicyDecision::{Allowed, Blocked(String)}`, `Blocked` carrying
+    the rendered Codex-native deny) over the unchanged
+    `crate::services::bash_policy::evaluate_bash_command_policy` +
+    `config::resolve_bash_policy_runtime_config`; command extraction is the
+    shared `bash_command_from_tool_input`. Both `sce hooks codex` and the
+    mutation-scope preflight call these, so they make the same decision for the
+    same repository + command (frozen by a parity test).
+    Regressions added (`codex_mutation_scope` driver + `codex::bash_policy`):
+    policy-blocked `Bash` creates no scope and touches neither resolver nor
+    seam; policy-allowed `Bash` still follows the write-ahead `Start` path;
+    policy-evaluation failure is fail-closed with no scope and a diagnostic log;
+    `apply_patch` never evaluates Bash policy (panicking evaluator);
+    malformed `tool_input` is fail-closed before the evaluator runs; a
+    production-shaped regression drives the real `evaluate_codex_bash_policy`
+    against a repo `.sce/config.json` that denies `rm` and asserts the
+    Codex-native policy deny with no `Start`; and a handler/preflight parity
+    test over one repo config + command.
+    Re-validated: `services::hooks::codex::` — **passed** (236, 1 ignored);
+    `services::hooks::codex_mutation_scope` — **passed**; `services::hooks::` —
+    **passed** (438, 1 ignored); `services::codex_hook_config` — **passed** (36);
+    `services::config::` — **passed** (31); `clippy --all-targets -- -D warnings`
+    — **clean**; `cargo fmt -- --check` — **clean**. No `spec/mutation_cursor.qnt`
+    / `mutation_trace/protocol.rs` / `mutation_trace/runtime/` /
+    `mutation_trace/store.rs` / `cli/migrations/agent-trace-repository/` /
+    `agent-trace.schema.json` / MCP-semantics / generated-config change *(this
+    follow-up's own diff; the fifth follow-up below intentionally changes the
+    protocol/Quint attribution semantics)*. Changes
+    confined to `cli/src/services/hooks/codex/{mod,bash_policy}.rs`,
+    `cli/src/services/hooks/codex_mutation_scope/mod.rs`, and this plan.
+    Arbitrary user-owned concurrent `PreToolUse(Bash)` denial — analysis result:
+    the SCE-owned race (SCE policy deny vs SCE mutation-scope `Start`) is removed
+    by this third follow-up; the remaining arbitrary-blocker successor-safety gap
+    is fixed by the **fourth follow-up** below.
+  - Fourth concurrency follow-up (2026-09-08 — arbitrary-blocker successor sweep,
+    PR #268): Codex v0.153.4 runs matching `PreToolUse` handlers concurrently and
+    combines their verdicts afterwards. An arbitrary user-owned / third-party
+    sibling `PreToolUse` hook can DENY the aggregate execution *after* the SCE
+    mutation-scope handler has already driven `Start(A)`, leaving `Active(A)`
+    with no `PostToolUse(A)`. Codex exposes no aggregate-denial event to the
+    mutation adapter, so SCE cannot learn that verdict directly. Turn-boundary
+    cleanup (D12) + the D13 barrier already bound the damage to one turn, but
+    within that turn a successor tracked `PreToolUse(B)` could still `Start`
+    alongside the zombie `Active(A)`, risking false `AiContended` / attribution.
+    Fix — the D10a Case-B lane-scoped successor sweep for built-ins:
+    - `CodexBuiltInLane = (session_id, turn_id)` (T01 proved built-in
+      mutation-capable execution is serial within one session+turn, including
+      across the parent/subagent boundary — so `agent_id` is **not** in the
+      lane). A later tracked built-in `PreToolUse(B)` in that lane is positive
+      evidence an older outstanding built-in attempt A there is stale.
+    - `AdapterAttempt` now persists `turn_id` as lane metadata. `AttemptKey`
+      stays `(session_id, agent_id?, tool_use_id)`; `ScopeId` / `EventId`
+      formatting unchanged. Adapter-state version bumped **2 -> 3**; a prior
+      (v2) checkout-local state file is rejected (fail-closed), never silently
+      swept on a guessed lane — this is checkout-local ephemeral state, no DB
+      migration.
+    - `PreToolUse(B)` flow inside the boundary lock: normalize recovery -> sweep
+      every same-lane attempt whose `AttemptKey != B` (`arm_recovery` ->
+      `Abandon` -> remove; never `Close`, since A's terminus is missing) ->
+      drive the existing quiescent recovery (`FlushClaimed` -> `flush` ->
+      `complete_recovery_flush`) -> re-admit B -> `Start(B)`. Seam order for the
+      primary regression: `Start(A)` `Abandon(A)` `Flush` `Start(B)`, never
+      `Start(A)` `Start(B)` `Abandon(A)`.
+    - Duplicate delivery (`AttemptKey(A) == AttemptKey(B)`) is not a predecessor
+      and is never swept — same `attempt_seq` / `ScopeId`, no second `Start`.
+    - `PendingStart` predecessors are swept the same way (conservative
+      `Abandon` + recovery), because a same-lane successor proves the prior
+      attempt is no longer legitimately running.
+    - Fail-closed: a failed `Abandon` keeps A tracked + recovery armed and denies
+      B; a failed `Flush` after a successful `Abandon` keeps recovery armed and
+      denies B; state-transition / lock failure denies B via the stable
+      mutation-scope deny contract.
+    - Defensive backstop: `AdmitDecision::StalePredecessorBlocked` — the
+      state/admission layer refuses to admit a new tracked attempt while an older
+      different-`AttemptKey` same-lane attempt is outstanding, so a driver bug or
+      incomplete sweep yields no `Start(B)` rather than silent overlap. The
+      boundary lock means this normally never fires after a successful sweep.
+    - Different `session_id` / different `turn_id` attempts are never swept by
+      this inference — D12 `Stop` / `Interrupt` / `SessionEnd` cleanup still owns
+      turn/session boundary lifecycle.
+    Regressions added (`codex_mutation_scope::state` + `::tests::driver`):
+    same-lane predecessor blocks admission (`StalePredecessorBlocked`);
+    same-lane `PendingStart` predecessor blocks; duplicate delivery is never a
+    predecessor; different-lane attempt still admits alongside (D14); zombie-A
+    then same-lane successor B drives `Start`->`Abandon`->`Flush`->`Start`
+    (`regression1`), `apply_patch` <-> `Bash` variants (`regression2`),
+    parent<->subagent same lane (`regression3`), different session not swept
+    (`regression4`), different turn not swept (`regression5`), duplicate key not
+    swept (`regression6`), `PendingStart` predecessor swept (`regression7`),
+    `Abandon` failure fail-closed (`regression8`), `Flush` failure fail-closed
+    (`regression9`); adapter-state v2 file now rejected as an unsupported
+    version.
+    Re-validated: `services::hooks::codex_mutation_scope` — **passed** (119, 1
+    ignored); `services::hooks::` — **passed** (451, 1 ignored);
+    `services::hooks::codex` — **passed** (249, 1 ignored);
+    `services::codex_hook_config` — **passed** (36); full `cargo test
+    --manifest-path cli/Cargo.toml` — **passed** (1280, 1 ignored);
+    `clippy --all-targets -- -D warnings` — **clean**; `cargo fmt -- --check` —
+    **clean**. No `spec/mutation_cursor.qnt` / `mutation_trace/protocol.rs` /
+    `mutation_trace/runtime/` / `mutation_trace/store.rs` /
+    `cli/migrations/agent-trace-repository/` / `agent-trace.schema.json` /
+    MCP-semantics / generated-config / Bash-policy-preflight change *(this
+    follow-up's own diff; the fifth follow-up below intentionally changes the
+    protocol/Quint attribution semantics)*. Changes
+    confined to
+    `cli/src/services/hooks/codex_mutation_scope/{mod,state}.rs` and this plan.
+    Untracked-successor / cross-harness analysis (required by this follow-up):
+    - The generated mutation-scope `PreToolUse` matcher intentionally does not
+      fire for MCP / unknown / delegation (Option B, D23), so the Case-B sweep
+      does **not** run at `PreToolUse(mcp__…)` (or an unknown/delegation
+      `PreToolUse`) after a zombie built-in `Active(A)`. This is not hidden.
+    - Arbitrary hook denial is fundamentally unobservable at A: SCE never learns
+      the aggregate verdict. `Active(A)` is kept conservatively live; only a
+      later **proven same-lane** tracked built-in `PreToolUse(B)` is positive
+      seriality evidence that A is stale. The fix does **not** claim any later
+      non-built-in `PreToolUse` proves A stale — no T01 evidence supports that,
+      and a separate cleanup-only path is **not** designed here.
+    - If no same-lane tracked built-in successor occurs in the turn, A is
+      retired by turn-boundary cleanup (`Stop` / `Interrupt` / `SessionEnd` ->
+      `abandon` -> recovery -> `flush`, D12). `abandon` keeps no
+      snapshot/attribution semantics for the unobserved interval
+      (`mutation_scope::tests::real_git_db_ingress::test4`), so an MCP mutation
+      in the zombie window is folded into `needs_rebaseline`, never falsely
+      attributed to A — the same un-attributed-MCP coverage boundary already
+      accepted under D23.
+    - Residual, single-turn-bounded: a **cross-harness** mutation-scope event
+      (another harness's scope boundary) landing while zombie A is still `Active`
+      and before any same-lane tracked successor or turn boundary could produce
+      a false `AiContended` against A for that transition. This is the same
+      exposure class the third follow-up recorded; this fix shrinks the window
+      (an in-turn same-lane tracked successor now retires A immediately instead
+      of waiting for the turn boundary) but does not eliminate it.
+      **RESOLVED by the fifth follow-up below (2026-09-08, PR #268)** — the
+      protocol-level unconfirmed-Codex uncertainty rule now withholds positive
+      attribution for exactly this window, so no false `AiContended` /
+      `AiExclusive` can be emitted against a zombie A. The lane-scoped successor
+      sweep is unchanged and still required: the two solve different problems —
+      the adapter Case-B sweep *removes* stale A once a proven same-lane Codex
+      successor arrives; the protocol uncertainty rule *prevents positive
+      attribution* before such cleanup is possible.
+    - Matcher and MCP behaviour are unchanged; no MCP tracking, MCP denial,
+      unknown-tool denial, PID supervision, polling, timeout-as-evidence, or
+      global/cross-session sweep was added.
+  - Fifth concurrency follow-up (2026-09-08 — unconfirmed-Codex attribution
+    uncertainty, PR #268): closes the cross-harness zombie window the fourth
+    follow-up left open. The Codex adapter **cannot** solve it: at the moment
+    another harness's boundary arrives, `ScopeState { actor_kind: Codex, status:
+    Active }` is the identical observable for both "A is genuinely running" and
+    "A was denied by an arbitrary sibling `PreToolUse` hook after SCE emitted
+    `Start(A)`", and the aggregate Codex `PreToolUse` decision is never exposed
+    to SCE — so adapter-local cleanup cannot decide whether A is stale. The fix
+    is therefore protocol/formal-model level, per the refined D14 rule.
+    - Model change: `spec/mutation_cursor.qnt` gains `isCodexScope`,
+      `boundaryConfirmsScope`, `hasUnconfirmedCodexScope` and
+      `attributionForBoundary`; `commitAttempt` now builds its `MutationEvent`
+      with `attributionForBoundary(worktree, boundary)`. `Scope4` (Codex on
+      `WT0`) is added so two simultaneously live Codex scopes are representable.
+    - Rust refinement: `mutation_trace/protocol.rs` gains `is_codex_scope`,
+      `boundary_confirms_scope`, `has_unconfirmed_codex_scope` and
+      `attribution_for_boundary`; `ResolvedAttempt::apply` uses it. `MBT` driver
+      and wire model gain `scope4`, so Quint Connect keeps replaying the same
+      semantics through the real `protocol.rs`.
+    - New formal invariants (all in `SafetyAttribution`):
+      `NoPositiveAttributionWithUnconfirmedCodexScope`,
+      `UnconfirmedCodexScopeBlocksCrossHarnessAttribution`,
+      `MultipleLiveCodexScopesSuppressPositiveAttribution`;
+      `AttributionMatchesObservedScopes` gained the unconfirmed-Codex branch.
+      Reachability witnesses `HasCodexConfirmedExclusiveEvidence`,
+      `HasCodexConfirmedContendedEvidence`,
+      `HasUnconfirmedCodexSuppressedEvidence` keep Codex attribution from
+      becoming permanently ineligible. New deterministic runs:
+      `testUnconfirmedCodexScopeBlocksCrossHarnessContention`,
+      `testUnconfirmedCodexScopeBlocksExclusiveAttribution`,
+      `testFlushDoesNotConfirmCodexScope`,
+      `testCodexCloseConfirmsExclusiveAttribution`,
+      `testSecondLiveCodexScopeSuppressesConfirmedCodexClose`,
+      `testTerminalCodexScopeDoesNotSuppressAttribution`;
+      `testDifferentActorStartKeepsExistingScope` now observes its transition at
+      the confirming Codex `Close`. No existing invariant was weakened or
+      skipped.
+    - Downstream: `mutation_attribution.rs` needed no production change — only
+      healthy `AiExclusive` becomes `TransitionOrigin::MutationAi`, so an
+      `IneligibleUnscoped` transition can never enter `mutation_ai_patch`. That
+      is frozen by
+      `an_ineligible_unscoped_transition_never_becomes_ai_mutation_lineage` and
+      by the real-coordinator end-to-end regressions.
+    - Unchanged: `Start` at `PreToolUse` (still write-ahead, still required for
+      mutation coverage), `AttemptKey`, `ScopeId`/`EventId` formatting, the
+      `(session_id, turn_id)` lane and its successor sweep, Bash policy
+      preflight, boundary lock, recovery state, adapter-state version, MCP /
+      unknown / delegation Option-B routing. **No** new DB column, `ScopeStatus`,
+      `ActorKind`, `Attribution` variant, adapter-state field, migration, or
+      schema field: `ScopeState.actor_kind` / `ScopeState.status` plus the
+      boundary's own scope already determine confirmation for the current
+      boundary. The Codex adapter itself has no production change.
+  - Context impact: domain — a new adapter-domain driver plus a new hidden CLI
+    route. User-visible surface: one hidden `sce hooks codex-mutation-scope`
+    subcommand (hidden from `sce --help` / `sce hooks --help`); no visible-help
+    or public-API change. No generated config yet (`.codex/hooks.json` / `sce
+    setup` wiring is T05), no real Git/DB path yet (T06). The generic
+    mutation-scope ingress and the Agent Trace schema are unchanged, and no
+    mutation-trace SQL migration exists. The generic protocol, Quint model, and
+    mutation-trace runtime **were** changed — once, deliberately — by T04's
+    **fifth** follow-up (the boundary-aware unconfirmed-Codex attribution rule,
+    D14/AC22); the first four follow-ups left them untouched. Durable
+    Codex-adapter context (`context/cli/codex-mutation-scope-integration.md` and
+    the cross-reference edits to `context/overview.md`,
+    `context/architecture.md`, `context/cli/mutation-scope-runtime.md`,
+    `context/cli/mutation-scope-hook-ingress.md`,
+    `context/sce/agent-trace-hooks-command-routing.md`,
+    `context/sce/codex-integration-runtime.md`, `context/context-map.md`) is
+    authored by **T07** once the full adapter ships, exactly as recorded for
+    T01/T02/T03.
+  - Context synchronization: synced
+    - T04 wires an internal Rust adapter driver plus one hidden, **unregistered**
+      CLI route (`sce hooks codex-mutation-scope`). No `sce setup` registration
+      (T05), no `.codex/hooks.json` generation (T05), and no real Git/DB path
+      (T06) — so no real Codex session can reach the adapter yet. Consistent with
+      the plan's "Context sync" section and the T01/T02/T03 precedent, the durable
+      Codex-adapter context (`context/cli/codex-mutation-scope-integration.md`)
+      and the root/domain cross-reference edits (`context/overview.md`,
+      `context/architecture.md` line ~135,
+      `context/cli/mutation-scope-runtime.md`,
+      `context/cli/mutation-scope-hook-ingress.md`,
+      `context/sce/agent-trace-hooks-command-routing.md`,
+      `context/sce/codex-integration-runtime.md`, `context/context-map.md`) are
+      authored by **T07** once the adapter is registered and proven. Mandatory
+      five-root pass done: `overview.md` (its "Codex, OpenCode, and Pi still have
+      no adapter" sentence stays accurate — the driver is inert until T05),
+      `architecture.md` (its `hooks/mod.rs` line-135 enumeration will name the
+      new arm at T07, matching how the `mutation-scope` / `claude-mutation-scope`
+      arms were documented at their integration task), `glossary.md`,
+      `patterns.md`, `context-map.md` all read and confirmed not contradicted by
+      an inert, unreachable adapter. No architecture decision qualified for an
+      ADR — T04 is a new caller of the existing
+      `hooks::mutation_scope::run_mutation_scope_from_payload` seam under the
+      already-recorded D17 decision (separate hidden command, decided at T02),
+      structurally mirroring `claude_mutation_scope`; the Codex hook-ownership
+      ADR (`2026-08-23-codex-nondestructive-hook-ownership.md`) is untouched
+      (that is T05's `codex_hook_config.rs` scope).
+    - Concurrency follow-ups one through four (2026-09-08, PR #268) re-checked
+      the five roots and remain `no_context_change`: the generation-aware
+      recovery state machine (D13a/D13b), the second follow-up's boundary lock
+      (D13c), the Bash-policy preflight, and the same-lane predecessor sweep are
+      adapter-internal inter-process synchronisation with no protocol, Quint,
+      runtime-semantic, SQL, or Agent Trace schema change and no user-visible
+      surface change — the adapter is still inert and unregistered. Durable
+      adapter context (D13a/b/c, the coverage table, the concurrency story) is
+      authored by T07 as already recorded.
+    - **Fifth follow-up (2026-09-08, PR #268) — protocol/formal change, recorded
+      here rather than deferred.** Unlike the first four, this one changes the
+      *generic* mutation semantics: `spec/mutation_cursor.qnt`,
+      `spec/mutation_cursor.md`, `cli/src/services/mutation_trace/protocol.rs`,
+      and the mutation-trace runtime/MBT tests. `spec/mutation_cursor.md` is the
+      Quint model's own durable prose and was updated in the same commit; D14 in
+      this plan is the authoritative plan-side record. AC22 was rewritten to
+      describe this as the **only** protocol/formal/attribution-semantic change
+      of the Codex integration (SQL and Agent Trace schema remain untouched). The
+      five roots (`overview.md`, `architecture.md`, `glossary.md`,
+      `patterns.md`, `context-map.md`) were re-checked and none states an
+      attribution rule this contradicts. **Two domain files now overstate the
+      old rule and are added to T07's scope:**
+      `context/cli/mutation-trace-runtime-coordinator.md` (~line 194, "two live
+      scopes yield `AiContended` regardless of matching or differing
+      `ActorKind`") and `context/cli/mutation-scope-runtime.md` (~line 236,
+      "`AiContended` (more than one live scope)") — both are now conditional on
+      no unconfirmed live Codex scope being present at the boundary. They are
+      left to T07, which owns durable-context authorship for this plan.
+
+- [x] T05: `Generated .codex/hooks.json registrations, setup merge, and doctor` (status:done)
+  - Task ID: T05
+  - Completed: 2026-09-08
+  - Scope: In —
+    (a) `config/pkl/renderers/codex-content.pkl`: add the minimum mutation-scope
+    `.codex/hooks.json` registrations the adapter uses (per T01's matcher
+    findings), routed to the D17 command, leaving the four existing
+    `sce hooks codex` registrations byte-for-byte unchanged **and positionally
+    stable** (D20 — appended after, never prepended).
+    (b) `cli/src/services/codex_hook_config.rs`: extend `REQUIRED_EVENTS` and
+    the ownership predicate to be **command-aware** (recognize both the existing
+    `["sce","hooks","codex"]` contract and the new
+    `["sce","hooks","codex-mutation-scope"]` contract), so the merge preserves
+    every existing SCE-owned and user-owned handler, replaces only the matching
+    command's stale/duplicate handlers, and stays idempotent; the merge inserts
+    new SCE-owned handlers/groups **additively after** existing ones so an
+    already-trusted registration keeps its
+    `(event, matcher, matcher-group index, handler index, handler
+    contents/hash)` identity and its computed Codex trust key (D20). If some
+    event/matcher structure genuinely cannot preserve position, the code records
+    which and doctor surfaces that re-trust is needed — trust is never silently
+    invalidated.
+    (c) Extend `codex_hook_config::hook_event_key_label` for **every** newly
+    SCE-owned mutation-scope event with the exact upstream Codex key label
+    (verified against `openai/codex` source, cited in a comment / `NOTES.md`,
+    never lowercased), with a dedicated test per new event (D22).
+    (d) Extend the doctor Codex-hook diagnosis so each mutation-scope
+    registration gets the full **three-dimension** health model (D21): structural
+    (`PresentAndCurrent` / `Missing` / `Stale` / `Malformed`), normal Codex trust
+    (`Trusted` / `Untrusted` / `Modified` / `Disabled`), and effective
+    project-hook policy (`ProjectHooksAllowed` / `PolicyBlocked` /
+    `PolicyUnknown`) reusing the single per-invocation `configRequirements/read`
+    probe; healthy requires all three; `PresentAndCurrent` + any of
+    `Untrusted` / `Modified` / `Disabled` / `PolicyBlocked` / `PolicyUnknown` is
+    never healthy; mutation-scope registrations are reported with readiness
+    distinct from the `sce hooks codex` registrations, not flattened into one
+    `.codex/hooks.json` status. `sce doctor --fix` repairs only SCE-owned
+    `.codex/hooks.json` structure and **never** writes `$CODEX_HOME/config.toml`,
+    grants trust, or changes managed policy.
+    Out — any adapter behavior change; any non-Codex renderer; any change to the
+    trust/policy probe mechanism itself (`codex_hook_policy.rs` — reused as-is).
+  - Dependencies: T04
+  - Done when: `nix run .#pkl-check-generated` passes with the new registrations
+    (its exact file-count artifact updated if the count legitimately changes);
+    `codex_hook_config.rs` tests prove AC16, AC16a (the canonical-four ->
+    plus-mutation-hooks **upgrade regression**: starting from a realistic
+    already-installed, already-trusted document with exactly
+    `UserPromptSubmit`/`Stop`/`PreToolUse Bash`/`PostToolUse apply_patch` ->
+    `sce hooks codex`, the same merge/setup path adds mutation-scope hooks while
+    every existing registration's identity tuple and trust key are unchanged,
+    new hooks appear exactly once, user hooks are untouched, and a second merge
+    is byte-identical), AC17 (idempotency + malformed-input untouched-file),
+    AC17a (one `hook_event_key_label` test per new event); doctor tests prove
+    AC18's six points, including that the existing trusted `sce hooks codex`
+    hooks and the new untrusted mutation-scope hooks are reported with distinct
+    readiness and no `$CODEX_HOME` write occurs on any path; a fresh
+    `sce setup --codex` into a repo with a user-owned Codex handler preserves it.
+  - Verify: `nix run .#pkl-check-generated`; `nix develop -c
+    ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    services::codex_hook_config`; `nix develop -c ./scripts/run-cli-cargo.sh
+    test --manifest-path cli/Cargo.toml services::doctor::`; `nix develop -c
+    ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    services::setup::`.
+  - Files changed:
+    - `config/pkl/renderers/codex-content.pkl` — a second command contract
+      `codexMutationScopeHookCommand` (`sce hooks codex-mutation-scope`); the
+      four `sce hooks codex` groups are byte-for-byte unchanged and a new
+      unmatched (catch-all) mutation-scope group is appended after each of
+      `Stop`, `PreToolUse`, `PostToolUse`, plus new `Interrupt`, `SubagentStop`,
+      `SessionEnd` events — exactly the six the T04 driver dispatches on (D17/D20).
+    - `config/pkl/renderers/generation-contract-check.pkl` — the
+      `codex-hook-invocation` contract now asserts the four `sce hooks codex`
+      handlers plus the six unmatched `sce hooks codex-mutation-scope` handlers,
+      with safe root resolution and no `eval`.
+    - `cli/src/services/codex_hook_config.rs` — command-aware ownership/merge:
+      `CodexHookCommand { Codex, MutationScope }`, `REQUIRED_EVENTS` is now 10
+      `(command, event, matcher)` rows, `required_registrations()` exported for
+      doctor, `RegistrationDiagnosis` / `Registration` carry `command`,
+      `command_owning_contract` / `handler_owning_command` / `handler_owned_by`
+      replace the single-contract predicate, `validate_generated_document_value`
+      locates each registration's group+handler by `(matcher, owning command)`
+      (multiple groups per event allowed), `merge_document` folds registrations
+      in `REQUIRED_EVENTS` order, `merge_event_groups` is command-scoped and
+      appends a fresh group rather than extending a group already holding the
+      other command's handler (D20 position stability), `hook_event_key_label`
+      gains `Interrupt`/`SubagentStop`/`SessionEnd`. Tests: AC16, AC16a
+      upgrade regression, AC17 idempotency + malformed-untouched, AC17a one label
+      test per new event, two-unmatched-`Stop`-groups, append-without-touching-Bash.
+    - `cli/src/services/doctor/inspect.rs` — `codex_registration_suffix`
+      (`PreToolUse(Bash)` unchanged for `Codex`, `<event>(mutation-scope)` for
+      `MutationScope`) and `codex_required_registration_children` replace the
+      hardcoded four-entry `codex_hook_registration_paths`;
+      `codex_hook_registration_child` derives the suffix from `diagnosis.command`.
+      Tests: `a_mutation_scope_registration_gets_the_full_three_dimension_health_model`
+      (structural / trust / policy, AC18 1-4), distinct-readiness vs
+      `sce hooks codex` (AC18), count assertions generalised to
+      `required_registrations().len()`.
+    - `cli/src/services/setup/mod.rs` — `install_merges_codex_hooks_*` test now
+      asserts 8 event keys and that the mutation-scope groups route to
+      `sce hooks codex-mutation-scope`.
+    - `scripts/test-codex-hook-command.sh` — the flake `codex-hook-command`
+      check now validates the four-plus-six-registration contract and that the
+      mutation-scope groups are unmatched and root-aware / fail-open.
+    - `cli/src/services/hooks/codex_mutation_scope/fixtures/NOTES.md` — a T05
+      section recording the registered event set, the unmatched-group choice
+      (T01 probe evidence), and the upstream `hook_event_key_label` citation
+      (`openai/codex` `rust-v0.153.4`, `codex-rs/hooks/src/lib.rs` lines 96–108)
+      for `interrupt` / `subagent_stop` / `session_end` (D22 / AC17a).
+    - `.codex/hooks.json` — the repo's own installed Codex hook config,
+      regenerated via `sce setup --codex` so the four `sce hooks codex`
+      registrations keep their exact `(event, matcher, group, handler)` identity
+      and the six mutation-scope registrations are appended (dogfood parity with
+      `.claude/settings.json`).
+  - Result: `.codex/hooks.json` generation now emits a second command contract.
+    The Codex mutation-scope adapter is registered as `sce hooks codex-mutation-scope`
+    on six unmatched groups (`PreToolUse`, `PostToolUse`, `Stop`, `Interrupt`,
+    `SubagentStop`, `SessionEnd`) appended after the four unchanged
+    `sce hooks codex` groups (D17). `codex_hook_config.rs`'s ownership, merge, and
+    diagnosis are command-aware: a handler is attributed to whichever trailing
+    command-token contract it matches, only that contract's stale/duplicate
+    handlers are repaired, and a new SCE group is appended rather than inserted
+    into a group already holding the other command's handler — so upgrading a
+    canonical-four document leaves every existing registration's identity tuple
+    and computed Codex trust key untouched (D20/AC16a), user handlers survive,
+    and a second merge is byte-identical (AC16/AC17). `hook_event_key_label`
+    covers `Interrupt`/`SubagentStop`/`SessionEnd` with the exact upstream labels
+    (D22/AC17a). `sce doctor` gives each mutation-scope registration the same
+    three-dimension model as the `sce hooks codex` registrations — structural,
+    Codex trust, effective project-hook policy — reported under a distinct
+    `.codex/hooks.json#<event>(mutation-scope)` row, never flattened, and
+    `--fix` still only rewrites SCE-owned `.codex/hooks.json` structure (the
+    trust/policy probes are read-only; no `$CODEX_HOME` write on any path)
+    (D21/AC18). No adapter behaviour, non-Codex renderer, or trust/policy probe
+    mechanism changed.
+  - Verify:
+    - `nix run .#pkl-check-generated` — **passed** (141 files; the
+      `codex-hook-invocation` and `codex-hook-command` contracts updated for the
+      four-plus-six registration shape). No committed file-count artifact — the
+      inventory digest is printed only; the file set is unchanged.
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::codex_hook_config` — **passed** (34 tests, incl.
+      the AC16a upgrade regression, AC17 idempotency/malformed, one AC17a label
+      test per new event, two-unmatched-`Stop`-groups, and the
+      append-without-touching-Bash placement test).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::doctor::` — **passed** (27 tests, incl. the new
+      three-dimension mutation-scope health test and the distinct-readiness
+      test).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::setup::` — **passed** (66 tests).
+    - `nix develop -c bash ./scripts/test-codex-hook-command.sh` — **passed**.
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::codex_hook_trust` — **passed** (13; trust module
+      unchanged and still correct for the new events/positions).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml` (full suite) — **passed** (1258 tests, 1 ignored).
+    - `clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` —
+      **clean**; `cargo fmt -- --check` — **clean**.
+  - Context impact: domain — a new generated `.codex/hooks.json` registration
+    set (six mutation-scope groups) and a command-aware Codex hook-config
+    ownership/merge/doctor model. User-visible surface: `sce setup --codex` now
+    installs the mutation-scope registrations; `sce doctor` reports them as
+    distinct `.codex/hooks.json#<event>(mutation-scope)` rows with the full
+    three-dimension health model. No public API, protocol, Quint, mutation-trace
+    SQL, or Agent Trace schema change *in T05's own diff* (the later fifth T04
+    follow-up intentionally changes the protocol/Quint attribution semantics —
+    D14/AC22). The generic
+    mutation-scope ingress/runtime and the existing `sce hooks codex`
+    conversation/diff pipeline are unchanged and additive. Durable
+    Codex-adapter context (`context/cli/codex-mutation-scope-integration.md`) is
+    authored by **T07** once the full adapter ships and is proven end-to-end
+    (T06); T05 corrected the now-contradicted cross-reference statements in
+    place (see Context synchronization).
+  - Context synchronization: synced
+    - T05 is the task that made the Codex mutation-scope adapter reachable:
+      `sce setup --codex` now installs six `sce hooks codex-mutation-scope`
+      registrations and `sce doctor` reports them. The T01–T04 precedent
+      deferred all durable-context edits to T07 on the grounds that the adapter
+      was "inert and unreachable" — that reasoning no longer holds after T05, so
+      the now-contradicted statements about generated `.codex/hooks.json`
+      content, `codex_hook_config` ownership, and the doctor per-registration
+      model were corrected in place: `context/overview.md` and
+      `context/architecture.md` (the four-registration / single-`sce hooks codex`
+      absolutes → four-plus-six, two command contracts, the D20 position-stable
+      append, the three-dimension doctor model with distinct
+      `#<event>(mutation-scope)` rows), `context/sce/codex-integration-runtime.md`
+      (dispatcher scope narrowed to the four conversation/diff registrations;
+      command-aware merge; twelve supported event names; `PreToolUse` no
+      `sce hooks codex` match), `context/sce/agent-trace-hooks-command-routing.md`
+      (two-contract ownership), `context/sce/doctor-human-text-contract.md` (the
+      mutation-scope rows and per-registration policy probe reuse), and the
+      mutation-scope stack summaries in `context/cli/mutation-scope-runtime.md`,
+      `context/cli/mutation-scope-hook-ingress.md`, and `context/context-map.md`
+      ("Codex has no adapter / remains unregistered" → the Codex adapter now
+      exists and is registered; OpenCode/Pi remain unwired). Mandatory
+      five-root pass done: `overview.md`, `architecture.md`, `context-map.md`
+      edited as above; `glossary.md` and `patterns.md` read and not
+      contradicted (T05 added no user-facing terminology — the three-class
+      classification and coverage boundary are T07's glossary scope).
+    - Deliberately **not** authored here (T07's explicit scope, dependent on
+      T05 **and** T06): the dedicated
+      `context/cli/codex-mutation-scope-integration.md` domain file (the
+      three-class tool classification, the D23 partial-by-tool-surface coverage
+      boundary and its T01 probe rationale, execution identity / `ScopeId`
+      derivation, the recovery bookkeeping, D8 fail-closed response, D9/D10/D10a
+      terminal boundaries, D12/D13 cleanup + recovery barrier, the
+      `AiExclusive`-is-not-sole-authorship statement, background/detached
+      limitations); `architecture.md` line 135's `hooks/mod.rs` enumeration
+      naming the new arm (a T04-accepted deferral); and splitting
+      `codex-integration-runtime.md` (291 lines) / `mutation-scope-runtime.md`
+      (267 lines) back under the 250-line budget — both were already over
+      budget before T05, and T07 edits and owns splitting them.
+    - No new ADR qualified. The "separate hidden command" architecture is
+      decision **D17**, already decided and recorded in this plan at T02; T05
+      is its merge/doctor-side implementation, consistent with the existing
+      `2026-08-23-codex-nondestructive-hook-ownership.md` ADR (whose core
+      non-destructive-merge principle is unchanged and, via D20, strengthened).
+      The plan reserves the "materially changes the accepted
+      non-destructive-ownership contract → new dated ADR" call for T07's full
+      re-evaluation once the adapter ships.
+  - Follow-up (2026-09-08 — bootstrap fail-closed for tracked mutation
+    `PreToolUse`, PR #268): the initial T05 registration reused the fail-open
+    conversation/diff bootstrap for the mutation-scope `PreToolUse` hook and
+    registered every mutation-scope group unmatched. That let a tracked
+    `Bash` / `apply_patch` execution proceed unscoped when repository-root
+    resolution, helper execution, or `sce` availability failed before the Rust
+    adapter ran (D8 violation), because the neutral `exit 0` bootstrap returned
+    before any durable `Start`.
+    The mutation-scope `PreToolUse` and `PostToolUse` registrations are now
+    constrained at the Codex matcher boundary to the tracked tool set —
+    `matcher = "^(Bash|apply_patch)$"`, verified against codex-cli 0.153.4
+    `hooks/src/events/common.rs` `matches_matcher` (a matcher carrying regex
+    metacharacters is compiled with the `regex` crate and tested with
+    `is_match`, so this is an anchored full-tool-name alternation). `Stop`,
+    `Interrupt`, `SubagentStop`, and `SessionEnd` stay unmatched. `mcp__*`,
+    `collaborationspawn_agent`, `collaborationwait_agent`, and unknown tools do
+    not match, so Codex never dispatches the generated mutation-scope tool hooks
+    for them and they remain allowed / untracked under D23 (Option B). The Rust
+    classifier is unchanged and stays defensive: a manual invocation of the
+    hidden command with an untracked payload still returns neutral.
+    The mutation-scope `PreToolUse` command is now a separate generated command
+    (`codexMutationScopePreToolUseCommand`) that fails **closed**: a Git-root
+    resolution failure or a missing/unreadable helper emits the exact D8 deny
+    contract (`{"hookSpecificOutput":{"hookEventName":"PreToolUse",
+    "permissionDecision":"deny","permissionDecisionReason":"SCE could not
+    establish mutation attribution for this tool execution."}}` — the same
+    `FAIL_CLOSED_DENY_REASON` string T04 emits) on stdout with `exit 0`, and it
+    sets `SCE_CODEX_PRE_TOOL_USE_FAIL_CLOSED=1` so the shared helper converts a
+    missing `sce` or any non-zero adapter exit into the same deny contract while
+    forwarding a successful adapter stdout (neutral or a recovery-barrier deny)
+    unchanged. `command_owning_contract` recognises the leading env-assignment
+    form as `CodexHookCommand::MutationScope` without widening ownership. The
+    other five mutation-scope commands and the four `sce hooks codex` commands
+    are byte-identical to before, so the existing four trusted registrations
+    keep their `(event, matcher, group index, handler index, handler
+    contents/hash)` identity (D20); a previously installed unmatched
+    mutation-scope `PreToolUse` / `PostToolUse` registration now diagnoses
+    `Stale` and `sce setup --codex` / `sce doctor --fix` migrates it into the
+    tracked-tool matcher group. Doctor's per-registration model is unchanged —
+    command identity already disambiguates the `#<event>(mutation-scope)` rows,
+    so the regex is not surfaced.
+    Files changed: `config/pkl/renderers/codex-content.pkl` (split
+    `codexMutationScopePreToolUseCommand` out, matcher on the Pre/Post groups,
+    fail-closed helper mode in `sceHookScript`),
+    `config/pkl/renderers/generation-contract-check.pkl` (matcher + fail-closed
+    bootstrap + helper assertions, `codex-hook-helper-fail-closed` check),
+    `cli/src/services/codex_hook_config.rs` (`CODEX_MUTATION_SCOPE_TOOL_MATCHER`
+    on the two `REQUIRED_EVENTS` rows, env-assignment-tolerant
+    `command_owning_contract`, matcher/fail-closed test coverage incl. the
+    canonical-four upgrade regression and the legacy-unmatched-hook repair
+    test), `scripts/test-codex-hook-command.sh` (the matcher shape and the six
+    fail-closed / forward regressions replace the former fail-open contract),
+    `context/plans/codex-mutation-scope-integration.md` (this note plus the D8a
+    subsection). No mutation protocol, Quint model, mutation runtime, SQL, Agent
+    Trace schema, Option B MCP semantics, T04 driver behaviour, or attribution
+    semantics changed.
+    Verify: `nix run .#pkl-check-generated` — **passed**; `nix develop -c
+    ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    services::codex_hook_config` — **passed** (36); `... services::setup::` —
+    **passed** (66); `... services::doctor::` — **passed** (27); `...
+    services::hooks::codex_mutation_scope` — **passed** (100, 1 ignored); `...
+    services::hooks::codex::` — **passed** (129); `nix develop -c bash
+    ./scripts/test-codex-hook-command.sh` — **passed**; `clippy ... --all-targets
+    -- -D warnings` — **clean**; `cargo fmt -- --check` — **clean**.
+
+- [x] T06: `Real Git/DB regressions through the production Codex path` (status:done)
+  - Task ID: T06
+  - **Completed (2026-09-08).** T01-T05 were done and synced, the
+    protocol/formal safety follow-up and AC22 consistency cleanup were complete,
+    and T06 subsequently completed against the frozen production baseline below.
+  - **T06 production baseline (frozen).** The production semantics under test are
+    frozen at the completion of the fifth T04 follow-up (head `b72f6c2c`):
+    Codex tracked-tool classification; fail-closed bootstrap; Bash-policy
+    preflight; the boundary-lock / recovery protocol; the same-lane predecessor
+    sweep; and the boundary-aware unconfirmed-Codex attribution rule (D14). T06
+    may add tests, fixtures, and test-only helpers (including the `#[cfg(test)]`
+    state-root entry point below), but must **not** change these production
+    semantics. Concretely, T06 must leave `spec/mutation_cursor.qnt`,
+    `spec/mutation_cursor.md`, `cli/src/services/mutation_trace/protocol.rs`,
+    and `cli/src/services/mutation_trace/runtime/` unchanged **relative to
+    `b72f6c2c`** (AC22). If a T06 regression exposes another production
+    correctness issue, **T06 stops**, records the contradiction in this plan, and
+    a separate follow-up fixes production behaviour before T06 resumes.
+  - Scope: In — regressions using real temporary Git repositories and real
+    repository Agent Trace DBs, driven through the production Codex-adapter ->
+    generic-ingress -> real runtime path (no manual `mutation_trace_*` inserts;
+    the only permitted injection is the adapter's own `state.rs` bookkeeping
+    helpers to simulate a crash point, exactly as #263's T08 did). Add a
+    `#[cfg(test)]` state-root variant of the real adapter entry point mirroring
+    `mutation_scope::run_mutation_scope_from_payload_at_state_root`. The matrix,
+    adapted to T01 findings and re-planning direction B (D23):
+    1. `Bash` successful mutation -> tracked / `AiExclusive` / `Closed` (AC8);
+    2. `Bash` partial mutation + non-zero exit -> tracked / `Closed` (partial
+       mutation attributed to that scope) (AC9);
+    3. `apply_patch` success -> tracked / `Closed` (AC8);
+    4. `apply_patch` verification failure -> no mutation, safe cleanup, no scope
+       to close (AC9);
+    5. duplicate tracked lifecycle (`Pre`/terminal redelivery) -> idempotent, no
+       second transition (AC4);
+    6. interrupted tracked execution -> abandonment / recovery via the proven
+       D12 signal (AC11);
+    7. subagent tracked tool -> independent scope identity (its `agent_id`);
+    8. linked worktree -> correct `WorktreeId` / cursor, other worktree
+       unchanged (AC14);
+    9. **MCP success -> allowed, no scope** — full `PreToolUse → PostToolUse`
+       MCP lifecycle (probe-12 shape) driven live via `fixtures/mcp_probe/`
+       leaves zero mutation-scope rows/events attributable to the MCP execution
+       and an untouched adapter state store (AC9b);
+    10. **MCP mutate-then-error -> allowed, no scope, no zombie state** — the
+        probe-13 lifecycle (MCP mutates a git-visible file, returns error, **no
+        `PostToolUse`**, then `Stop`/`SessionEnd`): no stale attempt, no
+        `recovery_pending`, no `abandon`, no zombie scope, because no `Start`
+        occurred (AC9c);
+    11. **failed MCP A -> successor tracked B** (probe-14 shape) -> B (`Bash` /
+        `apply_patch`) `Start`s normally as the only live scope; no stale MCP
+        state exists to interfere; no false `AiContended` (AC9d);
+    12. **parallel MCP executions** (probe-16/17 shape) -> both allowed, neither
+        creates a scope, **no MCP-derived `AiContended`**, no adapter state leak
+        (AC9e);
+    13. **tracked `Bash`/`apply_patch` overlapping an MCP mutation** -> the
+        runtime result (`AiExclusive` on the tracked scope) is asserted **and**
+        documented as *tracked-scope exclusivity, not sole authorship* — MCP did
+        mutate in the interval; the accepted protocol refinement does not convert
+        MCP overlap into `AiContended` (AC9f);
+    14. **unknown tool -> allowed untracked** — `PreToolUse(<unknown name>)`
+        returns the neutral response, no scope, no bookkeeping (AC9b);
+    15. raw Agent Trace tables (`diff_traces`,
+        `post_commit_patch_intersections`, `agent_traces`, `messages`, `parts`)
+        remain untouched by the mutation-scope adapter (before/after row counts)
+        (AC20).
+    16. **arbitrary-blocker zombie built-in A -> same-lane successor B** (D10a
+        Case B): drive `PreToolUse(A = Bash)` to `Active(A)`, omit
+        `PostToolUse(A)` (models a third-party sibling `PreToolUse` denying the
+        aggregate), then `PreToolUse(B)` with the same `session_id` / `turn_id`
+        and a different `tool_use_id`. Through the real runtime, A is
+        `Abandoned` and flushed before B `Start`s, B is the only live scope at
+        its `Start`, and no false `AiContended` / attribution to A results. The
+        adapter-level seam-ordering regression (`Start(A)` -> `Abandon(A)` ->
+        `Flush` -> `Start(B)`) already ships in
+        `codex_mutation_scope::tests::driver::regression1..9` (AC9a).
+    Plus the crash/recovery rows: crash before `Start` commit -> conservative
+    recovery (AC21a); `Start` committed before bookkeeping settlement ->
+    abandonment recovery, not late-`Start` (AC21b); terminal transition committed
+    before bookkeeping cleanup -> replay-safe (AC21c); `recovery_pending` blocks
+    a tracked successor until recovery succeeds (AC12); reused raw Codex tool
+    identifier after terminal -> new `ScopeId` (AC5); any unsupported background
+    execution is rejected / documented (AC15); denied tracked execution -> no
+    mutation under an untracked `Start` (AC7 production half); cross-harness
+    overlap attributed per the refined D14 rule — `IneligibleUnscoped` at a
+    boundary that does not confirm the live Codex scope, `AiContended` only at
+    that Codex scope's own `Close` with no other unconfirmed live Codex scope
+    (AC10, **both** directions).
+    The mutation-scope regressions use **real** temporary Git repos and real
+    Agent Trace DBs. The live MCP fixtures (`fixtures/mcp_probe/`, probes 12–17)
+    remain evidence fixtures and are **reused** to drive rows 9–13 rather than
+    re-running `codex exec` in ordinary unit tests.
+    Each applicable test asserts scope status, processed-event keys, revision,
+    `cursor_tree`, mutation-event count, attribution kind, `needs_rebaseline`,
+    and adapter state. Out — **new production behaviour beyond the already
+    accepted T01–T05 plus the lifecycle/attribution follow-ups**; any *further*
+    change to Codex adapter semantics, the mutation protocol, the Quint model,
+    mutation runtime semantics, the attribution algorithm, mutation-trace SQL, or
+    the Agent Trace schema (T06 adds **no further** protocol changes — the
+    accepted fifth follow-up already landed the only one, D14/AC22); any process
+    supervision or detached-child detection; any test that inserts the event it
+    means to prove; any regression asserting an MCP execution itself produces
+    mutation-scope attribution.
+  - Dependencies: T04 (T05 only for a test that installs generated settings —
+    prefer driving the adapter entry point directly).
+  - Done when: the whole matrix passes and collectively satisfies AC4, AC5,
+    AC7 (production half), AC8, AC9, AC9a, AC9b, AC9c, AC9d, AC9e, AC9f, AC10,
+    AC11, AC12, AC14, AC15, AC20, AC21.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml services::hooks::codex_mutation_scope`; `nix develop -c
+    ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    services::mutation_trace::`; and the frozen-baseline check
+    `git diff b72f6c2c -- spec/mutation_cursor.qnt spec/mutation_cursor.md
+    cli/src/services/mutation_trace/protocol.rs
+    cli/src/services/mutation_trace/runtime/` is empty.
+  - Completed: 2026-09-08
+  - Files changed:
+    - `cli/src/services/hooks/codex_mutation_scope/mod.rs` (+1622, test-only:
+      new `tests::production_regressions` module)
+  - Result: Added 27 production-path regressions in
+    `codex_mutation_scope::tests::production_regressions`, each driving real
+    temporary Git repositories and real repository Agent Trace DBs through
+    `run_codex_mutation_scope_from_payload_at_state_root` (the `#[cfg(test)]`
+    state-root variant of the real adapter entry point, which already existed
+    from T04) into the generic ingress and the real mutation runtime. No manual
+    `mutation_trace_*` inserts and no injected seams; the only injection is the
+    adapter's own `state::seed_attempt_for_tests` bookkeeping helper for the
+    crash rows. **No production file changed** — the diff is confined to the
+    adapter module's `#[cfg(test)]` tree.
+    Matrix coverage (test -> criterion):
+    `test1`/`test3` tracked `Bash` and `apply_patch` success -> `Closed` /
+    `AiExclusive` (AC8); `test2` `Bash` partial write then non-zero exit ->
+    `Closed`, partial mutation attributed to that scope (AC9); `test4`
+    `apply_patch` verification failure -> no mutation, `Stop` sweep, no scope to
+    close (AC9); `test5` duplicate `Pre`/`Post` redelivery -> same `ScopeId`, no
+    second transition (AC4); `test6`/`test6b`/`test7`/`test4` the four proven D12
+    cleanup signals `Interrupt` / `SessionEnd` / `SubagentStop` / `Stop` (AC11);
+    `test7` subagent tracked tool -> its own `agent_id`-bearing scope, swept only
+    by its own `SubagentStop`; `test8` linked worktree -> only its own cursor
+    advances (AC14); `test9` full successful MCP lifecycle -> allowed, zero
+    mutation-scope rows, no adapter state file (AC9b); `test10` probe-13
+    mutate-then-error -> no stale attempt, no `recovery_pending`, no zombie
+    (AC9c); `test11` probe-14 failed MCP then tracked successor -> successor is
+    the only live scope, no false `AiContended` (AC9d); `test12` probe-16
+    parallel MCP -> no scopes, no MCP-derived `AiContended`, no state leak
+    (AC9e); `test13` tracked `Bash` overlapping a real MCP mutation ->
+    `AiExclusive` asserted with the tracked-scope-exclusivity (not
+    sole-authorship) reading recorded in the assertion message (AC9f); `test14`
+    unknown tool -> neutral response, untracked (AC9b); `test15` raw Agent Trace
+    tables (`diff_traces`, `post_commit_patch_intersections`, `agent_traces`,
+    `messages`, `parts`) unchanged before/after, adapter state only below
+    `<git-dir>/sce/` (AC20, also asserted at the end of every other row);
+    `test16` arbitrary-blocker zombie built-in A then same-lane successor B ->
+    `Abandon(A)` -> flush -> `Start(B)`, nothing attributed to A, no false
+    `AiContended` (AC9a); `test17`/`test18`/`test19` the three crash points
+    (AC21a/b/c); `test20` `recovery_pending` denies a tracked successor while
+    attempts remain and clears only on durable flush success (AC12); `test21`
+    reused `tool_use_id` after terminal -> fresh `ScopeId` (AC5); `test22`
+    self-detaching descendant write after `PostToolUse` -> `IneligibleUnscoped`
+    at the later flush, never folded into the closed scope (AC15 documented
+    half; D16 records that this `codex exec` surface exposes no Codex-managed
+    background execution to deny); `test23` policy-denied tracked `Bash` -> deny
+    response, no scope, no bookkeeping (AC7 production half); `test24`/`test25`/
+    `test26` the refined D14 rule in both directions plus the suppression case —
+    `IneligibleUnscoped` at a non-confirming other-harness `Close` with
+    `active_scopes` still carrying both scopes, `AiContended` at the Codex
+    scope's own `Close`, and back to `IneligibleUnscoped` when a second
+    unconfirmed live Codex scope remains (AC10). The other harness's scope is
+    driven through the same production generic-ingress seam with
+    `"actor_kind":"claude_code"`, never by SQL.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::hooks::codex_mutation_scope` — **pass**
+      (146 passed, 0 failed, 1 ignored; the 27 new regressions included).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+      cli/Cargo.toml services::mutation_trace::` — **pass** (336 passed,
+      0 failed, including the MBT refinement suite).
+    - `git diff b72f6c2c -- spec/mutation_cursor.qnt spec/mutation_cursor.md
+      cli/src/services/mutation_trace/protocol.rs
+      cli/src/services/mutation_trace/runtime/` — **empty** (frozen baseline
+      held; AC22).
+    - Additional checks run: `services::hooks::` (478 passed, 0 failed);
+      `clippy --all-targets -- -D warnings` — clean; `fmt --check` — clean;
+      `git diff origin/claude-mutation-scope-integration --
+      cli/migrations/agent-trace-repository/
+      config/schema/agent-trace.schema.json` — empty (AC22 SQL/schema half);
+      the AC19 dependency-boundary grep matches only inside the
+      `#[cfg(test)]` module.
+  - Deviation: the `#[cfg(test)]` state-root entry point the scope asked T06 to
+    add already existed (`run_codex_mutation_scope_from_payload_at_state_root`,
+    added by T04 and previously unused); T06 uses it rather than adding a second
+    one. AC9f's "comment/doc line" is carried by the test's assertion message
+    and test name rather than a code comment, per the repository's
+    no-comments-in-code convention; T07 owns the durable-context wording.
+  - Context impact: none for durable context — test-only change, no production
+    behaviour, interface, or architecture change. The Codex adapter domain file
+    and the cross-reference updates remain T07's scope; this task adds the
+    executable evidence those documents will describe.
+  - Context synchronization: synced
+
+- [x] T07: `Author the durable Codex mutation-scope context` (status:done)
+  - Task ID: T07
+  - Scope: In — create `context/cli/codex-mutation-scope-integration.md` owning
+    the Codex adapter domain (the tool-execution scope model, the D2 **three-class**
+    classification table (`TrackedMutation` / `Delegation` / `Untracked`), the
+    **D23 partial-by-tool-surface coverage boundary** — the coverage table and
+    the "MCP calls remain usable but are not individually attributed" statement
+    plus *why* (the T01 probe findings), D3 execution identity, D4
+    `ScopeId`/`EventId` derivation, D5/D6 bookkeeping store, D7 write-ahead, D8
+    exact Codex-native fail-closed response (tracked only), D9/D10 terminal
+    boundaries, D10a the failed-tool -> successor-tool handling (Case A for
+    built-ins; Case C *if MCP were modeled as a scope*, resolved by not modeling
+    it), D12 cleanup signals + the load-bearing backstop, D13 recovery barrier,
+    D15 worktree/cwd ownership, D14 concurrency (including that `AiExclusive` is
+    tracked-scope exclusivity, not sole authorship, **and** the accepted
+    boundary-aware unconfirmed-Codex attribution rule: Codex `Start` is
+    write-ahead admission, not execution confirmation; an unconfirmed live Codex
+    scope forces `IneligibleUnscoped` at any non-confirming boundary; only that
+    exact scope's own `Close` confirms it; another unconfirmed live Codex scope
+    keeps attribution ineligible), D16 background/detached
+    limitations, D17 command architecture, D18 dependency direction, and
+    D20/D21/D22 the Codex hook trust-identity preservation, three-dimension
+    doctor health model, and upstream-verified event key labels), with an
+    explicit **Unsupported / Coverage boundary** section (AC24) naming the future
+    work (first-class MCP attribution via a richer lifecycle mechanism in a
+    separate PR) and the tested Codex version; and update
+    `context/cli/mutation-scope-runtime.md`,
+    `context/cli/mutation-scope-hook-ingress.md`,
+    `context/sce/agent-trace-hooks-command-routing.md`,
+    `context/sce/codex-integration-runtime.md`, `context/context-map.md`,
+    `context/overview.md`, and `context/architecture.md` (line 135) to record
+    that a second concrete harness adapter now exists; and correct the two
+    domain statements the accepted fifth follow-up made too broad —
+    `context/cli/mutation-trace-runtime-coordinator.md` ("two live scopes yield
+    `AiContended` regardless of matching or differing `ActorKind`") and
+    `context/cli/mutation-scope-runtime.md` ("`AiContended` (more than one live
+    scope)") — both now conditional on no unconfirmed live Codex scope at the
+    boundary (D14). `spec/mutation_cursor.md` already carries the Quint-side
+    prose and needs no T07 edit. Each edit additive,
+    naming Codex as wired/registered and leaving OpenCode/Pi as still-unwired,
+    and keeping the existing `sce hooks codex` conversation/diff description
+    intact. Write a new dated ADR **only if** T01/T02 established a genuinely
+    new system-wide constraint (e.g. permanently multi-command Codex hook-config
+    ownership). Out — describing behavior not actually shipped by T02–T06; any
+    edit to `context/cli/claude-mutation-scope-integration.md`; any edit to an
+    existing ADR.
+  - Dependencies: T05, T06
+  - Done when: `context/cli/codex-mutation-scope-integration.md` exists and
+    satisfies AC23/AC24; every cross-reference file names the second adapter;
+    `context/` files stay within the repository's per-file line budget (split a
+    file rather than overrun); `nix flake check` and `nix run
+    .#pkl-check-generated` still pass.
+  - Verify: inspection of the new file and each updated cross-reference against
+    AC23/AC24; the SQL/schema half of AC22 — `git diff
+    origin/claude-mutation-scope-integration --
+    cli/migrations/agent-trace-repository/ config/schema/agent-trace.schema.json`
+    is empty; the frozen-baseline check `git diff b72f6c2c --
+    spec/mutation_cursor.qnt spec/mutation_cursor.md
+    cli/src/services/mutation_trace/protocol.rs
+    cli/src/services/mutation_trace/runtime/` is empty (T07 introduces no
+    further protocol/Quint/runtime-semantic change); durable context records the
+    accepted boundary-aware unconfirmed-Codex attribution refinement (D14);
+    `nix flake check`.
+  - Completed: 2026-09-08
+  - Files changed:
+    - `context/cli/codex-mutation-scope-integration.md` (new durable Codex
+      adapter domain contract)
+    - `context/sce/codex-apply-patch-diff-runtime.md` (new split-out existing
+      Codex apply-patch evidence contract)
+    - `context/cli/mutation-scope-runtime.md`
+    - `context/cli/mutation-scope-hook-ingress.md`
+    - `context/cli/mutation-trace-runtime-coordinator.md`
+    - `context/sce/agent-trace-hooks-command-routing.md`
+    - `context/sce/codex-integration-runtime.md`
+    - `context/context-map.md`
+    - `context/overview.md`
+    - `context/architecture.md`
+  - Result: Authored the durable Codex mutation-scope domain contract for
+    codex-cli 0.153.4, including the tracked/delegation/untracked classification,
+    D23 MCP coverage boundary, write-ahead and fail-closed lifecycle, checkout-
+    local recovery, cleanup matrix, D14 boundary-aware attribution rule,
+    command/configuration ownership, doctor health dimensions, unsupported
+    boundaries, and T06 evidence. Updated all requested cross-references to
+    name Codex as the second wired adapter while preserving the existing
+    conversation/diff dispatcher. Split the existing Codex apply-patch detail
+    into its own context file and kept every affected context file within the
+    250-line budget. No new ADR qualified.
+  - Verify:
+    - New domain and split-out evidence documents plus every requested
+      cross-reference inspected against AC23/AC24 — **passed**.
+    - `git diff --check` and affected context line-budget checks — **passed**;
+      all affected files are at or below 250 lines.
+    - `git diff origin/claude-mutation-scope-integration --
+      cli/migrations/agent-trace-repository/ config/schema/agent-trace.schema.json`
+      — **passed** (empty).
+    - `git diff b72f6c2c -- spec/mutation_cursor.qnt spec/mutation_cursor.md
+      cli/src/services/mutation_trace/protocol.rs
+      cli/src/services/mutation_trace/runtime/` — **passed** (empty).
+    - `nix run .#pkl-check-generated` — **passed** (141 files; inventory sha256
+      `3d1e3aa23681e5c544eac660f9489f6ba4f48286efd9dc8de5b59fe8ee902d07`).
+    - `nix flake check` — **passed** (all checks passed; incompatible systems
+      omitted as usual).
+  - Context impact: cross-cutting durable context — added the Codex adapter
+    domain and complementary apply-patch evidence contract; updated mutation
+    runtime/ingress, hook routing, architecture, overview, and context-map
+    references because a second concrete harness adapter is now wired and
+    registered. No production behavior, protocol, Quint, SQL, or Agent Trace
+    schema changed in T07.
+  - Context synchronization: synced
+  - Follow-up (2026-09-08 — final durable-context consistency pass):
+    The first T07 context sync added the authoritative Codex mutation-scope
+    domain file but left several pre-adapter absolute statements in
+    overview/current-state context. This follow-up removed those contradictions:
+    Codex is now consistently described as the second wired adapter; OpenCode/Pi
+    remain future adapters; generated mutation Pre/Post groups use
+    `^(Bash|apply_patch)$` while cleanup groups remain unmatched; tracked
+    mutation Pre bootstrap is fail-closed; the existing `sce hooks codex`
+    evidence pipeline is kept distinct from mutation-scope Bash tracking; and
+    current cross-harness wording distinguishes wired Claude overlap from future
+    OpenCode/Pi runtime capability.
+    No production behavior changed.
+
+## Open questions
+
+The change's value is not in doubt: the mutation-scope stack exists to attribute
+mutations per independently-capable execution across every harness, and Codex is
+the second of four planned producers. The generic ingress and runtime were
+built specifically so this adapter would be additive. There is no smaller
+version worth naming — an adapter that does not establish `Start` before the
+tool runs, or does not fail closed, is not a correct adapter.
+
+**T01 outcome + re-planning (codex-cli 0.153.4, upstream `openai/codex`
+`rust-v0.153.4` / `3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`): built-in
+`Bash` / `apply_patch` is representable by the current mutation-scope contract.
+The MCP mutation-scope lifecycle is D10a Case C *if MCP is modeled as a scope*.
+Re-planning (2026-09-08) chose direction B (D23): MCP and unknown tools are
+`Untracked` — usable, may mutate, but outside the Codex adapter's mutation-scope
+coverage; no protocol change. T01 is done; T02 is unblocked.** Every built-in
+risk is resolved by a captured fixture or an upstream schema citation; the MCP
+risk is resolved by exclusion, with the Case C evidence retained as the reason
+(see the Design section dispositions, D23, and
+`cli/src/services/hooks/codex_mutation_scope/fixtures/NOTES.md`). Headline
+resolutions:
+
+- **D10a for built-in `Bash` / `apply_patch`: normal Case A + exceptional
+  Case B.** Normal path (Case A): a failed shell tool still fires `PostToolUse`;
+  a failed `apply_patch` writes nothing; interruption ends the turn. Exceptional
+  path (Case B, PR #268 arbitrary-hook-block follow-up): an arbitrary concurrent
+  sibling `PreToolUse` hook can deny the aggregate execution after SCE drove
+  `Start(A)`, so a later same-lane (`session_id`, `turn_id`) tracked built-in
+  `PreToolUse(B)` sweeps the stale predecessor — `Abandon(A)` -> quiescent
+  `Flush` -> `Start(B)` — with an `AdmitDecision::StalePredecessorBlocked`
+  backstop. `agent_id` is not part of the lane.
+- **D10a is Case C for MCP *if MCP were modeled as a scope* — resolved by NOT
+  modeling MCP as a scope (direction B, D23).** The T01 MCP
+  extension (probes 12–17) proves, live, all three Case C conditions at once,
+  and this evidence stands unchanged:
+  1. a mutation-capable MCP tool can **mutate a git-visible file and then return
+     `is_error:true` with NO terminal hook** (probe 13:
+     `PreToolUse → Stop → SessionEnd`, `mcp_b.txt` present in `git status`).
+     Upstream: `registry.rs` ~674 gates `PostToolUse` on
+     `success_for_logging()`; MCP's is `CallToolResult.success()`, false on
+     `is_error:true`.
+  2. **no positive cleanup signal precedes a successor** — probe 14:
+     `PreToolUse(A = mutate_then_error)` → `PreToolUse(B = mutate_success)` with
+     **no event of any kind between them**; A's `tool_use_id` never recurs.
+  3. **same-lane MCP executions can overlap** — probes 16/17: two
+     mutation-capable MCP executions run genuinely concurrently (~8 s window,
+     `PreToolUse`s ~1 ms apart, confirmed by the MCP server's own log). Enabled
+     by the config key `[mcp_servers.<name>] supports_parallel_tool_calls = true`
+     **or** the tool's own `annotations.readOnlyHint`
+     (`McpHandler::supports_parallel_tool_calls()`). So `PreToolUse(B)` cannot
+     prove A stale, and there is no narrower serial lane than
+     `(session_id, turn_id)`.
+  If MCP were a scope, the adapter could not distinguish `failed-and-dead A` from
+  `still-running A` — exactly the stale-scope problem D10a was added to prevent.
+  **Re-planning decision (2026-09-08):**
+  - **A — deny mutation-capable MCP `PreToolUse` fail-closed. REJECTED.** Too
+    disruptive (MCP tools unusable inside Codex under SCE); also needs a rule to
+    tell "mutation-capable MCP" from "read-only MCP" that cannot trust the
+    server's own `readOnlyHint`.
+  - **B — MCP (and unknown) tools are `Untracked`: allowed, may mutate, no
+    `Start`, no scope, explicitly outside mutation-scope coverage. CHOSEN for
+    Codex adapter v1** (D23). The un-attributed-MCP-mutation gap is an explicit,
+    documented coverage boundary, never a silent gap. No protocol / Quint /
+    SQL / schema change.
+  - **C — a richer lifecycle/runtime mechanism** (per-`tool_use_id` MCP scope
+    retired only by `PostToolUse`, or an overlap-tolerant turn-boundary sweep,
+    plus an `AiContended`-aware successor policy). DEFERRED as possible future
+    work in a separate, explicitly justified PR — "investigate first-class MCP
+    mutation attribution using a richer lifecycle mechanism".
+  The adapter must **not** silently downgrade MCP/unknown to read-only; direction
+  B allows them *explicitly* untracked, documented as a coverage boundary.
+- **Parallel MCP execution is real** (probes 16/17) but produces **no tracked
+  scopes** under direction B, so there is **no MCP-derived `AiContended`** and
+  **no MCP-overlap `AiContended` regression** in T06. `Bash`-overlapping-MCP is
+  covered by AC9f/T06 row 13, asserting `AiExclusive` = tracked-scope
+  exclusivity (not sole authorship). Cross-harness `AiContended` remains
+  reachable and is the AC10/T06 form.
+- **`SessionEnd` is the load-bearing cleanup backstop** (fires on clean exit and
+  on SIGINT); `Interrupt` is an additional earlier interruption signal the plan
+  did not know about (Codex has **12** hook events, not 11). For MCP,
+  `SessionEnd` would be a **whole-turn-late** backstop — which is exactly why MCP
+  cannot be modeled as a scope; under direction B (D23) no MCP attempt is created
+  for any signal to retire.
+- **The fail-closed `PreToolUse` response**: both `{"decision":"block"}` and
+  `hookSpecificOutput.permissionDecision:"deny"` block the tool (probes 3/4/15);
+  T04 emits the `hookSpecificOutput` shape for a **`TrackedMutation`** failure
+  only — MCP/unknown are never denied for being untracked (D8/D23).
+- **MCP tool naming** is `mcp__<server>__<tool>` with an `exec-<uuid>`
+  `tool_use_id` (D2/D3 unchanged for MCP).
+- **Codex exposes a delegated-agent identity** (`agent_id`, on subagent events
+  only) — the plan uses it and does not invent one.
+- **Command architecture**: T01 found nothing against the recommended separate
+  hidden `sce hooks codex-mutation-scope` command; T02 still decides.
+- **Existing-hook trust identity**: the upstream label map is
+  `codex-rs/hooks/src/lib.rs` 96–108; a position-stable additive merge is a T05
+  implementation constraint, not an unknown.
+
+The real risks were empirical, not architectural. T01 resolved the built-in ones
+with fixtures and the MCP one by an explicit coverage boundary:
+
+- **RESOLVED — Failed tool with no terminal event, then another tool in the same
+  turn.** (D10a — the single highest-risk correctness question.) For built-in
+  `Bash` / `apply_patch`: **normal Case A** — a failed shell tool still fires
+  `PostToolUse`, a failed `apply_patch` writes nothing, and interruption ends the
+  turn; **exceptional Case B** (PR #268) — an arbitrary concurrent sibling
+  `PreToolUse` hook can deny after `Start(A)`, so a later same-lane
+  (`session_id`, `turn_id`) tracked built-in `PreToolUse(B)` sweeps the stale
+  predecessor (`Abandon` -> `Flush` -> `Start(B)`) with a
+  `StalePredecessorBlocked` backstop. For **MCP: Case C *if modeled as a
+  scope*** — probes
+  13/14/16/17 prove a mutation-capable MCP tool can mutate-then-fail with no
+  terminal hook, no cleanup signal reaches the adapter before the successor
+  `PreToolUse`, and same-lane MCP executions can overlap. **Resolved by direction
+  B (D23):** MCP/unknown are `Untracked`, so no MCP attempt or scope exists, the
+  D10a tension never arises for them, and the un-attributed MCP mutation is a
+  documented coverage boundary. The MCP lifecycle did **not** become safe — it is
+  simply out of scope for the v1 adapter.
+- **Is there any reliable terminal signal for a failed mutation-capable tool at
+  all?** (D10.) Even outside the successor case, the failed-partial-mutation
+  interval with no `Close` is bounded only by the next lifecycle signal + a
+  re-baselining `flush` — a deliberate false-negative.
+- **Which Codex lifecycle signal is the load-bearing cleanup backstop?** (D12.)
+  Claude's is `SessionEnd`. Codex's must be one T01 proves fires on process/
+  session termination with a usable `session_id`. If none does, outstanding
+  attempts can only be retired on the next turn's `PreToolUse` via the recovery
+  barrier — acceptable but weaker.
+- **What is the exact Codex-native fail-closed response for the supported
+  version?** (D8.) `permissionDecision: "deny"`, `{"decision":"block"}`, or a
+  non-zero exit — version-dependent, and the adapter must emit exactly the one
+  that blocks the tool.
+- **RESOLVED — Can Codex overlap its own mutation-capable executions?** (D1/D14.)
+  **Yes, via MCP** (probes 16/17). Built-in `Bash` / `apply_patch` remained
+  serial across all 11 built-in probes. Under direction B, MCP executions are
+  `Untracked` and produce no tracked scopes, so there is **no MCP-derived
+  `AiContended`**; the T06 concurrency regression exercises the **cross-harness**
+  form only, and a separate `Bash`-overlapping-MCP regression documents the
+  `AiExclusive` = tracked-scope-exclusivity (not sole-authorship) semantic
+  (AC9f).
+- **Does Codex expose any delegated-agent identity?** (D3.) If not, there is no
+  per-agent cleanup sweep and no `agent_id` in the `ScopeId` — and the plan
+  must not invent one.
+- **Command architecture** (D17): separate `sce hooks codex-mutation-scope`
+  (recommended, decided in T02) versus extending the `sce hooks codex`
+  dispatcher. Not blocking — T02 decides against T01 + the code with a recorded
+  rationale.
+- **Can the mutation-scope registrations be added without disturbing the
+  existing hooks' Codex trust identity?** (D20.) Codex trust keys on
+  `event label + matcher-group index + handler index + handler hash`, so a
+  non-additive merge would silently un-trust the four working `sce hooks codex`
+  hooks. T05 must merge additively (append, never prepend/renumber) and prove
+  every existing identity tuple + trust key is unchanged; if some structure
+  genuinely cannot preserve position, doctor must say re-trust is needed. Not
+  blocking — this is a T05 implementation constraint, not an unknown.
+
+**Protocol / formal scope — how it actually resolved.** The adapter work needed
+no formal change: the generic mutation-scope contract already models
+`Start`/`Advance`/`Close`/`Flush`/`abandon`, already accepts `ActorKind::Codex`,
+and already handles replay idempotency, conservative recovery, and `AiContended`
+— the Claude adapter proved the contract is sufficient for a concrete harness
+without touching any of it. The T01 MCP D10a Case C finding did **not** force a
+protocol change either: re-planning direction B (D23) resolves it entirely
+within the Codex adapter's coverage boundary — MCP and unknown tools are
+`Untracked`, and the runtime already models exclusivity among the tracked scopes
+it is told about rather than global filesystem authorship.
+
+**One formal change was nevertheless required, for a different cause, and is
+accepted.** T04's lifecycle analysis found that an arbitrary sibling
+`PreToolUse` hook can deny a Codex tool *after* SCE drove `Start(A)`, with the
+aggregate verdict never exposed to SCE. `ScopeState { actor_kind: Codex, status:
+Active }` is then the identical observable for "A is running" and "A was denied",
+so no adapter-local fix exists, and a cross-harness boundary observing a mutation
+in that window would emit **false positive** attribution. The **fifth PR #268
+follow-up** therefore intentionally refined the generic protocol and the Quint
+model with boundary-aware unconfirmed-Codex attribution semantics (D14):
+`spec/mutation_cursor.qnt`, `spec/mutation_cursor.md`,
+`cli/src/services/mutation_trace/protocol.rs`, and the mutation-trace runtime /
+MBT tests that refine and validate the rule. That is the **only** protocol /
+Quint / runtime-semantic / attribution-algorithm change in this PR (AC22).
+
+**No mutation-trace SQL migration and no Agent Trace schema change exists or is
+expected**, and no *further* protocol, Quint, runtime-semantic, or
+attribution-algorithm change is expected after that follow-up — T06 and T07 are
+frozen against the post-follow-up head. Future work (direction C — first-class
+MCP attribution via a richer lifecycle mechanism) remains a separate, explicitly
+justified PR.
+
+## Validation Report
+
+**Status:** validated
+**Date:** 2026-09-08
+
+### Commands run
+
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::codex_mutation_scope` -> exit 0 (146 passed, 1 ignored)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::mutation_scope` -> exit 0 (36 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::codex` -> exit 0 (276 passed, 1 ignored)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::` -> exit 0 (478 passed, 1 ignored)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::mutation_trace::` -> exit 0 (336 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::codex_hook_config` -> exit 0 (36 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::doctor::` -> exit 0 (27 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` -> exit 0 (1320 passed, 1 ignored)
+- `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` -> exit 0 (completed without warnings)
+- `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` -> exit 0 (format check passed)
+- `nix run .#pkl-check-generated` -> exit 0 (141 generated files; inventory sha256 `b5967aeccf044184f8e6aaab0a863254726e849664f95abdc733c77065dcb34e`)
+- `nix flake check` -> exit 0 (all checks passed; incompatible systems omitted)
+- `nix run .#sce -- hooks codex-mutation-scope </dev/null` -> exit 4 (strict empty-payload diagnostic, not unknown subcommand)
+- `nix run .#sce -- --help` and `nix run .#sce -- hooks --help` -> exit 0 (hidden command omitted from both help surfaces)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::parse::command_runtime` -> exit 0 (15 passed, including routing and hidden-help tests)
+- `nix shell nixpkgs#ripgrep -c rg -n --type rust '^\\s*use\\s+crate::services::mutation_trace::(runtime|protocol|store)|::(RepositoryAgentTraceDb|WorktreeId|GitSnapshotService)\\b' cli/src/services/hooks/codex_mutation_scope/` -> exit 0 (only test-module matches)
+- `git diff --name-only origin/claude-mutation-scope-integration -- cli/migrations/agent-trace-repository/ config/schema/agent-trace.schema.json` -> exit 0 (empty)
+- `git diff --name-only b72f6c2c -- spec/mutation_cursor.qnt spec/mutation_cursor.md cli/src/services/mutation_trace/protocol.rs cli/src/services/mutation_trace/runtime/` -> exit 0 (empty)
+- Durable-context inspection and line-budget check -> passed (Codex domain and coverage boundary present; affected files at or below 250 lines)
+- Protocol/Quint diff inspection against `origin/claude-mutation-scope-integration` -> passed (limited to the accepted D14 unconfirmed-Codex attribution rule and its formal/refinement tests)
+
+### Success-criteria verification
+
+- [x] AC1: Hidden command exists, routes correctly, and is strict/non-fail-open -> direct invocation returned the strict parser error; both help surfaces omitted it; 15 command-runtime tests passed.
+- [x] AC2: Raw event parser validates required fields and rejects malformed payloads -> Codex adapter suite passed parser fixtures and rejection tests.
+- [x] AC3: Classification is total across tracked, delegation, and untracked tools -> classification and no-scope tests passed.
+- [x] AC9b: MCP and unknown tools pass through neutrally without adapter state -> adapter and production regressions passed.
+- [x] AC9c: MCP mutate-then-error leaves no stale state -> adapter and production regressions passed.
+- [x] AC9d: Failed MCP followed by a successor cannot interfere with tracked or MCP execution -> successor regression passed.
+- [x] AC9e: Parallel MCP executions create no scopes or contention -> parallel-MCP regression passed.
+- [x] AC9f: Tracked-tool plus MCP overlap retains tracked-scope exclusivity semantics -> real regression passed and durable context records that `AiExclusive` is not sole authorship.
+- [x] AC4: Duplicate live delivery is identity and event stable -> adapter identity/state and production regressions passed.
+- [x] AC5: Terminal scopes are never reused -> fresh-attempt and reused-identifier regressions passed.
+- [x] AC6: Tracked admission is write-ahead and forwards raw `cwd` -> ordering/seam and production regressions passed.
+- [x] AC7: Tracked setup failures fail closed while delegation/untracked tools remain neutral -> failure-classification, logging, and production regressions passed.
+- [x] AC8: Successful tracked tools close with eligible exclusive attribution -> real Git/DB regressions passed.
+- [x] AC9: Failed Bash and apply_patch behavior matches the frozen lifecycle evidence -> failed-tool regressions passed.
+- [x] AC9a: Built-in failed-A/successor-B handling prevents zombie scopes -> driver and production regressions passed.
+- [x] AC10: Tracked scopes remain distinct and D14 confirmation rules hold -> Codex cross-harness regressions and mutation-trace confirmation tests passed.
+- [x] AC11: Proven cleanup signals retire outstanding tracked attempts -> cleanup driver and production regressions passed.
+- [x] AC12: Recovery barrier denies tracked work until quiescent flush succeeds, without affecting untracked tools -> recovery regressions passed.
+- [x] AC13: Failed abandonment retains the attempt and arms recovery -> abandonment regression passed.
+- [x] AC14: Raw `cwd` isolates linked-worktree state without constructing `worktree_id` -> linked-worktree regression and boundary inspection passed.
+- [x] AC15: Background/detached limitations match Codex evidence -> documented unsupported-case regression passed.
+- [x] AC16: Codex setup output preserves existing registrations and adds mutation registrations -> generated parity, merge tests, and flake checks passed.
+- [x] AC16a: Existing trusted registration identity is preserved during upgrade -> canonical-four upgrade regression passed.
+- [x] AC17: Setup merge is idempotent and rejects malformed documents before replacement -> merge tests passed.
+- [x] AC17a: New event labels match upstream Codex labels -> dedicated label tests passed.
+- [x] AC18: Doctor reports structural, trust, and policy dimensions independently without trust/policy writes -> doctor suite passed.
+- [x] AC19: Production adapter dependency boundary is limited to the in-process mutation-scope seam -> prohibited direct-reference inspection found only test-module matches; manual production inspection passed.
+- [x] AC20: Mutation-scope regressions leave unrelated trace tables unchanged and state is under `<git-dir>/sce/` -> production row-count and state-location regressions passed.
+- [x] AC21: Crash/recovery invariants are replay-safe against the real runtime -> all three production crash-point regressions passed.
+- [x] AC22: Only the accepted D14 protocol/formal refinement exists, with SQL/schema and frozen-baseline diffs empty -> both empty-diff checks passed and the predecessor diff inspection passed.
+- [x] AC23: Durable context separates ingress, adapter, and runtime and records the complete Codex contract -> new domain and cross-reference inspection passed; all affected files fit the line budget.
+- [x] AC24: Unsupported and out-of-coverage limits are explicit, including MCP rationale and future work -> the durable “Unsupported / Coverage boundary” inspection passed.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- First-class MCP mutation attribution remains explicitly deferred to a separate richer-lifecycle change.

@@ -90,9 +90,12 @@ own the hierarchy. Areas render in deterministic order:
 - Codex: `Skills`, `Hooks`
 
 Codex's `Hooks` area covers `.codex/hooks/run-sce-or-show-install-guidance.sh`
-plus one row per required `.codex/hooks.json` registration
-(`UserPromptSubmit`, `Stop`, `PreToolUse(Bash)`, `PostToolUse(apply_patch)`)
-instead of one whole-file row. Doctor classifies each registration
+plus one row per required `.codex/hooks.json` registration instead of one
+whole-file row: the four `sce hooks codex` registrations (`UserPromptSubmit`,
+`Stop`, `PreToolUse(Bash)`, `PostToolUse(apply_patch)`) and, under distinct
+`(mutation-scope)` rows, the six `sce hooks codex-mutation-scope` registrations
+(`PreToolUse`, `PostToolUse`, `Stop`, `Interrupt`, `SubagentStop`,
+`SessionEnd`). Doctor classifies each registration
 structurally — `[PASS]` when present and canonical, `[MISS]` when absent,
 `[FAIL]` when stale (an SCE-owned handler exists but does not match the
 canonical one) or when the whole document cannot be structurally validated —
@@ -105,7 +108,7 @@ hook-discovery *policy* before trust is ever consulted. Doctor probes the
 installed `codex` binary's own composed `allow_managed_hooks_only`
 requirement once per invocation (`codex app-server --stdio`'s read-only
 `configRequirements/read`, bounded by a strict timeout) and reuses that one
-result for all four registrations: `[FAIL]` when the effective policy
+result for every required registration: `[FAIL]` when the effective policy
 excludes project hooks (`allow_managed_hooks_only = true` — this is an
 Error-severity, administrative-only problem, since SCE cannot change Codex's
 managed/enterprise policy), `[WARN]` when the policy could not be determined

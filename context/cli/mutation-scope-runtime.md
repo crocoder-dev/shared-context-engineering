@@ -1,27 +1,21 @@
 # Mutation-scope runtime: the harness-adapter contract
 
-The crate-visible surface of `cli/src/services/mutation_trace/runtime/`, and the
-lifecycle contract every harness adapter (Codex, Claude Code, OpenCode, Pi) must
-uphold when it drives that surface.
+The crate-visible surface of `cli/src/services/mutation_trace/runtime/` and the
+lifecycle contract every Codex, Claude Code, OpenCode, and Pi adapter must uphold.
 
 Built by the `mutation-scope-runtime-integration` plan
 (`context/plans/mutation-scope-runtime-integration.md`). The generic
-`sce hooks mutation-scope` CLI ingress
-([`mutation-scope-hook-ingress.md`](mutation-scope-hook-ingress.md)) and the
-shipped Claude Code adapter
-([`claude-mutation-scope-integration.md`](claude-mutation-scope-integration.md);
-Codex/OpenCode/Pi: none yet — see Status) both drive this seam. This file is the
-contract every harness adapter is written against, not shipped-adapter behavior.
+[`sce hooks mutation-scope` ingress](mutation-scope-hook-ingress.md), shipped
+Claude Code adapter, and Codex adapter (`sce hooks codex-mutation-scope`,
+registered by `sce setup --codex`; OpenCode/Pi: none yet) drive this seam. This
+file records the adapter contract; the Codex-specific mapping is in
+[`codex-mutation-scope-integration.md`](codex-mutation-scope-integration.md).
 
-The mechanics behind each entrypoint live in their own domain files:
-[`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md)
-(`coordinate()`),
-[`mutation-trace-scope-abandonment.md`](mutation-trace-scope-abandonment.md)
-(`abandon_scope()`),
-[`mutation-trace-protected-worktree.md`](mutation-trace-protected-worktree.md)
-(the shared safety prefix), and
-[`mutation-trace-protocol.md`](mutation-trace-protocol.md) (the pure protocol).
-This file is the layer above them: what an adapter is required to do, and why.
+The mechanics live in [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md)
+(`coordinate()`), [`mutation-trace-scope-abandonment.md`](mutation-trace-scope-abandonment.md)
+(`abandon_scope()`), [`mutation-trace-protected-worktree.md`](mutation-trace-protected-worktree.md)
+(safety prefix), and [`mutation-trace-protocol.md`](mutation-trace-protocol.md)
+(pure protocol). This file records what adapters must do and why.
 
 ## The exported seam
 
@@ -41,41 +35,29 @@ This file is the layer above them: what an adapter is required to do, and why.
 | `AbandonScopeError` | `scope_runtime` | its error surface |
 
 `ExternalTaintOperation` crosses the boundary because it is part of
-`CoordinateError`'s own public shape — a crate-visible error a caller cannot
-match on is not a usable seam. It lives in `protected_worktree.rs` and reaches
-the seam through `coordinator.rs`'s `pub use super::protected_worktree::
-ExternalTaintOperation`, so the type becomes crate-visible **without**
-`protected_worktree` becoming a public module.
+`CoordinateError`'s public shape. It lives in `protected_worktree.rs` and is
+re-exported by `coordinator.rs` without making that module public.
 
-Every `mod` declaration in `runtime/mod.rs` stays private. Nothing else is
-reachable from `git_snapshot`, `external_taint`, `worktree_lock`,
-`ref_reconciliation`, or `protected_worktree` — in particular `ProtectedWorktree`,
-`ProtectedWorktreeError`, and `WORKTREE_LOCK_TIMEOUT` remain internal to
-`runtime`, as does `reconcile_worktree`. An adapter drives the runtime only
-through the two entrypoints; it never assembles the safety prefix itself.
+Every runtime `mod` stays private, including `ProtectedWorktree`, its error,
+`WORKTREE_LOCK_TIMEOUT`, and `reconcile_worktree`. Adapters drive only the two
+entrypoints and never assemble the safety prefix.
 
-The re-exports remain the intentional crate-visible runtime seam; the generic
-`sce hooks mutation-scope` ingress consumes it while the runtime submodules and
-safety-prefix implementation stay private. Both re-export statements still carry
-`#[allow(unused_imports)]` in `runtime/mod.rs`, since no consumer yet names the
-two completing types (`ExternalTaintOperation`, `AbandonRecoveryReason`) that
-`clippy --all-targets -- -D warnings` would otherwise flag.
+The re-exports are the intentional crate-visible seam consumed by the generic
+ingress; runtime internals stay private. The two re-export statements retain
+`#[allow(unused_imports)]` because no consumer names the completing types yet.
 
 ## What a mutation scope is
 
-**A scope is one independently mutation-capable execution.** Not one session,
-not one process, not one harness.
+**A scope is one independently mutation-capable execution**, not a session,
+process, or harness.
 
-The practical consequence: a main agent and a subagent that can each edit the
-worktree concurrently are two scopes and must carry **distinct `ScopeId`s**. If
-an adapter gives them one shared `ScopeId`, their intervals collapse into a
-single exclusivity claim and the protocol can never report `AiContended` for two
-executions that genuinely raced.
+A main agent and subagent that can edit concurrently are two scopes with
+**distinct `ScopeId`s**; sharing one would collapse their intervals and hide
+`AiContended`.
 
-A `ScopeId` is durably bound to one worktree for life. `abandon_scope()` rejects
-a target whose durable `worktree_id` differs from the `WorktreeId` the invocation
-derived from its own checkout (`AbandonScopeError::WorktreeIdentityMismatch`),
-and writes nothing.
+A `ScopeId` is durably bound to one worktree. `abandon_scope()` rejects a target
+whose durable identity differs from the invoking checkout
+(`WorktreeIdentityMismatch`) and writes nothing.
 
 ## `Start` / `Advance` / `Close`
 
@@ -231,8 +213,10 @@ likewise means two or more scopes overlapped, not that two humans disagreed.
 
 Consumers building human-vs-AI authorship claims need evidence beyond this
 signal; the protocol deliberately does not supply it. The complementary states
-are `AiContended` (more than one live scope) and `IneligibleUnscoped` (no live
-scope, or the worktree is unhealthy, externally tainted, or needs rebaseline).
+are `AiContended` (more than one live scope when no unconfirmed live Codex scope
+remains at the boundary) and `IneligibleUnscoped` (no live scope, an
+unconfirmed live Codex scope, or the worktree is unhealthy, externally tainted,
+or needs rebaseline).
 
 ## Status
 
@@ -254,6 +238,12 @@ via the `pub(crate)` in-process seam
 and is covered by real-repository regressions against a real Agent Trace DB — its
 full contract is in
 [`claude-mutation-scope-integration.md`](claude-mutation-scope-integration.md).
-Codex, OpenCode, and Pi have no adapter; each still owns the `ScopeId` /
-`EventId` derivation and stale-process detection this contract requires, and
-repository-scoped unowned-checkout cleanup is still open.
+A Codex adapter (`cli/src/services/hooks/codex_mutation_scope/`, hidden
+`sce hooks codex-mutation-scope`) also maps onto this contract through the same
+seam and is now registered by `sce setup --codex`; its full contract (the
+tracked/delegation/untracked tool classification, the partial-by-tool-surface
+coverage boundary, and the checkout-local recovery bookkeeping) is in
+[`codex-mutation-scope-integration.md`](codex-mutation-scope-integration.md).
+OpenCode and Pi have no adapter; each remaining harness still owns the
+`ScopeId` / `EventId` derivation and stale-process detection this contract
+requires, and repository-scoped unowned-checkout cleanup is still open.
