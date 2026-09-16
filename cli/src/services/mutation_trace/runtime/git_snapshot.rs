@@ -76,6 +76,31 @@ impl GitSnapshotService {
         )
     }
 
+    pub fn head_tree(&self) -> Result<TreeId> {
+        let tree = self.run_git(&["rev-parse", "HEAD^{tree}"], None)?;
+        Ok(TreeId(tree.trim().to_string()))
+    }
+
+    pub fn file_at_tree(&self, tree: &TreeId, path: &str) -> Result<Option<String>> {
+        let spec = format!("{}:{}", tree.0, path);
+        let output = Command::new("git")
+            .args(["cat-file", "blob", &spec])
+            .current_dir(&self.repository_root)
+            .env("GIT_DIR", &self.git_dir)
+            .output()
+            .with_context(|| {
+                format!(
+                    "Failed to run git cat-file blob '{spec}' in '{}'",
+                    self.repository_root.display()
+                )
+            })?;
+
+        if !output.status.success() {
+            return Ok(None);
+        }
+        Ok(String::from_utf8(output.stdout).ok())
+    }
+
     /// Inventory every SCE snapshot pin owned by `worktree_id`.
     ///
     /// Runs `git for-each-ref` constrained to the single path prefix
@@ -420,7 +445,7 @@ fn pin_ref_name(worktree_id: &WorktreeId, tree: &TreeId) -> String {
     format!("{REF_NAMESPACE}/{}/{}", worktree_id.0, tree.0)
 }
 
-pub(super) fn resolve_git_dir(repository_root: &Path) -> Result<PathBuf> {
+pub(crate) fn resolve_git_dir(repository_root: &Path) -> Result<PathBuf> {
     let git_dir = PathBuf::from(run_rev_parse(
         repository_root,
         &["rev-parse", "--absolute-git-dir"],
@@ -450,7 +475,7 @@ fn resolve_git_common_dir(repository_root: &Path) -> Result<PathBuf> {
     Ok(git_common_dir)
 }
 
-pub(super) fn resolve_worktree_id(repository_root: &Path) -> Result<WorktreeId> {
+pub(crate) fn resolve_worktree_id(repository_root: &Path) -> Result<WorktreeId> {
     let git_dir = resolve_git_dir(repository_root)?;
     let git_common_dir = resolve_git_common_dir(repository_root)?;
 
