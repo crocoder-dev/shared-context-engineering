@@ -1000,14 +1000,14 @@ mod tests {
             &db,
             &capture,
             &worktree,
-            &RuntimeBoundary::Advance {
-                scope: ScopeId("scope-a".to_string()),
-                event: EventId("evt-advance-a".to_string()),
-                actor_kind: actor_a,
+            &RuntimeBoundary::Close {
+                scope: ScopeId("scope-b".to_string()),
+                event: EventId("evt-close-b".to_string()),
+                actor_kind: actor_b,
             },
             false,
         )
-        .expect("advance should succeed");
+        .expect("close should succeed");
 
         let event = outcome
             .mutation_event
