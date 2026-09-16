@@ -211,15 +211,18 @@ loads a `ProtocolState`; `protocol.rs` only transitions already-known ones.
 
 ## Target end-state architecture
 
-The plan's file split anticipated three seams beyond `protocol.rs`. `store.rs`
-now exists as a real database call site (`mutation-cursor-store-persistence`);
-`coordinator.rs`/`git_snapshot.rs` remain future work:
+The plan's file split anticipated three seams beyond `protocol.rs`. `store.rs`,
+`runtime/git_snapshot.rs`, and `coordinator.rs` (with its public `coordinate()`
+entrypoint) now all exist as real call sites (see
+[`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md)),
+with the runtime layer covered by cross-module integration tests; only
+harness/command wiring remains:
 
 ```mermaid
 flowchart LR
-    coordinator["coordinator.rs\n(imperative shell:\nDB load, Git snapshot,\nCAS/retry, persist)"]
+    coordinator["coordinator.rs (implemented)\n(imperative shell:\nlock, DB load, Git snapshot,\nCAS/retry, persist)"]
     protocol["protocol.rs\n(pure transitions —\nprepare/commit/attribution/\ntaint/abandon/recover\nall implemented)"]
-    git_snapshot["git_snapshot.rs\n(isolated Git object store,\ntemporary index, tree capture/diff)"]
+    git_snapshot["runtime/git_snapshot.rs (implemented)\n(isolated Git snapshot,\ntemporary index, tree capture/diff,\nSCE-owned ref pinning)"]
     store["store.rs\n(cursor/revision, scopes,\nprocessed events, mutation\nevidence, CAS transaction)"]
 
     coordinator --> protocol
@@ -227,20 +230,18 @@ flowchart LR
     coordinator --> store
 ```
 
-Each seam's responsibility:
-
-- **`coordinator.rs`** (future work) — receives hook/session identity,
-  resolves scope actor/worktree identity, asks `store.rs` to load the scope,
-  obtains a `ProtocolState`, and calls the pure protocol.
+- **`coordinator.rs`** (implemented) — its public `coordinate()` acquires the
+  per-worktree lock, derives `WorktreeId` from checkout identity, drives one
+  Git snapshot, and calls the pure protocol under a bounded CAS-retry loop.
+- **`runtime/git_snapshot.rs`** (implemented) — captures an isolated worktree
+  snapshot and pins it durably; called by `coordinator.rs`.
 - **`store.rs`** (implemented) — loads and persists worktree/scope/event state
-  via a CAS-guarded commit; atomically creates a new scope as `NeverSeen`;
-  never remaps `actor_kind`/`worktree_id` for an existing `ScopeId` (see
-  "Runtime scope materialization" above).
-- **`protocol.rs`** — assumes referenced scopes are already represented in
+  via a CAS-guarded commit; never remaps an existing `ScopeId`'s
+  `actor_kind`/`worktree_id` (see "Runtime scope materialization" above).
+- **`protocol.rs`** — assumes referenced scopes already exist in
   `ProtocolState.scopes`; validates and transitions lifecycle state only.
 
-`protocol.rs` stays free of any Git object, DB row, or CAS transaction concept;
-`coordinator.rs`/`git_snapshot.rs` are not created by this or the store plan.
+`protocol.rs` stays free of any Git object, DB row, or CAS transaction concept.
 
 ## Authoritative source
 
