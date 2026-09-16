@@ -126,15 +126,18 @@ where
     for attempt in 1..=policy.max_attempts {
         let started_at = Instant::now();
         let outcome = operation(attempt);
-        let timed_out = started_at.elapsed() >= policy.timeout();
 
-        match (timed_out, outcome) {
-            (false, Ok(value)) => return Ok(value),
-            (true, _) => {
-                last_error = format!("attempt {attempt} timed out after {}ms", policy.timeout_ms);
-            }
-            (false, Err(error)) => {
-                last_error = error.to_string();
+        match outcome {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                last_error = if started_at.elapsed() >= policy.timeout() {
+                    format!(
+                        "attempt {attempt} exceeded {}ms and failed: {error}",
+                        policy.timeout_ms
+                    )
+                } else {
+                    error.to_string()
+                };
             }
         }
 
@@ -220,18 +223,18 @@ mod tests {
     }
 
     #[test]
-    fn sync_retry_treats_slow_attempt_as_timeout() {
+    fn sync_retry_returns_a_slow_success_without_retrying_it() {
         let policy = RetryPolicy {
-            max_attempts: 1,
+            max_attempts: 5,
             timeout_ms: 5,
             initial_backoff_ms: 0,
             max_backoff_ms: 0,
         };
         let mut attempts = 0;
 
-        let error = run_with_retry_sync(
+        let value = run_with_retry_sync(
             policy,
-            "sync timeout",
+            "sync slow success",
             "try again when the resource is available",
             |attempt| {
                 attempts = attempt;
@@ -239,12 +242,64 @@ mod tests {
                 Ok("late success")
             },
         )
+        .expect("a completed success must never be reclassified as a timeout");
+
+        assert_eq!(value, "late success");
+        assert_eq!(attempts, 1, "a slow success must not be retried");
+    }
+
+    #[test]
+    fn sync_retry_annotates_a_slow_failure_with_the_elapsed_bound() {
+        let policy = RetryPolicy {
+            max_attempts: 1,
+            timeout_ms: 5,
+            initial_backoff_ms: 0,
+            max_backoff_ms: 0,
+        };
+
+        let error = run_with_retry_sync::<(), _>(
+            policy,
+            "sync slow failure",
+            "try again when the resource is available",
+            |_| {
+                thread::sleep(Duration::from_millis(20));
+                Err(anyhow!("connection refused"))
+            },
+        )
         .unwrap_err();
 
-        assert_eq!(attempts, 1);
         assert!(error
             .to_string()
-            .contains("Last error: attempt 1 timed out after 5ms"));
+            .contains("attempt 1 exceeded 5ms and failed: connection refused"));
+    }
+
+    #[test]
+    fn sync_retry_does_not_re_execute_a_committed_write_after_a_slow_first_attempt() {
+        let policy = RetryPolicy {
+            max_attempts: 5,
+            timeout_ms: 1,
+            initial_backoff_ms: 0,
+            max_backoff_ms: 0,
+        };
+        let mut inserted_keys: Vec<u32> = Vec::new();
+        let mut calls = 0;
+
+        let result = run_with_retry_sync(policy, "insert once", "retry later", |_| {
+            calls += 1;
+            thread::sleep(Duration::from_millis(5));
+            if inserted_keys.contains(&1) {
+                return Err(anyhow!("UNIQUE constraint failed: keys.id"));
+            }
+            inserted_keys.push(1);
+            Ok(())
+        });
+
+        assert!(
+            result.is_ok(),
+            "the committed first attempt must be returned"
+        );
+        assert_eq!(calls, 1, "the non-idempotent write must run exactly once");
+        assert_eq!(inserted_keys, vec![1]);
     }
 
     #[test]
