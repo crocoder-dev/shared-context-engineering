@@ -5,7 +5,6 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
-use crate::services::checkout::{read_checkout_id, resolve_git_dir};
 use crate::services::mutation_trace::attribution::{
     exclude_direct_coverage, logical_path, patch_for_locations, MutationAttributionResult,
     PatchLineLocation,
@@ -17,7 +16,7 @@ use crate::services::mutation_trace::store::{
 use crate::services::mutation_trace::types::{FailureKind, TreeId, WorktreeId};
 use crate::services::patch::{parse_patch, ParsedPatch, TouchedLineKind};
 
-use super::git_snapshot::GitSnapshotService;
+use super::git_snapshot::{resolve_git_dir, resolve_worktree_id, GitSnapshotService};
 use super::worktree_lock::WorktreeLock;
 
 pub const MAX_MUTATION_ATTRIBUTION_EVENTS: usize = 128;
@@ -396,7 +395,7 @@ pub(crate) fn resolve_post_commit_mutation_ai_patch(
     let Ok(git_dir) = resolve_git_dir(repository_root) else {
         return empty_patch();
     };
-    let Ok(Some(checkout_id)) = read_checkout_id(&git_dir) else {
+    let Ok(worktree) = resolve_worktree_id(repository_root) else {
         return empty_patch();
     };
     let Ok(snapshot) = GitSnapshotService::new(repository_root) else {
@@ -406,7 +405,6 @@ pub(crate) fn resolve_post_commit_mutation_ai_patch(
         return empty_patch();
     };
     let store = MutationTraceStore::new(db);
-    let worktree = WorktreeId(checkout_id);
 
     let Some(revision_ceiling) = capture_revision_cut(&git_dir, &store, &worktree) else {
         return empty_patch();

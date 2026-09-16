@@ -445,7 +445,7 @@ fn pin_ref_name(worktree_id: &WorktreeId, tree: &TreeId) -> String {
     format!("{REF_NAMESPACE}/{}/{}", worktree_id.0, tree.0)
 }
 
-pub(super) fn resolve_git_dir(repository_root: &Path) -> Result<PathBuf> {
+pub(crate) fn resolve_git_dir(repository_root: &Path) -> Result<PathBuf> {
     let git_dir = PathBuf::from(run_rev_parse(
         repository_root,
         &["rev-parse", "--absolute-git-dir"],
@@ -475,7 +475,7 @@ fn resolve_git_common_dir(repository_root: &Path) -> Result<PathBuf> {
     Ok(git_common_dir)
 }
 
-pub(super) fn resolve_worktree_id(repository_root: &Path) -> Result<WorktreeId> {
+pub(crate) fn resolve_worktree_id(repository_root: &Path) -> Result<WorktreeId> {
     let git_dir = resolve_git_dir(repository_root)?;
     let git_common_dir = resolve_git_common_dir(repository_root)?;
 

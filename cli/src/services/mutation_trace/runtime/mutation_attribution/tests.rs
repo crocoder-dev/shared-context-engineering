@@ -853,19 +853,15 @@ fn init_repo_with_commit(repo_root: &std::path::Path) {
 }
 
 #[test]
-fn post_commit_entry_point_without_checkout_identity_yields_empty_and_creates_none() {
+fn post_commit_entry_point_with_no_mutation_events_yields_empty() {
     use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 
     let temp = tempfile::Builder::new()
-        .prefix("sce-post-commit-lineage-no-identity-")
+        .prefix("sce-post-commit-lineage-no-events-")
         .tempdir()
         .expect("temp dir");
     let repo_root = temp.path().join("repo");
     init_repo_with_commit(&repo_root);
-
-    let git_dir = resolve_git_dir(&repo_root).expect("git dir");
-    let checkout_id_path = git_dir.join("sce").join("checkout-id");
-    assert!(!checkout_id_path.exists());
 
     let db = RepositoryAgentTraceDb::new_at(temp.path().join("agent-trace.db")).expect("db opens");
 
@@ -877,13 +873,11 @@ fn post_commit_entry_point_without_checkout_identity_yields_empty_and_creates_no
     );
 
     assert!(result.files.is_empty());
-    assert!(!checkout_id_path.exists());
 }
 
 #[test]
 fn post_commit_entry_point_resolves_current_worktree_and_ignores_foreign_rows() {
     use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
-    use crate::services::checkout::get_or_create_checkout_id;
     use crate::services::mutation_trace::store::encode_revision;
 
     let temp = tempfile::Builder::new()
@@ -893,8 +887,7 @@ fn post_commit_entry_point_resolves_current_worktree_and_ignores_foreign_rows() 
     let repo_root = temp.path().join("repo");
     init_repo_with_commit(&repo_root);
 
-    let git_dir = resolve_git_dir(&repo_root).expect("git dir");
-    let checkout_id = get_or_create_checkout_id(&git_dir).expect("checkout id");
+    let worktree_id = resolve_worktree_id(&repo_root).expect("worktree id");
 
     let snapshot = GitSnapshotService::new(&repo_root).expect("snapshot service");
     std::fs::write(repo_root.join("file.rs"), b"one\n").expect("write");
@@ -914,8 +907,8 @@ fn post_commit_entry_point_resolves_current_worktree_and_ignores_foreign_rows() 
         .expect("git commit");
 
     let db = RepositoryAgentTraceDb::new_at(temp.path().join("agent-trace.db")).expect("db opens");
-    for (worktree_id, revision, scope) in [
-        (checkout_id.as_str(), 1u64, "scope-current"),
+    for (row_worktree_id, revision, scope) in [
+        (worktree_id.0.as_str(), 1u64, "scope-current"),
         ("wt-foreign", 2u64, "scope-foreign"),
     ] {
         db.execute(
@@ -924,7 +917,7 @@ fn post_commit_entry_point_resolves_current_worktree_and_ignores_foreign_rows() 
                  attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id)
              VALUES (?1, ?2, ?3, ?4, 0, 'healthy', 'ai_exclusive', ?5, 'flush', NULL, NULL)",
             (
-                worktree_id,
+                row_worktree_id,
                 encode_revision(revision).as_slice(),
                 before.0.as_str(),
                 after.0.as_str(),

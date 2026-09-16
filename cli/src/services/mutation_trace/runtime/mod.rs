@@ -15,6 +15,8 @@ pub(crate) use coordinator::{
     coordinate, CoordinateError, CoordinateOutcome, ExternalTaintOperation, RuntimeBoundary,
 };
 #[allow(unused_imports)]
+pub(crate) use git_snapshot::{resolve_git_dir, resolve_worktree_id};
+#[allow(unused_imports)]
 pub(crate) use mutation_attribution::{
     resolve_bounded_mutation_attribution, resolve_post_commit_mutation_ai_patch,
     BoundedMutationAttribution, MutationAttributionBarrier, MutationEventPageSource,

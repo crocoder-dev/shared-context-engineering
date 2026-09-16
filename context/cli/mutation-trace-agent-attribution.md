@@ -110,17 +110,18 @@ identity.
 
 `resolve_post_commit_mutation_ai_patch(repository_root, &db, direct_coverage,
 committed_patch) -> ParsedPatch` is the read-only post-commit entrypoint. It
-resolves the invoking worktree's *existing* checkout identity
-([`checkout::resolve_git_dir`](checkout-identity.md) + `read_checkout_id`, never
-`get_or_create_*`), reads `HEAD^{tree}` as `commit_tree`, and captures the
-commit attribution cut: under the same worktree lock that serializes
-mutation-event transitions
+resolves the invoking worktree's identity from Git topology
+([`git_snapshot::resolve_git_dir` + `resolve_worktree_id`](mutation-trace-runtime-coordinator.md),
+which derive `WorktreeId` from `git rev-parse --absolute-git-dir` /
+`--git-common-dir` rather than any persisted identity file), reads
+`HEAD^{tree}` as `commit_tree`, and captures the commit attribution cut: under
+the same worktree lock that serializes mutation-event transitions
 ([`worktree_lock`](mutation-trace-runtime-coordinator.md)), it reads
 `MutationTraceStore::latest_mutation_event_revision` for the worktree. An event
 produced after the commit has a higher revision and cannot participate. The
 critical section is a single indexed read.
 
-An unresolvable git dir, an absent/unreadable checkout identity, an unavailable
+An unresolvable git dir, an unresolvable worktree identity, an unavailable
 snapshot service, an unreadable `HEAD` tree, a lock timeout, or no mutation
 history at all each yield an empty patch, so post-commit falls back to
 direct-only Agent Trace behavior. The entrypoint creates no identity and writes

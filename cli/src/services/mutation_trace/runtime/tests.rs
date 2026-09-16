@@ -5,23 +5,19 @@ use std::thread;
 use std::time::Duration;
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
-use crate::services::agent_trace_storage::{
-    resolve_agent_trace_storage_at_state_root, AgentTraceStorageContext,
-};
-use crate::services::checkout::{get_or_create_checkout_id, read_checkout_id, resolve_git_dir};
 use crate::services::mutation_trace::protocol;
 use crate::services::mutation_trace::store::{
     encode_revision, CasResult, DurableTransition, MutationTraceStore,
 };
 use crate::services::mutation_trace::types::{
     boundary_event_key, boundary_scope, ActorKind, AttemptId, Boundary, EventId, FailureKind,
-    ScopeId, ScopeStatus, WorktreeId,
+    ScopeId, ScopeStatus,
 };
 use crate::services::patch::{parse_patch, ParsedPatch};
 
 use super::coordinator::{coordinate, coordinate_inner, CoordinateError, RuntimeBoundary};
 use super::external_taint::ExternalTaintMarker;
-use super::git_snapshot::GitSnapshotService;
+use super::git_snapshot::{resolve_git_dir, resolve_worktree_id, GitSnapshotService};
 use super::mutation_attribution::resolve_bounded_mutation_attribution;
 use super::ref_reconciliation::{
     reconcile_worktree, reconcile_worktree_inner, ReconcileError, ReconciliationOutcome,
@@ -2213,9 +2209,8 @@ fn a_real_thread_cas_race_settles_on_the_competitors_terminal_status() {
 #[test]
 fn a_relevant_event_behind_128_newer_events_is_never_loaded_or_reconstructed() {
     let repo = TestRepo::new("attribution-horizon");
-    let git_dir = resolve_git_dir(&repo.repo_root).expect("git dir should resolve");
-    let checkout_id =
-        get_or_create_checkout_id(&git_dir).expect("checkout identity should resolve");
+    let worktree_id =
+        resolve_worktree_id(&repo.repo_root).expect("worktree identity should resolve");
     let snapshot =
         GitSnapshotService::new(&repo.repo_root).expect("a snapshot service should build");
 
@@ -2232,7 +2227,7 @@ fn a_relevant_event_behind_128_newer_events_is_never_loaded_or_reconstructed() {
     let db = repo.db();
     seed_attribution_event(
         &db,
-        &checkout_id,
+        &worktree_id.0,
         1,
         &before.0,
         &after.0,
@@ -2242,7 +2237,7 @@ fn a_relevant_event_behind_128_newer_events_is_never_loaded_or_reconstructed() {
     for revision in 2..=129 {
         seed_attribution_event(
             &db,
-            &checkout_id,
+            &worktree_id.0,
             revision,
             &after.0,
             &after.0,
@@ -2261,7 +2256,7 @@ fn a_relevant_event_behind_128_newer_events_is_never_loaded_or_reconstructed() {
     let attribution = resolve_bounded_mutation_attribution(
         &store,
         &snapshot,
-        &WorktreeId(checkout_id.clone()),
+        &worktree_id,
         &ParsedPatch { files: Vec::new() },
         &committed,
         &after,
