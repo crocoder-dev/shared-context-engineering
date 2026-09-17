@@ -6,8 +6,8 @@ Built by the `mutation-scope-runtime-integration` plan (`context/plans/mutation-
 [`sce hooks mutation-scope` ingress](mutation-scope-hook-ingress.md), the shipped
 Claude Code, Codex, and OpenCode adapters (OpenCode reachable in production via a
 generated plugin installed last by `sce setup`) drive this seam, plus a Pi adapter
-reachable via its own hidden CLI command but not yet wired into the real Pi
-extension. This file records the adapter contract; the harness-specific mappings are in
+driven by the canonical generated extension in ordinary Pi sessions. This file
+records the adapter contract; the harness-specific mappings are in
 [`codex-mutation-scope-integration.md`](codex-mutation-scope-integration.md),
 [`opencode-mutation-scope-integration.md`](opencode-mutation-scope-integration.md),
 and [`pi-mutation-scope-integration.md`](pi-mutation-scope-integration.md).
