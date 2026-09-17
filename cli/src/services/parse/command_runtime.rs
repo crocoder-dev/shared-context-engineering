@@ -516,6 +516,12 @@ fn convert_hooks_subcommand_request(
         cli_schema::HooksSubcommand::OpenCodeMutationScope => {
             Ok(services::hooks::HookSubcommand::OpenCodeMutationScope)
         }
+        cli_schema::HooksSubcommand::PiMutationScope => {
+            Ok(services::hooks::HookSubcommand::PiMutationScope)
+        }
+        cli_schema::HooksSubcommand::ExternalMutationGuard => {
+            Ok(services::hooks::HookSubcommand::ExternalMutationGuard)
+        }
     }
 }
 
@@ -686,6 +692,56 @@ mod tests {
         assert!(
             !help.contains("opencode-mutation-scope"),
             "opencode-mutation-scope must not be listed in `sce hooks --help`, got: {help}"
+        );
+    }
+
+    #[test]
+    fn pi_mutation_scope_hook_parses_to_hook_subcommand() {
+        let command = parse(&["sce", "hooks", "pi-mutation-scope"]);
+
+        let RuntimeCommand::Hooks(command) = command else {
+            panic!("expected hooks command");
+        };
+
+        assert_eq!(
+            command.subcommand,
+            services::hooks::HookSubcommand::PiMutationScope
+        );
+    }
+
+    #[test]
+    fn pi_mutation_scope_hook_is_hidden_from_hooks_help() {
+        let help =
+            cli_schema::render_help_for_path(&["hooks"]).expect("hooks help should be renderable");
+
+        assert!(
+            !help.contains("pi-mutation-scope"),
+            "pi-mutation-scope must not be listed in `sce hooks --help`, got: {help}"
+        );
+    }
+
+    #[test]
+    fn external_mutation_guard_hook_parses_to_hook_subcommand() {
+        let command = parse(&["sce", "hooks", "external-mutation-guard"]);
+
+        let RuntimeCommand::Hooks(command) = command else {
+            panic!("expected hooks command");
+        };
+
+        assert_eq!(
+            command.subcommand,
+            services::hooks::HookSubcommand::ExternalMutationGuard
+        );
+    }
+
+    #[test]
+    fn external_mutation_guard_hook_is_hidden_from_hooks_help() {
+        let help =
+            cli_schema::render_help_for_path(&["hooks"]).expect("hooks help should be renderable");
+
+        assert!(
+            !help.contains("external-mutation-guard"),
+            "external-mutation-guard must not be listed in `sce hooks --help`, got: {help}"
         );
     }
 
