@@ -2,7 +2,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use uuid::Uuid;
 
 use crate::services::mutation_trace::types::{TreeId, WorktreeId};
@@ -473,6 +473,35 @@ fn resolve_git_common_dir(repository_root: &Path) -> Result<PathBuf> {
     );
 
     Ok(git_common_dir)
+}
+
+pub(crate) fn resolve_worktree_root(repository_root: &Path) -> Result<PathBuf> {
+    let reported_root = run_rev_parse(
+        repository_root,
+        &["rev-parse", "--path-format=absolute", "--show-toplevel"],
+    )?;
+
+    let root_path = PathBuf::from(reported_root);
+    debug_assert!(
+        root_path.is_absolute(),
+        "git rev-parse --path-format=absolute --show-toplevel should always return an absolute path, got '{}'",
+        root_path.display()
+    );
+
+    let canonical_root = std::fs::canonicalize(&root_path).with_context(|| {
+        format!(
+            "failed to canonicalize the worktree root '{}'",
+            root_path.display()
+        )
+    })?;
+    if !canonical_root.is_dir() {
+        bail!(
+            "resolved worktree root '{}' is not a directory",
+            canonical_root.display()
+        );
+    }
+
+    Ok(canonical_root)
 }
 
 pub(crate) fn resolve_worktree_id(repository_root: &Path) -> Result<WorktreeId> {

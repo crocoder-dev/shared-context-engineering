@@ -50,11 +50,33 @@ soundness rests on two specific, deliberately-chosen kernel-level mechanisms:
    teardown runs. Reasoning about, or testing, "supervisor killed while shell
    alive" must reproduce that exact difference, not a plain Rust `drop()`.
 
-Finish is triggered exclusively by the guarded shell's own process
-termination (`wait()`) — never by elapsed time, never by the control channel
-to the caller closing. Cancellation is accepted only as an explicit request
-over that channel and is enacted by signaling the shell's own process group;
-a closed or disconnected channel signals nothing and triggers nothing.
+The control protocol is deliberately two-phase:
+
+```text
+{"operation":"arm"}
+    -> acquire + marker, create LifetimeToken, write+flush {"status":"armed"}
+    -> ArmedWaitingForExec; no human shell exists
+{"operation":"exec","command":...,"cwd":...,"env":...}
+    -> validate and spawn exactly once
+{"operation":"cancel"}
+    -> pre-spawn: terminate without spawning; post-spawn: signal the shell group
+```
+
+`Armed` is an admission acknowledgement, not authorization to execute. The
+later `exec` frame is positive evidence that the caller received and accepted
+establishment and still wants the command run. If writing or flushing `Armed`
+fails, the supervisor exits the pre-spawn path and never waits for an exec.
+Control EOF before exec is also ordinary pre-spawn cleanup, never implicit
+execution. Malformed, unknown, blank, invalid-cwd, and duplicate-exec frames
+cannot spawn a shell.
+
+Finish is triggered only after BOTH the guarded shell's own process
+termination (`wait()`) and EOF on a dedicated kernel-owned lifetime pipe
+inherited by the shell and ordinary descendants. It is never triggered by
+elapsed time, the caller's control channel closing, or stdout/stderr EOF.
+Cancellation is accepted only as an explicit request over that channel and
+is enacted by signaling the shell's own process group; a closed or
+disconnected channel after spawn signals nothing and triggers nothing.
 
 ## Rationale
 
@@ -103,8 +125,9 @@ sound Unix mechanism" already available in this codebase's own
 
 ## Guardrails
 
-- The finish trigger is exclusively the guarded shell's own process
-  termination — never elapsed time, never any control-channel signal.
+- The normal finish trigger is exclusively the guarded shell's own process
+  termination plus lifetime-token EOF — never elapsed time, never any
+  control-channel signal.
 - The parent-side `dup()`-before-`spawn()` ordering is load-bearing; moving
   fd duplication into any child-side (`pre_exec`) hook reintroduces the fixed
   race and must not be reintroduced without re-deriving this same guarantee.
@@ -127,9 +150,51 @@ sound Unix mechanism" already available in this codebase's own
 - Wire a real harness's `user_bash` call site (starting with Pi's TypeScript
   extension) to this route; until then it remains reachable only via its
   hidden CLI command.
-- Confirm the guarded shell's exact local-shell contract (`/bin/sh -c
+- ~~Confirm the guarded shell's exact local-shell contract (`/bin/sh -c
   <command>`) against Pi's own `createLocalBashOperations()` behavior when
-  that wiring lands.
+  that wiring lands.~~ **Resolved by a 2026-09-17 T03 repair pass**: the
+  assumed `/bin/sh -c <command>` contract was wrong — pinned Pi `0.80.6`
+  prefers real `/bin/bash`, falling back to `bash` on `PATH`, only then
+  plain `sh` (`dist/utils/shell.js#getShellConfig`); the guard now
+  reproduces that exact resolution order instead of hardcoding `/bin/sh`.
+  The same pass also gave the guard a validated `cwd` field (Pi's real
+  `user_bash` execution cwd, carried and checked against the guarded
+  worktree rather than always defaulting to the repository root) and fixed
+  a final-output-draining race that could drop a stdout/stderr chunk
+  arriving right at shell exit. Full contract citations and the remaining
+  deliberate differences (env-merge vs. env-replace; `SIGTERM` vs.
+  `SIGKILL` cancellation) are recorded in
+  [`mutation-trace-external-mutation-guard.md`](../cli/mutation-trace-external-mutation-guard.md#exact-pinned-pi-0806-local-shell-contract),
+  not restated here.
+- **2026-09-17 lifetime-token repair:** graceful completion now waits for
+  EOF on a dedicated CLOEXEC-explicit pipe inherited by the shell and
+  ordinary descendants, not merely for foreground-shell exit. The
+  supervisor keeps the real WorktreeLock and marker active through that wait
+  and through forced durable recovery. It polls stdout/stderr continuously
+  during the wait, uses bounded idle/hard-limit output finalization, and
+  retains the D14 deliberate-close escape limitation.
+- **2026-09-17 post-spawn failure repair:** successful `Command::spawn()` is
+  the cleanup boundary. Before spawn, ordinary RAII unlock is safe. After
+  spawn and before lifetime-token EOF, every supervision error or
+  panic-adjacent unwind consumes `ProtectedWorktree` through the
+  supervisor-specific abandonment path: it leaves the marker armed and
+  closes only the supervisor's lock reference without explicit `LOCK_UN`.
+  The shell/descendant inherited descriptor therefore remains the
+  kernel-authoritative flock reference. Once it becomes free, the next
+  boundary observes the still-armed marker and performs inherited-taint
+  recovery before proceeding. After lifetime EOF, ordinary unlock remains
+  safe even if final recovery fails, but the marker stays armed. `Armed` is
+  emitted only after lifetime-token creation/configuration succeeds; failure
+  before that point emits no acknowledgement and spawns no shell.
+- **2026-09-17 two-phase admission repair:** the old `guard` frame no longer
+  carries a command. The hidden route now arms first, writes and flushes
+  `Armed`, waits in `ArmedWaitingForExec`, and accepts exactly one later
+  `exec` frame containing command/cwd/env. Lost or timed-out acknowledgement,
+  pre-exec EOF, cancellation, malformed exec, and invalid cwd all remain
+  pre-spawn and cannot create a shell. The lifetime-token writer stays with
+  the supervisor until successful spawn, then the supervisor closes its copy;
+  the existing descendant-lifetime and no-`LOCK_UN` post-spawn rules are
+  unchanged.
 
 ## References
 

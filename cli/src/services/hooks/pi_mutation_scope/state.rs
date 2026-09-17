@@ -669,8 +669,7 @@ mod tests {
         let generation = begin_terminal_cleanup(&git_dir, &[]).expect("arm");
 
         assert_eq!(
-            complete_recovery_flush(&git_dir, generation + 1)
-                .expect("wrong-generation completion"),
+            complete_recovery_flush(&git_dir, generation + 1).expect("wrong-generation completion"),
             RecoveryFlushCompletion::Superseded,
         );
         assert_eq!(

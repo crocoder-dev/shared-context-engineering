@@ -14,6 +14,7 @@ const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(100);
 pub struct WorktreeLock {
     file: File,
     path: PathBuf,
+    unlock_on_drop: bool,
 }
 
 #[derive(Debug)]
@@ -83,6 +84,7 @@ where
                 return Ok(WorktreeLock {
                     file,
                     path: lock_path,
+                    unlock_on_drop: true,
                 });
             }
             Err(TryLockError::WouldBlock) => {
@@ -107,9 +109,17 @@ where
     }
 }
 
+impl WorktreeLock {
+    pub(super) fn close_without_unlock(mut self) {
+        self.unlock_on_drop = false;
+    }
+}
+
 impl Drop for WorktreeLock {
     fn drop(&mut self) {
-        let _ = self.file.unlock();
+        if self.unlock_on_drop {
+            let _ = self.file.unlock();
+        }
     }
 }
 

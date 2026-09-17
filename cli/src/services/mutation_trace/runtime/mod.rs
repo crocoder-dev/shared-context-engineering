@@ -18,7 +18,8 @@ pub(crate) use coordinator::{
 };
 #[allow(unused_imports)]
 pub(crate) use external_mutation_guard::{
-    run_external_mutation_guard, GuardError, GuardEvent, GuardOutcome, GuardRequest,
+    arm_external_mutation_guard, run_external_mutation_guard, ArmedExternalMutationGuard,
+    GuardError, GuardEvent, GuardOutcome, GuardRequest,
 };
 #[allow(unused_imports)]
 pub(crate) use git_snapshot::{resolve_git_dir, resolve_worktree_id};
