@@ -4777,6 +4777,8 @@ mod tests {
         use crate::services::hooks::claude_mutation_scope;
         use crate::services::hooks::codex_mutation_scope;
         use crate::services::hooks::opencode_mutation_scope;
+        use crate::services::hooks::pi_mutation_scope;
+        use crate::services::mutation_trace::runtime::resolve_git_dir;
         use crate::services::mutation_trace::runtime::resolve_post_commit_mutation_ai_patch;
 
         fn git(repo: &Path, args: &[&str]) -> String {
@@ -5582,6 +5584,746 @@ mod tests {
             assert_eq!(row_count(&repo.db(), "post_commit_patch_intersections"), 1);
             assert_eq!(row_count(&repo.db(), "mutation_trace_events"), 1);
             assert_eq!(row_count(&repo.db(), "agent_traces"), 1);
+        }
+
+        fn pi_tool_call(
+            cwd: &str,
+            session_id: &str,
+            tool_call_id: &str,
+            tool_name: &str,
+            model: Option<&str>,
+        ) -> String {
+            let mut payload = json!({
+                "hook_event_name": "ToolCall",
+                "session_id": session_id,
+                "tool_call_id": tool_call_id,
+                "cwd": cwd,
+                "tool_name": tool_name,
+            });
+            if let Some(model) = model {
+                payload["model"] = json!(model);
+            }
+            payload.to_string()
+        }
+
+        fn pi_tool_result(
+            cwd: &str,
+            session_id: &str,
+            tool_call_id: &str,
+            tool_name: &str,
+        ) -> String {
+            json!({
+                "hook_event_name": "ToolResult",
+                "session_id": session_id,
+                "tool_call_id": tool_call_id,
+                "cwd": cwd,
+                "tool_name": tool_name,
+            })
+            .to_string()
+        }
+
+        fn pi_tool_execution_end(
+            cwd: &str,
+            session_id: &str,
+            tool_call_id: &str,
+            tool_name: &str,
+        ) -> String {
+            json!({
+                "hook_event_name": "ToolExecutionEnd",
+                "session_id": session_id,
+                "tool_call_id": tool_call_id,
+                "cwd": cwd,
+                "tool_name": tool_name,
+            })
+            .to_string()
+        }
+
+        fn drive_pi(repo: &ProvenanceE2eRepo, payload: &str) -> Result<String> {
+            pi_mutation_scope::run_pi_mutation_scope_from_payload_at_state_root(
+                &repo.state_root,
+                payload,
+                None,
+            )
+        }
+
+        fn pi_confirmed_tool_case(tool_name: &str, label: &str) {
+            let repo = ProvenanceE2eRepo::new(label);
+            let session_id = format!("ses-{label}");
+            let call_id = format!("call-{label}");
+            let cwd = repo.cwd();
+
+            drive_pi(
+                &repo,
+                &pi_tool_call(
+                    &cwd,
+                    &session_id,
+                    &call_id,
+                    tool_name,
+                    Some("anthropic/opus-5"),
+                ),
+            )
+            .expect("Pi ToolCall should establish the tracked scope before execution");
+
+            repo.write_change(&format!("one\npi {tool_name} mutation\n"));
+
+            drive_pi(
+                &repo,
+                &pi_tool_result(&cwd, &session_id, &call_id, tool_name),
+            )
+            .expect("Pi ToolResult should mark the attempt executed");
+            drive_pi(
+                &repo,
+                &pi_tool_execution_end(&cwd, &session_id, &call_id, tool_name),
+            )
+            .expect("Pi ToolExecutionEnd paired with an observed ToolResult should Close");
+            repo.commit_change();
+
+            let trace = repo.run_post_commit();
+            assert_mutation_trace_provenance(
+                &trace,
+                "anthropic/opus-5",
+                &format!("pi_{session_id}"),
+            );
+            assert_eq!(row_count(&repo.db(), "diff_traces"), 0);
+            assert_eq!(row_count(&repo.db(), "post_commit_patch_intersections"), 1);
+            assert_eq!(row_count(&repo.db(), "mutation_trace_events"), 1);
+            assert_eq!(row_count(&repo.db(), "agent_traces"), 1);
+        }
+
+        #[test]
+        fn pi_bash_mutation_persists_model_and_session_in_agent_trace() {
+            pi_confirmed_tool_case("bash", "pi-bash");
+        }
+
+        #[test]
+        fn pi_write_mutation_persists_model_and_session_in_agent_trace() {
+            pi_confirmed_tool_case("write", "pi-write");
+        }
+
+        #[test]
+        fn pi_edit_mutation_persists_model_and_session_in_agent_trace() {
+            pi_confirmed_tool_case("edit", "pi-edit");
+        }
+
+        #[test]
+        fn pi_missing_model_preserves_session_with_null_model_in_agent_trace() {
+            let repo = ProvenanceE2eRepo::new("pi-no-model");
+            let session_id = "ses-pi-no-model";
+            let cwd = repo.cwd();
+
+            drive_pi(
+                &repo,
+                &pi_tool_call(&cwd, session_id, "call-1", "bash", None),
+            )
+            .expect("Pi ToolCall should establish the scope without model evidence");
+
+            repo.write_change("one\npi mutation without model\n");
+
+            drive_pi(&repo, &pi_tool_result(&cwd, session_id, "call-1", "bash"))
+                .expect("Pi ToolResult should mark the attempt executed");
+            drive_pi(
+                &repo,
+                &pi_tool_execution_end(&cwd, session_id, "call-1", "bash"),
+            )
+            .expect("Pi ToolExecutionEnd should close the scope");
+            repo.commit_change();
+
+            let trace = repo.run_post_commit();
+            assert_eq!(trace["files"][0]["path"], json!("file.txt"));
+            let contributor = &trace["files"][0]["conversations"][0]["contributor"];
+            assert_eq!(contributor["type"], json!("ai"));
+            assert!(
+                contributor.get("model_id").is_none(),
+                "absent model evidence must never be guessed or fabricated"
+            );
+            assert_eq!(
+                trace["files"][0]["conversations"][0]["related"],
+                json!([{
+                    "type": "session",
+                    "url": "https://sce.crocoder.dev/sessions/pi_ses-pi-no-model",
+                }])
+            );
+        }
+
+        #[test]
+        fn pi_read_only_and_unknown_tools_create_no_scope_or_mutation_state() {
+            let repo = ProvenanceE2eRepo::new("pi-untracked");
+            let session_id = "ses-pi-untracked";
+            let cwd = repo.cwd();
+
+            for tool_name in [
+                "read",
+                "grep",
+                "find",
+                "ls",
+                "custom_mcp_tool",
+                "totally_unknown_future_tool",
+                "user_bash",
+            ] {
+                let call_id = format!("call-{tool_name}");
+                drive_pi(
+                    &repo,
+                    &pi_tool_call(&cwd, session_id, &call_id, tool_name, None),
+                )
+                .unwrap_or_else(|_| panic!("{tool_name} ToolCall should be neutral"));
+                drive_pi(
+                    &repo,
+                    &pi_tool_result(&cwd, session_id, &call_id, tool_name),
+                )
+                .unwrap_or_else(|_| panic!("{tool_name} ToolResult should be neutral"));
+                drive_pi(
+                    &repo,
+                    &pi_tool_execution_end(&cwd, session_id, &call_id, tool_name),
+                )
+                .unwrap_or_else(|_| panic!("{tool_name} ToolExecutionEnd should be neutral"));
+            }
+
+            assert_eq!(row_count(&repo.db(), "mutation_trace_scopes"), 0);
+            assert_eq!(row_count(&repo.db(), "mutation_trace_events"), 0);
+        }
+
+        #[test]
+        fn pi_later_extension_rejection_after_start_produces_no_mutation_ai_patch() {
+            let repo = ProvenanceE2eRepo::new("pi-later-rejection");
+            let session_id = "ses-pi-rejected";
+            let cwd = repo.cwd();
+
+            drive_pi(
+                &repo,
+                &pi_tool_call(&cwd, session_id, "call-1", "bash", Some("anthropic/opus-5")),
+            )
+            .expect(
+                "Pi ToolCall should establish the scope before a later extension can reject it",
+            );
+
+            fs::write(
+                repo.root.join("rejected.txt"),
+                "should never be attributed AI\n",
+            )
+            .expect("the blocked attempt's incidental write should still land on disk");
+
+            drive_pi(
+                &repo,
+                &pi_tool_execution_end(&cwd, session_id, "call-1", "bash"),
+            )
+            .expect("ToolExecutionEnd with no preceding ToolResult must abandon, not error");
+
+            let scope_status = repo
+                .db()
+                .query_map("SELECT status FROM mutation_trace_scopes", (), |row| {
+                    row.get::<String>(0).map_err(anyhow::Error::from)
+                })
+                .expect("scope-status query should succeed");
+            assert_eq!(
+                scope_status,
+                vec!["abandoned".to_string()],
+                "the D7 abandon path must leave the scope durably abandoned, never closed or active"
+            );
+
+            git(&repo.root, &["add", "-A"]);
+            git(&repo.root, &["commit", "-qm", "rejected mutation"]);
+
+            let db = repo.db();
+            let post_commit_data = capture_post_commit_patch_from_git(&repo.root)
+                .expect("capturing the post-commit patch should succeed");
+            let mutation_ai_patch = resolve_post_commit_mutation_ai_patch(
+                &repo.root,
+                &db,
+                &ParsedPatch { files: Vec::new() },
+                &post_commit_data.parsed_patch,
+            );
+
+            assert!(
+                mutation_ai_patch.files.is_empty(),
+                "a Start that never reached a confirmed Close must never produce mutation_ai_patch entries"
+            );
+        }
+
+        #[test]
+        fn pi_mutate_then_error_still_persists_confirmed_mutation_through_close() {
+            let repo = ProvenanceE2eRepo::new("pi-error-executed");
+            let session_id = "ses-pi-error";
+            let cwd = repo.cwd();
+
+            drive_pi(
+                &repo,
+                &pi_tool_call(&cwd, session_id, "call-1", "bash", Some("anthropic/opus-5")),
+            )
+            .expect("Pi ToolCall should establish the scope");
+
+            repo.write_change("one\npartial mutation before failure\n");
+
+            let mut result_payload: Value =
+                serde_json::from_str(&pi_tool_result(&cwd, session_id, "call-1", "bash"))
+                    .expect("tool_result payload should parse as JSON");
+            result_payload["isError"] = json!(true);
+            drive_pi(&repo, &result_payload.to_string())
+                .expect("a failed-but-executed ToolResult is still positive execution evidence");
+
+            drive_pi(
+                &repo,
+                &pi_tool_execution_end(&cwd, session_id, "call-1", "bash"),
+            )
+            .expect("ToolExecutionEnd paired with an observed ToolResult must Close, not abandon");
+            repo.commit_change();
+
+            let trace = repo.run_post_commit();
+            assert_mutation_trace_provenance(&trace, "anthropic/opus-5", "pi_ses-pi-error");
+        }
+
+        #[test]
+        fn pi_concurrent_reject_and_confirm_keeps_only_the_confirmed_mutation_ai() {
+            let repo = ProvenanceE2eRepo::new("pi-concurrent-reject");
+            let session_id = "ses-pi-concurrent";
+            let cwd = repo.cwd();
+
+            drive_pi(
+                &repo,
+                &pi_tool_call(
+                    &cwd,
+                    session_id,
+                    "call-a-edit",
+                    "edit",
+                    Some("anthropic/opus-5"),
+                ),
+            )
+            .expect("A's edit ToolCall should establish a scope");
+            drive_pi(
+                &repo,
+                &pi_tool_call(
+                    &cwd,
+                    session_id,
+                    "call-b-write",
+                    "write",
+                    Some("anthropic/opus-5"),
+                ),
+            )
+            .expect("B's write ToolCall should establish a distinct concurrent scope");
+
+            fs::write(repo.root.join("rejected.txt"), "rejected mutation\n")
+                .expect("A's mutation should write");
+            fs::write(
+                repo.root.join("ambiguous.txt"),
+                "B's mutation before recovery\n",
+            )
+            .expect("B's pre-recovery mutation should write");
+
+            drive_pi(
+                &repo,
+                &pi_tool_execution_end(&cwd, session_id, "call-a-edit", "edit"),
+            )
+            .expect(
+                "A's ToolExecutionEnd with no ToolResult should abandon A's scope and consume \
+                 the shared ambiguous interval",
+            );
+
+            fs::write(
+                repo.root.join("confirmed.txt"),
+                "B's mutation after recovery\n",
+            )
+            .expect("B's post-recovery mutation should write");
+
+            drive_pi(
+                &repo,
+                &pi_tool_result(&cwd, session_id, "call-b-write", "write"),
+            )
+            .expect("B's ToolResult should mark it executed");
+            drive_pi(
+                &repo,
+                &pi_tool_execution_end(&cwd, session_id, "call-b-write", "write"),
+            )
+            .expect("B's ToolExecutionEnd should confirm exactly B's own surviving scope");
+
+            git(&repo.root, &["add", "-A"]);
+            git(&repo.root, &["commit", "-qm", "concurrent mutation"]);
+
+            let db = repo.db();
+            let post_commit_data = capture_post_commit_patch_from_git(&repo.root)
+                .expect("capturing the post-commit patch should succeed");
+            let mutation_ai_patch = resolve_post_commit_mutation_ai_patch(
+                &repo.root,
+                &db,
+                &ParsedPatch { files: Vec::new() },
+                &post_commit_data.parsed_patch,
+            );
+
+            let ai_paths: Vec<&str> = mutation_ai_patch
+                .files
+                .iter()
+                .map(|file| file.new_path.as_str())
+                .collect();
+            assert!(
+                !ai_paths.contains(&"rejected.txt"),
+                "the abandoned scope's own mutation must never enter mutation_ai_patch"
+            );
+            assert!(
+                !ai_paths.contains(&"ambiguous.txt"),
+                "B's mutation made before the ambiguity-consuming flush is genuinely \
+                 indistinguishable from A's and must stay non-AI, not merely non-A"
+            );
+            assert!(
+                ai_paths.contains(&"confirmed.txt"),
+                "B's own later mutation, made after A's interval was consumed and confirmed \
+                 by B's own Close, must be attributed AI"
+            );
+        }
+
+        #[test]
+        fn pi_and_claude_overlap_produces_ai_contended() {
+            let repo = ProvenanceE2eRepo::new("pi-claude-overlap");
+            let pi_session = "ses-pi-contended";
+            let claude_session = "claude-pi-overlap-session";
+            let cwd = repo.cwd();
+
+            drive_pi(
+                &repo,
+                &pi_tool_call(
+                    &cwd,
+                    pi_session,
+                    "call-pi-contended",
+                    "write",
+                    Some("anthropic/opus-5"),
+                ),
+            )
+            .expect("Pi write should establish a scope");
+
+            let claude_pre = json!({
+                "hook_event_name": "PreToolUse",
+                "session_id": claude_session,
+                "cwd": cwd,
+                "tool_name": "Bash",
+                "tool_use_id": "claude-pi-overlap-bash",
+                "tool_input": {"command": "printf mutation"},
+            });
+            claude_mutation_scope::run_claude_mutation_scope_from_payload_at_state_root(
+                &repo.state_root,
+                &claude_pre.to_string(),
+                None,
+            )
+            .expect(
+                "Claude Bash PreToolUse should establish a concurrent, non-confirmation-required scope",
+            );
+
+            repo.write_change("one\npi+claude contended mutation\n");
+
+            drive_pi(
+                &repo,
+                &pi_tool_result(&cwd, pi_session, "call-pi-contended", "write"),
+            )
+            .expect("Pi ToolResult should mark the attempt executed");
+            drive_pi(
+                &repo,
+                &pi_tool_execution_end(&cwd, pi_session, "call-pi-contended", "write"),
+            )
+            .expect("Pi ToolExecutionEnd should confirm its own scope");
+
+            let attribution = repo.mutation_events();
+            assert_eq!(
+                attribution.last().map(|(kind, _)| kind.as_str()),
+                Some("ai_contended"),
+                "a confirmed Pi close alongside a live non-confirmation-required Claude scope is contended, not suppressed"
+            );
+
+            let claude_post = json!({
+                "hook_event_name": "PostToolUse",
+                "session_id": claude_session,
+                "cwd": cwd,
+                "tool_name": "Bash",
+                "tool_use_id": "claude-pi-overlap-bash",
+            });
+            claude_mutation_scope::run_claude_mutation_scope_from_payload_at_state_root(
+                &repo.state_root,
+                &claude_post.to_string(),
+                None,
+            )
+            .expect("Claude PostToolUse should close its own scope");
+        }
+
+        #[test]
+        fn pi_and_codex_overlap_stays_ineligible_until_codex_confirms() {
+            let repo = ProvenanceE2eRepo::new("pi-codex-overlap");
+            let pi_session = "ses-pi-overlap";
+            let codex_session = "codex-pi-overlap-session";
+            let cwd = repo.cwd();
+
+            drive_pi(
+                &repo,
+                &pi_tool_call(
+                    &cwd,
+                    pi_session,
+                    "call-pi",
+                    "write",
+                    Some("anthropic/opus-5"),
+                ),
+            )
+            .expect("Pi write should establish a scope");
+
+            let codex_pre = json!({
+                "hook_event_name": "PreToolUse",
+                "session_id": codex_session,
+                "turn_id": "codex-pi-overlap-turn",
+                "cwd": cwd,
+                "tool_name": "Bash",
+                "tool_use_id": "codex-pi-overlap-bash",
+                "model": "gpt-5.6-sol",
+                "tool_input": {"command": "true"},
+            });
+            codex_mutation_scope::run_codex_mutation_scope_from_payload_at_state_root(
+                &repo.state_root,
+                &codex_pre.to_string(),
+                None,
+            )
+            .expect("Codex Bash PreToolUse should establish a concurrent scope");
+
+            repo.write_change("one\npi codex overlap mutation\n");
+
+            drive_pi(&repo, &pi_tool_result(&cwd, pi_session, "call-pi", "write"))
+                .expect("Pi ToolResult should mark the attempt executed");
+            drive_pi(
+                &repo,
+                &pi_tool_execution_end(&cwd, pi_session, "call-pi", "write"),
+            )
+            .expect("Pi ToolExecutionEnd should attempt to confirm its own scope");
+
+            let attribution_after_first_close = repo.mutation_events();
+            assert_eq!(
+                attribution_after_first_close
+                    .last()
+                    .map(|(kind, _)| kind.as_str()),
+                Some("ineligible_unscoped"),
+                "an unconfirmed live Codex scope must suppress Pi's own confirming close"
+            );
+
+            let codex_post = json!({
+                "hook_event_name": "PostToolUse",
+                "session_id": codex_session,
+                "turn_id": "codex-pi-overlap-turn",
+                "cwd": cwd,
+                "tool_name": "Bash",
+                "tool_use_id": "codex-pi-overlap-bash",
+            });
+            codex_mutation_scope::run_codex_mutation_scope_from_payload_at_state_root(
+                &repo.state_root,
+                &codex_post.to_string(),
+                None,
+            )
+            .expect("Codex PostToolUse should close its own scope");
+
+            drive_pi(
+                &repo,
+                &pi_tool_call(
+                    &cwd,
+                    pi_session,
+                    "call-pi-2",
+                    "write",
+                    Some("anthropic/opus-5"),
+                ),
+            )
+            .expect("a fresh Pi write should establish a new scope");
+            repo.write_change("one\npi codex overlap mutation\nsecond change\n");
+            drive_pi(
+                &repo,
+                &pi_tool_result(&cwd, pi_session, "call-pi-2", "write"),
+            )
+            .expect("Pi ToolResult should mark the fresh attempt executed");
+            drive_pi(
+                &repo,
+                &pi_tool_execution_end(&cwd, pi_session, "call-pi-2", "write"),
+            )
+            .expect("the fresh Pi scope should close cleanly once Codex is confirmed");
+
+            let attribution_after_second_close = repo.mutation_events();
+            assert_eq!(
+                attribution_after_second_close
+                    .last()
+                    .map(|(kind, _)| kind.as_str()),
+                Some("ai_exclusive"),
+                "once every other live scope is confirmation-safe, a solo confirming close is AiExclusive"
+            );
+        }
+
+        #[test]
+        fn pi_and_opencode_overlap_stays_ineligible_until_opencode_confirms() {
+            let repo = ProvenanceE2eRepo::new("pi-opencode-overlap");
+            let pi_session = "ses-pi-oc-overlap";
+            let oc_session = "ses_opencode_pi_overlap";
+            let cwd = repo.cwd();
+
+            drive_pi(
+                &repo,
+                &pi_tool_call(
+                    &cwd,
+                    pi_session,
+                    "call-pi",
+                    "write",
+                    Some("anthropic/opus-5"),
+                ),
+            )
+            .expect("Pi write should establish a scope");
+
+            drive_opencode(
+                &repo,
+                &opencode_before(
+                    &cwd,
+                    oc_session,
+                    "call_oc",
+                    "write",
+                    Some("opencode/big-pickle"),
+                ),
+            )
+            .expect("OpenCode write ToolExecuteBefore should establish a concurrent scope");
+
+            repo.write_change("one\npi opencode overlap mutation\n");
+
+            drive_pi(&repo, &pi_tool_result(&cwd, pi_session, "call-pi", "write"))
+                .expect("Pi ToolResult should mark the attempt executed");
+            drive_pi(
+                &repo,
+                &pi_tool_execution_end(&cwd, pi_session, "call-pi", "write"),
+            )
+            .expect("Pi ToolExecutionEnd should attempt to confirm its own scope");
+
+            let attribution_after_first_close = repo.mutation_events();
+            assert_eq!(
+                attribution_after_first_close
+                    .last()
+                    .map(|(kind, _)| kind.as_str()),
+                Some("ineligible_unscoped"),
+                "an unconfirmed live OpenCode scope must suppress Pi's own confirming close"
+            );
+
+            drive_opencode(&repo, &opencode_after(&cwd, oc_session, "call_oc", "write"))
+                .expect("OpenCode ToolExecuteAfter should close its own scope");
+
+            drive_pi(
+                &repo,
+                &pi_tool_call(
+                    &cwd,
+                    pi_session,
+                    "call-pi-2",
+                    "write",
+                    Some("anthropic/opus-5"),
+                ),
+            )
+            .expect("a fresh Pi write should establish a new scope");
+            repo.write_change("one\npi opencode overlap mutation\nsecond change\n");
+            drive_pi(
+                &repo,
+                &pi_tool_result(&cwd, pi_session, "call-pi-2", "write"),
+            )
+            .expect("Pi ToolResult should mark the fresh attempt executed");
+            drive_pi(
+                &repo,
+                &pi_tool_execution_end(&cwd, pi_session, "call-pi-2", "write"),
+            )
+            .expect("the fresh Pi scope should close cleanly once OpenCode is confirmed");
+
+            let attribution_after_second_close = repo.mutation_events();
+            assert_eq!(
+                attribution_after_second_close
+                    .last()
+                    .map(|(kind, _)| kind.as_str()),
+                Some("ai_exclusive"),
+                "once every other live scope is confirmation-safe, a solo confirming close is AiExclusive"
+            );
+        }
+
+        #[test]
+        fn pi_stale_process_recovery_discards_ambiguous_interval_while_fresh_pi_work_remains_usable(
+        ) {
+            let repo = ProvenanceE2eRepo::new("pi-stale-recovery");
+            let stale_session = "ses-pi-stale";
+            let fresh_session = "ses-pi-fresh";
+            let cwd = repo.cwd();
+
+            drive_pi(
+                &repo,
+                &pi_tool_call(
+                    &cwd,
+                    stale_session,
+                    "call-stale",
+                    "bash",
+                    Some("anthropic/opus-5"),
+                ),
+            )
+            .expect("the stale attempt's Pi ToolCall should establish a scope");
+
+            let git_dir = resolve_git_dir(&repo.root).expect("git dir should resolve");
+            let scope_id = pi_mutation_scope::state::read_state(&git_dir)
+                .expect("state should be readable")
+                .attempts
+                .iter()
+                .find(|attempt| attempt.session_id == stale_session)
+                .expect("the stale attempt should exist")
+                .scope_id
+                .clone();
+            pi_mutation_scope::force_attempt_owner_dead_for_tests(&git_dir, &scope_id);
+
+            fs::write(
+                repo.root.join("ambiguous.txt"),
+                "left behind by the dead Pi process\n",
+            )
+            .expect("the stale attempt's own mutation should still land on disk");
+
+            drive_pi(
+                &repo,
+                &pi_tool_call(
+                    &cwd,
+                    fresh_session,
+                    "call-fresh",
+                    "write",
+                    Some("anthropic/opus-5"),
+                ),
+            )
+            .expect("a fresh Pi ToolCall should trigger dead-owner recovery and then establish its own scope");
+
+            fs::write(repo.root.join("confirmed.txt"), "the fresh Pi work\n")
+                .expect("the fresh attempt's mutation should write");
+
+            drive_pi(
+                &repo,
+                &pi_tool_result(&cwd, fresh_session, "call-fresh", "write"),
+            )
+            .expect("the fresh attempt's ToolResult should mark it executed");
+            drive_pi(
+                &repo,
+                &pi_tool_execution_end(&cwd, fresh_session, "call-fresh", "write"),
+            )
+            .expect("the fresh attempt should close and reach AiExclusive");
+
+            git(&repo.root, &["add", "-A"]);
+            git(&repo.root, &["commit", "-qm", "stale recovery"]);
+
+            let db = repo.db();
+            let post_commit_data = capture_post_commit_patch_from_git(&repo.root)
+                .expect("capturing the post-commit patch should succeed");
+            let mutation_ai_patch = resolve_post_commit_mutation_ai_patch(
+                &repo.root,
+                &db,
+                &ParsedPatch { files: Vec::new() },
+                &post_commit_data.parsed_patch,
+            );
+
+            let ai_paths: Vec<&str> = mutation_ai_patch
+                .files
+                .iter()
+                .map(|file| file.new_path.as_str())
+                .collect();
+            assert!(
+                !ai_paths.contains(&"ambiguous.txt"),
+                "the dead process's ambiguous interval must never be attributed AI"
+            );
+            assert!(
+                ai_paths.contains(&"confirmed.txt"),
+                "later fresh Pi work must remain usable and reach AiExclusive"
+            );
+
+            let attribution = repo.mutation_events();
+            assert_eq!(
+                attribution.last().map(|(kind, _)| kind.as_str()),
+                Some("ai_exclusive"),
+                "the fresh attempt, unencumbered by the recovered stale scope, should reach AiExclusive"
+            );
         }
     }
 

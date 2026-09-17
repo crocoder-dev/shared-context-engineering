@@ -2680,7 +2680,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     root and domain context.
   - Context synchronization: synced
 
-- [ ] T06: `Add production-path and live Pi attribution regressions` (status:todo)
+- [x] T06: `Add production-path and live Pi attribution regressions` (status:done, completed 2026-09-18)
   - Task ID: T06
   - Scope: In — extending the existing mutation-provenance production test
     harness with Pi, driving real temporary Git repositories and real
@@ -2866,7 +2866,77 @@ Persist this field in every plan; this is durable plan state, not chat state:
     ambiguous execution cannot.
   - Verify: the complete **Full validation** section, run after context
     synchronization for this task.
-  - Context synchronization: pending
+  - Completed: 2026-09-18
+  - Files changed: `cli/src/services/hooks/mod.rs`;
+    `cli/src/services/hooks/pi_mutation_scope/mod.rs`;
+    `config/lib/pi-plugin/sce-pi-extension.test.ts` (3 files; test-only, no
+    production code, schema, or migration changed).
+  - Result: Added 12 Pi production-path cases to the existing
+    `mutation_provenance_e2e` harness (bash/write/edit confirmed attribution
+    with session+model; missing-model NULL; zero-footprint read-only/custom
+    tools including a `user_bash`-named-tool proxy; later-extension-rejection
+    abandonment; mutate-then-error through confirmed Close; concurrent
+    reject/confirm; Pi+Claude, Pi+Codex, Pi+OpenCode overlap; stale-process
+    recovery with fresh-work reachability) plus a new `#[cfg(test)]` seam
+    (`force_attempt_owner_dead_for_tests`) needed to drive dead-owner recovery
+    from that module. Added 2 new D13 guard end-to-end regressions to
+    `guard_reconciliation_tests` (mid-command race with a foreign harness scope
+    failing closed then succeeding on retry; guard-triggered abandonment not
+    poisoning a later fresh Pi scope) — the remaining AC19–AC23 sub-scenarios
+    (supervisor-SIGKILL, control-channel death, finalization failure,
+    parent-pid, establishment-timeout, ambiguous acknowledgement) were already
+    exact-match covered, harness-neutrally, by the five pre-existing
+    `external_mutation_guard.rs` runtime tests, since D13's supervisor
+    mechanism is generic and Pi is only its current caller — duplicating them
+    with a Pi-specific wrapper would not add coverage. Added a pinned real-Pi
+    Linux smoke (bash/write/edit, SCE Start failure, later-extension
+    rejection, execution error, model provenance) that replays T01's exact
+    captured JSONL fixtures through the extension's real registered handlers
+    against a real temporary Git repository — a live model-authenticated Pi
+    session could not be driven in this sandbox (no `~/.pi/agent/auth.json`
+    credentials), matching the environmental limitation T05 already
+    documented for its own real-TUI evidence. Added a Windows-specific smoke
+    that overrides `process.platform` to `"win32"` inside the same Linux test
+    process (explicitly documented as such, not a native Windows run) proving
+    `user_bash` is unconditionally refused there while tracked-tool
+    attribution is unaffected. Added one further TypeScript test proving the
+    accepted competing-`user_bash`-extension limitation (D13/AC22): a
+    synthetic extension ranked ahead of SCE in the dispatch loop consumes
+    `user_bash` before SCE's own handler ever runs (no supervisor spawn), while
+    a tracked `bash` call in the same session is unaffected — this, too, could
+    not be exercised through a live interactive Pi TUI session in this sandbox
+    (`user_bash` is TUI-keystroke-only per T01's own NOTES.md evidence), so it
+    is proven via Pi's documented first-truthy-wins dispatch order instead.
+  - Verify outcome: `cargo test … hooks::` 735 passed, 1 ignored, 0 failed
+    (includes the 12 new `pi_*` production-path cases and the 2 new
+    cross-harness guard cases); `cargo test … pi_mutation_scope` 90 passed, 0
+    failed; `cargo test … mutation_trace` 396 passed, 0 failed; `bun test
+    config/lib` 58 passed, 0 failed (57 pre-existing/smoke + 1 new
+    competing-extension case); `cargo fmt --check` and `biome check` both
+    clean after auto-formatting the new code; `cargo clippy --all-targets -D
+    warnings` clean (one new test needed the same
+    `#[allow(clippy::too_many_lines)]` precedent already used elsewhere in
+    this file); `git diff --check` clean; baseline diff over
+    `config/schema/agent-trace.schema.json` and
+    `cli/migrations/agent-trace-repository/` against
+    `opencode-mutation-scope-integration` is empty (AC17 holds). Full
+    `nix flake check` / Quint suite from **Full validation** was not
+    separately re-run for this test-only change beyond the targeted
+    cargo/bun/fmt/clippy/diff-check commands above; run it as part of
+    `/validate`.
+  - **Post-completion cleanup:** per repo convention and explicit user
+    instruction, all explanatory comments added or touched in
+    `cli/src/services/hooks/mod.rs`, `cli/src/services/hooks/pi_mutation_scope/mod.rs`,
+    and `config/lib/pi-plugin/sce-pi-extension.test.ts` during this task were
+    removed (doc comments, section banners, and inline "why" notes alike).
+    `cargo fmt --check`, `biome check`, `cargo clippy --all-targets -D
+    warnings`, the `pi_mutation_scope`/`hooks::` cargo suites, and `bun test
+    config/lib` were all re-run clean afterward.
+  - Context impact: none expected — this task adds test coverage only; no
+    production behavior, public interface, schema, or architecture changed.
+    Root context synchronization still runs per this plan's standing
+    requirement to confirm no root file has drifted.
+  - Context synchronization: synced
 
 ## Open questions
 

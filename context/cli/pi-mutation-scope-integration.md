@@ -63,8 +63,13 @@ human.txt; sleep 60'` showed the durable
 `<git-dir>/sce/mutation-cursor-tainted` marker while the command was running;
 cancelling the command through Pi removed the marker afterward. This proves the
 normal Pi → SCE `user_bash` → arm → `Armed` → supervisor execution path and its
-cancellation/finalization cleanup. It does not replace T06's production-path
-attribution regressions.
+cancellation/finalization cleanup. Production-path regressions (real Git/Agent
+Trace-DB coverage, D13 guard end-to-end cases, and a pinned real-Pi smoke
+replaying the captures above) live alongside `pi_mutation_scope/mod.rs` and
+`sce-pi-extension.test.ts`. No live model-authenticated Pi session or native
+Windows host is available in this sandbox, so the Windows disposition and the
+competing-`user_bash`-extension limitation are proven via a `process.platform`
+override and simulated dispatch order, not a live run.
 
 ## Scope model and coverage
 
