@@ -7,12 +7,64 @@ the mutation stack is the in-process
 `hooks::mutation_scope::run_mutation_scope_from_payload` seam; it does not call
 runtime, protocol, or database modules directly.
 
-The adapter is reachable through its own CLI command today, but no real Pi
-session drives it yet — wiring the actual TypeScript extension's `tool_call`
-handler (and its `user_bash` external-mutation guard call site) to this
-command is a separate, later task. Lifecycle evidence was frozen against
-pinned Pi `0.80.6`; raw captures are in
+The adapter is reachable through its own CLI command and is wired into the
+canonical generated Pi extension (`config/lib/pi-plugin/sce-pi-extension.ts`)
+that `sce setup --pi` installs and an ordinary `pi` invocation auto-discovers.
+No launcher, wrapper, or `sce pi` entry point exists or is required:
+
+```text
+ordinary `pi`
+    ↓ (normal extension auto-discovery)
+generated SCE extension (`.pi/extensions/sce/index.ts`)
+    ↓ tool_call (bash/edit/write)                  -- fail-closed
+fail-closed tracked Start (`sce hooks pi-mutation-scope`)
+    ↓ tool_result, tool_execution_end
+per-attempt-ordered ToolResult / ToolExecutionEnd delivery
+    ↓ (terminal transport ambiguity)
+D9 abandon/rebaseline recovery via ToolExecutionAbandon
+```
+
+The TypeScript extension's own terminal-delivery tracker keys every in-flight
+attempt by `(session_id, tool_call_id)` — the same identity the Rust adapter
+uses — so it never races a `tool_execution_end` subprocess against its own
+`tool_result` subprocess: `tool_execution_end` delivery always awaits the
+exact same attempt's `tool_result` delivery outcome first. Once a `tool_result`
+delivery is known to have failed, or an executed attempt's `tool_execution_end`
+delivery itself fails, the extension marks that exact attempt unresolved,
+denies further tracked Starts while it stays unresolved, and recovers by
+sending `ToolExecutionAbandon` (retried with backoff) rather than replaying a
+stale `ToolExecutionEnd` — see D9 above and the Rust `PiHookEvent::ExecutionAbandon`
+route, which the adapter treats identically to any other exact-attempt abandon
+regardless of whether the attempt was still `PendingStart` or already
+`Executed`.
+
+`user_bash` (`!`/`!!`) is delivered to SCE's own `user_bash` handler whenever
+Pi actually dispatches it there (T03's documented, accepted limitation: a
+competing extension registered ahead of SCE may consume the event first, in
+which case SCE has nothing to guard and tracked-tool attribution in the same
+session is unaffected). When SCE does receive it, the handler arms the T03
+external-mutation supervisor (`sce hooks external-mutation-guard`), awaits its
+durable `Armed` acknowledgement, and only then returns `operations` that relay
+`exec`/cancellation to the supervisor's own control channel — the supervisor,
+not Pi/Node, spawns and owns the real shell. `wrappedOperations.exec()`
+resolves only on an explicit supervisor `{"status":"result",...}` frame
+(`exit_code: null` included, when the supervisor itself reports that as its
+authoritative result); losing the control channel before any result frame
+rejects the exec Promise rather than fabricating a completed command.
+
+Lifecycle evidence was frozen against pinned Pi `0.80.6`; raw captures are in
 [`pi_mutation_scope/fixtures`](../../cli/src/services/hooks/pi_mutation_scope/fixtures/).
+
+## Real interactive smoke evidence
+
+On 2026-09-17, a freshly installed current-branch extension was exercised by
+ordinary interactive Pi in a real TUI. Running `!sh -c 'printf "guarded\\n" >>
+human.txt; sleep 60'` showed the durable
+`<git-dir>/sce/mutation-cursor-tainted` marker while the command was running;
+cancelling the command through Pi removed the marker afterward. This proves the
+normal Pi → SCE `user_bash` → arm → `Armed` → supervisor execution path and its
+cancellation/finalization cleanup. It does not replace T06's production-path
+attribution regressions.
 
 ## Scope model and coverage
 

@@ -28,6 +28,7 @@ const HOOK_EVENT_TOOL_EXECUTION_START: &str = "ToolExecutionStart";
 const HOOK_EVENT_TOOL_CALL: &str = "ToolCall";
 const HOOK_EVENT_TOOL_RESULT: &str = "ToolResult";
 const HOOK_EVENT_TOOL_EXECUTION_END: &str = "ToolExecutionEnd";
+const HOOK_EVENT_TOOL_EXECUTION_ABANDON: &str = "ToolExecutionAbandon";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PiHookEvent {
@@ -35,6 +36,7 @@ pub(crate) enum PiHookEvent {
     Call(PiToolCall),
     Executed(PiToolIdentity),
     ExecutionEnd(PiToolIdentity),
+    ExecutionAbandon(PiToolIdentity),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -144,6 +146,9 @@ pub(crate) fn parse_pi_hook_event(stdin_payload: &str) -> Result<PiHookEvent> {
         HOOK_EVENT_TOOL_CALL => parse_tool_call(object).map(PiHookEvent::Call),
         HOOK_EVENT_TOOL_RESULT => parse_tool_identity(object).map(PiHookEvent::Executed),
         HOOK_EVENT_TOOL_EXECUTION_END => parse_tool_identity(object).map(PiHookEvent::ExecutionEnd),
+        HOOK_EVENT_TOOL_EXECUTION_ABANDON => {
+            parse_tool_identity(object).map(PiHookEvent::ExecutionAbandon)
+        }
         other => bail!(validation_error(&format!(
             "unsupported hook_event_name '{other}'"
         ))),
@@ -342,6 +347,21 @@ fn dispatch_pi_hook_event(
                 handle_tool_execution_end(&git_dir, repository_root, &key, logger, seam)
             })
         }
+        PiHookEvent::ExecutionAbandon(identity) => {
+            if !matches!(
+                identity.classification(),
+                ToolClassification::TrackedMutation
+            ) {
+                return Ok(String::new());
+            }
+            let git_dir = resolve_git_dir(&identity.cwd)?;
+            let repository_root = Path::new(&identity.cwd);
+            let key = identity.attempt_key();
+            with_boundary_lock(&git_dir, || {
+                state::normalize_recovery_after_boundary_lock_acquired(&git_dir)?;
+                force_abandon_attempt(&git_dir, repository_root, &key, logger, seam)
+            })
+        }
     }
 }
 
@@ -533,6 +553,31 @@ fn handle_tool_execution_end(
             candidate.scope_id == doomed_scope_id
         })
     }
+}
+
+fn force_abandon_attempt(
+    git_dir: &Path,
+    repository_root: &Path,
+    key: &AttemptKey,
+    logger: Option<&dyn Logger>,
+    seam: IngressSeam,
+) -> Result<String> {
+    let current = state::read_state(git_dir)?;
+    let Some(attempt) = current
+        .attempts
+        .iter()
+        .find(|attempt| {
+            attempt.session_id == key.session_id && attempt.tool_call_id == key.tool_call_id
+        })
+        .cloned()
+    else {
+        return Ok(String::new());
+    };
+
+    let doomed_scope_id = attempt.scope_id.clone();
+    abandon_and_consume(git_dir, repository_root, logger, seam, move |candidate| {
+        candidate.scope_id == doomed_scope_id
+    })
 }
 
 enum RecoveryResolution {
@@ -819,10 +864,16 @@ mod tests {
 
     #[test]
     fn tool_result_and_tool_execution_end_parse_minimal_identity() {
-        for name in [HOOK_EVENT_TOOL_RESULT, HOOK_EVENT_TOOL_EXECUTION_END] {
+        for name in [
+            HOOK_EVENT_TOOL_RESULT,
+            HOOK_EVENT_TOOL_EXECUTION_END,
+            HOOK_EVENT_TOOL_EXECUTION_ABANDON,
+        ] {
             let event = parse_pi_hook_event(&tool_event_json(name, &[])).unwrap();
             let identity = match event {
-                PiHookEvent::Executed(identity) | PiHookEvent::ExecutionEnd(identity) => identity,
+                PiHookEvent::Executed(identity)
+                | PiHookEvent::ExecutionEnd(identity)
+                | PiHookEvent::ExecutionAbandon(identity) => identity,
                 other => panic!("expected a minimal-identity event, got {other:?}"),
             };
             assert_eq!(
@@ -1096,6 +1147,32 @@ mod lifecycle_tests {
         .to_string()
     }
 
+    fn tool_execution_abandon_event(tool_name: &str, tool_call_id: &str) -> String {
+        json!({
+            "hook_event_name": "ToolExecutionAbandon",
+            "session_id": "ses-main",
+            "tool_call_id": tool_call_id,
+            "cwd": CWD,
+            "tool_name": tool_name,
+        })
+        .to_string()
+    }
+
+    fn tool_execution_abandon_event_for_session(
+        tool_name: &str,
+        session_id: &str,
+        tool_call_id: &str,
+    ) -> String {
+        json!({
+            "hook_event_name": "ToolExecutionAbandon",
+            "session_id": session_id,
+            "tool_call_id": tool_call_id,
+            "cwd": CWD,
+            "tool_name": tool_name,
+        })
+        .to_string()
+    }
+
     fn cleanup(git_dir: &Path) {
         let _ = std::fs::remove_dir_all(git_dir);
     }
@@ -1261,6 +1338,184 @@ mod lifecycle_tests {
             .attempts
             .is_empty());
         assert!(seam.operations().contains(&"abandon".to_string()));
+
+        cleanup(&git_dir);
+    }
+
+    #[test]
+    fn execution_abandon_forces_abandon_even_when_the_attempt_is_already_executed() {
+        let git_dir = temp_git_dir("d9-execution-abandon-executed");
+        let seam = RecordingSeam::new();
+
+        drive(&git_dir, &seam, &tool_call_event("bash", "call_1")).expect("Start");
+        drive(&git_dir, &seam, &tool_result_event("bash", "call_1")).expect("tool_result");
+
+        drive(
+            &git_dir,
+            &seam,
+            &tool_execution_abandon_event("bash", "call_1"),
+        )
+        .expect("ExecutionAbandon must recover via abandon, not surface an error");
+
+        assert!(read_state(&git_dir)
+            .expect("state readable")
+            .attempts
+            .is_empty());
+        assert!(
+            !seam.operations().contains(&"close".to_string()),
+            "D9: an explicit abandon request must never be treated as a Close, \
+             even for an attempt already marked Executed"
+        );
+        assert!(seam.operations().contains(&"abandon".to_string()));
+
+        cleanup(&git_dir);
+    }
+
+    #[test]
+    fn execution_abandon_on_a_pending_start_attempt_abandons() {
+        let git_dir = temp_git_dir("d9-execution-abandon-pending-start");
+        let seam = RecordingSeam::new();
+
+        drive(&git_dir, &seam, &tool_call_event("bash", "call_1")).expect("Start");
+
+        drive(
+            &git_dir,
+            &seam,
+            &tool_execution_abandon_event("bash", "call_1"),
+        )
+        .expect("ExecutionAbandon must recover a PendingStart attempt via abandon");
+
+        assert!(read_state(&git_dir)
+            .expect("state readable")
+            .attempts
+            .is_empty());
+        assert!(seam.operations().contains(&"abandon".to_string()));
+
+        cleanup(&git_dir);
+    }
+
+    #[test]
+    fn execution_abandon_for_an_unknown_attempt_is_a_safe_no_op() {
+        let git_dir = temp_git_dir("d9-execution-abandon-unknown");
+        let seam = RecordingSeam::new();
+
+        let result = drive(
+            &git_dir,
+            &seam,
+            &tool_execution_abandon_event("bash", "call_1"),
+        )
+        .expect("an unknown attempt must be a safe no-op, never an error");
+
+        assert_eq!(result, "");
+        assert!(seam.operations().is_empty());
+
+        cleanup(&git_dir);
+    }
+
+    #[test]
+    fn execution_abandon_for_an_untracked_tool_is_a_no_op() {
+        let git_dir = temp_git_dir("d9-execution-abandon-untracked");
+        let seam = RecordingSeam::new();
+
+        let result = drive(
+            &git_dir,
+            &seam,
+            &tool_execution_abandon_event("read", "call_1"),
+        )
+        .expect("untracked tools are never adapter-relevant");
+
+        assert_eq!(result, "");
+        assert!(seam.operations().is_empty());
+
+        cleanup(&git_dir);
+    }
+
+    #[test]
+    fn duplicate_execution_abandon_on_an_already_abandoned_attempt_is_a_safe_no_op() {
+        let git_dir = temp_git_dir("d9-execution-abandon-duplicate");
+        let seam = RecordingSeam::new();
+
+        drive(&git_dir, &seam, &tool_call_event("bash", "call_1")).expect("Start");
+
+        drive(
+            &git_dir,
+            &seam,
+            &tool_execution_abandon_event("bash", "call_1"),
+        )
+        .expect("first ExecutionAbandon retires the attempt");
+        assert!(read_state(&git_dir)
+            .expect("state readable")
+            .attempts
+            .is_empty());
+
+        let result = drive(
+            &git_dir,
+            &seam,
+            &tool_execution_abandon_event("bash", "call_1"),
+        )
+        .expect("a duplicate ExecutionAbandon for an already-retired attempt must be a safe no-op");
+
+        assert_eq!(result, "");
+        assert_eq!(
+            seam.operations(),
+            vec!["start", "flush", "abandon", "flush"],
+            "a duplicate ExecutionAbandon must never issue a second abandon or a close"
+        );
+
+        cleanup(&git_dir);
+    }
+
+    #[test]
+    fn execution_abandon_for_one_session_never_touches_another_sessions_attempt_with_the_same_tool_call_id(
+    ) {
+        let git_dir = temp_git_dir("d9-execution-abandon-cross-session");
+        let seam = RecordingSeam::new();
+
+        drive(
+            &git_dir,
+            &seam,
+            &tool_call_event_for_session("bash", "ses-a", "call_1"),
+        )
+        .expect("session A Start");
+        drive(
+            &git_dir,
+            &seam,
+            &tool_call_event_for_session("bash", "ses-b", "call_1"),
+        )
+        .expect("session B Start with the same tool_call_id");
+
+        assert_eq!(
+            read_state(&git_dir).expect("state readable").attempts.len(),
+            2
+        );
+
+        drive(
+            &git_dir,
+            &seam,
+            &tool_execution_abandon_event_for_session("bash", "ses-a", "call_1"),
+        )
+        .expect("ExecutionAbandon for session A must not error");
+
+        let remaining = read_state(&git_dir).expect("state readable").attempts;
+        assert_eq!(
+            remaining.len(),
+            1,
+            "abandoning session A's attempt must leave session B's untouched"
+        );
+        assert_eq!(remaining[0].session_id, "ses-b");
+        assert_eq!(remaining[0].tool_call_id, "call_1");
+        assert_eq!(remaining[0].phase, AttemptPhase::PendingStart);
+
+        drive(
+            &git_dir,
+            &seam,
+            &tool_result_event_for_session("bash", "ses-b", "call_1"),
+        )
+        .expect("session B must still be able to progress normally after A's abandon");
+        assert_eq!(
+            read_state(&git_dir).expect("state readable").attempts[0].phase,
+            AttemptPhase::Executed
+        );
 
         cleanup(&git_dir);
     }
