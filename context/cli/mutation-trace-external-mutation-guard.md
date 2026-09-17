@@ -3,11 +3,11 @@
 `run_external_mutation_guard`, in
 `cli/src/services/mutation_trace/runtime/external_mutation_guard.rs`, is a
 harness-neutral runtime primitive — **not** Pi-specific, despite being built
-alongside the Pi adapter to eventually back Pi's `!`/`!!` `user_bash` — that
-lets a human-initiated shell command mutate a worktree for a bounded,
-durably-guarded interval without ever creating a mutation scope. It is
-reachable today through the hidden, Unix-only `sce hooks
-external-mutation-guard` command, but no harness extension calls it yet.
+alongside the Pi adapter to back Pi's `!`/`!!` `user_bash` — that lets a
+human-initiated shell command mutate a worktree for a bounded, durably-guarded
+interval without ever creating a mutation scope. It is reachable today through
+the hidden, Unix-only `sce hooks external-mutation-guard` command and is called
+by the canonical Pi extension for `user_bash`.
 
 ## Why a scope is the wrong model for `user_bash`
 
@@ -210,12 +210,12 @@ and its helpers:
   replaces rather than merges when given explicitly. The guard's
   `.envs(request.env.iter().cloned())` **merges** the wire `env` entries
   onto the guard process's own inherited environment rather than fully
-  replacing it. This is left unchanged here because T05 has not yet wired a
-  real full-snapshot `env` payload from Pi's own environment; flipping to a
-  hard `.env_clear()` today would strip `PATH` (and everything else) from
-  every existing empty-`env` call site, breaking ordinary command
-  resolution, for no current benefit. T05 must revisit this once it sends a
-  real snapshot.
+  replacing it. The current Pi client forwards only optional `env` entries supplied through
+  the operations contract; it does not construct Pi's full `getShellEnv()`
+  snapshot. This remains a deliberate compatibility difference: flipping to a
+  hard `.env_clear()` would strip `PATH` (and everything else) from empty-`env`
+  calls, breaking ordinary command resolution. Reconcile this only if a future
+  caller requires exact full-snapshot environment parity.
 - **Cancellation/timeout** (deliberate, documented, safety-compatible
   difference — not changed to match exactly): Pi's own abort path
   (`AbortSignal`/timeout) kills with `SIGKILL` to the process group
@@ -260,8 +260,8 @@ eventual explicit unlock.
 
 ## Non-goals of this task's implementation
 
-- No wiring into any harness's TypeScript extension or `user_bash` call
-  site — this is a Rust-side mechanism only, waiting for a caller.
+- No additional harness wiring beyond the canonical Pi extension's `user_bash`
+  client described in [`pi-mutation-scope-integration.md`](pi-mutation-scope-integration.md).
 - No `protocol.rs`/Quint change: the mechanism is pure composition of
   already-existing `ProtectedWorktree`/`WorktreeLock`/`ExternalTaintMarker`/
   `database_failure`/`recover` primitives via a new `coordinate_on_held_worktree`

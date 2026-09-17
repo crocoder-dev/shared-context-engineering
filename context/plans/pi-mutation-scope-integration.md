@@ -569,252 +569,50 @@ This gives the real mechanism for both halves of D13's fail-closed requirement, 
 * *Guard finalization fails* (the forced recovery/rebaseline commit does not durably succeed): `complete()` is never called and the marker stays armed; the supervisor exits non-zero. The extension must not claim clean attribution state for the just-finished command — it surfaces the failure, but the human command's already-completed result is still returned to the user (SCE cannot un-execute a finished command); the durable, still-armed marker is what future `coordinate()` calls use to stay conservative until self-healed.
 * *Abort/timeout/non-zero exit* (ordinary Pi semantics to preserve): the supervisor accepts a cancellation request from Pi/Node (from `AbortSignal` or Pi's own timeout) and signals the real shell's process group accordingly, exactly as `createLocalBashOperations()` would have — but cancelling the shell does not by itself end the guarded interval; the guard still waits for the shell's own positive termination (which a `SIGKILL` typically produces quickly, but is not assumed instantaneous) before running its finish sequence. A non-zero exit is relayed to Pi/Node like any other exit code and does not change guard behavior.
 
-**Extension-dispatch bypass — `user_bash` is first-handler-wins, so a foreign extension can execute the command before SCE ever sees it.** This is a second, independent soundness hole, not a variant of the lifetime hole above: T01's own evidence (`handleBashCommand()`) establishes that Pi consumes exactly one `user_bash` handler's result — the first one that returns a truthy `operations` or `result` — not a chain where every registered extension's handler runs in sequence the way `tool_execution_start`/`tool_call` do for tool calls (D5). If any other registered Pi extension's `user_bash` handler runs ahead of SCE's and itself returns a result, Pi never invokes SCE's handler at all: no supervisor is spawned, no `WorktreeLock` is acquired, no `ExternalTaintMarker` is armed, and the human command executes with **no guard whatsoever** while it may race a live, later-confirming AI scope — the exact false-positive-attribution shape D13 exists to prevent, reached by a completely different path than the lifetime holes above.
-
-SCE cannot rewrite Pi's own `user_bash` dispatch, and this plan does not attempt to. A prior version of this section proposed relying on `sce doctor`/setup warnings alone to mitigate this hole. **A warning is diagnostic, not a safety boundary, and is retracted as the mitigation.** The required invariant is:
-
-```text
-positive Pi mutation attribution enabled
-    =>
-SCE user_bash interception is proven unavoidable
-
-equivalently:
-
-SCE user_bash interception not provably unavoidable
-    =>
-positive Pi mutation attribution disabled/fail-closed
-```
-
-**Confirmed exact dispatch evidence, against pinned Pi `0.80.6` source (not merely T01's `handleBashCommand()` finding):**
-
-* `emitUserBash()` (`config/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/runner.js`, ~line 667) iterates `this.extensions` — a flat, pre-resolved array fixed once per session load — in order; for each extension it iterates that extension's own registered `user_bash` handlers in registration order; the first handler whose result is truthy is returned immediately (`return handlerResult`) and no further extension is even reached. This is the exact, complete dispatch loop — there is no separate non-short-circuiting phase.
-* `this.extensions`'s order is **not** simply "project-local, then global, then explicitly configured" as an earlier version of this plan assumed from the simpler `discoverAndLoadExtensions()` helper (`loader.js`) — that helper exists but is not what a real session uses. The actual path (`resource-loader.js`, used by both `agent-session.js` and the SDK's `sdk.js`) ranks every resolved extension by `resourcePrecedenceRank()` (`package-manager.js`, ~line 60): `0` = project + explicit settings-entry, `1` = project + auto-discovered, `2` = user/global + explicit settings-entry, `3` = user/global + auto-discovered, `4` = extension supplied by an installed package — then, separately and with strictly higher precedence than all of the above, merges in any **CLI-provided** extension path (`-e`/`additionalExtensionPaths`) as `primary` via `mergePaths(cliEnabledExtensions, enabledExtensions)` (`resource-loader.js`, ~line 269), which places every CLI-provided extension **unconditionally first**, ahead of every ranked entry including rank `0`.
-* SCE's generated extension is installed at `.pi/extensions/sce/index.ts` (`cli/build.rs`) with no corresponding entry ever written into `.pi/settings.json`'s extensions list (confirmed: no `"extensions"` write exists in `cli/src/services/setup/mod.rs`), so it is **rank `1` — project + auto-discovered** — never rank `0`.
-* Consequently, three independent ways an extension can dispatch `user_bash` ahead of SCE's exist on pinned `0.80.6`, in addition to the readdir-order tie risk noted below:
-  1. any extension path passed via Pi's CLI `-e` flag or an SDK caller's `additionalExtensionPaths` — unconditional, no configuration state can prevent it;
-  2. any extension the user explicitly lists in `.pi/settings.json`'s project-scope `extensions` array (rank `0`, strictly above SCE's rank `1`);
-  3. an **SDK-embedding caller's own `extensionsOverride` hook** (`resource-loader.js`, ~line 279: `this.extensionsResult = this.extensionsOverride ? this.extensionsOverride(extensionsResult) : extensionsResult;`) — a first-class, documented extensibility point that lets an embedder replace or arbitrarily reorder the **entire** resolved extension array after Pi's own ranking is computed, with no constraint whatsoever. This is not a race or an edge case; it is a supported Pi capability specifically for controlling extension composition, and it defeats any purely configuration-based ordering guarantee by construction.
-* Within a single precedence rank (e.g. two project-auto-discovered extensions, including a second one alongside SCE's own `.pi/extensions/sce/`), relative order is `fs.readdirSync()` enumeration order (`package-manager.js`/`loader.js`), which Node.js does not specify or guarantee as any particular order; `Array.prototype.sort()`'s stability only preserves whatever that unspecified order happens to be. **Readdir order is not a soundness guarantee** and this plan does not treat it as one.
-* `/reload` (`ctx.reload()`, backed by `resourceLoader.reload()` + a fresh `getExtensions()` call, `agent-session.js` ~line 2023-2029) recomputes the entire resolved/ranked extension set and rebuilds the `ExtensionRunner` from scratch; if the project's `.pi/settings.json`, CLI flags, or directory contents changed since the session started, the winner of a future `user_bash` dispatch can change. Neither the load-time `ExtensionAPI` (`createExtensionAPI`, `loader.js`) nor the per-event `ctx` (`createContext()`, `runner.js` ~line 420) exposes any sibling-extension list, position, or registration-order information to an extension's own code — **confirmed by direct inspection of both object constructors, not inferred** — so SCE's extension has no way, from inside itself, to learn at load time or at dispatch time whether it is first, whether a competing handler exists, or whether a `/reload` changed that fact.
-* No lower-level, non-short-circuiting hook wraps actual Bash execution: `AgentSession.executeBash()`/`executeBashWithOperations()` (`agent-session.js` ~line 2139) — the only code path that ever actually runs a shell for `!`/`!!` — emits no event and calls no extension hook of any kind; it is reached only when the single `emitUserBash()` winner's result lacked a full-replacement `result`. **Option A (an unavoidable execution seam) does not exist on pinned Pi `0.80.6` and is ruled out by direct source inspection, not assumed absent.**
-* No public priority/ordering field exists on `pi.on(event, handler)` or anywhere in `ExtensionAPI`. **Option B (enforceable SCE-first ordering) does not exist**: even disregarding the SDK `extensionsOverride` escape hatch, registering SCE's extension as a rank-`0` project-settings-entry (a real, available improvement T05 could make, since it is currently rank `1`) would still lose to any CLI-provided extension and to any other rank-`0` entry a user lists ahead of it in the same settings array — it narrows exposure, it does not close it, and it does nothing for the `extensionsOverride` case at all.
-
-**Selected mechanism: Option C, a runtime fail-closed compatibility gate — implemented outside Pi's own extension sandbox, since Pi's extension API exposes no introspection an extension could use to gate itself.** Because SCE's own extension code (confirmed above) cannot observe its own dispatch position or detect a competing handler from inside Pi's process, the check cannot live inside `sce-pi-extension.ts`'s handler bodies. T05 must instead:
-
-* Ship a thin `pi` launcher (installed by `sce setup --pi`, invoked by the user or their shell configuration in place of the real `pi` binary — exact packaging, e.g. a wrapper script placed ahead of the real binary on `PATH` or a shell function/alias, is T05's to determine) that, immediately before exec-ing the real `pi` binary with the same arguments, replicates pinned Pi's own `resource-loader`/`package-manager` resolution (importable from the vendored package without executing arbitrary extension code — path/metadata resolution only, not `factory()` invocation) to compute the exact ranked extension order the real invocation is about to use, and checks whether **any** entry precedes SCE's own generated extension path. Re-running this on every launch (not once at `setup`/`doctor` time) is required because the effective order can change between sessions (settings edits, `-e` flags, directory contents) — a cached/stale "doctor said it was fine" result is exactly the failure mode the human's brief prohibits. **Corrected below (see "Corrected a fourth time"): when this check finds a preceding extension, the launcher refuses to exec `pi` at all — it no longer launches Pi with attribution merely withheld.**
-* Communicate the result to SCE's own extension via an environment variable the launcher sets before exec-ing the real `pi` process (e.g. `SCE_PI_USER_BASH_GUARD_SAFE=1` only when no preceding extension was found; unset/absent/`0` otherwise). **Corrected below: this variable is no longer the safety proof.** It remains a launch-time optimization/diagnostic signal, but the runtime gate SCE's extension actually trusts before enabling the guarded `user_bash` handler or any Start-capable tracked-tool handling is the fresh, in-process, live-state check described in "Corrected a fourth time" below, re-derived at every factory invocation (initial load and every later `/reload`), never a process-lifetime environment variable read once. Absent/non-`1` (from either signal) is always treated as unsafe, and unsafe always withholds tracked-tool Start handling as well as `user_bash`, per the human's brief.
-* **This wording is superseded — see "Corrected a fourth time" below for the actual permanent scope boundary statement, restated for worktree-wide (not merely Pi-attribution) safety.**
-* `sce doctor`/`sce setup --pi` remain valuable as **diagnostic-only** reporting (surfacing the same ordering computation for a human to read and act on, e.g. "another extension is configured ahead of SCE's; use the `sce`-provided `pi` launcher, or move/remove the competing extension"), but per the human's brief, doctor output must never be treated, described, or relied upon anywhere in T05/T06 as the actual safety mechanism — the launcher-refusal-plus-in-process-check gate below is the safety mechanism, and it runs on every launch and every runner rebuild unconditionally, not only when a human happens to invoke `doctor`.
-* This disposition (the exact dispatch-order facts above, the ruling-out of Options A and B, and the selected Option C mechanism as corrected below, with its named permanent limitations) must be recorded in T02's task record before T02 is considered done, per D2's existing "false negative over false positive, never silent" posture: SCE must never claim D13 protection is active without a fresh, positive check that remains valid for the entire interval attribution is enabled.
-
-**Corrected a fourth time — withholding Pi's own attribution is not worktree protection, and a launch-time attestation does not survive `/reload`.** Two further load-bearing holes were found in the Option C mechanism above, both before any T02 work began.
-
-*Hole 1 — disabling Pi's own attribution does not protect a concurrently live Claude/Codex/OpenCode (or another Pi) scope.* The mechanism as originally stated only withholds SCE's own Start/Close registration and the `user_bash` guard for the current Pi session; it does not prevent Pi from starting, and it does nothing to the worktree itself. If a foreign extension wins `user_bash` dispatch (any of the three configurations in "Confirmed exact dispatch evidence" above), that foreign extension executes the human's command with no SCE guard whatsoever — no supervisor, no `WorktreeLock`, no `ExternalTaintMarker` — while SCE's own extension sits inert. This is not merely a missed-Pi-scope problem: every harness's mutation attribution in this codebase works by attributing whatever tree diff occurred during a scope's live, unconfirmed interval to that scope once it confirms, because nothing else in the generic runtime distinguishes "this diff came from the scope's own tool call" from "this diff came from an unrelated, unguarded shell command that happened to run concurrently." The `WorktreeLock`/`ExternalTaintMarker` guard is the *only* thing in this codebase that prevents an ambient human mutation from being folded into a concurrently-live scope's confirmed attribution — that is D13's entire reason for existing. Therefore:
-
-```text
-no Pi scope exists  =>  the worktree is safe
-```
-
-is false, and every occurrence of this reasoning anywhere in this plan (including the previous version of AC22's cross-harness bullet and T06's corresponding regression) is retracted. The correct invariant:
-
-```text
-An unguarded (unproven-safe) user_bash execution is a worktree-wide
-attribution hazard, not merely a Pi-attribution hazard. Disabling
-Pi's own Start/Close registration cannot by itself protect a live
-Claude/Codex/OpenCode (or another Pi) scope on the same worktree,
-because the thing that protects a live scope from an unguarded
-human mutation is the WorktreeLock/ExternalTaintMarker guard, not
-the presence or absence of a Pi mutation scope.
-
-"Pi attribution disabled" and "worktree attribution protected" are
-not equivalent, and no revision of this plan may treat them as
-equivalent.
-```
-
-*Hole 2 — a launch-time attestation does not survive `/reload`.* `SCE_PI_USER_BASH_GUARD_SAFE` was specified to be read once, at extension factory time, into an in-memory decision. But pinned Pi `0.80.6` can rebuild its entire extension runner in the same process: `ResourceLoader.reload()` (`dist/core/resource-loader.js`, ~line 216-219, inspected directly against the installed package) calls `clearExtensionCache()` whenever `this.loaded` is already true — clearing the module cache so the *next* `loadFinalExtensionSet()` (line 270) re-imports and re-invokes every extension's factory function fresh, including SCE's own `.pi/extensions/sce/index.ts` — and `AgentSession.reload()` (`dist/core/agent-session.js`, ~lines 2023-2044) drives this end to end: it emits `session_shutdown` with `reason: "reload"` on the *old* `ExtensionRunner` (line 2025), then awaits `this._resourceLoader.reload()` (line 2029), then calls `this._buildRuntime(...)` (line 2030), which calls `getExtensions()` (line 2002) and constructs a **brand-new** `ExtensionRunner` instance (line 2008), replacing `this._extensionRunner` outright, and finally (when bindings exist) emits `session_start` with `reason: "reload"` (line 2041) via the *new* runner. `ExtensionRunner.invalidate()` (`dist/core/extensions/runner.js`, line 323) independently confirms the runtime's own model of this: any `ctx` captured before a `ctx.reload()` is declared stale and must not be reused. If the project's `.pi/settings.json`, CLI flags, or directory contents changed since the process launched — the exact same inputs the launcher's pre-exec check read — the *new* incarnation's dispatch order can differ from what the launcher attested, but `process.env.SCE_PI_USER_BASH_GUARD_SAFE` is a process-lifetime value: it is untouched by `reload()`, so a stale `"1"` set at launch remains readable by the newly reinstantiated factory unless something explicitly invalidates it first. This is exactly the hazard the human's brief describes:
-
-```text
-launch-time-safe   !=   session-lifetime-safe
-```
-
-**Required attestation invariant.** Positive Pi mutation attribution may be enabled only while the exact extension-dispatch configuration actually used by the current Pi `ExtensionRunner` is known to satisfy the `user_bash` interception invariant, for the entire interval attribution remains enabled — not the configuration predicted at process launch. Any operation capable of replacing/reordering that runner invalidates the proof until a new enforceable proof exists. A launch-time-only check does not satisfy this.
-
-**Selected disposition — Option A applied at every point SCE's own factory code runs, not only at initial launch, plus Strategy 3 (fresh attestation on every runner rebuild) grounded in a confirmed Pi seam, not an assumption:**
-
-1. **Launcher refusal (closes Hole 1 at launch).** The `pi` launcher's fresh per-launch check (unchanged computation from "Confirmed exact dispatch evidence" above) no longer merely withholds an environment variable while still exec-ing `pi`. If it finds any extension preceding SCE's own generated extension path, it **refuses to exec the real `pi` binary at all** and exits non-zero with a diagnostic naming the conflicting extension (the same fact `sce doctor` already reports). No Pi process of any kind starts via that invocation, so no `user_bash` dispatch of any shape — guarded or unguarded — can occur through this entry point, and a concurrently live Claude/Codex/OpenCode/Pi scope on that worktree is completely unexposed to this hazard for this launch. This is preferable to launching a session capable of introducing an invisible, unguarded human mutation into a worktree containing scopes from another harness, per the human's brief. This is an attribution-safety *admission* failure the launcher enforces before Pi exists at all, not a Pi-internal Bash-policy decision.
-2. **In-process self-check on every factory invocation (closes Hole 2, and narrows — but does not eliminate — the launcher/Pi startup TOCTOU).** SCE's own extension factory (`config/lib/pi-plugin/sce-pi-extension.ts`) independently re-derives the ranked extension order itself, in-process, using the same vendored resolution entry points the launcher already imports (e.g. `DefaultPackageManager.resolve()`, `dist/core/package-manager.js` — exact exported surface to be pinned down at T05 time from the installed package, not invented here), against the *live on-disk* settings/CLI state at the exact moment the factory runs. Because `clearExtensionCache()` forces a genuinely fresh factory invocation on every `reload()` (confirmed above), this in-process check re-executes automatically on every runner rebuild — initial load and every subsequent `/reload`/`AgentSession.reload()` alike — with no separate reload-specific hook required. SCE's extension enables guarded `user_bash` handling and tracked-tool Start registration **only when this fresh, in-process check itself agrees SCE is first**; `SCE_PI_USER_BASH_GUARD_SAFE` is demoted from "the safety proof" (forbidden by the human's brief) to an early, launch-time-only optimization/diagnostic signal — the runtime gate actually enforced inside a running Pi process is always the freshly re-derived, live-state, in-process check, never a trusted environment variable read once.
-3. **Terminate, don't merely downgrade, when an already-running launcher-admitted session goes unsafe.** If the in-process check ever fails on a reinstantiation *after* the process has already been running in guarded-attribution mode (i.e., a `/reload` or `AgentSession.reload()` discovers a newly-unsafe configuration), SCE's extension does not merely withhold its own Start/`user_bash` registration and let the now-unsafe process keep running — per Hole 1's invariant, that would leave any concurrently live Claude/Codex/OpenCode scope on the same worktree exposed to exactly the same unguarded-dispatch hazard as an unsafe launch, just discovered later. The extension instead forces the Pi process to terminate (a hard exit after best-effort diagnostic output) so the newly-unsafe configuration can never be exercised via `user_bash` for the remainder of what would otherwise have been this process's life. This is Option A applied uniformly at every point SCE's own code runs — initial launch and every later reinstantiation — not only at the first one. This does not conflict with D13's existing Option A control-death policy (a supervisor already guarding an in-flight human command keeps running that command to completion regardless of Pi/Node's death); terminating Pi/Node here only forecloses *future*, not-yet-started, unguarded `user_bash` dispatch.
-
-**Named residual — retracted below for launcher-admitted sessions, not merely accepted as minimized.** The in-process self-check (item 2 above) was the same deterministic resolution function invoked independently against the same on-disk inputs, at a time much closer to Pi's own real resolution than the launcher's earlier external check — but it was still a *prediction*, not an *authority*: "the safety proof does not claim two independent resolver executions are guaranteed to coincide, only that they use the same code against the same inputs at closely-adjacent times, which is a *minimized*, not *zero*, TOCTOU" is retracted as an acceptable final state by "Corrected a fifth time" immediately below, which replaces prediction with ownership. See that section for why the TOCTOU is eliminated, not minimized, for any session admitted through SCE's launcher, and for the one residual boundary that remains permanent (sessions that bypass the launcher's `ResourceLoader` construction entirely).
-
-**Corrected a fifth time — the safety authority must exist outside the replaceable Pi extension set, not inside its own factory; a concrete bypass proves the prior mechanism unsound as a primary proof, not merely imprecise.** Items 1–3 of "Corrected a fourth time"'s selected disposition — the launcher refusing to exec `pi` at launch, SCE's own extension factory independently re-deriving the ranked order at every invocation, and terminating the process when a *later* factory invocation finds itself unsafe — are retracted as the primary soundness proof. They remain permissible only as diagnostics/defence-in-depth (see below), because all three share one structural flaw: every one of them runs as code *inside* `sce-pi-extension.ts`, which is itself a member of the very extension set the mechanism is supposed to police. This is load-bearing, not a corner case:
-
-```text
-Pi launched safely through the old launcher design
-SCE extension active, positive attribution enabled
-
-project configuration changes: SCE's own generated extension is
-removed / disabled / renamed / excluded from the next resolved set
-a foreign extension registering user_bash is added
-
-/reload
-    =>
-the reinstantiated ExtensionRunner is built from a resolved set that
-never includes SCE's extension at all
-    =>
-SCE's own factory function — the code that was supposed to
-independently re-check safety and terminate the process if unsafe —
-never executes, because it is not part of the set being loaded
-    =>
-the "terminate on newly-unsafe reload" logic never runs, because it
-lived entirely inside the thing that was removed
-    =>
-the foreign user_bash handler dispatches unguarded
-    =>
-unguarded human mutation, on a worktree that may still carry a live
-Claude/Codex/OpenCode/Pi scope
-```
-
-> The authority deciding whether guarded Pi attribution remains valid must exist outside, or below, the replaceable Pi extension set.
->
-> SCE's own extension cannot be the sole watchdog for whether SCE is still present, first, or active after an ExtensionRunner replacement.
->
-> If removing SCE also removes the enforcement mechanism, the mechanism is not a sound attribution boundary.
-
-And retain, unchanged:
-
-> The exact ExtensionRunner configuration actually in use must be authoritative.
->
-> Independent re-resolution is not equivalent to observing or controlling the runner that Pi actually installed.
-
-**Selected mechanism — Option A: the launcher owns `ResourceLoader` construction and freezes/governs the resolved extension array through two confirmed, first-class, publicly-exported Pi `0.80.6` constructor options, not a second, independently-timed resolver.** Inspecting pinned `0.80.6` directly (every path below is under `config/lib/node_modules/@earendil-works/pi-coding-agent`, the exact vendored copy of the version this plan already pins — confirmed by the installed `package.json`'s `"version": "0.80.6"`):
-
-* `AgentSession` never constructs its own `ResourceLoader`; one is handed to it at construction (`dist/core/agent-session.js` line 132: `this._resourceLoader = config.resourceLoader;`) and reused, unreplaced, for the life of the process, including every `reload()`. `_buildRuntime()` builds `ExtensionRunner` from exactly `this._resourceLoader.getExtensions()` (`agent-session.js` lines 2002/2008: `const extensionsResult = this._resourceLoader.getExtensions(); ... this._extensionRunner = new ExtensionRunner(extensionsResult.extensions, ...)`), and `reload()` (lines 2023-2034) does nothing but `await this._resourceLoader.reload()` followed by the same `_buildRuntime()` call. The array `ExtensionRunner` is actually built from, on every rebuild, is always and only whatever the caller-supplied `ResourceLoader` instance returns — there is no separate, Pi-internal "real" resolution for a launcher to race against once the launcher itself supplies that instance.
-* `DefaultResourceLoaderOptions` (`dist/core/resource-loader.d.ts`, an exported type consumed by the root-exported `createAgentSessionServices`/`createAgentSessionRuntime`/`createAgentSession` — `dist/index.d.ts` re-exports `createAgentSession, createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices` from `sdk.ts`, and the package's single `"."` export-map entry serves `dist/index.js`, so none of this requires reaching into an unexported deep path) carries two constructor-bound fields the launcher can set once, at session-construction time, for a session it itself hosts:
-  * `extensionFactories?: InlineExtension[]`, where `InlineExtension = ExtensionFactory | { name; factory }` and `ExtensionFactory = (pi: ExtensionAPI) => void | Promise<void>` (`dist/core/extensions/types.d.ts` lines 1059-1065) — **exactly** the signature SCE's existing `.pi/extensions/sce/index.ts` factory already has; it can be passed here unmodified. `resource-loader.js`'s `loadFinalExtensionSet()` — the function `reload()` calls on every single invocation, not only at first load (line 270: `const extensionsResult = await this.loadFinalExtensionSet(extensionPaths, preTrustExtensions);`) — unconditionally calls `this.loadExtensionFactories(...)` and appends its result to `extensionsResult.extensions` (lines 366-372), sourced from `this.extensionFactories`, set once at construction (line 130: `this.extensionFactories = options.extensionFactories ?? [];`) and never affected by `.pi/settings.json`, the `.pi/extensions/` directory, or any other on-disk state. Passing SCE's existing factory function here means SCE's extension is present in the resolved set on every rebuild **because the launcher supplied the function directly, in-process** — there is no on-disk file to delete, rename, or exclude that could remove it, because on-disk discovery was never how it got there. **This append is additive, not substitutive: pinned `0.80.6` performs no deduplication between an extension already present in `extensionsResult.extensions` from on-disk discovery and the same factory supplied here.** A normal `sce setup --pi` installation leaves `.pi/extensions/sce/index.ts` on disk, so a launcher-hosted session's `extensionsResult.extensions` — the array `extensionsOverride` receives, below — ordinarily contains **two** SCE entries before normalization: the disk-discovered one (from on-disk resolution, ranked per Pi's normal rules) and the inline one this bullet appends at the end. Uniqueness is not a byproduct of `extensionFactories`; it must be established explicitly by `extensionsOverride` — see "Canonical SCE runtime-instance invariant" below.
-  * `extensionsOverride?: (base: LoadExtensionsResult) => LoadExtensionsResult` (`resource-loader.d.ts` line 78) — invoked unconditionally at the very end of `reload()` (`resource-loader.js` line 279: `this.extensionsResult = this.extensionsOverride ? this.extensionsOverride(extensionsResult) : extensionsResult;`), **after** CLI-path merging, rank-0..4 resolution, and the inline-factory append above — i.e. against the complete, final, already-assembled array (which, absent normalization, may already contain both a disk-discovered and an inline SCE entry — see above), every single time `reload()` runs, not merely at first load. A launcher-owned override locates the one canonical inline SCE entry (guaranteed present via `extensionFactories` above), removes any disk-discovered SCE duplicate proven to correspond to SCE's own generated `.pi/extensions/sce` integration, places the canonical instance at array index `0`, and returns the normalized array; it fails closed (throws, which propagates out of `reload()`/`_buildRuntime()` as a rejected promise the launcher's own top-level code turns into a hard startup/reload failure) whenever a safe, unique array cannot be constructed — either because SCE's own inline factory itself throws when invoked, or because the canonical inline SCE instance cannot be identified exactly once in `base.extensions`. Moving an SCE entry to index `0` alone is insufficient and is retracted as a complete description of this mechanism — see "Canonical SCE runtime-instance invariant" below for the full normalization contract.
-* Because `emitUserBash()`, `tool_call`, and every other per-event dispatch (`extensions/runner.js`, confirmed above under "Confirmed exact dispatch evidence") iterate `this.extensions` — the exact array `ExtensionRunner` was constructed from — in array order, forcing the canonical SCE entry to index `0` via `extensionsOverride` makes SCE first for every dispatch, for every launcher-admitted session, by construction, not by predicting Pi's own rank computation and hoping it agrees. This closes the CLI-provided-extension bypass, the rank-`0`-settings-entry bypass, and the same-rank readdir-order tie identically — none of them change whether SCE ends up first, because SCE's launcher, not Pi's own rank computation, has the last word on the returned array. First is necessary but not sufficient: the same `extensionsOverride` call is also where the second, disk-discovered SCE instance (if present) must be removed, so that every dispatch reaches exactly one SCE handler, never two.
-* `createRuntime` (the factory `createAgentSessionRuntime(createRuntime, options)` stores and re-invokes) is "reused for later `/new`, `/resume`, `/fork`, and import flows" per its own doc comment (`dist/core/agent-session-runtime.d.ts` line 20 area), so a launcher-supplied `createRuntime` closure that always sets the same `resourceLoaderOptions.extensionFactories`/`extensionsOverride` governs every session-replacement path Pi supports, not only `/reload`.
-* Pi's own production entry point already uses exactly this composition — `createAgentSessionServices({ resourceLoaderOptions: {...} })` → `createAgentSessionRuntime(createRuntime, {...})` → `new InteractiveMode(runtime, {...})` (`dist/main.js` lines 489-598, 655) — and `InteractiveMode`, `runPrintMode`, `RpcClient`, `runRpcMode` are all exported from the package root (`dist/modes/index.d.ts`, re-exported via `dist/index.d.ts`). The launcher does not need to reimplement Pi's own TUI/print/rpc experience: it hosts the session, `main.js`-style, and hands off to Pi's own unmodified UI layer once the session exists.
-
-This meets Option A's required property exactly: `approved extension set E ↓ Pi ExtensionRunner is created from E ↓ future reload cannot discover an arbitrary new E'` — `E` is whatever the launcher's `resourceLoaderOptions` produces, on every rebuild, and no on-disk mutation or CLI flag determines whether SCE is present or ordered first; those inputs are merely additional entries SCE's `extensionsOverride` may accept and reorder around, never a way to change whether SCE itself remains first. **The launcher determines what Pi is allowed to run; it does not predict what Pi will resolve** — no second resolver, no race, no closely-adjacent-but-not-identical timing window.
-
-**Why this eliminates the startup/reload TOCTOU rather than minimizing it.** The retracted design ran two independent resolver executions — the launcher's pre-exec check and Pi's own real resolution — and, mid-session, the in-process factory check versus whatever `/reload` actually used — and argued they were "closely adjacent" and therefore safe enough. That reasoning is retracted; adjacency in time is not equivalence, and the concrete bypass above shows the gap is exploitable exactly when SCE's own code is what disappears. Under this correction there is exactly **one** array-producing code path per rebuild — `this._resourceLoader.getExtensions()` inside `_buildRuntime()`, fed by the launcher's own constructor-bound `extensionFactories`/`extensionsOverride` — and it is what `ExtensionRunner` is actually, synchronously, constructed from. There is nothing to race, because there is only one resolution, not two independently-timed ones.
-
-**How `/reload` becomes sound rather than merely re-checked.** `reload()` (`agent-session.js` lines 2023-2034) calls `this._resourceLoader.reload()` — the *same* `ResourceLoader` instance, with the *same* constructor-bound `extensionFactories`/`extensionsOverride`, as initial load — then rebuilds `ExtensionRunner` from its result. Nothing about `/reload` replaces the `ResourceLoader` instance or its bound options; it only re-runs the same governed resolution against possibly-changed on-disk inputs, which SCE's `extensionsOverride` sees and re-enforces every single time, unconditionally. `/reload` may pick up legitimate new project content — new skills, new prompts, a newly-added compatible extension — but it cannot make SCE disappear from the array `extensionsOverride` returns, and it cannot place anything ahead of SCE in that array, because SCE's own launcher code is the only thing that ever writes that array's final order. `AgentSession.reload()` is covered identically, since it is the same code path.
-
-**Downgrading the retracted design to defense-in-depth, not deleting it.** The launcher's earlier pre-exec ranked-order computation and SCE's extension's in-process self-check of its own dispatch position (both from "Corrected a fourth time" above) remain permissible as diagnostics — `sce doctor`/`sce setup --pi` may keep reporting a human-readable conflict, and the extension may keep asserting `extensions[0]` is itself as a cheap sanity check — but neither may be described, relied upon, or tested as the reason positive Pi attribution is sound. The soundness proof is the launcher's ownership of `ResourceLoader` construction; a self-check inside `sce-pi-extension.ts` is by definition unable to run once that extension is the thing missing, exactly as the concrete bypass above demonstrates, so it can never again be the primary proof.
-
-**Raw Pi / SDK embedding — the permanent, unenforceable boundary, restated in terms of this mechanism, not weakened.** A user invoking the real `pi` binary directly, or an SDK caller constructing their own `AgentSession`/`ResourceLoader` without going through SCE's launcher's `createRuntime`/`resourceLoaderOptions` wiring, never has SCE's `extensionFactories`/`extensionsOverride` bound in at all — there is no process boundary or API surface that can force an external caller to use them. Such a session can run with a foreign extension anywhere in its own resolved order, unguarded `user_bash` included, regardless of how many diagnostic self-checks SCE's own code performs if it happens to be present at all (it can still correctly disable its own attribution, but per Hole 1's invariant that does not protect any other live scope on the same worktree). This plan does not attempt to close this boundary — doing so would require Pi to expose a way to refuse its own startup from inside extension code, or to force every embedder to use SCE's `ResourceLoader`, and neither exists. The precise, permanent scope statement:
-
-```text
-SCE guarantees Pi mutation attribution soundness — including
-protection of concurrently live Claude/Codex/OpenCode/Pi scopes
-from an unguarded Pi user_bash execution — only for Pi sessions
-whose ResourceLoader was constructed by SCE's own launcher (the
-extensionFactories/extensionsOverride wiring described above), for
-the entire lifetime of that launcher-hosted process (including
-every later reload/reinstantiation and every /new, /resume, /fork,
-or import that reuses the same createRuntime factory).
-
-A raw pi invocation or an SDK-embedded AgentSession that does not
-use SCE's launcher-constructed ResourceLoader is an external mutator
-outside that guarantee: it can invalidate concurrent worktree
-attribution from any harness, and no AC in this plan may claim
-otherwise.
-```
-
-Any AC or task text elsewhere in this plan asserting that merely disabling Pi's own scopes prevents contamination of Claude/Codex/OpenCode is retracted by this correction (see the rewritten AC22 and T06 below).
-
 **Exclusivity — multiple `user_bash` invocations reuse the same lock, no new admission logic.** Pi's TUI already serializes `!`/`!!` execution to one in flight at a time (T01). If a mode ever allows a second concurrent `user_bash` on the same worktree, its supervisor's own `ProtectedWorktree::acquire` simply contends on the same `WorktreeLock` as the first supervisor and, on timeout, is treated as an ordinary guard-establishment failure by the mechanism above — command refused, no execution. This requires no reference counting, no tokens, and no admission code beyond what `WorktreeLock` already does.
 
-**No new protocol or Quint semantics.** `database_failure`, `recover`, `Flush`, `CoordinateError::LockAcquisition`, and `CoordinateError::MarkerClearAfterCommit` are all pre-existing, actor-agnostic, and already exercised by Rust tests and MBT. This section changes *which process* spawns the human shell, *how* the OS-level lock's lifetime is made to durably imply the shell's lifetime (fd duplication, a runtime/OS-level mechanism, not a protocol one), and *what triggers* the existing recovery the runtime already performs — not what the protocol model represents. No `protocol.rs` or `spec/mutation_cursor.qnt` edit is required (see AC18). This PR still does not need to solve the separately deferred Bash-policy behavior for `!`/`!!` beyond this guard, nor does it need to solve the extension-dispatch-bypass hole by modifying Pi's own dispatch mechanism — only to refuse, at runtime and on every launch, to enable positive Pi mutation attribution when SCE cannot first prove its own `user_bash` handler is unavoidable (the launcher/env-var gate above), never merely to detect the problem and warn.
+**No new protocol or Quint semantics.** `database_failure`, `recover`, `Flush`, `CoordinateError::LockAcquisition`, and `CoordinateError::MarkerClearAfterCommit` are all pre-existing, actor-agnostic, and already exercised by Rust tests and MBT. This section changes *which process* spawns the human shell, *how* the OS-level lock's lifetime is made to durably imply the shell's lifetime (fd duplication, a runtime/OS-level mechanism, not a protocol one), and *what triggers* the existing recovery the runtime already performs — not what the protocol model represents. No `protocol.rs` or `spec/mutation_cursor.qnt` edit is required (see AC18). This task does not need to solve the separately deferred Bash-policy behavior for `!`/`!!` beyond this guard.
 
-**Cross-process safety is explicit, not incidental.**
+**Extension-dispatch interception is an accepted, permanent limitation — not a hole this plan closes.** T01's own evidence (`handleBashCommand()`) establishes that Pi consumes exactly one `user_bash` handler's result — the first one that returns a truthy `operations` or `result` — not a chain where every registered extension's handler runs in sequence the way `tool_execution_start`/`tool_call` do for tool calls (D5). If any other registered Pi extension's `user_bash` handler runs ahead of SCE's and itself returns a result, Pi never invokes SCE's handler at all: no supervisor is spawned, no `WorktreeLock` is acquired, no `ExternalTaintMarker` is armed, and the human command executes with no guard from SCE.
 
-```text
-Attribution safety is worktree-wide, not Pi-process-local, and it holds
-for the entire dynamic lifetime of the ACTUAL SHELL PROCESS — not the
-supervisor's lifetime, not the control channel's lifetime, and not
-merely from the instant the command begins.
+**Corrected — SCE does not attempt to close this by contesting Pi's dispatch order.** Earlier drafts of this section proposed closing this gap with an SCE-hosted Pi launcher that would own `ResourceLoader` construction (`extensionFactories`/`extensionsOverride`), normalize the resolved extension array to guarantee SCE is first and present exactly once (`sceEnforceExtensionOrder`), and ship a `sce pi` entry point or PATH-shadowing wrapper to get sessions into that launcher. That direction is retracted as a deliberate product decision, not merely deprioritized:
 
-No correctness argument for user_bash may depend on an in-memory flag,
-a PID check, a timestamp, or a TTL. The only facts any other process
-can rely on are: (1) while the OS lock is held — by the supervisor, by
-the shell via its inherited duplicate descriptor, or both — no
-coordinate() call anywhere can proceed past
-ProtectedWorktree::acquire_inner; (2) once the lock is free, either the
-supervisor completed its finish sequence cleanly (marker cleared) or it
-did not (marker still armed, self-healed by the existing
-inherited-taint path); (3) this guarantee exists only for a user_bash
-invocation SCE's extension actually observed, which itself exists only
-for a Pi process whose ResourceLoader SCE's own launcher constructed —
-extensionFactories guaranteeing SCE's extension is present on every
-resolution regardless of on-disk state, extensionsOverride guaranteeing
-it is placed first on every resolution, both constructor-bound to the
-one ResourceLoader instance reused unreplaced for the life of the
-process, across every /reload, AgentSession.reload(), /new, /resume,
-and /fork. There is no reinstantiation that can "fail a check" and
-require terminating the process, because there is no window in which
-an unsafe array can be constructed at all for a launcher-hosted
-session. See "Corrected a fifth time" above for the exact mechanism,
-its required invariant, and its one named permanent limitation (a raw
-pi invocation, or SDK embedding that does not use SCE's launcher's
-ResourceLoader construction — worktree-wide safety is not guaranteed
-for either).
-```
+* SCE does not redistribute Pi, bundle a JS/Bun runtime, or embed Pi's SDK. Pi remains an independently installed, independently launched dependency.
+* There is no SCE-hosted Pi process, no `sce pi` command, and no launcher-owned `ResourceLoader`.
+* SCE does not claim, prove, or test that its extension is first or unique in Pi's runtime extension array. `sceEnforceExtensionOrder`, the canonical-inline-factory-identity mechanism, and the disk-duplicate-removal normalization described in earlier drafts of this section do not exist and are not built.
+* The supported product path remains exactly: `sce setup --pi` installs the generated extension; the user runs ordinary `pi`; Pi auto-discovers SCE like any other extension.
 
-**Canonical SCE runtime-instance invariant — corrected sixth: "SCE first" is necessary but not sufficient; "SCE first AND SCE exactly once" is required.** The preceding "Corrected a fifth time" mechanism establishes that the launcher's `ResourceLoader` construction is the sole authority over the array `ExtensionRunner` is built from, and that SCE's canonical entry always lands at index `0` of that array. It does not, on its own, establish that SCE's canonical entry is the *only* SCE entry in that array. Both `extensionFactories` and normal on-disk discovery can contribute an SCE-shaped extension to the same `base.extensions` array `extensionsOverride` receives (see the corrected `extensionFactories`/`extensionsOverride` bullets above), and pinned `0.80.6` performs no deduplication between them. A launcher-hosted installation with `.pi/extensions/sce/index.ts` present on disk — the normal output of `sce setup --pi` — therefore produces, absent explicit normalization, an array containing both instances, each independently registering `tool_call`, `tool_result`, `tool_execution_end`, `user_bash`, and every other SCE handler. Downstream event idempotence must never be relied on to make this harmless; the second handler invocation itself must not occur.
-
-**Canonical identity.** The canonical SCE instance for a launcher-hosted session is not identified by basename, display name, handler shape, or tool names — any of those could collide with a foreign extension. It is identified solely by construction: it is the exact `Extension` instance `loadFinalExtensionSet()` produces from the launcher's own named inline factory entry,
+**The guarantee this task actually provides:**
 
 ```text
-extensionFactories: [
-    { name: "sce", factory: sceExtensionFactory }
-]
+SCE user_bash handler receives event
+    ↓
+arm external-mutation supervisor
+    ↓
+receive durable Armed acknowledgement
+    ↓
+only then authorize exec
+    ↓
+supervisor owns actual shell execution and lifetime guard
+    ↓
+finish forces database_failure + recover before guard completion
 ```
 
-T02 must independently confirm, and commit as frozen evidence citing exact `resource-loader.js`/`loader.js` file/line numbers against the installed `0.80.6` package, the exact `Extension.path`/source-identity value `loadExtensionFromFactory()` assigns a named inline factory (a value resembling `<inline:sce>` is expected from `sceEnforceExtensionOrder`'s own prior inspection, but the literal field/value must not be assumed — T02 records what the source actually produces). The canonical instance is whichever `Extension` in `base.extensions` carries that exact inline-factory identity, never merely the one whose basename or declared name is `"sce"`.
+When SCE's `user_bash` handler is the one Pi invokes, every guarantee elsewhere in this section holds: the guard is durably established before any shell runs, `Armed` alone never authorizes execution, and the supervisor's own lifetime-tracking and forced recovery govern the guarded interval end to end, regardless of which process (Pi/Node, the supervisor, or the shell) dies and when.
 
-**Legacy generated disk-SCE identity.** The disk-discovered duplicate this section removes is identified the same way — by exact source identity, not by loose name matching. T02 must independently confirm and commit, citing exact file/line numbers, the exact `Extension.path` (after whatever canonicalization/realpath behavior Pi's loader applies) a normal `sce setup --pi` installation's generated `<repo>/.pi/extensions/sce/index.ts` receives when discovered from disk, and define a deterministic predicate — `isGeneratedDiskSce(extension)` — built from that exact path/source identity. This predicate must remove only SCE's own generated compatibility copy. It must never remove `.pi/extensions/sce-custom/`, a foreign package that happens to be named `sce`, or any extension merely because `"sce"` appears in its path or display name.
-
-**Required `extensionsOverride` normalization algorithm.** Replace "find SCE, move it to index 0, return the array" with:
+**The explicit limitation this task accepts, not solves:**
 
 ```text
-normalize(base):
-    canonical = { e in base.extensions : identity(e) == canonicalInlineFactoryIdentity }
-
-    if count(canonical) != 1:
-        fail closed  // throw — never guess which instance is canonical
-
-    legacyDiskSce = { e in base.extensions : isGeneratedDiskSce(e) }
-        // zero or more instances; identified by exact generated-path
-        // identity only, per the predicate above
-
-    normalized = [
-        canonical[0],
-        ...base.extensions excluding canonical[0] and every e in legacyDiskSce
-    ]
-        // relative order of every remaining, unrelated extension is preserved
-
-    assert normalized[0] === canonical[0]
-    assert count(e in normalized : identity(e) == canonicalInlineFactoryIdentity) == 1
-    assert count(e in normalized : isGeneratedDiskSce(e)) == 0
-        // asserted before returning; a failed assertion is also a fail-closed
-        // throw, not a silently-returned unsafe array
-
-    return normalized
+A competing Pi extension may consume user_bash before SCE.
+SCE cannot guard an event Pi never dispatches to it.
+This configuration is outside the user_bash safety guarantee.
 ```
 
-This is specific to SCE's own dual integration paths — it does not generically deduplicate the whole extension array, and it must not remove any foreign extension, including one whose name or path merely contains `sce`.
+This limitation is specific to `user_bash` extension-dispatch interception. It does not weaken mutation-attribution semantics for ordinary tracked Pi tools (`bash`/`edit`/`write`, D3–D12), which are gated on SCE actually receiving Pi's `tool_call` event for that call, not on SCE's position in the extension array — Pi calls every registered extension's `tool_call` handler in registration order (D5), so a later extension cannot prevent SCE's own `tool_call` handler from running the way `user_bash`'s first-handler-wins dispatch can. This limitation also must never become a runtime self-disable mechanism for tracked-tool attribution: whether another extension might also see `user_bash` first has no bearing on whether `bash`/`edit`/`write` Start/Close is established when SCE's own `tool_call` handler runs.
 
-**Fail-closed uniqueness, not best-effort.** `canonicalInlineFactoryIdentity` count `== 0` (the inline factory itself failed, already covered above) and count `> 1` (Pi somehow supplied the same inline factory more than once) both fail construction/reload closed — the launcher never arbitrarily picks one. Likewise, if the post-normalization assertions above cannot be proven, `ExtensionRunner` is never constructed from the unproven array. This remains part of the launcher-owned authoritative array construction (`extensionsOverride`, run inside `_buildRuntime()`/`reload()`), not an in-extension runtime self-check — consistent with "Corrected a fifth time"'s requirement that the safety authority live outside the replaceable extension set.
+`sce doctor`/`sce setup --pi` may optionally report, as human-readable diagnostic information only, that another extension is configured in a way that could intercept `user_bash` ahead of SCE under naive on-disk resolution. This is informational only: it is never a prerequisite for installing or using the Pi integration, and a clean report is never treated as proof that `user_bash` will actually reach SCE for a given session.
 
-**Preserving the disk integration.** `sce setup --pi` continues to generate and install `.pi/extensions/sce/index.ts` unchanged; this amendment does not touch that generation path. It still serves raw-`pi`/SDK-embedding sessions that discover it directly from disk without going through SCE's launcher (the same permanent, worktree-unsafe boundary "Corrected a fifth time" already names). The supported modes are deliberately different: a launcher-hosted session's `ExtensionRunner` contains only the canonical inline instance (the generated disk copy is filtered out of the *array `ExtensionRunner` is built from*, not deleted from disk); a raw/legacy-discovery session continues to discover and run the generated disk copy normally, with its own existing diagnostic self-check as before. The extension source remains one canonical implementation, available through two integration paths; exactly one path is active in a launcher-hosted `ExtensionRunner`.
-
-**`/reload` re-establishes uniqueness on every rebuild.** Because the same `ResourceLoader` instance performs discovery and applies `extensionsOverride` on every `reload()` (per "Corrected a fifth time" above), the normalization algorithm above re-runs, unconditionally, on every rebuild — initial load, every later `/reload`, and every `/new`/`/resume`/`/fork` that reuses the same `createRuntime` closure. This holds regardless of whether the on-disk generated copy is present, removed, restored, or renamed between rebuilds, and regardless of whether a foreign extension is added or reordered: `count(canonical) == 1` and `extensions[0] == canonical` and `count(legacyDiskSce in normalized) == 0` are proven fresh, from the actual array `_buildRuntime()` consumes, every single time — never inherited from a prior rebuild's result.
-
-**Update to D13's summary framing.** Every prior statement in this section describing the outcome as "SCE-first" alone is superseded by "SCE-first AND SCE-exactly-once" for launcher-hosted sessions: `count(canonicalSce, E) == 1 AND E[0] == canonicalSce AND count(generatedDiskSce, E) == 0`. This does not change the launcher-owns-`ResourceLoader`-construction argument — it strengthens what that ownership is required to prove before `ExtensionRunner` becomes operational.
+**Preserving the disk integration.** `sce setup --pi` generates and installs `.pi/extensions/sce/index.ts` exactly as it always has. A normal `pi` invocation discovers it like any other project extension, with no wrapper, launcher, or additional installation step.
 
 ### D14 — Detached descendants remain an explicit limitation
 
@@ -899,33 +697,8 @@ Neither finding is a failure of the overall Pi integration approach; both are ex
   - Validate, ambiguous begin acknowledgement: have the supervisor durably acquire the lock and arm the marker while the caller's acknowledgement is lost or delayed past its bound, before any shell has been spawned; assert the command is still blocked (never executed on an uncertain result) and that the caller terminates the orphaned supervisor process so the lock is promptly released (no shell exists yet to hold a duplicated fd in this window); assert a later boundary on that worktree conservatively recovers/rebaselines it anyway — an accepted false negative (unnecessary abandonment), never a safety violation.
   - Validate, guard finalization failure: force the forced-recovery commit at guard-finish time to fail; assert `complete()` is never called, the marker remains armed, and the supervisor reports failure without claiming clean attribution; assert the next boundary on that worktree self-heals via the existing inherited-taint recovery path.
   - Validate, the real shell's parent is the supervisor: assert the spawned shell process's parent pid is the supervisor's pid (not Pi/Node's), confirming Pi/Node's wrapped `exec()` never itself calls `createLocalBashOperations()`/spawns a shell once a guard exists.
-- [ ] AC22: positive Pi mutation attribution cannot become active when `user_bash` interception is bypassable, **and** an unsafe `user_bash` dispatch configuration can never introduce an unguarded human mutation into a worktree for which SCE still claims attribution safety — for any live harness scope on that worktree, not only Pi's own. This is stronger than "confirmed and enforced or explicitly documented" — a warning alone never satisfies this AC, and "no Pi scope was established" never satisfies this AC by itself (see D13's Hole 1 correction: disabling Pi's own attribution does not protect another harness's live scope). **Amended — "SCE first" alone is also insufficient; "SCE first AND SCE exactly once" is required (D13's "Canonical SCE runtime-instance invariant").** The launcher-hosted invariant AC22 requires is formally:
-  ```text
-  safe(E) :=
-      count(canonicalSce, E) == 1
-      AND E[0] == canonicalSce
-      AND count(generatedDiskSce, E) == 0
-  ```
-  where `E` is the exact array `resourceLoader.getExtensions().extensions` — the array `ExtensionRunner` is actually constructed from. `E[0] == canonicalSce` without `count(canonicalSce, E) == 1` is not sufficient: a normal `sce setup --pi` installation with the generated `.pi/extensions/sce/index.ts` disk copy present would otherwise satisfy "SCE first" while still carrying a second, disk-discovered SCE instance later in `E`, independently registering every SCE handler a second time. AC22 now proves four separate things — AC22a (a launcher-hosted session's extension array cannot become unsafe, and cannot contain more than one SCE runtime instance, at all, because the launcher owns the array's construction, not merely its admission check), AC22b (the safety authority, including uniqueness, survives every runner rebuild for the process's entire lifetime and cannot be removed by removing SCE's own Pi extension, because that authority was never inside the extension to begin with), AC22c (SCE present at startup, SCE absent from the naively-resolved set after a requested reload, still cannot produce an operational unsafe or duplicated runner), and AC22d (a normal installation with the generated disk copy present never produces two runtime SCE instances, and no duplicate handler effect is observable — see D13 and T06's "Duplicate-at-startup"/"No duplicate handler effects" regressions).
-  - **AC22a — a launcher-hosted extension array cannot be unsafe or contain more than one SCE instance (Hole 1, structurally, not by admission check).**
-    - Validate, launcher-hosted session, positive path, no competing extension configured, generated disk copy present: construct a session via SCE's launcher (`createRuntime`, T05) with no CLI `-e`/`additionalExtensionPaths`, no rank-`0` project-settings entry, and no other project-auto-discovered extension, with the generated `.pi/extensions/sce/index.ts` disk copy present (the normal `sce setup --pi` output); assert `safe(resourceLoader.getExtensions().extensions)` per the formula above — in particular `count(canonicalSce, E) == 1`, not merely `E[0] == canonicalSce` — and that the guarded `user_bash` handler and tracked-tool positive attribution are both enabled for that session.
-    - Validate, a competing extension present at construction time never changes the outcome: register a second, foreign `user_bash`-hooking extension — separately as (a) a CLI/`-e`-provided path, (b) a rank-`0` project-settings-entry, and (c) a same-rank project-auto-discovered sibling whose readdir position would precede SCE's under Pi's own on-disk ranking — and construct the session via SCE's launcher in each configuration; assert in every case `resourceLoader.getExtensions().extensions[0]` is still SCE's own extension (the foreign extension is present in the array, just not first), the guarded `user_bash` handler still wins dispatch, and no unguarded execution occurs. This must not be argued from "the launcher detected and refused the launch"; there is no refusal step to argue from — argue instead from "the returned array was never anything other than SCE-first, because SCE's own launcher code produced it."
-    - Validate, the cross-harness case: with a Claude/Codex/OpenCode scope already live on a worktree, construct a Pi session via SCE's launcher with a foreign extension configured in any of the three ways above; assert the resulting session still has SCE first, `user_bash` is never dispatched to the foreign extension, no human mutation is introduced, and the live Claude/Codex/OpenCode scope's eventual Close reaches its own correct, unrelated attribution outcome — prove this by asserting no unguarded `user_bash` dispatch occurred, not merely by asserting the scope's own outcome looked normal.
-    - Validate, the one remaining fail-closed case is a construction failure, not a runtime detection: force SCE's own inline extension factory to throw when the launcher invokes it as part of `extensionFactories`; assert `resourceLoader.getExtensions()`/`reload()` rejects, the launcher's own top-level code treats this as a hard startup failure, and no `AgentSession`/`ExtensionRunner` is ever constructed or left running in a state where SCE is absent from the array.
-    - Validate, bypassing the launcher is a named, permanent, worktree-unsafe boundary, not a safe fallback: construct a session directly against Pi's own `AgentSession`/`DefaultResourceLoader` (or invoke the real `pi` binary), bypassing SCE's launcher's `createRuntime`/`resourceLoaderOptions` wiring entirely, with the identical unsafe configuration from the prior bullets and a Claude/Codex/OpenCode scope live on the same worktree; assert the foreign extension can execute `user_bash` unguarded in this configuration, that this is **not** prevented by anything in this plan, and that this is recorded in T02's and T06's task records as a permanent, worktree-unsafe scope boundary (per D13's "Raw Pi / SDK embedding" disposition), never described as safe.
-    - Validate, the SDK-embedding residual limitation is the same boundary, not a separate one: construct an `AgentSession`/SDK caller using its own `extensionsOverride` (on a `ResourceLoader` SCE's launcher did not build) to place a foreign `user_bash` handler first, entirely outside any construction path SCE's launcher governs; assert the same worktree-unsafe boundary applies as in the direct-invocation case above, recorded identically as permanent.
-  - **AC22b — the authority, including uniqueness, survives every runner rebuild and cannot be removed by removing SCE's own Pi extension (Hole 2, generalized).**
-    - Validate, safe startup then a `/reload` that changes nothing, disk copy present: construct a session via SCE's launcher with the generated disk copy present; assert `safe(E)` (count == 1, index 0, zero disk duplicates) is available; trigger `/reload` with no configuration change; assert `safe(resourceLoader.getExtensions().extensions)` still holds after the reload (the same `ResourceLoader` instance, same constructor-bound `extensionFactories`/`extensionsOverride`, per D13); assert positive attribution remains available and a subsequent clean tool call still reaches `AiExclusive` with exactly one Start/one Close reaching the adapter.
-    - Validate, an on-disk reorder attempt across `/reload` never changes the outcome: construct a session via SCE's launcher; introduce a foreign `user_bash`-hooking extension ahead of where SCE would otherwise rank (any configuration from AC22a) without restarting the process; trigger `/reload`; assert `safe(resourceLoader.getExtensions().extensions)` still holds after the reload, the foreign `user_bash` handler never executes unguarded, positive attribution remains enabled throughout, and the Pi process is never terminated merely because an on-disk reorder was attempted — there is nothing to terminate for, since the reorder never reached the array `ExtensionRunner` was rebuilt from.
-    - Validate, the same reorder attempt with a concurrently live other-harness scope: repeat the prior bullet with a Claude/Codex/OpenCode scope live on the same worktree; assert that scope's eventual Close reaches its own correct attribution outcome, unaffected, because no unguarded `user_bash` dispatch from the reload ever became possible.
-    - Validate, disk copy removed then restored across successive reloads: with a launcher-hosted session running, delete/disable the generated disk copy and trigger `/reload`; assert `count(canonicalSce, E) == 1` and the canonical instance remains; restore the disk copy and trigger `/reload` again; assert it is filtered again and `count(canonicalSce, E) == 1` still holds — removing or restoring the disk copy must never produce zero or two runtime SCE instances.
-  - **AC22c — removing SCE's own Pi extension from the naively-resolved configuration cannot make an unsafe or duplicated runner operational (the concrete bypass this correction exists to close).**
-    - Validate: construct a session via SCE's launcher with a live Claude/Codex/OpenCode scope on the same worktree; assert SCE is present, unique, first, and positive Pi attribution is available; then mutate the project's on-disk configuration so that Pi's own *naive* on-disk resolution — the array `DefaultResourceLoader` would compute from `.pi/settings.json`/`.pi/extensions/` alone, with no `extensionFactories`/`extensionsOverride` applied — excludes SCE's generated extension entirely (remove/rename/disable it) and adds a foreign extension that registers `user_bash`; trigger `/reload`; assert `safe(resourceLoader.getExtensions().extensions)` holds — SCE's own canonical extension present at index `0`, exactly once (reinserted by `extensionFactories`, reordered and de-duplicated by `extensionsOverride`, per D13) — that the foreign `user_bash` handler is never dispatched ahead of SCE's, that no unguarded execution occurs, and that this holds specifically **because SCE's own extension code never had to run to detect or react to its own on-disk removal** — the assertion must be phrased as "the authoritative array-producing code (the launcher's `ResourceLoader`) is not itself a member of the resolved-from-disk set and therefore cannot be excluded by that set's mutation," not as "SCE's factory detected the removal." Restoring the generated disk extension afterward and reloading again must not create a second SCE runtime instance — re-assert `safe(E)`.
-    - Validate, Claude B live across the whole sequence: repeat the above with a live Claude scope (`B`) on the same worktree throughout; attempt `user_bash` after the reload and assert the foreign handler never executes unguarded and no human worktree mutation occurs; then `Close(B)`; assert `B`'s attribution outcome is correct and uncontaminated by any Pi-origin human mutation. Repeat/parameterize for Codex and OpenCode in place of Claude.
-  - **AC22d — a normal installation with the generated disk copy present never produces two runtime SCE instances, and no duplicate handler effect is observable.**
-    - Validate, duplicate-at-startup and no-duplicate-handler-effects: as T06's dedicated regressions of the same names — with `.pi/extensions/sce/index.ts` present, assert the pre-normalization array (`base.extensions` as received by `extensionsOverride`) actually contains both a disk-discovered and a canonical inline SCE instance (proving the hazard is real for pinned `0.80.6`, not merely theoretical), and assert the post-normalization array `ExtensionRunner` is built from satisfies `safe(E)`; execute one clean tracked mutation and assert exactly one `Start`, one execution-evidence transition, and one terminal Close/abandon path reach SCE's adapter, and exactly one expected conversation-trace and diff-trace delivery occur where applicable — proven by a call-count assertion on the adapter/hook invocation itself, never inferred from downstream idempotent DB/event state collapsing two deliveries into one.
-    - Validate, foreign collision: register a foreign extension whose directory name, display name, or package name contains or equals `sce` (e.g. `.pi/extensions/sce-custom/`); assert the normalizer does not remove it unless it exactly matches the proven generated-disk-SCE identity predicate (D13/T02), and that its own handlers dispatch normally.
-  - Validate, doctor is diagnostic only: run `sce doctor`/`sce setup --pi` against a configuration where naive on-disk resolution would place a foreign extension ahead of SCE, and assert it reports the same ordering fact for a human to read, but assert no code path anywhere treats a clean doctor run, or the presence/absence of a diagnostic self-check inside `sce-pi-extension.ts`, as the reason positive attribution is enabled for that session — the reason is always and only that the launcher's own `ResourceLoader` construction is what produced the array in use.
+- [ ] AC22: `sce setup --pi` installs SCE's canonical generated Pi extension, and a normal `pi` invocation loads it via ordinary auto-discovery and uses it for tracked-tool (`bash`/`edit`/`write`) mutation attribution and for guarded `user_bash` handling whenever Pi actually delivers those events to SCE's handlers. SCE does not claim, prove, or test authority over third-party Pi extension ordering. A third-party extension that consumes `user_bash` before SCE is a documented, accepted boundary of the external-mutation-guard guarantee (D13), not a defect this AC requires closing.
+  - Validate: in a scratch repository, run `sce setup --pi`, launch ordinary `pi` (no wrapper, no launcher, no alternate entry point), execute a tracked `bash`/`edit`/`write` tool call, and confirm the corresponding Start/Close reaches `sce hooks pi-mutation-scope` and produces `AiExclusive` attribution when it is the only live scope; separately, invoke `!`/`!!` `user_bash` and confirm SCE's guard establishes and the command executes only through the supervisor. Then register a second extension ahead of SCE in `.pi/settings.json` whose own `user_bash` handler returns a result; assert Pi never dispatches that `user_bash` event to SCE (no guard-establishment attempt occurs), and record this as the documented, accepted limitation rather than a failure — confirm tracked `bash`/`edit`/`write` attribution for the same session is unaffected, since it does not depend on SCE's position in the extension array.
 - [ ] AC23: control-process death (Pi/Node) never terminates or truncates a running human `user_bash` command, and never causes the guard to end before the actual shell terminates (D13's chosen Option A policy).
   - Validate: kill the Pi/Node process at several points during a running `user_bash` command (before any output, mid-stream, after the shell has already exited but before the supervisor's finish sequence completes) and assert in every case that the shell is never signaled by the supervisor as a result of the control-channel closing, that the guard's finish sequence runs only once the shell itself terminates, and that the shell's own exit code/output — while now undeliverable to the dead Pi/Node process — does not affect worktree correctness.
 
@@ -1015,7 +788,12 @@ Persist this field in every plan; this is durable plan state, not chat state:
   refactoring Claude/Codex/OpenCode adapters merely to deduplicate Pi code;
   **redoing the OpenCode confirmation-required generalization** — that is
   PR #276's work, which this plan's stacked base already supplies rather than
-  reimplements.
+  reimplements; **an SCE-hosted Pi launcher, a `sce pi` command, Pi SDK
+  embedding, or any mechanism claiming SCE is first or unique in Pi's own
+  runtime extension array** (retracted — see D13; SCE does not redistribute
+  Pi, and the supported product path is `sce setup --pi` followed by an
+  ordinary `pi` invocation); npm/Nix/Flatpak release-packaging changes to
+  bundle Pi, a JS/Bun runtime, or Pi's `node_modules`.
 - **Constraints:** PR #276's commits must remain an ancestor of this branch
   for as long as #278 is stacked on it (see the stack invariant in **Stack
   and base**); no Pi package upgrade; attribution safety outranks preserving attribution coverage; do not
@@ -1028,7 +806,11 @@ Persist this field in every plan; this is durable plan state, not chat state:
 - **Non-goal:** treating `AiExclusive(Pi)` as proof no human edited the
   worktree; inferring staleness from `ActorKind::Pi`, TTL, or age; replaying an
   old Close at recovery time; a long-lived Pi "session" or "agent" scope; a
-  Bash-text detached-process detector.
+  Bash-text detached-process detector; proving or testing that SCE's
+  extension is unavoidable in Pi's dispatch order — a competing Pi extension
+  that consumes `user_bash` before SCE is an accepted, documented limitation
+  of the external-mutation-guard guarantee (D13), not a defect future work is
+  expected to close.
 
 ## Assumptions
 
@@ -1746,12 +1528,21 @@ Persist this field in every plan; this is durable plan state, not chat state:
     any recovery/stale-process handling beyond the supervisor's own crash
     semantics already specified in D13 (T04 owns the adapter-reconciliation
     tests); wiring into the actual TypeScript extension, including the
-    `user_bash` call site that spawns/manages the supervisor process (T05);
-    the `user_bash` extension-dispatch-order launcher/env-var gate and doctor
-    check (T02 records the disposition, T05 implements both — AC22); any
-    Windows-specific supervisor/guard code (D13's Windows disposition is
-    unconditional refusal at the extension level, T05, not a Rust-side
-    platform branch T03 needs to implement).
+    `user_bash` call site that spawns/manages the supervisor process (T05).
+    **Superseded text, retained for history only:** an earlier draft of this
+    line additionally scoped out "the `user_bash` extension-dispatch-order
+    launcher/env-var gate and doctor check (T02 records the disposition, T05
+    implements both — AC22)." No such launcher, env-var gate, or
+    dispatch-order doctor check exists or is implemented by T05 — D13's later
+    retraction of any SCE-hosted Pi launcher or extension-order authority
+    mechanism (see D13's "No dispatch-safety self-check, no launcher, no
+    extension-order authority" and AC22) makes that sentence stale; T05's
+    actual scope is the unconditional `user_bash` handler wiring (arm ->
+    `Armed` -> `exec`, Windows refusal) with no dispatch-position self-check
+    of any kind. Also out of T03's scope — any Windows-specific
+    supervisor/guard code (D13's Windows disposition is unconditional refusal
+    at the extension level, T05, not a Rust-side platform branch T03 needs to
+    implement).
   - Dependencies: T02
   - Done when: the Rust adapter correctly drives the frozen happy-path Pi
     lifecycle through the generic mutation-scope runtime, with durable
@@ -2522,7 +2313,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     referenced it.
   - Context synchronization: synced
 
-- [ ] T05: `Wire mutation scope into the existing Pi extension` (status:todo)
+- [x] T05: `Wire mutation scope into the existing Pi extension` (status:done, completed 2026-09-17)
   - Task ID: T05
   - Scope: In — modifying the canonical Pi extension source
     `config/lib/pi-plugin/sce-pi-extension.ts` (not a second project-local SCE
@@ -2532,8 +2323,83 @@ Persist this field in every plan; this is durable plan state, not chat state:
     (Start), `tool_result` (execution evidence), and `tool_execution_end`
     (Close, gated on a prior `tool_result`) — `tool_execution_start` may still
     be forwarded for telemetry but participates in no attribution state
-    (D5/D6/D7). Also registers a `pi.on("user_bash", ...)` handler using Pi's
-    **actual** pinned `0.80.6` API — established directly from
+    (D5/D6/D7). Start, Executed, and Close are established purely from SCE
+    actually receiving these Pi events for a given `tool_call`; nothing here
+    depends on, checks, or gates on SCE's position in Pi's registered
+    extension array — Pi calls every registered extension's `tool_call`
+    handler in registration order (D5), so a later extension cannot prevent
+    SCE's own handler from running.
+
+    **D9 — terminal transport failure denies subsequent tracked Starts and
+    never becomes a delayed Close.** Once a tracked tool has executed, losing
+    communication with the Rust adapter must not let later tracked work
+    proceed as though the previous terminal state were known:
+
+    ```text
+    execution happened
+        ↓
+    terminal mutation-scope transport (tool_execution_end) fails
+        ↓
+    that exact attempt becomes unresolved in-process
+        ↓
+    later tracked-tool Starts are denied (fail-closed) while unresolved
+        ↓
+    once adapter communication becomes available again, recover the old
+    scope through abandon/rebaseline — never a delayed Close as though the
+    tool finished just now
+    ```
+
+    `tool_result` forwarding is never retried: a `tool_execution_end` that
+    later reaches the adapter with no recorded `tool_result` is already
+    correctly abandoned by the adapter's own D7 pairing rule, so this case is
+    sound with no new wire surface. `tool_execution_end` forwarding failure is
+    what this requirement protects: it is retried with backoff, and every
+    tracked-tool `tool_call` Start is denied while any `tool_execution_end`
+    delivery remains outstanding for this process.
+
+    **Known residual case requiring a narrow Rust adapter addition.** When
+    `tool_result` already reached the adapter (the attempt is `Executed`)
+    before `tool_execution_end` transport failed, a later retried delivery of
+    the same `tool_execution_end` is wire-indistinguishable from an on-time
+    Close — the existing four `hook_event_name` values (`ToolExecutionStart`,
+    `ToolCall`, `ToolResult`, `ToolExecutionEnd`) give the adapter no way to
+    know the terminal event arrived late. Closing this exactly requires the
+    adapter to accept an explicit, attempt-scoped abandon request from the
+    extension — a fifth `hook_event_name` (e.g. `ToolExecutionAbandon`,
+    carrying the same `session_id`/`tool_call_id`/`cwd` identity as the other
+    events) that retires the named attempt through the existing D7/D8
+    abandon/rebaseline pipeline regardless of whether its owning process is
+    still alive, rather than through D10's positive-process-death path. This
+    is new Rust surface T05 must add
+    (`cli/src/services/hooks/pi_mutation_scope/mod.rs`: parsing, a
+    `PiHookEvent::ExecutionAbandon` variant, and dispatch into the existing
+    abandon pipeline) — it does not exist today, and T05 is not
+    TypeScript-only merely because the rest of the wiring is. If this
+    sub-case is not closed, T05 must say so explicitly in its completion
+    record rather than describe D9 as fully sound.
+
+    **Closed by the T05 repair pass (2026-09-17).** `PiHookEvent::ExecutionAbandon`
+    exists in `mod.rs` exactly as specified above, dispatches into the
+    existing D7/D8 abandon/rebaseline pipeline regardless of the attempt's
+    `PendingStart`/`Executed` phase, and never produces a Close. The
+    TypeScript extension's terminal-delivery tracker
+    (`config/lib/pi-plugin/sce-pi-extension.ts`) closes the wire-level
+    ambiguity this sub-case describes structurally, not merely by adding the
+    Rust route: it keys every in-flight attempt by `(session_id,
+    tool_call_id)` and always awaits that exact attempt's own `tool_result`
+    delivery outcome before choosing what to send for
+    `tool_execution_end` — so `tool_execution_end` can never reach the
+    subprocess boundary before its own `tool_result`, and Rust never has to
+    disambiguate an on-time Close from a late retried one. When `tool_result`
+    delivery is known to have failed, or when an already-successful attempt's
+    `tool_execution_end` delivery itself fails, the extension marks that
+    exact attempt unresolved, denies further tracked Starts while unresolved,
+    and sends `ToolExecutionAbandon` (retried with backoff) instead of a
+    (possibly stale) `ToolExecutionEnd`. This sub-case is fully closed, not an
+    open residual case.
+
+    Also registers a `pi.on("user_bash", ...)` handler using Pi's **actual**
+    pinned `0.80.6` API — established directly from
     `config/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts`
     and the real consumption logic in
     `dist/modes/interactive/interactive-mode.js`'s `handleBashCommand()`
@@ -2551,7 +2417,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     it never calls `session.executeBash()` at all in that case — and
     otherwise passes `operations` through to
     `session.executeBash(command, onChunk, { excludeFromContext, operations })`.
-    Under the corrected D13 architecture, `operations` is **never**
+    Under D13's supervisor architecture, `operations` is **never**
     `createLocalBashOperations()` or a wrapper around it — the real shell must
     be spawned by the supervisor (T03), not by Pi/Node, so `wrappedOperations`
     is a thin control-channel client:
@@ -2559,35 +2425,20 @@ Persist this field in every plan; this is durable plan state, not chat state:
     ```text
     pi.on("user_bash", async (event) => {
         if process.platform === "win32":
-            // D13's corrected Windows disposition — unconditional refusal,
-            // not a transient failure. No supervisor is ever spawned; this
-            // is the same code path as the establishment-failure branch
-            // below, taken unconditionally, every time, on this platform.
+            // D13's Windows disposition — unconditional refusal, not a
+            // transient failure. No supervisor is ever spawned on this
+            // platform; this is the same shape as the establishment-failure
+            // branch below, taken unconditionally, every time.
             return { result: { output: "SCE does not support guarded
                 user_bash execution on Windows in this release; run this
                 command outside Pi.", exitCode: 1, cancelled: false,
                 truncated: false } }
 
-        if not dispatchSafe:
-            // dispatchSafe only matters for the legacy/bypass path: a
-            // session that discovered this factory from disk without going
-            // through SCE's launcher (D13 "Corrected a fifth time"). For a
-            // launcher-hosted session (this factory supplied via
-            // extensionFactories and reordered first via extensionsOverride
-            // — see T05's primary mechanism below), dispatchSafe is always
-            // true by construction and this branch is dead code reached
-            // only diagnostically; it is not what makes a launcher-hosted
-            // session safe. Also disables tracked-tool (bash/edit/write)
-            // Start handling for this session — not merely user_bash — per
-            // AC22, but per D13's Hole 1 invariant this withholds only
-            // THIS session's own attribution and must never be described as
-            // protecting a concurrently live Claude/Codex/OpenCode scope.
-            return { result: { output: "SCE could not confirm its
-                user_bash handler is dispatch-safe for this session; run
-                Pi through the sce-provided launcher, or see `sce doctor`
-                for the detected conflict.", exitCode: 1, cancelled: false,
-                truncated: false } }
-
+        // Unconditional: SCE guards whatever user_bash event Pi actually
+        // dispatches to it. There is no dispatch-position self-check here —
+        // D13's accepted, documented limitation is that a competing
+        // extension may consume user_bash before Pi ever calls this
+        // handler, in which case there is nothing for SCE to gate.
         spawn the external-mutation supervisor process (T03) with a
             control channel (piped stdio or an equivalent IPC transport)
         await its "armed" acknowledgement, bounded by an establishment
@@ -2628,192 +2479,206 @@ Persist this field in every plan; this is durable plan state, not chat state:
     })
     ```
 
-    **`dispatchSafe` above is retired as an env-var/self-check gate for the
-    launcher-hosted path (D13 "Corrected a fifth time" — Option A supersedes
-    Option C as the primary proof).** For a session constructed through
-    SCE's own launcher (below), SCE's extension is supplied via
-    `extensionFactories` and placed first via `extensionsOverride`
-    unconditionally, so by the time the factory function runs at all it is
-    already known to be first, by construction, for this invocation and
-    every future one on the same `ResourceLoader` instance — there is
-    nothing left for the extension itself to check or race. The `user_bash`
-    handler's guard-establishment branch (spawn supervisor, await armed
-    acknowledgement, etc.) therefore runs unconditionally in the
-    launcher-hosted factory, with no `dispatchSafe`/environment-variable
-    branch guarding it, and tracked-tool (`bash`/`edit`/`write`) Start
-    registration is unconditional in the same factory invocation for the
-    same reason.
+    **No dispatch-safety self-check, no launcher, no extension-order
+    authority.** Earlier drafts of this task specified a `dispatchSafe`
+    in-process self-check gating both `user_bash` and tracked-tool Start
+    registration, and an SCE-hosted Pi launcher (`sce pi`, or a `PATH`
+    wrapper) that would own `ResourceLoader` construction and normalize the
+    resolved extension array (`sceEnforceExtensionOrder`) to prove SCE first
+    and exactly once. Both are retracted as a deliberate product decision
+    (see D13): SCE does not redistribute Pi, embed its SDK, or claim
+    authority over Pi's extension ordering. `dispatchSafe`,
+    `sceEnforceExtensionOrder`, the launcher host program, and any `sce pi`
+    entry point do not exist and must not be (re)built. Tracked-tool
+    attribution runs unconditionally whenever SCE's own `tool_call` handler
+    is invoked; the `user_bash` guard is established unconditionally whenever
+    SCE's own `user_bash` handler is invoked; neither depends on whether SCE
+    happens to be first among Pi's registered extensions.
 
-    A second, legacy code path remains for compatibility: `.pi/extensions/sce/index.ts`
-    continues to exist on disk (generated exactly as today) so that a
-    session constructed **without** SCE's launcher — a raw `pi` invocation,
-    or an SDK caller using its own `ResourceLoader`/`DefaultResourceLoader`
-    — that happens to discover SCE's extension from disk still gets it
-    loaded and can still run its **existing** in-process, per-factory-invocation
-    self-check (reusing the same vendored `resource-loader`/`package-manager`
-    resolution entry points) as a best-effort, diagnostic-grade fallback:
-    if that self-check finds SCE is not first, it withholds its own
-    `user_bash` guard and Start registration for that session. This fallback
-    is **explicitly named as not a safety boundary** (per D13's Hole 1
-    invariant: disabling Pi's own attribution does not protect a
-    concurrently live Claude/Codex/OpenCode scope) — it only avoids a
-    worse outcome (Pi falsely claiming AI attribution for itself) for
-    sessions this plan already cannot make worktree-safe. T05 must not
-    describe this fallback as closing the raw-`pi`/SDK-embedding boundary.
-
-    Primary mechanism this task owns (per T02's recorded disposition — AC22,
-    D13 "Corrected a fifth time"), replacing the exec-a-real-`pi`-binary
-    launcher design an earlier version of this plan specified (retracted —
-    a launcher that merely decides whether to exec `pi` cannot survive
-    SCE's own extension being removed from what gets exec'd):
-
-    * **SCE's launcher becomes the Pi host process itself**, built on Pi
-      `0.80.6`'s own exported SDK — it does not exec a separate `pi` binary
-      for a guarded session. It mirrors Pi's own production wiring
-      (`dist/main.js` lines 489-598, 655: `createAgentSessionServices(...)`
-      → `createAgentSessionRuntime(createRuntime, {...})` →
-      `new InteractiveMode(runtime, {...})`, all root-exported per
-      `dist/index.d.ts`/`dist/modes/index.d.ts`), substituting SCE's own
-      `resourceLoaderOptions` into the `createRuntime` closure:
-      ```text
-      resourceLoaderOptions: {
-          ...(the launcher's own CLI-flag/settings passthrough, unchanged),
-          extensionFactories: [
-              ...(any factories Pi's own CLI wiring already supplies),
-              sceExtensionFactory,   // the SAME factory function already
-                                     // exported by config/lib/pi-plugin/
-                                     // sce-pi-extension.ts — unmodified
-          ],
-          extensionsOverride: (base) => sceEnforceExtensionOrder(base),
-      }
-      ```
-      `sceEnforceExtensionOrder` implements D13's "Canonical SCE
-      runtime-instance invariant" normalization algorithm, not merely a
-      move-to-index-0 reorder: it locates the one canonical inline SCE
-      entry in `base.extensions` by exact inline-factory identity
-      (guaranteed present because it was supplied via `extensionFactories`,
-      independent of on-disk discovery — D13; failing closed if that
-      identity is not found exactly once), removes every entry proven by
-      exact generated-path identity to be SCE's own legacy disk-discovered
-      `.pi/extensions/sce` duplicate (if `.pi/extensions/sce/index.ts` is
-      also present on disk, `base.extensions` ordinarily contains both
-      instances before this call — D13), preserves every other, unrelated
-      extension's relative order, places the canonical instance at index
-      `0`, asserts `count(canonical) == 1`, `extensions[0] == canonical`,
-      and `count(legacyDiskSce) == 0` on the array it is about to return,
-      and only then returns the normalized array; it throws — propagating
-      as a hard startup/reload failure, never a silent unsafe continuation
-      — whenever SCE's own inline factory fails, the canonical instance
-      cannot be identified exactly once, or the post-normalization
-      assertions cannot be proven. Print
-      mode (`runPrintMode`) and RPC mode (`runRpcMode`) use the identical
-      `resourceLoaderOptions`, since the seam is at `ResourceLoader`
-      construction, not at the interactive UI layer — a guarded session is
-      guarded regardless of which of Pi's own exported entry points renders
-      it.
-    * Packaging (a new `sce-pi`/`sce pi` entry point vs. a `PATH`-shadowing
-      `pi` wrapper vs. a shell function SCE asks the user to source) is
-      T05's to determine and document; whichever is chosen, it must be the
-      thing that actually constructs the session (per the above), not a
-      thing that decides whether to launch a separately-resolving `pi`
-      process.
-    * `sce doctor`/`sce setup --pi` continue to run the existing
-      naive-on-disk-resolution check **standalone, for human-readable
-      reporting only** ("another extension is configured ahead of where SCE
-      would rank at `<path>` under naive on-disk resolution; this is
-      informational only — sessions started through the sce-provided
-      launcher are unaffected because the launcher constructs the extension
-      array directly") — this output remains explicitly diagnostic; no code
-      path may treat a clean doctor run, on its own, as the reason positive
-      attribution is enabled for an actual session.
-    * **Permanent, named scope boundary (not a defect to close later):** the
-      launcher-owned `ResourceLoader` construction protects the worktree
-      only for sessions whose `AgentSession` was actually built by SCE's
-      launcher's `createRuntime` closure, for the entire lifetime of that
-      process (including every later `/reload`/`AgentSession.reload()`/
-      `/new`/`/resume`/`/fork`, since they all reuse the same closure). A
-      user invoking the real `pi` binary directly, or any SDK-embedding
-      caller constructing its own `AgentSession`/`ResourceLoader` without
-      this wiring, bypasses it entirely: the legacy on-disk-discovered
-      extension's own diagnostic self-check may still withhold Pi's own
-      attribution, but per D13's Hole 1 invariant this does **not** make
-      the worktree safe — a foreign extension in that configuration can
-      still execute `user_bash` unguarded and can still contaminate a
-      concurrently live Claude/Codex/OpenCode scope. T05's setup output and
-      documentation must state this plainly, as a named, permanent,
-      worktree-unsafe boundary, never as "safe, but with no Pi attribution."
+    `sce setup --pi` continues to generate and install
+    `.pi/extensions/sce/index.ts` exactly as it does today — no new
+    packaging, wrapper, or entry point. `sce doctor`/`sce setup --pi` may
+    optionally report, as informational-only diagnostic text, that another
+    extension is configured ahead of where SCE would rank under naive
+    on-disk resolution; this is not a prerequisite for using the Pi
+    integration and must never gate or disable attribution.
 
     Existing mutation Start ordering remains unchanged. Synchronous
-    fail-closed Start transport, terminal transport that never pretends the
-    tool did not run on post-execution transport failure (D9's
-    unresolved-terminal guard), and preservation of existing Bash policy,
-    conversation trace, edit/write diff trace, message trace, Pi session
-    prefix behavior, and tool-version resolution. Using the existing
-    generated Pi extension pipeline (`config/lib` / Pkl sources) — no
-    hand-edited generated copies; the generated factory function is reused
-    unmodified and is available through two integration paths: the
-    disk-discovered extension (legacy/compatibility path) and the in-process
-    `extensionFactories` entry (primary, launcher-hosted path) — one factory,
-    available through two integration paths, but `sceEnforceExtensionOrder`
-    (above) guarantees exactly one path is active in the array a
-    launcher-hosted `ExtensionRunner` is actually built from; both
-    registrations existing in the pre-normalization `base.extensions` and
-    both surviving into the same operational `ExtensionRunner` are two
-    different things, and this task's own implementation and its Bun tests
-    (below) must prove only the latter is prevented, not merely assert the
-    former is expected. Also in scope — the launcher host program itself (packaging;
-    `createAgentSessionServices`/`createAgentSessionRuntime`/`InteractiveMode`/
-    `runPrintMode`/`runRpcMode` wiring; the `resourceLoaderOptions.extensionFactories`/
-    `extensionsOverride` composition and its fail-closed-on-factory-failure
-    behavior); retaining the existing in-process self-check inside
-    `sce-pi-extension.ts` as an explicitly-diagnostic fallback for the
-    legacy/bypass discovery path only; wiring the naive-resolution check
-    into `sce doctor`/`sce setup --pi` as diagnostic-only reporting; the
-    unconditional Windows-refusal branch in the `user_bash` handler.
-    Out — any Rust adapter change beyond what T03/T04 already produced;
-    implementing the supervisor's own shell-spawn logic itself (T03); any
-    Windows-side Rust/supervisor code (none exists — refusal is entirely a
-    TypeScript-extension-level branch); reimplementing Pi's own TUI/print/rpc
-    rendering (reused unmodified via `InteractiveMode`/`runPrintMode`/`runRpcMode`).
+    fail-closed Start transport, D9's terminal-transport handling above, and
+    preservation of existing Bash policy, conversation trace, edit/write
+    diff trace, message trace, Pi session prefix behavior, and tool-version
+    resolution. Using the existing generated Pi extension pipeline
+    (`config/lib` / Pkl sources) — no hand-edited generated copies; the
+    generated factory function is reused unmodified, exactly as it is today,
+    with no second integration path. Also in scope — the narrow Rust
+    `ExecutionAbandon` addition described above, if needed to close D9's
+    residual case; the unconditional Windows-refusal branch in the
+    `user_bash` handler; the external-mutation-guard client (arm, await
+    `Armed`, `exec`, cancellation/timeout forwarding, resolve-only-on-the-
+    supervisor's-own-result).
+    Out — any SCE-hosted Pi launcher, `sce pi` command, or Pi SDK embedding;
+    `sceEnforceExtensionOrder` or any other extension-array normalization;
+    npm/Nix/Flatpak release packaging changes to bundle Pi, Bun, or Pi's
+    `node_modules`; any Rust adapter change beyond T03/T04's existing
+    machinery plus the narrow `ExecutionAbandon` addition above if it proves
+    necessary; implementing the supervisor's own shell-spawn logic itself
+    (T03, already done); any Windows-side Rust/supervisor code (none exists —
+    refusal is entirely a TypeScript-extension-level branch).
   - Dependencies: T04
-  - Done when: a real `sce setup --pi` installation routes Pi's mutation
-    lifecycle through the Rust adapter while all existing Pi integration
-    behavior remains intact; Bun tests (mocked subprocess transport) cover
-    bash-policy-denial-means-no-Start, tracked-Start-success,
-    tracked-Start-adapter-failure-blocks, missing-`sce`-blocks,
-    read-only/unknown-tool-means-no-adapter-call, `tool_result`-keyed
-    execution-evidence forwarding/state (never `tool_execution_start`),
-    successful/failed `tool_execution_end` gated on a prior `tool_result`,
-    `tool_execution_end`-without-`tool_result` abandon, terminal transport
-    failure,
-    `user_bash`-returns-`operations`-and-relays-to-the-supervisor-rather-than-spawning-a-shell-itself,
-    `user_bash`-returns-`result`-full-replacement-and-never-calls-`session.executeBash`-on-guard-establishment-failure,
-    `user_bash`-returns-`result`-full-replacement-and-terminates-the-orphaned-supervisor-process-on-an-ambiguous-acknowledgement,
-    wrapped-`exec`-forwards-cancellation/timeout-to-the-supervisor-rather-than-killing-a-local-child,
-    wrapped-`exec`-resolves-only-on-the-supervisor's-own-delivered-exit-result-never-merely-on-control-channel-closure,
-    `user_bash`-unconditionally-refused-on-Windows-with-no-supervisor-spawn,
-    the-launcher-hosted-session's-`resourceLoader.getExtensions().extensions[0]`-is-SCE's-own-canonical-extension-in-every-tested-competing-configuration-(CLI-provided,-rank-0-settings,-same-rank-readdir-tie,-and-SCE-entirely-removed-from-on-disk-configuration),
-    with-the-generated-disk-copy-present-at-startup-the-normalized-array-contains-exactly-one-SCE-instance-(the-canonical-inline-one)-and-zero-legacy-disk-SCE-instances-not-two,
-    the-same-holds-after-`/reload`-with-the-on-disk-configuration-mutated-to-try-to-exclude-or-outrank-SCE-between-construction-and-reload,
-    the-disk-copy-removed-then-restored-across-successive-`/reload`s-never-produces-more-than-one-runtime-SCE-instance,
-    a-factory-failure-inside-`extensionFactories`-fails-the-session-construction/reload-closed-rather-than-continuing-with-SCE-absent,
-    `sceEnforceExtensionOrder`-fails-closed-(throws)-when-the-canonical-inline-instance-cannot-be-identified-exactly-once-in-`base.extensions`,
-    the-legacy-disk-discovered-extension's-self-check-withholds-only-its-own-attribution-and-is-never-asserted-to-protect-another-harness's-scope,
-    `sce doctor`/`sce setup --pi`-report-the-same-conflict-for-humans-but-are-never-consulted-by-the-runtime-mechanism-itself,
-    model present/absent, session canonicalization, and unchanged edit/write-diff
-    and conversation tracing.
+  - Done when:
+    1. `sce setup --pi` installs the normal generated Pi extension, unchanged
+       from today.
+    2. A user launches ordinary `pi` — no wrapper, launcher, or alternate
+       entry point.
+    3. `bash`, `edit`, and `write` establish mutation scope fail-closed
+       whenever SCE's own `tool_call` handler runs, independent of SCE's
+       position in the extension array.
+    4. `read`, `grep`, `find`, `ls`, custom, and unknown tools remain
+       untracked, as specified.
+    5. `tool_result` is the sole execution evidence (D6).
+    6. An executed, terminal path Closes exactly once.
+    7. An admitted-but-not-executed path abandons/rebaselines (D7), never
+       Closes.
+    8. Terminal transport ambiguity follows D9 above and blocks subsequent
+       tracked Starts while unresolved; the `Executed`-then-transport-failed
+       sub-case is closed via the `ExecutionAbandon` Rust addition plus the
+       extension's per-attempt `(session_id, tool_call_id)`-keyed
+       terminal-delivery ordering, which also guarantees
+       `tool_execution_end` is never sent to Rust before its own
+       `tool_result` regardless of independent subprocess scheduling.
+    9. `user_bash`, when Pi actually delivers it to SCE, executes only
+       through the T03 supervisor (arm -> `Armed` -> `exec`).
+    10. Guard-establishment failure prevents shell execution.
+    11. An ambiguous/timed-out `Armed` acknowledgement prevents shell
+        execution and terminates the orphaned supervisor.
+    12. Cancellation/timeout is forwarded to the supervisor rather than
+        killing a local child.
+    13. The supervisor's real result drives Pi's Bash result; nothing
+        resolves merely because the control channel closed.
+    14. Normal Pi tracing/diff/bash-policy behavior remains intact.
+    15. Windows: `user_bash` is unconditionally refused; tracked-tool
+        attribution is unaffected.
+    16. No SCE-hosted Pi launcher or embedded Pi runtime exists.
+    17. No `sce pi` command exists.
+    18. No release-packaging changes were made.
+
+    Bun tests (mocked subprocess transport) cover: bash-policy-denial-means-
+    no-Start, tracked-Start-success, tracked-Start-adapter-failure-blocks,
+    missing-`sce`-blocks, read-only/unknown-tool-means-no-adapter-call,
+    `tool_result`-keyed execution-evidence forwarding/state (never
+    `tool_execution_start`), successful/failed `tool_execution_end` gated on
+    a prior `tool_result`, `tool_execution_end`-without-`tool_result`
+    abandon, `tool_execution_end` deferred until its own `tool_result`
+    delivery settles and then sent strictly after it (never racing two
+    independently scheduled subprocesses), a failed `tool_result` delivery
+    immediately denying Starts and converting a later `tool_execution_end`
+    into `ToolExecutionAbandon` rather than a Close, a `tool_execution_end`
+    transport failure after a successful `tool_result` retrying as
+    `ToolExecutionAbandon` (never a delayed replayed End) via an injectable
+    synchronous retry seam, the same `toolCallId` under two different
+    `sessionId`s maintaining fully independent unresolved state, terminal
+    transport failure denying subsequent tracked Starts and recovering via
+    retry, `user_bash`-returns-`operations`-and-relays-to-the-
+    supervisor-rather-than-spawning-a-shell-itself,
+    `user_bash`-returns-`result`-full-replacement-and-never-calls-
+    `session.executeBash`-on-guard-establishment-failure,
+    `user_bash`-returns-`result`-full-replacement-and-terminates-the-
+    orphaned-supervisor-process-on-an-ambiguous-acknowledgement,
+    wrapped-`exec`-forwards-cancellation/timeout-to-the-supervisor-rather-
+    than-killing-a-local-child, wrapped-`exec`-resolves-only-on-the-
+    supervisor's-own-delivered-exit-result-never-merely-on-control-channel-
+    closure, `user_bash`-unconditionally-refused-on-Windows-with-no-
+    supervisor-spawn, model present/absent, session canonicalization, and
+    unchanged edit/write-diff and conversation tracing.
   - Verify: `nix run nixpkgs#bun -- test config/lib`; `nix run .#pkl-check-generated`;
-    `nix flake check`; plus scratch setup/doctor smoke; plus a scratch smoke
-    constructing a session through the new launcher host, with the generated
-    `.pi/extensions/sce/index.ts` disk copy present, against both a clean and
-    a deliberately-competing extension configuration, asserting `extensions[0]`
-    is SCE's own canonical extension AND `count(SCE-identified extensions) == 1`
-    in both cases (not merely that the first one is SCE); plus a scratch smoke
-    that starts safely, mutates the on-disk extension configuration to
-    exclude SCE entirely and add a foreign `user_bash`-registering
-    extension, triggers `/reload`, and asserts `extensions[0]` is still
-    SCE's own extension and the foreign handler never dispatches.
-  - Context synchronization: pending
+    `nix flake check`; focused Rust tests
+    (`nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml pi_mutation_scope`)
+    if the `ExecutionAbandon` addition is implemented; plus a real scratch
+    `sce setup --pi` installation followed by running ordinary `pi` against
+    it (not `sce pi`) to exercise the tracked-tool and `user_bash` paths
+    end to end.
+  - Repair pass (2026-09-17, T05 soundness repair, not T06 work): fixed two
+    remaining soundness issues identified at head `3a6e2e9d1`:
+    (1) `ToolResult`/`ToolExecutionEnd` transport ordering — the extension's
+    terminal-delivery tracker is now keyed by `(session_id, tool_call_id)`
+    (never bare `toolCallId`) and `forwardEnd` always awaits the exact same
+    attempt's `forwardResult` delivery outcome before choosing what to send,
+    so `tool_execution_end` can never reach Rust before its own
+    `tool_result` regardless of independent subprocess scheduling; a failed
+    `tool_result` delivery now marks that exact attempt unresolved
+    immediately and converts any later `tool_execution_end` into
+    `ToolExecutionAbandon` rather than silently dropping it (the previous,
+    now-removed test explicitly accepted the drop — D9 requires it not be
+    best-effort); a `tool_execution_end` transport failure after a
+    successful `tool_result` likewise recovers via retried
+    `ToolExecutionAbandon`, never a delayed replayed `ToolExecutionEnd`.
+    (2) `user_bash` control-channel-close fabrication — `exec()` now rejects
+    when the guard's control channel closes before any `status: "result"`
+    frame, instead of resolving `{ exitCode: null }`; an explicit supervisor
+    `result(exit_code: null)` still resolves normally, confirmed by pinned
+    Pi `0.80.6` source (`executeBashWithOperations` in `bash-executor.js`
+    awaits `operations.exec()` in a try/catch and rethrows on non-abort
+    failure, confirming Promise rejection is the correct, native contract).
+    Added a matching Rust regression proving the same `toolCallId` under two
+    different `session_id`s never cross-contaminates `ExecutionAbandon`
+    resolution, plus a duplicate-`ExecutionAbandon`-is-a-safe-no-op
+    regression. Verified: `nix run nixpkgs#bun -- test config/lib` (49
+    passed), `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml pi_mutation_scope` (88 passed), `... test hooks::` (721
+    passed, 1 ignored), `nix run .#pkl-check-generated` (142 files, parity
+    ok), `nix flake check` (all checks passed), `git diff --check` (clean).
+    Real scratch smoke: `sce setup --pi` + ordinary `pi` (not `sce pi`)
+    against a live model (`opencode-go/gpt-5.6-luna`) drove one real tracked
+    `bash` tool call end to end — the adapter's own durable state showed a
+    clean `PendingStart(seq=1) -> Executed -> Close -> removed` cycle with
+    `recovery: {"phase":"clear"}`, proving ordinary Pi's own subprocess
+    scheduling did not trigger the Problem-1 race under this fix. The
+    `user_bash` (`!command`) supervisor path could **not** be exercised
+    through a real interactive Pi session in this sandboxed environment: it
+    requires Pi's interactive TUI mode, which needs a real TTY — a
+    `printf '!...' | pi --approve --no-session` attempt hung waiting for a
+    terminal and was killed by timeout, and `--print` non-interactive mode
+    treats its argument as an LLM prompt, not a literal `!`-prefixed REPL
+    command, so it cannot reach `user_bash` at all. This is an environmental
+    limitation of this sandbox, not a code defect; the `user_bash` fix is
+    still fully covered by the Bun unit tests above (control-channel-close
+    rejection, explicit `exit_code: null` result) and by the pre-existing
+    Rust `guard_reconciliation_tests`/D13 integration tests, which continue
+    to pass unchanged.
+  - **2026-09-17 real interactive-TUI smoke evidence:** after reinstalling
+    the current branch's Pi integration, ordinary interactive `pi` loaded SCE.
+    Running `!sh -c 'printf "guarded\\n" >> human.txt; sleep 60'` visibly held
+    the command while an external terminal confirmed that
+    `<git-dir>/sce/mutation-cursor-tainted` existed. Cancelling the command
+    through Pi was followed by confirmation that the marker was absent. This
+    proves the normal `pi -> SCE user_bash -> arm -> Armed -> exec/supervisor`
+    path and cancellation/finalization cleanup in the real TUI. The previous
+    sandbox limitation is superseded; it no longer blocks T05 completion.
+  - Completed: 2026-09-17
+  - Files changed: `cli/src/services/hooks/pi_mutation_scope/mod.rs`;
+    `config/lib/pi-plugin/sce-pi-extension.ts`;
+    `config/lib/pi-plugin/sce-pi-extension.test.ts`;
+    `context/cli/pi-mutation-scope-integration.md` (4 files; no generated
+    `.pi` copy).
+  - Result: The canonical generated Pi extension now fail-closed gates
+    tracked `bash`/`edit`/`write` Starts, orders per-attempt terminal delivery
+    by `(session_id, tool_call_id)`, abandons unresolved terminal observations,
+    and routes human `user_bash` through the two-phase supervisor guard. It
+    refuses guarded `user_bash` on Windows without affecting tracked-tool
+    attribution, while preserving existing policy, diff, and conversation
+    tracing behavior.
+  - Verify outcome: All previously recorded T05 verification remains
+    satisfied — Bun tests (49 passed), focused Pi adapter tests (88 passed),
+    hook tests (721 passed, 1 ignored), generated-output parity (142 files),
+    and `nix flake check` all passed with clean `git diff --check`. The real
+    interactive-TUI smoke above supplies the previously missing `user_bash`
+    supervisor evidence.
+  - Context impact: root — the completed extension wiring changes the
+    externally observable Pi integration boundary; the five-file root pass
+    confirmed the current overview, architecture, glossary, patterns, and
+    context map, with stale Pi/guard availability statements corrected in
+    root and domain context.
+  - Context synchronization: synced
 
 - [ ] T06: `Add production-path and live Pi attribution regressions` (status:todo)
   - Task ID: T06
@@ -2957,250 +2822,27 @@ Persist this field in every plan; this is durable plan state, not chat state:
     boundary on that worktree self-heals via the existing inherited-taint
     path rather than silently proceeding as if attribution were clean.
 
-    Also test the canonical-SCE-runtime-instance regressions D13's
-    "Canonical SCE runtime-instance invariant" requires — a normal
-    `sce setup --pi` installation loads SCE twice unless normalized, and
-    downstream event idempotence must never be relied on to hide that.
-
-    **Duplicate-at-startup regression.** With a normal `sce setup --pi`
-    installation where `.pi/extensions/sce/index.ts` exists on disk, launch
-    via the SCE-hosted Pi launcher path. Assert the pre-normalization input
-    — `base.extensions` as received by `extensionsOverride`, inspected
-    directly, not inferred — contains both a disk-discovered SCE instance
-    and the canonical inline SCE instance. Then assert the actual array used
-    by `ExtensionRunner` (`resourceLoader.getExtensions().extensions`)
-    contains exactly one SCE instance, that instance is the canonical inline
-    one, and it is at index `0`.
-
-    **No duplicate handler effects.** Execute one clean tracked mutation
-    (`bash`, `edit`, or `write`) against the launcher-hosted session from the
-    duplicate-at-startup regression above. Assert exactly one logical
-    lifecycle reaches SCE's adapter: one `Start` (`tool_call` admission), one
-    execution-evidence transition (`tool_result`), one terminal Close/abandon
-    path (`tool_execution_end` paired with that `tool_result`). Also assert
-    the existing advisory integrations are not duplicated where applicable to
-    the tool/event under test: one expected conversation-trace delivery, one
-    expected diff-trace delivery. This must be proven by asserting the second
-    handler invocation itself did not occur (e.g. a call-count assertion on
-    the adapter transport / hook invocation, not merely on downstream
-    DB/event state) — two deliveries whose downstream idempotence happens to
-    collapse them is not an acceptable substitute and does not satisfy this
-    regression.
-
-    **Reload regression.** Start with both the disk copy and the inline
-    factory available (as in the duplicate-at-startup regression). Trigger
-    `/reload` multiple times in succession. After every rebuild, assert
-    `count(SCE-identified extensions in resourceLoader.getExtensions().extensions) == 1`
-    and `extensions[0]` is the canonical inline instance; after each
-    `/reload`, execute one tracked mutation and assert exactly one Start/one
-    Close reaches the adapter (per "No duplicate handler effects" above),
-    proving handler registration has not accumulated across reloads.
-
-    **Disk copy removed.** Delete/disable the generated
-    `.pi/extensions/sce/index.ts` and trigger `/reload`. Assert
-    `count(SCE-identified extensions) == 1` and the canonical inline instance
-    remains at index `0`. This also preserves the AC22c SCE-removal
-    soundness proof below — removing the disk copy must not create zero SCE
-    instances any more than leaving it present may create two.
-
-    **Disk copy restored.** Restore the generated disk copy and trigger
-    `/reload` again. Assert it is filtered again (`count(legacy disk-SCE
-    instances in the normalized array) == 0`) and does not create a second
-    runtime SCE instance; execute one tracked mutation and assert exactly one
-    Start/one Close.
-
-    **Foreign collision.** Add a foreign extension whose directory name,
-    display name, or package name contains or equals `sce` (e.g.
-    `.pi/extensions/sce-custom/`, or a package literally named `sce`) where
-    Pi's own extension-loading permits it. Assert the normalizer does **not**
-    remove this foreign extension — it must remain present in the normalized
-    array — unless it happens to match the exact proven generated-disk-SCE
-    identity predicate from D13/T02 (which, by construction, a differently
-    named/pathed extension never does). Assert the foreign extension's own
-    handlers still dispatch normally and are unaffected by SCE's
-    normalization.
-
-    Also test the extension-array-authority fail-closed guarantee this
-    plan's D13 correction requires (AC22a/AC22b), replacing both the
-    doctor-warning-only test and the launcher-refuses-to-exec-`pi` test
-    earlier versions of this plan specified. **No variant below may be
-    argued from "no Pi Start was ever established" (retracted, D13's Hole 1
-    invariant) or from "the launcher refused to launch `pi`" (retracted,
-    D13's Option C is no longer the mechanism). Every variant must instead
-    assert directly on the array `ExtensionRunner` was actually built from
-    — `resourceLoader.getExtensions().extensions` — never on a separately
-    predicted array, per the "exact-runner authority" requirement below.**
+    Also test the accepted competing-`user_bash`-extension limitation D13
+    documents, so the boundary is proven rather than merely asserted in
+    prose:
 
     ```text
-    variant — launcher-hosted session, no competing extension:
-    construct a session via SCE's launcher (createRuntime +
-    resourceLoaderOptions.extensionFactories/extensionsOverride, T05),
-    with the generated .pi/extensions/sce/index.ts disk copy present (the
-    normal sce setup --pi output);
-    assert resourceLoader.getExtensions().extensions[0] is SCE's own
-    canonical extension AND count(SCE-identified extensions in that array)
-    == 1 (not two — the disk copy must be filtered, not merely outranked);
-    assert the guarded user_bash handler and tracked-Start
-    handling for bash/edit/write are both enabled; a clean tool call
-    reaches AiExclusive normally with exactly one Start/one Close reaching
-    the adapter
-
-    variant — a competing extension present at construction never wins,
-    each configuration separately: (a) a CLI/-e-provided competing
-    extension, (b) a rank-0 project-settings-entry competing extension,
-    (c) a same-rank project-auto-discovered sibling positioned ahead of
-    SCE's by readdir order:
-    construct a launcher-hosted session in each configuration, disk copy
-    present; assert resourceLoader.getExtensions().extensions[0] is still
-    SCE's own canonical extension AND count(SCE-identified extensions) == 1
-    in every case (the competing extension is present in the
-    array, just not first, and not counted as an SCE instance); attempt
-    user_bash; assert SCE's guarded handler dispatches, not the foreign
-    one; assert sce doctor/setup, run separately, still reports the
-    naive-on-disk-resolution conflict for a human to read, unrelated to
-    the actual (safe) outcome
-
-    variant — cross-harness, no contamination because the array was
-    never unsafe, not because no Pi Start was established: repeat the
-    prior variant with a Claude/Codex/OpenCode scope already live on
-    the same worktree; assert that scope's eventual Close reaches its
-    own correct, unrelated attribution outcome — prove this by
-    asserting the foreign extension's user_bash handler was never
-    dispatched, not merely by asserting mutation_ai_patch excludes some
-    interval
-
-    variant — the one remaining fail-closed case is construction
-    failure, not runtime detection: force SCE's own extensionFactories
-    entry to throw when the launcher invokes it; assert session
-    construction (or reload) rejects, the launcher's top-level code
-    treats this as a hard failure, and no AgentSession/ExtensionRunner
-    is ever left running with SCE absent from the array
-
-    variant — launcher bypassed entirely, a named worktree-unsafe
-    boundary, not a safe fallback: invoke the real pi binary directly,
-    or construct an AgentSession/DefaultResourceLoader directly, with a
-    conflicting configuration and a Claude/Codex/OpenCode scope live on
-    the same worktree; if SCE's legacy on-disk-discovered extension
-    happens to load, assert its own diagnostic self-check correctly
-    withholds its own Start/user_bash registration; but assert — and
-    record in this task's task record, do not treat as fixed — that the
-    foreign extension DOES execute user_bash unguarded in this
-    configuration, and that this plan does not prevent that mutation
-    from potentially being folded into the live other-harness scope's
-    eventual attribution; this is the named, permanent, worktree-unsafe
-    residual (D13's "Raw Pi / SDK embedding" disposition), asserted as
-    a documented boundary, never as "safe with reduced coverage"
-
-    variant — SDK extensionsOverride on a non-launcher-hosted session,
-    the same permanent residual limitation, not a separate one:
-    construct an AgentSession/SDK caller using its own extensionsOverride
-    (on a ResourceLoader SCE's launcher did not build) to place a
-    foreign user_bash handler first; assert the same worktree-unsafe
-    boundary applies as in the direct-invocation case above, recorded
-    identically as permanent
-    ```
-
-    Also test the reload/rebuild-lifetime guarantee D13's Hole 2 invariant
-    requires (AC22b) — a regression the previous version of this plan did
-    not have, since it treated a launch-time attestation as valid for the
-    whole session:
-
-    ```text
-    variant — safe startup, reload with no configuration change:
-    construct a launcher-hosted session, disk copy present; assert
-    positive Pi attribution is available and count(SCE-identified
-    extensions) == 1; trigger /reload with nothing on disk changed;
-    assert resourceLoader.getExtensions().extensions[0] is still SCE's
-    own canonical extension AND count(SCE-identified extensions) == 1
-    after the reload (the same ResourceLoader instance, same bound
-    extensionFactories/extensionsOverride); assert positive
-    attribution remains available and a subsequent clean tool call
-    still reaches AiExclusive with exactly one Start/one Close
-
-    variant — safe startup, an on-disk reorder attempt, reload,
-    attempted mutation, with a live other-harness scope:
-    construct a launcher-hosted session with a Claude/Codex/OpenCode
-    scope already live on the same worktree; introduce a foreign
-    user_bash-hooking extension ahead of where SCE would naively rank
-    on disk (any configuration from the array-authority variants above)
-    without restarting the Pi process; trigger /reload; assert
-    resourceLoader.getExtensions().extensions[0] is still SCE's own
-    canonical extension AND count(SCE-identified extensions) == 1 after
-    the reload; assert the foreign user_bash handler
-    never dispatches, the Pi process is never terminated merely because
-    an on-disk reorder was attempted (there is nothing unsafe to
-    terminate for — the reorder never reached the array
-    ExtensionRunner was built from), and positive attribution remains
-    enabled throughout; assert the live other-harness scope's eventual
-    Close reaches its own correct, unaffected attribution outcome
-    ```
-
-    Also test the SCE-removal regression (AC22c) — the concrete bypass this
-    correction exists to close, and the specific class the human's brief
-    requires as load-bearing, not merely a variant of the reorder case
-    above, because it proves the array-producing mechanism does not depend
-    on SCE's own extension code running at all:
-
-    ```text
-    safe guarded Pi startup through SCE's launcher
-        => positive attribution available
-
-    Claude B live on the same worktree
-
-    modify Pi's on-disk extension configuration so that Pi's own naive
-    on-disk resolution for the next runner:
-        - excludes SCE's generated extension entirely (removed, renamed,
-          disabled — not merely reordered)
-        - includes a foreign extension that registers user_bash
-
-    trigger /reload
+    variant — a competing extension consumes user_bash before SCE:
+    register a second extension, ranked ahead of SCE under Pi's normal
+    on-disk resolution, whose own user_bash handler returns a truthy
+    result or operations; trigger !command;
 
     assert:
-        resourceLoader.getExtensions().extensions still contains SCE's
-            own canonical extension, at index 0, exactly once
-            (reinserted by extensionFactories, reordered and
-            de-duplicated by extensionsOverride — neither of which read
-            the on-disk extension list to decide SCE's presence)
-        the authoritative external mechanism (the launcher's
-            ResourceLoader construction) prevented the unsafe
-            naively-resolved runner from ever becoming operational —
-            there is no window in which ExtensionRunner was built from
-            an array missing SCE
-
-    attempt user_bash
-
-    assert:
-        the foreign handler never executes unguarded
-        no human worktree mutation occurs
-
-    Claude Close(B)
-
-    assert:
-        no Pi-origin human mutation contaminates B's attribution outcome
+        Pi never invokes SCE's own user_bash handler for this command
+            (no supervisor process is spawned, no arm request occurs)
+        this is the expected, documented outcome, not a test failure —
+            SCE makes no guard claim for an event Pi never dispatched
+            to it
+        a tracked bash/edit/write tool call in the SAME session still
+            establishes mutation scope normally, proving this
+            limitation is scoped to user_bash dispatch interception and
+            does not weaken tracked-tool attribution
     ```
-
-    Repeat/parameterize this exact regression for Claude, Codex, and
-    OpenCode in place of B. The test must remove SCE from the on-disk
-    configuration completely, not merely reorder another extension ahead
-    of it — reordering alone is already covered by the prior variants, and
-    this class is what the earlier launcher-refusal/in-process-check design
-    could not survive (its own termination logic lived inside the extension
-    being removed).
-
-    Also test the exact-runner-authority requirement directly (AC22a/AC22b,
-    "the extension-set safety authority survives every runner rebuild and
-    cannot be removed by removing SCE's own Pi extension"): every assertion
-    in every variant above about "SCE is first"/"the foreign handler never
-    dispatches" must read `resourceLoader.getExtensions().extensions` (or
-    equivalently instrument `ExtensionRunner`'s actual constructor
-    arguments) at the moment `_buildRuntime()` runs, not a separately
-    computed prediction of what the array should be. A test that instead
-    asserts "the launcher's precomputed order was E" and separately assumes
-    "therefore the runner used E" does not satisfy this requirement — mutate
-    the on-disk extension directory and `.pi/settings.json` between
-    constructing the session and triggering `/reload` in at least one
-    variant, and assert the post-reload array is still read from the actual
-    `ExtensionRunner` construction, not from an earlier snapshot.
 
     Also a pinned real-Pi smoke covering
     bash, write, edit, SCE Start failure, later extension rejection, execution
