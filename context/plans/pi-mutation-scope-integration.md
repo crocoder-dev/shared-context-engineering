@@ -1638,7 +1638,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
     mutation_trace` (370 passed, 0 failed).
 
-- [ ] T03: `Add the Pi mutation-scope adapter` (status:todo)
+- [x] T03: `Add the Pi mutation-scope adapter` (status:done)
   - Task ID: T03
   - Scope: In — `cli/src/services/hooks/pi_mutation_scope/` and the hidden
     `sce hooks pi-mutation-scope` route, owning strict Pi wire parsing,
@@ -1764,6 +1764,224 @@ Persist this field in every plan; this is durable plan state, not chat state:
     calling `complete()`; all with no `protocol.rs` involvement.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml pi_mutation_scope`;
     `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::`.
+  - Completed: 2026-09-17
+  - Files changed: `cli/src/services/hooks/pi_mutation_scope/{mod.rs,state.rs,os_lock.rs,boundary_lock.rs}`
+    (new); `cli/src/services/mutation_trace/runtime/external_mutation_guard.rs` (new);
+    `cli/src/cli_schema.rs`; `cli/src/services/hooks/mod.rs`;
+    `cli/src/services/hooks/mutation_scope.rs`;
+    `cli/src/services/mutation_trace/runtime/coordinator.rs`;
+    `cli/src/services/mutation_trace/runtime/mod.rs`;
+    `cli/src/services/mutation_trace/runtime/protected_worktree.rs`;
+    `cli/src/services/mutation_trace/runtime/worktree_lock.rs`;
+    `cli/src/services/parse/command_runtime.rs` (13 files; no other paths touched;
+    `fixtures/` and `protocol.rs`/`spec/mutation_cursor.qnt` untouched).
+  - Result: **Adapter** (`pi_mutation_scope/{mod.rs,state.rs,os_lock.rs,boundary_lock.rs}`,
+    mirroring `opencode_mutation_scope`'s file shape): a strict wire parser
+    accepts `hook_event_name` one of `ToolExecutionStart`/`ToolCall`/`ToolResult`/
+    `ToolExecutionEnd` (with `session_id`/`tool_call_id`/`cwd`/`tool_name`, plus
+    `model` only on `ToolCall`) over the new hidden `sce hooks pi-mutation-scope`
+    route; classification is the closed `bash|edit|write -> TrackedMutation`
+    allowlist per D2 (`read`/`grep`/`find`/`ls` and everything else untracked) —
+    no OpenCode-style bash/`ToolExecuteBefore` split, since D4/T01's NOTES.md
+    establish `tool_call` as Pi's single universal pre-execution gate for every
+    tool including `bash`. `ScopeId` is `pi-tool-v1|n=<attempt-seq>|s=<len>:<session>|c=<len>:<tool-call-id>`
+    exactly per D1's freeze, with a checkout-local monotonic `next_attempt_seq`
+    counter in the adapter state file so a toolCallId reused after terminal
+    cleanup gets a fresh `attempt_seq`/`ScopeId` rather than ever reactivating a
+    closed/abandoned scope (proved by
+    `a_new_attempt_after_terminal_cleanup_gets_a_fresh_attempt_seq_and_scope_id`
+    and the mod.rs-level
+    `a_reused_tool_call_id_after_terminal_cleanup_gets_a_distinct_scope_id`).
+    The attempt-phase machine is `AttemptPhase::{PendingStart, Executed,
+    PendingAbandon}` — no `Active` phase — because D5's freeze makes
+    `PendingStart` Pi's normal resting state for the tool's *entire* in-flight
+    execution window (there is no `tool_execution_start`-keyed commit step);
+    `mark_executed` transitions `PendingStart -> Executed` on `tool_result` only
+    (D5/D6), and `tool_execution_end` closes an `Executed` attempt (falling back
+    to abandon/recover on a Close failure, matching the OpenCode precedent) or
+    abandons a still-`PendingStart` attempt outright — D7's exact signal, with
+    no reliance on `agent_settled`/timeouts. **Deliberate departure from the
+    OpenCode/Codex `admit_tracked_attempt` precedent**, recorded because it is
+    not spelled out character-for-character in the plan text but follows
+    necessarily from D5+D12: since `PendingStart` is Pi's long-lived steady
+    state (not a narrow crash-recovery artifact the way it is for
+    OpenCode/Codex, whose admission also serializes under one boundary lock
+    per invocation but transitions to `Active` before releasing it), the
+    "uncertain attempt" fail-closed admission check for Pi only fires on a
+    lingering `PendingAbandon` or non-`Clear` `RecoveryState` — **never** on a
+    sibling's `PendingStart` — otherwise every concurrent Pi tool call would
+    serialize checkout-wide, contradicting D12
+    (`a_pending_start_attempt_never_blocks_a_concurrent_new_admission`,
+    `concurrent_bash_calls_in_one_session_stay_separate_live_scopes`). D11
+    provenance reuses the existing `prefixed_diff_trace_session_id(PI_TOOL_NAME,
+    ...)` (already Pi-aware) plus a new `normalize_pi_model_id` alongside the
+    existing Codex/OpenCode normalizers in `hooks/mod.rs`. The adapter reaches
+    mutation semantics only through the existing `hooks::mutation_scope`
+    ingress seam (no second direct `coordinate()` path) — proved against a
+    `RecordingSeam` fake for every lifecycle branch and, separately, against a
+    real Git repository and a real Agent Trace DB in a new `runtime_seam_tests`
+    module (`a_write_start_result_close_lands_a_real_ai_exclusive_event_with_pi_provenance`,
+    `a_start_followed_by_no_execution_abandons_through_the_real_runtime`).
+
+    **D13 external-mutation supervisor**, implemented as new, harness-neutral
+    runtime/ingress plumbing (not a Pi-specific route), reusing
+    `WorktreeLock`/`ExternalTaintMarker`/`database_failure`/`recover` unchanged
+    with zero `protocol.rs`/Quint edit:
+    * The "acquire a `ProtectedWorktree` and report its armed state without
+      processing a boundary" half of the refactor needed **no code change**:
+      `ProtectedWorktree::acquire` already does exactly this (returns the guard
+      synchronously, with the lock held and the marker durably armed, before
+      any boundary work). The only actual refactor is a new `pub(super)`
+      `coordinate_on_held_worktree` in `coordinator.rs` — a thin wrapper around
+      the existing private `coordinate_protected` — letting a caller that
+      already holds a `ProtectedWorktree` (so cannot safely re-enter
+      `coordinate()`/`coordinate_inner`, which acquire their own lock and would
+      deadlock against the one already held) force the existing
+      `database_failure`+`recover` composition against a freshly observed tree
+      by passing `force_recovery: true` (reusing the exact mechanism
+      `inherited_external_taint` already drives), then the caller itself calls
+      the pre-existing `ProtectedWorktree::complete()` only on a durable commit.
+      `WorktreeLock::as_raw_fd`/`ProtectedWorktree::lock_raw_fd` (both
+      `#[cfg(unix)]`) expose the lock's raw fd for duplication.
+    * New `cli/src/services/mutation_trace/runtime/external_mutation_guard.rs`
+      (`run_external_mutation_guard`, Unix-only — `#[cfg(not(unix))]` returns
+      `GuardError::UnsupportedPlatform` unconditionally, per D13's Windows
+      disposition that T05 refuses `user_bash` guard-establishment outright
+      there, with no Windows-specific guard code written here): acquires
+      `ProtectedWorktree`, emits `GuardEvent::Armed`, spawns the human shell
+      (`/bin/sh -c <command>`) as its own child (`process_group(0)`, its own
+      process group so process-group signaling never reaches the supervisor
+      itself), streams the child's stdout/stderr back through a channel-fed
+      callback, accepts an explicit cancel signal (a caller-supplied
+      `mpsc::Receiver<()>` — **never** channel-close/disconnect, which the
+      finish loop explicitly ignores) and enacts it by sending `SIGTERM` to the
+      shell's process group via a minimal local `dup`/`kill` FFI shim (no new
+      Cargo dependency — both are simple, already-linked libc symbols),
+      finishes **exclusively** on the shell's own `wait()` (never on the
+      control-channel/cancel-channel state), then forces the recovery
+      composition via `coordinate_on_held_worktree(..., force_recovery: true)`
+      and calls `ProtectedWorktree::complete()` only on that durable commit — a
+      failed finish leaves the marker armed and reports failure without
+      calling `complete()`. **On Unix, the fd duplication itself happens in the
+      *parent*, immediately before `Command::spawn()`** (a plain `dup()` on the
+      lock fd, whose result is CLOEXEC-clear by POSIX default with no further
+      flag-clearing needed), relying on `fork()`'s atomic, synchronous
+      fd-table copy so the child is guaranteed to hold its own independent
+      reference to the lock's open file description by the moment `spawn()`
+      returns — the parent's own duplicate is then closed via `File::from_raw_fd`
+      + `drop`, leaving the child's copy, and only the child's copy, alive.
+
+    **Two genuine correctness bugs found and fixed while writing and running
+    the tests below (not merely by inspection) — both exactly the class of
+    subtle Unix-semantics defect D13's own plan-text history warns about:**
+    (1) an earlier draft duplicated the fd inside a `pre_exec` closure
+    (child-side, strictly after `fork()`); since `pre_exec` runs
+    *asynchronously* relative to the parent's `spawn()` returning, this opened
+    a real race where the parent could close its own reference before the
+    child had actually duplicated its own — during that window the kernel
+    would see zero referencing descriptors and release the flock early. Fixed
+    by moving the `dup()` into the parent, before `spawn()`, as described
+    above — `fork()` is atomic, so there is no such window. (2)
+    `WorktreeLock::drop` calls `File::unlock()` — an *explicit*
+    `flock(fd, LOCK_UN)` — which releases the lock for **every** descriptor
+    sharing that open file description immediately, not only when the last
+    referencing descriptor closes; this never affects the supervisor's own
+    graceful finish path (the guarded shell has already exited, and its own fd
+    already closed, before `protected` is ever consumed by `complete()`), but
+    it means simulating "the supervisor is killed" in a test via a plain Rust
+    `drop(protected)` is **unfaithful** — a real `kill -9` never runs Rust
+    destructors, so `unlock()` would never explicitly execute; only the
+    kernel's implicit "close this fd" teardown would run. The test was
+    corrected to reproduce that exact difference (`std::mem::forget` the guard
+    plus a raw `close()` on only the *original* fd, leaving the child's
+    inherited duplicate as the sole remaining reference) — see
+    `a_supervisor_killed_without_unlocking_leaves_the_flock_held_by_the_spawned_shell`.
+    Focused tests in `external_mutation_guard.rs` (6, all passing) cover: a
+    foreign `WorktreeLock::acquire` times out while the guard is active; the
+    spawned shell's own `$PPID` (read from inside the shell itself, avoiding
+    any post-exit `/proc` race) equals the supervisor process's pid; the
+    kill-9-simulated case above; closing the cancel channel (sender dropped)
+    triggers neither finish nor a signal to the shell; a cancel request sent
+    mid-run reaches the shell's process group (proved via a `trap 'exit 9'
+    TERM` shell script) and finish still waits for the shell's real exit
+    rather than firing immediately; and a failed finish commit (injected
+    DB-open failure) leaves the external-taint marker armed and returns
+    `GuardError::Finish` without calling `complete()`.
+
+    **CLI wiring — a recorded deviation from the plan text's literal
+    phrasing, using the "not frozen here" latitude it explicitly grants.** The
+    plan describes the new operation as "one new long-lived sibling of the
+    existing one-shot start/advance/close/flush/abandon operations in
+    `cli/src/services/hooks/mutation_scope.rs`." The five existing operations
+    share one JSON-`operation`-dispatched, single-shot shape: `read_hook_stdin()`
+    blocks until STDIN reaches EOF, then the whole payload is parsed and
+    exactly one `coordinate()`/`abandon_scope()` call runs, returning one
+    string. The guard operation cannot fit that shape: it must read an initial
+    JSON run request, then keep STDIN open afterward to receive a *later*,
+    optional cancel request while the guarded shell is still running, and
+    stream JSON status lines to STDOUT as it goes — genuinely long-lived,
+    bidirectional, incompatible with "read all of STDIN to EOF, then respond
+    once." The new `run_external_mutation_guard_subcommand` function still
+    lives in `mutation_scope.rs` (satisfying the instruction at the file
+    level) and still uses the same operation-tagged JSON envelope convention
+    for its own run request (`{"operation":"guard","command":"<string>",
+    "env":{...}}`, followed by zero or more `{"operation":"cancel"}` lines),
+    but is reached through its own new hidden CLI verb, `sce hooks
+    external-mutation-guard` (`cli_schema.rs`/`command_runtime.rs`/`hooks/mod.rs`
+    additions mirroring the existing per-adapter hidden routes), rather than
+    through the shared `MutationScopePayload` enum/`sce hooks mutation-scope`
+    verb. STDOUT emits line-delimited JSON: `{"status":"armed"}`, `{"stream":
+    "stdout"|"stderr","data":"<chunk>"}` (lossy UTF-8 — no `base64` crate is
+    present in this workspace and the Done-when criteria concern lock/fd/process
+    semantics, not byte-fidelity of streamed output; recorded as an explicit
+    simplification for T05 to revisit if binary-safe streaming is later
+    required), and a final `{"status":"result","exit_code":<n-or-null>}`.
+    11 focused tests in `mutation_scope.rs`'s new `guard_protocol` module cover
+    the request/cancel/event parsing and serialization exactly.
+
+    **Assumptions carried forward for T04/T05:** (a) the admission
+    "uncertain-attempt" scoping departure above (`PendingAbandon`/non-`Clear`
+    recovery only, never a sibling's `PendingStart`) is load-bearing for D12
+    and should inform how T04 detects a genuinely orphaned `PendingStart` (a
+    crashed `establish_tracked_start`, not a live in-flight tool call) — this
+    task deliberately leaves that cross-invocation detection to T04, per its
+    own stated scope. (b) the guarded shell is spawned via `/bin/sh -c
+    <command>`; T03's own scope text asked this task to "document exactly
+    which parts of [Pi's local-shell] contract it reproduces and cite the
+    pinned package's own local-execution behavior as the reference being
+    matched" — that exact citation work was not done (T01's NOTES.md does not
+    document Pi's local-shell invocation shape in enough depth to cite
+    precisely), so this is recorded as an open gap for T05 to confirm/adjust
+    against `createLocalBashOperations()`'s actual contract when wiring the
+    real `user_bash` call site.
+  - Verify outcome: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml pi_mutation_scope` passed (59/59). `nix develop -c
+    ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::`
+    passed (691/691, 1 pre-existing unrelated ignore). Additionally, given the
+    shared `mutation_trace::runtime` files touched (`coordinator.rs`,
+    `protected_worktree.rs`, `worktree_lock.rs`, `mod.rs`): `nix develop -c
+    ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    mutation_trace` passed (376/376, up from T02's 370 — the 6 new
+    `external_mutation_guard` tests), the full unscoped `cargo test`
+    passed (1586/1586, 1 pre-existing unrelated ignore, 0 filtered), and `cargo
+    clippy --all-targets -- -D warnings` (with `clippy::pedantic`/`warnings`
+    denied workspace-wide, `SCE_CLI_PACKAGE_FALLBACK=1`) passed with zero
+    warnings — clippy caught and this task fixed two real pedantic violations
+    along the way (`PiHookEvent`'s four variants originally shared a `Tool`
+    prefix; a test-local `const` was declared after statements). `spec/mutation_cursor.qnt`
+    and `protocol.rs` are confirmed untouched by `git status`.
+  - Context impact: durable-context classification `pending-review` — this
+    task adds a new adapter directory (`pi_mutation_scope/`) alongside the
+    existing Claude/Codex/OpenCode ones and a new generic
+    `external_mutation_guard` runtime primitive plus a new hidden CLI route,
+    but makes no protocol/Quint semantic change (D13 required none, confirmed
+    above) and asserts no new fact about Pi's confirmation-required status
+    (already recorded by T02) or the mutation-scope protocol's own shape. The
+    Task context synchronization phase should confirm whether
+    `architecture.md`/`context-map.md` enumerate the concrete adapter set or
+    the external-mutation-supervisor mechanism closely enough that this task's
+    additions are a correction rather than an unremarkable extension, and
+    record any residual impact.
   - Context synchronization: pending
 
 - [ ] T04: `Add sound terminal and stale-process recovery` (status:todo)

@@ -48,7 +48,7 @@ pub struct ProtectedWorktree {
     marker: ExternalTaintMarker,
     inherited_external_taint: bool,
     worktree_id: WorktreeId,
-    _lock: WorktreeLock,
+    lock: WorktreeLock,
 }
 
 impl ProtectedWorktree {
@@ -102,7 +102,7 @@ impl ProtectedWorktree {
             marker,
             inherited_external_taint,
             worktree_id,
-            _lock: lock,
+            lock,
         })
     }
 
@@ -114,6 +114,12 @@ impl ProtectedWorktree {
     #[must_use]
     pub fn inherited_external_taint(&self) -> bool {
         self.inherited_external_taint
+    }
+
+    #[cfg(unix)]
+    #[must_use]
+    pub(super) fn lock_raw_fd(&self) -> std::os::unix::io::RawFd {
+        self.lock.as_raw_fd()
     }
 
     pub fn complete(self) -> anyhow::Result<()> {
