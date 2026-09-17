@@ -87,9 +87,72 @@ call behind whichever one started first, contradicting the requirement that
 parallel tool executions stay distinct live scopes. Pi's admission therefore
 fails closed only on a lingering `PendingAbandon` (the D7/D8 abandon
 pipeline) or a non-`Clear` recovery state — never on a sibling's
-`PendingStart`. Detecting a genuinely orphaned `PendingStart` (the adapter's
-own process crashed mid-`start`, not a tool call still legitimately running)
-is left to stale-process reconciliation, a separate later task.
+`PendingStart`. A genuinely orphaned `PendingStart` (the owning Pi process
+crashed, not a tool call still legitimately running) is instead resolved by
+the stale-process reconciliation below.
+
+## Stale-process recovery (D10)
+
+Every `PendingStart` attempt records a `ProcessOwner { pid, instance_token }`
+captured via `getppid()` at admission time: because `sce hooks
+pi-mutation-scope` is invoked synchronously as a direct child of the Pi/Node
+process for that exact call (`tool_call` is a blocking pre-execution gate),
+the OS-reported parent pid at that moment *is* the owning Pi process, with no
+wire-protocol or TypeScript-extension change needed. `is_definitely_dead`
+(`pi_mutation_scope/process_owner.rs`) proves death via `kill(pid, 0)` ==
+`ESRCH` on Unix, and additionally guards against PID reuse on Linux by
+comparing the parent's `/proc/<pid>/stat` start-time field against the
+recorded value; a live pid whose instance identity can't be established this
+way (non-Linux Unix, or a missing `/proc` entry) is always conservatively
+treated as alive. No TTL, elapsed time, or session sweep is used anywhere in
+this path.
+
+Every tracked Start admission is itself a reconciliation opportunity, not
+merely a lookup keyed on the incoming `(session-id, tool-call-id)`. While
+holding the adapter boundary lock, admission first inspects every persisted
+`PendingStart`/`Executed` attempt — any session, any prior process, not only
+one matching the attempt currently being admitted — and independently proves
+each candidate's own recorded owner positively dead via `is_definitely_dead`.
+`PendingAbandon` attempts are never included: they already carry durable
+terminal recovery intent owned by the pre-existing D8
+pending-recovery-resume path. Because a Pi `session_id` is a fresh UUIDv7 per
+process (T01), the process that owned a stale attempt is essentially never
+the same process driving the *next* `tool_call`, so a same-key replay is not
+how this trigger fires in practice — a later, unrelated Pi session's Start is
+what discovers and retires it.
+
+Every scope with positive owner-death evidence collected in one pass is
+retired together through the existing D8 flush/abandon/flush pipeline in a
+single recovery generation (`begin_terminal_cleanup` on the whole batch →
+one ambiguity flush → one `abandon` per doomed scope → one rebaseline flush),
+before the triggering `tool_call` is admitted — no new recovery mechanism,
+D10 reuses D8's pattern end to end. A dead `PendingStart` and a dead
+`Executed` attempt are both abandoned/rebaselined identically; a dead
+`Executed` attempt is never given a synthetic delayed Close, because the
+current Git tree no longer represents the original `tool_execution_end`
+observation time (D9). Live and uncertain-owner attempts (a live pid whose
+exact process-instance identity can't be established) are left completely
+untouched by this scan — this is broad *inspection*, never broad
+*inference*: no TTL, no elapsed time, no session sweep, no `ActorKind::Pi`
+sweep, and no same-session-predecessor rule ever substitutes for an
+attempt's own positive process-death proof. If the flush/abandon/flush
+sequence fails partway, recovery stays durably `Pending` and the triggering
+Start is denied fail-closed; the next boundary-lock acquisition resumes and
+completes it before any new Start can commit.
+
+## Reconciling with the external-mutation guard
+
+A live Pi scope's local attempt state reconciles with a worktree the
+[external-mutation guard](mutation-trace-external-mutation-guard.md) abandons
+through the same existing Close-failure→abandon fallback the adapter already
+uses for any other externally tainted worktree: the adapter has no visibility
+into *why* the generic runtime abandoned a scope out from under it (a guard
+finishing, another harness's recovery, or otherwise), only that it did, and
+the next `tool_result`/`tool_execution_end` for that attempt safely reconciles
+through the pre-existing recovery path rather than erroring or resurrecting
+the scope. A fresh Pi `tool_call` that races an active guard blocks on the
+runtime's own worktree-lock timeout and fails closed, touching no protocol
+state, then succeeds normally once retried after the guard releases.
 
 ## Scope identity
 
