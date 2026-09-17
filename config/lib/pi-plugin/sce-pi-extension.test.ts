@@ -8,7 +8,10 @@ import {
 	test,
 } from "bun:test";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
 	AttemptKey,
 	PiMutationScopePayload,
@@ -60,8 +63,22 @@ let spawnSyncResult: {
 
 let spawnCalls: SpawnCall[] = [];
 
+const realChildProcessModule = createRequire(import.meta.url)(
+	"node:child_process",
+);
+const realSpawnSync: typeof import("node:child_process").spawnSync =
+	realChildProcessModule.spawnSync;
+
 mock.module("node:child_process", () => ({
-	spawnSync: (command: string, args: string[], options: { input?: string }) => {
+	...realChildProcessModule,
+	spawnSync: (
+		command: string,
+		args: string[],
+		options: { input?: string; cwd?: string },
+	) => {
+		if (command !== "sce") {
+			return realSpawnSync(command, args, options as never);
+		}
 		spawnSyncCalls.push({
 			command,
 			args,
@@ -95,19 +112,16 @@ afterAll(() => {
 	realChildProcess.spawn = originalSpawn;
 });
 
+const realFsPromisesModule = createRequire(import.meta.url)("node:fs/promises");
+
 mock.module("node:fs/promises", () => ({
+	...realFsPromisesModule,
 	readdir: async (dir: string) => {
 		if (dir.endsWith("/.pi/extensions")) {
 			return ["sce"];
 		}
 		return [];
 	},
-	readFile: async () => {
-		throw new Error("not used in these tests");
-	},
-	writeFile: async () => {},
-	mkdtemp: async (prefix: string) => `${prefix}fake`,
-	rm: async () => {},
 }));
 
 mock.module("@earendil-works/pi-coding-agent", () => ({
@@ -145,10 +159,19 @@ function ctxFor(cwd: string, sessionId = "ses_1") {
 	};
 }
 
+let smokeTempDirs: string[] = [];
+
 beforeEach(() => {
 	spawnSyncCalls = [];
 	spawnSyncResult = { status: 0 };
 	spawnCalls = [];
+	smokeTempDirs = [];
+});
+
+afterEach(() => {
+	for (const dir of smokeTempDirs) {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 describe("mutation-scope tool_call Start", () => {
@@ -766,5 +789,529 @@ describe("user_bash guard", () => {
 		spawnCalls[0].child.emitLine({ status: "result", exit_code: null });
 
 		await expect(execPromise).resolves.toEqual({ exitCode: null });
+	});
+
+	test("a competing extension consuming user_bash ahead of SCE prevents SCE's handler from ever running, while tracked-tool attribution in the same session is unaffected", async () => {
+		const { api, handlers } = makeApi();
+		sceExtension(api as never);
+		const [sceHandler] = handlers.get("user_bash") ?? [];
+		expect(sceHandler).toBeDefined();
+
+		let sceHandlerInvoked = false;
+		const spiedSceHandler: Handler = (event, ctx) => {
+			sceHandlerInvoked = true;
+			return sceHandler?.(event, ctx);
+		};
+
+		const competingHandler: Handler = () => ({
+			result: {
+				output: "handled by another extension",
+				exitCode: 0,
+				cancelled: false,
+				truncated: false,
+			},
+		});
+		const orderedHandlers: Handler[] = [competingHandler, spiedSceHandler];
+
+		let dispatched: unknown;
+		for (const handler of orderedHandlers) {
+			const result = await handler(
+				{
+					type: "user_bash",
+					command: "echo hi",
+					excludeFromContext: false,
+					cwd: "/repo",
+				},
+				undefined,
+			);
+			if (result) {
+				dispatched = result;
+				break;
+			}
+		}
+
+		expect(dispatched).toEqual({
+			result: {
+				output: "handled by another extension",
+				exitCode: 0,
+				cancelled: false,
+				truncated: false,
+			},
+		});
+		expect(sceHandlerInvoked).toBe(false);
+		expect(spawnCalls).toHaveLength(0);
+
+		const [, startHandler] = handlers.get("tool_call") ?? [];
+		const callResult = await startHandler?.(
+			{ toolName: "bash", toolCallId: "c_after_competing_user_bash" },
+			ctxFor("/repo", "ses_after_competing_user_bash"),
+		);
+		expect(callResult).toBeUndefined();
+		expect(spawnSyncCalls).toHaveLength(1);
+	});
+});
+
+type CaptureLine = {
+	tag: string;
+	hook: string;
+	payload: {
+		event?: Record<string, unknown>;
+		model?: { provider: string; id: string };
+	};
+};
+
+const FIXTURES_DIR = join(
+	import.meta.dir,
+	"..",
+	"..",
+	"..",
+	"cli/src/services/hooks/pi_mutation_scope/fixtures/captures",
+);
+
+function loadCaptureLines(fixtureFile: string): CaptureLine[] {
+	const raw = readFileSync(join(FIXTURES_DIR, fixtureFile), "utf8");
+	return raw
+		.trim()
+		.split("\n")
+		.map((line) => JSON.parse(line) as CaptureLine)
+		.filter(
+			(line) => line.tag === "capture" && line.payload.event !== undefined,
+		);
+}
+
+function findEvent(
+	lines: CaptureLine[],
+	hook: string,
+	occurrence = 0,
+): Record<string, unknown> {
+	const matches = lines.filter((line) => line.hook === hook);
+	const match = matches[occurrence];
+	if (!match?.payload.event) {
+		throw new Error(`fixture missing hook "${hook}" occurrence ${occurrence}`);
+	}
+	return match.payload.event;
+}
+
+function findRawPayload(
+	lines: CaptureLine[],
+	hook: string,
+	occurrence = 0,
+): Record<string, unknown> {
+	const matches = lines.filter((line) => line.hook === hook);
+	const match = matches[occurrence];
+	if (!match) {
+		throw new Error(`fixture missing hook "${hook}" occurrence ${occurrence}`);
+	}
+	return match.payload as unknown as Record<string, unknown>;
+}
+
+async function emitToolCall(
+	handlers: Handler[],
+	event: unknown,
+	ctx: unknown,
+): Promise<{ block?: boolean; reason?: string } | undefined> {
+	let result: { block?: boolean; reason?: string } | undefined;
+	for (const handler of handlers) {
+		const handlerResult = (await handler(event, ctx)) as
+			| { block?: boolean; reason?: string }
+			| undefined;
+		if (handlerResult) {
+			result = handlerResult;
+			if (result.block) {
+				return result;
+			}
+		}
+	}
+	return result;
+}
+
+async function emitAll(
+	handlers: Handler[],
+	event: unknown,
+	ctx: unknown,
+): Promise<void> {
+	for (const handler of handlers) {
+		await handler(event, ctx);
+	}
+}
+
+function ctxFromCapture(
+	cwd: string,
+	sessionId: string,
+	model: { provider: string; id: string } | undefined,
+) {
+	return {
+		cwd,
+		sessionManager: { getSessionId: () => sessionId },
+		model,
+	};
+}
+
+function makeTempGitRepo(): string {
+	const dir = mkdtempSync(join(tmpdir(), "sce-pi-smoke-"));
+	const init = realSpawnSync("git", ["init", "--quiet"], { cwd: dir } as never);
+	if (init.status !== 0) {
+		throw new Error(`git init failed: ${init.stderr?.toString() ?? ""}`);
+	}
+	realSpawnSync("git", ["config", "user.email", "smoke@example.com"], {
+		cwd: dir,
+	} as never);
+	realSpawnSync("git", ["config", "user.name", "Smoke Test"], {
+		cwd: dir,
+	} as never);
+	return dir;
+}
+
+async function settleAllSpawns(rounds = 5): Promise<void> {
+	for (let i = 0; i < rounds; i++) {
+		for (const call of spawnCalls) {
+			if (!call.child.killed) {
+				call.child.emit("close", 0);
+			}
+		}
+		await flush();
+	}
+}
+
+describe("pinned real-Pi smoke (T01 capture replay, Linux)", () => {
+	test("bash: tool_execution_start -> tool_call -> tool_result -> tool_execution_end reaches confirmed Close wiring, with model provenance", async () => {
+		const lines = loadCaptureLines("bash-success.jsonl");
+		const startEvent = findEvent(lines, "tool_execution_start");
+		const callEvent = findEvent(lines, "tool_call");
+		const resultEvent = findEvent(lines, "tool_result");
+		const endEvent = findEvent(lines, "tool_execution_end");
+		const model = findRawPayload(lines, "tool_call").model as {
+			provider: string;
+			id: string;
+		};
+
+		const cwd = makeTempGitRepo();
+		smokeTempDirs.push(cwd);
+		const { api, handlers } = makeApi();
+		sceExtension(api as never);
+		const ctx = ctxFromCapture(cwd, "ses_bash_smoke", model);
+
+		await emitAll(handlers.get("tool_execution_start") ?? [], startEvent, ctx);
+		expect(spawnCalls).toHaveLength(1);
+		expect(
+			JSON.parse(spawnCalls[0].child.stdin.writes[0]).hook_event_name,
+		).toBe("ToolExecutionStart");
+
+		const callResult = await emitToolCall(
+			handlers.get("tool_call") ?? [],
+			callEvent,
+			ctx,
+		);
+		expect(callResult).toBeUndefined();
+		expect(spawnSyncCalls.at(-1)?.payload).toEqual({
+			hook_event_name: "ToolCall",
+			session_id: "ses_bash_smoke",
+			tool_call_id: (callEvent as { toolCallId: string }).toolCallId,
+			cwd,
+			tool_name: "bash",
+			model: `${model.provider}/${model.id}`,
+		});
+
+		await emitAll(handlers.get("tool_result") ?? [], resultEvent, ctx);
+		await emitAll(handlers.get("tool_execution_end") ?? [], endEvent, ctx);
+		await settleAllSpawns();
+
+		const forwarded = spawnCalls.map(
+			(call) => JSON.parse(call.child.stdin.writes[0]).hook_event_name,
+		);
+		expect(forwarded).toEqual([
+			"ToolExecutionStart",
+			"ToolResult",
+			"ToolExecutionEnd",
+		]);
+	});
+
+	test("write: missing model yields NULL provenance (ctx.model absent for this attempt)", async () => {
+		const lines = loadCaptureLines("write-success.jsonl");
+		const callEvent = findEvent(lines, "tool_call");
+
+		const cwd = makeTempGitRepo();
+		smokeTempDirs.push(cwd);
+		const { api, handlers } = makeApi();
+		sceExtension(api as never);
+		const ctx = ctxFromCapture(cwd, "ses_write_nomodel", undefined);
+
+		await emitToolCall(handlers.get("tool_call") ?? [], callEvent, ctx);
+		expect(spawnSyncCalls.at(-1)?.payload).toEqual({
+			hook_event_name: "ToolCall",
+			session_id: "ses_write_nomodel",
+			tool_call_id: (callEvent as { toolCallId: string }).toolCallId,
+			cwd,
+			tool_name: "write",
+			model: undefined,
+		});
+	});
+
+	test("read-only and custom/unknown tools create zero mutation-scope footprint", async () => {
+		const readonlyLines = loadCaptureLines("readonly-footprint.jsonl");
+		const customLines = loadCaptureLines("customtool.jsonl");
+		const cwd = makeTempGitRepo();
+		smokeTempDirs.push(cwd);
+		const { api, handlers } = makeApi();
+		sceExtension(api as never);
+		const ctx = ctxFromCapture(cwd, "ses_readonly", undefined);
+
+		for (const hook of [
+			"tool_execution_start",
+			"tool_call",
+			"tool_result",
+			"tool_execution_end",
+		]) {
+			for (const lines of [readonlyLines, customLines]) {
+				const matches = lines.filter((line) => line.hook === hook);
+				for (const match of matches) {
+					if (hook === "tool_call") {
+						await emitToolCall(
+							handlers.get("tool_call") ?? [],
+							match.payload.event,
+							ctx,
+						);
+					} else {
+						await emitAll(handlers.get(hook) ?? [], match.payload.event, ctx);
+					}
+				}
+			}
+		}
+
+		expect(spawnSyncCalls).toHaveLength(0);
+		expect(spawnCalls).toHaveLength(0);
+	});
+
+	test("edit: real before/after file mutation in a real Git repo drives Start/Close and the diff-trace pipeline", async () => {
+		const lines = loadCaptureLines("edit-success.jsonl");
+		const startEvent = findEvent(lines, "tool_execution_start", 1);
+		const callEvent = findEvent(lines, "tool_call", 1) as {
+			toolCallId: string;
+			toolName: string;
+			input: { path: string };
+		};
+		const resultEvent = findEvent(lines, "tool_result", 1);
+		const endEvent = findEvent(lines, "tool_execution_end", 1);
+		const model = findRawPayload(lines, "tool_call", 1).model as {
+			provider: string;
+			id: string;
+		};
+
+		const cwd = makeTempGitRepo();
+		smokeTempDirs.push(cwd);
+		const filePath = join(cwd, callEvent.input.path);
+		writeFileSync(filePath, "line1");
+
+		const { api, handlers } = makeApi();
+		sceExtension(api as never);
+		const ctx = ctxFromCapture(cwd, "ses_edit_smoke", model);
+
+		await emitAll(handlers.get("tool_execution_start") ?? [], startEvent, ctx);
+		const callResult = await emitToolCall(
+			handlers.get("tool_call") ?? [],
+			callEvent,
+			ctx,
+		);
+		expect(callResult).toBeUndefined();
+
+		writeFileSync(filePath, "line2");
+
+		await emitAll(handlers.get("tool_result") ?? [], resultEvent, ctx);
+		await emitAll(handlers.get("tool_execution_end") ?? [], endEvent, ctx);
+		await settleAllSpawns();
+
+		const mutationScopeCalls = spawnSyncCalls.filter(
+			(call) => call.args[1] === "pi-mutation-scope",
+		);
+		expect(mutationScopeCalls).toHaveLength(1);
+		expect(mutationScopeCalls[0].payload).toEqual({
+			hook_event_name: "ToolCall",
+			session_id: "ses_edit_smoke",
+			tool_call_id: callEvent.toolCallId,
+			cwd,
+			tool_name: "edit",
+			model: `${model.provider}/${model.id}`,
+		});
+
+		const mutationScopeSpawns = spawnCalls.filter(
+			(call) => call.args[1] === "pi-mutation-scope",
+		);
+		const forwarded = mutationScopeSpawns.map(
+			(call) => JSON.parse(call.child.stdin.writes[0]).hook_event_name,
+		);
+		expect(forwarded).toEqual([
+			"ToolExecutionStart",
+			"ToolResult",
+			"ToolExecutionEnd",
+		]);
+
+		const traceSpawns = spawnCalls.filter(
+			(call) =>
+				call.args[1] === "diff-trace" || call.args[1] === "conversation-trace",
+		);
+		expect(traceSpawns.length).toBeGreaterThan(0);
+		const diffTraceSpawn = spawnCalls.find(
+			(call) => call.args[1] === "diff-trace",
+		);
+		const diffPayload = diffTraceSpawn
+			? JSON.parse(diffTraceSpawn.child.stdin.writes[0])
+			: undefined;
+		expect(diffPayload?.diff).toContain("-line1");
+		expect(diffPayload?.diff).toContain("+line2");
+	});
+
+	test("SCE Start failure blocks a real tool_call event before execution", async () => {
+		spawnSyncResult = { status: 1 };
+		const lines = loadCaptureLines("bash-success.jsonl");
+		const callEvent = findEvent(lines, "tool_call");
+		const cwd = makeTempGitRepo();
+		smokeTempDirs.push(cwd);
+		const { api, handlers } = makeApi();
+		sceExtension(api as never);
+		const ctx = ctxFromCapture(cwd, "ses_denied", undefined);
+
+		const result = await emitToolCall(
+			handlers.get("tool_call") ?? [],
+			callEvent,
+			ctx,
+		);
+		expect(result).toEqual({
+			block: true,
+			reason:
+				"SCE could not establish Pi mutation attribution for this tool execution.",
+		});
+	});
+
+	test("later-extension rejection after a successful SCE Start produces tool_execution_end with no preceding tool_result (D7 abandon shape)", async () => {
+		const lines = loadCaptureLines("probeB-later-block.jsonl");
+		const startEvent = findEvent(lines, "tool_execution_start");
+		const callEvent = findEvent(lines, "tool_call");
+		const endEvent = findEvent(lines, "tool_execution_end");
+		expect(lines.filter((line) => line.hook === "tool_result")).toHaveLength(0);
+
+		const cwd = makeTempGitRepo();
+		smokeTempDirs.push(cwd);
+		const { api, handlers } = makeApi();
+		sceExtension(api as never);
+		const ctx = ctxFromCapture(cwd, "ses_later_block", undefined);
+
+		await emitAll(handlers.get("tool_execution_start") ?? [], startEvent, ctx);
+
+		const combinedHandlers: Handler[] = [
+			...(handlers.get("tool_call") ?? []),
+			() => ({ block: true, reason: "competing extension blocked" }),
+		];
+		const overall = await emitToolCall(combinedHandlers, callEvent, ctx);
+		expect(overall).toEqual({
+			block: true,
+			reason: "competing extension blocked",
+		});
+		expect(spawnSyncCalls.at(-1)?.payload).toMatchObject({
+			hook_event_name: "ToolCall",
+		});
+
+		await emitAll(handlers.get("tool_execution_end") ?? [], endEvent, ctx);
+		await flush();
+
+		const forwarded = spawnCalls.map(
+			(call) => JSON.parse(call.child.stdin.writes[0]).hook_event_name,
+		);
+		expect(forwarded).toEqual(["ToolExecutionStart", "ToolExecutionEnd"]);
+	});
+
+	test("mutate-then-error (isError: true) still forwards ToolResult/ToolExecutionEnd", async () => {
+		const lines = loadCaptureLines("bash-nonzero.jsonl");
+		const startEvent = findEvent(lines, "tool_execution_start");
+		const callEvent = findEvent(lines, "tool_call");
+		const resultEvent = findEvent(lines, "tool_result") as { isError: boolean };
+		const endEvent = findEvent(lines, "tool_execution_end");
+		expect(resultEvent.isError).toBe(true);
+
+		const cwd = makeTempGitRepo();
+		smokeTempDirs.push(cwd);
+		const { api, handlers } = makeApi();
+		sceExtension(api as never);
+		const ctx = ctxFromCapture(cwd, "ses_error", undefined);
+
+		await emitAll(handlers.get("tool_execution_start") ?? [], startEvent, ctx);
+		await emitToolCall(handlers.get("tool_call") ?? [], callEvent, ctx);
+		await emitAll(handlers.get("tool_result") ?? [], resultEvent, ctx);
+		await emitAll(handlers.get("tool_execution_end") ?? [], endEvent, ctx);
+		await settleAllSpawns();
+
+		const forwarded = spawnCalls.map(
+			(call) => JSON.parse(call.child.stdin.writes[0]).hook_event_name,
+		);
+		expect(forwarded).toEqual([
+			"ToolExecutionStart",
+			"ToolResult",
+			"ToolExecutionEnd",
+		]);
+	});
+});
+
+describe("Windows-specific pinned real-Pi smoke (D13 disposition)", () => {
+	const originalPlatform = process.platform;
+
+	afterEach(() => {
+		Object.defineProperty(process, "platform", { value: originalPlatform });
+	});
+
+	test("user_bash is unconditionally refused, and a tracked bash tool_call in the same session still reaches confirmed Close wiring", async () => {
+		Object.defineProperty(process, "platform", { value: "win32" });
+
+		const cwd = makeTempGitRepo();
+		smokeTempDirs.push(cwd);
+		const { api, handlers } = makeApi();
+		sceExtension(api as never);
+
+		const [userBashHandler] = handlers.get("user_bash") ?? [];
+		const refusal = await userBashHandler?.({
+			type: "user_bash",
+			command: "echo hi",
+			excludeFromContext: false,
+			cwd,
+		});
+		expect(refusal).toEqual({
+			result: {
+				output:
+					"SCE does not support guarded user_bash execution on Windows in this release; run this command outside Pi.",
+				exitCode: 1,
+				cancelled: false,
+				truncated: false,
+			},
+		});
+		expect(spawnCalls).toHaveLength(0);
+
+		const lines = loadCaptureLines("bash-success.jsonl");
+		const startEvent = findEvent(lines, "tool_execution_start");
+		const callEvent = findEvent(lines, "tool_call");
+		const resultEvent = findEvent(lines, "tool_result");
+		const endEvent = findEvent(lines, "tool_execution_end");
+		const model = findRawPayload(lines, "tool_call").model as {
+			provider: string;
+			id: string;
+		};
+		const ctx = ctxFromCapture(cwd, "ses_win32_bash", model);
+
+		await emitAll(handlers.get("tool_execution_start") ?? [], startEvent, ctx);
+		const callResult = await emitToolCall(
+			handlers.get("tool_call") ?? [],
+			callEvent,
+			ctx,
+		);
+		expect(callResult).toBeUndefined();
+		await emitAll(handlers.get("tool_result") ?? [], resultEvent, ctx);
+		await emitAll(handlers.get("tool_execution_end") ?? [], endEvent, ctx);
+		await settleAllSpawns();
+
+		const forwarded = spawnCalls.map(
+			(call) => JSON.parse(call.child.stdin.writes[0]).hook_event_name,
+		);
+		expect(forwarded).toEqual([
+			"ToolExecutionStart",
+			"ToolResult",
+			"ToolExecutionEnd",
+		]);
 	});
 });
