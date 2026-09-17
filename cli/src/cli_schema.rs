@@ -342,6 +342,20 @@ pub enum HooksSubcommand {
         hide = true
     )]
     OpenCodeMutationScope,
+
+    #[command(
+        name = "pi-mutation-scope",
+        about = "Run the Pi mutation-scope adapter (reads JSON payload from STDIN)",
+        hide = true
+    )]
+    PiMutationScope,
+
+    #[command(
+        name = "external-mutation-guard",
+        about = "Run the harness-neutral external-mutation supervisor (reads a JSON run request, then cancel requests, from STDIN)",
+        hide = true
+    )]
+    ExternalMutationGuard,
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]

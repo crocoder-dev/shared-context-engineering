@@ -1,4 +1,5 @@
 mod coordinator;
+mod external_mutation_guard;
 mod external_taint;
 mod git_snapshot;
 mod mutation_attribution;
@@ -14,6 +15,10 @@ mod tests;
 pub(crate) use coordinator::{
     coordinate, CoordinateError, CoordinateOutcome, ExternalTaintOperation, RuntimeBoundary,
     StartProvenance,
+};
+#[allow(unused_imports)]
+pub(crate) use external_mutation_guard::{
+    run_external_mutation_guard, GuardError, GuardEvent, GuardOutcome, GuardRequest,
 };
 #[allow(unused_imports)]
 pub(crate) use git_snapshot::{resolve_git_dir, resolve_worktree_id};

@@ -49,6 +49,7 @@ pub mod command;
 pub mod lifecycle;
 pub mod mutation_scope;
 pub mod opencode_mutation_scope;
+pub mod pi_mutation_scope;
 
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
@@ -109,6 +110,8 @@ pub enum HookSubcommand {
     ClaudeMutationScope,
     CodexMutationScope,
     OpenCodeMutationScope,
+    PiMutationScope,
+    ExternalMutationGuard,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -254,6 +257,12 @@ fn run_hooks_subcommand_in_repo(
         }
         HookSubcommand::OpenCodeMutationScope => {
             opencode_mutation_scope::run_opencode_mutation_scope_subcommand(logger)
+        }
+        HookSubcommand::PiMutationScope => {
+            pi_mutation_scope::run_pi_mutation_scope_subcommand(logger)
+        }
+        HookSubcommand::ExternalMutationGuard => {
+            mutation_scope::run_external_mutation_guard_subcommand(repository_root, logger)
         }
     }
 }
@@ -1103,6 +1112,15 @@ fn normalize_codex_model_id(model: &str) -> Option<String> {
 }
 
 fn normalize_opencode_model_id(model: &str) -> Option<String> {
+    let normalized = model.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    Some(normalized.to_string())
+}
+
+fn normalize_pi_model_id(model: &str) -> Option<String> {
     let normalized = model.trim();
     if normalized.is_empty() {
         return None;
@@ -1988,6 +2006,8 @@ fn hook_runtime_invocation_name(subcommand: &HookSubcommand) -> &'static str {
         HookSubcommand::ClaudeMutationScope => "Claude mutation-scope runtime invocation",
         HookSubcommand::CodexMutationScope => "Codex mutation-scope runtime invocation",
         HookSubcommand::OpenCodeMutationScope => "OpenCode mutation-scope runtime invocation",
+        HookSubcommand::PiMutationScope => "Pi mutation-scope runtime invocation",
+        HookSubcommand::ExternalMutationGuard => "external-mutation-guard runtime invocation",
     }
 }
 

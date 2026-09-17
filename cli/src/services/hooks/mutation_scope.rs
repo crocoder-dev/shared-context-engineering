@@ -1,12 +1,14 @@
+use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::mutation_trace::runtime::{
-    abandon_scope, coordinate, AbandonScopeError, AbandonScopeOutcome, CoordinateError,
-    CoordinateOutcome, RuntimeBoundary, StartProvenance,
+    abandon_scope, coordinate, run_external_mutation_guard, AbandonScopeError,
+    AbandonScopeOutcome, CoordinateError, CoordinateOutcome, GuardEvent, GuardRequest,
+    RuntimeBoundary, StartProvenance,
 };
 use crate::services::mutation_trace::types::{ActorKind, EventId, ScopeId};
 use crate::services::observability::traits::Logger;
@@ -397,6 +399,138 @@ fn log_marker_clear_after_durable_completion(
             None,
         );
     }
+}
+
+const GUARD_OPERATION_FIELD: &str = "operation";
+const GUARD_OPERATION_GUARD: &str = "guard";
+const GUARD_OPERATION_CANCEL: &str = "cancel";
+const GUARD_COMMAND_FIELD: &str = "command";
+const GUARD_ENV_FIELD: &str = "env";
+
+fn parse_guard_request(line: &str) -> Result<GuardRequest> {
+    if line.trim().is_empty() {
+        bail!(validation_error(
+            "expected a JSON object run request, got an empty line"
+        ));
+    }
+
+    let parsed: Value = serde_json::from_str(line)
+        .with_context(|| validation_error("expected a valid JSON run request"))?;
+    let object = parsed
+        .as_object()
+        .ok_or_else(|| anyhow!(validation_error("expected a JSON object run request")))?;
+
+    let operation = required_str(object, GUARD_OPERATION_FIELD)?;
+    if operation != GUARD_OPERATION_GUARD {
+        bail!(validation_error(&format!(
+            "field 'operation' must be 'guard', got '{operation}'"
+        )));
+    }
+
+    let command = required_non_blank_str(object, GUARD_COMMAND_FIELD)?;
+    let env = match object.get(GUARD_ENV_FIELD) {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Object(entries)) => entries
+            .iter()
+            .map(|(key, value)| {
+                let value = value.as_str().ok_or_else(|| {
+                    anyhow!(validation_error(&format!(
+                        "field 'env.{key}' must be a string"
+                    )))
+                })?;
+                Ok((key.clone(), value.to_string()))
+            })
+            .collect::<Result<Vec<_>>>()?,
+        Some(_) => bail!(validation_error("field 'env' must be a JSON object")),
+    };
+
+    Ok(GuardRequest { command, env })
+}
+
+fn is_cancel_request_line(line: &str) -> bool {
+    let Ok(parsed) = serde_json::from_str::<Value>(line) else {
+        return false;
+    };
+    parsed
+        .as_object()
+        .and_then(|object| object.get(GUARD_OPERATION_FIELD))
+        .and_then(Value::as_str)
+        == Some(GUARD_OPERATION_CANCEL)
+}
+
+fn guard_event_json_line(event: &GuardEvent) -> String {
+    match event {
+        GuardEvent::Armed => json!({ "status": "armed" }).to_string(),
+        GuardEvent::Stdout(chunk) => json!({
+            "stream": "stdout",
+            "data": String::from_utf8_lossy(chunk),
+        })
+        .to_string(),
+        GuardEvent::Stderr(chunk) => json!({
+            "stream": "stderr",
+            "data": String::from_utf8_lossy(chunk),
+        })
+        .to_string(),
+    }
+}
+
+pub(crate) fn run_external_mutation_guard_subcommand(
+    repository_root: &Path,
+    logger: Option<&dyn Logger>,
+) -> Result<String> {
+    let mut reader = std::io::BufReader::new(std::io::stdin());
+    let mut first_line = String::new();
+    std::io::BufRead::read_line(&mut reader, &mut first_line)
+        .context("Failed to read the external-mutation guard run request from STDIN.")?;
+    let request = parse_guard_request(&first_line)?;
+
+    let (cancel_tx, cancel_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match std::io::BufRead::read_line(&mut reader, &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if is_cancel_request_line(&line) {
+                        let _ = cancel_tx.send(());
+                    }
+                }
+            }
+        }
+    });
+
+    let repository_root = repository_root.to_path_buf();
+    let stdout = std::io::stdout();
+    let outcome = run_external_mutation_guard(
+        &repository_root,
+        &request,
+        || super::open_agent_trace_db_for_hook_runtime(&repository_root, MUTATION_SCOPE_DB_CONTEXT),
+        |event| {
+            let mut handle = stdout.lock();
+            let _ = writeln!(handle, "{}", guard_event_json_line(&event));
+            let _ = handle.flush();
+        },
+        &cancel_rx,
+    )?;
+
+    if outcome.marker_clear_failed {
+        log_marker_clear_after_durable_completion(
+            logger,
+            "external_mutation_guard",
+            &anyhow!("external-taint marker clear failed after a durable guard finish"),
+        );
+    }
+
+    println!(
+        "{}",
+        json!({
+            "status": "result",
+            "exit_code": outcome.exit_code,
+        })
+    );
+
+    Ok(String::new())
 }
 
 #[cfg(test)]
@@ -1712,6 +1846,104 @@ mod tests {
 
             assert_eq!(orphans, 0);
             assert_eq!(count(&db, "mutation_trace_scope_provenance"), 1);
+        }
+    }
+
+    mod guard_protocol {
+        use super::*;
+
+        #[test]
+        fn empty_line_is_rejected() {
+            let error = parse_guard_request("").unwrap_err().to_string();
+            assert!(error.contains("empty line"), "{error:?}");
+        }
+
+        #[test]
+        fn wrong_operation_is_rejected() {
+            let error = parse_guard_request(r#"{"operation":"start","command":"true"}"#)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("'operation'"), "{error:?}");
+        }
+
+        #[test]
+        fn missing_command_is_rejected() {
+            assert!(parse_guard_request(r#"{"operation":"guard"}"#).is_err());
+        }
+
+        #[test]
+        fn blank_command_is_rejected() {
+            assert!(parse_guard_request(r#"{"operation":"guard","command":"   "}"#).is_err());
+        }
+
+        #[test]
+        fn command_without_env_parses() {
+            let request =
+                parse_guard_request(r#"{"operation":"guard","command":"echo hi"}"#).unwrap();
+            assert_eq!(request.command, "echo hi");
+            assert!(request.env.is_empty());
+        }
+
+        #[test]
+        fn command_with_env_parses() {
+            let request = parse_guard_request(
+                r#"{"operation":"guard","command":"true","env":{"FOO":"bar","BAZ":"qux"}}"#,
+            )
+            .unwrap();
+            let mut env = request.env;
+            env.sort();
+            assert_eq!(
+                env,
+                vec![
+                    ("BAZ".to_string(), "qux".to_string()),
+                    ("FOO".to_string(), "bar".to_string()),
+                ]
+            );
+        }
+
+        #[test]
+        fn non_string_env_value_is_rejected() {
+            let error =
+                parse_guard_request(r#"{"operation":"guard","command":"true","env":{"FOO":1}}"#)
+                    .unwrap_err()
+                    .to_string();
+            assert!(error.contains("'env.FOO'"), "{error:?}");
+        }
+
+        #[test]
+        fn non_object_env_is_rejected() {
+            assert!(parse_guard_request(
+                r#"{"operation":"guard","command":"true","env":"nope"}"#
+            )
+            .is_err());
+        }
+
+        #[test]
+        fn cancel_request_line_is_recognized() {
+            assert!(is_cancel_request_line(r#"{"operation":"cancel"}"#));
+            assert!(!is_cancel_request_line(r#"{"operation":"guard"}"#));
+            assert!(!is_cancel_request_line("not json"));
+            assert!(!is_cancel_request_line(""));
+        }
+
+        #[test]
+        fn armed_event_serializes_without_a_stream_field() {
+            let line = guard_event_json_line(&GuardEvent::Armed);
+            let parsed: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(parsed["status"], "armed");
+        }
+
+        #[test]
+        fn stdout_and_stderr_events_tag_their_stream() {
+            let stdout_line = guard_event_json_line(&GuardEvent::Stdout(b"hello".to_vec()));
+            let parsed: Value = serde_json::from_str(&stdout_line).unwrap();
+            assert_eq!(parsed["stream"], "stdout");
+            assert_eq!(parsed["data"], "hello");
+
+            let stderr_line = guard_event_json_line(&GuardEvent::Stderr(b"oops".to_vec()));
+            let parsed: Value = serde_json::from_str(&stderr_line).unwrap();
+            assert_eq!(parsed["stream"], "stderr");
+            assert_eq!(parsed["data"], "oops");
         }
     }
 }

@@ -113,6 +113,15 @@ impl Drop for WorktreeLock {
     }
 }
 
+#[cfg(unix)]
+impl WorktreeLock {
+    #[must_use]
+    pub(crate) fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
+        use std::os::unix::io::AsRawFd;
+        self.file.as_raw_fd()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
