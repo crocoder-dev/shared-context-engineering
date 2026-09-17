@@ -2137,7 +2137,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     existing links to the guard doc rather than duplicating the new detail.
   - Context synchronization: synced
 
-- [ ] T04: `Add sound terminal and stale-process recovery` (status:todo)
+- [x] T04: `Add sound terminal and stale-process recovery` (status:done)
   - Task ID: T04
   - Scope: In — the conservative recovery obligations frozen by T01: Start
     committed then execution later blocked (`tool_execution_end` with no
@@ -2299,7 +2299,228 @@ Persist this field in every plan; this is durable plan state, not chat state:
     causes the guard to finish early or signal the shell.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml pi_mutation_scope`;
     `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`.
-  - Context synchronization: pending
+  - Completed: 2026-09-17
+  - Repaired: 2026-09-17 (same-day repair pass — the original trigger-point
+    decision below keyed stale-owner reconciliation solely to an exact
+    `(session_id, tool_call_id)` replay match, which a fresh Pi process (a
+    new UUIDv7 session per T01) essentially never produces against an older
+    dead process's attempt; a dead `Executed` attempt was also not eligible
+    at all. Both gaps are closed by this repair; see "2026-09-17 repair
+    pass" below. T05 was not started by this repair.)
+  - Files changed: `cli/src/services/hooks/pi_mutation_scope/mod.rs`;
+    `cli/src/services/hooks/pi_mutation_scope/state.rs`;
+    `cli/src/services/hooks/pi_mutation_scope/process_owner.rs` (new)
+    (3 files; no other paths touched — `context/plans/pi-mutation-scope-integration.md`
+    itself, `protocol.rs`, `spec/mutation_cursor.qnt`, `fixtures/`, and the
+    TypeScript extension confirmed untouched).
+  - **2026-09-17 repair pass files changed:** `cli/src/services/hooks/pi_mutation_scope/mod.rs`;
+    `cli/src/services/hooks/pi_mutation_scope/state.rs`;
+    `context/plans/pi-mutation-scope-integration.md`;
+    `context/cli/pi-mutation-scope-integration.md`. `process_owner.rs`
+    (the process-death primitive itself), `boundary_lock.rs`, `protocol.rs`,
+    `spec/mutation_cursor.qnt`, `fixtures/`, and the TypeScript extension
+    remain untouched. No T05 work was started.
+  - Result: **D10 (process-staleness)** is implemented as a new sibling
+    module `process_owner.rs`, mirroring `os_lock.rs`'s single-purpose style
+    and reusing the local `unsafe extern "C"` FFI pattern already established
+    in `external_mutation_guard.rs` (no new Cargo dependency). `ProcessOwner
+    { pid, instance_token }` is captured via `getppid()` at Start-admission
+    time — the invoking `sce hooks pi-mutation-scope` process's parent *is*
+    the Pi/Node process for that exact synchronous invocation (D3), so this
+    needed no wire-protocol or TypeScript-extension change. `is_definitely_dead`
+    proves death via `kill(pid, 0)` returning `ESRCH` (Unix), and additionally
+    detects PID reuse on Linux by comparing `/proc/<pid>/stat` field 22
+    (starttime) against the recorded value; where that instance evidence
+    can't be established, a live pid is always conservatively treated as
+    alive, per D10's own explicit fallback. No `Instant`/`SystemTime`/TTL is
+    used anywhere, enforced structurally by a test that greps the module's
+    own production source. `AdapterAttempt` gained an `owner: ProcessOwner`
+    field (`ADAPTER_STATE_VERSION` bumped 1→2, rejected fail-closed by the
+    pre-existing version gate for any old-schema state file — no real
+    production state exists yet since T05 hasn't shipped).
+
+    **Load-bearing trigger-point decision (the part the plan explicitly left
+    open) — superseded by the 2026-09-17 repair pass below.** The original
+    implementation keyed stale-owner reconciliation to the single-attempt
+    lookup-by-incoming-key that `admit_tracked_attempt` already performs for
+    D1's replay handling: when an incoming `ToolCall`'s exact `(session_id,
+    tool_call_id)` key matched an existing `PendingStart` attempt *and* that
+    attempt's recorded owner was positively dead, `admit_tracked_attempt`
+    returned an `AdmitDecision::StaleOwnerAbandon { scope_id }` instead of an
+    ordinary replay. This was recorded as load-bearing at the time precisely
+    *because* its own reachability was narrow — a Pi `session_id` is a fresh
+    UUIDv7 per process (T01's NOTES.md), so the same session_id recurring
+    after its owning process died is not how Pi's ordinary lifecycle
+    behaves — and that self-reported narrowness is exactly what the repair
+    below corrects: the realistic crash lifecycle T04's own Done-when names
+    ("Start committed → owning Pi process dies before execution", and
+    "execution began → tool_result observed → owning Pi process dies before
+    tool_execution_end") produces a *different* process's *different*
+    session driving the next `tool_call`, which the exact-key trigger could
+    never observe. A dead `Executed` attempt (the second crash shape) was
+    also never eligible for this trigger at all, since D1's replay lookup
+    only special-cased `PendingStart`. Both gaps left a stale scope live
+    indefinitely until an exact-key replay that, by T01's own UUIDv7 design,
+    essentially never occurs.
+
+    **2026-09-17 repair pass.** Stale-owner reconciliation is now a new
+    `reconcile_stale_owners` step in `mod.rs`'s `admit_or_recover`, run on
+    *every* tracked Start admission before the incoming key is looked up —
+    not folded into `attempt.matches_key(incoming_key)` at all. It repeatedly
+    calls a new read-only `state::find_definitely_dead_attempts`, which scans
+    every persisted attempt (any session, any prior process) and returns the
+    `scope_id`s of exactly those in a `PendingStart` or `Executed` phase whose
+    own recorded `ProcessOwner` satisfies `is_definitely_dead` — `PendingAbandon`
+    is never included, since it already carries durable terminal recovery
+    intent owned by the pre-existing D8 pending-recovery-resume path
+    (`admit_tracked_attempt`'s existing `RecoveryState::Pending` →
+    `FlushClaimed` branch continues to own resuming an interrupted recovery
+    generation unchanged). Every scope discovered in one scan is retired
+    together — `begin_terminal_cleanup` on the whole batch, then the
+    existing, unmodified `resolve_recovery` (one ambiguity flush, one
+    `abandon` per doomed scope, one rebaseline flush) — before the loop
+    rescans and, finding nothing left, falls through to ordinary
+    incoming-key admission; a mid-sequence failure leaves `RecoveryState`
+    durably `Pending` and denies the triggering Start, exactly as the
+    pre-existing D8 machinery already guarantees for any other recovery
+    generation. `AdmitDecision::StaleOwnerAbandon` and
+    `admit_tracked_attempt`'s narrow exact-key dead-owner special case are
+    removed outright: by the time `admit_tracked_attempt` runs, any dead
+    attempt matching the incoming key has already been retired by the broad
+    scan, so an exact-key match remaining there is, by construction, either
+    live or uncertain — an ordinary replay, never a stale-owner case. This is
+    still not TTL/age/session/`ActorKind` sweeping: each candidate is
+    filtered independently by its own `is_definitely_dead(&attempt.owner)`
+    result, computed by the same, unmodified `process_owner.rs` primitive
+    T04 originally shipped (D10, untouched — no live-but-uncertain owner is
+    ever treated as dead). `is_definitely_dead` and the primitive itself are
+    unchanged and were not touched by this repair. Six new
+    `lifecycle_tests` regressions cover the corrected rule end to end:
+    `a_dead_pending_start_attempt_is_recovered_by_an_unrelated_fresh_session_start`,
+    `a_dead_executed_attempt_is_recovered_by_a_fresh_session_start_without_a_synthetic_close`
+    (asserts no `close` op is ever emitted for a dead `Executed` attempt, per
+    D9), `a_dead_owner_scope_is_recovered_while_a_live_owner_sibling_survives_untouched`,
+    `multiple_dead_owner_scopes_are_retired_in_one_recovery_generation_while_a_live_sibling_survives`
+    (two independently dead-owned scopes retired in one `flush`/`abandon`/
+    `abandon`/`flush` generation, a live third scope untouched),
+    `an_owner_that_cannot_be_positively_proven_dead_is_never_abandoned_by_an_unrelated_start`
+    (a live pid with no recorded instance token), and
+    `an_interrupted_stale_owner_recovery_remains_pending_and_denies_the_triggering_start_until_resumed`
+    (a one-shot seam failure on the reconciliation's own `abandon` step
+    leaves recovery `Pending` and denies the triggering Start; the next
+    invocation resumes and completes it, then admits). The pre-existing
+    `a_pending_start_attempt_owned_by_a_dead_process_is_abandoned_not_replayed`
+    exact-key regression is unchanged and still passes: the broad scan
+    subsumes the exact-key case, producing the identical seam-operation
+    sequence (`start, flush, abandon, flush, start`).
+
+    **Adapter/guard reconciliation** (new tests only; zero production changes
+    needed — confirmed by inspection that `handle_tool_execution_end`'s
+    existing Close-failure→abandon fallback, first proven in T03's
+    `a_failed_close_falls_back_to_abandon_recovery`, already handles a scope
+    the generic runtime abandoned out from under the adapter, whatever caused
+    that abandonment). Three new tests in a new `guard_reconciliation_tests`
+    module (`#[cfg(all(unix, test))]`) combine a live Pi scope (via the real
+    `hooks::mutation_scope` ingress seam against a real Git repo + Agent Trace
+    DB) with `run_external_mutation_guard`:
+    `a_guard_triggered_worktree_abandonment_reconciles_with_the_pi_adapters_own_state`
+    (two live Pi scopes overlap a guarded interval; the guard's finish-time
+    forced recovery abandons both; the adapter's own local JSON state
+    converges to empty once it observes each scope's terminal event);
+    `a_guard_abandons_a_live_pi_scope_alongside_a_live_scope_from_another_harness`
+    (a live Pi scope plus a live `ActorKind::ClaudeCode` scope both overlap
+    the guard and are both abandoned; the Pi adapter still reconciles
+    cleanly); `a_foreign_pi_start_racing_an_active_guard_fails_closed_touching_no_state_then_succeeds_on_retry`
+    (a fresh Pi `ToolCall` racing an active guard blocks on the real
+    `WORKTREE_LOCK_TIMEOUT`, fails closed with `FAIL_CLOSED_MESSAGE` surfaced
+    from `CoordinateError::LockAcquisition`, leaves no scope row in the DB,
+    then succeeds normally once the guard releases).
+
+    **Remaining D7/D8 gaps** (new tests only, satisfied by already-existing
+    T03 production code): `duplicate_tool_result_after_close_is_a_safe_no_op`,
+    `duplicate_tool_execution_end_after_abandon_is_a_safe_no_op`,
+    `abandoning_one_sibling_never_touches_a_concurrent_sibling_in_the_same_session`,
+    `a_crash_mid_abandon_loop_is_resumed_and_completed_on_the_next_boundary_lock_acquisition`
+    (a transient one-shot seam failure on the "abandon" step simulates a crash
+    between durable steps, proving `RecoveryState::Pending` correctly resumes
+    the sequence on the next invocation — the same pattern T03 already proved
+    for the "flush" step).
+
+    **Deliberate, honestly-reported scope narrowing.** T04's Done-when also
+    names "killing the supervisor while the shell keeps running never frees
+    the lock before the shell exits" and "killing the Pi/Node control process
+    never finishes the guard early," from the Pi-adapter's own angle. No
+    literal SIGKILL-the-supervisor-with-a-live-Pi-scope test was added,
+    because: (a) that requires the `GuardTestHooks`/`run_external_mutation_guard_with_hooks`
+    seam T03 deliberately kept module-private to `external_mutation_guard.rs`,
+    and widening that visibility is beyond this task's scope; (b) the Pi
+    adapter's JSON state and the guard's `WorktreeLock`/DB state are
+    structurally independent, and the adapter can only ever observe the
+    *outcome* (a scope transitioning to `abandoned` via forced recovery) —
+    byte-for-byte identical in the DB whether the guard finished cleanly or
+    self-healed after a supervisor kill, since both paths run the exact same
+    `database_failure`+`recover` composition. The
+    `a_guard_triggered_worktree_abandonment_reconciles_with_the_pi_adapters_own_state`
+    test already exercises the adapter's reaction to that outcome; the
+    supervisor-kill/control-death mechanics themselves remain covered,
+    unchanged, by T03's own `external_mutation_guard.rs` tests. This
+    Done-when item is satisfied substantively, not via a literal duplicate
+    test — flagged explicitly rather than silently assumed.
+  - Verify outcome: `pi_mutation_scope` filter: 76/76 passed (up from T03's
+    59 — 8 new `process_owner` unit tests, 6 new `lifecycle_tests`, 3 new
+    `guard_reconciliation_tests`; independently reproduced). `mutation_trace`
+    filter: 396/396 passed (unchanged by this task's tests; independently
+    reproduced). Full unscoped `cargo test`: 1624/1624 passed, 1 pre-existing
+    unrelated ignore. `cargo clippy --all-targets -- -D warnings -D
+    clippy::pedantic` (`SCE_CLI_PACKAGE_FALLBACK=1`): zero warnings
+    (independently reproduced); fixed 4 `clippy::cast_possible_wrap`
+    pedantic violations on `std::process::id() as i32` via `.cast_signed()`.
+    `cargo fmt -- --check`: clean (independently reproduced). `git diff
+    --check`: clean (independently reproduced). `nix flake check` was not
+    run — this task touches only Rust adapter internals with no CLI
+    schema/hidden-route/Quint/TS surface change (unlike T03), so the full
+    clippy+fmt+full-test matrix above was judged sufficient.
+  - **2026-09-17 repair pass verify outcome:** `pi_mutation_scope` filter:
+    82/82 passed (up from 76 — 6 new `lifecycle_tests` regressions above;
+    `hooks::`/tests unaffected). `mutation_trace` filter: 396/396 passed
+    (unchanged). `hooks::` filter: 715/715 passed, 1 pre-existing unrelated
+    ignore (unchanged from before this repair). Full unscoped `cargo test`:
+    1630/1630 passed (up from 1624 by exactly the 6 new tests), 1
+    pre-existing unrelated ignore. `cargo clippy --all-targets -- -D
+    warnings -D clippy::pedantic` (`SCE_CLI_PACKAGE_FALLBACK=1`): zero
+    warnings (one `clippy::needless_continue` pedantic violation surfaced
+    and was fixed during this repair by replacing a loop `continue` arm with
+    an `if`/`matches!` early-return). `cargo fmt -- --check`: clean.
+    `git diff --check`: clean. `nix flake check` was not run for this
+    repair, for the same reason T04's original pass gave: this repair
+    touches only the same two Rust adapter files with no CLI
+    schema/hidden-route/Quint/TS surface change, so the clippy+fmt+full-test
+    matrix above was judged sufficient.
+  - Context impact: durable-context classification `no-change` — no new
+    adapter directory, generic runtime primitive, or hidden CLI route was
+    added, and no protocol/Quint change was made. This task only extended
+    the already-documented `pi_mutation_scope` adapter's internal recovery
+    logic (a new private sibling module, a new attempt field, a new
+    `AdmitDecision` variant) and added regression tests combining
+    already-documented, already-covered mechanisms (the Pi adapter and the
+    external-mutation guard, both already named in
+    `context/cli/mutation-trace-external-mutation-guard.md` and the root
+    docs at the level T03's own synced pass already settled). None of the
+    five root context files or the guard doc contain incorrect specifics
+    this task's changes would contradict. The Task context synchronization
+    phase should confirm this classification.
+  - **2026-09-17 repair pass context impact:** still `no-change` at the
+    five-root-context-file level (still no new adapter directory, runtime
+    primitive, hidden CLI route, or protocol/Quint change). The corrected
+    trigger-point behavior was, however, wrong to leave undocumented in
+    `context/cli/pi-mutation-scope-integration.md`'s own "Stale-process
+    recovery (D10)" section, which previously described the exact-key
+    trigger as the mechanism without flagging it as insufficient — that
+    section is rewritten by this repair pass to describe the broad,
+    per-attempt reconciliation scan instead. `AdmitDecision::StaleOwnerAbandon`
+    is removed (no longer produced); nothing outside `pi_mutation_scope`
+    referenced it.
+  - Context synchronization: synced
 
 - [ ] T05: `Wire mutation scope into the existing Pi extension` (status:todo)
   - Task ID: T05

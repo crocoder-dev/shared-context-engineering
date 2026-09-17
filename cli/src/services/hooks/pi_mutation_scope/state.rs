@@ -7,6 +7,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::os_lock::{AdvisoryLockError, OsAdvisoryLock};
+use super::process_owner::{current_process_owner, is_definitely_dead, ProcessOwner};
 use super::{format_pi_scope_id, AttemptKey};
 
 const SCE_STATE_DIR: &str = "sce";
@@ -16,7 +17,7 @@ const STATE_LOCK_WHAT: &str = "adapter-state";
 
 const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
-const ADAPTER_STATE_VERSION: u32 = 1;
+const ADAPTER_STATE_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -53,6 +54,7 @@ pub(crate) struct AdapterAttempt {
     pub tool_call_id: String,
     pub tool_name: String,
     pub phase: AttemptPhase,
+    pub owner: ProcessOwner,
 }
 
 impl AdapterAttempt {
@@ -258,6 +260,7 @@ fn allocate_pending_start(
         tool_call_id: key.tool_call_id.clone(),
         tool_name: tool_name.to_string(),
         phase: AttemptPhase::PendingStart,
+        owner: current_process_owner(),
     };
     state.attempts.push(attempt.clone());
     attempt
@@ -309,6 +312,24 @@ pub(crate) fn admit_tracked_attempt(
         attempt,
         reused: false,
     }))
+}
+
+/// Read-only D10 scan: `scope_id`s of live (`PendingStart`/`Executed`) attempts whose own
+/// recorded owner is positively dead. Never includes `PendingAbandon`.
+pub(crate) fn find_definitely_dead_attempts(git_dir: &Path) -> Result<Vec<String>> {
+    let _lock = acquire_lock(git_dir)?;
+    let state = read_state(git_dir)?;
+    Ok(state
+        .attempts
+        .iter()
+        .filter(|attempt| {
+            matches!(
+                attempt.phase,
+                AttemptPhase::PendingStart | AttemptPhase::Executed
+            ) && is_definitely_dead(&attempt.owner)
+        })
+        .map(|attempt| attempt.scope_id.clone())
+        .collect())
 }
 
 pub(crate) fn mark_executed(git_dir: &Path, key: &AttemptKey) -> Result<()> {
@@ -431,6 +452,25 @@ pub(crate) fn seed_attempt_for_tests(
 }
 
 #[cfg(test)]
+pub(crate) fn set_attempt_owner_for_tests(
+    git_dir: &Path,
+    scope_id: &str,
+    owner: ProcessOwner,
+) -> AdapterAttempt {
+    let _lock = acquire_lock(git_dir).expect("test owner-override lock");
+    let mut state = read_state(git_dir).expect("test owner-override read");
+    let attempt = state
+        .attempts
+        .iter_mut()
+        .find(|attempt| attempt.scope_id == scope_id)
+        .expect("attempt to override must already exist");
+    attempt.owner = owner;
+    let updated = attempt.clone();
+    write_state_durably(git_dir, &state).expect("test owner-override write");
+    updated
+}
+
+#[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::thread;
@@ -468,7 +508,7 @@ mod tests {
 
         let state = read_state(&git_dir).expect("missing state file should read as default");
         assert_eq!(state, AdapterState::default());
-        assert_eq!(state.version, 1);
+        assert_eq!(state.version, ADAPTER_STATE_VERSION);
         assert!(state.recovery.is_clear());
         assert_eq!(state.next_recovery_generation, 1);
         assert_eq!(state.next_attempt_seq, 1);
