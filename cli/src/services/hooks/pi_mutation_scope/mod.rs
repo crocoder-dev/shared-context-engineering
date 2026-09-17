@@ -142,9 +142,7 @@ pub(crate) fn parse_pi_hook_event(stdin_payload: &str) -> Result<PiHookEvent> {
         }
         HOOK_EVENT_TOOL_CALL => parse_tool_call(object).map(PiHookEvent::Call),
         HOOK_EVENT_TOOL_RESULT => parse_tool_identity(object).map(PiHookEvent::Executed),
-        HOOK_EVENT_TOOL_EXECUTION_END => {
-            parse_tool_identity(object).map(PiHookEvent::ExecutionEnd)
-        }
+        HOOK_EVENT_TOOL_EXECUTION_END => parse_tool_identity(object).map(PiHookEvent::ExecutionEnd),
         other => bail!(validation_error(&format!(
             "unsupported hook_event_name '{other}'"
         ))),
@@ -385,7 +383,14 @@ fn establish_tracked_start(
 
         match admit_or_recover(&git_dir, repository_root, key, tool_name, logger, seam)? {
             Admission::Admitted(allocated) => {
-                establish_start(&git_dir, repository_root, &allocated, provenance, logger, seam)?;
+                establish_start(
+                    &git_dir,
+                    repository_root,
+                    &allocated,
+                    provenance,
+                    logger,
+                    seam,
+                )?;
                 Ok(StartOutcome::Established)
             }
             Admission::Denied => Ok(StartOutcome::Denied),
@@ -447,7 +452,8 @@ fn establish_start(
 ) -> Result<()> {
     let scope_id = &allocated.attempt.scope_id;
 
-    let start_payload = scope_start_payload(scope_id, &pi_scope_start_event_id(scope_id), provenance);
+    let start_payload =
+        scope_start_payload(scope_id, &pi_scope_start_event_id(scope_id), provenance);
 
     seam(repository_root, &start_payload, logger)?;
     Ok(())
@@ -464,7 +470,9 @@ fn handle_tool_execution_end(
     let Some(attempt) = current
         .attempts
         .iter()
-        .find(|attempt| attempt.session_id == key.session_id && attempt.tool_call_id == key.tool_call_id)
+        .find(|attempt| {
+            attempt.session_id == key.session_id && attempt.tool_call_id == key.tool_call_id
+        })
         .cloned()
     else {
         return Ok(String::new());
@@ -781,12 +789,13 @@ mod tests {
         for name in [HOOK_EVENT_TOOL_RESULT, HOOK_EVENT_TOOL_EXECUTION_END] {
             let event = parse_pi_hook_event(&tool_event_json(name, &[])).unwrap();
             let identity = match event {
-                PiHookEvent::Executed(identity) | PiHookEvent::ExecutionEnd(identity) => {
-                    identity
-                }
+                PiHookEvent::Executed(identity) | PiHookEvent::ExecutionEnd(identity) => identity,
                 other => panic!("expected a minimal-identity event, got {other:?}"),
             };
-            assert_eq!(identity.attempt_key(), key("01a091f4-session", "call_1|fc_1"));
+            assert_eq!(
+                identity.attempt_key(),
+                key("01a091f4-session", "call_1|fc_1")
+            );
         }
     }
 
@@ -1082,7 +1091,8 @@ mod lifecycle_tests {
         let seam = RecordingSeam::new();
 
         drive(&git_dir, &seam, &tool_call_event("bash", "call_a")).expect("A Start");
-        drive(&git_dir, &seam, &tool_call_event("bash", "call_b")).expect("B Start must not retire A");
+        drive(&git_dir, &seam, &tool_call_event("bash", "call_b"))
+            .expect("B Start must not retire A");
 
         let state = read_state(&git_dir).expect("state readable");
         assert_eq!(state.attempts.len(), 2);
@@ -1114,7 +1124,10 @@ mod lifecycle_tests {
 
         drive(&git_dir, &seam, &tool_execution_end_event("bash", "call_1"))
             .expect("tool_execution_end closes an Executed attempt");
-        assert!(read_state(&git_dir).expect("state readable").attempts.is_empty());
+        assert!(read_state(&git_dir)
+            .expect("state readable")
+            .attempts
+            .is_empty());
         assert_eq!(seam.operations(), vec!["start", "close"]);
 
         cleanup(&git_dir);
@@ -1130,13 +1143,19 @@ mod lifecycle_tests {
         drive(&git_dir, &seam, &tool_execution_end_event("bash", "call_1"))
             .expect("D7: a terminal event with no preceding tool_result must abandon");
 
-        assert!(read_state(&git_dir).expect("state readable").attempts.is_empty());
+        assert!(read_state(&git_dir)
+            .expect("state readable")
+            .attempts
+            .is_empty());
         assert!(
             !seam.operations().contains(&"close".to_string()),
             "D7: an unexecuted attempt must never be closed"
         );
         assert!(seam.operations().contains(&"abandon".to_string()));
-        assert!(read_state(&git_dir).expect("state readable").recovery.is_clear());
+        assert!(read_state(&git_dir)
+            .expect("state readable")
+            .recovery
+            .is_clear());
 
         cleanup(&git_dir);
     }
@@ -1152,7 +1171,10 @@ mod lifecycle_tests {
         drive(&git_dir, &seam, &tool_execution_end_event("bash", "call_1"))
             .expect("a Close failure must recover via abandon, not surface an error");
 
-        assert!(read_state(&git_dir).expect("state readable").attempts.is_empty());
+        assert!(read_state(&git_dir)
+            .expect("state readable")
+            .attempts
+            .is_empty());
         assert!(seam.operations().contains(&"abandon".to_string()));
 
         cleanup(&git_dir);
@@ -1163,7 +1185,12 @@ mod lifecycle_tests {
         let git_dir = temp_git_dir("recovery-flush-failure");
         let persistently_failing = RecordingSeam::failing_on(&["flush"]);
 
-        drive(&git_dir, &persistently_failing, &tool_call_event("bash", "call_1")).expect("Start");
+        drive(
+            &git_dir,
+            &persistently_failing,
+            &tool_call_event("bash", "call_1"),
+        )
+        .expect("Start");
         drive(
             &git_dir,
             &persistently_failing,
@@ -1177,14 +1204,21 @@ mod lifecycle_tests {
             "a failed ambiguity flush must leave recovery Pending, not Clear"
         );
 
-        let error = drive(&git_dir, &persistently_failing, &tool_call_event("bash", "call_2"))
-            .expect_err("a new admission must fail closed while recovery remains unresolved");
+        let error = drive(
+            &git_dir,
+            &persistently_failing,
+            &tool_call_event("bash", "call_2"),
+        )
+        .expect_err("a new admission must fail closed while recovery remains unresolved");
         assert!(error.to_string().contains(FAIL_CLOSED_MESSAGE));
 
         let recovered = RecordingSeam::new();
         drive(&git_dir, &recovered, &tool_call_event("bash", "call_3"))
             .expect("a new admission must self-heal once recovery can complete");
-        assert!(read_state(&git_dir).expect("state readable").recovery.is_clear());
+        assert!(read_state(&git_dir)
+            .expect("state readable")
+            .recovery
+            .is_clear());
         let state = read_state(&git_dir).expect("state readable");
         assert_eq!(state.attempts.len(), 1);
         assert_eq!(state.attempts[0].tool_call_id, "call_3");
@@ -1198,7 +1232,10 @@ mod lifecycle_tests {
         let captured: Mutex<Vec<String>> = Mutex::new(Vec::new());
         let resolver = |_cwd: &str| Ok(git_dir.clone());
         let seam_fn = |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| {
-            captured.lock().expect("capture mutex").push(payload.to_string());
+            captured
+                .lock()
+                .expect("capture mutex")
+                .push(payload.to_string());
             Ok(String::new())
         };
 
@@ -1231,7 +1268,10 @@ mod lifecycle_tests {
         let captured: Mutex<Vec<String>> = Mutex::new(Vec::new());
         let resolver = |_cwd: &str| Ok(git_dir.clone());
         let seam_fn = |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| {
-            captured.lock().expect("capture mutex").push(payload.to_string());
+            captured
+                .lock()
+                .expect("capture mutex")
+                .push(payload.to_string());
             Ok(String::new())
         };
 
@@ -1261,11 +1301,19 @@ mod lifecycle_tests {
 
         drive(&git_dir, &seam, &tool_call_event("read", "call_ro")).expect("untracked is inert");
         assert!(seam.operations().is_empty());
-        assert!(read_state(&git_dir).expect("state readable").attempts.is_empty());
+        assert!(read_state(&git_dir)
+            .expect("state readable")
+            .attempts
+            .is_empty());
 
-        drive(&git_dir, &seam, &tool_result_event("read", "call_ro")).expect("untracked result inert");
-        drive(&git_dir, &seam, &tool_execution_end_event("read", "call_ro"))
-            .expect("untracked terminal inert");
+        drive(&git_dir, &seam, &tool_result_event("read", "call_ro"))
+            .expect("untracked result inert");
+        drive(
+            &git_dir,
+            &seam,
+            &tool_execution_end_event("read", "call_ro"),
+        )
+        .expect("untracked terminal inert");
         assert!(seam.operations().is_empty());
 
         cleanup(&git_dir);
@@ -1279,9 +1327,13 @@ mod lifecycle_tests {
         drive(&git_dir, &seam, &tool_call_event("bash", "call_1")).expect("first Start");
         drive(&git_dir, &seam, &tool_result_event("bash", "call_1")).expect("first tool_result");
         drive(&git_dir, &seam, &tool_execution_end_event("bash", "call_1")).expect("first Close");
-        assert!(read_state(&git_dir).expect("state readable").attempts.is_empty());
+        assert!(read_state(&git_dir)
+            .expect("state readable")
+            .attempts
+            .is_empty());
 
-        drive(&git_dir, &seam, &tool_call_event("bash", "call_1")).expect("reused toolCallId Start");
+        drive(&git_dir, &seam, &tool_call_event("bash", "call_1"))
+            .expect("reused toolCallId Start");
         let state = read_state(&git_dir).expect("state readable");
         assert_eq!(state.attempts.len(), 1);
         assert_eq!(state.attempts[0].attempt_seq, 2);

@@ -1,4 +1,4 @@
-use std::io::Write as _;
+use std::io::Write;
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -6,9 +6,8 @@ use serde_json::{json, Map, Value};
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::mutation_trace::runtime::{
-    abandon_scope, coordinate, run_external_mutation_guard, AbandonScopeError,
-    AbandonScopeOutcome, CoordinateError, CoordinateOutcome, GuardEvent, GuardRequest,
-    RuntimeBoundary, StartProvenance,
+    abandon_scope, arm_external_mutation_guard, coordinate, AbandonScopeError, AbandonScopeOutcome,
+    CoordinateError, CoordinateOutcome, GuardEvent, GuardRequest, RuntimeBoundary, StartProvenance,
 };
 use crate::services::mutation_trace::types::{ActorKind, EventId, ScopeId};
 use crate::services::observability::traits::Logger;
@@ -402,32 +401,59 @@ fn log_marker_clear_after_durable_completion(
 }
 
 const GUARD_OPERATION_FIELD: &str = "operation";
-const GUARD_OPERATION_GUARD: &str = "guard";
+const GUARD_OPERATION_ARM: &str = "arm";
+const GUARD_OPERATION_EXEC: &str = "exec";
 const GUARD_OPERATION_CANCEL: &str = "cancel";
 const GUARD_COMMAND_FIELD: &str = "command";
+const GUARD_CWD_FIELD: &str = "cwd";
 const GUARD_ENV_FIELD: &str = "env";
 
-fn parse_guard_request(line: &str) -> Result<GuardRequest> {
+fn parse_guard_object(line: &str) -> Result<Map<String, Value>> {
     if line.trim().is_empty() {
         bail!(validation_error(
-            "expected a JSON object run request, got an empty line"
+            "expected a JSON object guard request, got an empty line"
         ));
     }
-
     let parsed: Value = serde_json::from_str(line)
-        .with_context(|| validation_error("expected a valid JSON run request"))?;
-    let object = parsed
+        .with_context(|| validation_error("expected a valid JSON guard request"))?;
+    parsed
         .as_object()
-        .ok_or_else(|| anyhow!(validation_error("expected a JSON object run request")))?;
+        .cloned()
+        .ok_or_else(|| anyhow!(validation_error("expected a JSON object guard request")))
+}
 
-    let operation = required_str(object, GUARD_OPERATION_FIELD)?;
-    if operation != GUARD_OPERATION_GUARD {
+fn parse_guard_arm(line: &str) -> Result<()> {
+    let object = parse_guard_object(line)?;
+    reject_unexpected_keys(&object, &[GUARD_OPERATION_FIELD])?;
+    let operation = required_str(&object, GUARD_OPERATION_FIELD)?;
+    if operation != GUARD_OPERATION_ARM {
         bail!(validation_error(&format!(
-            "field 'operation' must be 'guard', got '{operation}'"
+            "field 'operation' must be 'arm', got '{operation}'"
+        )));
+    }
+    Ok(())
+}
+
+fn parse_guard_exec(line: &str) -> Result<GuardRequest> {
+    let object = parse_guard_object(line)?;
+    reject_unexpected_keys(
+        &object,
+        &[
+            GUARD_OPERATION_FIELD,
+            GUARD_COMMAND_FIELD,
+            GUARD_CWD_FIELD,
+            GUARD_ENV_FIELD,
+        ],
+    )?;
+    let operation = required_str(&object, GUARD_OPERATION_FIELD)?;
+    if operation != GUARD_OPERATION_EXEC {
+        bail!(validation_error(&format!(
+            "field 'operation' must be 'exec', got '{operation}'"
         )));
     }
 
-    let command = required_non_blank_str(object, GUARD_COMMAND_FIELD)?;
+    let command = required_non_blank_str(&object, GUARD_COMMAND_FIELD)?;
+    let cwd = optional_non_blank_str(&object, GUARD_CWD_FIELD)?;
     let env = match object.get(GUARD_ENV_FIELD) {
         None | Some(Value::Null) => Vec::new(),
         Some(Value::Object(entries)) => entries
@@ -444,18 +470,31 @@ fn parse_guard_request(line: &str) -> Result<GuardRequest> {
         Some(_) => bail!(validation_error("field 'env' must be a JSON object")),
     };
 
-    Ok(GuardRequest { command, env })
+    Ok(GuardRequest { command, cwd, env })
 }
 
-fn is_cancel_request_line(line: &str) -> bool {
-    let Ok(parsed) = serde_json::from_str::<Value>(line) else {
-        return false;
-    };
-    parsed
-        .as_object()
-        .and_then(|object| object.get(GUARD_OPERATION_FIELD))
-        .and_then(Value::as_str)
-        == Some(GUARD_OPERATION_CANCEL)
+fn parse_guard_cancel(line: &str) -> Result<()> {
+    let object = parse_guard_object(line)?;
+    reject_unexpected_keys(&object, &[GUARD_OPERATION_FIELD])?;
+    let operation = required_str(&object, GUARD_OPERATION_FIELD)?;
+    if operation != GUARD_OPERATION_CANCEL {
+        bail!(validation_error(&format!(
+            "field 'operation' must be 'cancel', got '{operation}'"
+        )));
+    }
+    Ok(())
+}
+
+fn guard_operation(line: &str) -> Option<String> {
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .and_then(|object| {
+            object
+                .get(GUARD_OPERATION_FIELD)
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
 }
 
 fn guard_event_json_line(event: &GuardEvent) -> String {
@@ -478,41 +517,75 @@ pub(crate) fn run_external_mutation_guard_subcommand(
     repository_root: &Path,
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
-    let mut reader = std::io::BufReader::new(std::io::stdin());
+    let reader = std::io::BufReader::new(std::io::stdin());
+    let stdout = std::io::stdout();
+    run_external_mutation_guard_protocol_with(
+        repository_root,
+        logger,
+        reader,
+        stdout.lock(),
+        |root| super::open_agent_trace_db_for_hook_runtime(root, MUTATION_SCOPE_DB_CONTEXT),
+    )
+}
+
+fn run_external_mutation_guard_protocol_with<R, W, O>(
+    repository_root: &Path,
+    logger: Option<&dyn Logger>,
+    mut reader: R,
+    mut writer: W,
+    open_db: O,
+) -> Result<String>
+where
+    R: std::io::BufRead + Send + 'static,
+    W: Write,
+    O: Fn(&Path) -> Result<RepositoryAgentTraceDb>,
+{
     let mut first_line = String::new();
     std::io::BufRead::read_line(&mut reader, &mut first_line)
-        .context("Failed to read the external-mutation guard run request from STDIN.")?;
-    let request = parse_guard_request(&first_line)?;
+        .context("Failed to read the external-mutation guard arm request from STDIN.")?;
+    parse_guard_arm(&first_line)?;
 
     let (cancel_tx, cancel_rx) = std::sync::mpsc::channel();
+    let repository_root = repository_root.to_path_buf();
+    let armed_guard = arm_external_mutation_guard(
+        &repository_root,
+        || open_db(&repository_root),
+        || write_guard_event(&mut writer, &GuardEvent::Armed),
+        cancel_rx,
+    )?;
+
+    let mut exec_line = String::new();
+    match std::io::BufRead::read_line(&mut reader, &mut exec_line)
+        .context("Failed to read the external-mutation guard exec request from STDIN.")?
+    {
+        0 => return Ok(String::new()),
+        _ if guard_operation(&exec_line).as_deref() == Some(GUARD_OPERATION_CANCEL) => {
+            parse_guard_cancel(&exec_line)?;
+            return Ok(String::new());
+        }
+        _ => {}
+    }
+    let request = parse_guard_exec(&exec_line)?;
+
     std::thread::spawn(move || {
         let mut line = String::new();
         loop {
             line.clear();
             match std::io::BufRead::read_line(&mut reader, &mut line) {
                 Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    if is_cancel_request_line(&line) {
+                Ok(_) if guard_operation(&line).as_deref() == Some(GUARD_OPERATION_CANCEL) => {
+                    if parse_guard_cancel(&line).is_ok() {
                         let _ = cancel_tx.send(());
                     }
                 }
+                Ok(_) => {}
             }
         }
     });
 
-    let repository_root = repository_root.to_path_buf();
-    let stdout = std::io::stdout();
-    let outcome = run_external_mutation_guard(
-        &repository_root,
-        &request,
-        || super::open_agent_trace_db_for_hook_runtime(&repository_root, MUTATION_SCOPE_DB_CONTEXT),
-        |event| {
-            let mut handle = stdout.lock();
-            let _ = writeln!(handle, "{}", guard_event_json_line(&event));
-            let _ = handle.flush();
-        },
-        &cancel_rx,
-    )?;
+    let outcome = armed_guard.exec(&request, |event| {
+        let _ = write_guard_event(&mut writer, &event);
+    })?;
 
     if outcome.marker_clear_failed {
         log_marker_clear_after_durable_completion(
@@ -522,15 +595,25 @@ pub(crate) fn run_external_mutation_guard_subcommand(
         );
     }
 
-    println!(
-        "{}",
-        json!({
+    let _ = write_guard_line(
+        &mut writer,
+        &json!({
             "status": "result",
             "exit_code": outcome.exit_code,
         })
+        .to_string(),
     );
 
     Ok(String::new())
+}
+
+fn write_guard_event<W: Write>(writer: &mut W, event: &GuardEvent) -> std::io::Result<()> {
+    write_guard_line(writer, &guard_event_json_line(event))
+}
+
+fn write_guard_line<W: Write>(writer: &mut W, line: &str) -> std::io::Result<()> {
+    writeln!(writer, "{line}")?;
+    writer.flush()
 }
 
 #[cfg(test)]
@@ -1105,6 +1188,7 @@ mod tests {
     mod real_git_db_ingress {
         use std::cell::Cell;
         use std::fs;
+        use std::io::{Cursor, Error, ErrorKind, Write};
         use std::path::{Path, PathBuf};
         use std::process::Command;
 
@@ -1318,6 +1402,175 @@ mod tests {
                 },
             )
             .expect("mutation-events query should succeed")
+        }
+
+        struct LostArmedWriter;
+
+        impl Write for LostArmedWriter {
+            fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+                Err(Error::new(
+                    ErrorKind::BrokenPipe,
+                    "injected lost Armed delivery",
+                ))
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(Error::new(
+                    ErrorKind::BrokenPipe,
+                    "injected lost Armed delivery",
+                ))
+            }
+        }
+
+        #[test]
+        fn hidden_guard_lost_armed_ack_never_runs_the_exec_command() {
+            let repo = IngressRepo::new("guard-lost-armed-ack");
+            let target = repo.root.join("lost-armed-side-effect");
+            let command = format!("touch '{}'", target.display());
+            let input = format!(
+                "{{\"operation\":\"arm\"}}\n{{\"operation\":\"exec\",\"command\":{command:?}}}\n"
+            );
+
+            let result = run_external_mutation_guard_protocol_with(
+                &repo.root,
+                None,
+                Cursor::new(input.into_bytes()),
+                LostArmedWriter,
+                |root| {
+                    crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
+                        root,
+                        &repo.state_root,
+                        "lost Armed guard transport test",
+                    )
+                },
+            );
+
+            assert!(result.is_err());
+            assert!(!target.exists(), "lost Armed must not run the exec command");
+            assert!(
+                repo.marker_path().exists(),
+                "ambiguous establishment remains conservatively tainted"
+            );
+        }
+
+        #[test]
+        fn hidden_guard_cancel_after_armed_exits_without_running_a_shell() {
+            let repo = IngressRepo::new("guard-cancel-before-exec");
+            let target = repo.root.join("cancel-side-effect");
+            let mut output = Vec::new();
+
+            run_external_mutation_guard_protocol_with(
+                &repo.root,
+                None,
+                Cursor::new(b"{\"operation\":\"arm\"}\n{\"operation\":\"cancel\"}\n".to_vec()),
+                &mut output,
+                |root| {
+                    crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
+                        root,
+                        &repo.state_root,
+                        "cancel before exec transport test",
+                    )
+                },
+            )
+            .expect("cancel before exec should terminate cleanly");
+
+            assert!(!target.exists());
+            assert!(repo.marker_path().exists());
+            assert_eq!(
+                String::from_utf8(output)
+                    .expect("guard output should be UTF-8")
+                    .lines()
+                    .count(),
+                1,
+                "only Armed should be emitted"
+            );
+        }
+
+        #[test]
+        fn hidden_guard_eof_after_armed_exits_without_running_a_shell() {
+            let repo = IngressRepo::new("guard-arm-without-exec");
+            let target = repo.root.join("eof-side-effect");
+            let mut output = Vec::new();
+
+            run_external_mutation_guard_protocol_with(
+                &repo.root,
+                None,
+                Cursor::new(b"{\"operation\":\"arm\"}\n".to_vec()),
+                &mut output,
+                |root| {
+                    crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
+                        root,
+                        &repo.state_root,
+                        "arm without exec transport test",
+                    )
+                },
+            )
+            .expect("EOF before exec should terminate cleanly");
+
+            assert!(!target.exists());
+            assert!(repo.marker_path().exists());
+            assert_eq!(
+                String::from_utf8(output)
+                    .expect("guard output should be UTF-8")
+                    .lines()
+                    .count(),
+                1,
+                "only Armed should be emitted"
+            );
+            repo.drive(FLUSH)
+                .expect("next boundary should self-heal marker");
+            assert!(!repo.marker_path().exists());
+        }
+
+        #[test]
+        fn hidden_guard_transport_arms_then_executes_only_the_explicit_exec_command() {
+            let repo = IngressRepo::new("guard-two-phase-transport");
+            let target = repo.root.join("exec-side-effect");
+            let duplicate_target = repo.root.join("duplicate-exec-side-effect");
+            let command = format!("touch '{}'", target.display());
+            let duplicate_command = format!("touch '{}'", duplicate_target.display());
+            let input = format!(
+                "{{\"operation\":\"arm\"}}\n{{\"operation\":\"exec\",\"command\":{command:?}}}\n{{\"operation\":\"exec\",\"command\":{duplicate_command:?}}}\n"
+            );
+            let mut output = Vec::new();
+
+            run_external_mutation_guard_protocol_with(
+                &repo.root,
+                None,
+                Cursor::new(input.into_bytes()),
+                &mut output,
+                |root| {
+                    crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
+                        root,
+                        &repo.state_root,
+                        "two-phase guard transport test",
+                    )
+                },
+            )
+            .expect("the hidden guard transport should complete");
+
+            assert!(target.exists(), "the side effect must occur after exec");
+            assert!(
+                !duplicate_target.exists(),
+                "a duplicate exec must not launch a second shell"
+            );
+            let output = String::from_utf8(output).expect("guard output should be UTF-8");
+            let lines: Vec<Value> = output
+                .lines()
+                .map(|line| serde_json::from_str(line).expect("guard output line should be JSON"))
+                .collect();
+            assert_eq!(
+                lines.first().and_then(|line| line.get("status")),
+                Some(&json!("armed"))
+            );
+            assert_eq!(
+                lines.last().and_then(|line| line.get("status")),
+                Some(&json!("result"))
+            );
+            assert_eq!(
+                lines.last().and_then(|line| line.get("exit_code")),
+                Some(&json!(0))
+            );
         }
 
         const START_A_E1: &str =
@@ -1853,77 +2106,69 @@ mod tests {
         use super::*;
 
         #[test]
-        fn empty_line_is_rejected() {
-            let error = parse_guard_request("").unwrap_err().to_string();
-            assert!(error.contains("empty line"), "{error:?}");
+        fn arm_has_no_execution_fields() {
+            assert!(parse_guard_arm(r#"{"operation":"arm"}"#).is_ok());
+            assert!(parse_guard_arm(r#"{"operation":"arm","command":"true"}"#).is_err());
+            assert!(parse_guard_arm(r#"{"operation":"guard","command":"true"}"#).is_err());
         }
 
         #[test]
-        fn wrong_operation_is_rejected() {
-            let error = parse_guard_request(r#"{"operation":"start","command":"true"}"#)
-                .unwrap_err()
-                .to_string();
-            assert!(error.contains("'operation'"), "{error:?}");
+        fn malformed_arm_is_rejected() {
+            assert!(parse_guard_arm("").is_err());
+            assert!(parse_guard_arm("{").is_err());
+            assert!(parse_guard_arm(r#"{"operation":"start"}"#).is_err());
         }
 
         #[test]
-        fn missing_command_is_rejected() {
-            assert!(parse_guard_request(r#"{"operation":"guard"}"#).is_err());
+        fn exec_requires_a_non_blank_command() {
+            assert!(parse_guard_exec(r#"{"operation":"exec","command":"pwd"}"#).is_ok());
+            assert!(parse_guard_exec(r#"{"operation":"exec","command":"   "}"#).is_err());
+            assert!(parse_guard_exec(r#"{"operation":"exec"}"#).is_err());
+            assert!(parse_guard_exec(r#"{"operation":"guard","command":"pwd"}"#).is_err());
         }
 
         #[test]
-        fn blank_command_is_rejected() {
-            assert!(parse_guard_request(r#"{"operation":"guard","command":"   "}"#).is_err());
-        }
-
-        #[test]
-        fn command_without_env_parses() {
-            let request =
-                parse_guard_request(r#"{"operation":"guard","command":"echo hi"}"#).unwrap();
-            assert_eq!(request.command, "echo hi");
-            assert!(request.env.is_empty());
-        }
-
-        #[test]
-        fn command_with_env_parses() {
-            let request = parse_guard_request(
-                r#"{"operation":"guard","command":"true","env":{"FOO":"bar","BAZ":"qux"}}"#,
+        fn exec_parses_cwd_and_environment() {
+            let request = parse_guard_exec(
+                r#"{"operation":"exec","command":"pwd","cwd":"/repo/crates/foo","env":{"FOO":"bar","BAZ":"qux"}}"#,
             )
             .unwrap();
+            assert_eq!(request.command, "pwd");
+            assert_eq!(request.cwd, Some("/repo/crates/foo".to_string()));
             let mut env = request.env;
             env.sort();
             assert_eq!(
                 env,
-                vec![
-                    ("BAZ".to_string(), "qux".to_string()),
-                    ("FOO".to_string(), "bar".to_string()),
-                ]
+                vec![("BAZ".into(), "qux".into()), ("FOO".into(), "bar".into())]
             );
         }
 
         #[test]
-        fn non_string_env_value_is_rejected() {
-            let error =
-                parse_guard_request(r#"{"operation":"guard","command":"true","env":{"FOO":1}}"#)
-                    .unwrap_err()
-                    .to_string();
-            assert!(error.contains("'env.FOO'"), "{error:?}");
+        fn invalid_exec_fields_are_rejected() {
+            assert!(
+                parse_guard_exec(r#"{"operation":"exec","command":"pwd","cwd":"   "}"#).is_err()
+            );
+            assert!(
+                parse_guard_exec(r#"{"operation":"exec","command":"pwd","env":{"FOO":1}}"#)
+                    .is_err()
+            );
+            assert!(
+                parse_guard_exec(r#"{"operation":"exec","command":"pwd","env":"nope"}"#).is_err()
+            );
+            assert!(
+                parse_guard_exec(r#"{"operation":"exec","command":"pwd","extra":true}"#).is_err()
+            );
         }
 
         #[test]
-        fn non_object_env_is_rejected() {
-            assert!(parse_guard_request(
-                r#"{"operation":"guard","command":"true","env":"nope"}"#
-            )
-            .is_err());
-        }
-
-        #[test]
-        fn cancel_request_line_is_recognized() {
-            assert!(is_cancel_request_line(r#"{"operation":"cancel"}"#));
-            assert!(!is_cancel_request_line(r#"{"operation":"guard"}"#));
-            assert!(!is_cancel_request_line("not json"));
-            assert!(!is_cancel_request_line(""));
+        fn cancel_is_a_strict_control_frame() {
+            assert!(parse_guard_cancel(r#"{"operation":"cancel"}"#).is_ok());
+            assert!(parse_guard_cancel(r#"{"operation":"cancel","command":"pwd"}"#).is_err());
+            assert_eq!(
+                guard_operation(r#"{"operation":"cancel"}"#).as_deref(),
+                Some("cancel")
+            );
+            assert_eq!(guard_operation("not json"), None);
         }
 
         #[test]

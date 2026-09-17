@@ -430,9 +430,14 @@ supervisor itself spawns the human shell as its OWN child
 supervisor streams the shell's stdout/stderr back to Pi/Node
 over the control channel, so onData still fires as before
     ↓
-supervisor waits for the shell's OWN process to terminate
-    (wait()/waitpid — positive termination evidence, never a
-    control-channel signal, never elapsed time)
+supervisor continuously observes shell status, stdout/stderr, and a
+kernel-owned lifetime-token pipe inherited by the shell and ordinary
+descendants
+    ↓
+foreground shell terminates, but the supervisor does not finish yet
+    ↓
+lifetime-token EOF proves no ordinary descendant still owns the
+inherited token
     ↓
 capture final Git tree; database_failure + recover against the
 already-held ProtectedWorktree; commit durably; on success,
@@ -509,9 +514,25 @@ regardless of whether the supervisor, Pi/Node, or any other
 control process is alive
 ```
 
-When the supervisor *is* still alive at the moment the shell exits (the ordinary, non-crash path), it observes that termination directly via its own `wait()`/`waitpid` on its child and immediately runs the finish sequence itself (forced recover, `complete()`, exit) rather than waiting for some unrelated future `coordinate()` call to stumble into the self-heal path — the fd-duplication mechanism above is specifically the supervisor-crash backstop, not a replacement for the supervisor's normal eager finish.
+When the supervisor *is* still alive at the moment the shell exits (the ordinary, non-crash path), it observes that termination directly via its own `wait()`/`waitpid` on its child but does not finish until a separate kernel-owned lifetime token also reaches EOF. That token is a pipe whose read end belongs only to the supervisor and whose CLOEXEC-clear writer is inherited by the shell and ordinary descendants; the supervisor closes its own writer after spawn. It continuously consumes stdout/stderr while waiting. Only after shell termination and token EOF does it run forced recovery, `complete()`, and release, so the fd-duplicated WorktreeLock remains active throughout the descendant interval.
 
-The fd-duplication mechanism above is Unix-specific by construction: it depends on `flock(2)` semantics attaching to the open file description and surviving `dup()`/inheritance across `fork()`/`exec()`, which is a POSIX guarantee with no Windows equivalent for `std::fs::File`'s locking primitive. T03 must verify Rust's exact spawning API for clearing `FD_CLOEXEC` on a duplicated descriptor before exec (e.g. `dup()` via `std::os::fd::AsRawFd`/`OwnedFd` plus a `pre_exec` hook, or an equivalent `std::process::Command` facility) against the actual `WorktreeLock`/`File` type before committing to an exact implementation; if inspection turns up a simpler or stronger kernel-backed alternative that provides the same "shell lifetime durably implies lock lifetime" guarantee on Unix, T03 should use it instead — the requirement is the property, not this exact API sequence.
+**Post-spawn failure rule — no explicit unlock before lifetime completion.** Before
+`Command::spawn()` succeeds, ordinary RAII cleanup is safe because no external
+mutation producer exists. After successful spawn and before lifetime-token EOF,
+any wait, poll, lifetime-read, stream-read, callback panic, or other
+supervision failure consumes a dedicated abandonment state: the marker remains
+armed and the supervisor closes/relinquishes only its own `WorktreeLock` fd
+without `flock(LOCK_UN)`. The shell and descendants retain the inherited fd
+for the same open file description, so the kernel keeps the flock authoritative
+until the last inheritor closes it. Once that inherited lock becomes free, the
+next `coordinate()` observes the armed marker and performs the existing
+inherited-taint `database_failure + recover` path before proceeding. If
+lifetime EOF has already been observed, ordinary unlock is safe even when
+final recovery fails, but the marker remains armed. `GuardEvent::Armed` is
+reported only after lifetime-token creation/configuration succeeds; a failure
+there emits no event and spawns no shell.
+
+The fd-duplication mechanism above is Unix-specific by construction: it depends on `flock(2)` semantics attaching to the open file description and surviving `dup()`/inheritance across `fork()`/`exec()`, which is a POSIX guarantee with no Windows equivalent for `std::fs::File`'s locking primitive. The separate lifetime token uses the same ordinary Unix fd-inheritance rule: its read end is supervisor-owned and CLOEXEC, its writer is explicitly CLOEXEC-clear, and the supervisor closes its writer after spawn. EOF is positive evidence that the kernel closed the final ordinary writer reference. T03 must keep these ownership and CLOEXEC rules explicit and must not replace token EOF with shell exit, stream EOF, process enumeration, or a timeout.
 
 **Corrected a third time — Windows was previously and incorrectly claimed to need no lifetime protection.** An earlier version of this section stated that Pi's own `detached: process.platform !== "win32"` conditional meant "the underlying detached-survival hazard this whole section addresses does not arise on Windows in the first place," and that T03 could therefore implement "the simpler 'supervisor process tree death is sufficient' story on Windows." **This claim is false and is retracted.** `detached: false` (Node's default, and what pinned Pi passes on Windows) only controls whether Node places the child in a new process group/session on POSIX; on Windows it controls an unrelated flag (`CREATE_NEW_PROCESS_GROUP`/console allocation), and on **neither** platform does a non-detached child's lifetime become tied to its parent's lifetime by default. An orphaned child on Windows, exactly as on Unix, is simply reparented and keeps running when its parent dies — Windows has no default "kill children when parent exits" behavior any more than Unix does. "Pi does not pass `detached: true` on Windows" therefore proves nothing about what happens to the shell if the supervisor is killed on Windows; the detached-survival hazard this whole section addresses is present on **every** platform Pi's local Bash child can outlive its spawner. This is a straightforward category error (a Node.js spawn-option default was treated as an OS-enforced process-lifetime guarantee) and no revision of this plan may repeat it or an equivalent claim for any platform.
 
@@ -797,17 +818,11 @@ This is specific to SCE's own dual integration paths — it does not generically
 
 ### D14 — Detached descendants remain an explicit limitation
 
-A foreground Pi Bash tool can potentially launch a child process that survives the Bash tool's own completion.
+A foreground Pi Bash tool can potentially launch a child process that survives the Bash tool's own completion. If the pinned Pi runtime provides no structured lifecycle proving all descendants are dead, `tool_execution_end` cannot prove that a self-detached descendant has stopped mutating.
 
-If the pinned Pi runtime provides no structured lifecycle proving all descendants are dead, `tool_execution_end` cannot prove that a self-detached descendant has stopped mutating.
+For the D13 `user_bash` guard specifically, foreground-shell lifetime is not external-mutation lifetime. The supervisor creates a dedicated Unix pipe before spawning: its read end remains with the supervisor, its writer is explicitly CLOEXEC-clear, the shell inherits that writer, and ordinary descendants inherit it under normal Unix fd inheritance. The supervisor closes its own writer after spawn. It does not recover, clear the marker, or release the real WorktreeLock at foreground-shell exit. It waits for shell termination **and** kernel-observable lifetime-token EOF; EOF proves that no ordinary inheritor still owns the token. The final tree is then observed and the existing forced `database_failure + recover` composition runs while the supervisor still owns the ProtectedWorktree. Only durable recovery is followed by marker clear and normal WorktreeLock drop.
 
-Do not attempt to infer this from Bash command text. Do not build a shell parser or static background-process detector in this PR.
-
-Record the exact observed behavior in T01 and document the residual attribution boundary.
-
-**Revisited under D13's corrected lifetime-guard mechanism.** For a `user_bash` execution specifically (not a foreground Pi tool's own Bash), D13's fd-duplication mechanism changes this boundary rather than merely restating it: ordinary Unix fd inheritance means a descendant a shell spawns — including one that backgrounds or otherwise detaches from the shell itself (`cmd &`, `nohup`, `disown`) — inherits the same duplicated lock file descriptor unless it, or the shell, explicitly closes it or marks it close-on-exec. In that ordinary case, protection naturally extends to the descendant: the `WorktreeLock` stays held, by the same kernel guarantee, for as long as that descendant keeps the inherited descriptor open, even after the foreground shell itself has exited.
-
-The exact residual limitation this does **not** cover: a descendant that deliberately closes the inherited descriptor — for example, a fully-daemonizing process that closes all open file descriptors above 2 as part of its own detachment routine (a common pattern for long-running background daemons), or one that execs into a program which itself closes non-standard inherited fds — escapes kernel-enforced tracking at the moment it closes that descriptor, even though it keeps running and can keep mutating the checkout. SCE has no way to distinguish this from genuine termination without parsing process behavior, which this plan does not attempt (same prohibition as the general D14 rule above: no Bash-text parsing, no static background-process detector). This is an accepted, explicitly documented boundary of the fd-inheritance mechanism, not a defect introduced by choosing it — no mechanism available to an extension-based integration without kernel-level process supervision (e.g. a container/cgroup boundary) can close this gap, and building one is out of scope for this PR.
+This improves the ordinary `cmd &`, `nohup`, or `disown` case without parsing Bash or enumerating processes. The explicit residual limitation remains: a descendant that deliberately closes the inherited lifetime token (or execs into a program that closes non-standard inherited descriptors) can continue mutating after EOF and escape tracking. The supervisor cannot distinguish that deliberate close from genuine completion; output streams are not used as the safety oracle, and their post-token finalization is bounded. This is accepted and documented, not hidden or solved by a TTL.
 
 **Windows scoping.** On Windows, `user_bash` is unconditionally refused (D13's corrected Windows disposition) — no shell is ever spawned via that path, so no descendant question arises for `user_bash` there at all. The general, platform-independent D14 rule above (a foreground Pi tool's own tracked Bash call can launch a surviving descendant) is unchanged and unaffected by this correction, since it concerns `tool_call`-mediated `bash`, not `user_bash`, and `tool_call`'s lifecycle is not part of D13's Windows carve-out.
 
@@ -1695,20 +1710,26 @@ Persist this field in every plan; this is durable plan state, not chat state:
       this fd-duplication step is simply not reached, not "skipped as
       unnecessary." T03 must gate the supervisor's invocation on platform
       (Unix-only) rather than implementing a no-op/simplified guard path for
-      Windows. The finish trigger is **exclusively the
-      shell's own process termination** (`wait()`/`waitpid` on the spawned
-      child) — never stdin EOF or any other signal on the control channel to
-      Pi/Node, which may close independently of the shell's lifetime (D13's
-      chosen Option A: control-channel death from Pi/Node dying does not
-      finish the guard). Once the shell terminates, the supervisor runs the
-      forced recovery/`complete()` sequence above, after which it emits a
-      final result over the control channel (if anything is still listening)
-      and exits — success only if the recovery commit and the marker clear
-      both durably succeeded. A failure or ambiguous outcome at any point
-      before the "armed" acknowledgement (i.e., before any shell has been
-      spawned) must leave no lock held by this process (the process either
-      never acquired it or exits, releasing it — no shell exists yet to hold
-      a duplicated fd in that window). This needs no `scope_id`/`event_id` —
+      Windows. Lifetime-token creation/configuration precedes the durable
+      `Armed` acknowledgement; a token-establishment failure emits no
+      acknowledgement and spawns no shell. The normal finish trigger is
+      **exclusively the shell's own process termination plus lifetime-token EOF**
+      (`wait()`/`waitpid` and the kernel-owned pipe on the spawned child and
+      ordinary descendants) — never stdin EOF or any other signal on the
+      control channel to Pi/Node, which may close independently of the shell's
+      lifetime (D13's chosen Option A: control-channel death from Pi/Node dying
+      does not finish the guard). Once both conditions hold, the supervisor
+      runs the forced recovery/`complete()` sequence above, after which it
+      emits a final result over the control channel (if anything is still
+      listening) and exits — success only if the recovery commit and the
+      marker clear both durably succeeded. Before spawn, ordinary RAII cleanup
+      is safe. After successful spawn and before lifetime EOF, every
+      supervision error or panic-adjacent unwind uses a consuming abandonment
+      path that leaves the marker armed and closes only the supervisor's own
+      lock reference without explicit `flock(LOCK_UN)`; the inherited shell or
+      descendant descriptor keeps the flock kernel-held. After lifetime EOF,
+      ordinary unlock is safe even if final recovery fails, but the marker
+      remains armed. This needs no `scope_id`/`event_id` —
       worktree identity is still derived by the runtime from the invoking
       checkout, and guard identity (for stale-owner detection) is exactly "is
       the `WorktreeLock` still held (by the supervisor, by the shell via its
@@ -1757,14 +1778,18 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `coordinate()` call self-heals via the existing inherited-taint path;
     closing the control channel to the caller (simulating Pi/Node death)
     while the shell is still running does not trigger the finish sequence and
-    does not signal the shell; finish is triggered exclusively by the shell's
-    own process termination and forces `database_failure`+`recover` against
-    the already-held `ProtectedWorktree`, only then clearing the marker; a
-    failed finish commit leaves the marker armed and reports failure without
+    does not signal the shell; finish requires the shell's own process
+    termination and lifetime-token EOF, then forces `database_failure`+`recover`
+    against the already-held `ProtectedWorktree`, only then clearing the marker;
+    a failed finish commit leaves the marker armed and reports failure without
     calling `complete()`; all with no `protocol.rs` involvement.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml pi_mutation_scope`;
     `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::`.
   - Completed: 2026-09-17
+  - Repaired: 2026-09-17 (same-day repair pass — cwd contract, exact pinned
+    Pi shell contract citations, final stdout/stderr draining race, and
+    context synchronization; see the sections below marked "2026-09-17
+    repair pass"). T04 was not started by this repair.
   - Files changed: `cli/src/services/hooks/pi_mutation_scope/{mod.rs,state.rs,os_lock.rs,boundary_lock.rs}`
     (new); `cli/src/services/mutation_trace/runtime/external_mutation_guard.rs` (new);
     `cli/src/cli_schema.rs`; `cli/src/services/hooks/mod.rs`;
@@ -1775,6 +1800,22 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `cli/src/services/mutation_trace/runtime/worktree_lock.rs`;
     `cli/src/services/parse/command_runtime.rs` (13 files; no other paths touched;
     `fixtures/` and `protocol.rs`/`spec/mutation_cursor.qnt` untouched).
+  - **2026-09-17 repair pass files changed** (see "Repair" below):
+    `cli/src/services/mutation_trace/runtime/external_mutation_guard.rs`;
+    `cli/src/services/mutation_trace/runtime/git_snapshot.rs` (new
+    `resolve_worktree_root`); `cli/src/services/hooks/mutation_scope.rs`
+    (new `cwd` wire field); `cli/src/services/hooks/pi_mutation_scope/{mod.rs,state.rs}`
+    (whitespace-only `cargo fmt` reformatting of pre-existing drift found
+    while getting `nix flake check`'s `cli-fmt` gate green, no behavior
+    change). `protocol.rs`/`spec/mutation_cursor.qnt` and `fixtures/`
+    remain untouched.
+  - **2026-09-17 lifetime-token repair files changed:**
+    `cli/src/services/mutation_trace/runtime/external_mutation_guard.rs`;
+    `context/cli/mutation-trace-external-mutation-guard.md`;
+    `context/plans/pi-mutation-scope-integration.md`;
+    `context/decisions/2026-09-17-external-mutation-guard-process-supervisor.md`.
+    No change to normal `WorktreeLock` drop semantics, protocol/Quint change,
+    T04 work, or generated-config change was made.
   - Result: **Adapter** (`pi_mutation_scope/{mod.rs,state.rs,os_lock.rs,boundary_lock.rs}`,
     mirroring `opencode_mutation_scope`'s file shape): a strict wire parser
     accepts `hook_event_name` one of `ToolExecutionStart`/`ToolCall`/`ToolResult`/
@@ -1848,28 +1889,37 @@ Persist this field in every plan; this is durable plan state, not chat state:
       `GuardError::UnsupportedPlatform` unconditionally, per D13's Windows
       disposition that T05 refuses `user_bash` guard-establishment outright
       there, with no Windows-specific guard code written here): acquires
-      `ProtectedWorktree`, emits `GuardEvent::Armed`, spawns the human shell
-      (`/bin/sh -c <command>`) as its own child (`process_group(0)`, its own
-      process group so process-group signaling never reaches the supervisor
-      itself), streams the child's stdout/stderr back through a channel-fed
+      `ProtectedWorktree`, creates/configures the lifetime token, and only then
+      emits `GuardEvent::Armed`; a lifetime-token establishment failure emits
+      no event and spawns no shell. It then spawns the human shell using the
+      pinned Pi-compatible shell contract as its own child (`process_group(0)`,
+      its own process group so process-group signaling never reaches the
+      supervisor itself), streams stdout/stderr back through a channel-fed
       callback, accepts an explicit cancel signal (a caller-supplied
       `mpsc::Receiver<()>` — **never** channel-close/disconnect, which the
-      finish loop explicitly ignores) and enacts it by sending `SIGTERM` to the
-      shell's process group via a minimal local `dup`/`kill` FFI shim (no new
-      Cargo dependency — both are simple, already-linked libc symbols),
-      finishes **exclusively** on the shell's own `wait()` (never on the
-      control-channel/cancel-channel state), then forces the recovery
-      composition via `coordinate_on_held_worktree(..., force_recovery: true)`
-      and calls `ProtectedWorktree::complete()` only on that durable commit — a
-      failed finish leaves the marker armed and reports failure without
-      calling `complete()`. **On Unix, the fd duplication itself happens in the
-      *parent*, immediately before `Command::spawn()`** (a plain `dup()` on the
-      lock fd, whose result is CLOEXEC-clear by POSIX default with no further
-      flag-clearing needed), relying on `fork()`'s atomic, synchronous
-      fd-table copy so the child is guaranteed to hold its own independent
-      reference to the lock's open file description by the moment `spawn()`
-      returns — the parent's own duplicate is then closed via `File::from_raw_fd`
-      + `drop`, leaving the child's copy, and only the child's copy, alive.
+      finish loop explicitly ignores), and enacts it by sending `SIGTERM` to
+      the shell's process group via a minimal local `dup`/`kill` FFI shim (no
+      new Cargo dependency — both are simple, already-linked libc symbols).
+      Normal finish requires the shell's own `wait()` **and** lifetime-token
+      EOF, never control-channel/cancel-channel state alone. Before spawn,
+      ordinary RAII cleanup is safe. After successful spawn and before
+      lifetime EOF, all supervision errors and panic-adjacent unwinds use a
+      consuming abandonment path that leaves the marker armed and closes only
+      the supervisor's lock reference without explicit `flock(LOCK_UN)`; the
+      inherited shell/descendant descriptor keeps the flock kernel-held. Once
+      both completion conditions hold, it forces recovery through
+      `coordinate_on_held_worktree(..., force_recovery: true)` and calls
+      `ProtectedWorktree::complete()` only on that durable commit. A failed
+      final recovery leaves the marker armed; because lifetime EOF was already
+      proven, ordinary unlock is safe in that case. **On Unix, the fd
+      duplication itself happens in the *parent*, immediately before
+      `Command::spawn()`** (a plain `dup()` on the lock fd, whose result is
+      CLOEXEC-clear by POSIX default with no further flag-clearing needed),
+      relying on `fork()`'s atomic, synchronous fd-table copy so the child is
+      guaranteed to hold its own independent reference to the lock's open file
+      description by the moment `spawn()` returns — the parent's own duplicate
+      is then closed via `File::from_raw_fd` + `drop`, leaving the child's copy,
+      and only the child's copy, alive.
 
     **Two genuine correctness bugs found and fixed while writing and running
     the tests below (not merely by inspection) — both exactly the class of
@@ -1923,21 +1973,26 @@ Persist this field in every plan; this is durable plan state, not chat state:
     bidirectional, incompatible with "read all of STDIN to EOF, then respond
     once." The new `run_external_mutation_guard_subcommand` function still
     lives in `mutation_scope.rs` (satisfying the instruction at the file
-    level) and still uses the same operation-tagged JSON envelope convention
-    for its own run request (`{"operation":"guard","command":"<string>",
-    "env":{...}}`, followed by zero or more `{"operation":"cancel"}` lines),
-    but is reached through its own new hidden CLI verb, `sce hooks
+    level) and uses an explicit two-phase operation-tagged JSON protocol:
+    exactly `{"operation":"arm"}` first, then (only after the flushed
+    `{"status":"armed"}` acknowledgement) exactly one
+    `{"operation":"exec","command":"<string>","cwd":"...","env":{...}}`
+    frame. `{"operation":"cancel"}` is accepted while waiting for exec and
+    after spawn; it means pre-spawn termination before spawn and process-group
+    cancellation after spawn. The hidden CLI verb is `sce hooks
     external-mutation-guard` (`cli_schema.rs`/`command_runtime.rs`/`hooks/mod.rs`
     additions mirroring the existing per-adapter hidden routes), rather than
-    through the shared `MutationScopePayload` enum/`sce hooks mutation-scope`
-    verb. STDOUT emits line-delimited JSON: `{"status":"armed"}`, `{"stream":
+    the shared `MutationScopePayload` enum/`sce hooks mutation-scope` verb.
+    STDOUT emits line-delimited JSON: `{"status":"armed"}`, `{"stream":
     "stdout"|"stderr","data":"<chunk>"}` (lossy UTF-8 — no `base64` crate is
     present in this workspace and the Done-when criteria concern lock/fd/process
     semantics, not byte-fidelity of streamed output; recorded as an explicit
     simplification for T05 to revisit if binary-safe streaming is later
     required), and a final `{"status":"result","exit_code":<n-or-null>}`.
-    11 focused tests in `mutation_scope.rs`'s new `guard_protocol` module cover
-    the request/cancel/event parsing and serialization exactly.
+    The explicit state machine is `Starting -> ArmedWaitingForExec -> Running
+    -> Finished`; no arm acknowledgement can itself spawn a shell. Focused
+    tests in `mutation_scope.rs` cover strict arm/exec/cancel parsing and event
+    serialization.
 
     **Assumptions carried forward for T04/T05:** (a) the admission
     "uncertain-attempt" scoping departure above (`PendingAbandon`/non-`Clear`
@@ -1945,15 +2000,22 @@ Persist this field in every plan; this is durable plan state, not chat state:
     and should inform how T04 detects a genuinely orphaned `PendingStart` (a
     crashed `establish_tracked_start`, not a live in-flight tool call) — this
     task deliberately leaves that cross-invocation detection to T04, per its
-    own stated scope. (b) the guarded shell is spawned via `/bin/sh -c
-    <command>`; T03's own scope text asked this task to "document exactly
-    which parts of [Pi's local-shell] contract it reproduces and cite the
-    pinned package's own local-execution behavior as the reference being
-    matched" — that exact citation work was not done (T01's NOTES.md does not
-    document Pi's local-shell invocation shape in enough depth to cite
-    precisely), so this is recorded as an open gap for T05 to confirm/adjust
-    against `createLocalBashOperations()`'s actual contract when wiring the
-    real `user_bash` call site.
+    own stated scope. (b) **superseded by the 2026-09-17 repair pass below**
+    — the guarded shell was originally spawned via a hardcoded `/bin/sh -c
+    <command>` without checking pinned Pi source; T03's own scope text asked
+    this task to "document exactly which parts of [Pi's local-shell]
+    contract it reproduces and cite the pinned package's own local-execution
+    behavior as the reference being matched," and that citation work was not
+    done. The repair pass closed it directly against pinned
+    `@earendil-works/pi-coding-agent@0.80.6`'s `dist/core/tools/bash.js`
+    (`createLocalBashOperations`) and its `dist/utils/shell.js`/
+    `dist/utils/child-process.js` helpers: the assumed `/bin/sh` contract was
+    wrong (Pi prefers real `/bin/bash`, then `bash` on `PATH`, only then
+    plain `sh`), and the guard now reproduces that exact resolution order.
+    Full contract citations, and the deliberate differences kept as-is
+    (env-merge vs. env-replace; `SIGTERM` vs. `SIGKILL` cancellation), live in
+    `context/cli/mutation-trace-external-mutation-guard.md` rather than being
+    duplicated here.
   - Verify outcome: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
     cli/Cargo.toml pi_mutation_scope` passed (59/59). `nix develop -c
     ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::`
@@ -1970,6 +2032,78 @@ Persist this field in every plan; this is durable plan state, not chat state:
     along the way (`PiHookEvent`'s four variants originally shared a `Tool`
     prefix; a test-local `const` was declared after statements). `spec/mutation_cursor.qnt`
     and `protocol.rs` are confirmed untouched by `git status`.
+  - **2026-09-17 repair pass verify outcome:** `nix develop -c
+    ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    external_mutation_guard` passed (19/19 matched by that name filter — 17
+    of those live in `external_mutation_guard.rs` itself, up from 6, the
+    other 2 are pre-existing `command_runtime.rs` hidden-route parser tests
+    coincidentally matched by the same substring). 11 new tests in
+    `external_mutation_guard.rs`: 8 covering the `cwd` contract, 1
+    unit-testing the drain-after-join ordering fix directly and
+    deterministically (no subprocess timing dependency), and 2 end-to-end
+    multi-chunk stdout/stderr regressions. `pi_mutation_scope` re-verified
+    unchanged (59/59). `hooks::` passed (695/695, up from 691 — 4 new
+    `cwd`-wire-parsing tests in `mutation_scope.rs`'s `guard_protocol`
+    module, 1 pre-existing unrelated ignore). `mutation_trace` passed
+    (387/387, up from 376 — the 11 new `external_mutation_guard` tests).
+    The full unscoped `cargo test` passed (1601/1601, up from 1586, 1
+    pre-existing unrelated ignore, 0 filtered). `cargo clippy --all-targets
+    -- -D warnings -D clippy::pedantic` (`SCE_CLI_PACKAGE_FALLBACK=1`)
+    passed with zero warnings. `git diff --check` passed (no whitespace
+    errors). `nix flake check` — not run by T03's original verification —
+    was run for this repair pass and reported **all checks passed**,
+    including `cli-fmt`; that check first failed against whitespace-only
+    drift already present in `pi_mutation_scope/{mod.rs,state.rs}` before
+    this repair began (confirmed via `git diff` — none of the flagged lines
+    were touched by this repair's own changes), closed by running the
+    already-sanctioned `cargo fmt` autofix (AGENTS.md), not by editing test
+    assertions or behavior.
+  - **2026-09-17 lifetime-token repair verify outcome:** `nix develop -c
+    ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    pi_mutation_scope` passed (59/59); `hooks::` passed (695/695, 1 ignored);
+    `mutation_trace` passed (388/388); the focused external-mutation-guard
+    suite passed (20/20). `cargo clippy --all-targets -- -D warnings -D
+    clippy::pedantic` passed, `nix flake check` passed all checks, and
+    `git diff --check` passed. The graceful-descendant and output/lifetime
+    regressions pass alongside the existing supervisor-death regression.
+  - **2026-09-17 lifetime-token repair:** added a CLOEXEC-explicit Unix
+    lifetime pipe, positive shell-termination-plus-token-EOF completion, and
+    continuous bounded output polling. Added deterministic regressions for a
+    graceful background descendant and output while its lifetime token is
+    held. The real WorktreeLock and marker remain active until durable
+    recovery succeeds; D14's deliberate-close escape remains documented.
+  - **2026-09-17 post-spawn failure repair:** added explicit guard ownership
+    states for pre-spawn, post-spawn-before-lifetime-EOF, and completed-lifetime
+    cleanup. `ProtectedWorktree::abandon_after_spawn_without_unlock` consumes
+    the supervisor's lock reference without explicit `LOCK_UN`; normal
+    `WorktreeLock` drop behavior is unchanged for all existing callers. The
+    `Armed` event now follows lifetime-token establishment. Deterministic
+    regressions cover lifetime-establishment failure, injected post-spawn
+    observation failure with a live background descendant, and the same
+    failure after a shell with no descendants. They assert inherited lock
+    exclusion, armed-marker persistence, and the next-boundary inherited-taint
+    recovery. Focused external-guard tests passed 23/23; `mutation_trace`
+    passed 391/391; the requested `pi_mutation_scope` and `hooks::` suites
+    remained green at 59/59 and 695/695. `nix flake check` passed all checks,
+    including clippy, format, CLI tests, and Quint-connect; `git diff --check`
+    passed. T03 remains `done`; T04 remains `todo` and was not started.
+  - **2026-09-17 two-phase admission repair:** replaced the misleading
+    single-phase `guard` request carrying command data with
+    `arm -> flushed Armed -> explicit exec` and made the runtime expose an
+    `ArmedExternalMutationGuard` handle. Arm acquires the worktree and marker,
+    establishes the lifetime token, and waits without a shell. Exec performs
+    request-specific cwd validation and is the only path that calls
+    `spawn_guarded_shell`; a lost Armed write/flush, pre-exec EOF, cancellation,
+    malformed/unknown/duplicate exec, blank command, or invalid cwd cannot
+    spawn. The pre-spawn handle retains the token writer and ordinary RAII lock
+    release; successful spawn still enters the existing descendant-lifetime and
+    no-`LOCK_UN` abandonment states. Added deterministic regressions for lost
+    Armed delivery (including an absent filesystem side effect), arm-without-
+    exec plus inherited-taint self-heal, and the two-phase happy path proving
+    no side effect before exec; protocol regressions cover strict arm/exec,
+    cwd/env, cancellation, malformed, unknown, blank, and extra-field frames.
+    `T03` status remains `done`; `T04` and `T05` remain `todo` and were not
+    started.
   - Context impact: durable-context classification `pending-review` — this
     task adds a new adapter directory (`pi_mutation_scope/`) alongside the
     existing Claude/Codex/OpenCode ones and a new generic
@@ -1982,7 +2116,26 @@ Persist this field in every plan; this is durable plan state, not chat state:
     the external-mutation-supervisor mechanism closely enough that this task's
     additions are a correction rather than an unremarkable extension, and
     record any residual impact.
-  - Context synchronization: pending
+  - **2026-09-17 repair pass context impact:** resolved. The canonical
+    `context/cli/mutation-trace-external-mutation-guard.md` now carries an
+    "Execution cwd contract" section and an "Exact pinned Pi `0.80.6`
+    local-shell contract" section (shell resolution, command transport,
+    cwd, stdio, process-group, exit-code, and final-output-draining
+    parity, plus the two deliberate documented differences: env-merge and
+    `SIGTERM` cancellation) with exact pinned-source file/line citations,
+    and its Lifecycle diagram now names continuous output polling during the
+    descendant-lifetime wait plus bounded finalization.
+    The `2026-09-17-external-mutation-guard-process-supervisor` ADR's
+    Follow-up section is updated to mark the shell-contract confirmation
+    resolved (its Decision/Rationale/Alternatives/Consequences are
+    historical and were left untouched). `architecture.md`, `context-map.md`,
+    `glossary.md`, `overview.md`, and `pi-mutation-scope-integration.md`
+    already described the guard only at the same high level this repair
+    preserved (spawns the human shell as its own child, harness-neutral,
+    Unix-only, unwired) with no incorrect specifics to correct, so per "keep
+    one canonical explanation and link to it," they are left as their
+    existing links to the guard doc rather than duplicating the new detail.
+  - Context synchronization: synced
 
 - [ ] T04: `Add sound terminal and stale-process recovery` (status:todo)
   - Task ID: T04

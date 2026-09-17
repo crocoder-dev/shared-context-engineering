@@ -125,6 +125,11 @@ impl ProtectedWorktree {
     pub fn complete(self) -> anyhow::Result<()> {
         self.marker.clear()
     }
+
+    #[cfg(unix)]
+    pub(super) fn abandon_after_spawn_without_unlock(self) {
+        self.lock.close_without_unlock();
+    }
 }
 
 #[cfg(test)]
