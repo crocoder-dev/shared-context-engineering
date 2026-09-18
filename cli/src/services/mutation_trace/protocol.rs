@@ -65,8 +65,8 @@ pub fn attribution_for(state: &ProtocolState, worktree: &WorktreeId) -> Attribut
 
 pub fn requires_boundary_confirmation(actor_kind: ActorKind) -> bool {
     match actor_kind {
-        ActorKind::Codex | ActorKind::OpenCode => true,
-        ActorKind::ClaudeCode | ActorKind::Pi => false,
+        ActorKind::Codex | ActorKind::OpenCode | ActorKind::Pi => true,
+        ActorKind::ClaudeCode => false,
     }
 }
 

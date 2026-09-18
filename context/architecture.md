@@ -2,32 +2,11 @@
 
 ## Mutation-scope harness adapters
 
-The mutation-scope runtime now has three concrete lifecycle adapters: Claude
-Code, Codex, and OpenCode. Codex is implemented in
-`cli/src/services/hooks/codex_mutation_scope/` and reaches the generic ingress
-through its in-process seam; its hidden command is registered by the shared
-Codex setup/merge/doctor path. The Codex adapter's tracked-tool coverage and MCP
-boundary are documented in
-[`context/cli/codex-mutation-scope-integration.md`](cli/codex-mutation-scope-integration.md).
-OpenCode's tool lifecycle has been frozen against `@opencode-ai/plugin@1.15.4`
-and OpenCode CLI 1.15.4, and its adapter in
-`cli/src/services/hooks/opencode_mutation_scope/` (hidden `sce hooks
-opencode-mutation-scope`) now drives the same in-process seam with a full
-`Start`/`Close`/`Abandon` lifecycle, checkout-local durable state under
-`<git-dir>/sce/` (attempt phases `PendingStart` → `Active` → `PendingAbandon`),
-and a generation-tracked recovery barrier. Exact `ToolError` evidence persists
-the doomed attempt as `PendingAbandon` before any cleanup seam call and the
-attempt is removed only after the generic `abandon` succeeds, so a transient
-cleanup failure is retried rather than losing the scope. A generated
-`sce-mutation-scope.ts` transport plugin (`config/lib/mutation-scope-plugin/`,
-registered last in the OpenCode `plugin` array) is installed as the final
-OpenCode plugin by `sce setup` — the config merge appends it after arbitrary
-user plugins and `sce doctor` flags any non-last position — so real OpenCode
-sessions now reach the adapter; Pi has no adapter. See
-[`context/cli/opencode-mutation-scope-integration.md`](cli/opencode-mutation-scope-integration.md)
-and [`context/cli/opencode-mutation-scope-adapter-lifecycle.md`](cli/opencode-mutation-scope-adapter-lifecycle.md).
+The mutation-scope runtime now has four concrete lifecycle adapters: Claude Code, Codex, OpenCode, and Pi. Codex is implemented in `cli/src/services/hooks/codex_mutation_scope/` and reaches the generic ingress through its in-process seam; its hidden command is registered by the shared Codex setup/merge/doctor path. The Codex adapter's tracked-tool coverage and MCP boundary are documented in [`context/cli/codex-mutation-scope-integration.md`](cli/codex-mutation-scope-integration.md).
+OpenCode's tool lifecycle has been frozen against `@opencode-ai/plugin@1.15.4` and OpenCode CLI 1.15.4, and its adapter in `cli/src/services/hooks/opencode_mutation_scope/` (hidden `sce hooks opencode-mutation-scope`) now drives the same in-process seam with a full `Start`/`Close`/`Abandon` lifecycle, checkout-local durable state under `<git-dir>/sce/` (attempt phases `PendingStart` → `Active` → `PendingAbandon`), and a generation-tracked recovery barrier. Exact `ToolError` evidence persists the doomed attempt as `PendingAbandon` before any cleanup seam call and the attempt is removed only after the generic `abandon` succeeds, so a transient cleanup failure is retried rather than losing the scope. A generated `sce-mutation-scope.ts` transport plugin (`config/lib/mutation-scope-plugin/`, registered last in the OpenCode `plugin` array) is installed as the final OpenCode plugin by `sce setup` — the config merge appends it after arbitrary user plugins and `sce doctor` flags any non-last position — so real OpenCode sessions now reach the adapter.
+Pi's adapter, in `cli/src/services/hooks/pi_mutation_scope/` (hidden `sce hooks pi-mutation-scope`), tracks `bash`/`edit`/`write` with a `PendingStart`/`Executed`/`Closed`/`PendingAbandon` lifecycle keyed on Pi's `tool_result` event; the canonical generated Pi extension now drives it from ordinary Pi sessions with fail-closed delivery. That extension also invokes the related, harness-neutral `sce hooks external-mutation-guard` process (Unix-only) for human `!`/`!!` shell commands, keeping them outside AI scopes while the durable guard is active. See [`context/cli/opencode-mutation-scope-integration.md`](cli/opencode-mutation-scope-integration.md), [`context/cli/opencode-mutation-scope-adapter-lifecycle.md`](cli/opencode-mutation-scope-adapter-lifecycle.md), [`context/cli/pi-mutation-scope-integration.md`](cli/pi-mutation-scope-integration.md), and [`context/cli/mutation-trace-external-mutation-guard.md`](cli/mutation-trace-external-mutation-guard.md).
 
-All three adapters attach optional `ScopeProvenance` at admission (OpenCode
+All four adapters attach optional `ScopeProvenance` at admission (OpenCode
 stamps `oc_<sessionID>` and the observed model, else `NULL`). The verified
 mutation protocol still decides scope ownership and `AiExclusive(scope)`;
 provenance is observational metadata resolved later into mutation-derived

@@ -9,8 +9,8 @@ call, and invokes the existing runtime with a lazy DB provider.
 Built by the `mutation-scope-hook-ingress` plan
 (`context/plans/mutation-scope-hook-ingress.md`). It lives in
 `cli/src/services/hooks/mutation_scope.rs` and is the transport/normalization
-seam used by shipped Claude Code/Codex adapters and intended for future
-OpenCode/Pi adapters. It contains **no** concrete mapping or lifecycle
+seam used by the shipped Claude Code, Codex, and OpenCode adapters, plus a Pi
+adapter driven by the canonical generated extension in ordinary Pi sessions. It contains **no** concrete mapping or lifecycle
 translation — see [Generic ingress vs harness adapter](#generic-ingress-vs-harness-adapter).
 
 ## Command routing

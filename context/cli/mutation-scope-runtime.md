@@ -5,10 +5,12 @@ The crate-visible surface of `cli/src/services/mutation_trace/runtime/` and the 
 Built by the `mutation-scope-runtime-integration` plan (`context/plans/mutation-scope-runtime-integration.md`). The generic
 [`sce hooks mutation-scope` ingress](mutation-scope-hook-ingress.md), the shipped
 Claude Code, Codex, and OpenCode adapters (OpenCode reachable in production via a
-generated plugin installed last by `sce setup`; Pi: none) drive this seam. This file
+generated plugin installed last by `sce setup`) drive this seam, plus a Pi adapter
+driven by the canonical generated extension in ordinary Pi sessions. This file
 records the adapter contract; the harness-specific mappings are in
-[`codex-mutation-scope-integration.md`](codex-mutation-scope-integration.md) and
-[`opencode-mutation-scope-integration.md`](opencode-mutation-scope-integration.md).
+[`codex-mutation-scope-integration.md`](codex-mutation-scope-integration.md),
+[`opencode-mutation-scope-integration.md`](opencode-mutation-scope-integration.md),
+and [`pi-mutation-scope-integration.md`](pi-mutation-scope-integration.md).
 
 The mechanics live in [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md) (`coordinate()`), [`mutation-trace-scope-abandonment.md`](mutation-trace-scope-abandonment.md) (`abandon_scope()`), [`mutation-trace-protected-worktree.md`](mutation-trace-protected-worktree.md) (safety prefix), and [`mutation-trace-protocol.md`](mutation-trace-protocol.md) (pure protocol). This file records what adapters must do and why.
 
@@ -256,9 +258,10 @@ those seam steps leaves the attempt `PendingAbandon` and recovery unresolved, so
 the operation is retried on the next recovery-capable boundary instead of the
 scope being silently forgotten. Broad asynchronous OpenCode lifecycle events
 abandon nothing.
-Pi has no adapter and still owns its own `ScopeId` / `EventId` derivation and
-stale-process detection; repository-scoped unowned-checkout cleanup is still
-open.
+Pi's adapter owns its own `(session-id, tool-call-id)` → `ScopeId` derivation
+(see [`pi-mutation-scope-integration.md`](pi-mutation-scope-integration.md));
+its stale-process detection and repository-scoped unowned-checkout cleanup
+are still open.
 
 Real Claude and Codex `Bash` regressions exercise the complete runtime path
 through commit and persisted Agent Trace JSON. They confirm that

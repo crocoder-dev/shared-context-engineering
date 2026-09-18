@@ -241,6 +241,27 @@ where
     )
 }
 
+pub(super) fn coordinate_on_held_worktree<P>(
+    repository_root: &Path,
+    worktree_id: &WorktreeId,
+    boundary: &RuntimeBoundary,
+    open_db: P,
+    force_recovery: bool,
+) -> Result<CoordinateOutcome, CoordinateError>
+where
+    P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+{
+    coordinate_protected(
+        repository_root,
+        worktree_id,
+        boundary,
+        open_db,
+        force_recovery,
+        |_attempt| {},
+        |_attempt| Ok(()),
+    )
+}
+
 fn protected_worktree_failure(error: ProtectedWorktreeError) -> CoordinateError {
     match error {
         ProtectedWorktreeError::GitDirResolution(source)
@@ -1000,14 +1021,14 @@ mod tests {
             &db,
             &capture,
             &worktree,
-            &RuntimeBoundary::Advance {
-                scope: ScopeId("scope-a".to_string()),
-                event: EventId("evt-advance-a".to_string()),
-                actor_kind: actor_a,
+            &RuntimeBoundary::Close {
+                scope: ScopeId("scope-b".to_string()),
+                event: EventId("evt-close-b".to_string()),
+                actor_kind: actor_b,
             },
             false,
         )
-        .expect("advance should succeed");
+        .expect("close should succeed");
 
         let event = outcome
             .mutation_event

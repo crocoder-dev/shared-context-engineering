@@ -97,6 +97,34 @@ Rust `conversation-trace` intake applies the same idempotent `pi_` prefix to
 both message and part session IDs, while skipped and batch-failure diagnostics
 retain the original producer-native session ID.
 
+## Implemented slice: mutation-scope lifecycle
+
+- `tool_call` gates the tracked built-ins `bash`, `edit`, and `write` through
+  the hidden `sce hooks pi-mutation-scope` command and blocks fail-closed when
+  attribution cannot be established. Read-only, custom, and unknown tools do
+  not invoke the adapter.
+- `tool_result` is forwarded as execution evidence; `tool_execution_end` is
+  delivered only after that exact attempt's result delivery settles. A missing
+  result or terminal transport failure uses the adapter's abandon/rebaseline
+  path rather than fabricating a Close. `tool_execution_start` is telemetry
+  only.
+- Terminal delivery state is keyed by `(session_id, tool_call_id)` and blocks
+  later tracked Starts while unresolved. Pi session and model provenance are
+  captured at Start admission.
+
+## Implemented slice: guarded user Bash
+
+- `user_bash` uses Pi 0.80.6's `{ operations, result }` API. On Unix it arms
+  `sce hooks external-mutation-guard`, waits for durable `Armed`, and returns
+  operations that relay the command, output, cancellation, and final result to
+  the supervisor; Pi/Node never spawns the shell locally. On Windows it
+  returns a full replacement failure result and never executes the command.
+- The human command never creates a Pi AI scope. When SCE receives the event,
+  the supervisor's guard remains active through shell termination and cleanup.
+- A real interactive-TUI smoke confirmed marker presence during a running
+  `!` command and marker cleanup after Pi cancellation; see
+  [`Pi mutation-scope integration`](../cli/pi-mutation-scope-integration.md).
+
 ## Asset pipeline, install, and doctor coverage
 
 - For repository builds, a pre-Cargo step evaluates the canonical Pkl model and
@@ -115,7 +143,7 @@ retain the original producer-native session ID.
 
 ## Deferred non-goals
 
-User-shell `!`/`!!` policy enforcement and bash-mutation diff tracing are
+User-shell `!`/`!!` policy enforcement and bash-mutation diff tracing remain
 deferred (see `context/plans/pi-extension-sce-integration.md`).
 
 See also: [generated-opencode-plugin-registration.md](generated-opencode-plugin-registration.md),
