@@ -263,13 +263,18 @@ classifier stays pure and read-only regardless.
 
 ## Task stack
 
-- [ ] T01: `Define the shared mutation-scope health status contract` (status:todo)
+- [x] T01: `Define the shared mutation-scope health status contract` (status:done)
   - Task ID: T01
-  - Scope: In — a new small module (e.g. `cli/src/services/mutation_trace/scope_health.rs` or a peer location chosen at implementation time) defining the `MutationScopeHealthStatus` enum (`Healthy`, `Recovering`, `Blocked`, `Invalid`) with doc comments that restate the precise semantics in [Health status definitions](#health-status-definitions) (not just the enum names), and a per-adapter health record (adapter identity, status, human-readable reason, and any machine detail doctor needs to render or serialize it). Out — any adapter-specific classification logic, and any doctor wiring.
+  - Scope: In — a new small module (e.g. `cli/src/services/mutation_trace/scope_health.rs` or a peer location chosen at implementation time) defining the `MutationScopeHealthStatus` enum (`Healthy`, `Recovering`, `Blocked`, `Invalid`) and the shared per-adapter health record (adapter identity, status, human-readable reason, and any machine detail doctor needs to render or serialize it). Out — any adapter-specific classification logic, and any doctor wiring.
   - Dependencies: none
-  - Done when: the shared type compiles, derives whatever traits its consumers need (`Debug`/`Clone`/`PartialEq`/`serde::Serialize` as required by JSON rendering), its doc comments match the plan's health-status definitions exactly (including that `recovering` requires a proven future self-healing path and `blocked` requires the absence of one), and it has unit tests only for its own invariants (e.g. any ordering/aggregation helper it exposes).
+  - Done when: the shared `MutationScopeHealthStatus` enum exists; the per-adapter `MutationScopeAdapterHealth` record exists; the type derives whatever traits its current consumers need (`Debug`/`Clone`/`PartialEq`/`serde::Serialize` as required by JSON rendering); the record carries adapter identity, status, a human-readable reason, and optional machine detail; focused unit tests cover the shared type/record behavior; and no adapter-specific classifier logic or doctor integration is introduced. The detailed semantics of `Healthy`/`Recovering`/`Blocked`/`Invalid` remain authoritative in this plan's [Health status definitions](#health-status-definitions) and are synchronized into durable context by T06; they do not need to be duplicated as comments in the Rust type.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml scope_health`
-  - Context synchronization: pending
+  - Context synchronization: synced
+  - Completed: 2026-09-19
+  - Files changed: `cli/src/services/hooks/mutation_scope_health.rs`, `cli/src/services/hooks/mod.rs`
+  - Result: Added the shared `MutationScopeHealthStatus` enum (`Healthy`/`Recovering`/`Blocked`/`Invalid`) and `MutationScopeAdapterHealth` record (adapter identity via the existing `ActorKind`, status, human-readable reason, optional machine detail) in a new `cli/src/services/hooks/mutation_scope_health.rs` module, registered in `hooks/mod.rs`. No adapter classification logic or doctor wiring was added.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml scope_health` — pass (3 tests).
+  - Context impact: domain — no root context file currently describes mutation-scope health status; T06's context sync is where the shared status vocabulary migrates into `context/sce/agent-trace-hook-doctor.md` per the plan's context-sync section. This task introduces no new adapter-facing or user-facing contract by itself.
 
 - [ ] T02: `Classify Claude mutation-scope health` (status:todo)
   - Task ID: T02
