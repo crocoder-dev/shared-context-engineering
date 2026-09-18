@@ -64,12 +64,39 @@ human.txt; sleep 60'` showed the durable
 cancelling the command through Pi removed the marker afterward. This proves the
 normal Pi → SCE `user_bash` → arm → `Armed` → supervisor execution path and its
 cancellation/finalization cleanup. Production-path regressions (real Git/Agent
-Trace-DB coverage, D13 guard end-to-end cases, and a pinned real-Pi smoke
-replaying the captures above) live alongside `pi_mutation_scope/mod.rs` and
-`sce-pi-extension.test.ts`. No live model-authenticated Pi session or native
-Windows host is available in this sandbox, so the Windows disposition and the
-competing-`user_bash`-extension limitation are proven via a `process.platform`
-override and simulated dispatch order, not a live run.
+Trace-DB coverage, D13 guard end-to-end cases, and a pinned Pi capture-replay
+smoke — real Pi 0.80.6 lifecycle captures from T01 replayed through the
+extension's real registered handlers, not an actual Pi process/session) live
+alongside `pi_mutation_scope/mod.rs` and `sce-pi-extension.test.ts`.
+
+A separate, genuine real-Pi-runtime tracked-tool smoke also exists at
+`config/lib/pi-plugin/real-pi-runtime-smoke/` (`run.sh`), reproducible with no
+model credentials or network access: it builds `sce` from this branch, runs
+the real `sce setup --pi` in a scratch Git repo, installs a throwaway
+`.pi/extensions/test-provider/` extension that uses `@earendil-works/pi-ai`'s
+own official scripted-response test harness (`createFauxCore`) via
+`pi.registerProvider(..., { streamSimple })` to script one deterministic
+`bash` tool call, and drives it through the SDK's `createAgentSession()` +
+`DefaultResourceLoader` — the same `.pi/extensions/` auto-discovery ordinary
+`pi` uses. The real SCE extension (installed by the real `sce setup --pi`,
+not stubbed) intercepts the tool call and reaches the real
+`sce hooks pi-mutation-scope` Rust adapter. `run.sh` asserts, rather than
+merely prints, the scratch repo's own repository-scoped Agent Trace DB result
+— via exact-cardinality `SELECT COUNT(*)` queries against the pinned
+`nix run .#turso` in machine-readable `list` mode — that exactly one `pi`-actor
+scope reaches `status = closed`, exactly one `close` boundary event has
+`attribution_kind = ai_exclusive` (`tainted = 0`, `failure_kind = healthy`),
+and exactly one `mutation_trace_scope_provenance` row has `session_id LIKE
+'pi_%'` and `model_id = sce-test-provider/sce-test-model`; any failed
+assertion exits non-zero with a diagnostic. This is distinct from, and not a
+replacement for, the capture-replay smoke above — see T06 in
+`context/plans/pi-mutation-scope-integration.md` for the full evidence and
+scope discipline (bash only, per the task's own minimum-smoke guidance).
+
+No live model-authenticated Pi session or native Windows host is available in
+this sandbox, so the Windows disposition and the competing-`user_bash`-extension
+limitation are proven via a `process.platform` override and simulated dispatch
+order, not a live run.
 
 ## Scope model and coverage
 

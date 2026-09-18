@@ -973,7 +973,7 @@ async function settleAllSpawns(rounds = 5): Promise<void> {
 	}
 }
 
-describe("pinned real-Pi smoke (T01 capture replay, Linux)", () => {
+describe("pinned Pi capture-replay smoke (T01 lifecycle fixtures, Linux)", () => {
 	test("bash: tool_execution_start -> tool_call -> tool_result -> tool_execution_end reaches confirmed Close wiring, with model provenance", async () => {
 		const lines = loadCaptureLines("bash-success.jsonl");
 		const startEvent = findEvent(lines, "tool_execution_start");
@@ -1250,7 +1250,7 @@ describe("pinned real-Pi smoke (T01 capture replay, Linux)", () => {
 	});
 });
 
-describe("Windows-specific pinned real-Pi smoke (D13 disposition)", () => {
+describe("Windows-specific pinned Pi capture-replay smoke (D13 disposition)", () => {
 	const originalPlatform = process.platform;
 
 	afterEach(() => {
