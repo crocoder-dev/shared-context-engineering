@@ -276,13 +276,18 @@ classifier stays pure and read-only regardless.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml scope_health` — pass (3 tests).
   - Context impact: domain — no root context file currently describes mutation-scope health status; T06's context sync is where the shared status vocabulary migrates into `context/sce/agent-trace-hook-doctor.md` per the plan's context-sync section. This task introduces no new adapter-facing or user-facing contract by itself.
 
-- [ ] T02: `Classify Claude mutation-scope health` (status:todo)
+- [x] T02: `Classify Claude mutation-scope health` (status:done)
   - Task ID: T02
   - Scope: In — a read-only function in `cli/src/services/hooks/claude_mutation_scope/` that reads `claude-mutation-scope-state.json` via the existing `state::read_state` and maps it to the T01 status type using the proven rule from AC3 (`recovery_pending && attempts non-empty` → `Blocked`, because the recovery barrier's only self-healing path — `{"operation":"flush"}` — only runs when `attempts.is_empty()`, so a non-empty `attempts` list has no reachable future self-healing transition; `recovery_pending && attempts empty` → `Recovering`, because that flush path does run and does clear `recovery_pending`; neither → `Healthy`; a `read_state` error → `Invalid` with the error surfaced); absent-file handling (already `Ok(AdapterState::default())` in `read_state`) must classify as `Healthy`. Out — doctor wiring, other adapters, any change to the recovery barrier itself.
   - Dependencies: T01
   - Done when: unit tests cover all four resulting statuses, the absent-file case, and the AC3 regression scenario (stale non-empty-`attempts` state persists across two successive tracked `PreToolUse` calls without self-clearing).
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_mutation_scope`
-  - Context synchronization: pending
+  - Context synchronization: synced
+  - Completed: 2026-09-19
+  - Files changed: `cli/src/services/hooks/claude_mutation_scope/health.rs` (new), `cli/src/services/hooks/claude_mutation_scope/mod.rs`, `cli/src/services/hooks/claude_mutation_scope/state.rs`
+  - Result: Added `classify_health(git_dir) -> MutationScopeAdapterHealth` in a new `claude_mutation_scope/health.rs`, registered as `pub(crate) mod health;` in `mod.rs`. It calls the existing `state::read_state` and maps: a read/parse error → `Invalid` with the error surfaced via `.with_detail(...)`; `recovery_pending == false` (including the absent-file default) → `Healthy`; `recovery_pending == true` with empty `attempts` → `Recovering`; `recovery_pending == true` with non-empty `attempts` → `Blocked`. Made `state::state_path` `pub(crate)` (was module-private) so the malformed-file test could target the real state file path without duplicating the filename constant. No doctor wiring, other-adapter logic, or recovery-barrier behavior was touched.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_mutation_scope` — pass (119 tests, including the new `health::tests` module: absent-file, `recovery_pending=false` with live attempts, empty-attempts recovering, non-empty-attempts blocked, malformed-file invalid, and the AC3 regression driving a real failed-abandon seam call then asserting `apply_recovery_barrier` denies twice in a row with `classify_health` reporting `Blocked` throughout).
+  - Context impact: domain — `context/cli/claude-mutation-scope-integration.md` now records the proven Healthy / Recovering / Blocked / Invalid mapping in a new "Mutation-scope health" section adjacent to "Abandonment cleanup signals" / "The recovery barrier", including the behavioral reason for Recovering (the recovery barrier's own flush + `clear_recovery_pending` path) versus Blocked (the flush path never runs when `attempts` is non-empty, so ordinary future `PreToolUse` calls keep denying without advancing recovery — the exact incident shape), the read-only boundary, and the observation-window nuance.
 
 - [ ] T03: `Investigate and classify Codex mutation-scope health` (status:todo)
   - Task ID: T03
