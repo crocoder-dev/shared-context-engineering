@@ -648,58 +648,58 @@ Neither finding is a failure of the overall Pi integration approach; both are ex
 
 ## Acceptance criteria
 
-- [ ] AC1: Exact lifecycle evidence exists for Pi `0.80.6`, covering `tool_call`, `tool_execution_start`, `tool_execution_end`, `tool_result`, blocking, handler failure, tool failure, interruption, session lifecycle, process death, model observation, extension ordering, and concurrency — including the frozen `tool_execution_start`-before-`tool_call` ordering and the `tool_result`-gates-execution rule (D5/D6/D7).
+- [x] AC1: Exact lifecycle evidence exists for Pi `0.80.6`, covering `tool_call`, `tool_execution_start`, `tool_execution_end`, `tool_result`, blocking, handler failure, tool failure, interruption, session lifecycle, process death, model observation, extension ordering, and concurrency — including the frozen `tool_execution_start`-before-`tool_call` ordering and the `tool_result`-gates-execution rule (D5/D6/D7).
   - Validate: satisfied by T01's committed fixtures/report (`cli/src/services/hooks/pi_mutation_scope/fixtures/`) with exact Pi version, upstream commit, environment, and event sequences; `/validate` re-confirms this AC against the final implementation, not merely against T01's evidence.
-- [ ] AC2: `bash`, `edit`, and `write` each establish one independently identified Pi mutation scope before their mutation-capable execution begins.
+- [x] AC2: `bash`, `edit`, and `write` each establish one independently identified Pi mutation scope before their mutation-capable execution begins.
   - Validate: adapter tests plus live/runtime fixtures.
-- [ ] AC3: `read`, `grep`, `find`, `ls`, `user_bash`, and representative unknown/custom tools create no Pi mutation scope.
+- [x] AC3: `read`, `grep`, `find`, `ls`, `user_bash`, and representative unknown/custom tools create no Pi mutation scope.
   - Validate: zero-footprint classification and runtime tests.
-- [ ] AC4: failure to establish a tracked Pi Start blocks the tool before execution.
+- [x] AC4: failure to establish a tracked Pi Start blocks the tool before execution.
   - Validate: live probe where the adapter fails and an observable filesystem mutation never occurs.
-- [ ] AC5: a Pi scope cannot create positive mutation attribution until its own confirming post-execution Close, where Close is keyed on the `tool_result`-then-`tool_execution_end` pairing (D6), never on raw `tool_execution_end`.
+- [x] AC5: a Pi scope cannot create positive mutation attribution until its own confirming post-execution Close, where Close is keyed on the `tool_result`-then-`tool_execution_end` pairing (D6), never on raw `tool_execution_end`.
   - Validate: Rust protocol tests plus Quint Pi confirmation-required cases.
-- [ ] AC6: an unconfirmed Pi scope suppresses positive attribution at Claude, Codex, OpenCode, Pi, and Flush boundaries.
+- [x] AC6: an unconfirmed Pi scope suppresses positive attribution at Claude, Codex, OpenCode, Pi, and Flush boundaries.
   - Validate: protocol/MBT/Quint cross-harness tests.
-- [ ] AC7: a confirming Pi Close (the D6 `tool_result`-then-`tool_execution_end` pairing) can produce `AiExclusive(Pi)` when it is the only safe live scope and `AiContended` when overlapping confirmation-safe scopes remain.
+- [x] AC7: a confirming Pi Close (the D6 `tool_result`-then-`tool_execution_end` pairing) can produce `AiExclusive(Pi)` when it is the only safe live scope and `AiContended` when overlapping confirmation-safe scopes remain.
   - Validate: Rust/Quint reachability tests.
-- [ ] AC8: an earlier extension or SCE bash policy rejecting a tool before SCE Start creates no scope; a later extension rejecting after SCE Start cannot create positive attribution and is eventually conservatively recovered. A later-extension rejection after a successful SCE Start produces `tool_execution_end` with no preceding `tool_result` for that `toolCallId` (D7); the adapter must abandon, never Close, on that exact signal.
+- [x] AC8: an earlier extension or SCE bash policy rejecting a tool before SCE Start creates no scope; a later extension rejecting after SCE Start cannot create positive attribution and is eventually conservatively recovered. A later-extension rejection after a successful SCE Start produces `tool_execution_end` with no preceding `tool_result` for that `toolCallId` (D7); the adapter must abandon, never Close, on that exact signal.
   - Validate: pinned-runtime ordering fixtures plus adapter/runtime regression; fixtures assert the exact `tool_execution_end`-without-`tool_result` pairing, not a broader heuristic.
-- [ ] AC9: a tracked tool that executes and then reports `isError` still produces `tool_result` (proving execution occurred, per D6) and observes its final Git tree through the same `tool_result`-gated terminal boundary as success.
+- [x] AC9: a tracked tool that executes and then reports `isError` still produces `tool_result` (proving execution occurred, per D6) and observes its final Git tree through the same `tool_result`-gated terminal boundary as success.
   - Validate: partial-mutation-then-error regression.
-- [ ] AC10: simultaneous or overlapping Pi calls remain separate scopes and terminal cleanup of one never implicitly retires another.
+- [x] AC10: simultaneous or overlapping Pi calls remain separate scopes and terminal cleanup of one never implicitly retires another.
   - Validate: concurrency adapter/runtime test.
-- [ ] AC11: a lost or failed terminal boundary cannot later be replayed as if its observation happened at recovery time.
+- [x] AC11: a lost or failed terminal boundary cannot later be replayed as if its observation happened at recovery time.
   - Validate: injected terminal seam failure followed by another filesystem mutation; recovery must discard/rebaseline the ambiguous interval instead of attributing it.
-- [ ] AC12: stale-process cleanup requires positive process-death evidence and never uses TTL, age, session identity, or ActorKind alone.
+- [x] AC12: stale-process cleanup requires positive process-death evidence and never uses TTL, age, session identity, or ActorKind alone.
   - Validate: live-owner vs dead-owner durable-state tests.
-- [ ] AC13: Pi Start provenance stores canonical `pi_<sessionID>` plus the exact observed normalized model, or `NULL` when unavailable.
+- [x] AC13: Pi Start provenance stores canonical `pi_<sessionID>` plus the exact observed normalized model, or `NULL` when unavailable.
   - Validate: real repository Agent Trace DB and final Agent Trace regressions.
-- [ ] AC14: existing Pi Bash policy, conversation tracing, edit/write diff tracing, generated extension installation, and doctor behavior remain intact.
+- [x] AC14: existing Pi Bash policy, conversation tracing, edit/write diff tracing, generated extension installation, and doctor behavior remain intact.
   - Validate: existing Pi/config-lib tests, setup smoke, doctor smoke, and generated-output validation.
-- [ ] AC15: only confirmed exclusive Pi evidence reaches `mutation_ai_patch`; blocked, ambiguous, unconfirmed, abandoned, custom/unknown, and recovery intervals do not.
+- [x] AC15: only confirmed exclusive Pi evidence reaches `mutation_ai_patch`; blocked, ambiguous, unconfirmed, abandoned, custom/unknown, and recovery intervals do not.
   - Validate: real Git/DB production-path tests.
-- [ ] AC16: cross-harness Pi overlap obeys the generalized mutation protocol, at minimum Pi+Claude, Pi+Codex, Pi+OpenCode.
+- [x] AC16: cross-harness Pi overlap obeys the generalized mutation protocol, at minimum Pi+Claude, Pi+Codex, Pi+OpenCode.
   - Validate: production-path tests against the OpenCode adapter already present in the stacked base (see **Stack and base**), plus Rust/Quint cross-harness tests.
-- [ ] AC17: no new Agent Trace schema or mutation-trace SQL migration is introduced.
+- [x] AC17: no new Agent Trace schema or mutation-trace SQL migration is introduced.
   - Validate: baseline diff over schema/migration paths is empty.
-- [ ] AC18: the protocol/Quint semantic change is limited to adding the Pi case to the already-generalized confirmation-required predicate. This also covers D13's external-mutation guard: it reuses the existing `ProtectedWorktree`/`WorktreeLock`/`ExternalTaintMarker`/`database_failure`/`recover` primitives unchanged, held for a longer, explicitly-terminated interval whose lifetime is anchored to the actual shell process (via the supervisor spawning it directly and, on Unix, fd-duplicating the lock into it), and adds no new protocol.rs or Quint code; the new long-lived supervisor invocation the mechanism requires (T03) lives in the runtime/ingress layer (`cli/src/services/mutation_trace/runtime/`, `cli/src/services/hooks/mutation_scope.rs`), outside this baseline-diff scope entirely.
+- [x] AC18: the protocol/Quint semantic change is limited to adding the Pi case to the already-generalized confirmation-required predicate. This also covers D13's external-mutation guard: it reuses the existing `ProtectedWorktree`/`WorktreeLock`/`ExternalTaintMarker`/`database_failure`/`recover` primitives unchanged, held for a longer, explicitly-terminated interval whose lifetime is anchored to the actual shell process (via the supervisor spawning it directly and, on Unix, fd-duplicating the lock into it), and adds no new protocol.rs or Quint code; the new long-lived supervisor invocation the mechanism requires (T03) lives in the runtime/ingress layer (`cli/src/services/mutation_trace/runtime/`, `cli/src/services/hooks/mutation_scope.rs`), outside this baseline-diff scope entirely.
   - Validate: targeted baseline diff over `protocol.rs`, `spec/mutation_cursor.qnt`, its documentation, and MBT/refinement surface, showing only Pi-shaped additions.
-- [ ] AC19: on every platform where guarded Pi `user_bash` attribution is supported, every mutation performed by a `user_bash` execution occurs inside one worktree-wide external-mutation guard whose lifetime spans the entire lifetime of the actual shell process (not the supervisor's, and not the control channel's), and no AI boundary can make any part of that guarded interval positively attributable, for any live harness scope on that worktree (D13's corrected lifetime invariant). On Windows, where guarded `user_bash` attribution is explicitly unsupported for this PR, `user_bash` is unconditionally refused rather than guarded — see the Windows-refusal bullet below — and this AC's guard-lifetime claims apply only to the Unix mechanism.
+- [x] AC19: on every platform where guarded Pi `user_bash` attribution is supported, every mutation performed by a `user_bash` execution occurs inside one worktree-wide external-mutation guard whose lifetime spans the entire lifetime of the actual shell process (not the supervisor's, and not the control channel's), and no AI boundary can make any part of that guarded interval positively attributable, for any live harness scope on that worktree (D13's corrected lifetime invariant). On Windows, where guarded `user_bash` attribution is explicitly unsupported for this PR, `user_bash` is unconditionally refused rather than guarded — see the Windows-refusal bullet below — and this AC's guard-lifetime claims apply only to the Unix mechanism.
   - Validate, successful guard, single write: arm the guard while a Pi scope and at least one other-harness scope (Claude, Codex, or OpenCode) are both live and mutating on the same worktree; let the human command execute and mutate; end the guard; then trigger a boundary from the *other* harness's scope (not Pi's own) and assert the forced recovery abandons every live worktree scope before that boundary is evaluated, that neither scope reaches `AiExclusive`/`AiContended` over the guarded interval, and that the interval is excluded from `mutation_ai_patch` (matching AC15).
   - Validate, the mid-command race: with the guard active and a human write already made (write #1), have a foreign harness's boundary attempt to run *while the guard is still active* and assert it does not proceed — it observes `CoordinateError::LockAcquisition` (or the adapter's own conservative retry-later handling of it) and neither reads, mutates, nor clears any protocol or taint state; let a second human write occur (write #2) before the guard ends; end the guard; assert both writes remain excluded from positive AI attribution and no live scope reached `AiExclusive`/`AiContended` for any part of the interval spanning either write.
   - Validate, supervisor dies while the shell is still running (Unix): after the guard is armed and the shell has produced at least one write, `SIGKILL` the supervisor process directly while the shell keeps running; assert `WorktreeLock` remains held (a concurrent foreign `coordinate()` call still blocks/fails closed with `CoordinateError::LockAcquisition`, exactly as if the supervisor were alive) for as long as the shell (or a descendant holding the duplicated fd) is alive; let the shell make a second write and then exit; assert the lock frees only once the shell exits, that `ExternalTaintMarker` is still armed at that point, and that the very next `coordinate()` call on that worktree — from any harness — self-heals via the existing unmodified inherited-taint path before processing its own boundary; assert both writes remain excluded from positive AI attribution.
   - Validate, Pi/Node dies while the shell is still running: kill the Pi/Node control-channel process while the guard is active and the shell is still running; assert the supervisor does not treat this as a finish signal, does not kill the shell, and keeps holding the lock/marker; let the shell make a further write and then exit normally; assert the supervisor still runs its normal finish sequence (forced recover, `complete()`, release) with nothing listening on the dead control channel, and that every write remains excluded from positive AI attribution.
   - Validate, Windows refusal: on Windows, invoke `user_bash`; assert the handler unconditionally returns the `result` full-replacement (never `operations`), that `session.executeBash()` is never called, that no shell — supervised or otherwise — is ever spawned, and that the command's own exit/output is never delivered because it never ran; assert a concurrently live Pi `bash`/`edit`/`write` tracked-tool scope on the same Windows worktree is unaffected and can still separately reach `AiExclusive`/`AiContended` normally, proving the refusal is scoped to `user_bash` alone and does not disable tracked-tool attribution.
-- [ ] AC20: after a `user_bash`-guarded interval ends and its forced recovery/rebaseline durably succeeds, a fresh, uninterfered-with Pi scope — and a fresh scope from any other harness whose boundary was deferred by the guard — can still reach `AiExclusive` (D13).
+- [x] AC20: after a `user_bash`-guarded interval ends and its forced recovery/rebaseline durably succeeds, a fresh, uninterfered-with Pi scope — and a fresh scope from any other harness whose boundary was deferred by the guard — can still reach `AiExclusive` (D13).
   - Validate: guard, recover (abandoning the live scope(s) and rebaselining), then run a clean tracked Pi tool to completion with no further interference; assert it reaches `AiExclusive` and lands in `mutation_ai_patch`. Also validate that a foreign-harness boundary that was deferred (AC19's mid-command-race case) succeeds normally once retried after the guard ends, and that a boundary deferred by the supervisor-death self-heal case above also succeeds normally once retried.
-- [ ] AC21: if the worktree external-mutation guard cannot be durably established, the underlying Bash execution is never invoked, and the supervisor — not Pi/Node — is confirmed to be the process that actually spawns the real shell once the guard is established.
+- [x] AC21: if the worktree external-mutation guard cannot be durably established, the underlying Bash execution is never invoked, and the supervisor — not Pi/Node — is confirmed to be the process that actually spawns the real shell once the guard is established.
   - Validate: inject a guard-establishment failure (lock-acquisition timeout, marker-persistence failure, or spawn failure) while a Pi scope (and, in at least one variant, an other-harness scope) is live on the worktree; assert the `user_bash` handler returns Pi's `result` full-replacement (never `operations`), that no real shell is ever spawned by either Pi/Node or a supervisor, that an observable shell mutation never occurs, and that the live scope(s) are unaffected because no human mutation was ever introduced.
   - Validate, ambiguous begin acknowledgement: have the supervisor durably acquire the lock and arm the marker while the caller's acknowledgement is lost or delayed past its bound, before any shell has been spawned; assert the command is still blocked (never executed on an uncertain result) and that the caller terminates the orphaned supervisor process so the lock is promptly released (no shell exists yet to hold a duplicated fd in this window); assert a later boundary on that worktree conservatively recovers/rebaselines it anyway — an accepted false negative (unnecessary abandonment), never a safety violation.
   - Validate, guard finalization failure: force the forced-recovery commit at guard-finish time to fail; assert `complete()` is never called, the marker remains armed, and the supervisor reports failure without claiming clean attribution; assert the next boundary on that worktree self-heals via the existing inherited-taint recovery path.
   - Validate, the real shell's parent is the supervisor: assert the spawned shell process's parent pid is the supervisor's pid (not Pi/Node's), confirming Pi/Node's wrapped `exec()` never itself calls `createLocalBashOperations()`/spawns a shell once a guard exists.
-- [ ] AC22: `sce setup --pi` installs SCE's canonical generated Pi extension, and a normal `pi` invocation loads it via ordinary auto-discovery and uses it for tracked-tool (`bash`/`edit`/`write`) mutation attribution and for guarded `user_bash` handling whenever Pi actually delivers those events to SCE's handlers. SCE does not claim, prove, or test authority over third-party Pi extension ordering. A third-party extension that consumes `user_bash` before SCE is a documented, accepted boundary of the external-mutation-guard guarantee (D13), not a defect this AC requires closing.
+- [x] AC22: `sce setup --pi` installs SCE's canonical generated Pi extension, and a normal `pi` invocation loads it via ordinary auto-discovery and uses it for tracked-tool (`bash`/`edit`/`write`) mutation attribution and for guarded `user_bash` handling whenever Pi actually delivers those events to SCE's handlers. SCE does not claim, prove, or test authority over third-party Pi extension ordering. A third-party extension that consumes `user_bash` before SCE is a documented, accepted boundary of the external-mutation-guard guarantee (D13), not a defect this AC requires closing.
   - Validate: in a scratch repository, run `sce setup --pi`, launch ordinary `pi` (no wrapper, no launcher, no alternate entry point), execute a tracked `bash`/`edit`/`write` tool call, and confirm the corresponding Start/Close reaches `sce hooks pi-mutation-scope` and produces `AiExclusive` attribution when it is the only live scope; separately, invoke `!`/`!!` `user_bash` and confirm SCE's guard establishes and the command executes only through the supervisor. Then register a second extension ahead of SCE in `.pi/settings.json` whose own `user_bash` handler returns a result; assert Pi never dispatches that `user_bash` event to SCE (no guard-establishment attempt occurs), and record this as the documented, accepted limitation rather than a failure — confirm tracked `bash`/`edit`/`write` attribution for the same session is unaffected, since it does not depend on SCE's position in the extension array.
-- [ ] AC23: control-process death (Pi/Node) never terminates or truncates a running human `user_bash` command, and never causes the guard to end before the actual shell terminates (D13's chosen Option A policy).
+- [x] AC23: control-process death (Pi/Node) never terminates or truncates a running human `user_bash` command, and never causes the guard to end before the actual shell terminates (D13's chosen Option A policy).
   - Validate: kill the Pi/Node process at several points during a running `user_bash` command (before any output, mid-stream, after the shell has already exited but before the supervisor's finish sequence completes) and assert in every case that the shell is never signaled by the supervisor as a result of the control-channel closing, that the guard's finish sequence runs only once the shell itself terminates, and that the shell's own exit code/output — while now undeliverable to the dead Pi/Node process — does not affect worktree correctness.
 
 ### Full validation
@@ -2864,12 +2864,26 @@ Persist this field in every plan; this is durable plan state, not chat state:
     as Claude, Codex, and OpenCode — confirmed exclusive evidence can reach
     final Agent Trace provenance; uncertain, blocked, failed-to-observe, or
     ambiguous execution cannot.
-  - Verify: the complete **Full validation** section, run after context
-    synchronization for this task.
-  - Completed: 2026-09-18
+  - Verify (task-level; the plan-wide **Full validation** section — including
+    `nix flake check` and the Quint suite — is deferred to `/validate` and is
+    not part of this task's own Verify):
+    `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::`;
+    `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml pi_mutation_scope`;
+    `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`;
+    `nix run nixpkgs#bun -- test config/lib`; `cargo fmt --check`; `biome check`;
+    `cargo clippy --all-targets -D warnings`; `git diff --check`; baseline diff
+    over `config/schema/agent-trace.schema.json` and
+    `cli/migrations/agent-trace-repository/` against
+    `opencode-mutation-scope-integration` (expected empty).
+  - Completed: 2026-09-18 (reopened same day for a completion-evidence
+    correction, then re-completed once the real Pi-runtime smoke below was
+    obtained — see **Real Pi-runtime smoke (2026-09-18 correction)**).
   - Files changed: `cli/src/services/hooks/mod.rs`;
     `cli/src/services/hooks/pi_mutation_scope/mod.rs`;
-    `config/lib/pi-plugin/sce-pi-extension.test.ts` (3 files; test-only, no
+    `config/lib/pi-plugin/sce-pi-extension.test.ts`;
+    `config/lib/pi-plugin/real-pi-runtime-smoke/provider-extension.ts`;
+    `config/lib/pi-plugin/real-pi-runtime-smoke/driver.mjs`;
+    `config/lib/pi-plugin/real-pi-runtime-smoke/run.sh` (6 files; test-only, no
     production code, schema, or migration changed).
   - Result: Added 12 Pi production-path cases to the existing
     `mutation_provenance_e2e` harness (bash/write/edit confirmed attribution
@@ -2888,18 +2902,29 @@ Persist this field in every plan; this is durable plan state, not chat state:
     exact-match covered, harness-neutrally, by the five pre-existing
     `external_mutation_guard.rs` runtime tests, since D13's supervisor
     mechanism is generic and Pi is only its current caller — duplicating them
-    with a Pi-specific wrapper would not add coverage. Added a pinned real-Pi
-    Linux smoke (bash/write/edit, SCE Start failure, later-extension
-    rejection, execution error, model provenance) that replays T01's exact
-    captured JSONL fixtures through the extension's real registered handlers
-    against a real temporary Git repository — a live model-authenticated Pi
-    session could not be driven in this sandbox (no `~/.pi/agent/auth.json`
-    credentials), matching the environmental limitation T05 already
-    documented for its own real-TUI evidence. Added a Windows-specific smoke
-    that overrides `process.platform` to `"win32"` inside the same Linux test
-    process (explicitly documented as such, not a native Windows run) proving
-    `user_bash` is unconditionally refused there while tracked-tool
-    attribution is unaffected. Added one further TypeScript test proving the
+    with a Pi-specific wrapper would not add coverage. Added a pinned **Pi
+    capture-replay smoke** (Linux) — also describable as a pinned Pi
+    lifecycle-fixture replay; covering bash/write/edit, SCE Start failure,
+    later-extension rejection, execution error, model provenance — that
+    replays T01's exact captured JSONL fixtures (real Pi 0.80.6 lifecycle
+    events) through the extension's real registered handlers against a real
+    temporary Git repository. This proves real Pi capture shape -> real SCE
+    extension handlers -> expected forwarding behavior. **It does not execute
+    the actual Pi 0.80.6 runtime/process**, does not exercise Pi's own
+    extension auto-discovery/dispatch, and is not a substitute for a real
+    Pi-runtime smoke — this record previously mislabeled it "pinned real-Pi
+    smoke"; that label is retracted, the test itself is retained and renamed
+    in `sce-pi-extension.test.ts`. A live model-authenticated Pi session could
+    not be driven in this sandbox (no `~/.pi/agent/auth.json` credentials),
+    matching the environmental limitation T05 already documented for its own
+    real-TUI evidence — that explains why a live-model session wasn't used
+    for this capture-replay smoke; it does not make capture-replay equivalent
+    to a real-Pi-runtime smoke. Added a Windows-specific variant of the same
+    capture-replay method (same caveat: not a native Windows run and not a
+    real-Pi-runtime smoke) that overrides `process.platform` to `"win32"`
+    inside the same Linux test process, proving `user_bash` is unconditionally
+    refused there while tracked-tool attribution is unaffected. Added one
+    further TypeScript test proving the
     accepted competing-`user_bash`-extension limitation (D13/AC22): a
     synthetic extension ranked ahead of SCE in the dispatch loop consumes
     `user_bash` before SCE's own handler ever runs (no supervisor spawn), while
@@ -2932,12 +2957,193 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `cargo fmt --check`, `biome check`, `cargo clippy --all-targets -D
     warnings`, the `pi_mutation_scope`/`hooks::` cargo suites, and `bun test
     config/lib` were all re-run clean afterward.
-  - Context impact: none expected — this task adds test coverage only; no
-    production behavior, public interface, schema, or architecture changed.
-    Root context synchronization still runs per this plan's standing
-    requirement to confirm no root file has drifted.
+  - **Real Pi-runtime smoke (2026-09-18 correction):** this record originally
+    mislabeled the capture-replay smoke above "pinned real-Pi smoke." That was
+    retracted (see the corrected Result text above); T06 was reopened
+    (`status:todo`) until a genuine real-Pi-runtime smoke existed, per the
+    task's own original scope. Investigation into pinned Pi `0.80.6`
+    (`config/lib/node_modules/@earendil-works/pi-coding-agent`,
+    `docs/custom-provider.md` and `docs/sdk.md`) found a supported,
+    credential-free path: extensions may call `pi.registerProvider()` with a
+    `streamSimple` implementation that fully replaces the network call (no
+    HTTP request is made), and `@earendil-works/pi-ai` ships its own official
+    scripted-response test harness for exactly this (`createFauxCore` /
+    `fauxAssistantMessage` / `fauxToolCall`, from `providers/faux.js`) — a
+    supported Pi test mechanism, not an invented one. Separately,
+    `createAgentSession()`'s `DefaultResourceLoader` discovers
+    `.pi/extensions/` from `cwd`, the same auto-discovery ordinary `pi` uses,
+    so a scratch repo's real `sce setup --pi`-installed extension loads
+    through Pi's own normal mechanism, not a hand-built API shim. No live
+    model call, network access, or `~/.pi/agent/auth.json` credential is
+    involved anywhere in this path.
+
+    Built and ran this end to end: `config/lib/pi-plugin/real-pi-runtime-smoke/`
+    (`provider-extension.ts` — a throwaway `.pi/extensions/test-provider/`
+    scripting one `bash` tool call via `createFauxCore`, then a `done` text
+    turn; `driver.mjs` — an SDK driver using `createAgentSession` +
+    `DefaultResourceLoader` + `session.setModel()` + `session.prompt()`;
+    `run.sh` — builds `sce` from this branch's own source via
+    `nix develop -c ./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml`,
+    creates a fresh scratch Git repo, runs the real `sce setup --pi` with that
+    binary on `PATH`, copies in the test-provider extension, runs the driver,
+    then queries the scratch repo's own repository-scoped Agent Trace DB via
+    the pinned `nix run .#turso`). Reproduce with:
+    `bash config/lib/pi-plugin/real-pi-runtime-smoke/run.sh`.
+
+    First attempt showed zero mutation-trace rows despite the bash mutation
+    happening — diagnosed as a test-environment bug, not a production one:
+    the generated extension's `spawnSync("sce", ["hooks", "pi-mutation-scope"])`
+    resolved to a stale, globally-installed `sce` on the host `PATH`
+    (predating this branch, with no `pi-mutation-scope` hook subcommand at
+    all) rather than this branch's freshly built binary. Prepending this
+    branch's `cli/target/debug` to `PATH` before running `sce setup --pi` and
+    the driver fixed it. Observed durable evidence, queried directly from the
+    scratch repository-scoped `agent-trace.db`:
+    `mutation_trace_scopes`: `actor_kind = pi`, `status = closed`, scope ID
+    exactly matching D1's canonical format
+    (`pi-tool-v1|n=1|s=36:<real Pi session UUID>|c=16:sce-smoke-bash-1`).
+    `mutation_trace_events`: `boundary_kind = close`,
+    `attribution_kind = ai_exclusive`, `tainted = 0`, `failure_kind = healthy`.
+    `mutation_trace_scope_provenance`: `session_id = pi_<real Pi session UUID>`,
+    `model_id = sce-test-provider/sce-test-model`. This satisfies all of: the
+    tracked `bash` tool executed through Pi's real tool-dispatch engine; the
+    SCE extension loaded via normal Pi discovery, not manual registration;
+    real `sce hooks pi-mutation-scope` reached the Rust adapter before
+    execution (fail-closed Start honored); `ToolResult`/`ToolExecutionEnd`
+    reached it in real Pi order; the attempt closed cleanly; the resulting
+    Git mutation reached confirmed `AiExclusive`, not contended or ambiguous;
+    and session/model provenance reached the final durable row. Reproduced
+    twice independently (once directly, once by a parallel investigation)
+    with matching results each time.
+
+    Scope discipline: `bash` only, per this task's own "prefer bash as the
+    minimum tracked tool" guidance; `edit`/`write` were not additionally
+    exercised through the real runtime, matching the instruction not to
+    duplicate the capture-replay matrix just to satisfy the word "smoke."
+    T06's original Done-when was not weakened; this closes it as originally
+    written. `[x] T06 ... (status:done)` is restored. The capture-replay
+    smoke and this real-runtime smoke remain two distinct, separately labeled
+    evidence types, per the task record above and
+    `context/cli/pi-mutation-scope-integration.md`.
+  - Context impact: `context/cli/pi-mutation-scope-integration.md` updated to
+    record the real Pi-runtime smoke alongside the existing real-TUI
+    (`user_bash`) evidence, distinct from the capture-replay smoke. No other
+    root context file, schema, migration, or public interface changed.
+  - **Real Pi-runtime smoke self-verification hardening (2026-09-18 repair,
+    PR #278):** `run.sh` previously printed the durable evidence rows without
+    asserting them, so the smoke could exit 0 having proven nothing — exactly
+    the failure mode the first attempt above already hit once (stale global
+    `sce` on `PATH` silently produced zero mutation-trace rows). Repaired
+    `config/lib/pi-plugin/real-pi-runtime-smoke/run.sh` only (`driver.mjs` and
+    `provider-extension.ts` unchanged) to close that gap:
+    it now asserts, via the pinned `nix run .#turso -- --experimental-multiprocess-wal
+    --readonly -m list -q` (machine-readable pipe-delimited `list` output,
+    not the pretty table), exact-cardinality `SELECT COUNT(*)` checks —
+    total Pi scopes = 1, closed Pi scopes = 1, one `close`/`ai_exclusive`/
+    `tainted=0`/`healthy` event, one `mutation_trace_scope_provenance` row
+    with `session_id LIKE 'pi_%'` and the expected `model_id`, and zero
+    `mutation_trace_worktrees` rows left `tainted`/`needs_rebaseline`/
+    unhealthy — plus that `smoke-output.txt` exists and contains
+    `sce-real-pi-smoke`, and that `sce doctor`'s reported
+    `agent_trace_db.path` is non-empty, non-null, and exists on disk before
+    querying it. Any failed assertion prints a diagnostic and exits non-zero;
+    a successful exit now entails a passing assertion, not merely a
+    completed process. The stale-`sce` regression is now structurally
+    prevented, not just fixed once: `run.sh` builds and calls
+    `"$sce_bin" setup --pi --non-interactive` /
+    `"$sce_bin" doctor --format json` by absolute path (no `PATH` reliance),
+    and, immediately before the real Pi driver runs (inside the same
+    `nix develop` invocation used to run it, after re-prepending the
+    branch-built `cli/target/debug` onto `PATH` so `nix develop`'s own PATH
+    setup cannot let a stale global `sce` win back), asserts
+    `command -v sce` resolves, after `realpath`, to
+    `$repo_root/cli/target/debug/sce`, failing before Pi starts otherwise.
+    `node driver.mjs` now runs through `nix develop -c bash -c '... node
+    driver.mjs ...'` instead of bare `node`, per this repo's Nix-only
+    tooling rule. Setup is explicit `--pi --non-interactive`, with a scratch
+    `.sce/config.json` (`agent_trace.auto_sync: false`) written before setup
+    so the automated run can never opt into uploading Agent Traces; no
+    control-plane upload or login occurs. Every flake-relative invocation
+    (`nix develop`, `nix run .#turso`) now runs inside a `(cd "$repo_root" &&
+    ...)` subshell, so `run.sh` behaves identically regardless of the
+    caller's working directory (verified by running it from `/tmp`).
+    Additionally, `XDG_STATE_HOME` is now scoped to each run's own scratch
+    directory: the scratch repo's Agent Trace repository identity is derived
+    from a fixed synthetic remote URL, so without this the repository-scoped
+    Agent Trace DB would previously have been the same persistent file
+    reused (and accumulated into) across every run, which would have made
+    the new exact-cardinality assertions fail on any run after the first —
+    this was found and fixed during this repair, not merely asserted safe.
+    Proved the assertions are load-bearing by temporarily changing the
+    "closed Pi mutation scopes" expectation from 1 to 2 and re-running the
+    full smoke end to end: it failed with `FAIL: closed Pi mutation scopes:
+    expected '2', got '1'` and a non-zero exit, then the expectation was
+    reverted and the smoke re-run clean (`PASS: real Pi runtime
+    mutation-attribution smoke`, exit 0) — this reproduces the exact same
+    durable evidence already recorded above (same scope/event/provenance
+    shape, fresh Pi session UUIDs each run), so this repair reproves rather
+    than reopens T06's runtime claim. Reproduce with:
+    `cd /tmp && <repo>/config/lib/pi-plugin/real-pi-runtime-smoke/run.sh`.
   - Context synchronization: synced
 
 ## Open questions
 
 None. T01 owns every lifecycle fact that could invalidate this design, and a contradictory finding there is a re-planning gate, not a deferred guess. The one dependency question this plan started with — whether to wait for PR #276 to merge, redo its protocol generalization here, or stack directly on its branch — was resolved during planning: this plan stacks on PR #276's head per **Stack and base**.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-09-18
+
+### Commands run
+
+- `nix run .#quint -- typecheck spec/mutation_cursor.qnt` -> exit 0 (typecheck clean)
+- `nix run .#quint -- test spec/mutation_cursor.qnt` -> exit 0 (`mutation_cursor` suite passed)
+- `nix build .#checks.x86_64-linux.mutation-trace-quint-connect` -> exit 0 (build succeeded)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml pi_mutation_scope` -> exit 0 (90 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` -> exit 0 (396 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::` -> exit 0 (735 passed, 1 ignored, 0 failed)
+- `nix run nixpkgs#bun -- test config/lib` -> exit 0 (58 passed, 0 failed)
+- `nix run .#pkl-check-generated` -> exit 0 (142 files, ephemeral generation matches committed output)
+- `nix flake check` -> exit 0 (all checks passed: cli-tests, cli-clippy, cli-fmt, mutation-trace-quint-connect, cli-generated-input, pkl-generated, codex-hook-command, npm/config-lib bun+biome checks, workflow-actionlint, native-portability-audit, flatpak-static-validation, cargo-sources-parity, flatpak-manifest-parity)
+- `git diff --check` -> exit 0 (clean, no whitespace/conflict markers)
+- `git diff origin/opencode-mutation-scope-integration...HEAD -- config/schema/agent-trace.schema.json cli/migrations/agent-trace-repository/` -> exit 0 (empty diff)
+- `git diff origin/opencode-mutation-scope-integration...HEAD -- cli/src/services/mutation_trace/protocol.rs spec/mutation_cursor.qnt spec/mutation_cursor.md` -> exit 0 (104 insertions/11 deletions across exactly these 3 files; every added line is Pi-shaped: `ActorKind::Pi` added to `requires_boundary_confirmation`, one new `Scope6`/Pi Quint scope constant, Pi-specific Quint test scenarios and doc wording; no new protocol fields or structural changes)
+- `bash config/lib/pi-plugin/real-pi-runtime-smoke/run.sh` (run from `/tmp`, independent of T06's own run) -> exit 0 (`PASS: real Pi runtime mutation-attribution smoke`; real Pi 0.80.6 SDK session via `createFauxCore`/`DefaultResourceLoader`, real `sce setup --pi`-installed extension via ordinary auto-discovery, real `sce hooks pi-mutation-scope` dispatch; durable evidence: 1 Pi mutation scope, closed; 1 `close`/`ai_exclusive`/`tainted=0`/`healthy` event; 1 provenance row `session_id=pi_<uuid>`, `model_id=sce-test-provider/sce-test-model`; 0 tainted/unresolved worktrees)
+
+### Success-criteria verification
+
+- [x] AC1: exact Pi 0.80.6 lifecycle evidence exists -> T01's committed fixtures/report (`cli/src/services/hooks/pi_mutation_scope/fixtures/`) remain in the tree; re-confirmed against the final implementation by the independent real-Pi-runtime smoke reproduction above, which reproduces the exact `tool_call`/`tool_result`/`tool_execution_end` ordering and produces the expected confirmed-Close outcome.
+- [x] AC2: `bash`/`edit`/`write` each establish one scope before execution -> `mutation_provenance_e2e::pi_bash_mutation_persists_model_and_session_in_agent_trace`, `pi_edit_mutation_persists_model_and_session_in_agent_trace`, `pi_write_mutation_persists_model_and_session_in_agent_trace` (all passing in the `hooks::` run), plus the real-runtime smoke's `bash` scope.
+- [x] AC3: read-only/`user_bash`/unknown tools create no scope -> `pi_mutation_scope::tests::classification_table` and `mutation_provenance_e2e::pi_read_only_and_unknown_tools_create_no_scope_or_mutation_state` passing.
+- [x] AC4: failed Start blocks the tool before execution -> `pi_mutation_scope::tests::run_from_payload_fails_closed_when_a_tracked_start_cannot_resolve_its_checkout` passing.
+- [x] AC5: positive attribution requires confirming Close, keyed on `tool_result`-then-`tool_execution_end` -> `runtime_seam_tests::a_write_start_result_close_lands_a_real_ai_exclusive_event_with_pi_provenance` and the Quint `requires_boundary_confirmation`/close-pairing model (typecheck + test suite green) passing.
+- [x] AC6: unconfirmed Pi scope suppresses attribution across harnesses -> `mutation_provenance_e2e::pi_and_claude_overlap_produces_ai_contended`, `pi_and_codex_overlap_stays_ineligible_until_codex_confirms`, `pi_and_opencode_overlap_stays_ineligible_until_opencode_confirms` passing; Quint `testUnconfirmedPiScopeBlocksCrossHarnessAttribution` in the passing Quint suite.
+- [x] AC7: confirming Close yields `AiExclusive`/`AiContended` correctly -> same `pi_and_*_overlap` tests plus `runtime_seam_tests::a_write_start_result_close_lands_a_real_ai_exclusive_event_with_pi_provenance`, and the real-runtime smoke's single-scope `AiExclusive` result.
+- [x] AC8: earlier-extension/bash-policy rejection creates no scope; later-extension rejection abandons, never Closes -> `runtime_seam_tests::a_start_followed_by_no_execution_abandons_through_the_real_runtime`, `lifecycle_tests::tool_execution_end_without_a_preceding_tool_result_abandons_never_closes`, `mutation_provenance_e2e::pi_later_extension_rejection_after_start_produces_no_mutation_ai_patch` all passing.
+- [x] AC9: `isError` execution still produces `tool_result` and observes the final tree through the same Close -> `mutation_provenance_e2e::pi_mutate_then_error_still_persists_confirmed_mutation_through_close` passing.
+- [x] AC10: overlapping Pi calls stay independent scopes -> `mutation_provenance_e2e::pi_concurrent_reject_and_confirm_keeps_only_the_confirmed_mutation_ai`, `lifecycle_tests::abandoning_one_sibling_never_touches_a_concurrent_sibling_in_the_same_session` passing.
+- [x] AC11: lost/failed terminal boundary is never replayed as current -> `lifecycle_tests::a_terminal_recovery_flush_failure_leaves_a_pending_recovery_and_denies_new_admission`, `a_crash_mid_abandon_loop_is_resumed_and_completed_on_the_next_boundary_lock_acquisition` passing.
+- [x] AC12: stale-process cleanup requires positive death evidence only -> `lifecycle_tests::a_dead_owner_scope_is_recovered_while_a_live_owner_sibling_survives_untouched`, `multiple_dead_owner_scopes_are_retired_in_one_recovery_generation_while_a_live_sibling_survives`, `a_pending_start_attempt_never_blocks_a_concurrent_new_admission` passing.
+- [x] AC13: Start provenance stores canonical `pi_<sessionID>` + model or `NULL` -> `mutation_provenance_e2e::pi_missing_model_preserves_session_with_null_model_in_agent_trace` and the three `pi_*_mutation_persists_model_and_session_in_agent_trace` tests passing; independently reconfirmed by the real-runtime smoke's `mutation_trace_scope_provenance` row (`session_id=pi_<real-session-uuid>`, `model_id=sce-test-provider/sce-test-model`).
+- [x] AC14: existing Pi Bash policy/conversation-trace/diff-trace/setup/doctor remain intact -> `nix run nixpkgs#bun -- test config/lib` 58/58 passing (bash-policy-plugin, pi-plugin, mutation-scope-plugin suites), and the real-runtime smoke's `sce setup --pi` / `sce doctor --format json` path succeeding end to end.
+- [x] AC15: only confirmed exclusive Pi evidence reaches `mutation_ai_patch` -> `pi_later_extension_rejection_after_start_produces_no_mutation_ai_patch` (negative) plus the `pi_bash/edit/write_mutation_persists_model_and_session_in_agent_trace` tests (positive), all passing against a real Git/DB harness.
+- [x] AC16: cross-harness Pi overlap (Pi+Claude, Pi+Codex, Pi+OpenCode) -> `pi_and_claude_overlap_produces_ai_contended`, `pi_and_codex_overlap_stays_ineligible_until_codex_confirms`, `pi_and_opencode_overlap_stays_ineligible_until_opencode_confirms` all passing.
+- [x] AC17: no new Agent Trace schema or migration -> targeted baseline diff over `config/schema/agent-trace.schema.json` and `cli/migrations/agent-trace-repository/` against `opencode-mutation-scope-integration` is empty.
+- [x] AC18: protocol/Quint change limited to the Pi confirmation-required case -> targeted baseline diff over `protocol.rs`/`spec/mutation_cursor.qnt`/`spec/mutation_cursor.md` shows exactly 3 files, 104 insertions/11 deletions, every added line Pi-shaped (see Commands run); no new `protocol.rs` structures.
+- [x] AC19: guarded `user_bash` lifetime spans the real shell process, not the supervisor or control channel; Windows refuses -> `external_mutation_guard::tests::a_supervisor_killed_without_unlocking_leaves_the_flock_held_by_the_spawned_shell`, `closing_the_control_channel_does_not_trigger_finish_or_signal_the_shell`, `graceful_completion_waits_for_an_inherited_background_descendant`, `output_is_consumed_while_a_background_descendant_holds_the_lifetime_token` (all in the passing `mutation_trace` run) plus the TS `describe("Windows-specific pinned Pi capture-replay smoke (D13 disposition)")` / `test("refuses unconditionally on win32")` cases in the passing `bun test config/lib` run.
+- [x] AC20: post-recovery fresh scopes still reach `AiExclusive` -> `mutation_provenance_e2e::pi_stale_process_recovery_discards_ambiguous_interval_while_fresh_pi_work_remains_usable` and `external_mutation_guard::tests::a_concurrent_foreign_lock_attempt_times_out_while_the_guard_is_active` passing.
+- [x] AC21: guard-establishment failure never spawns a shell; supervisor is the real spawner -> `external_mutation_guard::tests::lost_armed_acknowledgement_cannot_spawn_or_mutate`, `a_failed_finish_commit_leaves_the_marker_armed_and_reports_failure`, `lifetime_token_establishment_failure_cannot_emit_armed`, `the_spawned_shells_parent_is_the_calling_process`, `armed_guard_waits_for_exec_and_drops_without_spawning_on_eof` all passing.
+- [x] AC22: `sce setup --pi` + ordinary `pi` auto-discovery drives tracked-tool attribution; competing extension is a documented boundary -> independently reproduced by the real-Pi-runtime smoke (ordinary `sce setup --pi`, real Pi auto-discovery, real `sce hooks pi-mutation-scope` dispatch, `AiExclusive` result) for the tracked-tool path; TS `test("a competing extension consuming user_bash ahead of SCE prevents SCE's handler from ever running, while tracked-tool attribution in the same session is unaffected")` passing for the documented-boundary path. The interactive `!`/`!!` guard-establishment portion of this AC's Validate text remains evidenced only by the unit/integration guard tests and T05's documented environmental limitation (no `~/.pi/agent/auth.json`, no live TUI in this sandbox) — an unchanged, previously accepted limitation, not a new gap.
+- [x] AC23: control-process death never truncates a running `user_bash` command or ends the guard early -> `external_mutation_guard::tests::closing_the_control_channel_does_not_trigger_finish_or_signal_the_shell` passing, matching this AC's exact scenario.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- AC19/AC22's interactive `!`/`!!` guard-establishment path against a live, credential-authenticated Pi TUI session was not exercised in this sandbox (no `~/.pi/agent/auth.json`); coverage rests on the `external_mutation_guard` unit/integration suite plus T05's real-TUI evidence for the non-guard path, a limitation already documented at task completion, not introduced by this validation.
+- T06's own record notes Windows tracked-tool (`bash`/`edit`/`write`) parity with the Linux captures is inferred from source (plain JS/TS control flow, no OS syscalls) rather than directly captured on Windows; the Windows-specific evidence obtained is a same-process `process.platform` override, not a native Windows run.
+
+
