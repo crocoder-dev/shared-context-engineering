@@ -169,7 +169,8 @@ fn mutation_cursor_guarded_recover_invokes_real_recover() -> impl Driver {
 #[quint_run(
     spec = "../spec/mutation_cursor.qnt",
     max_samples = 500,
-    max_steps = 30
+    max_steps = 30,
+    seed = "0xbd646ab9"
 )]
 fn mutation_cursor_generated_traces_refine_rust_protocol() -> impl Driver {
     MutationCursorDriver::default()
