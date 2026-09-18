@@ -48,6 +48,7 @@ pub mod codex_mutation_scope;
 pub mod command;
 pub mod lifecycle;
 pub mod mutation_scope;
+pub mod mutation_scope_health;
 pub mod opencode_mutation_scope;
 pub mod pi_mutation_scope;
 
