@@ -184,6 +184,8 @@ generation-tracked recovery barrier that retries transient cleanup failures, and
 no same-session sweep or TTL. Broad asynchronous lifecycle events retire nothing.
 No protocol or Quint change. Full detail:
 [`opencode-mutation-scope-adapter-lifecycle.md`](opencode-mutation-scope-adapter-lifecycle.md).
+Doctor health classification built on this state machine is proven in
+[opencode-mutation-scope-health.md](opencode-mutation-scope-health.md).
 
 ## Attribution boundary
 
