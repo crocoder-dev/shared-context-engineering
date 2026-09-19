@@ -270,6 +270,9 @@ files, holding `next_attempt_seq`, a recovery generation/phase, and the live
 attempt list. It is bookkeeping only, never attribution evidence, and is never
 held while invoking the generic mutation-scope runtime.
 
+Doctor health classification built on this state machine is proven in
+[pi-mutation-scope-health.md](pi-mutation-scope-health.md).
+
 See also [`mutation-scope-hook-ingress.md`](mutation-scope-hook-ingress.md),
 [`mutation-scope-runtime.md`](mutation-scope-runtime.md), and
 [`mutation-trace-external-mutation-guard.md`](mutation-trace-external-mutation-guard.md)
