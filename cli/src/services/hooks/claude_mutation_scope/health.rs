@@ -209,7 +209,8 @@ mod tests {
         );
 
         for attempt_number in 1..=2 {
-            let outcome = apply_recovery_barrier(&git_dir, repository_root, None, &unreachable_seam);
+            let outcome =
+                apply_recovery_barrier(&git_dir, repository_root, None, &unreachable_seam);
             assert!(
                 matches!(outcome, BarrierOutcome::Deny),
                 "PreToolUse call #{attempt_number} must be denied without self-clearing"

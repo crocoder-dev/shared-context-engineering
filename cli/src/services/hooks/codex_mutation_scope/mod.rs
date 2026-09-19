@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod boundary_lock;
+pub(crate) mod health;
 mod os_lock;
 pub(crate) mod state;
 
@@ -2225,6 +2226,198 @@ mod tests {
             let final_state = read_state(&git_dir);
             assert_eq!(final_state.attempts.len(), 1);
             assert!(!final_state.recovery.is_clear());
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn pending_non_empty_recovery_denies_unrelated_admission_without_losing_the_recovery_path()
+        {
+            use crate::services::hooks::mutation_scope_health::MutationScopeHealthStatus;
+
+            let git_dir = unique_test_git_dir("health-recovering-unrelated-denied");
+            let resolver = fixed_resolver(git_dir.clone());
+            seed_attempt(
+                &git_dir,
+                "session-1",
+                None,
+                "exec-main",
+                state::AttemptPhase::Active,
+            );
+
+            let seam = seam_failing_on("abandon");
+            let error = run_codex_mutation_scope_from_payload_with(
+                &session_end_payload("session-1"),
+                None,
+                &resolver,
+                &seam,
+            )
+            .expect_err("a failed abandonment during cleanup must propagate");
+            assert!(error.to_string().contains("abandon"));
+
+            assert_eq!(
+                health::classify_health(&git_dir).status,
+                MutationScopeHealthStatus::Recovering,
+                "a stuck non-empty attempt with recovery armed is Recovering: unrelated \
+                 admission stays fail-closed, but a same-lane successor can still retry \
+                 the stale predecessor's abandonment"
+            );
+
+            for attempt_number in 1..=2 {
+                let output = drive(
+                    &pre_tool_use_json(&[
+                        (SESSION_ID_FIELD, Value::String("session-2".to_string())),
+                        (TURN_ID_FIELD, Value::String("turn-2".to_string())),
+                        (
+                            TOOL_USE_ID_FIELD,
+                            Value::String("exec-unrelated".to_string()),
+                        ),
+                    ]),
+                    &resolver,
+                    &unreachable_seam,
+                );
+                assert_eq!(
+                    output,
+                    pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON),
+                    "PreToolUse call #{attempt_number} for an unrelated session must still be denied"
+                );
+            }
+
+            assert_eq!(
+                health::classify_health(&git_dir).status,
+                MutationScopeHealthStatus::Recovering,
+                "the classifier must still report Recovering after repeated denial from an \
+                 unrelated session; Recovering does not mean every future call succeeds, only \
+                 that a proven normal self-healing route exists"
+            );
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn same_lane_successor_retries_abandon_and_reaches_healthy_after_a_failed_lifecycle_abandon_ac4(
+        ) {
+            use crate::services::hooks::mutation_scope_health::MutationScopeHealthStatus;
+
+            let git_dir = unique_test_git_dir("health-same-lane-self-heal");
+            let resolver = fixed_resolver(git_dir.clone());
+
+            seed_attempt_in_turn(
+                &git_dir,
+                "session-1",
+                "turn-1",
+                None,
+                "exec-a",
+                state::AttemptPhase::Active,
+            );
+
+            let failing_abandon_seam = seam_failing_on("abandon");
+            let output_b = drive(
+                &pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String("exec-b".to_string()))]),
+                &resolver,
+                &failing_abandon_seam,
+            );
+            assert_eq!(
+                output_b,
+                pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON),
+                "B fails closed when the same-lane sweep's retried abandon of A fails"
+            );
+
+            let after_b = read_state(&git_dir);
+            assert_eq!(
+                after_b.attempts.len(),
+                1,
+                "A remains persisted after the failed same-lane sweep"
+            );
+            assert_eq!(after_b.attempts[0].tool_use_id, "exec-a");
+            assert!(!after_b.recovery.is_clear());
+
+            assert_eq!(
+                health::classify_health(&git_dir).status,
+                MutationScopeHealthStatus::Recovering
+            );
+
+            let seam_calls = Arc::new(Mutex::new(Vec::new()));
+            let recording = recording_seam(Arc::clone(&seam_calls));
+            let output_c = drive(
+                &pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String("exec-c".to_string()))]),
+                &resolver,
+                &recording,
+            );
+            assert_eq!(
+                output_c, "",
+                "C's tracked Start proceeds once the same-lane sweep clears A and the \
+                 quiescent flush completes"
+            );
+
+            let operations: Vec<String> = seam_calls
+                .lock()
+                .expect("recording seam mutex")
+                .iter()
+                .filter_map(|payload| {
+                    serde_json::from_str::<Value>(payload)
+                        .ok()
+                        .and_then(|value| {
+                            value
+                                .get("operation")
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                        })
+                })
+                .collect();
+            let abandon_index = operations
+                .iter()
+                .position(|operation| operation == "abandon");
+            let flush_index = operations.iter().position(|operation| operation == "flush");
+            let start_index = operations.iter().position(|operation| operation == "start");
+            assert!(
+                abandon_index.is_some() && flush_index.is_some() && start_index.is_some(),
+                "expected abandon(A), flush, and start(C) seam calls, got {operations:?}"
+            );
+            assert!(
+                abandon_index < flush_index && flush_index < start_index,
+                "expected abandon(A) -> flush -> start(C) ordering, got {operations:?}"
+            );
+
+            let final_state = read_state(&git_dir);
+            assert!(final_state.recovery.is_clear());
+            assert_eq!(final_state.attempts.len(), 1);
+            assert_eq!(final_state.attempts[0].tool_use_id, "exec-c");
+
+            assert_eq!(
+                health::classify_health(&git_dir).status,
+                MutationScopeHealthStatus::Healthy
+            );
+
+            remove_test_git_dir(&git_dir);
+        }
+
+        #[test]
+        fn health_classifies_recovering_then_healthy_once_the_next_pre_tool_use_flushes_ac4() {
+            use crate::services::hooks::mutation_scope_health::MutationScopeHealthStatus;
+
+            let git_dir = unique_test_git_dir("health-recovering-then-healthy");
+            std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+            let resolver = fixed_resolver(git_dir.clone());
+            state::arm_recovery(&git_dir).expect("arming the barrier should succeed");
+
+            assert_eq!(
+                health::classify_health(&git_dir).status,
+                MutationScopeHealthStatus::Recovering
+            );
+
+            let output = drive(
+                &pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String("exec-new".to_string()))]),
+                &resolver,
+                &ok_seam,
+            );
+            assert_eq!(output, "");
+
+            assert_eq!(
+                health::classify_health(&git_dir).status,
+                MutationScopeHealthStatus::Healthy,
+                "a successful flush clears recovery and returns the adapter to Healthy"
+            );
 
             remove_test_git_dir(&git_dir);
         }
