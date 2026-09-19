@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod boundary_lock;
+pub(crate) mod health;
 mod os_lock;
 pub(crate) mod state;
 
