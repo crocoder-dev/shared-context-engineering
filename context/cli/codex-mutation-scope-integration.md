@@ -148,7 +148,8 @@ Positive cleanup arms `recovery_pending`, abandons matching tracked scopes via
 generic `abandon`, and removes settled attempts. Known attempts keep tracked
 `PreToolUse` denied; once empty, one generic `flush` re-baselines and clears
 recovery. Flush failure leaves the barrier armed. Untracked events never enter
-or are blocked by this barrier.
+or are blocked by this barrier. Doctor health classification built on this
+state machine is proven in [codex-mutation-scope-health.md](codex-mutation-scope-health.md).
 
 The cleanup matrix is identity-scoped: `Stop` covers the session's main agent,
 `Interrupt` and `SessionEnd` cover the session, and `SubagentStop` covers one
