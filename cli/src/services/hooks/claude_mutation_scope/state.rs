@@ -72,7 +72,7 @@ fn state_dir(git_dir: &Path) -> PathBuf {
     git_dir.join(SCE_STATE_DIR)
 }
 
-fn state_path(git_dir: &Path) -> PathBuf {
+pub(crate) fn state_path(git_dir: &Path) -> PathBuf {
     state_dir(git_dir).join(ADAPTER_STATE_FILE)
 }
 
