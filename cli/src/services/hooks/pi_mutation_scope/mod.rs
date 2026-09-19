@@ -1,8 +1,9 @@
 #![allow(dead_code)]
 
 mod boundary_lock;
+pub(crate) mod health;
 mod os_lock;
-mod process_owner;
+pub(crate) mod process_owner;
 pub(crate) mod state;
 
 use std::path::{Path, PathBuf};
