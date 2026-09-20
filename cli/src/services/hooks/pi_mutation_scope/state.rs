@@ -314,8 +314,6 @@ pub(crate) fn admit_tracked_attempt(
     }))
 }
 
-/// Read-only D10 scan: `scope_id`s of live (`PendingStart`/`Executed`) attempts whose own
-/// recorded owner is positively dead. Never includes `PendingAbandon`.
 pub(crate) fn find_definitely_dead_attempts(git_dir: &Path) -> Result<Vec<String>> {
     let _lock = acquire_lock(git_dir)?;
     let state = read_state(git_dir)?;
