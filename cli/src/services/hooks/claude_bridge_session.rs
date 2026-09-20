@@ -7,10 +7,6 @@ use serde_json::Value;
 const MAX_LEADING_RECORDS: usize = 16;
 const BRIDGE_SESSION_RECORD_TYPE: &str = "bridge-session";
 
-/// Extract Claude's bridge-session identifier from the leading JSONL records.
-///
-/// Transcript access and parsing are fail-open. Only a bounded number of
-/// records are read so discovery never scans a complete transcript.
 pub fn extract_claude_bridge_session_id(transcript_path: &Path) -> Option<String> {
     extract_claude_bridge_session_id_from_reader(File::open(transcript_path).map(BufReader::new))
 }

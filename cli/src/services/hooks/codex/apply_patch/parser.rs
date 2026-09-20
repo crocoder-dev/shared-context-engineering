@@ -1,38 +1,3 @@
-//! Grammar parser for Codex's `apply_patch` custom patch text.
-//!
-//! The grammar implemented here follows the official Lark grammar documented
-//! in `openai/codex`'s `codex-rs/apply-patch/src/parser.rs` (checked against
-//! that source directly for this task; see plan
-//! `context/plans/codex-cli-integration.md` Assumptions):
-//!
-//! ```text
-//! start: begin_patch environment_id? hunk+ end_patch
-//! begin_patch: "*** Begin Patch" LF
-//! environment_id: "*** Environment ID: " filename LF
-//! end_patch: "*** End Patch" LF?
-//!
-//! hunk: add_hunk | delete_hunk | update_hunk
-//! add_hunk: "*** Add File: " filename LF add_line+
-//! delete_hunk: "*** Delete File: " filename LF
-//! update_hunk: "*** Update File: " filename LF change_move? change?
-//! filename: /(.+)/
-//! add_line: "+" /(.+)/ LF -> line
-//!
-//! change_move: "*** Move to: " filename LF
-//! change: (change_context | change_line)+ eof_line?
-//! change_context: ("@@" | "@@ " /(.+)/) LF
-//! change_line: ("+" | "-" | " ") /(.+)/ LF
-//! eof_line: "*** End of File" LF
-//! ```
-//!
-//! Upstream Codex itself accepts absolute hunk paths and `..` traversal
-//! segments, resolving them against the tool's own `cwd` later. This parser
-//! preserves that model: it validates only the syntactic `apply_patch` grammar
-//! and basic path representability (e.g. a non-empty path), and leaves the
-//! decision of whether a parsed path is safe and stays inside the canonical
-//! Git worktree to `resolve_codex_patch_paths` in this module's sibling
-//! `path.rs`, which runs after parsing.
-
 const BEGIN_PATCH_MARKER: &str = "*** Begin Patch";
 const END_PATCH_MARKER: &str = "*** End Patch";
 const ENVIRONMENT_ID_MARKER: &str = "*** Environment ID: ";
@@ -44,15 +9,12 @@ const END_OF_FILE_MARKER: &str = "*** End of File";
 const CHANGE_CONTEXT_MARKER: &str = "@@";
 const CHANGE_CONTEXT_MARKER_WITH_TEXT: &str = "@@ ";
 
-/// One fully parsed Codex `apply_patch` payload: an ordered list of the file
-/// operations it declares. Order is preserved from the source text.
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CodexPatch {
     pub(crate) operations: Vec<CodexFileOperation>,
 }
 
-/// A single `*** Add File:` / `*** Update File:` / `*** Delete File:` block.
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CodexFileOperation {
@@ -70,9 +32,6 @@ pub(crate) enum CodexFileOperation {
     },
 }
 
-/// One contiguous change region within an `*** Update File:` block, started
-/// either by an explicit `@@` context marker or implicitly by the first
-/// change line when no `@@` marker precedes it.
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CodexHunk {
@@ -81,8 +40,6 @@ pub(crate) struct CodexHunk {
     pub(crate) is_end_of_file: bool,
 }
 
-/// A single line within a [`CodexHunk`], without its leading marker
-/// character.
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CodexHunkLine {
@@ -91,8 +48,6 @@ pub(crate) enum CodexHunkLine {
     Removed(String),
 }
 
-/// Error produced when raw `apply_patch` text does not conform to the
-/// grammar above, or contains an unrepresentable path (e.g. empty).
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CodexPatchParseError {
@@ -113,19 +68,12 @@ fn error(message: impl Into<String>) -> CodexPatchParseError {
     }
 }
 
-/// Removes the optional shell-like heredoc boundary that current upstream
-/// Codex may include around an `apply_patch` command. The canonical grammar
-/// parser intentionally does not know about shell syntax; callers should pass
-/// this result to [`parse_codex_apply_patch`].
 #[allow(dead_code)]
 pub(crate) fn normalize_outer_apply_patch_input(raw: &str) -> Result<String, CodexPatchParseError> {
     let trimmed = raw.trim();
     let lines: Vec<&str> = trimmed.lines().collect();
 
     if has_canonical_boundaries(&lines) {
-        // Preserve ordinary raw patch input byte-for-byte. The canonical
-        // parser performs the same boundary trimming it did before this
-        // outer-normalization seam was introduced.
         return Ok(raw.to_string());
     }
 
@@ -158,10 +106,6 @@ fn has_canonical_boundaries(lines: &[&str]) -> bool {
         && lines.last().map(|line| line.trim()) == Some(END_PATCH_MARKER)
 }
 
-/// Parses canonical Codex `apply_patch` text into a [`CodexPatch`]. Performs
-/// no outer shell normalization, normalization to SCE unified-diff form, or
-/// filesystem access; callers handling hook `tool_input.command` should first
-/// use [`normalize_outer_apply_patch_input`].
 #[allow(dead_code)]
 pub(crate) fn parse_codex_apply_patch(raw: &str) -> Result<CodexPatch, CodexPatchParseError> {
     let trimmed = raw.trim();
@@ -271,9 +215,6 @@ fn is_top_level_marker(line: &str) -> bool {
         || line.starts_with(UPDATE_FILE_MARKER)
 }
 
-/// Parses the `change_move? change?` tail of an `*** Update File:` block
-/// (with any `*** Move to:` line already consumed by the caller), returning
-/// the resulting hunks plus how many lines of `lines` were consumed.
 fn parse_update_hunks(
     path: &str,
     lines: &[&str],
@@ -347,11 +288,6 @@ fn parse_update_hunks(
     Ok((hunks, consumed))
 }
 
-/// Validates only that a parsed path is representable at all (non-empty).
-/// Absolute paths and `..` traversal segments are syntactically valid Codex
-/// `apply_patch` paths and are passed through unchanged; whether a given path
-/// is safe is decided later, against the event cwd and canonical Git
-/// worktree, by `resolve_codex_patch_paths` in `path.rs`.
 fn validate_path(path: &str) -> Result<String, CodexPatchParseError> {
     if path.is_empty() {
         return Err(error("Codex apply_patch path cannot be empty."));
@@ -755,11 +691,6 @@ mod tests {
 
     #[test]
     fn accepts_absolute_and_parent_traversal_path_syntax_unresolved() {
-        // The parser owns only the apply_patch grammar: absolute paths and
-        // `..` traversal segments are syntactically valid here and are
-        // passed through unresolved. Whether they are actually safe is
-        // `resolve_codex_patch_paths` (path.rs)'s decision, made later
-        // against the event cwd and canonical Git worktree.
         let patch = "*** Begin Patch\n\
              *** Add File: /etc/passwd\n\
              +x\n\

@@ -13,22 +13,10 @@ use super::super::{
 };
 use super::CodexHookEvent;
 
-/// Captures a Codex `UserPromptSubmit` event as one `messages` row
-/// (`role = "user"`) and one `parts` row (`part_type = "text"`, `text = prompt`)
-/// under session `cx_<session_id>`, message `cx:<turn_id>:user`.
 pub(super) fn handle(repository_root: &Path, event: &CodexHookEvent) -> Result<String> {
     handle_with_clock(repository_root, event, current_unix_time_ms)
 }
 
-/// Injectable-clock counterpart of `handle`. Validates `session_id`,
-/// `turn_id`, and `prompt` (via [`validate_user_prompt_submit_event`])
-/// *before* any side effect — a malformed payload never reaches timestamp
-/// acquisition or Agent Trace DB access. Timestamp acquisition is itself
-/// fallible and its failure is propagated as `Err` rather than swallowed
-/// internally, so the existing outer Codex fail-open boundary
-/// (`run_codex_subcommand` → `log_codex_fail_open`) owns logging and the
-/// empty-stdout contract for both a malformed payload and a failed clock,
-/// exactly as it does for any other handler error.
 fn handle_with_clock<F>(repository_root: &Path, event: &CodexHookEvent, now: F) -> Result<String>
 where
     F: FnOnce() -> Result<i64>,
@@ -45,20 +33,12 @@ where
     persist_with(&db, &validated, generated_at_unix_ms)
 }
 
-/// A Codex `UserPromptSubmit` event whose `session_id`/`turn_id` are
-/// confirmed non-blank and trimmed, and whose `prompt` is confirmed
-/// present and non-blank (but left untrimmed — prompt text is not
-/// whitespace-normalized).
 struct ValidatedUserPromptSubmit<'a> {
     session_id: &'a str,
     turn_id: &'a str,
     prompt: &'a str,
 }
 
-/// The single validation layer for `UserPromptSubmit` events: every
-/// required-field check (`session_id`, `turn_id`, `prompt`) lives here so
-/// no other function re-validates the same fields with subtly different
-/// semantics. Runs before any timestamp acquisition or DB access.
 fn validate_user_prompt_submit_event(
     event: &CodexHookEvent,
 ) -> Result<ValidatedUserPromptSubmit<'_>> {
@@ -73,8 +53,6 @@ fn validate_user_prompt_submit_event(
     })
 }
 
-/// Persists an already-validated `UserPromptSubmit` event against an
-/// already-open Agent Trace DB. Performs no validation of its own.
 fn persist_with(
     db: &RepositoryAgentTraceDb,
     validated: &ValidatedUserPromptSubmit<'_>,
@@ -113,9 +91,6 @@ fn required_field<'a>(value: Option<&'a str>, field_name: &str) -> Result<&'a st
     }
 }
 
-/// Validates an identifier field (`session_id`/`turn_id`) is present and
-/// non-blank, returning it trimmed so downstream prefixing/formatting never
-/// persists incidental leading/trailing whitespace.
 fn required_trimmed_field<'a>(value: Option<&'a str>, field_name: &str) -> Result<&'a str> {
     match value.map(str::trim) {
         Some(value) if !value.is_empty() => Ok(value),
@@ -125,11 +100,6 @@ fn required_trimmed_field<'a>(value: Option<&'a str>, field_name: &str) -> Resul
     }
 }
 
-/// Test-only convenience wrapper preserving the pre-refactor `capture_with`
-/// call shape (`event` + timestamp, against an already-open DB) for tests
-/// that build a full `CodexHookEvent`. Routes through the same single
-/// validation layer (`validate_user_prompt_submit_event`) as production
-/// `handle`.
 #[cfg(test)]
 fn capture_with(
     db: &RepositoryAgentTraceDb,
@@ -343,10 +313,6 @@ mod tests {
     fn handle_with_clock_propagates_a_timestamp_failure_as_an_error_with_no_persistence() {
         let payload = event("session-1", "turn-1", "hello world");
 
-        // A nonexistent repository root additionally proves the failed
-        // clock is consulted (and propagated) before Agent Trace DB
-        // resolution is ever attempted: a subsequent DB-open attempt
-        // against this path would fail loudly instead.
         let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             Err(anyhow::anyhow!("clock failed"))
         })

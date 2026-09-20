@@ -4,12 +4,6 @@ use std::path::Path;
 
 use serde_json::Value;
 
-/// Extract the model identity from a Claude JSONL transcript by matching an
-/// assistant message whose `tool_use` content block has the given ID.
-///
-/// Transcript access and parsing are fail-open. Unreadable files, unreadable
-/// lines, missing fields, and unmatched tool calls return `None`; malformed
-/// unrelated JSONL records are skipped so later valid records can still match.
 pub fn extract_claude_transcript_model(
     transcript_path: &Path,
     tool_use_id: &str,
@@ -39,8 +33,6 @@ fn extract_claude_transcript_model_from_reader<R: BufRead>(
             continue;
         };
 
-        // Current Claude transcripts wrap the assistant message in `message`.
-        // Keep support for the earlier flat assistant-message shape as well.
         let message = if let Some(message) = record.get("message").and_then(Value::as_object) {
             let is_assistant = record
                 .get("type")
