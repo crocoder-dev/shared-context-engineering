@@ -1,14 +1,16 @@
 use anyhow::{Context, Result};
 use serde_json::json;
 
+use crate::services::hooks::mutation_scope_health::MutationScopeHealthStatus;
 use crate::services::style::{heading, label, supports_color, value, OwoColorize};
 
 use super::types::{
-    fix_result_outcome, problem_category, problem_fixability, problem_severity,
-    DoctorDisplayDetail, DoctorDisplayNode, DoctorDisplayNodeKind, DoctorDisplayStatus,
-    HookContentState, HookDoctorReport, HookFileHealth, HookPathSource, IntegrationArea,
-    IntegrationChildHealth, IntegrationContentState, IntegrationGroupHealth, IntegrationGroupKey,
-    IntegrationTarget, PostCommitAutoSyncState, ProblemKind, ProblemSeverity, Readiness,
+    fix_result_outcome, mutation_scope_health_status, mutation_scope_target_id, problem_category,
+    problem_fixability, problem_severity, DoctorDisplayDetail, DoctorDisplayNode,
+    DoctorDisplayNodeKind, DoctorDisplayStatus, HookContentState, HookDoctorReport, HookFileHealth,
+    HookPathSource, IntegrationArea, IntegrationChildHealth, IntegrationContentState,
+    IntegrationGroupHealth, IntegrationGroupKey, IntegrationTarget, MutationScopeHealthRow,
+    PostCommitAutoSyncState, ProblemKind, ProblemSeverity, Readiness,
 };
 use super::{DoctorExecution, DoctorFormat, DoctorMode, DoctorRequest, NAME};
 
@@ -137,6 +139,10 @@ fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: boo
             lines.push(format!("  {}", integration_target_label(target)));
             for group in groups_for_target(report, target) {
                 let node = integration_group_node(&group, report);
+                render_display_node(&mut lines, &node, color_enabled, 4, true);
+            }
+            if let Some(row) = mutation_scope_health_row_for_target(report, target) {
+                let node = mutation_scope_health_node(row);
                 render_display_node(&mut lines, &node, color_enabled, 4, true);
             }
         }
@@ -625,7 +631,46 @@ fn render_display_detail(lines: &mut Vec<String>, detail: &DoctorDisplayDetail, 
             lines.push(format!("{prefix}Problem: {summary}"));
             lines.push(format!("{prefix}Remediation: {remediation}"));
         }
+        DoctorDisplayDetail::MutationScopeHealth { reason, detail } => {
+            lines.push(format!("{prefix}Reason: {reason}"));
+            if let Some(detail) = detail {
+                lines.push(format!("{prefix}Detail: {detail}"));
+            }
+        }
     }
+}
+
+fn mutation_scope_health_row_for_target(
+    report: &HookDoctorReport,
+    target: IntegrationTarget,
+) -> Option<&MutationScopeHealthRow> {
+    report
+        .mutation_scope_health
+        .iter()
+        .find(|row| row.target == target)
+}
+
+fn mutation_scope_health_display_status(status: MutationScopeHealthStatus) -> DoctorDisplayStatus {
+    match status {
+        MutationScopeHealthStatus::Healthy => DoctorDisplayStatus::Pass,
+        MutationScopeHealthStatus::Recovering => DoctorDisplayStatus::Warn,
+        MutationScopeHealthStatus::Blocked | MutationScopeHealthStatus::Invalid => {
+            DoctorDisplayStatus::Fail
+        }
+    }
+}
+
+fn mutation_scope_health_node(row: &MutationScopeHealthRow) -> DoctorDisplayNode {
+    DoctorDisplayNode::branch_with_status(
+        DoctorDisplayNodeKind::Asset,
+        "Agent tracing",
+        mutation_scope_health_display_status(row.status),
+        vec![DoctorDisplayDetail::MutationScopeHealth {
+            reason: row.reason.clone(),
+            detail: row.detail.clone(),
+        }],
+        Vec::new(),
+    )
 }
 
 fn integration_targets_for_text(report: &HookDoctorReport) -> Vec<IntegrationTarget> {
@@ -659,7 +704,7 @@ fn groups_for_target(
     groups
 }
 
-fn integration_target_label(target: IntegrationTarget) -> &'static str {
+pub(super) fn integration_target_label(target: IntegrationTarget) -> &'static str {
     match target {
         IntegrationTarget::ClaudeCode => "Claude Code",
         IntegrationTarget::OpenCode => "OpenCode",
@@ -721,6 +766,19 @@ fn integration_area_order(target: IntegrationTarget, area: IntegrationArea) -> u
     }
 }
 
+fn mutation_scope_health_json(rows: &[MutationScopeHealthRow]) -> Vec<serde_json::Value> {
+    rows.iter()
+        .map(|row| {
+            json!({
+                "target": mutation_scope_target_id(row.target),
+                "status": mutation_scope_health_status(row.status),
+                "reason": row.reason,
+                "detail": row.detail,
+            })
+        })
+        .collect::<Vec<_>>()
+}
+
 fn render_report_json(execution: &DoctorExecution) -> Result<String> {
     let report = &execution.report;
     let hooks = report
@@ -749,6 +807,8 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
             })
         })
         .collect::<Vec<_>>();
+
+    let mutation_scope_health = mutation_scope_health_json(&report.mutation_scope_health);
 
     let payload = json!({
         "status": "ok",
@@ -797,6 +857,7 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
         },
         "config_paths": config_paths,
         "hooks": hooks,
+        "mutation_scope_health": mutation_scope_health,
         "problems": report.problems.iter().map(|problem| json!({
             "category": problem_category(problem.category),
             "severity": problem_severity(problem.severity),
@@ -850,5 +911,131 @@ fn hook_content_state(state: HookContentState) -> &'static str {
         HookContentState::Stale => "stale",
         HookContentState::Missing => "missing",
         HookContentState::Unknown => "unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        mutation_scope_health_node, mutation_scope_health_status, mutation_scope_target_id,
+        render_display_node, DoctorDisplayStatus, IntegrationTarget, MutationScopeHealthRow,
+        MutationScopeHealthStatus,
+    };
+
+    fn row(
+        target: IntegrationTarget,
+        status: MutationScopeHealthStatus,
+        reason: &str,
+        detail: Option<&str>,
+    ) -> MutationScopeHealthRow {
+        MutationScopeHealthRow {
+            target,
+            status,
+            reason: reason.to_string(),
+            detail: detail.map(str::to_string),
+        }
+    }
+
+    fn rendered_lines(row: &MutationScopeHealthRow) -> Vec<String> {
+        let node = mutation_scope_health_node(row);
+        let mut lines = Vec::new();
+        render_display_node(&mut lines, &node, false, 4, true);
+        lines
+    }
+
+    #[test]
+    fn healthy_row_collapses_to_a_single_pass_line() {
+        let row = row(
+            IntegrationTarget::ClaudeCode,
+            MutationScopeHealthStatus::Healthy,
+            "no persisted recovery problem",
+            None,
+        );
+
+        assert_eq!(
+            rendered_lines(&row),
+            vec!["    [PASS] Agent tracing".to_string()]
+        );
+    }
+
+    #[test]
+    fn recovering_row_expands_with_warn_and_reason() {
+        let row = row(
+            IntegrationTarget::Codex,
+            MutationScopeHealthStatus::Recovering,
+            "pending recovery with no unresolved attempts",
+            None,
+        );
+        let lines = rendered_lines(&row);
+
+        assert_eq!(lines[0], "    [WARN] Agent tracing");
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("Reason: pending recovery with no unresolved attempts")));
+    }
+
+    #[test]
+    fn blocked_row_expands_with_fail_reason_and_detail() {
+        let row = row(
+            IntegrationTarget::ClaudeCode,
+            MutationScopeHealthStatus::Blocked,
+            "stale attempts remain after a failed abandon",
+            Some("2 stale attempts"),
+        );
+        let lines = rendered_lines(&row);
+
+        assert_eq!(lines[0], "    [FAIL] Agent tracing");
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("Reason: stale attempts remain after a failed abandon")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("Detail: 2 stale attempts")));
+    }
+
+    #[test]
+    fn invalid_row_maps_to_fail() {
+        let row = row(
+            IntegrationTarget::Pi,
+            MutationScopeHealthStatus::Invalid,
+            "state file failed to parse",
+            Some("unexpected EOF"),
+        );
+
+        assert_eq!(
+            mutation_scope_health_node(&row).status,
+            DoctorDisplayStatus::Fail
+        );
+    }
+
+    #[test]
+    fn json_slugs_are_stable() {
+        assert_eq!(
+            mutation_scope_target_id(IntegrationTarget::ClaudeCode),
+            "claude"
+        );
+        assert_eq!(
+            mutation_scope_target_id(IntegrationTarget::OpenCode),
+            "opencode"
+        );
+        assert_eq!(mutation_scope_target_id(IntegrationTarget::Pi), "pi");
+        assert_eq!(mutation_scope_target_id(IntegrationTarget::Codex), "codex");
+
+        assert_eq!(
+            mutation_scope_health_status(MutationScopeHealthStatus::Healthy),
+            "healthy"
+        );
+        assert_eq!(
+            mutation_scope_health_status(MutationScopeHealthStatus::Recovering),
+            "recovering"
+        );
+        assert_eq!(
+            mutation_scope_health_status(MutationScopeHealthStatus::Blocked),
+            "blocked"
+        );
+        assert_eq!(
+            mutation_scope_health_status(MutationScopeHealthStatus::Invalid),
+            "invalid"
+        );
     }
 }
