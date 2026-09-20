@@ -1,29 +1,11 @@
-//! Pure JSON merge for setup-installed config files that a user may already own
-//! and extend. Two known shapes today: Claude's `.claude/settings.json` hook
-//! registry and `OpenCode`'s `.opencode/opencode.json` plugin registry. Each
-//! merge keeps every non-SCE key and entry untouched, and replaces SCE-owned
-//! content wholesale so repeated installs stay idempotent.
-
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-/// Substring identifying an SCE-authored Claude hook command
-/// (`config/pkl/renderers/claude-content.pkl`).
 const CLAUDE_SCE_HOOK_MARKER: &str = "run-sce-or-show-install-guidance.sh";
 const LEGACY_CLAUDE_AGENT_TRACE_PLUGIN: &str = ".claude/plugins/sce-agent-trace.ts";
 
-/// Path prefix identifying an SCE-authored `OpenCode` plugin registration
-/// (`config/pkl/base/opencode.pkl`), matched structurally so a plugin path an
-/// older or renamed catalog installed is still recognized as SCE-owned even
-/// though the current generated document no longer declares it.
 const OPENCODE_SCE_PLUGIN_PREFIX: &str = "./plugins/sce-";
 
-/// Merges `generated` (the freshly rendered SCE settings document) into
-/// `existing_bytes` (the user's current `.claude/settings.json`, if any) and
-/// returns the merged document's bytes, pretty-printed with a trailing
-/// newline. When `existing_bytes` is `None`, returns `generated` verbatim.
-///
-/// `source_path` is used only to name the offending file in a parse error.
 pub fn merge_or_create_claude_settings(
     existing_bytes: Option<&[u8]>,
     generated_bytes: &[u8],
@@ -47,14 +29,6 @@ pub fn merge_or_create_claude_settings(
     Ok(serialized.into_bytes())
 }
 
-/// Merges `generated` into `existing` for the Claude settings shape:
-/// - `$schema` is SCE-owned and taken from `generated`.
-/// - `hooks` is merged event-by-event: for each event key `generated.hooks`
-///   declares, entries in `existing.hooks[event]` whose command contains the
-///   SCE marker are dropped, and `generated.hooks[event]`'s entries are
-///   appended after the surviving (non-SCE) entries. Event keys `existing`
-///   holds that `generated` does not declare are left untouched.
-/// - Every other top-level key in `existing` is left untouched.
 fn merge_claude_settings(existing: &Value, generated: &Value, source_path: &str) -> Result<Value> {
     let mut existing_obj = existing.as_object().cloned().with_context(|| {
         format!("Existing config file '{source_path}' must contain a top-level JSON object.")
@@ -132,12 +106,6 @@ fn hook_is_legacy_claude_agent_trace(hook: &Value) -> bool {
             == Some(LEGACY_CLAUDE_AGENT_TRACE_PLUGIN)
 }
 
-/// Merges `generated` (the freshly rendered SCE `OpenCode` config) into
-/// `existing_bytes` (the user's current `.opencode/opencode.json`, if any) and
-/// returns the merged document's bytes, pretty-printed with a trailing
-/// newline. When `existing_bytes` is `None`, returns `generated` verbatim.
-///
-/// `source_path` is used only to name the offending file in a parse error.
 pub fn merge_or_create_opencode_config(
     existing_bytes: Option<&[u8]>,
     generated_bytes: &[u8],
@@ -161,13 +129,6 @@ pub fn merge_or_create_opencode_config(
     Ok(serialized.into_bytes())
 }
 
-/// Merges `generated` into `existing` for the `OpenCode` config shape:
-/// - `$schema` is SCE-owned and taken from `generated`.
-/// - `plugin` is merged as a set: entries in `existing.plugin` shaped like an
-///   SCE plugin path are dropped (whether or not `generated.plugin` still
-///   declares them), and `generated.plugin`'s entries are appended after the
-///   surviving (non-SCE) entries.
-/// - Every other top-level key in `existing` is left untouched.
 fn merge_opencode_config(existing: &Value, generated: &Value, source_path: &str) -> Result<Value> {
     let mut existing_obj = existing.as_object().cloned().with_context(|| {
         format!("Existing config file '{source_path}' must contain a top-level JSON object.")
@@ -204,19 +165,12 @@ fn merge_opencode_config(existing: &Value, generated: &Value, source_path: &str)
     Ok(Value::Object(existing_obj))
 }
 
-/// True when a `plugin` array entry is a string shaped like an SCE plugin
-/// registration path (`./plugins/sce-*`).
 fn plugin_entry_is_sce_owned(entry: &Value) -> bool {
     entry
         .as_str()
         .is_some_and(|path| path.starts_with(OPENCODE_SCE_PLUGIN_PREFIX))
 }
 
-/// True when merging `generated` into `existing_bytes` would be a no-op, i.e.
-/// `existing_bytes` already carries a current, complete copy of every
-/// SCE-owned hook entry the generated document declares. Used by `sce doctor`
-/// to tell a merged file that legitimately carries extra user content apart
-/// from an SCE-owned fragment that is missing or stale.
 pub(crate) fn claude_settings_fragment_is_current(
     existing_bytes: &[u8],
     generated_bytes: &[u8],
@@ -230,10 +184,6 @@ pub(crate) fn claude_settings_fragment_is_current(
     Ok(merged == existing)
 }
 
-/// True when merging `generated` into `existing_bytes` would be a no-op, i.e.
-/// `existing_bytes` already carries every canonical SCE plugin path the
-/// generated document declares and no stale SCE-shaped plugin path. Used by
-/// `sce doctor` for the same purpose as `claude_settings_fragment_is_current`.
 pub(crate) fn opencode_config_fragment_is_current(
     existing_bytes: &[u8],
     generated_bytes: &[u8],
