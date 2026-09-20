@@ -1,9 +1,19 @@
 use std::path::PathBuf;
 
+use crate::services::hooks::mutation_scope_health::MutationScopeHealthStatus;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Readiness {
     Ready,
     NotReady,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct MutationScopeHealthRow {
+    pub(super) target: IntegrationTarget,
+    pub(super) status: MutationScopeHealthStatus,
+    pub(super) reason: String,
+    pub(super) detail: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,6 +67,7 @@ pub(super) struct HookDoctorReport {
     pub(super) hooks: Vec<HookFileHealth>,
     pub(super) integration_groups: Vec<IntegrationGroupHealth>,
     pub(super) integration_targets_absent: bool,
+    pub(super) mutation_scope_health: Vec<MutationScopeHealthRow>,
     pub(super) problems: Vec<DoctorProblem>,
 }
 
@@ -289,6 +300,10 @@ pub(super) enum DoctorDisplayDetail {
         summary: String,
         remediation: String,
     },
+    MutationScopeHealth {
+        reason: String,
+        detail: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -438,6 +453,7 @@ pub(crate) enum ProblemCategory {
     HookRollout,
     RepoAssets,
     FilesystemPermissions,
+    MutationScopeHealth,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -450,6 +466,7 @@ pub(crate) enum ProblemSeverity {
 pub(crate) enum ProblemFixability {
     AutoFixable,
     ManualOnly,
+    NoActionRequired,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -489,6 +506,9 @@ pub(crate) enum ProblemKind {
     CodexHookRegistrationPolicyUnknown,
     AgentTraceDbConnectionFailed,
     AgentTraceDbSchemaNotReady,
+    MutationScopeHealthRecovering,
+    MutationScopeHealthBlocked,
+    MutationScopeHealthInvalid,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -525,6 +545,36 @@ pub(super) fn problem_category(category: ProblemCategory) -> &'static str {
         ProblemCategory::HookRollout => "hook_rollout",
         ProblemCategory::RepoAssets => "repo_assets",
         ProblemCategory::FilesystemPermissions => "filesystem_permissions",
+        ProblemCategory::MutationScopeHealth => "mutation_scope_health",
+    }
+}
+
+pub(super) fn mutation_scope_health_status(status: MutationScopeHealthStatus) -> &'static str {
+    match status {
+        MutationScopeHealthStatus::Healthy => "healthy",
+        MutationScopeHealthStatus::Recovering => "recovering",
+        MutationScopeHealthStatus::Blocked => "blocked",
+        MutationScopeHealthStatus::Invalid => "invalid",
+    }
+}
+
+pub(super) fn mutation_scope_target_id(target: IntegrationTarget) -> &'static str {
+    match target {
+        IntegrationTarget::ClaudeCode => "claude",
+        IntegrationTarget::OpenCode => "opencode",
+        IntegrationTarget::Pi => "pi",
+        IntegrationTarget::Codex => "codex",
+    }
+}
+
+pub(super) fn compute_readiness(problems: &[DoctorProblem]) -> Readiness {
+    if problems
+        .iter()
+        .any(|problem| problem.severity == ProblemSeverity::Error)
+    {
+        Readiness::NotReady
+    } else {
+        Readiness::Ready
     }
 }
 
@@ -539,6 +589,7 @@ pub(super) fn problem_fixability(fixability: ProblemFixability) -> &'static str 
     match fixability {
         ProblemFixability::AutoFixable => "auto_fixable",
         ProblemFixability::ManualOnly => "manual_only",
+        ProblemFixability::NoActionRequired => "no_action_required",
     }
 }
 

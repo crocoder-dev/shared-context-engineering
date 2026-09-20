@@ -89,6 +89,18 @@ own the hierarchy. Areas render in deterministic order:
 - Pi: `Extensions`, `Prompts`, `Skills`
 - Codex: `Skills`, `Hooks`
 
+Beneath its areas, every resolved target renders one further row, labeled
+`Agent tracing` (the human display name for the internal mutation-scope
+health concept): the runtime status that target's own mutation-scope adapter
+classifier reports (`healthy | recovering | blocked | invalid`, see
+[mutation-scope-health-status.md](mutation-scope-health-status.md)), using
+the same compact/expand convention as any other row — `[PASS]` (`healthy`)
+collapses with no reason shown, `[WARN]` (`recovering`) and `[FAIL]`
+(`blocked`/`invalid`) expand with a short `Reason:` line and an optional
+`Detail:` line. This row is independent of that target's asset-content
+checks above it: a target can show `[PASS]` for every asset area while its
+`Agent tracing` row is `[WARN]`/`[FAIL]`, or vice versa.
+
 Codex's `Hooks` area covers `.codex/hooks/run-sce-or-show-install-guidance.sh`
 plus one row per required `.codex/hooks.json` registration instead of one
 whole-file row: the four `sce hooks codex` registrations (`UserPromptSubmit`,
