@@ -20,17 +20,6 @@ const CODEX_HOOK_EVENT_POST_TOOL_USE: &str = "PostToolUse";
 const CODEX_HOOK_TOOL_BASH: &str = "Bash";
 const CODEX_HOOK_TOOL_APPLY_PATCH: &str = "apply_patch";
 
-/// Distinguishes a JSON field that is absent from the payload entirely
-/// (`Missing`) from one that is present with an explicit `null` (`Null`)
-/// from one that is present with a value (`Value`). A plain
-/// `#[serde(default)] Option<T>` cannot make this distinction: Serde's
-/// `Option<T>` deserializer maps JSON `null` to `None` at the *same* layer
-/// it uses for "value absent", so both missing-field and explicit-null
-/// collapse to `None`. `#[serde(default, deserialize_with = "...")]` on a
-/// field of this type keeps `Default` (→ `Missing`) for the no-field case
-/// and routes every present field (including `null`) through
-/// [`deserialize_nullable_field`], which is the only path that can produce
-/// `Null` or `Value`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) enum NullableField<T> {
     #[default]
@@ -72,21 +61,6 @@ where
     })
 }
 
-/// A single Codex hook lifecycle event, deserialized from the raw STDIN JSON
-/// payload `sce hooks codex` receives via
-/// `.codex/hooks/run-sce-or-show-install-guidance.sh`.
-///
-/// Working contract (see plan `context/plans/codex-cli-integration.md`
-/// Assumptions): `hook_event_name` is present on every event; `session_id`,
-/// `turn_id`, `cwd`, and `model` vary by event; `tool_name`/`tool_use_id`/
-/// `tool_input`/`tool_response` are present only on `PreToolUse`/`PostToolUse`;
-/// `prompt` is present only on `UserPromptSubmit`, matching Claude's own
-/// `UserPromptSubmit` payload shape (see `transform_claude_user_prompt_submit_with`);
-/// `last_assistant_message` is present (per current upstream Codex `Stop`
-/// schema, required and typed `string | null`) only on `Stop`, matching
-/// Claude's own `Stop` payload shape (see `transform_claude_stop_with`)
-/// except that Codex allows an explicit `null` where Claude does not — see
-/// [`NullableField`].
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub(crate) struct CodexHookEvent {
@@ -113,8 +87,6 @@ pub(crate) struct CodexHookEvent {
     pub(crate) last_assistant_message: NullableField<String>,
 }
 
-/// The set of Codex hook-event/tool combinations `sce hooks codex` gives
-/// distinct behavior. Every other combination classifies as `NoOp`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CodexDispatchArm {
     UserPromptSubmit,
@@ -483,17 +455,6 @@ mod tests {
         fs::remove_dir_all(&state_root).ok();
     }
 
-    // Explicit-empty-string and normal-text persistence *through raw JSON
-    // deserialization* are covered in `stop::tests` (e.g.
-    // `capture_with_persists_deserialized_raw_json_with_empty_string_last_assistant_message`),
-    // not here: `open_agent_trace_db_for_hook_runtime` (used by `stop::handle`
-    // for every persisting case) resolves the real default Agent Trace
-    // storage path and has no `state_root` injection seam — unlike
-    // `apply_patch`, which added one specifically for its own dispatcher
-    // tests. Missing/null above need no DB at all (they short-circuit before
-    // DB open), so they remain safe to exercise through the full
-    // `run_codex_subcommand_from_payload_at_state_root` dispatcher path.
-
     #[test]
     fn codex_hook_event_deserializes_missing_last_assistant_message_as_missing() {
         let event: CodexHookEvent =
@@ -806,14 +767,6 @@ mod tests {
         fs::remove_dir_all(&repository_root).ok();
         fs::remove_dir_all(&state_root).ok();
     }
-
-    // --- T20/AC26 ownership boundary: the parser accepts absolute and `..`
-    // path syntax unresolved (see apply_patch/parser.rs), and
-    // `resolve_codex_patch_paths` (apply_patch/path.rs) is the sole
-    // authority deciding whether a parsed path is safe and stays inside the
-    // canonical Git worktree. These end-to-end tests exercise the real
-    // `PostToolUse apply_patch -> parse -> cwd-aware path resolution ->
-    // normalize -> diff_traces` pipeline, not `path.rs` in isolation. ---
 
     fn diff_trace_count(repository_root: &Path, state_root: &Path) -> usize {
         let storage = resolve_agent_trace_storage_for_hook_runtime_at_state_root(

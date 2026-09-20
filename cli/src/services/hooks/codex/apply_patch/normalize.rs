@@ -1,25 +1,3 @@
-//! Normalizes a parsed Codex `apply_patch` payload ([`CodexPatch`]) into SCE
-//! `Index:`-form unified-diff text that `crate::services::patch::parse_patch`
-//! already accepts.
-//!
-//! Positions are deterministic and event-scoped: each `Update File` operation
-//! numbers only the touched (`+`/`-`) lines it actually emits, from a bounded
-//! range derived from the stable `tool_use_id`. Local offsets are allocated
-//! across every emitted operation, hunk, and file. Codex's own unchanged
-//! context lines are dropped, not persisted as evidence, and contribute no
-//! positional weight. These positions are evidence identities, never real
-//! filesystem line numbers. The
-//! existing, unmodified `intersect_patches`
-//! historical `kind`+`content` fallback is what lets this synthetic-line
-//! evidence still attribute correctly once a real commit lands at different
-//! real line numbers (see plan `context/plans/codex-cli-integration.md`
-//! T11/AC15) — this module does not touch that fallback.
-//!
-//! `Delete File` operations, and `Update File` + `Move to` operations with no
-//! changed lines, contribute no evidence and are silently dropped: an
-//! `apply_patch` producing no provable evidence normalizes to an empty
-//! string.
-
 use std::fmt::Write as _;
 
 use sha2::{Digest, Sha256};
@@ -32,8 +10,6 @@ const CODEX_SYNTHETIC_LINE_ID_DOMAIN: &[u8] = b"sce-codex-apply-patch-line-id-v1
 const SYNTHETIC_EVENT_RANGE_SIZE: u64 = 1 << 31;
 const SYNTHETIC_BASE_OFFSET: u64 = 2;
 
-/// Error produced when Codex apply-patch evidence cannot be assigned safe,
-/// event-scoped synthetic line identities.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CodexPatchNormalizeError {
     message: String,
@@ -53,12 +29,6 @@ fn normalize_error(message: impl Into<String>) -> CodexPatchNormalizeError {
     }
 }
 
-/// Normalizes every `Add`/`Update` file operation in `patch` into one
-/// combined SCE `Index:`-form unified-diff string, in operation order.
-///
-/// The synthetic line identities are deterministic for `tool_use_id`, and
-/// local offsets are allocated across the entire patch rather than restarting
-/// for each file. They are evidence identities, not source line numbers.
 #[allow(dead_code)]
 pub(crate) fn normalize_codex_patch(
     patch: &CodexPatch,
@@ -192,8 +162,6 @@ fn normalize_update(
 
         for line in &hunk.lines {
             match line {
-                // Codex's unchanged context is dropped, not persisted as
-                // evidence, and does not affect synthetic positions.
                 CodexHunkLine::Context(_) => {}
                 CodexHunkLine::Removed(content) => {
                     hunk_body.push('-');
@@ -329,8 +297,6 @@ mod tests {
         let normalized = normalize_codex_patch(&patch, "tool-1").expect("should normalize");
         let base = test_base();
 
-        // The context line ("    unchanged") is dropped entirely and
-        // contributes no positional weight.
         assert_eq!(
             normalized,
             format!(
@@ -719,11 +685,6 @@ mod tests {
         synthetic_base(tool_use_id).expect("test identity should hash")
     }
 
-    /// AC15: synthetic patch-local line numbers must still attribute
-    /// correctly through the existing, unmodified `intersect_patches`
-    /// historical `kind`+`content` fallback once the real commit lands the
-    /// same touched lines at different real line numbers, while an unrelated
-    /// committed line does not intersect.
     #[test]
     fn intersect_patches_matches_synthetic_lines_via_historical_fallback() {
         let codex_patch = parse(
@@ -738,9 +699,6 @@ mod tests {
         let constructed_patch =
             parse_patch(&normalized, Some("cx_test")).expect("constructed patch should parse");
 
-        // A realistic post-commit patch where the same touched lines sit at
-        // different real line numbers than the event-scoped synthetic ones,
-        // plus one unrelated line that should not intersect.
         let post_commit_patch = real_commit_patch();
 
         let overlap = intersect_patches(&constructed_patch, &post_commit_patch);

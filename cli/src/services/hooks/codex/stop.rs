@@ -13,34 +13,10 @@ use super::super::{
 };
 use super::{CodexHookEvent, NullableField};
 
-/// Captures a Codex `Stop` event as one `messages` row (`role = "assistant"`)
-/// and one `parts` row (`part_type = "text"`, `text = last_assistant_message`)
-/// under session `cx_<session_id>`, message `cx:<turn_id>:assistant`.
-///
-/// Upstream Codex's `Stop` schema requires `session_id`, `turn_id`, and
-/// `last_assistant_message` (typed `string | null`) on every Stop payload.
-/// This handler validates all three *before* any side effect — timestamp
-/// acquisition, Agent Trace DB access, or persistence — via
-/// [`validate_stop_event`]. A missing/blank `session_id` or `turn_id`, or a
-/// missing `last_assistant_message`, is a malformed payload that errors so
-/// the outer Codex dispatcher fail-open boundary (`run_codex_subcommand` →
-/// `log_codex_fail_open`) logs it and emits exact empty stdout with no DB
-/// access — this is true even for an otherwise-valid explicit `null`: a
-/// null Stop with a blank/missing identifier is still malformed and must
-/// not reach the null no-op path. Only once identifiers and presence are
-/// confirmed valid does an explicit `null` short-circuit as a silent
-/// successful no-op *before* timestamp acquisition or the Agent Trace DB is
-/// ever opened; a present value (including an explicit empty string,
-/// persisted like any other text) is captured normally.
 pub(super) fn handle(repository_root: &Path, event: &CodexHookEvent) -> Result<String> {
     handle_with_clock(repository_root, event, current_unix_time_ms)
 }
 
-/// Injectable-clock counterpart of `handle`. Timestamp acquisition is
-/// fallible and its failure is propagated as `Err` rather than swallowed
-/// internally, so the existing outer Codex fail-open boundary owns logging
-/// and the empty-stdout contract for a failed clock exactly as it does for
-/// any other handler error.
 fn handle_with_clock<F>(repository_root: &Path, event: &CodexHookEvent, now: F) -> Result<String>
 where
     F: FnOnce() -> Result<i64>,
@@ -66,12 +42,6 @@ where
     )
 }
 
-/// A Codex `Stop` event whose `session_id`/`turn_id` are confirmed
-/// non-blank and trimmed, and whose `last_assistant_message` presence has
-/// already been confirmed (a missing field cannot produce a `ValidatedStop`
-/// at all). `None` here means an explicit upstream `null` — the valid
-/// "no assistant text this turn" no-op signal; `Some` carries a present
-/// value (including an explicit empty string).
 #[derive(Debug)]
 struct ValidatedStop<'a> {
     session_id: &'a str,
@@ -79,10 +49,6 @@ struct ValidatedStop<'a> {
     last_assistant_message: Option<&'a str>,
 }
 
-/// The single validation layer for `Stop` events: every required-field
-/// check (`session_id`, `turn_id`, `last_assistant_message` presence) lives
-/// here so no other function re-validates the same fields with subtly
-/// different semantics. Runs before any timestamp acquisition or DB access.
 fn validate_stop_event(event: &CodexHookEvent) -> Result<ValidatedStop<'_>> {
     let session_id = required_trimmed_field(event.session_id.as_deref(), "session_id")?;
     let turn_id = required_trimmed_field(event.turn_id.as_deref(), "turn_id")?;
@@ -103,9 +69,6 @@ fn validate_stop_event(event: &CodexHookEvent) -> Result<ValidatedStop<'_>> {
     })
 }
 
-/// Persists an already-validated `Stop` event with a known-present
-/// assistant message against an already-open Agent Trace DB. Performs no
-/// validation of its own.
 fn persist_with(
     db: &RepositoryAgentTraceDb,
     validated: &ValidatedStop<'_>,
@@ -136,9 +99,6 @@ fn persist_with(
     Ok(String::new())
 }
 
-/// Validates an identifier field (`session_id`/`turn_id`) is present and
-/// non-blank, returning it trimmed so downstream prefixing/formatting never
-/// persists incidental leading/trailing whitespace.
 fn required_trimmed_field<'a>(value: Option<&'a str>, field_name: &str) -> Result<&'a str> {
     match value.map(str::trim) {
         Some(value) if !value.is_empty() => Ok(value),
@@ -148,12 +108,6 @@ fn required_trimmed_field<'a>(value: Option<&'a str>, field_name: &str) -> Resul
     }
 }
 
-/// Test-only convenience wrapper preserving the pre-refactor `capture_with`
-/// call shape (`event` + timestamp, against an already-open DB) for tests
-/// that build a full `CodexHookEvent`. Routes through the same single
-/// validation layer (`validate_stop_event`) as production `handle`, so it
-/// exercises identical semantics — including the null no-op — rather than
-/// re-implementing validation.
 #[cfg(test)]
 fn capture_with(
     db: &RepositoryAgentTraceDb,
@@ -465,9 +419,6 @@ mod tests {
         let mut payload = event("session-1", "turn-1", "unused");
         payload.last_assistant_message = NullableField::Null;
 
-        // A nonexistent repository root proves `handle` never reaches Agent
-        // Trace DB resolution for a null `last_assistant_message`: DB opening
-        // against a nonexistent repository would otherwise fail loudly.
         let output = handle(Path::new("/nonexistent-repository-root"), &payload)
             .expect("null last_assistant_message should be a silent successful no-op");
         assert_eq!(output, "");
@@ -490,10 +441,6 @@ mod tests {
         let mut payload = event("session-1", "turn-1", "unused");
         payload.last_assistant_message = NullableField::Null;
 
-        // A failing/panicking clock closure and a nonexistent repository
-        // root together prove `handle_with_clock` short-circuits before
-        // timestamp acquisition and before Agent Trace DB resolution for an
-        // explicit null.
         let output = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             panic!("clock must not be called for an explicit null last_assistant_message")
         })
@@ -505,10 +452,6 @@ mod tests {
     fn handle_with_clock_propagates_a_timestamp_failure_as_an_error_with_no_persistence() {
         let payload = event("session-1", "turn-1", "hello back");
 
-        // A nonexistent repository root additionally proves the failed
-        // clock is consulted (and propagated) before Agent Trace DB
-        // resolution is ever attempted: a subsequent DB-open attempt
-        // against this path would fail loudly instead.
         let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             Err(anyhow::anyhow!("clock failed"))
         })
@@ -607,8 +550,6 @@ mod tests {
         payload.turn_id = Some(" turn-1 ".to_string());
         payload.last_assistant_message = NullableField::Null;
 
-        // Padded-but-otherwise-valid identifiers must validate under their
-        // trimmed representation even though a null Stop persists nothing.
         let output = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             panic!("clock must not be called for an explicit null last_assistant_message")
         })

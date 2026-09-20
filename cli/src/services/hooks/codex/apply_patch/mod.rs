@@ -1,8 +1,3 @@
-//! Parses Codex's custom `apply_patch` text format (`*** Begin Patch` ...
-//! `*** End Patch`) into a typed [`CodexPatch`], normalizes it into an
-//! SCE-supported unified diff, and persists non-empty results as a
-//! `diff_traces` row for the `PostToolUse`/`apply_patch` dispatch arm.
-
 mod normalize;
 mod parser;
 mod path;
@@ -32,14 +27,6 @@ use super::super::{
 };
 use super::CodexHookEvent;
 
-/// Handles a Codex `PostToolUse(apply_patch)` event: reads the raw patch text
-/// from `tool_input.command`, parses it (T10), normalizes it (T11), and — for
-/// a non-empty normalized result — persists one `diff_traces` row.
-///
-/// Every path here, success or fail-open, returns empty stdout: a missing or
-/// non-string `command`, a parse failure (logged), and an empty normalized
-/// patch (e.g. delete-only) all resolve to `Ok(String::new())` with no
-/// evidence written.
 pub(super) fn handle(
     repository_root: &Path,
     event: &CodexHookEvent,
@@ -54,8 +41,6 @@ pub(super) fn handle_with_state_root(
     state_root: Option<&Path>,
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
-    // Validate the session before parsing, path resolution, or DB access so
-    // invalid Codex events can never reach apply_patch persistence.
     required_session_id(event.session_id.as_deref())?;
 
     let Some(command) = apply_patch_command_from_event(event) else {
@@ -160,9 +145,6 @@ pub(super) fn handle_with_state_root(
     persist_with(&db, event, &normalized_patch, time_ms)
 }
 
-/// Codex's `PostToolUse` `tool_input` for the `apply_patch` tool carries the
-/// raw patch text under `command`, mirroring the `Bash` tool's `tool_input`
-/// shape this module's sibling `bash_policy.rs` already relies on.
 fn apply_patch_command_from_event(event: &CodexHookEvent) -> Option<&str> {
     event
         .tool_input
@@ -180,9 +162,6 @@ fn required_session_id(value: Option<&str>) -> Result<&str> {
     }
 }
 
-/// Injectable counterpart of `handle`'s persistence step, for deterministic
-/// testing against an already-open Agent Trace DB — mirrors the
-/// `user_prompt_submit`/`stop` sibling arms' `capture_with` pattern.
 fn persist_with(
     db: &RepositoryAgentTraceDb,
     event: &CodexHookEvent,
@@ -322,10 +301,6 @@ mod tests {
         }
     }
 
-    // --- fail-open / successful no-op behaviors: `handle` returns before it
-    // would ever open the Agent Trace DB, so a non-existent repository root
-    // is safe to pass through unused. ---
-
     #[test]
     fn handle_fails_open_silently_when_tool_input_missing() {
         let output = handle(
@@ -436,11 +411,6 @@ mod tests {
         .expect("apply_patch handling should succeed");
         assert_eq!(output, "");
     }
-
-    // --- persistence content (AC11-AC14): `persist_with` against a real,
-    // directly-opened Agent Trace DB, mirroring `user_prompt_submit`/`stop`'s
-    // own injectable-level testing precedent rather than the full
-    // hook-runtime DB resolution (which requires a prior `sce setup`). ---
 
     #[test]
     fn apply_patch_persists_one_row_with_expected_field_values_for_add_and_update() {
@@ -585,13 +555,6 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    /// AC15: a committed Codex `apply_patch` Update whose `diff_trace` carries
-    /// synthetic, patch-local line numbers is still attributed through the
-    /// existing, unmodified post-commit intersection pipeline
-    /// (`build_agent_trace`, the same function the real `post-commit` hook
-    /// flow calls) when the real committed line numbers differ, and the
-    /// resulting Agent Trace identifies Codex as the tool and preserves the
-    /// Codex model ID.
     #[test]
     fn apply_patch_diff_trace_attributes_through_agent_trace_pipeline_at_different_real_lines() {
         let db_path = unique_test_db_path("agent-trace-pipeline");
@@ -612,9 +575,6 @@ mod tests {
         assert_eq!(recent.loaded_count(), 1);
         let constructed = &recent.patches[0];
 
-        // A realistic post-commit patch where the same touched lines sit at
-        // real line 42, far from the diff_trace's synthetic line 1, plus one
-        // unrelated committed line that must not be attributed to Codex.
         let post_commit_patch = ParsedPatch {
             files: vec![PatchFileChange {
                 old_path: "src/lib.rs".to_string(),

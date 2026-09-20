@@ -382,12 +382,6 @@ mod tests {
             .find(|a| a.call_id == "call-a")
             .expect("A is tracked");
 
-        // Simulate a crash between begin_terminal_cleanup arming Flushing and
-        // resolve_recovery ever running: this is the only way to observe a
-        // literal orphaned `Flushing` at rest, since every in-process caller of
-        // begin_terminal_cleanup always calls resolve_recovery immediately
-        // afterward under the same boundary lock. A real process crash at this
-        // exact point is a legitimately persisted, production-reachable shape.
         state::begin_terminal_cleanup(&git_dir, std::slice::from_ref(&doomed.scope_id))
             .expect("seeding an orphaned flush should succeed");
         let seeded = state::read_state(&git_dir).expect("state readable");
