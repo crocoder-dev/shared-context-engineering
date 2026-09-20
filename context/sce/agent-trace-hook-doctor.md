@@ -12,11 +12,9 @@ In scope for this contract task:
 - stable text/JSON output additions for diagnosis and `--fix` reporting
 - the standing maintenance rule that every new SCE-managed setup/install surface must extend `sce doctor` coverage in the same change stream
 
-Out of scope for this contract task:
-
-- Rust implementation changes
-- parser/help wiring beyond the contract needed for downstream tasks
-- broad machine diagnostics unrelated to SCE-owned operator readiness
+Out of scope for this contract task: Rust implementation changes, parser/help
+wiring beyond the contract needed for downstream tasks, and broad machine
+diagnostics unrelated to SCE-owned operator readiness.
 
 ## Current implementation baseline
 
@@ -47,6 +45,7 @@ The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor comm
 - integration groups are rendered beneath typed, target-scoped `Claude Code`, `OpenCode`, `Pi`, and `Codex` nodes in deterministic target-specific area order; healthy groups render one concise status row without listing installed files
 - OpenCode plugin inventory includes the installed manifest file plus plugin/preset artifacts as required presence-only files; Claude groups are derived from embedded `.claude` assets (`settings.json` and `hooks/**` under `ClaudeCode plugins`, including `.claude/hooks/run-sce-or-show-install-guidance.sh`, then `commands/**` and `skills/**`); Pi groups are derived from embedded `.pi` assets (`prompts/**` under `Pi prompts`, `skills/**` under `Pi skills`); Codex groups are derived from the embedded Codex catalog (`.agents/skills/**` under `Codex skills`, one row per required `.codex/hooks.json` registration plus `.codex/hooks/**` under `Codex hooks`, the former also gated on Codex's own read-only hook-trust state — see `context/sce/doctor-human-text-contract.md`); generated `config/.opencode/**`, `config/.claude/**`, `config/.pi/**`, and `config/.agents/**`/`config/.codex/**` trees are not inspected by doctor
 - repair-mode delegation to `ServiceLifecycle::fix` implementations: `HooksLifecycle::fix` reuses `install_required_git_hooks` for missing hooks directories plus missing, stale, or non-executable required hooks, so repair restores the canonical all-hook non-blocking missing-`sce` guidance, available-CLI argument/failure propagation, and post-commit-only remote forwarding contract; `LocalDbLifecycle::fix`, `AuthDbLifecycle::fix`, and `AgentTraceDbLifecycle::fix` handle bootstrap of missing canonical SCE-owned DB parent directories
+- mutation-scope runtime health reporting: for every resolved integration target, doctor consumes that adapter's own `healthy | recovering | blocked | invalid` classifier (never inspecting persisted recovery state itself) and reports it in both output modes; `blocked`/`invalid` are `manual_only` problems that `sce doctor --fix` cannot repair, while `recovering` is a `Warning`-severity, `no_action_required` diagnostic that keeps readiness `ready` and produces no `--fix` result at all — see [mutation-scope-health-status.md](mutation-scope-health-status.md)
 
 ## Approved human text-mode contract
 
@@ -94,6 +93,7 @@ Every detected issue must map to exactly one stable problem category:
 - `repo_assets`: missing or stale repo-local SCE-managed assets outside the hook files themselves
 - `filesystem_permissions`: missing parent directories, unwritable owned paths, rename/temp barriers, or permission failures blocking safe repair
 - `remediation_coverage`: gaps where doctor can diagnose an issue but does not yet own a canonical repair path
+- `mutation_scope_health`: a non-`healthy` adapter mutation-scope runtime status (`recovering`/`blocked`/`invalid`) — see [mutation-scope-health-status.md](mutation-scope-health-status.md)
 
 Each problem record must also include stable severity and fixability classes.
 
@@ -108,6 +108,7 @@ Each problem record must also include stable severity and fixability classes.
 - `auto_fixable`: safe for `sce doctor --fix` to repair idempotently
 - `manual_only`: not safe for automatic repair; output must include deterministic manual remediation
 - `not_yet_implemented`: intended to become auto-fixable, but current doctor repair coverage is incomplete and must report the gap explicitly
+- `no_action_required`: diagnostic-only; no repair exists or is needed because the underlying condition is expected to resolve through ordinary future activity rather than through any doctor or operator action — distinct from `not_yet_implemented`, which marks a repair gap rather than an absence of remediation need. `sce doctor --fix` must not render a manual-repair result for a `no_action_required` problem (see `mutation_scope_health`'s `recovering` status)
 
 ## Required check inventory
 
@@ -174,7 +175,7 @@ The broadened contract for `sce doctor` must cover the following problem invento
 Every reported problem must include deterministic remediation metadata:
 
 - whether the issue is `auto_fixable`, `manual_only`, or `not_yet_implemented`
-- one canonical next action (`doctor_fix`, `setup_hooks`, `manual_steps`, or another stable action label introduced by downstream tasks)
+- one canonical next action (`doctor_fix`, `setup_hooks`, `manual_steps`, `no_action_required`, or another stable action label introduced by downstream tasks)
 - concise human-readable remediation text in text mode
 - stable machine-readable remediation fields in JSON mode
 

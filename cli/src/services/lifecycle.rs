@@ -20,6 +20,7 @@ pub enum HealthCategory {
     HookRollout,
     RepoAssets,
     FilesystemPermissions,
+    MutationScopeHealth,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,6 +33,7 @@ pub enum HealthSeverity {
 pub enum HealthFixability {
     AutoFixable,
     ManualOnly,
+    NoActionRequired,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -71,6 +73,9 @@ pub enum HealthProblemKind {
     CodexHookRegistrationPolicyUnknown,
     AgentTraceDbConnectionFailed,
     AgentTraceDbSchemaNotReady,
+    MutationScopeHealthRecovering,
+    MutationScopeHealthBlocked,
+    MutationScopeHealthInvalid,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

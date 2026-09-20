@@ -252,6 +252,7 @@ fn doctor_problem_category(category: HealthCategory) -> ProblemCategory {
         HealthCategory::HookRollout => ProblemCategory::HookRollout,
         HealthCategory::RepoAssets => ProblemCategory::RepoAssets,
         HealthCategory::FilesystemPermissions => ProblemCategory::FilesystemPermissions,
+        HealthCategory::MutationScopeHealth => ProblemCategory::MutationScopeHealth,
     }
 }
 
@@ -262,6 +263,7 @@ fn health_problem_category(category: ProblemCategory) -> HealthCategory {
         ProblemCategory::HookRollout => HealthCategory::HookRollout,
         ProblemCategory::RepoAssets => HealthCategory::RepoAssets,
         ProblemCategory::FilesystemPermissions => HealthCategory::FilesystemPermissions,
+        ProblemCategory::MutationScopeHealth => HealthCategory::MutationScopeHealth,
     }
 }
 
@@ -283,6 +285,7 @@ fn doctor_problem_fixability(fixability: HealthFixability) -> ProblemFixability 
     match fixability {
         HealthFixability::AutoFixable => ProblemFixability::AutoFixable,
         HealthFixability::ManualOnly => ProblemFixability::ManualOnly,
+        HealthFixability::NoActionRequired => ProblemFixability::NoActionRequired,
     }
 }
 
@@ -290,6 +293,7 @@ fn health_problem_fixability(fixability: ProblemFixability) -> HealthFixability 
     match fixability {
         ProblemFixability::AutoFixable => HealthFixability::AutoFixable,
         ProblemFixability::ManualOnly => HealthFixability::ManualOnly,
+        ProblemFixability::NoActionRequired => HealthFixability::NoActionRequired,
     }
 }
 
@@ -364,6 +368,11 @@ fn doctor_problem_kind(kind: HealthProblemKind) -> ProblemKind {
             ProblemKind::AgentTraceDbConnectionFailed
         }
         HealthProblemKind::AgentTraceDbSchemaNotReady => ProblemKind::AgentTraceDbSchemaNotReady,
+        HealthProblemKind::MutationScopeHealthRecovering => {
+            ProblemKind::MutationScopeHealthRecovering
+        }
+        HealthProblemKind::MutationScopeHealthBlocked => ProblemKind::MutationScopeHealthBlocked,
+        HealthProblemKind::MutationScopeHealthInvalid => ProblemKind::MutationScopeHealthInvalid,
     }
 }
 
@@ -438,6 +447,11 @@ fn health_problem_kind(kind: ProblemKind) -> HealthProblemKind {
             HealthProblemKind::AgentTraceDbConnectionFailed
         }
         ProblemKind::AgentTraceDbSchemaNotReady => HealthProblemKind::AgentTraceDbSchemaNotReady,
+        ProblemKind::MutationScopeHealthRecovering => {
+            HealthProblemKind::MutationScopeHealthRecovering
+        }
+        ProblemKind::MutationScopeHealthBlocked => HealthProblemKind::MutationScopeHealthBlocked,
+        ProblemKind::MutationScopeHealthInvalid => HealthProblemKind::MutationScopeHealthInvalid,
     }
 }
 

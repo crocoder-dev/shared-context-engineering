@@ -5,18 +5,11 @@ pub(super) fn build_manual_fix_results(report: &HookDoctorReport) -> Vec<DoctorF
     report
         .problems
         .iter()
-        .filter(|problem| problem.fixability != ProblemFixability::AutoFixable)
+        .filter(|problem| problem.fixability == ProblemFixability::ManualOnly)
         .map(|problem| DoctorFixResultRecord {
             category: problem.category,
             outcome: FixResult::Manual,
-            detail: match problem.fixability {
-                ProblemFixability::AutoFixable => {
-                    unreachable!("auto-fixable problems should not be rendered as manual results")
-                }
-                ProblemFixability::ManualOnly => {
-                    format!("{} Manual remediation is still required.", problem.summary)
-                }
-            },
+            detail: format!("{} Manual remediation is still required.", problem.summary),
         })
         .collect()
 }
