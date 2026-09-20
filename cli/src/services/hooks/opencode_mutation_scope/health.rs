@@ -66,7 +66,8 @@ mod tests {
 
     use serde_json::{json, Value};
 
-    use super::super::{run_opencode_mutation_scope_from_payload_with_seams, AttemptKey};
+    use super::super::events::AttemptKey;
+    use super::super::lifecycle::run_opencode_mutation_scope_from_payload_with_seams;
     use super::*;
     use crate::services::observability::traits::Logger;
 
