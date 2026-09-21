@@ -96,10 +96,16 @@ classifier reports (`healthy | recovering | blocked | invalid`, see
 [mutation-scope-health-status.md](mutation-scope-health-status.md)), using
 the same compact/expand convention as any other row — `[PASS]` (`healthy`)
 collapses with no reason shown, `[WARN]` (`recovering`) and `[FAIL]`
-(`blocked`/`invalid`) expand with a short `Reason:` line and an optional
-`Detail:` line. This row is independent of that target's asset-content
-checks above it: a target can show `[PASS]` for every asset area while its
-`Agent tracing` row is `[WARN]`/`[FAIL]`, or vice versa.
+(`blocked`/`invalid`) expand with a short `Reason:` line, an optional
+`Detail:` line, and — whenever the underlying `DoctorProblem` carries
+remediation text — a `Remediation:` line: for a `blocked` row this is
+`Run 'sce doctor --fix' to recover ...` when the owning adapter proves the
+state `auto_fixable`, or text naming the exact persisted state-file path
+(never suggesting deletion) when it remains `manual_only`; see
+[mutation-scope-health-status.md](mutation-scope-health-status.md). This row
+is independent of that target's asset-content checks above it: a target can
+show `[PASS]` for every asset area while its `Agent tracing` row is
+`[WARN]`/`[FAIL]`, or vice versa.
 
 Codex's `Hooks` area covers `.codex/hooks/run-sce-or-show-install-guidance.sh`
 plus one row per required `.codex/hooks.json` registration instead of one

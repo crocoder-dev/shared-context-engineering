@@ -1,4 +1,6 @@
-use super::types::{DoctorFixResultRecord, FixResult, ProblemFixability};
+use super::types::{
+    DoctorFixResultRecord, DoctorProblem, FixResult, ProblemCategory, ProblemFixability,
+};
 use super::HookDoctorReport;
 
 pub(super) fn build_manual_fix_results(report: &HookDoctorReport) -> Vec<DoctorFixResultRecord> {
@@ -9,7 +11,15 @@ pub(super) fn build_manual_fix_results(report: &HookDoctorReport) -> Vec<DoctorF
         .map(|problem| DoctorFixResultRecord {
             category: problem.category,
             outcome: FixResult::Manual,
-            detail: format!("{} Manual remediation is still required.", problem.summary),
+            detail: manual_fix_detail(problem),
         })
         .collect()
+}
+
+fn manual_fix_detail(problem: &DoctorProblem) -> String {
+    if problem.category == ProblemCategory::MutationScopeHealth {
+        problem.remediation.clone()
+    } else {
+        format!("{} Manual remediation is still required.", problem.summary)
+    }
 }

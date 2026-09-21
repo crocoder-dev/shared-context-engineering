@@ -1390,7 +1390,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Verify outcomes (corrected): `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor` -> `50 passed; 0 failed` (the five surviving T05 regressions plus the new `finalize_mutation_scope_repair_results_ignores_an_immediate_post_repair_read_that_the_final_report_contradicts`); `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_mutation_scope` -> `138 passed; 0 failed` (includes the two new T04-correction Invalid-classification regressions); `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml opencode_mutation_scope` -> `113 passed; 0 failed`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_scope_health` -> `10 passed; 0 failed`; `cargo fmt --manifest-path cli/Cargo.toml -- --check` -> clean; `SCE_CLI_PACKAGE_FALLBACK=1 cargo clippy --manifest-path cli/Cargo.toml --all-targets` -> no warnings; `nix run .#quint -- typecheck spec/doctor_recovery.qnt` -> clean; `nix run .#quint -- test spec/doctor_recovery.qnt --match '^test.*'` -> `13 passing` (unchanged — this correction required no Quint model change, confirming the implementation was the thing out of sync with the already-correct formal model, not the other way around).
   - Context synchronization: synced
 
-- [ ] T06: `Human and JSON remediation contract for repaired and manual Agent tracing states` (status:todo)
+- [x] T06: `Human and JSON remediation contract for repaired and manual Agent tracing states` (status:done)
   - Task ID: T06
   - Scope: In — `cli/src/services/doctor/{render,fixes,types}.rs`. Fix
     `build_manual_fix_results` (currently drops `DoctorProblem.remediation`
@@ -1428,7 +1428,169 @@ Persist this field in every plan; this is durable plan state, not chat state:
     Agent tracing ...` for a resolved repair and `[manual] Agent tracing
     remains blocked. Inspect '<path>'.` for an unresolved one.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor`
-  - Context synchronization: pending
+  - Completed: 2026-09-21
+  - Files changed: `cli/src/services/doctor/inspect.rs` (adds a `mutation_scope_repairability`
+    dispatch helper, alongside the existing `claude_repairability`/
+    `opencode_repairability`; `push_mutation_scope_health_problem` now calls it for a
+    `Blocked` row and branches its `fixability`/`next_action`/remediation text on the
+    result instead of hardcoding `ManualOnly`; the function now returns
+    `Option<String>` (the remediation text it decided, `None` only for `Healthy`) so
+    the caller can also stamp it onto the row; `inspect_mutation_scope_health` now
+    threads that return value into a new `MutationScopeHealthRow.remediation` field;
+    the `ManualOnly`-Blocked and `Invalid` remediation strings are reworded to lead
+    with the exact sentence doctor's various surfaces now render verbatim
+    (`"Agent tracing remains blocked. Inspect '<path>'. ..."` /
+    `"Agent tracing state could not be safely interpreted. Inspect '<path>'. ..."`);
+    adds `mutation_scope_health_blocked_autofixable_remediation_names_doctor_fix`,
+    `mutation_scope_health_manual_only_states_name_the_real_state_path_and_never_suggest_deletion`,
+    `full_report_autofixable_blocked_names_doctor_fix_in_text_and_json`, and
+    `full_report_fix_mode_human_text_shows_the_manual_detail_line`; strengthens
+    `repair_blocked_mutation_scope_target_repairs_an_autofixable_claude_state` with an
+    assertion on the literal `[fixed]` detail-line contract);
+    `cli/src/services/doctor/types.rs` (adds `remediation: Option<String>` to
+    `MutationScopeHealthRow`, an internal Rust field not read by
+    `mutation_scope_health_json` — the JSON array's own field set is untouched; adds
+    the same field to `DoctorDisplayDetail::MutationScopeHealth`);
+    `cli/src/services/doctor/render.rs` (the `MutationScopeHealth` display-detail
+    render arm renders a `Remediation:` line when the field is `Some`;
+    `mutation_scope_health_node` threads `row.remediation` through; adds
+    `blocked_row_renders_remediation_when_present` and
+    `blocked_row_omits_remediation_line_when_absent`, and a `row_with_remediation`
+    test helper the pre-existing `row` helper now delegates to);
+    `cli/src/services/doctor/fixes.rs` (`build_manual_fix_results` now calls a new
+    `manual_fix_detail` helper: for `ProblemCategory::MutationScopeHealth` it uses
+    `problem.remediation` verbatim as the fix-result detail instead of the generic
+    `"{summary} Manual remediation is still required."` wrapper every other
+    manual-only category still gets).
+  - Result: A `Blocked` Agent-tracing row's remediation is now computed from the
+    owning adapter's own `assess_repairability` at diagnosis time, not hardcoded to
+    `ManualOnly`: `AutoFixable` produces `fixability: auto_fixable` /
+    `next_action: doctor_fix` and remediation text naming `sce doctor --fix`
+    explicitly (both in the human `Remediation:` line under "Agent tracing" and in
+    the JSON `problems[].remediation.text`, since `DoctorProblem` already flowed
+    into JSON unchanged — only the values it now receives are corrected);
+    `ManualOnly`/`Invalid` rows keep the existing `fixability: manual_only` /
+    `next_action: manual_steps` contract, now with wording that leads with the exact
+    persisted state-file path and contains no `delete`/`deleting`/`deleted` wording
+    anywhere (AC2's literal contract — see the 2026-09-21 correction below; the text
+    instead tells the user to preserve the persisted state while reviewing the
+    adapter's recovery model), and that same text is now actually
+    reachable through the previously-inert `DoctorDisplayDetail::MutationScopeHealth`
+    tree-row rendering. `sce doctor --fix`'s `[manual]` fix-result line for a
+    mutation-scope-health target now reads
+    `"Agent tracing remains blocked. Inspect '<path>'. ..."` (via
+    `build_manual_fix_results`'s new category-specific branch for a never-attempted
+    `ManualOnly` target, and via `finalize_mutation_scope_repair_results` — see the
+    correction below — for an attempted `AutoFixable` target whose repair did not
+    resolve it) instead of the generic `"{summary} Manual remediation is still
+    required."`; the `[fixed]` line (`"Recovered <adapter> Agent tracing (now
+    <status>: <reason>)."`) is unchanged, since `fixed_record_from_recomputed_health`
+    (T05) already produced it correctly and this task only added a regression
+    asserting its literal prefix. The `mutation_scope_health[]` JSON array's field set
+    (`target`/`status`/`reason`/`detail`) and status strings are untouched — the
+    new `MutationScopeHealthRow.remediation` field exists only as an internal Rust
+    struct field that `mutation_scope_health_json` never reads (AC7).
+  - Deviation: `push_mutation_scope_health_problem` and the new
+    `mutation_scope_repairability` dispatch helper live in `inspect.rs`, not in this
+    task's literal `Scope: In` file list (`{render,fixes,types}.rs`), because the
+    task's own `Done when` text explicitly requires
+    `push_mutation_scope_health_problem` to "gain" fixability-aware remediation, and
+    no file in the named list owns that call site — `push_mutation_scope_health_problem`
+    was already the sole place `Blocked`/`Invalid` remediation text and `fixability`
+    are decided (T03/T04/T05 established `claude_repairability`/
+    `opencode_repairability` there for the same reason). This mirrors T04's own
+    identical precedent of touching `lifecycle.rs` beyond its literal named scope
+    when `Done when` required it. `build_manual_fix_results`'s remediation-preserving
+    fix is scoped to the `mutation_scope_health` category only, not generalized to
+    every `ManualOnly` category: this plan's acceptance criteria (AC1/AC2) and this
+    task's own `Done when` name only `mutation_scope_health` wording explicitly, and
+    every other `ManualOnly` category's existing `"{summary} Manual remediation is
+    still required."` wording is unrelated to this plan's scope — changing it for
+    categories this plan never inspected (config/hooks/asset problems) would risk
+    silently changing established wording contracts those categories' own tests may
+    depend on, with no acceptance criterion requiring it.
+  - Verify outcomes: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor` -> `56 passed; 0 failed` (50 pre-existing + 6 new: `blocked_row_renders_remediation_when_present`, `blocked_row_omits_remediation_line_when_absent`, `mutation_scope_health_blocked_autofixable_remediation_names_doctor_fix`, `mutation_scope_health_manual_only_states_name_the_real_state_path_and_never_suggest_deletion`, `full_report_autofixable_blocked_names_doctor_fix_in_text_and_json`, `full_report_fix_mode_human_text_shows_the_manual_detail_line`), re-run three times consecutively with no flakes; `cargo fmt --manifest-path cli/Cargo.toml -- --check` -> clean; `SCE_CLI_PACKAGE_FALLBACK=1 cargo clippy --manifest-path cli/Cargo.toml --all-targets` -> no warnings; `grep -rn "SystemTime\|Instant::now\|\.elapsed()\|modified()" cli/src/services/doctor/render.rs cli/src/services/doctor/fixes.rs cli/src/services/doctor/types.rs cli/src/services/doctor/inspect.rs` -> only a pre-existing, unrelated test-fixture nonce (`unique_temp_repository_root`, unchanged by this task), matching AC3's "no staleness use outside unrelated lock-timeout constants."
+  - Context impact: `sce doctor` (no `--fix`) now states, for a `Blocked` row, either
+    the literal `sce doctor --fix` remediation (`AutoFixable`) or the real
+    state-file path with no deletion suggestion (`ManualOnly`) in both human text and
+    JSON — previously the JSON `problems[]` carried only the static `ManualOnly`
+    wording regardless of actual repairability, and the human tree rendered no
+    remediation for "Agent tracing" at all. `sce doctor --fix`'s `[manual]`
+    fix-result line for this category changed wording (from the generic "Manual
+    remediation is still required." wrapper to the adapter's own remediation text
+    leading with the real path); its `[fixed]` line is unchanged. No
+    `mutation_scope_health[]` JSON field, status string, or `MutationScope*`/
+    `mutation_scope_health` Rust name changed (AC7). This is the task named in the
+    plan's own "Context sync" section as owning
+    `context/sce/mutation-scope-health-status.md` (the new dynamic-`fixability`
+    behavior for a `Blocked` problem record),
+    `context/sce/agent-trace-hook-doctor.md` (remediation now varies by adapter-owned
+    repairability within the existing initial-diagnosis -> existing-repairs ->
+    final-diagnosis flow), and `context/sce/doctor-human-text-contract.md` (the new
+    `Remediation:` line under "Agent tracing") — those three docs still need this
+    task's own context-synchronization pass (next), which was deferred here from
+    T03/T04/T05 exactly as those tasks recorded. `context/cli/claude-mutation-scope-integration.md`,
+    the OpenCode adapter docs, and `context/cli/pi-mutation-scope-integration.md`
+    describe adapter-internal repair mechanics this task did not touch (T03/T04
+    already own their own sync passes for those); no root context file
+    (`overview.md`/`architecture.md`/`glossary.md`/`patterns.md`/`context-map.md`)
+    is implicated by this doctor-rendering-layer change alone.
+  - Context synchronization: synced
+  - Correction (2026-09-21): Two plan-contract issues found in this task's initial
+    implementation were fixed without starting T07 or redesigning mutation-scope
+    recovery:
+    1. AC2 requires that no rendered manual remediation string contain `delete`, but
+       `push_mutation_scope_health_problem`'s `ManualOnly`-`Blocked` and `Invalid`
+       remediation text literally said `"Do not delete the state file."` /
+       `"...rather than deleting it."`, and the regressions
+       (`mutation_scope_health_reports_blocked_as_an_error_and_flips_readiness_not_ready`,
+       `mutation_scope_health_manual_only_states_name_the_real_state_path_and_never_suggest_deletion`,
+       `full_report_blocked_regression_is_consistent_across_surfaces`) asserted those
+       phrases were present, encoding the wrong behavior. Fixed by rewording both
+       strings in `cli/src/services/doctor/inspect.rs` to name the exact state path
+       and tell the user to preserve the persisted state while reviewing the
+       adapter's recovery model, with no `delete`/`deleting`/`deleted` wording, and by
+       rewriting the three regressions to assert the literal AC2 contract instead
+       (`remediation.contains(&state_path.display().to_string())` and
+       `!remediation.to_ascii_lowercase().contains("delete")`).
+    2. `build_manual_fix_results` only covers `ProblemFixability::ManualOnly`
+       problems, so an `AutoFixable` `Blocked` target whose attempted repair left it
+       still `Blocked`/`Invalid` (repairability is recomputed fresh from adapter
+       state at push time, independent of whether a repair was attempted, so it stays
+       `AutoFixable`) produced neither a `Fixed` nor a `Manual` fix result — it simply
+       disappeared from `Fix results`. Fixed by broadening
+       `finalize_mutation_scope_repair_results` (renamed its per-target helper from
+       `fixed_record_from_recomputed_health` to
+       `mutation_scope_repair_result_from_final_row`, now returning
+       `DoctorFixResultRecord` unconditionally instead of
+       `Option<DoctorFixResultRecord>`, since every attempted target now produces
+       exactly one outcome) so a final `Healthy`/`Recovering` row still produces
+       `Fixed` (unchanged from T05) while a final `Blocked`/`Invalid` row now produces
+       `Manual`, reusing `MutationScopeHealthRow.remediation` — the same string
+       already pushed into the final report's matching `DoctorProblem` — as the
+       `Manual` detail, so the exact state path and no-`delete` wording stay identical
+       across the `[manual]` fix-result line and the plain-diagnose `Remediation:`
+       line. `AutoFixable` fixability itself is untouched (AC6/plain-`doctor`
+       `fixability: auto_fixable` / `next_action: doctor_fix` still stands for a
+       not-yet-attempted `Blocked` `AutoFixable` state), and `build_manual_fix_results`
+       still only covers never-attempted `ManualOnly` problems, so there is no overlap
+       between the two `Manual`-producing paths. Added
+       `finalize_mutation_scope_repair_results_reports_manual_when_an_attempted_autofixable_repair_stays_blocked`
+       in `cli/src/services/doctor/inspect.rs`, using a `failing_repair_seam()` test
+       helper (the same seam-injection pattern `no_op_repair_seam()` already
+       established) to deterministically force `claude_mutation_scope::repair_blocked`
+       to leave a proven-`AutoFixable` `Blocked` state unresolved, then asserts the
+       final row stays `Blocked`, no `Fixed` result is ever produced, and a `Manual`
+       result is produced whose detail names the exact state path and contains no
+       `delete` wording.
+    - Verify: `nix build .#checks.x86_64-linux.cli-tests` -> `1752 passed; 0 failed; 1
+      ignored`; `nix build .#checks.x86_64-linux.cli-clippy` -> clean; `nix build
+      .#checks.x86_64-linux.cli-fmt` -> clean.
+    - No change to the `mutation_scope_health[]` JSON schema, T05's final-report-only
+      `Fixed` authorization, adapter repairability rules, owner-death proof, state
+      locking, boundary locking, recovery generation semantics, durable
+      `PendingAbandon`, atomic recovery clear, health status strings, or Codex/Pi
+      behavior. T07 remains todo.
 
 - [ ] T07: `Cross-adapter end-to-end regression and formal-model connection` (status:todo)
   - Task ID: T07
