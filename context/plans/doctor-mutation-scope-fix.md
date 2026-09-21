@@ -273,7 +273,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Formalize the safe doctor-repair protocol and its invariants` (status:todo)
+- [x] T01: `Formalize the safe doctor-repair protocol and its invariants` (status:done)
   - Task ID: T01
   - Scope: In — a new, focused Quint model (e.g. `spec/doctor_recovery.qnt`,
     exact name chosen at implementation time) modeling the shared abstract
@@ -307,6 +307,360 @@ Persist this field in every plan; this is durable plan state, not chat state:
     explicitly which real Claude/OpenCode concepts each abstract phase and
     the owner oracle correspond to, so T03/T04 can be checked against it.
   - Verify: `nix run .#quint -- typecheck spec/doctor_recovery.qnt`; `nix run .#quint -- test spec/doctor_recovery.qnt`; the invariant-check command recorded in the file's own header.
+  - Completed: 2026-09-21 (corrected three times on 2026-09-21 — the first
+    pass's model was directionally useful but several named invariants
+    were weaker than claimed; the second pass fixed that but still
+    modeled `recovery`/`health`/`fixState` per attempt where the real
+    adapters persist one recovery/health/fix-report fact for the whole
+    adapter, and left `recoveryProgress`/`completeAbandon` runnable while
+    `DoctorHolds`; the third pass fixed both of those but introduced two
+    new mismatches of its own: it added a `recovery == Clear` precondition
+    to `hookDecideAbandon`/`doctorAttemptRepairWith` that wrongly encoded
+    "at most one attempt can be `PendingAbandon`" as a shared protocol
+    invariant, and it described the model's `lock: LockHolder` variable as
+    corresponding primarily to OpenCode's `AdapterBoundaryLock` even though
+    the model required that variable free during the seam-adjacent
+    `recoveryProgress`/`completeAbandon` actions — the real
+    `AdapterBoundaryLock` remains held across seam calls; only the shorter
+    `AdapterStateLock` is released before them. This record describes the
+    fourth pass, which removes the single-`PendingAbandon` restriction and
+    renames the lock abstraction so it stops claiming to be
+    `AdapterBoundaryLock`)
+  - Files changed: `spec/doctor_recovery.qnt` (new, then corrected in
+    place three times — no T01b/T01c/T01d, same task)
+  - Result: `spec/doctor_recovery.qnt` is a standalone Quint model (does
+    not extend `spec/mutation_cursor.qnt`) of the safe doctor-repair
+    pattern. `phase: AttemptId -> AttemptPhase` stays per-attempt, but
+    `recovery: RecoveryState` and `fixState: FixState` are now single
+    adapter-wide variables (not `AttemptId -> ...` maps), matching the real
+    OpenCode `AdapterState { recovery: RecoveryState, attempts:
+    Vec<AdapterAttempt> }` shape and Claude's whole-file
+    `recovery_pending` flag — both adapters report one health/one fix
+    result for the adapter, never one per attempt:
+    - `AttemptPhase = NotAllocated | PendingStart | Active | PendingAbandon
+      | Removed` (unchanged from both earlier passes).
+    - `RecoveryState = Clear | Pending | Flushing`, still a single `var
+      recovery` for the whole adapter (unchanged shape from the third
+      pass), distinguishing "no terminal recovery obligations remain
+      anywhere in the adapter" (`Clear`), "one or more terminal recovery
+      obligations exist and need processing" (`Pending`), and "the
+      adapter-wide recovery sequence is currently processing one or more
+      obligations" (`Flushing`). It is not ownership of one particular
+      attempt: multiple `PendingAbandon` attempts may be covered by the
+      same shared `recovery` value at once. The third pass had added a
+      `recovery == Clear` precondition to `hookDecideAbandon`/
+      `doctorAttemptRepairWith`'s eligibility specifically to force at
+      most one attempt to be `PendingAbandon` at a time; this fourth pass
+      removes that precondition, because the real OpenCode
+      `begin_terminal_cleanup(scope_ids: &[String])` sets every matching
+      attempt to `PendingAbandon` in one call and `resolve_recovery()`
+      filters and processes every currently-`PendingAbandon` attempt, not
+      at most one, and Claude's broad cleanup signals
+      (`Stop`/`SessionEnd`/`UserPromptSubmit`/`SubagentStop`, per T04) may
+      likewise decide to abandon several attempts at once.
+      `abandonTransition` now takes the current `recovery` value as a
+      parameter and computes `recovery: if (rec == Clear) Pending else
+      rec` — establishing a new `PendingAbandon` obligation moves `Clear
+      -> Pending` but leaves an already-`Pending`/`Flushing` recovery
+      unchanged, so a second obligation can join an in-flight recovery
+      pipeline without disturbing it. `recoveryProgress` still advances
+      `Pending -> Flushing` for the shared pipeline. `completeAbandon` no
+      longer clears `recovery` unconditionally on removing its attempt —
+      it now computes `otherObligationsRemain = exists a. (phase with
+      this attempt set to Removed).get(a) == PendingAbandon` and sets
+      `recovery' = if (otherObligationsRemain) Pending else Clear`, so
+      global recovery only clears once every terminal obligation is
+      resolved; a remaining obligation falls the pipeline back to
+      `Pending` (an explicit "retry remaining obligations" step, needing a
+      fresh `recoveryProgress` before the next `completeAbandon`) rather
+      than staying `Flushing` for an attempt whose own flush already
+      finished. Both `recoveryProgress` and `completeAbandon` still
+      require the short state-transaction abstraction free (see the
+      lock-naming correction below) — the second pass left this
+      seam/recovery pair runnable while that variable was held, the third
+      pass fixed that, and this pass preserves it unchanged; every test
+      already released it before driving
+      `recoveryProgress`/`completeAbandon`.
+    - `Health = Healthy | Recovering | Blocked | Invalid` now comes from a
+      new `pure def adapterHealth(phase: AttemptId -> AttemptPhase,
+      recovery: RecoveryState): Health` — one health value for the whole
+      adapter, derived from `hasPendingStart = exists a. phase.get(a) ==
+      PendingStart` and `hasPendingAbandon = exists a. phase.get(a) ==
+      PendingAbandon` in the exact required priority order: `recovery ==
+      Clear and hasPendingAbandon -> Invalid`, else `hasPendingStart ->
+      Blocked`, else `recovery == Clear -> Healthy`, else `Recovering`
+      (covering both `Pending` and `Flushing`). The old per-attempt `pure
+      def health(phase, recovery)` is gone; every caller now calls
+      `adapterHealth(phase, recovery)` with no attempt argument.
+      `testInvalidTakesPriorityOverBlockedWhenBothConditionsHold` (new)
+      proves the ordering directly: one attempt hand-set to `PendingAbandon`
+      with `recovery == Clear` and a second, different attempt genuinely
+      `PendingStart` (both conditions live at once) still classifies
+      `Invalid`, not `Blocked`.
+    - `FixState = NotAttempted | RepairAttempted | RepairCompleted |
+      ReportedFixed | ReportedManual`, now a single `var fixState` for the
+      whole adapter (previously `AttemptId -> FixState`), matching that
+      `sce doctor` reports one fix result per adapter, never one per
+      attempt. `doctorAttemptRepairWith` sets it to `RepairAttempted`
+      (unconditionally, whether or not the repair turns out eligible);
+      `completeAbandon` promotes `RepairAttempted -> RepairCompleted`; a
+      `doctorReportResult` action (now nullary — no attempt argument, since
+      there is one fix result, not one per attempt) reads the fresh
+      `adapterHealth(phase, recovery)` at report time and decides
+      `ReportedFixed` only when it is `Healthy`/`Recovering`, else
+      `ReportedManual`. Making `fixState` adapter-wide surfaced a case
+      neither earlier pass had to consider: since `adapterHealth` now
+      depends on *every* attempt's phase, an unrelated attempt allocating
+      fresh (`hookAllocate`, `NotAllocated -> PendingStart`) after a
+      `ReportedFixed` report can make `adapterHealth` swing to `Blocked`
+      purely because of that unrelated attempt, staling the old report.
+      `hookAllocate` is the only action that can newly introduce
+      `hasPendingStart` (every other action only removes a `PendingStart`
+      contributor or moves through `PendingAbandon`/`Recovering`, which
+      never regresses toward `Blocked`/`Invalid`), so `hookAllocate` now
+      resets `fixState' = NotAttempted` instead of passing it through
+      unchanged — the prior report is intentionally treated as stale once
+      fresh, doctor-relevant lifecycle activity begins. This reset is a
+      no-op in every existing test (each calls `hookAllocate` exactly once,
+      at the very start, while `fixState` is still its `init` value of
+      `NotAttempted`), and it was required for `--invariant=Safety` to find
+      no violation at the stated bounds — omitting it reproduces a real
+      counterexample.
+    - A shared `pure def abandonTransition(phase, everWasPendingAbandon,
+      rec, attempt)` (this pass restores a `recovery` parameter the third
+      pass had dropped — the successor `recovery` value can no longer
+      always be the literal `Pending`, since an already-`Pending`/
+      `Flushing` shared recovery must be left unchanged when a second
+      obligation joins it) returns the `PendingStart/Active ->
+      PendingAbandon` + `recovery: if (rec == Clear) Pending else rec`
+      result record. Both `hookDecideAbandon` and `doctorAttemptRepairWith`
+      (after its own `stateTxn == DoctorStateTxn and phase == PendingStart
+      and reading == SeenDead` eligibility check — the third pass's
+      `recovery == Clear` conjunct is removed here) call this same
+      function, preserving the second pass's "doctor cannot reach a shape
+      the ordinary hook path could not also reach" property.
+    - `OwnerReading = SeenAlive | SeenDead | SeenUnknown` and
+      `soundReadings(alive)` are unchanged. `doctorAttemptRepairWith`'s
+      `phase.get(attempt) != NotAllocated` precondition (added in the
+      second pass) is unchanged.
+    - The same eight named invariants as the third pass (one renamed, per
+      below), combined into `val Safety`. Their statements are otherwise
+      unchanged text from the third pass, but two of them are now
+      meaningfully different in what they prove, because "at most one
+      attempt is ever mid-`PendingAbandon`" is no longer true and was
+      never actually required for either to hold:
+      `RecoveryNeverClearedWithUnresolvedAbandon` (`recovery == Clear
+      implies (forall a. phase.get(a) != PendingAbandon)`) now genuinely
+      constrains `completeAbandon`'s new `otherObligationsRemain` logic —
+      with the third pass's single-`PendingAbandon` restriction in place
+      this invariant held almost trivially (there was never a second
+      `PendingAbandon` attempt to protect against); with that restriction
+      removed, this is the invariant that actually forces
+      `completeAbandon` to check the whole resulting attempt set before
+      clearing `recovery`, and `testMultiplePendingAbandonShareOneRecoveryPipeline`
+      (new) exercises exactly that: completing the first of two
+      concurrently-`PendingAbandon` attempts must leave `recovery !=
+      Clear`. `DoctorRepairProducesOnlyOrdinaryLifecycleShapes`
+      (`phase.get(a) == Removed or (phase.get(a) == PendingAbandon and
+      (recovery == Pending or recovery == Flushing))`, unchanged text from
+      the second pass's fix) already held for any number of concurrent
+      `PendingAbandon` attempts — it says nothing about how many other
+      attempts share the same `recovery` value, so removing the
+      single-`PendingAbandon` restriction changes nothing about this
+      invariant's proof. `InterruptedRecoveryStaysInOrdinaryRetryableState`
+      likewise already generalized to multiple attempts without
+      modification: each attempt in `everWasPendingAbandon` and not yet in
+      `everRemoved` independently must be `PendingAbandon` with `recovery
+      == Pending or Flushing`, which holds per-attempt regardless of how
+      many other attempts satisfy the same clause simultaneously.
+      `ReportedFixedRequiresHealthyFinalState` is renamed
+      `ReportedFixedExcludesBlockedOrInvalid` (same body:
+      `fixState == ReportedFixed implies (adapterHealth(phase, recovery)
+      != Blocked and adapterHealth(phase, recovery) != Invalid)`) — the
+      old name overstated the requirement as "healthy," when `Recovering`
+      is deliberately still accepted as a successful report (`Blocked` ->
+      `Recovering` counts as removing the durable wedge, per this plan's
+      AC6); the new name says exactly what the invariant checks.
+    - `pendingAbandonFromDoctor` is unchanged — still a per-attempt
+      diagnostic/test bookkeeping set, not adapter-wide, since it tracks
+      which specific attempts doctor touched (a real, per-attempt fact),
+      not the adapter's health or fix-report state.
+    - Thirteen `run` tests (up from eleven): the third pass's eleven
+      tests, updated only where the `doctorAcquireLock`/`doctorReleaseLock`
+      action names changed to `doctorAcquireStateTxn`/
+      `doctorReleaseStateTxn` (see the lock-naming correction below; no
+      test's assertions changed), plus two new tests.
+      `testMultiplePendingAbandonShareOneRecoveryPipeline` reaches
+      `Attempt0 = PendingAbandon, Attempt1 = PendingAbandon, recovery ==
+      Pending` through ordinary `hookAllocate`/`hookDecideAbandon` calls on
+      both attempts (not a hand-constructed state), asserts
+      `adapterHealth(...) == Recovering` and `Safety` there, then completes
+      only `Attempt0` (`recoveryProgress` + `completeAbandon`) and asserts
+      `Attempt0 == Removed`, `Attempt1 == PendingAbandon`, `recovery !=
+      Clear`, and `adapterHealth(...) == Recovering` still — proving
+      `completeAbandon`'s per-attempt-set recovery-clearing logic. It then
+      drives `Attempt1` through its own
+      `recoveryProgress`/`completeAbandon` and only then asserts `recovery
+      == Clear` and `adapterHealth(...) == Healthy`.
+      `testRepairingOneDeadBlockerLeavesOtherBlockerBlocked` reaches
+      `Attempt0 = PendingStart` with a proven-dead owner and `Attempt1 =
+      PendingStart` with an unknown owner, both contributing to an initial
+      `Blocked` classification; it repairs only `Attempt0`
+      (`doctorAcquireStateTxn`/`doctorAttemptRepairWith(Attempt0,
+      SeenDead)`/`doctorReleaseStateTxn`) and asserts `adapterHealth(...)
+      == Blocked` still (because `Attempt1` remains `PendingStart`) and
+      `doctorReportResult` produces `ReportedManual`, not `ReportedFixed`;
+      it then completes `Attempt0`'s abandonment and asserts
+      `adapterHealth(...) == Blocked` and `fixState != ReportedFixed`
+      persist even after that attempt reaches `Removed`, since `Attempt1`
+      is still an unrepaired `PendingStart` blocker — the core proof that
+      repairing one repairable blocker does not mean the adapter itself is
+      repaired; only the freshly recomputed adapter-wide classifier may
+      authorize `ReportedFixed`. Both new tests are ordinary-transition
+      regressions (no hand-constructed `all { ... }` state), matching every
+      other test's convention except the two adversarial ones documented
+      below.
+      `testPendingAbandonWithClearRecoveryIsInvalid` and
+      `testInvalidTakesPriorityOverBlockedWhenBothConditionsHold` are
+      otherwise unchanged in structure (aside from the `lock' = lock` ->
+      `stateTxn' = stateTxn` field rename in their hand-constructed `all {
+      ... }` blocks) and still deliberately omit `.expect(Safety)` for the
+      same reason as before (the constructed state is intentionally
+      adversarial/unreachable).
+  - Deviation: the file still carries no comments (including no header
+    comment), per the repository's standing "no comments in code"
+    instruction; the concept mapping and verification results below stand
+    in for the file's own header comment, as in every earlier pass.
+    - Concept mapping (abstract -> real), unchanged from the third pass
+      except the lock abstraction, corrected below: `PendingStart` ->
+      OpenCode's `AdapterAttempt` `PendingStart` (the phase its `Blocked`
+      classification keys on) and, for Claude, a `PendingStart`/`Active`
+      attempt with no established abandon intent; `Active` -> an attempt
+      progressing under its owner, or a Claude attempt past `PendingStart`
+      with no abandon decision yet; `PendingAbandon` -> Claude's new
+      `PendingAbandon` phase (T04) and OpenCode's `PendingStart ->
+      PendingAbandon` durable transition (T03) once the dead-owner
+      condition is proven — and, as of this pass, multiple attempts may
+      independently carry this phase at once, all covered by the one
+      shared `recovery` value; `Removed` -> the attempt gone after a
+      successful seam sequence; `recovery: RecoveryState` (adapter-wide) ->
+      OpenCode's `AdapterState.recovery` field directly, and Claude's
+      whole-file `recovery_pending` flag/barrier state — `Clear` is "no
+      terminal recovery obligation outstanding anywhere in the adapter,"
+      `Pending` is "one or more obligations recorded, pipeline not
+      actively running," `Flushing` is "the shared pipeline is actively
+      processing one or more obligations," matching
+      `begin_terminal_cleanup`/`resolve_recovery`'s real multi-attempt
+      batch shape, not a single-attempt lock; `adapterHealth(phase,
+      recovery)` -> `classify_health`'s `healthy`/`recovering`/`blocked`/
+      `invalid` result, computed the same way the real classifiers do —
+      from every attempt's phase plus the one adapter-wide recovery fact,
+      never from a single attempt in isolation; `fixState` (adapter-wide)
+      -> the one doctor fix-result lifecycle
+      `execute_doctor_with_lifecycle_providers` drives per adapter target
+      (assess -> repair -> re-diagnose -> record one
+      `DoctorFixResultRecord`), with `ReportedFixed` standing for the
+      final report deciding `Fixed` only from the freshly recomputed
+      adapter-wide `classify_health` (never from a repair function's
+      `Ok(())` alone, and never per-attempt, and never from having
+      repaired only some of several contributing blockers — see
+      `testRepairingOneDeadBlockerLeavesOtherBlockerBlocked` above);
+      `ownerAlive` (ground truth) -> the real, single owning process
+      instance (PID + `/proc` start-time identity,
+      `mutation_scope_owner`), monotonic once dead; `OwnerReading` ->
+      `mutation_scope_owner::is_definitely_dead`'s `Alive`/`Dead`/`Unknown`
+      result.
+      Lock mapping, corrected this pass: the third pass's completion
+      record described `lock: LockHolder` (`LockFree`/`DoctorHolds`) as
+      corresponding primarily to OpenCode's `AdapterBoundaryLock`, while
+      the model itself required that variable free during
+      `recoveryProgress`/`completeAbandon` (the seam-adjacent actions) —
+      but the real `AdapterBoundaryLock` remains held across OpenCode's
+      seam calls; it serializes the whole repair lifecycle, seam sequence
+      included. Only the shorter `AdapterStateLock` is released before
+      every seam call. Those two claims cannot both describe real
+      OpenCode, so the variable is renamed `stateTxn: StateTxnHolder`
+      (`StateTxnFree`/`DoctorStateTxn`), and the two lock actions are
+      renamed `doctorAcquireStateTxn`/`doctorReleaseStateTxn` to match.
+      `stateTxn == StateTxnFree` during `recoveryProgress`/`completeAbandon`
+      now correctly means only "the short durable state-transaction lock
+      is released," saying nothing about a larger OpenCode boundary lock:
+      `stateTxn`/`StateTxnHolder` -> OpenCode's `AdapterStateLock`
+      transaction used to re-read/re-prove/persist a durable transition,
+      and, for Claude, its ordinary short state-file lock transaction
+      around the same re-read/re-prove/persist step. OpenCode's
+      `AdapterBoundaryLock` itself is outside this model variable
+      entirely — it is a separate, coarser serialization concern (the
+      complete repair lifecycle boundary across concurrent OpenCode
+      processes, including the seam calls) that this model does not need
+      a dedicated variable for, since none of the eight `Safety` invariants
+      depend on cross-process boundary serialization; T03 is responsible
+      for implementing `AdapterBoundaryLock` acquisition around its whole
+      `repair_blocked` call, wrapping (not replacing) the shorter
+      `AdapterStateLock`-shaped `stateTxn` transactions this model
+      verifies. For Claude there is no equivalent boundary lock in this
+      plan; Claude's repair safety rests on the durable `PendingAbandon`
+      evidence itself plus its own individual state-lock transactions, not
+      on a boundary-shaped variable. With the renaming, `doctorDiagnose` ->
+      `assess_repairability`'s unlocked, possibly-stale read;
+      `doctorAcquireStateTxn`/`doctorAttemptRepair`/`doctorReleaseStateTxn`
+      -> `repair_blocked`'s durable read/re-prove/transition (run inside
+      OpenCode's separate `AdapterBoundaryLock`, and without one for
+      Claude); `recoveryProgress` -> running the adapter's existing
+      recovery-protocol seam operations (OpenCode's `flush`/`abandon`/
+      `flush`; Claude's `abandon_attempt`'s seam `abandon`) — modeled with
+      `stateTxn == StateTxnFree` required, matching the repository
+      invariant that `AdapterStateLock` (and Claude's equivalent state
+      lock) is never held across a seam call; `completeAbandon` -> the
+      durable transaction recording that seam sequence's success, shared
+      by both the ordinary hook-process retry path and doctor's repair
+      path so doctor never invents a new terminal transition.
+    - Verification command and result: `quint run spec/doctor_recovery.qnt
+      --invariant=Safety --max-samples=10000 --max-steps=30` -> `[ok] No
+      violation found (389ms at 25707 traces/second)`; a second, stronger
+      bound (`--max-samples=20000 --max-steps=50`) -> `[ok] No violation
+      found (1328ms at 15060 traces/second)`. Both bounds were re-run
+      against this fourth pass specifically (not carried over from the
+      third pass's record), since removing the single-`PendingAbandon`
+      restriction changes which states are reachable.
+  - Verify outcomes: `quint typecheck spec/doctor_recovery.qnt` -> exit 0
+    (no output, clean typecheck); `quint test spec/doctor_recovery.qnt
+    --match '^test.*'` -> `13 passing`, 0 failed; `quint run
+    spec/doctor_recovery.qnt --invariant=Safety --max-samples=10000
+    --max-steps=30` -> `[ok] No violation found`; `quint run
+    spec/doctor_recovery.qnt --invariant=Safety --max-samples=20000
+    --max-steps=50` -> `[ok] No violation found`; `nix flake check` ->
+    `all checks passed!` (re-run for this correction, including the
+    existing `mutation-trace-quint-connect` check against the `spec/`
+    tree; no check is yet wired specifically to `doctor_recovery.qnt` —
+    that connection is T07's job per this task's own scope).
+  - Context impact: Establishes `spec/doctor_recovery.qnt` as the reference
+    formal model T03/T04's real Rust implementations and T07's
+    Quint-Connect-or-documented-mapping connection must be checked against.
+    T03/T04 should read two corrected facts above before writing the
+    OpenCode/Claude repair code: (1) one adapter-wide `recovery` pipeline
+    may safely cover multiple concurrent `PendingAbandon` obligations, and
+    it cannot clear to `Clear` until every one of them is resolved — doctor
+    and the ordinary hook path may each independently mark different
+    attempts `PendingAbandon`, and `resolve_recovery`-shaped completion
+    logic must check the whole attempt set, not just the attempt it is
+    currently finishing; (2) the model's `stateTxn`/`StateTxnHolder`
+    variable corresponds to OpenCode's short `AdapterStateLock` transaction
+    only, never to `AdapterBoundaryLock` — T03 must still acquire
+    `AdapterBoundaryLock` around the whole `repair_blocked` call per this
+    plan's own constraints section, and that acquisition is a fact outside
+    this model's verified surface, not something `stateTxn == StateTxnFree`
+    stands in for. Doctor's fix result and the classifier's health input
+    remain both single adapter-level facts derived from every attempt's
+    phase plus one shared recovery value, not computed or reported per
+    attempt, and the seam sequence (`flush`/`abandon`/`flush` for
+    OpenCode, `abandon_attempt`'s seam `abandon` for Claude) must run with
+    the state-transaction lock released, matching `AdapterStateLock` never
+    being held across a seam call. No context doc listed in this plan's
+    "Context sync" section is implicated by this task alone (it adds no
+    new Rust-facing contract); T07's own context-sync pass is where a new
+    shared doc for the model, if warranted, would be considered per the
+    plan's non-speculative instruction.
   - Context synchronization: pending
 
 - [ ] T02: `Extract shared positive process-owner evidence from Pi` (status:todo)
