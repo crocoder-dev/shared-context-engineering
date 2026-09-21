@@ -1,11 +1,3 @@
-//! Resolves Codex `apply_patch` paths against the event cwd and the real Git
-//! repository root.
-//!
-//! Codex invokes command hooks with the event's cwd, while the SCE dispatcher
-//! may be launched from any directory in the checkout. This module keeps that
-//! distinction explicit and only emits repository-relative, UTF-8 paths that
-//! can be represented losslessly in SCE's patch format.
-
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
@@ -13,10 +5,6 @@ use anyhow::{anyhow, bail, Context, Result};
 
 use super::parser::{CodexFileOperation, CodexPatch};
 
-/// Resolves every path that can contribute Codex patch evidence in `patch`.
-///
-/// The Git root and event cwd are validated once per event. Source and move
-/// destination paths are then resolved independently from the event cwd.
 pub(crate) fn resolve_codex_patch_paths(
     repository_root: &Path,
     event_cwd: &str,
@@ -44,12 +32,6 @@ pub(crate) fn resolve_codex_patch_paths(
     Ok(())
 }
 
-/// Resolves one Codex path to a repository-relative path.
-///
-/// This public seam intentionally performs the same Git-root and cwd checks
-/// as the event-level resolver, making the path contract independently
-/// testable without invoking the hook dispatcher or opening the Agent Trace
-/// database.
 #[allow(dead_code)]
 pub(crate) fn resolve_codex_patch_path(
     repository_root: &Path,
@@ -162,9 +144,6 @@ fn resolve_path_from_cwd(git_root: &Path, event_cwd: &Path, codex_path: &str) ->
     )
 }
 
-/// Resolve a lexically normalized absolute path while preserving filesystem
-/// semantics for existing components. Lexical normalization must happen before
-/// this function so a symlink component removed by `..` is never inspected.
 fn resolve_candidate_inside_repository(git_root: &Path, candidate: &Path) -> Result<PathBuf> {
     let (existing, suffix) = nearest_existing_prefix(candidate)?;
     let canonical_existing = canonicalize_inside_repository(git_root, &existing, candidate)?;
@@ -179,9 +158,6 @@ fn resolve_candidate_inside_repository(git_root: &Path, candidate: &Path) -> Res
     Ok(resolved)
 }
 
-/// Normalize an absolute path using Codex's lexical `PathUri::join` semantics:
-/// `.` is removed, `..` removes the preceding lexical component, and parent
-/// traversal at the filesystem root is clamped rather than treated as an error.
 fn normalize_absolute_path(path: &Path) -> Result<PathBuf> {
     if !path.is_absolute() {
         bail!("Codex path must be absolute after joining with the event cwd.");
@@ -274,8 +250,6 @@ fn append_path_lexically(base: &Path, suffix: &Path) -> Result<PathBuf> {
     Ok(result)
 }
 
-/// Convert a canonical or lexically resolved path into the slash-separated
-/// UTF-8 form used by SCE patch text.
 fn path_to_utf8_slash_path(path: &Path) -> Result<String> {
     let mut components = Vec::new();
     for component in path.components() {
@@ -495,10 +469,7 @@ mod tests {
             .expect("temporary repository should have a name")
             .to_str()
             .expect("temporary repository name should be UTF-8");
-        // Overshoot past the filesystem root by a wide margin: `TMPDIR` depth
-        // varies by platform (e.g. macOS's `/var/folders/xx/yyyy/T/` nests
-        // deeper than Linux's `/tmp/`), so a fixed `..` count that clamps on
-        // one platform can undershoot the root on another.
+
         let cwd_depth = cwd.components().count();
         let excess_traversal = "../".repeat(cwd_depth + 8);
         let path = format!("{excess_traversal}{parent_path}/{root_name}/clamped.rs");

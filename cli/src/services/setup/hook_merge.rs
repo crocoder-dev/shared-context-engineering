@@ -1,64 +1,26 @@
-//! Pure byte-level merge for git hooks that a repository may already own and
-//! extend with its own script (husky, lefthook, or a hand-written hook).
-//! Mirrors `config_merge.rs`'s approach for the two JSON merge targets: no
-//! filesystem access, a classification of what happened, and idempotence
-//! across repeated merges.
-//!
-//! SCE's logic in a hook lives inside a stable marker pair,
-//! `MANAGED_BLOCK_START` / `MANAGED_BLOCK_END`. A hook that already carries
-//! the pair is owned within that block; a hook predating the markers is
-//! recognized as SCE-owned wholesale by the presence of the canonical
-//! guidance URL and replaced entirely; any other hook is foreign, and its
-//! bytes are kept as an exact prefix with the canonical block appended after
-//! them.
-
 use anyhow::{bail, Result};
 
-/// Opening marker line of the SCE managed block, matched as an exact line
-/// (`config/pkl/renderers/*-hooks.pkl` templates emit it verbatim).
 pub const MANAGED_BLOCK_START: &str = "# >>> sce managed block (do not edit) >>>";
 
-/// Closing marker line of the SCE managed block.
 pub const MANAGED_BLOCK_END: &str = "# <<< sce managed block <<<";
 
-/// Substring identifying a pre-marker SCE hook payload, from before the
-/// managed block existed: the CLI installation guidance URL every canonical
-/// template has always printed when `sce` is missing.
 const LEGACY_GUIDANCE_URL: &str = "https://sce.crocoder.dev/docs/getting-started#install-cli";
 
-/// What `merge_or_create_hook` did to produce its output bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HookMergeKind {
-    /// No hook existed; the canonical template was used verbatim.
     Created,
-    /// A hook already carried a managed block, and the block's content
-    /// differed from the canonical block, or the hook was a legacy
-    /// pre-marker SCE payload replaced wholesale.
     ManagedBlockReplaced,
-    /// A foreign hook without a managed block was kept, with the canonical
-    /// block appended after its content.
     AppendedToForeign,
-    /// A hook already carried a managed block identical to the canonical
-    /// one; the input bytes are returned unchanged.
     AlreadyCurrent,
 }
 
-/// Result of merging a hook's existing bytes with the canonical template.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HookMerge {
-    /// The bytes to install.
     pub bytes: Vec<u8>,
-    /// What kind of merge produced `bytes`.
     pub kind: HookMergeKind,
-    /// True when `kind` is `AppendedToForeign` and the foreign hook's last
-    /// effective line is a zero-indent `exec` or `exit`, so the appended
-    /// block would never run.
     pub unreachable_block_advisory: bool,
 }
 
-/// Computes the bytes to install for a git hook named `hook_name`, given its
-/// current bytes (`existing`, `None` when no hook exists) and the canonical
-/// template (`canonical`). Performs no filesystem access.
 pub fn merge_or_create_hook(
     existing: Option<&[u8]>,
     canonical: &[u8],
@@ -131,10 +93,6 @@ pub fn merge_or_create_hook(
     }
 }
 
-/// Where the SCE managed block's marker lines were found in a byte buffer,
-/// as byte offsets: `Balanced(start, end)` is the offset of the start
-/// marker line's first byte and the offset just past the end marker line's
-/// trailing newline (or end of buffer).
 enum BlockLocation {
     Absent,
     Balanced(usize, usize),
@@ -151,10 +109,6 @@ fn locate_block(bytes: &[u8]) -> BlockLocation {
     }
 }
 
-/// Finds the line in `bytes` whose content, with a trailing `\r?\n`
-/// stripped, is exactly `marker`. Returns `(line_start, line_end)` byte
-/// offsets, where `line_end` includes the line's own trailing newline (or is
-/// the buffer length for a final line with none).
 fn locate_marker_line(bytes: &[u8], marker: &str) -> Option<(usize, usize)> {
     let mut offset = 0;
     for line in bytes.split_inclusive(|&byte| byte == b'\n') {
@@ -168,10 +122,6 @@ fn locate_marker_line(bytes: &[u8], marker: &str) -> Option<(usize, usize)> {
     None
 }
 
-/// True when the last non-blank, non-comment line of `text` sits at zero
-/// indentation and starts with `exec ` or `exit` — a narrow heuristic (no
-/// shell parsing) for "a block appended after this line would not run".
-/// Deliberately misses an early `exit` guarded by a conditional.
 fn ends_with_unreachable_control_flow(text: &str) -> bool {
     let Some(line) = text.lines().rev().find(|line| {
         let trimmed = line.trim();

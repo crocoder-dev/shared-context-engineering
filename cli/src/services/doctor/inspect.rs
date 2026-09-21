@@ -14,12 +14,14 @@ use crate::services::default_paths::{
     repo_dir, InstallTargetPaths, RepoPaths,
 };
 use crate::services::hooks::mutation_scope_health::{
-    MutationScopeAdapterHealth, MutationScopeHealthStatus,
+    MutationScopeAdapterHealth, MutationScopeHealthStatus, Repairability,
 };
 use crate::services::hooks::{
-    claude_mutation_scope, codex_mutation_scope, opencode_mutation_scope, pi_mutation_scope,
+    claude_mutation_scope, codex_mutation_scope, mutation_scope, opencode_mutation_scope,
+    pi_mutation_scope,
 };
 use crate::services::mutation_trace::runtime::resolve_git_dir;
+use crate::services::observability::traits::Logger;
 use crate::services::repository_identity::resolve::{
     resolve_repository_identity, RepositoryIdentitySource,
 };
@@ -215,15 +217,144 @@ fn inspect_mutation_scope_health(
                     pi_mutation_scope::health::classify_health(&git_dir),
                 ),
             };
-            push_mutation_scope_health_problem(target, &health, &git_dir, problems);
+            let remediation =
+                push_mutation_scope_health_problem(target, &health, &git_dir, problems);
             MutationScopeHealthRow {
                 target,
                 status: health.status,
                 reason: health.reason,
                 detail: health.detail,
+                remediation,
             }
         })
         .collect()
+}
+
+pub(super) type MutationScopeRepairSeam<'a> =
+    &'a dyn Fn(&Path, &str, Option<&dyn Logger>) -> anyhow::Result<String>;
+
+pub(super) fn repair_blocked_mutation_scope_targets_with_seam(
+    initial_report: &HookDoctorReport,
+    seam: MutationScopeRepairSeam<'_>,
+) -> Vec<IntegrationTarget> {
+    let Some(repository_root) = initial_report.repository_root.as_deref() else {
+        return Vec::new();
+    };
+    let Ok(git_dir) = resolve_git_dir(repository_root) else {
+        return Vec::new();
+    };
+
+    initial_report
+        .mutation_scope_health
+        .iter()
+        .filter(|row| row.status == MutationScopeHealthStatus::Blocked)
+        .filter_map(|row| {
+            repair_blocked_mutation_scope_target(row.target, &git_dir, repository_root, seam)
+        })
+        .collect()
+}
+
+pub(super) fn mutation_scope_repair_seam(
+    repository_root: &Path,
+    payload: &str,
+    logger: Option<&dyn Logger>,
+) -> anyhow::Result<String> {
+    mutation_scope::run_mutation_scope_from_payload(repository_root, payload, logger)
+}
+
+fn repair_blocked_mutation_scope_target(
+    target: IntegrationTarget,
+    git_dir: &Path,
+    repository_root: &Path,
+    seam: MutationScopeRepairSeam<'_>,
+) -> Option<IntegrationTarget> {
+    match target {
+        IntegrationTarget::ClaudeCode => {
+            if claude_repairability(git_dir) != Repairability::AutoFixable {
+                return None;
+            }
+            let _ = claude_mutation_scope::repair_blocked(git_dir, repository_root, None, seam);
+            Some(target)
+        }
+        IntegrationTarget::OpenCode => {
+            if opencode_repairability(git_dir) != Repairability::AutoFixable {
+                return None;
+            }
+            let _ = opencode_mutation_scope::repair_blocked(git_dir, repository_root, None, seam);
+            Some(target)
+        }
+        IntegrationTarget::Pi | IntegrationTarget::Codex => None,
+    }
+}
+
+fn claude_repairability(git_dir: &Path) -> Repairability {
+    match claude_mutation_scope::assess_repairability(git_dir) {
+        claude_mutation_scope::Repairability::AutoFixable => Repairability::AutoFixable,
+        claude_mutation_scope::Repairability::ManualOnly => Repairability::ManualOnly,
+    }
+}
+
+fn opencode_repairability(git_dir: &Path) -> Repairability {
+    match opencode_mutation_scope::assess_repairability(git_dir) {
+        opencode_mutation_scope::Repairability::AutoFixable => Repairability::AutoFixable,
+        opencode_mutation_scope::Repairability::ManualOnly => Repairability::ManualOnly,
+    }
+}
+
+fn mutation_scope_repairability(target: IntegrationTarget, git_dir: &Path) -> Repairability {
+    match target {
+        IntegrationTarget::ClaudeCode => claude_repairability(git_dir),
+        IntegrationTarget::OpenCode => opencode_repairability(git_dir),
+        IntegrationTarget::Pi | IntegrationTarget::Codex => Repairability::ManualOnly,
+    }
+}
+
+pub(super) fn finalize_mutation_scope_repair_results(
+    attempted_targets: &[IntegrationTarget],
+    final_mutation_scope_health: &[MutationScopeHealthRow],
+) -> Vec<DoctorFixResultRecord> {
+    attempted_targets
+        .iter()
+        .filter_map(|target| {
+            let row = final_mutation_scope_health
+                .iter()
+                .find(|row| row.target == *target)?;
+            Some(mutation_scope_repair_result_from_final_row(*target, row))
+        })
+        .collect()
+}
+
+fn mutation_scope_repair_result_from_final_row(
+    target: IntegrationTarget,
+    row: &MutationScopeHealthRow,
+) -> DoctorFixResultRecord {
+    match row.status {
+        MutationScopeHealthStatus::Healthy | MutationScopeHealthStatus::Recovering => {
+            DoctorFixResultRecord {
+                category: ProblemCategory::MutationScopeHealth,
+                outcome: FixResult::Fixed,
+                detail: format!(
+                    "Recovered {} Agent tracing (now {}: {}).",
+                    integration_target_label(target),
+                    mutation_scope_health_status(row.status),
+                    row.reason
+                ),
+            }
+        }
+        MutationScopeHealthStatus::Blocked | MutationScopeHealthStatus::Invalid => {
+            DoctorFixResultRecord {
+                category: ProblemCategory::MutationScopeHealth,
+                outcome: FixResult::Manual,
+                detail: row.remediation.clone().unwrap_or_else(|| {
+                    format!(
+                        "{} Agent tracing remains {} after an attempted repair.",
+                        integration_target_label(target),
+                        mutation_scope_health_status(row.status)
+                    )
+                }),
+            }
+        }
+    }
 }
 
 fn mutation_scope_state_path(target: IntegrationTarget, git_dir: &Path) -> PathBuf {
@@ -240,9 +371,9 @@ fn push_mutation_scope_health_problem(
     health: &MutationScopeAdapterHealth,
     git_dir: &Path,
     problems: &mut Vec<DoctorProblem>,
-) {
+) -> Option<String> {
     let (kind, severity, fixability, next_action, remediation) = match health.status {
-        MutationScopeHealthStatus::Healthy => return,
+        MutationScopeHealthStatus::Healthy => return None,
         MutationScopeHealthStatus::Recovering => (
             ProblemKind::MutationScopeHealthRecovering,
             ProblemSeverity::Warning,
@@ -256,29 +387,45 @@ fn push_mutation_scope_health_problem(
                  state remains recovering unexpectedly.",
             ),
         ),
-        MutationScopeHealthStatus::Blocked => (
-            ProblemKind::MutationScopeHealthBlocked,
-            ProblemSeverity::Error,
-            ProblemFixability::ManualOnly,
-            "manual_steps",
-            format!(
-                "'sce doctor --fix' will not modify persisted mutation-scope recovery state: \
-                 clearing it automatically could silently discard unresolved mutation-scope \
-                 lifecycle or recovery evidence. No safe generic recovery command exists yet \
-                 for this case. Inspect '{}' and this adapter's recovery model directly before \
-                 taking manual action; do not delete the state file.",
-                mutation_scope_state_path(target, git_dir).display()
+        MutationScopeHealthStatus::Blocked => match mutation_scope_repairability(target, git_dir) {
+            Repairability::AutoFixable => (
+                ProblemKind::MutationScopeHealthBlocked,
+                ProblemSeverity::Error,
+                ProblemFixability::AutoFixable,
+                "doctor_fix",
+                format!(
+                    "Run 'sce doctor --fix' to recover this state: the owning process for \
+                         the blocking attempt(s) has been positively proven dead, so automatic \
+                         recovery is safe. The persisted state is at '{}'.",
+                    mutation_scope_state_path(target, git_dir).display()
+                ),
             ),
-        ),
+            Repairability::ManualOnly => (
+                ProblemKind::MutationScopeHealthBlocked,
+                ProblemSeverity::Error,
+                ProblemFixability::ManualOnly,
+                "manual_steps",
+                format!(
+                    "Agent tracing remains blocked. Inspect '{}'. 'sce doctor --fix' will \
+                         not modify persisted mutation-scope recovery state automatically: \
+                         clearing it could silently discard unresolved mutation-scope \
+                         lifecycle or recovery evidence. No safe generic recovery command \
+                         exists yet for this case; preserve the persisted state while \
+                         reviewing this adapter's recovery model directly before taking \
+                         manual action.",
+                    mutation_scope_state_path(target, git_dir).display()
+                ),
+            ),
+        },
         MutationScopeHealthStatus::Invalid => (
             ProblemKind::MutationScopeHealthInvalid,
             ProblemSeverity::Error,
             ProblemFixability::ManualOnly,
             "manual_steps",
             format!(
-                "The persisted mutation-scope state at '{}' could not be safely interpreted. \
-                 No safe generic recovery command exists yet; inspect the file directly rather \
-                 than deleting it.",
+                "Agent tracing state could not be safely interpreted. Inspect '{}'. No safe \
+                 generic recovery command exists yet; preserve the persisted state for \
+                 diagnosis and review the adapter's recovery model directly.",
                 mutation_scope_state_path(target, git_dir).display()
             ),
         ),
@@ -301,10 +448,13 @@ fn push_mutation_scope_health_problem(
         severity,
         fixability,
         summary,
-        remediation,
+        remediation: remediation.clone(),
         next_action,
         scope: None,
+        mutation_scope_target: Some(target),
     });
+
+    Some(remediation)
 }
 
 fn collect_post_commit_auto_sync_health(
@@ -424,6 +574,7 @@ fn collect_agent_trace_db_health(
                 remediation: problem.remediation.clone(),
                 next_action: problem.next_action,
                 scope: None,
+                mutation_scope_target: None,
             });
             continue;
         }
@@ -552,6 +703,7 @@ fn inspect_repository_hooks(
             remediation: String::from("Install an accessible 'git' binary and ensure it is on PATH before rerunning 'sce doctor'."),
             next_action: "manual_steps",
             scope: None,
+            mutation_scope_target: None,
         });
         return Vec::new();
     }
@@ -568,6 +720,7 @@ fn inspect_repository_hooks(
             remediation: String::from("Run 'sce doctor' from a non-bare working tree clone to inspect repo-scoped SCE hook health."),
             next_action: "manual_steps",
             scope: None,
+            mutation_scope_target: None,
         });
         return Vec::new();
     }
@@ -582,6 +735,7 @@ fn inspect_repository_hooks(
             remediation: String::from("Run 'sce doctor' from inside the target repository working tree to inspect repo-scoped SCE hook health."),
             next_action: "manual_steps",
             scope: None,
+            mutation_scope_target: None,
         });
         return Vec::new();
     }
@@ -600,6 +754,7 @@ fn inspect_repository_hooks(
         remediation: String::from("Verify that git repository inspection succeeds and rerun 'sce doctor' inside a non-bare git repository."),
         next_action: "manual_steps",
         scope: None,
+        mutation_scope_target: None,
     });
     Vec::new()
 }
@@ -691,6 +846,7 @@ fn inspect_repository_integrations(
             ),
             next_action: "manual_steps",
             scope: None,
+            mutation_scope_target: None,
         });
         return Vec::new();
     }
@@ -919,6 +1075,7 @@ fn collect_global_state_health(
             remediation: String::from("Verify that the current platform exposes a writable SCE state directory before rerunning 'sce doctor'."),
             next_action: "manual_steps",
             scope: None,
+            mutation_scope_target: None,
         }),
     }
 
@@ -941,6 +1098,7 @@ fn collect_global_state_health(
                         ),
                         next_action: "manual_steps",
                         scope: None,
+                        mutation_scope_target: None,
                     });
                 }
             }
@@ -959,6 +1117,7 @@ fn collect_global_state_health(
             remediation: String::from("Verify that the current platform exposes a writable SCE config directory before rerunning 'sce doctor'."),
             next_action: "manual_steps",
             scope: None,
+            mutation_scope_target: None,
         }),
     }
 
@@ -980,6 +1139,7 @@ fn collect_global_state_health(
                 ),
                 next_action: "manual_steps",
                 scope: None,
+                mutation_scope_target: None,
             });
         }
     }
@@ -1000,6 +1160,7 @@ fn collect_global_state_health(
 }
 
 #[allow(dead_code)]
+#[allow(clippy::too_many_lines)]
 fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> Vec<HookFileHealth> {
     if !directory.exists() {
         problems.push(DoctorProblem {
@@ -1014,6 +1175,7 @@ fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> V
             ),
             next_action: "doctor_fix",
             scope: None,
+            mutation_scope_target: None,
         });
     } else if !directory.is_dir() {
         problems.push(DoctorProblem {
@@ -1028,6 +1190,7 @@ fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> V
             ),
             next_action: "manual_steps",
             scope: None,
+            mutation_scope_target: None,
         });
     }
 
@@ -1058,6 +1221,7 @@ fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> V
                     ),
                     next_action: "doctor_fix",
                     scope: None,
+                    mutation_scope_target: None,
                 });
             } else if !executable {
                 problems.push(DoctorProblem {
@@ -1072,6 +1236,7 @@ fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> V
                     ),
                     next_action: "doctor_fix",
                     scope: None,
+                    mutation_scope_target: None,
                 });
             }
 
@@ -1091,6 +1256,7 @@ fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> V
                     ),
                     next_action: "doctor_fix",
                     scope: None,
+                    mutation_scope_target: None,
                 });
             }
 
@@ -1182,6 +1348,7 @@ fn push_codex_hook_malformed_problems(
                 .to_string(),
             next_action: "manual_steps",
             scope: Some(group.key),
+            mutation_scope_target: None,
         });
     }
 }
@@ -1228,6 +1395,7 @@ fn push_codex_hook_policy_blocked_problems(
             remediation: CODEX_HOOK_POLICY_BLOCKED_REMEDIATION.to_string(),
             next_action: "manual_steps",
             scope: Some(group.key),
+            mutation_scope_target: None,
         });
     }
 }
@@ -1271,6 +1439,7 @@ fn push_codex_hook_policy_unknown_problems(
                 .to_string(),
             next_action: "manual_steps",
             scope: Some(group.key),
+            mutation_scope_target: None,
         });
     }
 }
@@ -1311,6 +1480,7 @@ fn push_codex_hook_trust_problems(
             remediation: CODEX_HOOK_TRUST_GUIDANCE.to_string(),
             next_action: "manual_steps",
             scope: Some(group.key),
+            mutation_scope_target: None,
         });
     }
 }
@@ -1349,6 +1519,7 @@ fn push_opencode_integration_missing_problems(
             ),
             next_action: "manual_steps",
             scope: Some(group.key),
+            mutation_scope_target: None,
         });
     }
 }
@@ -1387,6 +1558,7 @@ fn push_opencode_integration_mismatch_problems(
             ),
             next_action: "manual_steps",
             scope: Some(group.key),
+            mutation_scope_target: None,
         });
     }
 }
@@ -1416,6 +1588,7 @@ fn push_opencode_integration_read_fail_problems(
                 ),
                 next_action: "manual_steps",
                 scope: Some(group.key),
+                mutation_scope_target: None,
             });
         }
     }
@@ -1455,6 +1628,7 @@ fn push_claude_integration_missing_problems(
             ),
             next_action: "manual_steps",
             scope: Some(group.key),
+            mutation_scope_target: None,
         });
     }
 }
@@ -1493,6 +1667,7 @@ fn push_claude_integration_mismatch_problems(
             ),
             next_action: "manual_steps",
             scope: Some(group.key),
+            mutation_scope_target: None,
         });
     }
 }
@@ -1522,6 +1697,7 @@ fn push_claude_integration_read_fail_problems(
                 ),
                 next_action: "manual_steps",
                 scope: Some(group.key),
+                mutation_scope_target: None,
             });
         }
     }
@@ -1561,6 +1737,7 @@ fn push_pi_integration_missing_problems(
             ),
             next_action: "manual_steps",
             scope: Some(group.key),
+            mutation_scope_target: None,
         });
     }
 }
@@ -1599,6 +1776,7 @@ fn push_pi_integration_mismatch_problems(
             ),
             next_action: "manual_steps",
             scope: Some(group.key),
+            mutation_scope_target: None,
         });
     }
 }
@@ -1628,6 +1806,7 @@ fn push_pi_integration_read_fail_problems(
                 ),
                 next_action: "manual_steps",
                 scope: Some(group.key),
+                mutation_scope_target: None,
             });
         }
     }
@@ -1678,6 +1857,7 @@ fn push_codex_integration_missing_problems(
             remediation,
             next_action: "manual_steps",
             scope: Some(group.key),
+            mutation_scope_target: None,
         });
     }
 }
@@ -1727,6 +1907,7 @@ fn push_codex_integration_mismatch_problems(
             remediation,
             next_action: "manual_steps",
             scope: Some(group.key),
+            mutation_scope_target: None,
         });
     }
 }
@@ -1756,6 +1937,7 @@ fn push_codex_integration_read_fail_problems(
                 ),
                 next_action: "manual_steps",
                 scope: Some(group.key),
+                mutation_scope_target: None,
             });
         }
     }
@@ -1811,6 +1993,7 @@ fn inspect_opencode_plugin_ordering_health(
             IntegrationTarget::OpenCode,
             IntegrationArea::Plugins,
         )),
+        mutation_scope_target: None,
     });
 }
 
@@ -1854,6 +2037,7 @@ fn inspect_opencode_plugin_registry_health(
             IntegrationTarget::OpenCode,
             IntegrationArea::Plugins,
         )),
+        mutation_scope_target: None,
     });
 }
 
@@ -1908,6 +2092,7 @@ fn inspect_opencode_asset_presence(
             IntegrationTarget::OpenCode,
             IntegrationArea::Plugins,
         )),
+        mutation_scope_target: None,
     });
 }
 
@@ -2492,6 +2677,7 @@ fn inspect_hook_content_state(
                 ),
                 next_action: "manual_steps",
                 scope: None,
+                mutation_scope_target: None,
             });
             HookContentState::Unknown
         }
@@ -2502,6 +2688,7 @@ fn inspect_hook_content_state(
 mod tests {
     use std::path::PathBuf;
 
+    use super::super::fixes::build_manual_fix_results;
     use super::{
         claude_mutation_scope, codex_hook_config, codex_hook_registration_child, codex_hook_trust,
         collect_claude_integration_groups, collect_codex_integration_groups,
@@ -2509,9 +2696,11 @@ mod tests {
         collect_pi_integration_groups, compute_readiness, inspect_claude_integration_health,
         inspect_codex_integration_health, inspect_mutation_scope_health,
         inspect_opencode_plugin_ordering_health, resolve_doctor_integration_targets,
-        CodexHookPolicyReadiness, HookContentState, IntegrationArea, IntegrationContentState,
-        IntegrationGroupHealth, IntegrationGroupKey, IntegrationTarget, MutationScopeHealthStatus,
-        ProblemFixability, ProblemKind, ProblemSeverity, Readiness,
+        CodexHookPolicyReadiness, DoctorMode, DoctorProblem, HookContentState, HookDoctorReport,
+        HookPathSource, IntegrationArea, IntegrationContentState, IntegrationGroupHealth,
+        IntegrationGroupKey, IntegrationTarget, MutationScopeHealthRow, MutationScopeHealthStatus,
+        PostCommitAutoSyncHealth, PostCommitAutoSyncState, ProblemFixability, ProblemKind,
+        ProblemSeverity, Readiness,
     };
     use crate::services::config::IntegrationTargetId;
     use crate::services::hooks::claude_mutation_scope::state::{
@@ -4081,6 +4270,30 @@ mod tests {
         }
     }
 
+    fn claude_autofixable_blocked_state() -> AdapterState {
+        let key = crate::services::hooks::claude_mutation_scope::AttemptKey {
+            session_id: "session-a".to_string(),
+            agent_id: None,
+            tool_use_id: "tool-use-a".to_string(),
+        };
+        let scope_id =
+            crate::services::hooks::claude_mutation_scope::format_claude_scope_id(1, &key);
+        AdapterState {
+            version: 1,
+            next_attempt_seq: 2,
+            recovery_pending: true,
+            attempts: vec![AdapterAttempt {
+                attempt_seq: 1,
+                scope_id,
+                session_id: key.session_id,
+                agent_id: key.agent_id,
+                tool_use_id: key.tool_use_id,
+                tool_name: "Edit".to_string(),
+                phase: AttemptPhase::PendingAbandon,
+            }],
+        }
+    }
+
     fn claude_recovering_state() -> AdapterState {
         AdapterState {
             version: 1,
@@ -4178,12 +4391,21 @@ mod tests {
         assert_eq!(problems[0].severity, ProblemSeverity::Error);
         assert_eq!(problems[0].fixability, ProblemFixability::ManualOnly);
         assert_eq!(problems[0].next_action, "manual_steps");
+        let state_path =
+            claude_mutation_scope::state::state_path(&super::resolve_git_dir(&repo).unwrap());
         assert!(
             problems[0]
                 .remediation
+                .contains(&state_path.display().to_string()),
+            "remediation must name the exact persisted state path: {}",
+            problems[0].remediation
+        );
+        assert!(
+            !problems[0]
+                .remediation
                 .to_ascii_lowercase()
-                .contains("do not delete the state file"),
-            "remediation must explicitly say not to delete the state file: {}",
+                .contains("delete"),
+            "manual mutation-scope remediation must not contain deletion wording: {}",
             problems[0].remediation
         );
         assert_eq!(compute_readiness(&problems), Readiness::NotReady);
@@ -4216,6 +4438,87 @@ mod tests {
         assert_eq!(compute_readiness(&problems), Readiness::NotReady);
 
         std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn mutation_scope_health_blocked_autofixable_remediation_names_doctor_fix() {
+        let repo = init_git_repo_with_claude_target("mutation-scope-health-blocked-autofixable");
+        write_claude_mutation_scope_state(&repo, &claude_autofixable_blocked_state());
+
+        let mut problems = Vec::new();
+        let rows = inspect_mutation_scope_health(true, false, Some(&repo), &mut problems);
+
+        let claude_row = rows
+            .iter()
+            .find(|row| row.target == IntegrationTarget::ClaudeCode)
+            .expect("claude row present");
+        assert_eq!(claude_row.status, MutationScopeHealthStatus::Blocked);
+        assert!(
+            claude_row
+                .remediation
+                .as_deref()
+                .is_some_and(|text| text.contains("sce doctor --fix")),
+            "row remediation must name 'sce doctor --fix': {:?}",
+            claude_row.remediation
+        );
+
+        assert_eq!(problems.len(), 1);
+        assert_eq!(problems[0].fixability, ProblemFixability::AutoFixable);
+        assert_eq!(problems[0].next_action, "doctor_fix");
+        assert!(
+            problems[0].remediation.contains("sce doctor --fix"),
+            "problem remediation must name 'sce doctor --fix': {}",
+            problems[0].remediation
+        );
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn mutation_scope_health_manual_only_states_name_the_real_state_path_and_never_suggest_deletion(
+    ) {
+        let blocked_repo =
+            init_git_repo_with_claude_target("mutation-scope-health-manual-path-blocked");
+        write_claude_mutation_scope_state(&blocked_repo, &claude_blocked_state());
+        let blocked_git_dir = super::resolve_git_dir(&blocked_repo).expect("resolve git dir");
+        let blocked_path = claude_mutation_scope::state::state_path(&blocked_git_dir);
+
+        let mut blocked_problems = Vec::new();
+        inspect_mutation_scope_health(true, false, Some(&blocked_repo), &mut blocked_problems);
+        assert_eq!(blocked_problems.len(), 1);
+        let blocked_remediation = &blocked_problems[0].remediation;
+        assert!(
+            blocked_remediation.contains(&blocked_path.display().to_string()),
+            "manual-only Blocked remediation must name the real state file path: {blocked_remediation}"
+        );
+        assert!(
+            !blocked_remediation.to_ascii_lowercase().contains("delete"),
+            "manual-only Blocked remediation must never contain deletion wording: {blocked_remediation}"
+        );
+
+        std::fs::remove_dir_all(&blocked_repo).ok();
+
+        let invalid_repo =
+            init_git_repo_with_claude_target("mutation-scope-health-manual-path-invalid");
+        let invalid_git_dir = super::resolve_git_dir(&invalid_repo).expect("resolve git dir");
+        let invalid_path = claude_mutation_scope::state::state_path(&invalid_git_dir);
+        std::fs::create_dir_all(invalid_path.parent().expect("state path has a parent")).unwrap();
+        std::fs::write(&invalid_path, b"not json").expect("write malformed state file");
+
+        let mut invalid_problems = Vec::new();
+        inspect_mutation_scope_health(true, false, Some(&invalid_repo), &mut invalid_problems);
+        assert_eq!(invalid_problems.len(), 1);
+        let invalid_remediation = &invalid_problems[0].remediation;
+        assert!(
+            invalid_remediation.contains(&invalid_path.display().to_string()),
+            "manual-only Invalid remediation must name the real state file path: {invalid_remediation}"
+        );
+        assert!(
+            !invalid_remediation.to_ascii_lowercase().contains("delete"),
+            "manual-only Invalid remediation must never contain deletion wording: {invalid_remediation}"
+        );
+
+        std::fs::remove_dir_all(&invalid_repo).ok();
     }
 
     #[test]
@@ -4374,6 +4677,14 @@ mod tests {
         repo: &std::path::Path,
         mode: super::DoctorMode,
     ) -> super::super::DoctorExecution {
+        run_full_doctor_report_with_seam(repo, mode, &super::mutation_scope_repair_seam)
+    }
+
+    fn run_full_doctor_report_with_seam(
+        repo: &std::path::Path,
+        mode: super::DoctorMode,
+        mutation_scope_seam: super::MutationScopeRepairSeam<'_>,
+    ) -> super::super::DoctorExecution {
         let context = FullReportRepoContext {
             repo_root: repo.to_path_buf(),
         };
@@ -4384,6 +4695,7 @@ mod tests {
             },
             repo,
             &context,
+            mutation_scope_seam,
         )
     }
 
@@ -4524,8 +4836,17 @@ mod tests {
             ));
             assert!(remediation.contains("no safe generic recovery command exists yet"));
             assert!(
-                !remediation.contains("delete the state file")
-                    || remediation.contains("do not delete the state file")
+                !remediation.contains("delete"),
+                "manual mutation-scope remediation must not contain deletion wording: {remediation}"
+            );
+            let state_path =
+                claude_mutation_scope::state::state_path(&super::resolve_git_dir(&repo).unwrap());
+            assert!(
+                problem
+                    .remediation
+                    .contains(&state_path.display().to_string()),
+                "remediation must name the exact persisted state path: {}",
+                problem.remediation
             );
 
             let text = render_text(&execution);
@@ -4598,6 +4919,881 @@ mod tests {
             assert_eq!(json_problems.len(), 1);
             assert_eq!(json_problems[0]["severity"], "error");
             assert_eq!(json_problems[0]["fixability"], "manual_only");
+
+            std::fs::remove_dir_all(&repo).ok();
+        });
+    }
+
+    #[test]
+    fn full_report_autofixable_blocked_names_doctor_fix_in_text_and_json() {
+        with_isolated_global_state(|| {
+            let repo = init_git_repo_with_healthy_claude_target("full-report-autofixable-diagnose");
+            write_claude_mutation_scope_state(&repo, &claude_autofixable_blocked_state());
+
+            let execution = run_full_doctor_report(&repo, super::DoctorMode::Diagnose);
+            assert_eq!(execution.report.readiness, Readiness::NotReady);
+            let problem = execution
+                .report
+                .problems
+                .iter()
+                .find(|problem| problem.category == super::ProblemCategory::MutationScopeHealth)
+                .expect("mutation-scope health problem present");
+            assert_eq!(problem.fixability, ProblemFixability::AutoFixable);
+            assert_eq!(problem.next_action, "doctor_fix");
+            assert!(problem.remediation.contains("sce doctor --fix"));
+
+            let text = render_text(&execution);
+            assert!(
+                text.contains("sce doctor --fix"),
+                "human text must name 'sce doctor --fix' for an auto-fixable blocked state: {text}"
+            );
+
+            let json = render_json(&execution);
+            let json_problems = json["problems"].as_array().expect("problems is an array");
+            let mutation_scope_problem = json_problems
+                .iter()
+                .find(|problem| problem["category"] == "mutation_scope_health")
+                .expect("mutation-scope health JSON problem present");
+            assert_eq!(mutation_scope_problem["fixability"], "auto_fixable");
+            assert_eq!(
+                mutation_scope_problem["remediation"]["next_action"],
+                "doctor_fix"
+            );
+            assert!(mutation_scope_problem["remediation"]["text"]
+                .as_str()
+                .expect("remediation text is a string")
+                .contains("sce doctor --fix"));
+
+            std::fs::remove_dir_all(&repo).ok();
+        });
+    }
+
+    fn no_op_repair_seam() -> super::MutationScopeRepairSeam<'static> {
+        &|_root, _payload, _logger| Ok(String::new())
+    }
+
+    #[test]
+    fn repair_blocked_mutation_scope_target_repairs_an_autofixable_claude_state() {
+        let repo = init_git_repo_with_claude_target("repair-target-claude-auto");
+        write_claude_mutation_scope_state(&repo, &claude_autofixable_blocked_state());
+        let git_dir = super::resolve_git_dir(&repo).expect("resolve git dir");
+
+        let repaired = super::repair_blocked_mutation_scope_target(
+            IntegrationTarget::ClaudeCode,
+            &git_dir,
+            &repo,
+            no_op_repair_seam(),
+        );
+        assert_eq!(
+            repaired,
+            Some(IntegrationTarget::ClaudeCode),
+            "an autofixable claude blocked target must have a repair attempted"
+        );
+
+        let health = claude_mutation_scope::health::classify_health(&git_dir);
+        assert_ne!(
+            health.status,
+            MutationScopeHealthStatus::Blocked,
+            "a reported fix must never leave the target still blocked"
+        );
+        assert_ne!(health.status, MutationScopeHealthStatus::Invalid);
+
+        let mut problems = Vec::new();
+        let final_rows = inspect_mutation_scope_health(true, false, Some(&repo), &mut problems);
+        let records = super::finalize_mutation_scope_repair_results(
+            &[IntegrationTarget::ClaudeCode],
+            &final_rows,
+        );
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(
+            records[0].category,
+            super::ProblemCategory::MutationScopeHealth
+        );
+        assert_eq!(records[0].outcome, super::FixResult::Fixed);
+        assert!(
+            records[0]
+                .detail
+                .starts_with("Recovered Claude Code Agent tracing ("),
+            "fix-result detail must match the documented '[fixed] Recovered <adapter> Agent \
+             tracing (...)' contract: {}",
+            records[0].detail
+        );
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn repair_blocked_mutation_scope_target_never_touches_a_manual_only_claude_state() {
+        let repo = init_git_repo_with_claude_target("repair-target-claude-manual");
+        write_claude_mutation_scope_state(&repo, &claude_blocked_state());
+        let git_dir = super::resolve_git_dir(&repo).expect("resolve git dir");
+
+        let record = super::repair_blocked_mutation_scope_target(
+            IntegrationTarget::ClaudeCode,
+            &git_dir,
+            &repo,
+            no_op_repair_seam(),
+        );
+
+        assert!(
+            record.is_none(),
+            "a ManualOnly blocked state must never produce a fix result: {record:?}"
+        );
+
+        let path = claude_mutation_scope::state::state_path(&git_dir);
+        let persisted: AdapterState =
+            serde_json::from_slice(&std::fs::read(&path).expect("read persisted state"))
+                .expect("parse persisted state");
+        assert_eq!(
+            persisted,
+            claude_blocked_state(),
+            "a ManualOnly blocked state must never be mutated by the repair dispatch"
+        );
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn finalize_mutation_scope_repair_results_ignores_an_immediate_post_repair_read_that_the_final_report_contradicts(
+    ) {
+        let repo = init_git_repo_with_claude_target("finalize-race-claude");
+        write_claude_mutation_scope_state(&repo, &claude_autofixable_blocked_state());
+        let git_dir = super::resolve_git_dir(&repo).expect("resolve git dir");
+
+        let repaired = super::repair_blocked_mutation_scope_target(
+            IntegrationTarget::ClaudeCode,
+            &git_dir,
+            &repo,
+            no_op_repair_seam(),
+        );
+        assert_eq!(repaired, Some(IntegrationTarget::ClaudeCode));
+
+        let immediately_after_repair = claude_mutation_scope::health::classify_health(&git_dir);
+        assert_ne!(
+            immediately_after_repair.status,
+            MutationScopeHealthStatus::Blocked,
+            "the repair must have genuinely succeeded before the simulated concurrent mutation"
+        );
+
+        write_claude_mutation_scope_state(&repo, &claude_blocked_state());
+
+        let mut problems = Vec::new();
+        let final_rows = inspect_mutation_scope_health(true, false, Some(&repo), &mut problems);
+        let final_status = final_rows
+            .iter()
+            .find(|row| row.target == IntegrationTarget::ClaudeCode)
+            .expect("claude row present in the final report")
+            .status;
+        assert_eq!(final_status, MutationScopeHealthStatus::Blocked);
+
+        let fix_results = super::finalize_mutation_scope_repair_results(
+            &[IntegrationTarget::ClaudeCode],
+            &final_rows,
+        );
+
+        assert!(
+            !fix_results.iter().any(|result| {
+                result.category == super::ProblemCategory::MutationScopeHealth
+                    && result.outcome == super::FixResult::Fixed
+            }),
+            "a target that regressed to Blocked before the final report is built must never be \
+             reported Fixed: {fix_results:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    fn failing_repair_seam() -> super::MutationScopeRepairSeam<'static> {
+        &|_root, _payload, _logger| Err(anyhow::anyhow!("simulated seam failure"))
+    }
+
+    #[test]
+    fn finalize_mutation_scope_repair_results_reports_manual_when_an_attempted_autofixable_repair_stays_blocked(
+    ) {
+        let repo = init_git_repo_with_claude_target("finalize-failed-autofixable-claude");
+        write_claude_mutation_scope_state(&repo, &claude_autofixable_blocked_state());
+        let git_dir = super::resolve_git_dir(&repo).expect("resolve git dir");
+
+        let attempted = super::repair_blocked_mutation_scope_target(
+            IntegrationTarget::ClaudeCode,
+            &git_dir,
+            &repo,
+            failing_repair_seam(),
+        );
+        assert_eq!(
+            attempted,
+            Some(IntegrationTarget::ClaudeCode),
+            "an autofixable blocked target must still be attempted even when the repair seam fails"
+        );
+
+        let health = claude_mutation_scope::health::classify_health(&git_dir);
+        assert_eq!(
+            health.status,
+            MutationScopeHealthStatus::Blocked,
+            "a failing repair seam must leave the target blocked"
+        );
+
+        let mut problems = Vec::new();
+        let final_rows = inspect_mutation_scope_health(true, false, Some(&repo), &mut problems);
+        let final_row = final_rows
+            .iter()
+            .find(|row| row.target == IntegrationTarget::ClaudeCode)
+            .expect("claude row present in the final report");
+        assert_eq!(final_row.status, MutationScopeHealthStatus::Blocked);
+
+        let fix_results = super::finalize_mutation_scope_repair_results(
+            &[IntegrationTarget::ClaudeCode],
+            &final_rows,
+        );
+
+        assert!(
+            !fix_results.iter().any(|result| {
+                result.category == super::ProblemCategory::MutationScopeHealth
+                    && result.outcome == super::FixResult::Fixed
+            }),
+            "an attempted but unresolved mutation-scope repair must never be reported Fixed: \
+             {fix_results:?}"
+        );
+
+        let manual = fix_results
+            .iter()
+            .find(|result| {
+                result.category == super::ProblemCategory::MutationScopeHealth
+                    && result.outcome == super::FixResult::Manual
+            })
+            .expect(
+                "an attempted but unresolved mutation-scope repair must produce a manual result",
+            );
+
+        let state_path = claude_mutation_scope::state::state_path(&git_dir);
+        assert!(
+            manual.detail.contains(&state_path.display().to_string()),
+            "manual detail must name the exact persisted state path: {}",
+            manual.detail
+        );
+        assert!(
+            !manual.detail.to_ascii_lowercase().contains("delete"),
+            "manual detail must not contain deletion wording: {}",
+            manual.detail
+        );
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    fn minimal_report(
+        problems: Vec<DoctorProblem>,
+        mutation_scope_health: Vec<MutationScopeHealthRow>,
+    ) -> HookDoctorReport {
+        HookDoctorReport {
+            mode: DoctorMode::Fix,
+            readiness: compute_readiness(&problems),
+            state_root: None,
+            agent_trace_db: None,
+            repository_root: None,
+            hook_path_source: HookPathSource::Default,
+            hooks_directory: None,
+            post_commit_auto_sync: PostCommitAutoSyncHealth {
+                state: PostCommitAutoSyncState::NotApplicable,
+                enabled: false,
+                source: "test",
+                config_source: None,
+            },
+            config_locations: Vec::new(),
+            hooks: Vec::new(),
+            integration_groups: Vec::new(),
+            integration_targets_absent: false,
+            mutation_scope_health,
+            problems,
+        }
+    }
+
+    fn combined_mutation_scope_fix_results(
+        report: &HookDoctorReport,
+        attempted_targets: &[IntegrationTarget],
+    ) -> Vec<super::DoctorFixResultRecord> {
+        let mut results = super::finalize_mutation_scope_repair_results(
+            attempted_targets,
+            &report.mutation_scope_health,
+        );
+        results.extend(build_manual_fix_results(report, attempted_targets));
+        results
+            .into_iter()
+            .filter(|result| result.category == super::ProblemCategory::MutationScopeHealth)
+            .collect()
+    }
+
+    fn attempted_claude_final_rows_and_problems(
+        repo: &std::path::Path,
+        after_repair: impl FnOnce(&std::path::Path),
+    ) -> (Vec<MutationScopeHealthRow>, Vec<DoctorProblem>) {
+        let git_dir = super::resolve_git_dir(repo).expect("resolve git dir");
+
+        let attempted = super::repair_blocked_mutation_scope_target(
+            IntegrationTarget::ClaudeCode,
+            &git_dir,
+            repo,
+            no_op_repair_seam(),
+        );
+        assert_eq!(
+            attempted,
+            Some(IntegrationTarget::ClaudeCode),
+            "the autofixable blocked fixture must be attempted"
+        );
+
+        after_repair(repo);
+
+        let mut problems = Vec::new();
+        let final_rows = inspect_mutation_scope_health(true, false, Some(repo), &mut problems);
+        (final_rows, problems)
+    }
+
+    #[test]
+    fn attempted_target_final_healthy_produces_exactly_one_fixed_and_no_manual() {
+        let repo = init_git_repo_with_claude_target("aggregation-attempted-healthy");
+        write_claude_mutation_scope_state(&repo, &claude_autofixable_blocked_state());
+
+        let (final_rows, problems) = attempted_claude_final_rows_and_problems(&repo, |_repo| {});
+        let claude_row = final_rows
+            .iter()
+            .find(|row| row.target == IntegrationTarget::ClaudeCode)
+            .expect("claude row present");
+        assert_eq!(claude_row.status, MutationScopeHealthStatus::Healthy);
+
+        let report = minimal_report(problems, final_rows);
+        let attempted_targets = [IntegrationTarget::ClaudeCode];
+        let mutation_results = combined_mutation_scope_fix_results(&report, &attempted_targets);
+
+        assert_eq!(mutation_results.len(), 1, "{mutation_results:?}");
+        assert_eq!(mutation_results[0].outcome, super::FixResult::Fixed);
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn attempted_target_final_recovering_produces_exactly_one_fixed_and_no_manual() {
+        let repo = init_git_repo_with_claude_target("aggregation-attempted-recovering");
+        write_claude_mutation_scope_state(&repo, &claude_autofixable_blocked_state());
+
+        let (final_rows, problems) = attempted_claude_final_rows_and_problems(&repo, |repo| {
+            write_claude_mutation_scope_state(repo, &claude_recovering_state());
+        });
+        let claude_row = final_rows
+            .iter()
+            .find(|row| row.target == IntegrationTarget::ClaudeCode)
+            .expect("claude row present");
+        assert_eq!(claude_row.status, MutationScopeHealthStatus::Recovering);
+
+        let report = minimal_report(problems, final_rows);
+        let attempted_targets = [IntegrationTarget::ClaudeCode];
+        let mutation_results = combined_mutation_scope_fix_results(&report, &attempted_targets);
+
+        assert_eq!(mutation_results.len(), 1, "{mutation_results:?}");
+        assert_eq!(mutation_results[0].outcome, super::FixResult::Fixed);
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn attempted_target_final_blocked_manual_only_produces_exactly_one_manual_result() {
+        let repo = init_git_repo_with_claude_target("aggregation-attempted-blocked-manual-only");
+        write_claude_mutation_scope_state(&repo, &claude_autofixable_blocked_state());
+
+        let (final_rows, problems) = attempted_claude_final_rows_and_problems(&repo, |repo| {
+            write_claude_mutation_scope_state(repo, &claude_blocked_state());
+        });
+        let claude_row = final_rows
+            .iter()
+            .find(|row| row.target == IntegrationTarget::ClaudeCode)
+            .expect("claude row present");
+        assert_eq!(claude_row.status, MutationScopeHealthStatus::Blocked);
+        let claude_problem = problems
+            .iter()
+            .find(|problem| problem.category == super::ProblemCategory::MutationScopeHealth)
+            .expect("claude problem present");
+        assert_eq!(claude_problem.fixability, ProblemFixability::ManualOnly);
+
+        let git_dir = super::resolve_git_dir(&repo).expect("resolve git dir");
+        let state_path = claude_mutation_scope::state::state_path(&git_dir);
+
+        let report = minimal_report(problems, final_rows);
+        let attempted_targets = [IntegrationTarget::ClaudeCode];
+        let mutation_results = combined_mutation_scope_fix_results(&report, &attempted_targets);
+
+        assert_eq!(
+            mutation_results.len(),
+            1,
+            "an attempted mutation-scope target must produce exactly one fix result: \
+             {mutation_results:?}"
+        );
+        assert_eq!(mutation_results[0].outcome, super::FixResult::Manual);
+        assert!(
+            mutation_results[0]
+                .detail
+                .contains(&state_path.display().to_string()),
+            "manual detail must name the exact persisted state path: {}",
+            mutation_results[0].detail
+        );
+        assert!(
+            !mutation_results[0]
+                .detail
+                .to_ascii_lowercase()
+                .contains("delete"),
+            "manual detail must not contain deletion wording: {}",
+            mutation_results[0].detail
+        );
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn attempted_target_final_invalid_produces_exactly_one_manual_result() {
+        let repo = init_git_repo_with_claude_target("aggregation-attempted-invalid");
+        write_claude_mutation_scope_state(&repo, &claude_autofixable_blocked_state());
+
+        let (final_rows, problems) = attempted_claude_final_rows_and_problems(&repo, |repo| {
+            let git_dir = super::resolve_git_dir(repo).expect("resolve git dir");
+            let path = claude_mutation_scope::state::state_path(&git_dir);
+            std::fs::write(&path, b"not json").expect("write malformed state file");
+        });
+        let claude_row = final_rows
+            .iter()
+            .find(|row| row.target == IntegrationTarget::ClaudeCode)
+            .expect("claude row present");
+        assert_eq!(claude_row.status, MutationScopeHealthStatus::Invalid);
+
+        let report = minimal_report(problems, final_rows);
+        let attempted_targets = [IntegrationTarget::ClaudeCode];
+        let mutation_results = combined_mutation_scope_fix_results(&report, &attempted_targets);
+
+        assert_eq!(mutation_results.len(), 1, "{mutation_results:?}");
+        assert_eq!(mutation_results[0].outcome, super::FixResult::Manual);
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn never_attempted_manual_only_target_still_produces_exactly_one_manual_result() {
+        let repo = init_git_repo_with_claude_target("aggregation-never-attempted-manual-only");
+        write_claude_mutation_scope_state(&repo, &claude_blocked_state());
+
+        let mut problems = Vec::new();
+        let final_rows = inspect_mutation_scope_health(true, false, Some(&repo), &mut problems);
+        let claude_row = final_rows
+            .iter()
+            .find(|row| row.target == IntegrationTarget::ClaudeCode)
+            .expect("claude row present");
+        assert_eq!(claude_row.status, MutationScopeHealthStatus::Blocked);
+
+        let report = minimal_report(problems, final_rows);
+        let attempted_targets: [IntegrationTarget; 0] = [];
+        let mutation_results = combined_mutation_scope_fix_results(&report, &attempted_targets);
+
+        assert_eq!(
+            mutation_results.len(),
+            1,
+            "a never-attempted ManualOnly target must still produce exactly one manual result: \
+             {mutation_results:?}"
+        );
+        assert_eq!(mutation_results[0].outcome, super::FixResult::Manual);
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn full_report_fix_mode_leaves_a_manual_only_claude_blocked_state_untouched() {
+        with_isolated_global_state(|| {
+            let repo = init_git_repo_with_healthy_claude_target("full-report-fix-claude-manual");
+            write_claude_mutation_scope_state(&repo, &claude_blocked_state());
+
+            let execution = run_full_doctor_report(&repo, super::DoctorMode::Fix);
+
+            assert!(
+                execution.fix_results.iter().all(|result| {
+                    result.category != super::ProblemCategory::MutationScopeHealth
+                        || result.outcome != super::FixResult::Fixed
+                }),
+                "a ManualOnly blocked state must never be reported fixed: {:?}",
+                execution.fix_results
+            );
+
+            let git_dir = super::resolve_git_dir(&repo).expect("resolve git dir");
+            let path = claude_mutation_scope::state::state_path(&git_dir);
+            let persisted: AdapterState =
+                serde_json::from_slice(&std::fs::read(&path).expect("read persisted state"))
+                    .expect("parse persisted state");
+            assert_eq!(
+                persisted,
+                claude_blocked_state(),
+                "'sce doctor --fix' must leave a ManualOnly blocked state completely untouched"
+            );
+
+            std::fs::remove_dir_all(&repo).ok();
+        });
+    }
+
+    #[test]
+    fn full_report_fix_mode_human_text_shows_the_manual_detail_line() {
+        with_isolated_global_state(|| {
+            let manual_repo =
+                init_git_repo_with_healthy_claude_target("full-report-fix-detail-manual");
+            write_claude_mutation_scope_state(&manual_repo, &claude_blocked_state());
+            let manual_execution = run_full_doctor_report(&manual_repo, super::DoctorMode::Fix);
+            let manual_text = render_text(&manual_execution);
+            assert!(
+                manual_text.contains("[manual] Agent tracing remains blocked. Inspect '"),
+                "human fix results must show the '[manual] Agent tracing remains blocked. Inspect ...' line: {manual_text}"
+            );
+            std::fs::remove_dir_all(&manual_repo).ok();
+        });
+    }
+
+    fn init_git_repo_with_opencode_target(label: &str) -> PathBuf {
+        let repo = init_git_repo(label);
+        std::fs::create_dir_all(repo.join(".opencode")).expect("create .opencode directory");
+        repo
+    }
+
+    fn opencode_dead_owner() -> crate::services::hooks::mutation_scope_owner::ProcessOwner {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawning 'true' should succeed");
+        let pid = i32::try_from(child.id()).expect("pid fits in i32");
+        child.wait().expect("child should exit and be reaped");
+        crate::services::hooks::mutation_scope_owner::ProcessOwner {
+            pid,
+            instance_token: None,
+        }
+    }
+
+    #[test]
+    fn repair_blocked_mutation_scope_target_repairs_an_autofixable_opencode_state() {
+        let repo = init_git_repo_with_opencode_target("repair-target-opencode-auto");
+        let git_dir = super::resolve_git_dir(&repo).expect("resolve git dir");
+
+        let attempt =
+            crate::services::hooks::opencode_mutation_scope::state::seed_attempt_for_tests(
+                &git_dir,
+                &crate::services::hooks::opencode_mutation_scope::AttemptKey {
+                    session_id: "ses-main".to_string(),
+                    call_id: "call-1".to_string(),
+                },
+                "write",
+                crate::services::hooks::opencode_mutation_scope::state::AttemptPhase::PendingStart,
+            );
+        crate::services::hooks::opencode_mutation_scope::state::set_attempt_owner_for_tests(
+            &git_dir,
+            &attempt.scope_id,
+            Some(opencode_dead_owner()),
+        );
+
+        let repaired = super::repair_blocked_mutation_scope_target(
+            IntegrationTarget::OpenCode,
+            &git_dir,
+            &repo,
+            no_op_repair_seam(),
+        );
+        assert_eq!(
+            repaired,
+            Some(IntegrationTarget::OpenCode),
+            "an autofixable opencode blocked target must have a repair attempted"
+        );
+
+        let health =
+            crate::services::hooks::opencode_mutation_scope::health::classify_health(&git_dir);
+        assert_ne!(health.status, MutationScopeHealthStatus::Blocked);
+        assert_ne!(health.status, MutationScopeHealthStatus::Invalid);
+
+        let mut problems = Vec::new();
+        let final_rows = inspect_mutation_scope_health(true, false, Some(&repo), &mut problems);
+        let records = super::finalize_mutation_scope_repair_results(
+            &[IntegrationTarget::OpenCode],
+            &final_rows,
+        );
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(
+            records[0].category,
+            super::ProblemCategory::MutationScopeHealth
+        );
+        assert_eq!(records[0].outcome, super::FixResult::Fixed);
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn full_report_fix_mode_has_no_mutation_scope_effect_when_nothing_is_blocked() {
+        with_isolated_global_state(|| {
+            let repo = init_git_repo_with_healthy_claude_target("full-report-fix-no-problems");
+
+            let execution = run_full_doctor_report(&repo, super::DoctorMode::Fix);
+
+            assert!(
+                execution
+                    .fix_results
+                    .iter()
+                    .all(|result| result.category != super::ProblemCategory::MutationScopeHealth),
+                "a repository with no mutation-scope problems must produce no mutation-scope \
+                 fix result: {:?}",
+                execution.fix_results
+            );
+
+            std::fs::remove_dir_all(&repo).ok();
+        });
+    }
+
+    fn init_git_repo_with_healthy_claude_and_opencode_targets(label: &str) -> PathBuf {
+        let repo = init_git_repo(label);
+        let remote_output = std::process::Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                &format!("https://example.invalid/{label}.git"),
+            ])
+            .current_dir(&repo)
+            .output()
+            .expect("git remote add should spawn");
+        assert!(
+            remote_output.status.success(),
+            "git remote add failed: {}",
+            String::from_utf8_lossy(&remote_output.stderr)
+        );
+        crate::services::setup::install_required_git_hooks(&repo)
+            .expect("install canonical git hooks");
+        crate::services::setup::run_setup_for_mode(
+            &repo,
+            crate::services::setup::SetupMode::NonInteractive(
+                crate::services::setup::SetupTarget::Claude,
+            ),
+            None,
+            None,
+            None,
+        )
+        .expect("install canonical Claude integration assets");
+        crate::services::setup::run_setup_for_mode(
+            &repo,
+            crate::services::setup::SetupMode::NonInteractive(
+                crate::services::setup::SetupTarget::OpenCode,
+            ),
+            None,
+            None,
+            None,
+        )
+        .expect("install canonical OpenCode integration assets");
+        run_full_doctor_report(&repo, super::DoctorMode::Fix);
+        repo
+    }
+
+    fn seed_opencode_manual_only_blocked_state(git_dir: &std::path::Path) {
+        crate::services::hooks::opencode_mutation_scope::state::seed_attempt_for_tests(
+            git_dir,
+            &crate::services::hooks::opencode_mutation_scope::AttemptKey {
+                session_id: "ses-main".to_string(),
+                call_id: "call-1".to_string(),
+            },
+            "write",
+            crate::services::hooks::opencode_mutation_scope::state::AttemptPhase::PendingStart,
+        );
+    }
+
+    #[test]
+    fn full_report_multi_adapter_diagnose_names_doctor_fix_for_one_target_and_the_real_path_for_the_other(
+    ) {
+        with_isolated_global_state(|| {
+            let repo = init_git_repo_with_healthy_claude_and_opencode_targets(
+                "full-report-multi-adapter-diagnose",
+            );
+            write_claude_mutation_scope_state(&repo, &claude_autofixable_blocked_state());
+            let git_dir = super::resolve_git_dir(&repo).expect("resolve git dir");
+            seed_opencode_manual_only_blocked_state(&git_dir);
+
+            let execution = run_full_doctor_report(&repo, super::DoctorMode::Diagnose);
+            assert_eq!(execution.report.readiness, Readiness::NotReady);
+            let mutation_scope_problems: Vec<_> = execution
+                .report
+                .problems
+                .iter()
+                .filter(|problem| problem.category == super::ProblemCategory::MutationScopeHealth)
+                .collect();
+            assert_eq!(
+                mutation_scope_problems.len(),
+                2,
+                "{mutation_scope_problems:#?}"
+            );
+
+            let claude_problem = mutation_scope_problems
+                .iter()
+                .find(|problem| {
+                    problem.mutation_scope_target == Some(IntegrationTarget::ClaudeCode)
+                })
+                .expect("claude mutation-scope problem present");
+            assert_eq!(claude_problem.fixability, ProblemFixability::AutoFixable);
+            assert_eq!(claude_problem.next_action, "doctor_fix");
+            assert!(claude_problem.remediation.contains("sce doctor --fix"));
+
+            let opencode_problem = mutation_scope_problems
+                .iter()
+                .find(|problem| problem.mutation_scope_target == Some(IntegrationTarget::OpenCode))
+                .expect("opencode mutation-scope problem present");
+            assert_eq!(opencode_problem.fixability, ProblemFixability::ManualOnly);
+            assert_eq!(opencode_problem.next_action, "manual_steps");
+            let opencode_state_path =
+                crate::services::hooks::opencode_mutation_scope::state::state_path(&git_dir);
+            assert!(
+                opencode_problem
+                    .remediation
+                    .contains(&opencode_state_path.display().to_string()),
+                "remediation must name the exact persisted opencode state path: {}",
+                opencode_problem.remediation
+            );
+            assert!(
+                !opencode_problem
+                    .remediation
+                    .to_ascii_lowercase()
+                    .contains("delete"),
+                "manual opencode remediation must not contain deletion wording: {}",
+                opencode_problem.remediation
+            );
+
+            let text = render_text(&execution);
+            assert!(
+                text.contains("sce doctor --fix"),
+                "human text must name 'sce doctor --fix' for the autofixable claude row: {text}"
+            );
+            assert!(
+                text.contains(&opencode_state_path.display().to_string()),
+                "human text must name the real opencode state path: {text}"
+            );
+
+            let json = render_json(&execution);
+            assert_eq!(json["readiness"], "not_ready");
+            let json_problems = json["problems"].as_array().expect("problems is an array");
+            let json_mutation_scope_problems: Vec<_> = json_problems
+                .iter()
+                .filter(|problem| problem["category"] == "mutation_scope_health")
+                .collect();
+            assert_eq!(
+                json_mutation_scope_problems.len(),
+                2,
+                "{json_mutation_scope_problems:?}"
+            );
+            let json_autofixable = json_mutation_scope_problems
+                .iter()
+                .find(|problem| problem["fixability"] == "auto_fixable")
+                .expect("json autofixable problem present");
+            assert_eq!(json_autofixable["remediation"]["next_action"], "doctor_fix");
+            assert!(json_autofixable["remediation"]["text"]
+                .as_str()
+                .expect("remediation text is a string")
+                .contains("sce doctor --fix"));
+            let json_manual_only = json_mutation_scope_problems
+                .iter()
+                .find(|problem| problem["fixability"] == "manual_only")
+                .expect("json manual-only problem present");
+            assert_eq!(
+                json_manual_only["remediation"]["next_action"],
+                "manual_steps"
+            );
+            assert!(json_manual_only["remediation"]["text"]
+                .as_str()
+                .expect("remediation text is a string")
+                .contains(&opencode_state_path.display().to_string()));
+
+            std::fs::remove_dir_all(&repo).ok();
+        });
+    }
+
+    #[test]
+    fn full_report_multi_adapter_fix_mode_resolves_one_target_and_leaves_the_other_manual() {
+        with_isolated_global_state(|| {
+            let repo = init_git_repo_with_healthy_claude_and_opencode_targets(
+                "full-report-multi-adapter-fix",
+            );
+            write_claude_mutation_scope_state(&repo, &claude_autofixable_blocked_state());
+            let git_dir = super::resolve_git_dir(&repo).expect("resolve git dir");
+            seed_opencode_manual_only_blocked_state(&git_dir);
+
+            let execution = run_full_doctor_report_with_seam(
+                &repo,
+                super::DoctorMode::Fix,
+                no_op_repair_seam(),
+            );
+
+            let mutation_scope_results: Vec<_> = execution
+                .fix_results
+                .iter()
+                .filter(|result| result.category == super::ProblemCategory::MutationScopeHealth)
+                .collect();
+            assert_eq!(
+                mutation_scope_results.len(),
+                2,
+                "{mutation_scope_results:?}"
+            );
+            assert!(
+                mutation_scope_results.iter().any(|result| {
+                    result.outcome == super::FixResult::Fixed
+                        && result
+                            .detail
+                            .starts_with("Recovered Claude Code Agent tracing (")
+                }),
+                "expected a fixed claude result: {mutation_scope_results:?}"
+            );
+            assert!(
+                mutation_scope_results.iter().any(|result| {
+                    result.outcome == super::FixResult::Manual
+                        && result
+                            .detail
+                            .contains("Agent tracing remains blocked. Inspect '")
+                }),
+                "expected a manual opencode result: {mutation_scope_results:?}"
+            );
+
+            assert_eq!(execution.report.readiness, Readiness::NotReady);
+            let final_mutation_scope_problems: Vec<_> = execution
+                .report
+                .problems
+                .iter()
+                .filter(|problem| problem.category == super::ProblemCategory::MutationScopeHealth)
+                .collect();
+            assert_eq!(
+                final_mutation_scope_problems.len(),
+                1,
+                "the repaired claude target must no longer appear as a problem in the final \
+                 report, leaving only the still-blocked opencode target: {final_mutation_scope_problems:#?}"
+            );
+            assert_eq!(
+                final_mutation_scope_problems[0].mutation_scope_target,
+                Some(IntegrationTarget::OpenCode)
+            );
+            assert_eq!(
+                final_mutation_scope_problems[0].fixability,
+                ProblemFixability::ManualOnly
+            );
+
+            let text = render_text(&execution);
+            assert!(
+                text.contains("[fixed] Recovered Claude Code Agent tracing ("),
+                "human fix results must show the claude '[fixed] Recovered ...' line: {text}"
+            );
+            assert!(
+                text.contains("[manual] Agent tracing remains blocked. Inspect '"),
+                "human fix results must show the opencode '[manual] Agent tracing remains \
+                 blocked ...' line: {text}"
+            );
+
+            let opencode_health =
+                crate::services::hooks::opencode_mutation_scope::health::classify_health(&git_dir);
+            assert_eq!(
+                opencode_health.status,
+                MutationScopeHealthStatus::Blocked,
+                "a ManualOnly opencode target must remain untouched and still blocked"
+            );
+            let claude_health = claude_mutation_scope::health::classify_health(&git_dir);
+            assert_ne!(
+                claude_health.status,
+                MutationScopeHealthStatus::Blocked,
+                "a reported fixed claude target must never leave the target still blocked"
+            );
+            assert_ne!(claude_health.status, MutationScopeHealthStatus::Invalid);
 
             std::fs::remove_dir_all(&repo).ok();
         });

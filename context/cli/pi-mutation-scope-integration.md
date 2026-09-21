@@ -182,8 +182,12 @@ captured via `getppid()` at admission time: because `sce hooks
 pi-mutation-scope` is invoked synchronously as a direct child of the Pi/Node
 process for that exact call (`tool_call` is a blocking pre-execution gate),
 the OS-reported parent pid at that moment *is* the owning Pi process, with no
-wire-protocol or TypeScript-extension change needed. `is_definitely_dead`
-(`pi_mutation_scope/process_owner.rs`) proves death via `kill(pid, 0)` ==
+wire-protocol or TypeScript-extension change needed. `ProcessOwner` and
+`is_definitely_dead` now live in the shared `cli/src/services/hooks/mutation_scope_owner.rs`
+module (extracted from Pi's own `process_owner.rs` so other adapters can
+reuse the same positive-evidence primitive; Pi's own `health.rs`/`state.rs`
+import it from there with identical behavior). `is_definitely_dead` proves
+death via `kill(pid, 0)` ==
 `ESRCH` on Unix, and additionally guards against PID reuse on Linux by
 comparing the parent's `/proc/<pid>/stat` start-time field against the
 recorded value; a live pid whose instance identity can't be established this

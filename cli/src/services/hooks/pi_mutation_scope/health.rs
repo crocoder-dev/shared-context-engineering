@@ -5,8 +5,8 @@ use crate::services::hooks::mutation_scope_health::{
 };
 use crate::services::mutation_trace::types::ActorKind;
 
-use super::process_owner::is_definitely_dead;
 use super::state::{self, AttemptPhase, RecoveryState};
+use crate::services::hooks::mutation_scope_owner::is_definitely_dead;
 
 pub(crate) fn classify_health(git_dir: &Path) -> MutationScopeAdapterHealth {
     let state = match state::read_state(git_dir) {
@@ -69,12 +69,12 @@ mod tests {
 
     use serde_json::{json, Value};
 
-    use super::super::process_owner::ProcessOwner;
     use super::super::{
         force_attempt_owner_dead_for_tests, run_pi_mutation_scope_from_payload_with_seams,
         AttemptKey,
     };
     use super::*;
+    use crate::services::hooks::mutation_scope_owner::ProcessOwner;
     use crate::services::observability::traits::Logger;
 
     const FAIL_CLOSED_MESSAGE: &str =
@@ -639,7 +639,7 @@ mod tests {
             pid: dead_pid,
             instance_token: None,
         };
-        let live_owner = super::super::process_owner::current_process_owner();
+        let live_owner = crate::services::hooks::mutation_scope_owner::current_process_owner();
 
         let clear = RecoveryState::Clear;
         let pending = RecoveryState::Pending { generation: 1 };

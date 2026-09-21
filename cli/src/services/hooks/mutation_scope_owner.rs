@@ -83,7 +83,7 @@ mod tests {
 
     #[test]
     fn no_ttl_or_elapsed_time_primitive_is_used_by_this_module() {
-        let source = include_str!("process_owner.rs");
+        let source = include_str!("mutation_scope_owner.rs");
         let production_source = source
             .split_once("#[cfg(test)]")
             .expect("this module has a #[cfg(test)] boundary")

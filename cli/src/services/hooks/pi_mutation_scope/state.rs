@@ -7,8 +7,10 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::os_lock::{AdvisoryLockError, OsAdvisoryLock};
-use super::process_owner::{current_process_owner, is_definitely_dead, ProcessOwner};
 use super::{format_pi_scope_id, AttemptKey};
+use crate::services::hooks::mutation_scope_owner::{
+    current_process_owner, is_definitely_dead, ProcessOwner,
+};
 
 const SCE_STATE_DIR: &str = "sce";
 const ADAPTER_STATE_FILE: &str = "pi-mutation-scope-state.json";
@@ -314,8 +316,6 @@ pub(crate) fn admit_tracked_attempt(
     }))
 }
 
-/// Read-only D10 scan: `scope_id`s of live (`PendingStart`/`Executed`) attempts whose own
-/// recorded owner is positively dead. Never includes `PendingAbandon`.
 pub(crate) fn find_definitely_dead_attempts(git_dir: &Path) -> Result<Vec<String>> {
     let _lock = acquire_lock(git_dir)?;
     let state = read_state(git_dir)?;

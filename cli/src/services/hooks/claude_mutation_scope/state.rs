@@ -22,6 +22,7 @@ const ADAPTER_STATE_VERSION: u32 = 1;
 pub(crate) enum AttemptPhase {
     PendingStart,
     Active,
+    PendingAbandon,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -313,8 +314,70 @@ pub(crate) fn mark_active(git_dir: &Path, scope_id: &str) -> Result<()> {
         .iter_mut()
         .find(|attempt| attempt.scope_id == scope_id)
         .ok_or_else(|| anyhow!("No adapter-state attempt found for scope_id '{scope_id}'"))?;
-    attempt.phase = AttemptPhase::Active;
+
+    match attempt.phase {
+        AttemptPhase::PendingStart => {
+            attempt.phase = AttemptPhase::Active;
+        }
+        AttemptPhase::Active => return Ok(()),
+        AttemptPhase::PendingAbandon => {
+            return Err(anyhow!(
+                "Cannot mark mutation-scope attempt '{scope_id}' active after abandonment was established"
+            ));
+        }
+    }
+
     write_state_durably(git_dir, &state)
+}
+
+fn transition_to_pending_abandon(state: &mut AdapterState, scope_ids: &[String]) {
+    for attempt in &mut state.attempts {
+        if scope_ids
+            .iter()
+            .any(|scope_id| scope_id == &attempt.scope_id)
+        {
+            attempt.phase = AttemptPhase::PendingAbandon;
+        }
+    }
+}
+
+pub(crate) fn mark_recovery_pending_and_pending_abandon(
+    git_dir: &Path,
+    scope_ids: &[String],
+) -> Result<()> {
+    if scope_ids.is_empty() {
+        return Ok(());
+    }
+
+    let _lock = AdapterStateLock::acquire(git_dir, DEFAULT_LOCK_TIMEOUT)
+        .map_err(|err| anyhow!("Failed to acquire adapter-state lock: {err}"))?;
+
+    let mut state = read_state(git_dir)?;
+    state.recovery_pending = true;
+    transition_to_pending_abandon(&mut state, scope_ids);
+    write_state_durably(git_dir, &state)
+}
+
+pub(crate) fn reprove_pending_abandon(git_dir: &Path) -> Result<Option<Vec<AdapterAttempt>>> {
+    let _lock = AdapterStateLock::acquire(git_dir, DEFAULT_LOCK_TIMEOUT)
+        .map_err(|err| anyhow!("Failed to acquire adapter-state lock: {err}"))?;
+
+    let state = read_state(git_dir)?;
+
+    if !state.recovery_pending || state.attempts.is_empty() {
+        return Ok(None);
+    }
+
+    let every_attempt_is_pending_abandon = state
+        .attempts
+        .iter()
+        .all(|attempt| attempt.phase == AttemptPhase::PendingAbandon);
+
+    if !every_attempt_is_pending_abandon {
+        return Ok(None);
+    }
+
+    Ok(Some(state.attempts))
 }
 
 pub(crate) fn remove_attempt(git_dir: &Path, scope_id: &str) -> Result<()> {
@@ -341,13 +404,59 @@ pub(crate) fn mark_recovery_pending(git_dir: &Path) -> Result<()> {
     write_state_durably(git_dir, &state)
 }
 
-pub(crate) fn clear_recovery_pending(git_dir: &Path) -> Result<()> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ClearRecoveryOutcome {
+    Cleared,
+    StillPending,
+}
+
+pub(crate) fn clear_recovery_pending_if_quiescent(git_dir: &Path) -> Result<ClearRecoveryOutcome> {
+    clear_recovery_pending_if_quiescent_inner(git_dir, |_, _| Ok(()))
+}
+
+fn clear_recovery_pending_if_quiescent_inner<F>(
+    git_dir: &Path,
+    before_rename: F,
+) -> Result<ClearRecoveryOutcome>
+where
+    F: FnOnce(&Path, &Path) -> Result<()>,
+{
     let _lock = AdapterStateLock::acquire(git_dir, DEFAULT_LOCK_TIMEOUT)
         .map_err(|err| anyhow!("Failed to acquire adapter-state lock: {err}"))?;
 
     let mut state = read_state(git_dir)?;
+
+    if !state.recovery_pending {
+        return Ok(ClearRecoveryOutcome::Cleared);
+    }
+
+    if !state.attempts.is_empty() {
+        return Ok(ClearRecoveryOutcome::StillPending);
+    }
+
     state.recovery_pending = false;
-    write_state_durably(git_dir, &state)
+    write_state_durably_inner(git_dir, &state, before_rename)?;
+    Ok(ClearRecoveryOutcome::Cleared)
+}
+
+#[cfg(test)]
+pub(crate) fn set_attempt_phase_for_tests(
+    git_dir: &Path,
+    scope_id: &str,
+    phase: AttemptPhase,
+) -> AdapterAttempt {
+    let _lock =
+        AdapterStateLock::acquire(git_dir, DEFAULT_LOCK_TIMEOUT).expect("test phase-override lock");
+    let mut state = read_state(git_dir).expect("test phase-override read");
+    let attempt = state
+        .attempts
+        .iter_mut()
+        .find(|attempt| attempt.scope_id == scope_id)
+        .expect("attempt to override must already exist");
+    attempt.phase = phase;
+    let updated = attempt.clone();
+    write_state_durably(git_dir, &state).expect("test phase-override write");
+    updated
 }
 
 #[cfg(test)]
@@ -506,6 +615,117 @@ mod tests {
             .find(|attempt| attempt.scope_id == allocated.attempt.scope_id)
             .expect("attempt should still be present");
         assert_eq!(persisted.phase, AttemptPhase::Active);
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn mark_active_is_idempotent_when_already_active() {
+        let git_dir = unique_test_git_dir("mark-active-idempotent");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+        let allocated = allocate_attempt(&git_dir, &key("session-1", None, "toolu_1"), "Write")
+            .expect("allocation should succeed");
+        mark_active(&git_dir, &allocated.attempt.scope_id)
+            .expect("first activation should succeed");
+
+        mark_active(&git_dir, &allocated.attempt.scope_id)
+            .expect("re-delivery of PreToolUse after activation must be a safe idempotent no-op");
+
+        let state = read_state(&git_dir).expect("state should be readable");
+        assert_eq!(state.attempts[0].phase, AttemptPhase::Active);
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn mark_active_is_forbidden_once_pending_abandon_is_established() {
+        let git_dir = unique_test_git_dir("mark-active-forbidden-pending-abandon");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+        let allocated = allocate_attempt(&git_dir, &key("session-1", None, "toolu_1"), "Write")
+            .expect("allocation should succeed");
+
+        mark_recovery_pending_and_pending_abandon(
+            &git_dir,
+            std::slice::from_ref(&allocated.attempt.scope_id),
+        )
+        .expect("atomic establishment should succeed");
+
+        let error = mark_active(&git_dir, &allocated.attempt.scope_id)
+            .expect_err("PendingAbandon -> Active must be forbidden");
+        assert!(error.to_string().contains("abandon"));
+
+        let state = read_state(&git_dir).expect("state should be readable");
+        assert_eq!(
+            state.attempts[0].phase,
+            AttemptPhase::PendingAbandon,
+            "a rejected activation must not mutate the persisted phase"
+        );
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn mark_recovery_pending_and_pending_abandon_establishes_both_facts_in_one_durable_write() {
+        let git_dir = unique_test_git_dir("atomic-recovery-and-pending-abandon");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+        let allocated = allocate_attempt(&git_dir, &key("session-1", None, "toolu_1"), "Write")
+            .expect("allocation should succeed");
+        mark_active(&git_dir, &allocated.attempt.scope_id).expect("attempt should become active");
+
+        mark_recovery_pending_and_pending_abandon(
+            &git_dir,
+            std::slice::from_ref(&allocated.attempt.scope_id),
+        )
+        .expect("atomic establishment should succeed");
+
+        let state = read_state(&git_dir).expect("state should be readable");
+        assert!(
+            state.recovery_pending,
+            "T04: the recovery barrier must be armed by the atomic operation"
+        );
+        assert_eq!(
+            state.attempts[0].phase,
+            AttemptPhase::PendingAbandon,
+            "T04: abandonment evidence must be established alongside the barrier in the same write"
+        );
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn mark_recovery_pending_and_pending_abandon_failed_write_leaves_no_partial_invariant() {
+        let git_dir = unique_test_git_dir("atomic-injected-failure");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+        let allocated = allocate_attempt(&git_dir, &key("session-1", None, "toolu_1"), "Write")
+            .expect("allocation should succeed");
+        mark_active(&git_dir, &allocated.attempt.scope_id).expect("attempt should become active");
+
+        let mut state = read_state(&git_dir).expect("state should be readable");
+        state.recovery_pending = true;
+        transition_to_pending_abandon(
+            &mut state,
+            std::slice::from_ref(&allocated.attempt.scope_id),
+        );
+
+        let result = write_state_durably_inner(&git_dir, &state, |_, _| {
+            Err(anyhow!("injected interruption before rename"))
+        });
+        assert!(
+            result.is_err(),
+            "write_state_durably_inner should surface the injected interruption"
+        );
+
+        let after =
+            read_state(&git_dir).expect("state should be readable after the injected failure");
+        assert!(
+            !after.recovery_pending,
+            "an interrupted write must not leave the barrier half-armed"
+        );
+        assert_eq!(
+            after.attempts[0].phase,
+            AttemptPhase::Active,
+            "an interrupted write must not leave the attempt half-transitioned to PendingAbandon"
+        );
 
         remove_test_git_dir(&git_dir);
     }
@@ -738,15 +958,103 @@ mod tests {
     }
 
     #[test]
-    fn clear_recovery_pending_resets_the_barrier() {
-        let git_dir = unique_test_git_dir("clear-recovery-pending");
+    fn clear_recovery_pending_if_quiescent_resets_the_barrier_when_no_attempts_remain() {
+        let git_dir = unique_test_git_dir("clear-recovery-pending-quiescent");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
         mark_recovery_pending(&git_dir).expect("marking recovery pending should succeed");
 
-        clear_recovery_pending(&git_dir).expect("clearing the barrier should succeed");
+        let outcome = clear_recovery_pending_if_quiescent(&git_dir)
+            .expect("clearing the barrier should succeed");
+        assert_eq!(outcome, ClearRecoveryOutcome::Cleared);
 
         let state = read_state(&git_dir).expect("state should be readable");
         assert!(!state.recovery_pending);
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn clear_recovery_pending_if_quiescent_is_a_no_op_when_recovery_is_already_clear() {
+        let git_dir = unique_test_git_dir("clear-recovery-pending-already-clear");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+
+        let outcome = clear_recovery_pending_if_quiescent(&git_dir)
+            .expect("clearing an already-clear barrier should succeed");
+        assert_eq!(outcome, ClearRecoveryOutcome::Cleared);
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn clear_recovery_pending_if_quiescent_leaves_recovery_armed_when_an_attempt_remains() {
+        let git_dir = unique_test_git_dir("clear-recovery-pending-still-pending");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+        let allocated = allocate_attempt(&git_dir, &key("session-1", None, "toolu_1"), "Write")
+            .expect("allocation should succeed");
+        mark_recovery_pending_and_pending_abandon(
+            &git_dir,
+            std::slice::from_ref(&allocated.attempt.scope_id),
+        )
+        .expect("atomic establishment should succeed");
+
+        let outcome = clear_recovery_pending_if_quiescent(&git_dir)
+            .expect("proving quiescence should not error");
+        assert_eq!(outcome, ClearRecoveryOutcome::StillPending);
+
+        let state = read_state(&git_dir).expect("state should be readable");
+        assert!(
+            state.recovery_pending,
+            "recovery must remain armed when an unresolved attempt survives the proof"
+        );
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn clear_recovery_pending_if_quiescent_interrupted_before_rename_keeps_recovery_armed() {
+        let git_dir = unique_test_git_dir("clear-recovery-pending-interrupted-before-rename");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+        mark_recovery_pending(&git_dir).expect("marking recovery pending should succeed");
+
+        let result =
+            clear_recovery_pending_if_quiescent_inner(&git_dir, |tmp_path, canonical_path| {
+                assert!(
+                    tmp_path.exists(),
+                    "temp replacement file should exist by the time the pre-rename hook runs"
+                );
+                assert!(
+                    canonical_path.exists(),
+                    "canonical state file should still exist at the pre-rename hook"
+                );
+                Err(anyhow!("injected interruption before rename"))
+            });
+
+        assert!(
+            result.is_err(),
+            "an interrupted durable write must surface the injected error"
+        );
+
+        let after =
+            read_state(&git_dir).expect("state should be readable after the injected interruption");
+        assert!(
+            after.recovery_pending,
+            "an interrupted clear must leave the canonical state fail-closed with recovery armed"
+        );
+        assert!(
+            after.attempts.is_empty(),
+            "the interrupted clear must not fabricate or lose attempt bookkeeping"
+        );
+
+        let outcome = clear_recovery_pending_if_quiescent(&git_dir)
+            .expect("a retried clear should succeed once nothing interrupts the rename");
+        assert_eq!(outcome, ClearRecoveryOutcome::Cleared);
+
+        let final_state =
+            read_state(&git_dir).expect("state should be readable after the successful retry");
+        assert!(
+            !final_state.recovery_pending,
+            "the retried clear must durably disarm the barrier"
+        );
 
         remove_test_git_dir(&git_dir);
     }

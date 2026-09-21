@@ -20,15 +20,11 @@ impl SetupCommand {
                 .map_err(unexpected_failure)?,
         };
 
-        // The repository root is resolved before any prompt so the interactive
-        // optional-workflow prompt can pre-check the persisted selection.
         let repository_root = resolve_setup_repository(&setup_start_path)?;
 
         let setup_dispatch = if self.request.context_only {
             None
         } else if let Some(mode) = self.request.config_mode {
-            // A supplied `--workflow` selection seeds the prompt; otherwise the
-            // repository's persisted selection does.
             let optional_workflow_defaults = match &self.request.optional_workflows {
                 Some(selection) => selection.clone(),
                 None => setup::persisted_optional_workflows(&repository_root),
@@ -62,7 +58,6 @@ impl SetupCommand {
 
         let mut sections = Vec::new();
 
-        // Every successful setup path ensures the durable-context baseline exists.
         let context_message =
             setup::bootstrap_context_baseline(&repository_root).map_err(unexpected_failure)?;
         sections.push(context_message);
@@ -71,11 +66,8 @@ impl SetupCommand {
             return Ok(sections.join("\n\n"));
         }
 
-        // Scope the runtime AppContext to the resolved repository root for lifecycle providers.
         let ctx = context.with_repo_root(repository_root.clone());
 
-        // Aggregate setup steps from lifecycle providers in order:
-        // config → local_db → auth_db → agent_trace_db → hooks (when requested).
         let providers = lifecycle_providers(self.request.install_hooks);
 
         for provider in &providers {
@@ -90,7 +82,6 @@ impl SetupCommand {
             }
         }
 
-        // Handle config target installation (OpenCode/Claude assets).
         if let Some((
             resolved_mode,
             prompted_optional_workflows,
@@ -98,8 +89,6 @@ impl SetupCommand {
             attribution_hooks_enabled,
         )) = setup_dispatch
         {
-            // A prompted selection is authoritative for the run; without one the
-            // `--workflow` selection (or, absent that, the persisted one) applies.
             let optional_workflows = prompted_optional_workflows
                 .as_deref()
                 .or(self.request.optional_workflows.as_deref());

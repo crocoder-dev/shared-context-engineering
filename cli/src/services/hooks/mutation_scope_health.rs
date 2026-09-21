@@ -9,6 +9,13 @@ pub(crate) enum MutationScopeHealthStatus {
     Invalid,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub(crate) enum Repairability {
+    AutoFixable,
+    ManualOnly,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(dead_code)]
 pub(crate) struct MutationScopeAdapterHealth {
@@ -61,6 +68,12 @@ mod tests {
             MutationScopeHealthStatus::Healthy,
             MutationScopeHealthStatus::Healthy
         );
+    }
+
+    #[test]
+    fn repairability_variants_are_distinct() {
+        assert_ne!(Repairability::AutoFixable, Repairability::ManualOnly);
+        assert_eq!(Repairability::AutoFixable, Repairability::AutoFixable);
     }
 
     #[test]

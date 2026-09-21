@@ -90,7 +90,9 @@ new `ScopeId`; otherwise-identical tool IDs under main / `agent_id=A` /
 `checkout::resolve_git_dir(cwd)` — worktree-specific for linked worktrees): a
 versioned `{version, next_attempt_seq, recovery_pending, attempts[]}`, each
 attempt carrying `attempt_seq`, `scope_id`, the identity fields, `tool_name`, and
-`phase` (`pending_start | active`). This is **adapter bookkeeping, never
+`phase` (`pending_start | active | pending_abandon`, the last set durably before
+any abandon seam call — see [Abandonment cleanup signals](#abandonment-cleanup-signals)
+below). This is **adapter bookkeeping, never
 attribution evidence** — not exported, synced, or authoritative; its only job is
 knowing which Claude-created scopes may still need a terminal action. A malformed
 or wrong-version file is rejected, never fabricated.
@@ -155,10 +157,17 @@ rules:
 
 ## Abandonment cleanup signals
 
-Every abandonment shares one helper: arm `recovery_pending`, call the seam
-`abandon` operation, then remove the attempt on success. A failed abandon leaves
-`recovery_pending = true` and the attempt tracked, so the next mutation-capable
-`PreToolUse` is denied by the barrier.
+Every abandonment shares one helper: arm `recovery_pending`, durably persist the
+attempt's phase as `pending_abandon` (proof that abandonment has already been
+decided, distinct from "may still be running"), then call the seam `abandon`
+operation and remove the attempt only on success. A failed abandon leaves
+`recovery_pending = true` and the attempt tracked in `pending_abandon`, so the
+next mutation-capable `PreToolUse` is denied by the barrier. When a broad
+cleanup signal (`Stop`/`UserPromptSubmit`/`SubagentStop`/`SessionEnd`/
+`WorktreeRemove`) matches more than one outstanding attempt, every matched
+attempt is durably marked `pending_abandon` in one write before any of their
+seam `abandon` calls run, so one attempt's seam failure can never leave a
+sibling attempt in the same batch without its own retryable evidence.
 
 | Event | Retires |
 | --- | --- |
@@ -183,64 +192,12 @@ recovery/rebaseline boundary. Only a successful `flush` clears
 ## Mutation-scope health
 
 `claude_mutation_scope::health::classify_health` is a read-only diagnostic
-classifier over the checkout-local adapter state described above. It returns
-the shared `healthy | recovering | blocked | invalid` health vocabulary that
-the planned doctor integration will consume. It reads the same
-`state::read_state` result the adapter itself uses and maps it as:
-
-| Persisted state | Status | Reason |
-| --- | --- | --- |
-| `recovery_pending == false` | `Healthy` | no persisted recovery barrier is armed |
-| `recovery_pending == true && attempts.is_empty()` | `Recovering` | the recovery barrier's own flush path can clear this automatically |
-| `recovery_pending == true && attempts` non-empty | `Blocked` | the recovery barrier's flush path never runs from this shape, and nothing else advances it |
-| `read_state` fails (malformed JSON, unsupported version, read error) | `Invalid` | the state cannot be safely interpreted |
-
-**Healthy** covers the absence of a state file (`read_state`'s default) as
-well as an explicit `recovery_pending == false`. This is recovery health
-specifically, not "no active tool calls" — the adapter may still have live
-`attempts` in `pending_start`/`active` phase; live attempts alone, with
-`recovery_pending == false`, are still `Healthy`.
-
-**Recovering** (`recovery_pending == true && attempts.is_empty()`) reflects
-actual adapter behavior, not the `recovery_pending` name alone: the next
-mutation-capable `PreToolUse` reaches [the recovery barrier](#the-recovery-barrier)
-above, finds `attempts` empty, runs `{"operation":"flush"}` through the seam,
-and — on success — calls `clear_recovery_pending` before proceeding. This is
-a normal, self-healing admission path with no manual intervention.
-
-**Blocked** (`recovery_pending == true && attempts` non-empty) is the exact
-shape of the incident that motivated this classifier and the wider
-`doctor-mutation-scope-health` plan. `apply_recovery_barrier()` sees
-`recovery_pending == true` with non-empty `attempts` and returns `Deny`. It
-does not retry the abandon that left those attempts stale, does not remove
-them, does not flush, and does not clear `recovery_pending` — the barrier's
-only self-healing transition (flush) is gated on `attempts.is_empty()`, which
-this shape never satisfies. So once the hook invocation that produced this
-persisted state has returned, every subsequent ordinary mutation-capable
-`PreToolUse` continues to deny without advancing recovery — a durable
-repository-wide lockout, not merely "currently denied."
-
-**Invalid** applies when `state::read_state` cannot safely read or parse the
-state file — malformed JSON or an unsupported/invalid persisted version, per
-the existing state reader. A fail-closed but structurally valid state (i.e.
-`Blocked`) is never reported as `Invalid`.
-
-**Read-only boundary.** This classifier is diagnostic only: it reads the
-existing checkout-local adapter state and nothing else. It never modifies
-`attempts`, never clears `recovery_pending`, never calls `flush` or
-`abandon`, and never alters mutation attribution. Recovery/repair is a
-separate concern this classifier does not perform.
-
-**Observation semantics.** Classification is a snapshot of persisted state,
-read the same way `state::read_state` reads it for the adapter's own use.
-There is a narrow window in which a currently executing hook has already
-persisted `recovery_pending = true` with non-empty `attempts` but is still
-about to complete its abandon/remove sequence — the classifier does not
-attempt to prove global process liveness across that window. `Blocked` means
-that, if the operation that produced the observed durable state has stopped
-progressing, future ordinary adapter lifecycle events have no self-healing
-path from that state — not a claim that no process anywhere could possibly
-still be mid-write.
+classifier over the checkout-local adapter state described above, mapping it
+onto the shared `healthy | recovering | blocked | invalid` vocabulary that
+`sce doctor` consumes. See
+[Claude mutation-scope health classification](claude-mutation-scope-health.md)
+for the full mapping, the `Blocked` incident this classifier exists to
+surface, and its read-only/observation-semantics boundaries.
 
 ## Raw cwd is authoritative
 
@@ -255,31 +212,7 @@ to the seam.
 
 ## Background shell is unsupported
 
-An explicit `Bash.run_in_background = true` / `PowerShell.run_in_background =
-true` is denied in `PreToolUse` (fail-closed shape) with:
-
-```text
-SCE mutation attribution does not yet support detached background shell execution. Run this command in the foreground.
-```
-
-A detached shell can keep mutating the repository after `PostToolUse` returns and
-can outlive a session; the generic contract has no process supervisor or stable
-background-execution terminal signal. This is a deliberate correctness boundary,
-not a Bash security policy. Background **subagents** are not excluded — their
-internal mutation-capable tool calls still establish their own scopes.
-
-**Self-detaching descendants are a separate, explicit unsupported boundary
-(D20).** A `run_in_background = false` call can still leave a repository-mutating
-descendant running after `PostToolUse` returns when the invoked command detaches
-a child (`command &`, `nohup`, `setsid`, double-fork, `start_new_session=True`).
-T04 proved this live against Claude Code `2.1.258`: a foreground `setsid`
-command returned `PostToolUse` in `duration_ms: 13` and its descendant's write
-landed ~3s later, changing the Git tree an SCE snapshot would capture — outside
-the tool's closed scope. This is not solvable by inspecting the command string;
-the integration adds no detection, supervision, or static scan, and simply does
-not treat `PostToolUse` as proof that every descendant has stopped mutating. See
-the T04 addendum and `probe17-*` fixtures under
-`cli/src/services/hooks/claude_mutation_scope/fixtures/`.
+An explicit `Bash.run_in_background = true` / `PowerShell.run_in_background = true` is denied in `PreToolUse` (fail-closed shape); self-detaching descendants are a separate, explicit unsupported boundary (D20). See [Claude mutation-scope background and detached execution boundaries](claude-mutation-scope-background-execution.md) for the full denial text and both boundaries.
 
 ## Generated settings
 
@@ -307,6 +240,8 @@ durable-completion classification, and empty-stdout semantics.
 
 ## Related context
 
+- [Claude mutation-scope health classification](claude-mutation-scope-health.md)
+- [Claude mutation-scope background and detached execution boundaries](claude-mutation-scope-background-execution.md)
 - [Mutation-scope hook ingress: the harness-neutral transport seam](mutation-scope-hook-ingress.md)
 - [Mutation-scope runtime: the harness-adapter contract](mutation-scope-runtime.md)
 - [Agent Trace hooks command routing](../sce/agent-trace-hooks-command-routing.md)

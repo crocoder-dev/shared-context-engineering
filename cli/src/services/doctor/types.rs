@@ -14,6 +14,7 @@ pub(super) struct MutationScopeHealthRow {
     pub(super) status: MutationScopeHealthStatus,
     pub(super) reason: String,
     pub(super) detail: Option<String>,
+    pub(super) remediation: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -303,6 +304,7 @@ pub(super) enum DoctorDisplayDetail {
     MutationScopeHealth {
         reason: String,
         detail: Option<String>,
+        remediation: Option<String>,
     },
 }
 
@@ -529,6 +531,7 @@ pub(crate) struct DoctorProblem {
     pub(crate) remediation: String,
     pub(crate) next_action: &'static str,
     pub(super) scope: Option<IntegrationGroupKey>,
+    pub(super) mutation_scope_target: Option<IntegrationTarget>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
