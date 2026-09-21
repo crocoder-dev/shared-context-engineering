@@ -81,21 +81,83 @@ Each non-healthy status produces one `DoctorProblem` in a new
 | `Blocked` | `MutationScopeHealthBlocked` | Error | `manual_only` | `manual_steps` | overall readiness becomes `not_ready` |
 | `Invalid` | `MutationScopeHealthInvalid` | Error | `manual_only` | `manual_steps` | overall readiness becomes `not_ready` |
 
-`sce doctor --fix` never mutates adapter recovery state (deleting a state
-file, clearing `recovery_pending`, resetting a `RecoveryState`, or
-fabricating an abandon): doctor cannot safely discard persisted
-mutation-scope lifecycle/recovery evidence whose meaning and recovery
-obligations belong to the adapter state machine. For example, Claude's
-unresolved-abandonment case is documented in D12/D19 in
+`sce doctor --fix` never deletes a state file, clears `recovery_pending`/a
+`RecoveryState` generically, resets attempts, or fabricates an abandon
+outside an adapter's own real protocol operations: doctor cannot safely
+discard persisted mutation-scope lifecycle/recovery evidence whose meaning
+and recovery obligations belong to the adapter state machine, and it never
+calls `remove_attempt()` or rewrites a state file's JSON itself. For example,
+Claude's unresolved-abandonment case is documented in D12/D19 in
 [claude-mutation-scope-integration.md](../cli/claude-mutation-scope-integration.md);
 other adapters can be `Blocked` by different durable evidence, such as
 OpenCode's stale outstanding `PendingStart` with no unresolved abandonment
 at all.
 
-`Blocked` and `Invalid` are `manual_only`: doctor cannot repair them, and
-`--fix` renders a deterministic manual-remediation result naming the real
-adapter state file path, stating plainly that no safe generic recovery
-command exists yet, and never recommending deletion of the state file.
+`Invalid` is always `manual_only`: a state file doctor cannot safely
+interpret is never auto-repaired. `Blocked`, however, has a second, separate
+fact beyond its health status: **repairability**. Health
+(`healthy`/`recovering`/`blocked`/`invalid`, above) and repairability
+(`AutoFixable`/`ManualOnly`, `Repairability` in
+`cli/src/services/hooks/mutation_scope_health.rs`, kept as a distinct type
+from `MutationScopeHealthStatus`) are modeled as separate facts on purpose:
+a `Blocked` problem record's repairability can change as the adapter's own
+positive evidence changes (for example, a dead owner becoming provably dead
+only after its process actually exits), while its health stays `Blocked`
+until either an ordinary lifecycle event or a repair actually clears it.
+
+For a `Blocked` row, each adapter owns its own `assess_repairability(git_dir)
+-> Repairability` and, when `AutoFixable`, `repair_blocked(git_dir,
+repository_root, logger, seam) -> Result<RepairOutcome>` (Claude and OpenCode
+only — Codex and Pi never classify `Blocked` today, so neither defines these
+functions). `AutoFixable` requires positive, freshly-reprovable evidence, not
+a timestamp, file age, or generic "clear the state" fallback:
+
+- **Claude** (`claude_mutation_scope::health`) is `AutoFixable` only when
+  every currently persisted attempt is already `PendingAbandon` (an
+  established, durably-recorded abandon intent for all of them); any
+  `PendingStart`/`Active` attempt with no established abandon intent forces
+  the whole adapter `ManualOnly`. `repair_blocked` re-reads and re-proves
+  that same condition inside one lock-protected, read-only state
+  transaction, then retries each attempt's already-established seam
+  `abandon` call independently outside the lock, removing only the ones that
+  succeed and clearing `recovery_pending` only once none remain.
+- **OpenCode** (`opencode_mutation_scope::health`) is `AutoFixable` only when
+  every currently `PendingStart` attempt has a recorded owner (PID +
+  `/proc` start-time identity, stamped at allocation) the shared
+  `mutation_scope_owner::is_definitely_dead` proves dead; a legacy attempt
+  with no recorded owner, a live owner, or an unprovable owner is
+  `ManualOnly`. `repair_blocked` acquires the adapter's `AdapterBoundaryLock`,
+  re-proves the same all-or-nothing dead-owner condition inside one
+  lock-protected state transaction, transitions the qualifying attempts to
+  `PendingAbandon`, then drives the existing `flush`/`abandon`/`flush` seam
+  sequence with the state lock released.
+
+`sce doctor --fix` (`execute_doctor_with_lifecycle_providers` in
+`cli/src/services/doctor/mod.rs`, dispatched by
+`repair_blocked_mutation_scope_targets` in `cli/src/services/doctor/inspect.rs`)
+runs this repair as one further step, positioned after the existing
+`ServiceLifecycle`/merge-target repairs and before the final diagnosis that
+produces the fix-mode report. For each row the *initial* diagnosis found
+`Blocked`, it calls that adapter's `assess_repairability` fresh; when
+`AutoFixable`, it calls `repair_blocked` through the real production
+mutation-scope ingress seam, then immediately re-reads a fresh
+`classify_health` rather than trusting `repair_blocked`'s `Ok(())` return —
+only when that fresh read is `Healthy`/`Recovering` does doctor record a
+`Fixed` fix result, so a `Fixed` result and a final report still
+`Blocked`/`Invalid` for that target can never coincide. Doctor itself never
+acquires or holds an adapter's state lock and never holds one across the
+seam call; that serialization is entirely adapter-owned (OpenCode's
+`AdapterBoundaryLock` around the whole repair; Claude's own per-transaction
+state lock with no added boundary lock). A `ManualOnly` row is never passed
+to `repair_blocked` at all and falls through unchanged to the existing
+generic manual-result handling, which still renders a deterministic
+manual-remediation result naming the real adapter state file path, stating
+plainly that no safe generic recovery command exists for it, and never
+recommending deletion of the state file — the `DoctorProblem`'s own
+rendered `fixability`/`remediation` text does not yet vary by this
+repairability fact (still the shared `manual_only` wording below regardless
+of a target's true repairability); that rendering surface is a separate,
+later concern from the repair pipeline described here.
 
 `Recovering` is a distinct fixability, `no_action_required`: doctor performs
 no repair *because none is needed*, not because remediation is merely

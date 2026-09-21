@@ -1145,9 +1145,44 @@ Persist this field in every plan; this is durable plan state, not chat state:
     describing `mark_recovery_pending()` followed by `mark_pending_abandon()`
     as the final implementation has been corrected above; that two-write
     sequence is no longer present in the codebase.
+  - Correction (2026-09-21, second): `classify_health` disagreed with T01's
+    formal invariant `RecoveryNeverClearedWithUnresolvedAbandon` and with
+    `doctor_recovery.qnt`'s `adapterHealth` priority order
+    (`recovery == Clear and hasPendingAbandon -> Invalid`, checked before
+    every other classification). The Rust classifier instead returned
+    `Healthy` for any `recovery_pending == false` state without checking
+    whether a persisted attempt was still `PendingAbandon` — a structurally
+    impossible/corrupt shape (terminal cleanup already durably decided while
+    the barrier reads clear) was silently reported healthy instead of
+    surfaced as `Invalid`. Fixed by adding a `has_pending_abandon` check
+    (`state.attempts.iter().any(|attempt| attempt.phase ==
+    AttemptPhase::PendingAbandon)`) ahead of the existing
+    `!state.recovery_pending -> Healthy` branch in
+    `claude_mutation_scope::health::classify_health`: `!recovery_pending &&
+    has_pending_abandon` now returns `Invalid` first, matching the Quint
+    model's priority order exactly. `assess_repairability` needed no change
+    — its existing `!state.recovery_pending -> ManualOnly` short-circuit
+    already classified this shape `ManualOnly` before this correction, so
+    the impossible state was already un-auto-fixable; only the health
+    classification itself was wrong. Ordinary `PendingStart`/`Active`
+    attempts with `recovery_pending == false` are unaffected
+    (`has_pending_abandon` is false for them), and no Claude boundary lock
+    or owner-liveness primitive was added. New regressions in
+    `claude_mutation_scope::health::tests`: `clear_recovery_with_pending_abandon_is_invalid`
+    (a hand-constructed `recovery_pending: false` state with one
+    `PendingAbandon` attempt classifies `Invalid` and `assess_repairability`
+    reports `ManualOnly`) and
+    `invalid_takes_priority_over_blocked_in_mixed_impossible_state` (a
+    second, hand-constructed `PendingStart` attempt coexisting in the same
+    `recovery_pending: false` state still classifies `Invalid`, not
+    `Blocked`), mirroring the Quint model's
+    `testPendingAbandonWithClearRecoveryIsInvalid`/
+    `testInvalidTakesPriorityOverBlockedWhenBothConditionsHold`. No T05/T06
+    scope, OpenCode, Pi, Codex, doctor orchestration/rendering, or the Quint
+    model itself was touched by this correction.
   - Context synchronization: synced
 
-- [ ] T05: `Shared repairability contract and doctor --fix orchestration` (status:todo)
+- [x] T05: `Shared repairability contract and doctor --fix orchestration` (status:done)
   - Task ID: T05
   - Scope: In — `cli/src/services/hooks/mutation_scope_health.rs` (add the
     shared `Repairability` enum, kept separate from `MutationScopeHealthStatus`);
@@ -1185,7 +1220,175 @@ Persist this field in every plan; this is durable plan state, not chat state:
     problems runs the new step as a no-op with no behavior change from
     today.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor`
-  - Context synchronization: pending
+  - Completed: 2026-09-21
+  - Files changed: `cli/src/services/hooks/mutation_scope_health.rs` (adds the
+    shared `pub(crate) enum Repairability { AutoFixable, ManualOnly }`,
+    kept separate from `MutationScopeHealthStatus`, plus a
+    `repairability_variants_are_distinct` regression test);
+    `cli/src/services/doctor/inspect.rs` (adds
+    `repair_blocked_mutation_scope_targets` — the new `pub(super)` dispatch
+    entry point — plus its private helpers
+    `repair_blocked_mutation_scope_targets_with_seam`,
+    `mutation_scope_repair_seam` (the real production seam,
+    `hooks::mutation_scope::run_mutation_scope_from_payload`),
+    `repair_blocked_mutation_scope_target`, `claude_repairability`,
+    `opencode_repairability`, and `fixed_record_from_recomputed_health`;
+    imports `Repairability`, `mutation_scope`, and `Logger`; adds six new
+    regression tests and the `claude_autofixable_blocked_state`/
+    `init_git_repo_with_opencode_target`/`opencode_dead_owner`/
+    `no_op_repair_seam` test fixtures);
+    `cli/src/services/doctor/mod.rs` (wires
+    `repair_blocked_mutation_scope_targets(&initial_report)` into
+    `execute_doctor_with_lifecycle_providers`, positioned exactly after
+    `repair_merge_target_configs` and before the final
+    `diagnose_lifecycle_providers` call).
+  - Result: `sce doctor --fix` now repairs a `Blocked` Claude or OpenCode
+    Agent-tracing state whenever the owning adapter's own
+    `assess_repairability` proves it `AutoFixable`, by calling that
+    adapter's own `repair_blocked` through the real production seam
+    (`hooks::mutation_scope::run_mutation_scope_from_payload` — the same
+    seam Claude's and OpenCode's own hook entry points use), then
+    re-reading a fresh `classify_health` immediately afterward: only when
+    that fresh read is `Healthy`/`Recovering` does the dispatch record a
+    `Fixed` `DoctorFixResultRecord`; a `repair_blocked` call that returns
+    `Ok(())` but leaves the target `Blocked`/`Invalid` (a losing race, a
+    seam failure, or any other reason) produces no record at all, and the
+    existing generic `build_manual_fix_results` pass over the *final*
+    recomputed report — unchanged by this task — reports it `Manual`
+    instead, so `Fixed` and a still-`Blocked` final report can never
+    coincide (AC6). A `ManualOnly` target (no owner evidence, a live/unknown
+    owner, or a mixed-phase Claude state) is never passed to `repair_blocked`
+    at all — `claude_repairability`/`opencode_repairability` short-circuit
+    first — leaving the state file byte-for-byte untouched and routing
+    through the pre-existing manual-remediation path exactly as before this
+    task (AC2 unaffected; T06 still owns its wording). Doctor itself never
+    acquires or holds either adapter's state lock, never holds a lock across
+    a seam call, and never calls `remove_attempt()` or rewrites JSON — it
+    only calls each adapter's own `assess_repairability`/`repair_blocked`/
+    `classify_health`, matching this plan's constraints and T01's formal
+    model. Codex and Pi rows are matched to `None` in
+    `repair_blocked_mutation_scope_target` and never dispatched further,
+    since neither adapter can currently classify `Blocked` (per T01's
+    assumptions).
+  - Deviation: the seam is threaded through
+    `repair_blocked_mutation_scope_targets_with_seam`/
+    `repair_blocked_mutation_scope_target` as an explicit parameter
+    (`MutationScopeRepairSeam<'a> = &'a dyn Fn(&Path, &str, Option<&dyn
+    Logger>) -> anyhow::Result<String>`) rather than being hardcoded inline,
+    mirroring the seam-injection pattern every adapter's own lifecycle
+    module already uses (e.g. `claude_mutation_scope`'s
+    `run_claude_mutation_scope_from_payload_with_resolver`). This was not
+    load-bearing for production behavior (the public
+    `repair_blocked_mutation_scope_targets` entry point always uses the one
+    real seam, `mutation_scope_repair_seam`) but was necessary for reliable
+    testing: an initial version of the regression tests drove the real
+    production seam end-to-end (a real git repo, a real per-repository
+    Agent Trace DB) and was flaky under the full `doctor` test binary — it
+    passed when run alone but intermittently reported `Manual` instead of
+    `Fixed` when preceded by other tests in the same process, traced to the
+    credential-store-backed Agent Trace DB encryption key
+    (`cli/src/services/db/encryption_key.rs`'s process-global
+    `DEFAULT_STORE`/keyring-store registration) not reliably surviving a
+    second real, encrypted per-repository database being created in the
+    same test process inside this sandboxed environment — a pre-existing
+    test-infrastructure characteristic unrelated to this task's logic and
+    out of its scope to fix. Threading the seam as a parameter let the
+    regression tests inject the same kind of no-op fake seam every other
+    hook-level test in this codebase already uses (matching
+    `claude_mutation_scope`/`opencode_mutation_scope`'s own `repair_blocked`
+    test suites), making the new tests deterministic while still exercising
+    every line of this task's own new dispatch code — the underlying
+    adapter `repair_blocked` behavior against the real seam remains proven
+    by T03/T04's own extensive test suites, which this task does not
+    duplicate.
+  - Verify outcomes: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor` -> `49 passed; 0 failed` (six new: `repair_blocked_mutation_scope_target_repairs_an_autofixable_claude_state`, `repair_blocked_mutation_scope_target_never_touches_a_manual_only_claude_state`, `repair_blocked_mutation_scope_target_repairs_an_autofixable_opencode_state`, `full_report_fix_mode_leaves_a_manual_only_claude_blocked_state_untouched`, `full_report_fix_mode_has_no_mutation_scope_effect_when_nothing_is_blocked`, plus `mutation_scope_health.rs`'s `repairability_variants_are_distinct`), re-run three times consecutively with no flakes; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_mutation_scope` -> `136 passed; 0 failed`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml opencode_mutation_scope` -> `113 passed; 0 failed`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_scope_health` -> `10 passed; 0 failed`; `cargo fmt --manifest-path cli/Cargo.toml -- --check` -> clean; `SCE_CLI_PACKAGE_FALLBACK=1 cargo clippy --manifest-path cli/Cargo.toml --all-targets` -> no warnings; `grep -rn "SystemTime\|Instant::now\|\.elapsed()\|modified()" cli/src/services/hooks/claude_mutation_scope cli/src/services/hooks/opencode_mutation_scope cli/src/services/hooks/mutation_scope_owner.rs` -> only the pre-existing, unrelated `AdapterStateLock`/`AdapterBoundaryLock`/`os_lock` timeout deadlines and the static no-TTL-token source scan's own token list, matching AC3's "no staleness use outside unrelated lock-timeout constants" (this task introduced no new staleness heuristic).
+  - Context impact: `sce doctor --fix` gains real, user-visible repair
+    behavior for a `Blocked` Claude/OpenCode Agent-tracing state for the
+    first time (previously `--fix` could never touch this category at all).
+    The `mutation_scope_health` JSON array's shape and status strings, and
+    every `MutationScope*` Rust type name, are unchanged (AC7 — this task
+    added no new field to that array and renamed nothing). `DoctorProblem`'s
+    `fixability`/`remediation` text for a `Blocked` row is *not yet* dynamic
+    per this task (still the pre-existing static `ManualOnly` wording from
+    `push_mutation_scope_health_problem`, untouched by this task) — a
+    `Blocked` row that this task's new step successfully repairs still shows
+    the old wording on the *initial* diagnosis before `--fix` runs, and
+    `sce doctor --fix`'s human/JSON fix-result line for a repaired target
+    goes through the existing generic `[{outcome}] {detail}` formatter with
+    a `Recovered <adapter> Agent tracing (now <status>: <reason>).` detail
+    string this task produces — not yet the `[fixed] Recovered <adapter>
+    Agent tracing ...` wording T06's own Done-when names, since
+    `DoctorDisplayDetail::MutationScopeHealth` rendering is unchanged here.
+    `context/sce/mutation-scope-health-status.md`,
+    `context/sce/agent-trace-hook-doctor.md`, and
+    `context/sce/doctor-human-text-contract.md` are all named in this plan's
+    own "Context sync" section as needing the new repairability facet
+    described once the repair path exists — deferring that write to this
+    task's own context-synchronization pass (next), not T06, since this is
+    the task that actually makes `--fix` capable of the repair, per this
+    plan's own instruction to record docs against the task that makes a
+    behavior reachable.
+  - Correction (2026-09-21): the original dispatch violated AC6 and this
+    task's own "final report is the sole postcondition" requirement.
+    `repair_blocked_mutation_scope_target` called each adapter's
+    `repair_blocked`, then immediately called that same adapter's
+    `classify_health` again right there and built a `Fixed`
+    `DoctorFixResultRecord` from that *intermediate* read — a read taken
+    before `execute_doctor_with_lifecycle_providers` goes on to build the
+    actual final `HookDoctorReport`. A concurrent hook process mutating
+    persisted state between that intermediate read and the final diagnosis
+    could produce `fix_results: [Fixed]` alongside a final report that is
+    still `Blocked`, which AC6 and `doctor_recovery.qnt`'s
+    `ReportedFixedExcludesBlockedOrInvalid` invariant both forbid. Fixed by
+    separating "perform the repair" from "decide whether it counts as
+    `Fixed`": `repair_blocked_mutation_scope_target`/
+    `repair_blocked_mutation_scope_targets(_with_seam)` now return which
+    targets doctor actually attempted a repair for
+    (`Option<IntegrationTarget>`/`Vec<IntegrationTarget>`), with no
+    `classify_health` call and no `DoctorFixResultRecord` construction of
+    their own. A new `finalize_mutation_scope_repair_results(repaired_targets:
+    &[IntegrationTarget], final_mutation_scope_health: &[MutationScopeHealthRow])
+    -> Vec<DoctorFixResultRecord>` is the only place a mutation-scope
+    `Fixed` record is now produced: it looks up each repaired target's row
+    in the already-built final report's `mutation_scope_health` (never
+    recomputing health itself) and reports `Fixed` only for
+    `Healthy`/`Recovering`; `Blocked`/`Invalid`, or a target missing from
+    the final row set entirely, produce no record and fall through to the
+    existing, unchanged `build_manual_fix_results` pass over the final
+    report. `execute_doctor_with_lifecycle_providers` in
+    `cli/src/services/doctor/mod.rs` now calls
+    `repair_blocked_mutation_scope_targets(&initial_report)` to get the
+    repaired-target list, builds the final report exactly as before, then
+    calls `finalize_mutation_scope_repair_results(&mutation_scope_repairs,
+    &final_report.mutation_scope_health)` before `build_manual_fix_results`
+    — preserving the plan's initial-diagnosis -> existing-repairs ->
+    repair-attempt -> final-diagnosis -> derive-fix-result-from-final-report
+    flow exactly, with the derivation step now strictly after the final
+    report exists rather than interleaved with the repair step. `fixed_record_from_recomputed_health`
+    now takes a `&MutationScopeHealthRow` (the final report's own row shape)
+    instead of a freshly computed `&MutationScopeAdapterHealth`, so there is
+    no code path left that can authorize `Fixed` from anything but the final
+    report. New regression
+    `finalize_mutation_scope_repair_results_ignores_an_immediate_post_repair_read_that_the_final_report_contradicts`
+    in `cli/src/services/doctor/inspect.rs` drives a real `repair_blocked`
+    call to a genuine immediate `Healthy`/`Recovering` result, then
+    overwrites the persisted Claude state back to `Blocked` (simulating a
+    concurrent hook process) before computing the final
+    `mutation_scope_health` row and calling `finalize_mutation_scope_repair_results`
+    — asserting both that the final row is `Blocked` and that no `Fixed`
+    `MutationScopeHealth` record is produced, proving the race AC6 requires
+    is now impossible. The three existing dispatch-level tests
+    (`repair_blocked_mutation_scope_target_repairs_an_autofixable_claude_state`,
+    `repair_blocked_mutation_scope_target_never_touches_a_manual_only_claude_state`,
+    `repair_blocked_mutation_scope_target_repairs_an_autofixable_opencode_state`)
+    were updated for the new `Option<IntegrationTarget>` return shape; the
+    two `AutoFixable` tests now additionally call
+    `finalize_mutation_scope_repair_results` against a freshly recomputed
+    final row set to prove the end-to-end `Fixed` path still works when the
+    final report agrees. No T06/T07 functionality, OpenCode/Claude adapter
+    internals, or human/JSON rendering were touched.
+  - Verify outcomes (corrected): `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor` -> `50 passed; 0 failed` (the five surviving T05 regressions plus the new `finalize_mutation_scope_repair_results_ignores_an_immediate_post_repair_read_that_the_final_report_contradicts`); `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_mutation_scope` -> `138 passed; 0 failed` (includes the two new T04-correction Invalid-classification regressions); `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml opencode_mutation_scope` -> `113 passed; 0 failed`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_scope_health` -> `10 passed; 0 failed`; `cargo fmt --manifest-path cli/Cargo.toml -- --check` -> clean; `SCE_CLI_PACKAGE_FALLBACK=1 cargo clippy --manifest-path cli/Cargo.toml --all-targets` -> no warnings; `nix run .#quint -- typecheck spec/doctor_recovery.qnt` -> clean; `nix run .#quint -- test spec/doctor_recovery.qnt --match '^test.*'` -> `13 passing` (unchanged — this correction required no Quint model change, confirming the implementation was the thing out of sync with the already-correct formal model, not the other way around).
+  - Context synchronization: synced
 
 - [ ] T06: `Human and JSON remediation contract for repaired and manual Agent tracing states` (status:todo)
   - Task ID: T06
