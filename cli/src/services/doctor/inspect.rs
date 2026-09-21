@@ -230,16 +230,10 @@ fn inspect_mutation_scope_health(
         .collect()
 }
 
-pub(super) fn repair_blocked_mutation_scope_targets(
-    initial_report: &HookDoctorReport,
-) -> Vec<IntegrationTarget> {
-    repair_blocked_mutation_scope_targets_with_seam(initial_report, &mutation_scope_repair_seam)
-}
-
-type MutationScopeRepairSeam<'a> =
+pub(super) type MutationScopeRepairSeam<'a> =
     &'a dyn Fn(&Path, &str, Option<&dyn Logger>) -> anyhow::Result<String>;
 
-fn repair_blocked_mutation_scope_targets_with_seam(
+pub(super) fn repair_blocked_mutation_scope_targets_with_seam(
     initial_report: &HookDoctorReport,
     seam: MutationScopeRepairSeam<'_>,
 ) -> Vec<IntegrationTarget> {
@@ -260,7 +254,7 @@ fn repair_blocked_mutation_scope_targets_with_seam(
         .collect()
 }
 
-fn mutation_scope_repair_seam(
+pub(super) fn mutation_scope_repair_seam(
     repository_root: &Path,
     payload: &str,
     logger: Option<&dyn Logger>,
@@ -4683,6 +4677,14 @@ mod tests {
         repo: &std::path::Path,
         mode: super::DoctorMode,
     ) -> super::super::DoctorExecution {
+        run_full_doctor_report_with_seam(repo, mode, &super::mutation_scope_repair_seam)
+    }
+
+    fn run_full_doctor_report_with_seam(
+        repo: &std::path::Path,
+        mode: super::DoctorMode,
+        mutation_scope_seam: super::MutationScopeRepairSeam<'_>,
+    ) -> super::super::DoctorExecution {
         let context = FullReportRepoContext {
             repo_root: repo.to_path_buf(),
         };
@@ -4693,6 +4695,7 @@ mod tests {
             },
             repo,
             &context,
+            mutation_scope_seam,
         )
     }
 
@@ -5532,6 +5535,265 @@ mod tests {
                  fix result: {:?}",
                 execution.fix_results
             );
+
+            std::fs::remove_dir_all(&repo).ok();
+        });
+    }
+
+    fn init_git_repo_with_healthy_claude_and_opencode_targets(label: &str) -> PathBuf {
+        let repo = init_git_repo(label);
+        let remote_output = std::process::Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                &format!("https://example.invalid/{label}.git"),
+            ])
+            .current_dir(&repo)
+            .output()
+            .expect("git remote add should spawn");
+        assert!(
+            remote_output.status.success(),
+            "git remote add failed: {}",
+            String::from_utf8_lossy(&remote_output.stderr)
+        );
+        crate::services::setup::install_required_git_hooks(&repo)
+            .expect("install canonical git hooks");
+        crate::services::setup::run_setup_for_mode(
+            &repo,
+            crate::services::setup::SetupMode::NonInteractive(
+                crate::services::setup::SetupTarget::Claude,
+            ),
+            None,
+            None,
+            None,
+        )
+        .expect("install canonical Claude integration assets");
+        crate::services::setup::run_setup_for_mode(
+            &repo,
+            crate::services::setup::SetupMode::NonInteractive(
+                crate::services::setup::SetupTarget::OpenCode,
+            ),
+            None,
+            None,
+            None,
+        )
+        .expect("install canonical OpenCode integration assets");
+        run_full_doctor_report(&repo, super::DoctorMode::Fix);
+        repo
+    }
+
+    fn seed_opencode_manual_only_blocked_state(git_dir: &std::path::Path) {
+        crate::services::hooks::opencode_mutation_scope::state::seed_attempt_for_tests(
+            git_dir,
+            &crate::services::hooks::opencode_mutation_scope::AttemptKey {
+                session_id: "ses-main".to_string(),
+                call_id: "call-1".to_string(),
+            },
+            "write",
+            crate::services::hooks::opencode_mutation_scope::state::AttemptPhase::PendingStart,
+        );
+    }
+
+    #[test]
+    fn full_report_multi_adapter_diagnose_names_doctor_fix_for_one_target_and_the_real_path_for_the_other(
+    ) {
+        with_isolated_global_state(|| {
+            let repo = init_git_repo_with_healthy_claude_and_opencode_targets(
+                "full-report-multi-adapter-diagnose",
+            );
+            write_claude_mutation_scope_state(&repo, &claude_autofixable_blocked_state());
+            let git_dir = super::resolve_git_dir(&repo).expect("resolve git dir");
+            seed_opencode_manual_only_blocked_state(&git_dir);
+
+            let execution = run_full_doctor_report(&repo, super::DoctorMode::Diagnose);
+            assert_eq!(execution.report.readiness, Readiness::NotReady);
+            let mutation_scope_problems: Vec<_> = execution
+                .report
+                .problems
+                .iter()
+                .filter(|problem| problem.category == super::ProblemCategory::MutationScopeHealth)
+                .collect();
+            assert_eq!(
+                mutation_scope_problems.len(),
+                2,
+                "{mutation_scope_problems:#?}"
+            );
+
+            let claude_problem = mutation_scope_problems
+                .iter()
+                .find(|problem| {
+                    problem.mutation_scope_target == Some(IntegrationTarget::ClaudeCode)
+                })
+                .expect("claude mutation-scope problem present");
+            assert_eq!(claude_problem.fixability, ProblemFixability::AutoFixable);
+            assert_eq!(claude_problem.next_action, "doctor_fix");
+            assert!(claude_problem.remediation.contains("sce doctor --fix"));
+
+            let opencode_problem = mutation_scope_problems
+                .iter()
+                .find(|problem| problem.mutation_scope_target == Some(IntegrationTarget::OpenCode))
+                .expect("opencode mutation-scope problem present");
+            assert_eq!(opencode_problem.fixability, ProblemFixability::ManualOnly);
+            assert_eq!(opencode_problem.next_action, "manual_steps");
+            let opencode_state_path =
+                crate::services::hooks::opencode_mutation_scope::state::state_path(&git_dir);
+            assert!(
+                opencode_problem
+                    .remediation
+                    .contains(&opencode_state_path.display().to_string()),
+                "remediation must name the exact persisted opencode state path: {}",
+                opencode_problem.remediation
+            );
+            assert!(
+                !opencode_problem
+                    .remediation
+                    .to_ascii_lowercase()
+                    .contains("delete"),
+                "manual opencode remediation must not contain deletion wording: {}",
+                opencode_problem.remediation
+            );
+
+            let text = render_text(&execution);
+            assert!(
+                text.contains("sce doctor --fix"),
+                "human text must name 'sce doctor --fix' for the autofixable claude row: {text}"
+            );
+            assert!(
+                text.contains(&opencode_state_path.display().to_string()),
+                "human text must name the real opencode state path: {text}"
+            );
+
+            let json = render_json(&execution);
+            assert_eq!(json["readiness"], "not_ready");
+            let json_problems = json["problems"].as_array().expect("problems is an array");
+            let json_mutation_scope_problems: Vec<_> = json_problems
+                .iter()
+                .filter(|problem| problem["category"] == "mutation_scope_health")
+                .collect();
+            assert_eq!(
+                json_mutation_scope_problems.len(),
+                2,
+                "{json_mutation_scope_problems:?}"
+            );
+            let json_autofixable = json_mutation_scope_problems
+                .iter()
+                .find(|problem| problem["fixability"] == "auto_fixable")
+                .expect("json autofixable problem present");
+            assert_eq!(json_autofixable["remediation"]["next_action"], "doctor_fix");
+            assert!(json_autofixable["remediation"]["text"]
+                .as_str()
+                .expect("remediation text is a string")
+                .contains("sce doctor --fix"));
+            let json_manual_only = json_mutation_scope_problems
+                .iter()
+                .find(|problem| problem["fixability"] == "manual_only")
+                .expect("json manual-only problem present");
+            assert_eq!(
+                json_manual_only["remediation"]["next_action"],
+                "manual_steps"
+            );
+            assert!(json_manual_only["remediation"]["text"]
+                .as_str()
+                .expect("remediation text is a string")
+                .contains(&opencode_state_path.display().to_string()));
+
+            std::fs::remove_dir_all(&repo).ok();
+        });
+    }
+
+    #[test]
+    fn full_report_multi_adapter_fix_mode_resolves_one_target_and_leaves_the_other_manual() {
+        with_isolated_global_state(|| {
+            let repo = init_git_repo_with_healthy_claude_and_opencode_targets(
+                "full-report-multi-adapter-fix",
+            );
+            write_claude_mutation_scope_state(&repo, &claude_autofixable_blocked_state());
+            let git_dir = super::resolve_git_dir(&repo).expect("resolve git dir");
+            seed_opencode_manual_only_blocked_state(&git_dir);
+
+            let execution = run_full_doctor_report_with_seam(
+                &repo,
+                super::DoctorMode::Fix,
+                no_op_repair_seam(),
+            );
+
+            let mutation_scope_results: Vec<_> = execution
+                .fix_results
+                .iter()
+                .filter(|result| result.category == super::ProblemCategory::MutationScopeHealth)
+                .collect();
+            assert_eq!(
+                mutation_scope_results.len(),
+                2,
+                "{mutation_scope_results:?}"
+            );
+            assert!(
+                mutation_scope_results.iter().any(|result| {
+                    result.outcome == super::FixResult::Fixed
+                        && result
+                            .detail
+                            .starts_with("Recovered Claude Code Agent tracing (")
+                }),
+                "expected a fixed claude result: {mutation_scope_results:?}"
+            );
+            assert!(
+                mutation_scope_results.iter().any(|result| {
+                    result.outcome == super::FixResult::Manual
+                        && result
+                            .detail
+                            .contains("Agent tracing remains blocked. Inspect '")
+                }),
+                "expected a manual opencode result: {mutation_scope_results:?}"
+            );
+
+            assert_eq!(execution.report.readiness, Readiness::NotReady);
+            let final_mutation_scope_problems: Vec<_> = execution
+                .report
+                .problems
+                .iter()
+                .filter(|problem| problem.category == super::ProblemCategory::MutationScopeHealth)
+                .collect();
+            assert_eq!(
+                final_mutation_scope_problems.len(),
+                1,
+                "the repaired claude target must no longer appear as a problem in the final \
+                 report, leaving only the still-blocked opencode target: {final_mutation_scope_problems:#?}"
+            );
+            assert_eq!(
+                final_mutation_scope_problems[0].mutation_scope_target,
+                Some(IntegrationTarget::OpenCode)
+            );
+            assert_eq!(
+                final_mutation_scope_problems[0].fixability,
+                ProblemFixability::ManualOnly
+            );
+
+            let text = render_text(&execution);
+            assert!(
+                text.contains("[fixed] Recovered Claude Code Agent tracing ("),
+                "human fix results must show the claude '[fixed] Recovered ...' line: {text}"
+            );
+            assert!(
+                text.contains("[manual] Agent tracing remains blocked. Inspect '"),
+                "human fix results must show the opencode '[manual] Agent tracing remains \
+                 blocked ...' line: {text}"
+            );
+
+            let opencode_health =
+                crate::services::hooks::opencode_mutation_scope::health::classify_health(&git_dir);
+            assert_eq!(
+                opencode_health.status,
+                MutationScopeHealthStatus::Blocked,
+                "a ManualOnly opencode target must remain untouched and still blocked"
+            );
+            let claude_health = claude_mutation_scope::health::classify_health(&git_dir);
+            assert_ne!(
+                claude_health.status,
+                MutationScopeHealthStatus::Blocked,
+                "a reported fixed claude target must never leave the target still blocked"
+            );
+            assert_ne!(claude_health.status, MutationScopeHealthStatus::Invalid);
 
             std::fs::remove_dir_all(&repo).ok();
         });

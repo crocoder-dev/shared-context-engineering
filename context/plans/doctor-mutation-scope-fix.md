@@ -87,7 +87,7 @@ never performs `remove_attempt()`/direct JSON rewriting itself.
 
 ## Acceptance criteria
 
-- [ ] AC1: For a `Blocked` Agent tracing row an adapter proves `auto_fixable`,
+- [x] AC1: For a `Blocked` Agent tracing row an adapter proves `auto_fixable`,
       plain `sce doctor` (no `--fix`) states the literal remediation
       `Run 'sce doctor --fix' to recover ...` in both human text and the
       JSON `problems[]` remediation text, and the `DoctorProblem` carries
@@ -97,7 +97,7 @@ never performs `remove_attempt()`/direct JSON rewriting itself.
     `--format json` payload both contain the literal string
     `sce doctor --fix` and `"fixability":"auto_fixable"` /
     `"next_action":"doctor_fix"`.
-- [ ] AC2: For a `Blocked`/`Invalid` row that remains `manual_only`, both
+- [x] AC2: For a `Blocked`/`Invalid` row that remains `manual_only`, both
       human text and JSON name the exact persisted adapter state-file path
       (e.g. `<git-dir>/sce/claude-mutation-scope-state.json`) and never
       suggest deleting it.
@@ -105,7 +105,7 @@ never performs `remove_attempt()`/direct JSON rewriting itself.
     asserts the rendered text and JSON both contain the real
     `state::state_path(...)` value and that no rendered remediation string
     contains `delete`.
-- [ ] AC3: `sce doctor --fix` never abandons or repairs an attempt without
+- [x] AC3: `sce doctor --fix` never abandons or repairs an attempt without
       positive evidence freshly re-read and re-proven inside the adapter's
       existing lifecycle-serialization boundary where one exists, and every
       durable state transition is performed under the adapter state lock.
@@ -116,18 +116,18 @@ never performs `remove_attempt()`/direct JSON rewriting itself.
       infers staleness from a timestamp, file modification time, or elapsed
       duration.
   - Validate: `grep -rn "SystemTime\|Instant::now\|\.elapsed()\|modified()" cli/src/services/hooks/claude_mutation_scope cli/src/services/hooks/opencode_mutation_scope cli/src/services/hooks/mutation_scope_owner.rs` finds no staleness use outside unrelated lock-timeout constants; the concurrent-race regressions in T03/T04 pass.
-- [ ] AC4: A legacy persisted state file written before this change (no
+- [x] AC4: A legacy persisted state file written before this change (no
       owner evidence, no `PendingAbandon` phase) remains readable and stays
       `manual_only` when `Blocked` — upgrading SCE never makes an
       old, ambiguous attempt auto-fixable on its own.
   - Validate: T03/T04 legacy-fixture regression tests pass.
-- [ ] AC5: An interrupted repair (a crash or process kill between any two
+- [x] AC5: An interrupted repair (a crash or process kill between any two
       durable writes the repair introduces) leaves state that a later
       `sce doctor --fix` completes safely, without ever requiring state
       deletion and without resurrecting or duplicating a terminal/removed
       attempt.
   - Validate: T03/T04 crash-mid-repair regression tests pass.
-- [ ] AC6: `sce doctor --fix` never reports a mutation-scope fix result
+- [x] AC6: `sce doctor --fix` never reports a mutation-scope fix result
       `fixed` while the freshly recomputed final `classify_health` result
       for that target remains `Blocked`/`Invalid`; a final result of
       `Recovering` is accepted as a successful repair (`Blocked` ->
@@ -136,12 +136,12 @@ never performs `remove_attempt()`/direct JSON rewriting itself.
       repair only reaches `Recovering` (a normal residual recovery step
       remains) and one where the repair leaves the target still `Blocked`
       (must not report `fixed`).
-- [ ] AC7: The `mutation_scope_health` JSON array's shape
+- [x] AC7: The `mutation_scope_health` JSON array's shape
       (`target`/`status`/`reason`/`detail`) and the `healthy`/`recovering`/
       `blocked`/`invalid` status strings are unchanged; no `MutationScope*`
       Rust type or the `mutation_scope_health` field name is renamed.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor`; inspect the JSON payload in that test output for the unchanged array shape and status strings.
-- [ ] AC8: The stated safety invariants (doctor cannot abandon a
+- [x] AC8: The stated safety invariants (doctor cannot abandon a
       potentially live attempt; an unprovable/unknown owner is never
       treated as proof of death; doctor cannot clear recovery while
       unresolved lifecycle evidence exists; concurrent hook-process and
@@ -1679,7 +1679,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
       behavior, or health status strings. No direct adapter JSON editing from
       doctor. T07 remains todo; not started.
 
-- [ ] T07: `Cross-adapter end-to-end regression and formal-model connection` (status:todo)
+- [x] T07: `Cross-adapter end-to-end regression and formal-model connection` (status:done)
   - Task ID: T07
   - Scope: In — one or more command-level integration tests (driving
     `run_doctor_with_context`/the `sce doctor`/`sce doctor --fix` command
@@ -1704,7 +1704,152 @@ Persist this field in every plan; this is durable plan state, not chat state:
     T01 invariant is traceably connected to at least one Rust test (via
     Quint-Connect or documented mapping); `nix flake check` passes.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor`; `nix flake check`
-  - Context synchronization: pending
+  - Completed: 2026-09-21
+  - Files changed: `cli/src/services/doctor/inspect.rs` (adds two new
+    command-level regression tests —
+    `full_report_multi_adapter_diagnose_names_doctor_fix_for_one_target_and_the_real_path_for_the_other`
+    and
+    `full_report_multi_adapter_fix_mode_resolves_one_target_and_leaves_the_other_manual`
+    — plus their fixtures
+    `init_git_repo_with_healthy_claude_and_opencode_targets` and
+    `seed_opencode_manual_only_blocked_state`; widens
+    `MutationScopeRepairSeam`, `mutation_scope_repair_seam`, and
+    `repair_blocked_mutation_scope_targets_with_seam` from private to
+    `pub(super)` and removes the now-redundant seam-defaulted
+    `repair_blocked_mutation_scope_targets` wrapper it replaces; adds a
+    seam-parameterized `run_full_doctor_report_with_seam` test helper that
+    `run_full_doctor_report` now delegates to);
+    `cli/src/services/doctor/mod.rs` (threads a new
+    `mutation_scope_seam: MutationScopeRepairSeam<'_>` parameter through
+    `execute_doctor_with_context`/`execute_doctor_with_lifecycle_providers`,
+    with `run_doctor_with_context` — the sole production caller — passing
+    the real `mutation_scope_repair_seam`; the mutation-scope repair
+    dispatch call site now reads
+    `repair_blocked_mutation_scope_targets_with_seam(&initial_report,
+    mutation_scope_seam)`).
+  - Result: Two new command-level regression tests drive the full
+    `execute_doctor_with_context`/`execute_doctor_with_lifecycle_providers`
+    pipeline (initial diagnosis -> existing repairs ->
+    `repair_blocked_mutation_scope_targets_with_seam` -> final diagnosis ->
+    `finalize_mutation_scope_repair_results` ->
+    `build_manual_fix_results`) against one repository seeded with a Claude
+    `AutoFixable` `Blocked` state (`claude_autofixable_blocked_state()`) and
+    an OpenCode `ManualOnly` `Blocked` state (a `PendingStart` attempt with
+    no recorded owner) at once — the first tests in this plan to exercise
+    T03/T04/T05/T06 together through the top-level command surface rather
+    than through `inspect.rs`'s per-adapter helpers.
+    `full_report_multi_adapter_diagnose_names_doctor_fix_for_one_target_and_the_real_path_for_the_other`
+    asserts plain `sce doctor`'s human text and `--format json` both name
+    `sce doctor --fix` for the Claude row (AC1) and the real OpenCode
+    state-file path with no deletion wording for the OpenCode row (AC2), in
+    the same report.
+    `full_report_multi_adapter_fix_mode_resolves_one_target_and_leaves_the_other_manual`
+    runs `sce doctor --fix` against the same seeded repository and asserts:
+    exactly one `[fixed] Recovered Claude Code Agent tracing (...)` result
+    and one `[manual] Agent tracing remains blocked. Inspect '...'` result;
+    the final report contains only the still-`Blocked` OpenCode problem
+    (Claude's is gone, since it is no longer a problem after being fixed);
+    OpenCode's persisted state is untouched and still `Blocked`; and
+    Claude's is never `Blocked`/`Invalid` — proving AC6 holds when one
+    adapter is genuinely repaired and an unrelated adapter in the same
+    report stays blocked.
+  - Deviation: driving Claude's real repair through the production seam
+    (`hooks::mutation_scope::run_mutation_scope_from_payload`) inside
+    `full_report_multi_adapter_fix_mode_resolves_one_target_and_leaves_the_other_manual`
+    hit the exact test-infrastructure characteristic T05 already documented
+    and worked around: the credential-store-backed Agent Trace DB
+    encryption key does not reliably survive a second real, encrypted
+    per-repository database being created in the same test process,
+    surfacing as `AbandonScopeError::AgentTraceDbUnavailable` and a
+    deterministic (not intermittent, in this case) `NoOp` repair outcome —
+    confirmed by direct diagnosis (a throwaway instrumented test, removed
+    before this record) before any fix was applied. Following T05's own
+    precedent exactly (injecting a fake seam so dispatch-level logic is
+    tested deterministically, while T03/T04's own adapter suites prove the
+    real seam separately), this task widens the seam-injection pattern one
+    level up the call stack: `MutationScopeRepairSeam`,
+    `mutation_scope_repair_seam`, and
+    `repair_blocked_mutation_scope_targets_with_seam` become `pub(super)`,
+    `execute_doctor_with_context`/`execute_doctor_with_lifecycle_providers`
+    take an explicit seam parameter instead of hardcoding the production
+    one internally, and the now-redundant seam-defaulted
+    `repair_blocked_mutation_scope_targets` wrapper is removed rather than
+    left as dead code. Production behavior is unchanged — the sole
+    production caller (`run_doctor_with_context`) always passes the real
+    `mutation_scope_repair_seam` — this is a testability-only
+    parameterization, not new production behavior. The new
+    diagnose-mode test needs no seam and is unaffected (Diagnose mode never
+    calls the repair step). The 15 pre-existing `full_report_*` tests
+    (single-adapter, mostly Diagnose-mode or a `ManualOnly`/no-op Fix-mode
+    path that also never reaches the seam) are unaffected: `run_full_doctor_report`
+    keeps its original signature and now delegates to
+    `run_full_doctor_report_with_seam(repo, mode, &mutation_scope_repair_seam)`,
+    so nothing about their behavior changed — confirmed by their unchanged
+    pass/fail outcome and by `claude_mutation_scope`/`opencode_mutation_scope`'s
+    own suites (138/113 passed, matching T05/T06's last recorded counts)
+    below.
+  - Formal-model connection: a Quint-Connect harness mirroring
+    `cli/src/services/mutation_trace/mbt/` was not built. That harness
+    traces a pure Rust refinement (`mutation_trace::protocol`) of its Quint
+    model action-for-action; `spec/doctor_recovery.qnt`'s actions
+    (`hookAllocate`, `doctorAttemptRepairWith`, `recoveryProgress`,
+    `completeAbandon`, ...) correspond to real adapter I/O — durable state
+    files, OS locks, `/proc` owner liveness, the real mutation-scope seam —
+    with no equivalent pure core to trace against; extracting one would be
+    new production behavior this task's own scope excludes. This task
+    instead uses the documented-mapping option T01 itself explicitly
+    allows, following the same "no comments in code, the plan is the
+    header comment" precedent T01 already established for this exact file
+    (this repository's own standing convention). Each of `spec/doctor_recovery.qnt`'s
+    eight `Safety` invariants is traceably proven by at least one existing
+    or new Rust regression test:
+    - `DoctorNeverAbandonsALiveOwner`:
+      `opencode_mutation_scope::health::tests::repair_blocked_is_a_safe_no_op_when_the_pending_start_owner_is_live`,
+      `opencode_mutation_scope::health::tests::assess_repairability_is_manual_only_when_the_pending_start_owner_is_live`.
+    - `UnknownOwnerNeverProvesDeath`:
+      `opencode_mutation_scope::health::tests::assess_repairability_is_manual_only_for_a_legacy_pending_start_attempt_with_no_recorded_owner`;
+      this task's new
+      `doctor::inspect::tests::full_report_multi_adapter_diagnose_names_doctor_fix_for_one_target_and_the_real_path_for_the_other`
+      (an unowned OpenCode `PendingStart` stays `ManualOnly` in the very
+      same report where Claude's proven-dead-equivalent state is
+      `AutoFixable`).
+    - `RecoveryNeverClearedWithUnresolvedAbandon`:
+      `claude_mutation_scope::health::tests::repair_blocked_removes_only_successfully_abandoned_attempts_and_keeps_recovery_pending_when_one_fails`.
+    - `NoOrdinaryTransitionProducesInvalidHealth`:
+      `claude_mutation_scope::health::tests::clear_recovery_with_pending_abandon_is_invalid`,
+      `claude_mutation_scope::health::tests::invalid_takes_priority_over_blocked_in_mixed_impossible_state`,
+      `opencode_mutation_scope::health::tests::clear_recovery_with_a_pending_abandon_attempt_is_a_structurally_impossible_state_classified_invalid`.
+    - `DoctorRepairProducesOnlyOrdinaryLifecycleShapes`:
+      `opencode_mutation_scope::health::tests::repair_blocked_clears_a_dead_owner_pending_start_end_to_end`;
+      `claude_mutation_scope::health::tests::repair_blocked_removes_only_successfully_abandoned_attempts_and_keeps_recovery_pending_when_one_fails`
+      (shared with `RecoveryNeverClearedWithUnresolvedAbandon` above).
+    - `RemovedAttemptsAreNeverResurrected`:
+      `claude_mutation_scope::state::tests::removing_an_already_removed_attempt_is_a_safe_no_op`,
+      `opencode_mutation_scope::state::tests::removing_an_already_removed_attempt_is_a_safe_no_op`,
+      `opencode_mutation_scope::tests::regression_f_start_replay_for_a_pending_abandon_identity_never_reactivates`.
+    - `InterruptedRecoveryStaysInOrdinaryRetryableState`:
+      `claude_mutation_scope::health::tests::repair_blocked_interrupted_by_a_failing_seam_leaves_state_a_later_repair_completes_without_duplication`,
+      `opencode_mutation_scope::health::tests::repair_blocked_interrupted_before_the_seam_resolves_leaves_state_the_ordinary_recovery_path_completes_without_duplication`.
+    - `ReportedFixedExcludesBlockedOrInvalid`:
+      `doctor::inspect::tests::finalize_mutation_scope_repair_results_ignores_an_immediate_post_repair_read_that_the_final_report_contradicts`;
+      this task's new
+      `doctor::inspect::tests::full_report_multi_adapter_fix_mode_resolves_one_target_and_leaves_the_other_manual`
+      (Claude's `Fixed` report is derived only from the final, freshly
+      recomputed row, at the same moment the adjacent OpenCode row in that
+      identical final report is still `Blocked`).
+  - Verify outcomes: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor` -> `64 passed; 0 failed` (56 pre-existing + 2 new multi-adapter regressions; the 6 test names T05/T06 recorded plus this task's own 2 account for all `full_report_*` growth), re-run three times consecutively with no flakes; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_mutation_scope` -> `138 passed; 0 failed`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml opencode_mutation_scope` -> `113 passed; 0 failed`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_scope_health` -> `12 passed; 0 failed`; `cargo fmt --manifest-path cli/Cargo.toml -- --check` -> clean; `SCE_CLI_PACKAGE_FALLBACK=1 cargo clippy --manifest-path cli/Cargo.toml --all-targets` -> no warnings; `grep -rn "SystemTime\|Instant::now\|\.elapsed()\|modified()" cli/src/services/hooks/claude_mutation_scope cli/src/services/hooks/opencode_mutation_scope cli/src/services/hooks/mutation_scope_owner.rs cli/src/services/doctor/*.rs` -> only the pre-existing, unrelated `AdapterStateLock`/`os_lock` timeout deadlines, the static no-TTL-token source scan's own token list, and an unrelated test-fixture nonce (`unique_temp_repository_root`), matching AC3; `nix run .#quint -- typecheck spec/doctor_recovery.qnt` -> clean; `nix run .#quint -- test spec/doctor_recovery.qnt --match '^test.*'` -> `13 passing` (unchanged — this task made no Quint model edit); `nix flake check` -> `all checks passed!` (includes `cli-tests`, `cli-clippy`, `cli-fmt`, and `mutation-trace-quint-connect`).
+  - Context impact: No user-visible behavior, public interface, persisted
+    data shape, or architecture-boundary change — this task adds regression
+    coverage and a formal-model traceability mapping only, plus a
+    testability-only seam parameter on two already-private `doctor::mod`
+    functions never called outside this crate. This is the task named in
+    the plan's own "Context sync" section as the last to run before the
+    plan's own context-synchronization pass is due; per the plan's own
+    non-speculative instruction, a new shared doc for "the doctor-repair
+    invariants" is only warranted if the context-synchronization phase
+    judges the mapping above substantial enough on its own merits — it is
+    not created here as part of task execution.
+  - Context synchronization: synced
 
 ## Open questions
 
@@ -1716,3 +1861,42 @@ evidence; OpenCode's does). Where the request itself flagged a genuine
 implementation choice ("decide from the actual barrier logic", "if the
 investigation finds..."), the corresponding task scope says so explicitly
 rather than presenting a false certainty here.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-09-21
+
+### Commands run
+
+- `nix flake check` -> exit 0 (all checks passed, including `cli-tests`, `cli-clippy`, `cli-fmt`, `mutation-trace-quint-connect`)
+- `grep -rn "SystemTime\|Instant::now\|\.elapsed()\|modified()" cli/src/services/hooks/claude_mutation_scope cli/src/services/hooks/opencode_mutation_scope cli/src/services/hooks/mutation_scope_owner.rs` -> exit 0 (only pre-existing `AdapterStateLock`/`os_lock` timeout-deadline `Instant::now()` uses and the static no-TTL-token scan's own token list; no staleness-based repair evidence)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor` -> exit 0 (64 passed; 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_mutation_scope` -> exit 0 (138 passed; 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml opencode_mutation_scope` -> exit 0 (113 passed; 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_scope_health` -> exit 0 (12 passed; 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_scope_owner` -> exit 0 (8 passed; 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml pi_mutation_scope` -> exit 0 (94 passed; 0 failed)
+- `nix develop -c cargo fmt --manifest-path cli/Cargo.toml -- --check` -> exit 0 (clean)
+- `nix run .#quint -- typecheck spec/doctor_recovery.qnt` -> exit 0 (clean typecheck)
+- `nix run .#quint -- test spec/doctor_recovery.qnt --match '^test.*'` -> exit 0 (13 passing)
+- `nix run .#quint -- run spec/doctor_recovery.qnt --invariant=Safety --max-samples=10000 --max-steps=30` -> exit 0 (`[ok] No violation found`)
+
+### Success-criteria verification
+
+- [x] AC1: A `Blocked`/`auto_fixable` row states the literal `sce doctor --fix` remediation in text and JSON, with `fixability: auto_fixable` / `next_action: doctor_fix` -> `full_report_autofixable_blocked_names_doctor_fix_in_text_and_json` (cli/src/services/doctor/inspect.rs) asserts both the rendered text and the `--format json` payload contain `sce doctor --fix`, `"fixability":"auto_fixable"`, and `"next_action":"doctor_fix"`; passing in the `doctor` test run above.
+- [x] AC2: A `manual_only` `Blocked`/`Invalid` row names the real state-file path and never suggests deletion -> `mutation_scope_health_manual_only_states_name_the_real_state_path_and_never_suggest_deletion` and `full_report_blocked_regression_is_consistent_across_surfaces` (cli/src/services/doctor/inspect.rs) assert the rendered text/JSON contain the real `state::state_path(...)` value and no `delete` wording; passing in the `doctor` test run above.
+- [x] AC3: No repair infers staleness from time; every durable transition runs under the adapter state lock, never across a seam call -> the grep above finds no staleness use outside pre-existing lock-timeout deadlines and the static scan's own token list; T03/T04 concurrent-race regressions (`opencode_mutation_scope`, `claude_mutation_scope` suites) pass.
+- [x] AC4: A legacy persisted state file (no owner evidence, no `PendingAbandon`) stays `manual_only` when `Blocked` -> T03/T04 legacy-fixture regressions pass within the `opencode_mutation_scope`/`claude_mutation_scope` suites above (e.g. `assess_repairability_is_manual_only_for_a_legacy_pending_start_attempt_with_no_recorded_owner`).
+- [x] AC5: An interrupted repair leaves state a later `sce doctor --fix` completes safely, without deletion or resurrection/duplication -> T03/T04 crash-mid-repair regressions pass within the suites above (e.g. `repair_blocked_interrupted_by_a_failing_seam_leaves_state_a_later_repair_completes_without_duplication`, `repair_blocked_interrupted_before_the_seam_resolves_leaves_state_the_ordinary_recovery_path_completes_without_duplication`).
+- [x] AC6: `sce doctor --fix` never reports `fixed` while the freshly recomputed health stays `Blocked`/`Invalid`; `Recovering` is an accepted successful repair -> T05 postcondition regressions pass within the `doctor` suite above, including `finalize_mutation_scope_repair_results_ignores_an_immediate_post_repair_read_that_the_final_report_contradicts` and `finalize_mutation_scope_repair_results_reports_manual_when_an_attempted_autofixable_repair_stays_blocked`.
+- [x] AC7: The `mutation_scope_health` JSON array's `target`/`status`/`reason`/`detail` shape and `healthy`/`recovering`/`blocked`/`invalid` status strings are unchanged; no `MutationScope*` type or field renamed -> direct inspection of `MutationScopeHealthRow` (cli/src/services/doctor/types.rs:12-18) and `mutation_scope_health_status` (types.rs:555-562) confirms the field set and status strings are unchanged (only the additive `remediation: Option<String>` field was added); the `doctor` test run above exercises the JSON payload directly.
+- [x] AC8: The stated safety invariants are formal and connected to the implementation -> `nix run .#quint -- typecheck spec/doctor_recovery.qnt` and `quint test` (13 passing) above; `quint run --invariant=Safety --max-samples=10000 --max-steps=30` finds no violation; T07's documented-mapping connection ties each of the eight `Safety` invariants to specific passing Rust regressions (recorded in T07's task record).
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- None identified.

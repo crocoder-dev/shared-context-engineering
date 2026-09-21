@@ -24,7 +24,8 @@ pub mod command;
 use fixes::build_manual_fix_results;
 use inspect::{
     build_report_with_lifecycle_problems, finalize_mutation_scope_repair_results,
-    repair_blocked_mutation_scope_targets, repair_merge_target_configs,
+    mutation_scope_repair_seam, repair_blocked_mutation_scope_targets_with_seam,
+    repair_merge_target_configs, MutationScopeRepairSeam,
 };
 use render::render_report;
 use types::{
@@ -88,7 +89,12 @@ where
         setup::ensure_git_repository(&current_dir).unwrap_or(current_dir)
     };
     let scoped_context = context.with_repo_root(&repository_root);
-    let execution = execute_doctor_with_context(request, &repository_root, &scoped_context);
+    let execution = execute_doctor_with_context(
+        request,
+        &repository_root,
+        &scoped_context,
+        &mutation_scope_repair_seam,
+    );
     render_report(request, &execution)
 }
 
@@ -96,6 +102,7 @@ fn execute_doctor_with_context(
     request: DoctorRequest,
     repository_root: &Path,
     context: &impl HasRepoRoot,
+    mutation_scope_seam: MutationScopeRepairSeam<'_>,
 ) -> DoctorExecution {
     execute_doctor_with_lifecycle_providers(
         request,
@@ -111,6 +118,7 @@ fn execute_doctor_with_context(
             validate_config_file: &crate::services::config::validate_config_file,
             probe_codex_hook_policy: &codex_hook_policy::probe_default,
         },
+        mutation_scope_seam,
     )
 }
 
@@ -119,6 +127,7 @@ fn execute_doctor_with_lifecycle_providers(
     repository_root: &Path,
     context: &impl HasRepoRoot,
     dependencies: &DoctorDependencies<'_>,
+    mutation_scope_seam: MutationScopeRepairSeam<'_>,
 ) -> DoctorExecution {
     // Probed exactly once per doctor invocation, then reused for every
     // Codex integration inspection below (initial report, `--fix`, and final
@@ -151,7 +160,8 @@ fn execute_doctor_with_lifecycle_providers(
         repository_root,
         &policy_readiness,
     ));
-    let mutation_scope_repairs = repair_blocked_mutation_scope_targets(&initial_report);
+    let mutation_scope_repairs =
+        repair_blocked_mutation_scope_targets_with_seam(&initial_report, mutation_scope_seam);
     let final_problems = diagnose_lifecycle_providers(context, &providers);
     let final_doctor_problems = final_problems
         .into_iter()
