@@ -168,7 +168,10 @@ fn execute_doctor_with_lifecycle_providers(
         &mutation_scope_repairs,
         &final_report.mutation_scope_health,
     ));
-    fix_results.extend(build_manual_fix_results(&final_report));
+    fix_results.extend(build_manual_fix_results(
+        &final_report,
+        &mutation_scope_repairs,
+    ));
 
     DoctorExecution {
         report: final_report,
@@ -224,6 +227,7 @@ fn doctor_problem_from_health(problem: HealthProblem) -> DoctorProblem {
         remediation: problem.remediation,
         next_action: problem.next_action,
         scope: None,
+        mutation_scope_target: None,
     }
 }
 
