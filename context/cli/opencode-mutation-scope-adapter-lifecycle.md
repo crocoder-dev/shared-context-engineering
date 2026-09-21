@@ -111,9 +111,52 @@ concurrent OpenCode processes.
   (idempotent), confirmation-required attribution, and `needs_rebaseline`; the
   existing Quint checks are re-run only as regression verification.
 
+## Owner evidence and the doctor-repair path
+
+Each `AdapterAttempt` now carries an optional `owner: Option<ProcessOwner>`
+(`#[serde(default)]`), stamped with the shared
+[`mutation_scope_owner::current_process_owner()`](pi-mutation-scope-integration.md)
+when a `PendingStart` attempt is allocated. A state file written before this
+field existed deserializes its absence as `owner: None`, never inferred —
+`assess_repairability`/`repair_blocked` below treat a missing owner exactly
+like a live/unprovable one.
+
+This evidence exists only to back a `doctor`-invoked repair for the
+`blocked` `PendingStart` shape described in
+[opencode-mutation-scope-health.md](opencode-mutation-scope-health.md#why-a-stale-pendingstart-is-blocked-not-recovering--even-alongside-a-pendingflushing-recovery-generation);
+it changes none of the ordinary hook lifecycle above and none of
+`classify_health`'s reachable classifications.
+
+- `assess_repairability(git_dir)` reports `AutoFixable` only when every
+  currently `PendingStart` attempt has a recorded owner the shared
+  `mutation_scope_owner::is_definitely_dead` proves dead; otherwise
+  `ManualOnly` (no owner recorded, a live owner, or unprovable liveness).
+- `repair_blocked(git_dir, repository_root, logger, seam)` acquires the
+  `AdapterBoundaryLock`, normalizes an orphaned `Flushing`, then — in one
+  `AdapterStateLock` transaction — re-reads state fresh and re-evaluates
+  liveness against the *current* state rather than trusting any earlier
+  read. Only attempts still `PendingStart` with a still-dead owner at that
+  moment transition to `PendingAbandon`, using the same durable
+  `begin_terminal_cleanup` shape the ordinary `ToolError` path already uses.
+  The state lock is released before the unmodified `flush`/`abandon`/`flush`
+  seam sequence (`resolve_recovery`) runs, so the lock is never held across a
+  seam call. A losing re-proof (the attempt is no longer `PendingStart`, or
+  no attempt is currently dead-owned) is a safe no-op: no seam call, no
+  write. If a seam call fails mid-repair, the resulting `PendingAbandon`/
+  `Pending` state is left exactly as an ordinary failed `ToolError` cleanup
+  would leave it, so the existing self-healing retry (any later tracked
+  admission) resumes and completes it without duplicating or resurrecting
+  the attempt.
+- Neither function is wired into `doctor` yet — `sce doctor --fix` cannot
+  reach `repair_blocked` until a later task dispatches to it from
+  `execute_doctor_with_lifecycle_providers`.
+
 ## Related context
 
 - [OpenCode mutation-scope integration](opencode-mutation-scope-integration.md)
+- [OpenCode mutation-scope health classification](opencode-mutation-scope-health.md)
 - [Mutation-scope hook ingress](mutation-scope-hook-ingress.md)
 - [Mutation-scope runtime: the harness-adapter contract](mutation-scope-runtime.md)
 - [Mutation-scope provenance](mutation-scope-provenance.md)
+- [Pi mutation-scope integration](pi-mutation-scope-integration.md) (the shared
+  `mutation_scope_owner` liveness primitive this task reuses)

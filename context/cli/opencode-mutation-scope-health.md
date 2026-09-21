@@ -158,14 +158,21 @@ attempt on behalf of an unrelated call. The only two paths that retire a
 - that same key's own `ToolExecuteAfter`/`ToolError`, which drives
   `abandon_and_consume` for that specific attempt.
 
-If the process that owns that call has died before either of those arrives —
-there is no equivalent of Pi's `ProcessOwner`/`is_definitely_dead()` liveness
-check in OpenCode, and `server_disposed_cannot_sweep_another_processes_attempt`
-proves `ServerDisposed` is deliberately inert for this — no future ordinary
-lifecycle event from any other call can ever clear it. This is the same
+If the process that owns that call has died before either of those arrives, no
+future *ordinary* lifecycle event from any other call can ever clear it —
+`server_disposed_cannot_sweep_another_processes_attempt` proves `ServerDisposed`
+is deliberately inert for this, and (unlike Pi's D10 sweep) nothing in the
+`ToolExecuteBefore`/`ToolExecuteAfter`/`ToolError`/`ShellEnv` dispatch path ever
+inspects owner liveness on behalf of an unrelated call. This is the same
 "valid persisted state + fail-closed admission + no reachable self-healing
 transition" shape as the Claude incident, just triggered by `PendingStart`
-instead of a non-empty `attempts` list under `recovery_pending`.
+instead of a non-empty `attempts` list under `recovery_pending`. OpenCode does
+now record the same positive owner evidence as Pi (via the shared
+`mutation_scope_owner` module) and can prove a `PendingStart` attempt's owner
+positively dead — see
+[Owner evidence and the doctor-repair path](opencode-mutation-scope-adapter-lifecycle.md#owner-evidence-and-the-doctor-repair-path)
+— but that liveness check is not wired into this ordinary hook lifecycle at
+all; it backs a separate `doctor`-invoked repair path only.
 
 **This holds even when recovery is simultaneously `Pending` or `Flushing` for
 an unrelated `PendingAbandon` attempt.** Recovery reaching `Clear` retires

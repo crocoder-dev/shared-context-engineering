@@ -739,7 +739,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     so none needed edits.
   - Context synchronization: synced
 
-- [ ] T03: `OpenCode: persisted owner evidence and safe PendingStart repair` (status:todo)
+- [x] T03: `OpenCode: persisted owner evidence and safe PendingStart repair` (status:done)
   - Task ID: T03
   - Scope: In — `cli/src/services/hooks/opencode_mutation_scope/{boundary_lock,events,lifecycle,mod,os_lock,payload,state,health,tests}.rs`.
     Preserve the existing lock hierarchy: `AdapterBoundaryLock`
@@ -794,7 +794,112 @@ Persist this field in every plan; this is durable plan state, not chat state:
     continues from `PendingAbandon` without state deletion or attempt
     duplication.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml opencode_mutation_scope`
-  - Context synchronization: pending
+  - Completed: 2026-09-21
+  - Files changed: `cli/src/services/hooks/opencode_mutation_scope/state.rs`
+    (imports `current_process_owner`/`is_definitely_dead`/`ProcessOwner` from
+    the shared `mutation_scope_owner` module; adds `owner:
+    Option<ProcessOwner>` to `AdapterAttempt` with `#[serde(default)]`;
+    stamps it in `allocate_pending_start` via `current_process_owner()`;
+    factors `begin_terminal_cleanup`'s tail into a shared
+    `transition_to_pending_abandon_and_arm_flush` helper; adds
+    `reprove_dead_owner_pending_start_and_begin_repair`, a single
+    lock-protected read-reprove-transition, and the `#[cfg(test)]`
+    `set_attempt_owner_for_tests` helper);
+    `cli/src/services/hooks/opencode_mutation_scope/health.rs` (adds the
+    local `Repairability { AutoFixable, ManualOnly }` enum and
+    `assess_repairability`; adds ten new regression tests covering legacy
+    no-owner deserialization, live/dead/mixed-owner assessment, end-to-end
+    repair, the live-owner no-op, the concurrent-race re-proof refusal, the
+    all-or-nothing rejection when a sibling `PendingStart` attempt's owner
+    goes stale between the unlocked assessment and the locked re-proof, and
+    the interrupted-repair resume via the ordinary recovery path; fixes the
+    pre-existing `matrix_attempt` literal to set `owner: None`);
+    `cli/src/services/hooks/opencode_mutation_scope/lifecycle.rs` (adds
+    `RepairOutcome { Repaired, NoOp }` and `repair_blocked`, which runs
+    inside the existing `with_boundary_lock` helper);
+    `cli/src/services/hooks/opencode_mutation_scope/mod.rs` (re-exports
+    `assess_repairability`, `Repairability`, `repair_blocked`,
+    `RepairOutcome`, each `#[allow(unused_imports)]` pending T05's doctor
+    wiring, matching the existing `pi_mutation_scope/mod.rs` precedent for
+    not-yet-consumed exports).
+  - Result: `AdapterAttempt` now carries optional, backward-compatible
+    owner evidence stamped at `PendingStart` allocation. `assess_repairability`
+    classifies a `Blocked` adapter `AutoFixable` only when every currently
+    `PendingStart` attempt has a recorded owner positively proven dead by the
+    shared `is_definitely_dead`; a legacy file with no `owner` field, a live
+    owner, or an unprovable owner all stay `ManualOnly`. `repair_blocked`
+    acquires the `AdapterBoundaryLock`, normalizes orphaned recovery, then
+    performs one lock-protected read-reprove-transition
+    (`reprove_dead_owner_pending_start_and_begin_repair`) that re-evaluates
+    liveness fresh against the current state rather than trusting any
+    earlier read. This re-proof is all-or-nothing over the adapter's
+    complete current `PendingStart` set, not a per-attempt filter: it
+    collects every attempt currently `PendingStart` and requires every one
+    of them to have a recorded owner positively proven dead. If any current
+    blocker is live, unknown, or ownerless, `repair_blocked` returns `NoOp`,
+    no attempt is transitioned, recovery is untouched, and no seam call
+    occurs. Only when every current blocker is positively dead do all
+    current `PendingStart` attempts transition together to `PendingAbandon`,
+    arming the existing recovery pipeline; `repair_blocked` then releases
+    the state lock and drives the unmodified `flush`/`abandon`/`flush` seam
+    sequence via the existing `resolve_recovery`, so the state lock is never
+    held across a seam call and no new seam behavior was introduced. A
+    losing re-proof (owner no longer `PendingStart` by the time the lock is
+    acquired, or a sibling attempt's owner is no longer provably dead) makes
+    `repair_blocked` a safe no-op with no seam call and no write — proven by
+    a new regression test,
+    `repair_blocked_is_all_or_nothing_when_auto_fixable_assessment_becomes_stale`,
+    that seeds two independently dead-owner `PendingStart` attempts
+    (doctor's initial unlocked `assess_repairability` read reports
+    `AutoFixable`), then rewrites only the second attempt's persisted owner
+    to a live owner before calling `repair_blocked`, and asserts the fresh
+    re-proof rejects the whole batch: `RepairOutcome::NoOp`, both attempts
+    still `PendingStart`, recovery still `Clear`, and zero seam calls — so
+    the first attempt's still-dead owner is never enough on its own once any
+    other current blocker fails the all-dead proof. A seam failure
+    mid-repair leaves the existing `PendingAbandon`/`Pending` recovery
+    state, which the adapter's pre-existing ordinary recovery path (any
+    later tracked admission) resumes and completes without duplicating or
+    resurrecting the attempt — proven by a new regression test that
+    interrupts `repair_blocked` on a failing `abandon` seam call and then
+    drives an unrelated `ToolExecuteBefore` to completion.
+  - Deviation: `repair_blocked`'s signature is `repair_blocked(git_dir,
+    repository_root, logger, seam) -> Result<RepairOutcome>`, adding a
+    `logger: Option<&dyn Logger>` parameter beyond the plan's literal
+    `repair_blocked(git_dir, repository_root, seam)`, matching every other
+    seam-driving function in this module (`resolve_recovery`,
+    `abandon_and_consume`, `establish_tracked_start`) which already thread a
+    logger through for fail-closed observability; `repair_blocked` calls
+    `resolve_recovery` directly and needed the same parameter. `Repairability`
+    and `RepairOutcome` are defined locally in this module (in `health.rs`
+    and `lifecycle.rs` respectively) rather than in the shared
+    `mutation_scope_health.rs`, since T05 (dependent on this task) is the
+    task explicitly scoped to add "the shared `Repairability` enum" there;
+    this task's own in-scope file list does not include
+    `mutation_scope_health.rs`.
+  - Verify outcomes: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml opencode_mutation_scope` -> `113 passed; 0 failed` (103 pre-existing + 10 new, including the
+    `repair_blocked_is_all_or_nothing_when_auto_fixable_assessment_becomes_stale`
+    follow-up regression); `cargo fmt --manifest-path cli/Cargo.toml -- --check` -> clean; `SCE_CLI_PACKAGE_FALLBACK=1 cargo clippy --manifest-path cli/Cargo.toml --all-targets` -> no warnings; `grep -rn "SystemTime\|Instant::now\|\.elapsed()\|modified()" cli/src/services/hooks/opencode_mutation_scope` -> only the pre-existing, unrelated `os_lock.rs` lock-timeout deadline (unchanged by this task), matching AC3's "no staleness use outside unrelated lock-timeout constants."
+  - Context impact: OpenCode's persisted state file gains a new optional
+    `owner` field (backward-compatible, `#[serde(default)]`) and three new
+    `pub(crate)` symbols (`Repairability`, `assess_repairability`,
+    `repair_blocked`/`RepairOutcome`) that are not yet consumed by doctor —
+    T05 wires them into `execute_doctor_with_lifecycle_providers`. No
+    user-visible behavior changed yet (doctor's `--fix` still cannot repair
+    OpenCode until T05 dispatches to these functions), no existing
+    `MutationScope*` type or JSON shape changed, and `classify_health`'s
+    four status boundaries are unchanged. `domain`-scoped: the context docs
+    this plan's "Context sync" section names for OpenCode
+    (`context/cli/opencode-mutation-scope-adapter-lifecycle.md` and/or
+    `context/cli/opencode-mutation-scope-integration.md`) describe the new
+    owner-evidence field and dead-owner repair path once T05/T06 make the
+    repair path reachable through `sce doctor --fix`; recording that
+    dependency here for T05's own context-sync pass rather than updating
+    those docs prematurely for a repair path doctor cannot yet invoke. No
+    root context file (`overview.md`/`architecture.md`/`glossary.md`/
+    `patterns.md`/`context-map.md`) is implicated by an adapter-internal,
+    not-yet-wired addition.
+  - Context synchronization: synced
 
 - [ ] T04: `Claude: persisted terminal-cleanup evidence and safe PendingAbandon repair` (status:todo)
   - Task ID: T04

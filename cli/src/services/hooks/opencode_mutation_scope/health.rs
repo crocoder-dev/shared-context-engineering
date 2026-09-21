@@ -3,9 +3,42 @@ use std::path::Path;
 use crate::services::hooks::mutation_scope_health::{
     MutationScopeAdapterHealth, MutationScopeHealthStatus,
 };
+use crate::services::hooks::mutation_scope_owner::is_definitely_dead;
 use crate::services::mutation_trace::types::ActorKind;
 
 use super::state::{self, AttemptPhase, RecoveryState};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Repairability {
+    AutoFixable,
+    ManualOnly,
+}
+
+pub(crate) fn assess_repairability(git_dir: &Path) -> Repairability {
+    let Ok(state) = state::read_state(git_dir) else {
+        return Repairability::ManualOnly;
+    };
+
+    let pending_start: Vec<&state::AdapterAttempt> = state
+        .attempts
+        .iter()
+        .filter(|attempt| attempt.phase == AttemptPhase::PendingStart)
+        .collect();
+
+    if pending_start.is_empty() {
+        return Repairability::ManualOnly;
+    }
+
+    let every_owner_is_positively_dead = pending_start
+        .iter()
+        .all(|attempt| attempt.owner.as_ref().is_some_and(is_definitely_dead));
+
+    if every_owner_is_positively_dead {
+        Repairability::AutoFixable
+    } else {
+        Repairability::ManualOnly
+    }
+}
 
 pub(crate) fn classify_health(git_dir: &Path) -> MutationScopeAdapterHealth {
     let state = match state::read_state(git_dir) {
@@ -643,6 +676,7 @@ mod tests {
             call_id: key.call_id,
             tool_name: "write".to_string(),
             phase,
+            owner: None,
         }
     }
 
@@ -714,5 +748,365 @@ mod tests {
 
             remove_test_git_dir(&git_dir);
         }
+    }
+
+    fn dead_owner() -> crate::services::hooks::mutation_scope_owner::ProcessOwner {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawning 'true' should succeed");
+        let pid = i32::try_from(child.id()).expect("pid fits in i32");
+        child.wait().expect("child should exit and be reaped");
+        crate::services::hooks::mutation_scope_owner::ProcessOwner {
+            pid,
+            instance_token: None,
+        }
+    }
+
+    fn live_owner() -> crate::services::hooks::mutation_scope_owner::ProcessOwner {
+        crate::services::hooks::mutation_scope_owner::current_process_owner()
+    }
+
+    fn seed_pending_start_with_owner(
+        git_dir: &Path,
+        call_id: &str,
+        owner: Option<crate::services::hooks::mutation_scope_owner::ProcessOwner>,
+    ) -> state::AdapterAttempt {
+        let attempt = state::seed_attempt_for_tests(
+            git_dir,
+            &key(call_id),
+            "write",
+            AttemptPhase::PendingStart,
+        );
+        state::set_attempt_owner_for_tests(git_dir, &attempt.scope_id, owner)
+    }
+
+    #[test]
+    fn assess_repairability_is_manual_only_when_the_adapter_is_not_blocked() {
+        let git_dir = unique_test_git_dir("assess-not-blocked");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+
+        assert_eq!(assess_repairability(&git_dir), Repairability::ManualOnly);
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn assess_repairability_is_manual_only_for_a_legacy_pending_start_attempt_with_no_recorded_owner(
+    ) {
+        let git_dir = unique_test_git_dir("assess-legacy-no-owner");
+        let dir = state::adapter_state_dir(&git_dir);
+        std::fs::create_dir_all(&dir).expect("state dir should be created");
+        std::fs::write(
+            state::state_path(&git_dir),
+            serde_json::json!({
+                "version": 1,
+                "next_recovery_generation": 1,
+                "recovery": { "phase": "clear" },
+                "attempts": [{
+                    "scope_id": "oc-tool-v1|s=8:ses-main|c=6:call-1",
+                    "session_id": "ses-main",
+                    "call_id": "call-1",
+                    "tool_name": "write",
+                    "phase": "pending_start",
+                }],
+            })
+            .to_string(),
+        )
+        .expect("legacy state file with no owner field should be writable");
+
+        assert_eq!(
+            classify_health(&git_dir).status,
+            MutationScopeHealthStatus::Blocked,
+            "a legacy state file predating owner evidence must still classify Blocked"
+        );
+        assert_eq!(
+            assess_repairability(&git_dir),
+            Repairability::ManualOnly,
+            "no recorded owner is never treated as proof of death"
+        );
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn assess_repairability_is_manual_only_when_the_pending_start_owner_is_live() {
+        let git_dir = unique_test_git_dir("assess-live-owner");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+        seed_pending_start_with_owner(&git_dir, "call-1", Some(live_owner()));
+
+        assert_eq!(assess_repairability(&git_dir), Repairability::ManualOnly);
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn assess_repairability_is_auto_fixable_when_every_pending_start_owner_is_positively_dead() {
+        let git_dir = unique_test_git_dir("assess-dead-owner");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+        seed_pending_start_with_owner(&git_dir, "call-1", Some(dead_owner()));
+
+        assert_eq!(assess_repairability(&git_dir), Repairability::AutoFixable);
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn assess_repairability_is_manual_only_when_one_of_several_pending_start_owners_is_live() {
+        let git_dir = unique_test_git_dir("assess-mixed-owners");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+        seed_pending_start_with_owner(&git_dir, "call-dead", Some(dead_owner()));
+        seed_pending_start_with_owner(&git_dir, "call-live", Some(live_owner()));
+
+        assert_eq!(
+            assess_repairability(&git_dir),
+            Repairability::ManualOnly,
+            "every contributing PendingStart attempt must have a proven-dead owner"
+        );
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn repair_blocked_clears_a_dead_owner_pending_start_end_to_end() {
+        let git_dir = unique_test_git_dir("repair-end-to-end");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+        seed_pending_start_with_owner(&git_dir, "call-1", Some(dead_owner()));
+
+        assert_eq!(
+            classify_health(&git_dir).status,
+            MutationScopeHealthStatus::Blocked
+        );
+
+        let healthy = RecordingSeam::new();
+        let repository_root = Path::new(CWD);
+        let outcome = super::super::lifecycle::repair_blocked(
+            &git_dir,
+            repository_root,
+            None,
+            &|_root: &Path, payload: &str, _logger: Option<&dyn Logger>| healthy.handle(payload),
+        )
+        .expect("repair should not error");
+
+        assert_eq!(outcome, super::super::lifecycle::RepairOutcome::Repaired);
+        let final_status = classify_health(&git_dir).status;
+        assert!(
+            matches!(
+                final_status,
+                MutationScopeHealthStatus::Healthy | MutationScopeHealthStatus::Recovering
+            ),
+            "a reported repair must never leave the final health Blocked: {final_status:?}"
+        );
+        assert!(state::read_state(&git_dir)
+            .expect("state readable")
+            .attempts
+            .is_empty());
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn repair_blocked_is_a_safe_no_op_when_the_pending_start_owner_is_live() {
+        let git_dir = unique_test_git_dir("repair-live-owner-noop");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+        let attempt = seed_pending_start_with_owner(&git_dir, "call-1", Some(live_owner()));
+
+        let seam = RecordingSeam::new();
+        let repository_root = Path::new(CWD);
+        let outcome = super::super::lifecycle::repair_blocked(
+            &git_dir,
+            repository_root,
+            None,
+            &|_root: &Path, payload: &str, _logger: Option<&dyn Logger>| seam.handle(payload),
+        )
+        .expect("repair should not error");
+
+        assert_eq!(outcome, super::super::lifecycle::RepairOutcome::NoOp);
+        assert!(
+            seam.calls.lock().expect("seam mutex").is_empty(),
+            "a live owner must never trigger any seam call"
+        );
+        let state = state::read_state(&git_dir).expect("state readable");
+        assert_eq!(state.attempts.len(), 1);
+        assert_eq!(state.attempts[0].scope_id, attempt.scope_id);
+        assert_eq!(state.attempts[0].phase, AttemptPhase::PendingStart);
+        assert_eq!(
+            classify_health(&git_dir).status,
+            MutationScopeHealthStatus::Blocked
+        );
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn repair_blocked_refuses_to_abandon_an_attempt_a_concurrent_process_already_started_before_the_lock_is_acquired(
+    ) {
+        let git_dir = unique_test_git_dir("repair-concurrent-race");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+        let attempt = seed_pending_start_with_owner(&git_dir, "call-1", Some(dead_owner()));
+
+        assert_eq!(assess_repairability(&git_dir), Repairability::AutoFixable);
+
+        state::mark_active(&git_dir, &attempt.scope_id)
+            .expect("simulating the concurrent owning process completing its own Start");
+
+        let seam = RecordingSeam::new();
+        let repository_root = Path::new(CWD);
+        let outcome = super::super::lifecycle::repair_blocked(
+            &git_dir,
+            repository_root,
+            None,
+            &|_root: &Path, payload: &str, _logger: Option<&dyn Logger>| seam.handle(payload),
+        )
+        .expect("repair should not error");
+
+        assert_eq!(
+            outcome,
+            super::super::lifecycle::RepairOutcome::NoOp,
+            "the fresh, lock-protected re-proof must refuse to act on state assessed before it changed"
+        );
+        assert!(
+            seam.calls.lock().expect("seam mutex").is_empty(),
+            "no seam call may fire once the attempt is no longer PendingStart"
+        );
+        let state = state::read_state(&git_dir).expect("state readable");
+        assert_eq!(state.attempts.len(), 1);
+        assert_eq!(state.attempts[0].phase, AttemptPhase::Active);
+        assert_eq!(
+            classify_health(&git_dir).status,
+            MutationScopeHealthStatus::Healthy,
+            "the concurrently-started attempt must be left exactly as the owning process left it"
+        );
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn repair_blocked_is_all_or_nothing_when_auto_fixable_assessment_becomes_stale() {
+        let git_dir = unique_test_git_dir("repair-all-or-nothing-stale");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+
+        let attempt0 = seed_pending_start_with_owner(&git_dir, "call-0", Some(dead_owner()));
+        let attempt1 = seed_pending_start_with_owner(&git_dir, "call-1", Some(dead_owner()));
+
+        assert_eq!(
+            assess_repairability(&git_dir),
+            Repairability::AutoFixable,
+            "doctor's initial, unlocked assessment sees both owners positively dead"
+        );
+
+        state::set_attempt_owner_for_tests(&git_dir, &attempt1.scope_id, Some(live_owner()));
+
+        let seam = RecordingSeam::new();
+        let repository_root = Path::new(CWD);
+        let outcome = super::super::lifecycle::repair_blocked(
+            &git_dir,
+            repository_root,
+            None,
+            &|_root: &Path, payload: &str, _logger: Option<&dyn Logger>| seam.handle(payload),
+        )
+        .expect("repair should not error");
+
+        assert_eq!(
+            outcome,
+            super::super::lifecycle::RepairOutcome::NoOp,
+            "the fresh repair-time re-proof must reject the whole batch once any current \
+             PendingStart owner is no longer positively dead"
+        );
+
+        let state = state::read_state(&git_dir).expect("state readable");
+        assert_eq!(
+            state
+                .attempts
+                .iter()
+                .find(|a| a.scope_id == attempt0.scope_id)
+                .expect("attempt0 is still tracked")
+                .phase,
+            AttemptPhase::PendingStart,
+            "the still-dead attempt0 must not be transitioned to PendingAbandon when another \
+             current blocker fails the all-dead proof"
+        );
+        assert_eq!(
+            state
+                .attempts
+                .iter()
+                .find(|a| a.scope_id == attempt1.scope_id)
+                .expect("attempt1 is still tracked")
+                .phase,
+            AttemptPhase::PendingStart,
+        );
+
+        assert!(
+            state.recovery.is_clear(),
+            "a failed re-proof must perform no durable recovery transition: {:?}",
+            state.recovery
+        );
+
+        assert!(
+            seam.calls.lock().expect("seam mutex").is_empty(),
+            "the state transaction must return None before resolve_recovery is entered, so no \
+             seam call (flush/abandon) may fire"
+        );
+
+        assert_eq!(
+            classify_health(&git_dir).status,
+            MutationScopeHealthStatus::Blocked,
+            "both attempts remain PendingStart, so the adapter stays Blocked"
+        );
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn repair_blocked_interrupted_before_the_seam_resolves_leaves_state_the_ordinary_recovery_path_completes_without_duplication(
+    ) {
+        let git_dir = unique_test_git_dir("repair-interrupted-resume");
+        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+        seed_pending_start_with_owner(&git_dir, "call-1", Some(dead_owner()));
+
+        let failing_abandon = RecordingSeam::failing_on(&["abandon"]);
+        let repository_root = Path::new(CWD);
+        let outcome = super::super::lifecycle::repair_blocked(
+            &git_dir,
+            repository_root,
+            None,
+            &|_root: &Path, payload: &str, _logger: Option<&dyn Logger>| {
+                failing_abandon.handle(payload)
+            },
+        )
+        .expect("repair should not error even though the seam abandon call fails");
+
+        assert_eq!(outcome, super::super::lifecycle::RepairOutcome::NoOp);
+        let interrupted = state::read_state(&git_dir).expect("state readable");
+        assert_eq!(interrupted.attempts.len(), 1);
+        assert_eq!(interrupted.attempts[0].phase, AttemptPhase::PendingAbandon);
+        assert!(
+            matches!(interrupted.recovery, RecoveryState::Pending { .. }),
+            "a failed seam call during repair must relinquish Flushing back to Pending: {:?}",
+            interrupted.recovery
+        );
+        assert_eq!(
+            classify_health(&git_dir).status,
+            MutationScopeHealthStatus::Recovering,
+            "an interrupted repair must never remain Blocked"
+        );
+
+        let healthy = RecordingSeam::new();
+        drive(&git_dir, &healthy, &tool_before("write", "call-2"))
+            .expect("the ordinary recovery path resumes the interrupted repair automatically");
+
+        let resolved = state::read_state(&git_dir).expect("state readable");
+        assert!(resolved.recovery.is_clear());
+        assert_eq!(
+            resolved.attempts.len(),
+            1,
+            "the interrupted repair's attempt must not be duplicated"
+        );
+        assert_eq!(resolved.attempts[0].call_id, "call-2");
+        assert_eq!(
+            classify_health(&git_dir).status,
+            MutationScopeHealthStatus::Healthy
+        );
+
+        remove_test_git_dir(&git_dir);
     }
 }
