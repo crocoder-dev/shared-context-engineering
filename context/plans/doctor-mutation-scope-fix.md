@@ -661,9 +661,9 @@ Persist this field in every plan; this is durable plan state, not chat state:
     new Rust-facing contract); T07's own context-sync pass is where a new
     shared doc for the model, if warranted, would be considered per the
     plan's non-speculative instruction.
-  - Context synchronization: pending
+  - Context synchronization: synced
 
-- [ ] T02: `Extract shared positive process-owner evidence from Pi` (status:todo)
+- [x] T02: `Extract shared positive process-owner evidence from Pi` (status:done)
   - Task ID: T02
   - Scope: In — move `ProcessOwner`, `current_process_owner`,
     `process_owner_for`, and `is_definitely_dead` out of
@@ -689,7 +689,55 @@ Persist this field in every plan; this is durable plan state, not chat state:
     including the static "no TTL/elapsed-time primitive" source scan
     (now scoped to the new file), passes.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml pi_mutation_scope`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_scope_owner`
-  - Context synchronization: pending
+  - Completed: 2026-09-21
+  - Files changed: `cli/src/services/hooks/mutation_scope_owner.rs` (new —
+    moved `ProcessOwner`/`current_process_owner`/`process_owner_for`/
+    `is_definitely_dead` and their full test suite verbatim from
+    `pi_mutation_scope/process_owner.rs`); `cli/src/services/hooks/mod.rs`
+    (registers `pub mod mutation_scope_owner;`);
+    `cli/src/services/hooks/pi_mutation_scope/process_owner.rs` (deleted);
+    `cli/src/services/hooks/pi_mutation_scope/mod.rs` (drops the local
+    `pub(crate) mod process_owner;` declaration);
+    `cli/src/services/hooks/pi_mutation_scope/{state,health,lifecycle,lifecycle_tests}.rs`
+    (import paths repointed to `crate::services::hooks::mutation_scope_owner::...`,
+    no logic changes; `cargo fmt` reordered the new `use` blocks).
+  - Result: `ProcessOwner`, `current_process_owner`, `process_owner_for`, and
+    `is_definitely_dead` now live in the shared, adapter-neutral
+    `cli/src/services/hooks/mutation_scope_owner.rs`, sibling to the existing
+    `mutation_scope_health.rs`, with byte-identical logic (`kill(pid, 0)`
+    liveness, Linux `/proc/{pid}/stat` start-time PID-reuse proofing,
+    conservative `false` on non-Linux/non-unix) and its own complete test
+    suite including the static no-TTL/elapsed-time-token source scan
+    (re-scoped to `include_str!("mutation_scope_owner.rs")`).
+    `pi_mutation_scope` no longer defines any of these symbols; `state.rs`,
+    `health.rs`, and `lifecycle.rs`/`lifecycle_tests.rs` now import them from
+    the shared module. No behavior, persisted `owner` field shape, or
+    reachable Pi health status changed. Two active context docs
+    (`context/cli/pi-mutation-scope-health.md`,
+    `context/cli/pi-mutation-scope-integration.md`) cited the old
+    `pi_mutation_scope/process_owner.rs` path and were corrected to name the
+    new shared module.
+  - Deviation: while running the plan's own `Verify` commands, the initial
+    `SCE_CLI_PACKAGE_FALLBACK=1 cargo test` run showed 7 pre-existing,
+    change-unrelated failures (`no such table: mutation_trace_scope_provenance`)
+    caused by a stale `cli/package-fallback`/incremental-build cache;
+    confirmed pre-existing by stashing this task's changes and reproducing
+    the identical failure on the unmodified baseline. Running
+    `bash scripts/prepare-cli-generated-assets.sh` and clearing the stale
+    `cli/target/debug/build/shared-context-engineering-*` directories
+    resolved it; both plan `Verify` commands then passed cleanly, including
+    via the documented `nix develop -c ./scripts/run-cli-cargo.sh` wrapper.
+    Not a T02 regression or scope item.
+  - Verify outcomes: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml pi_mutation_scope` -> `94 passed; 0 failed`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_scope_owner` -> `8 passed; 0 failed`; `cargo fmt --manifest-path cli/Cargo.toml -- --check` -> clean; `cargo clippy --manifest-path cli/Cargo.toml` -> no warnings on touched modules.
+  - Context impact: A shared, adapter-neutral process-owner-liveness module
+    now exists at `cli/src/services/hooks/mutation_scope_owner.rs` for T03
+    (OpenCode) to consume; no user-visible behavior, public interface,
+    persisted data shape, or architecture-boundary change. `domain`-scoped:
+    the two Pi-specific context docs that named the old file path were
+    corrected; no root context file (`overview.md`/`architecture.md`/
+    `glossary.md`/`patterns.md`/`context-map.md`) referenced the old path,
+    so none needed edits.
+  - Context synchronization: synced
 
 - [ ] T03: `OpenCode: persisted owner evidence and safe PendingStart repair` (status:todo)
   - Task ID: T03
