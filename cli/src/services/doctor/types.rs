@@ -531,6 +531,7 @@ pub(crate) struct DoctorProblem {
     pub(crate) remediation: String,
     pub(crate) next_action: &'static str,
     pub(super) scope: Option<IntegrationGroupKey>,
+    pub(super) mutation_scope_target: Option<IntegrationTarget>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
