@@ -1572,9 +1572,15 @@ Persist this field in every plan; this is durable plan state, not chat state:
        across the `[manual]` fix-result line and the plain-diagnose `Remediation:`
        line. `AutoFixable` fixability itself is untouched (AC6/plain-`doctor`
        `fixability: auto_fixable` / `next_action: doctor_fix` still stands for a
-       not-yet-attempted `Blocked` `AutoFixable` state), and `build_manual_fix_results`
-       still only covers never-attempted `ManualOnly` problems, so there is no overlap
-       between the two `Manual`-producing paths. Added
+       not-yet-attempted `Blocked` `AutoFixable` state). At the time this correction
+       was written, `build_manual_fix_results` filtered only on
+       `ProblemFixability::ManualOnly` with no target-attempted exclusion, so an
+       attempted target whose final row was `Blocked`/`Invalid` and whose
+       recomputed-fresh fixability also happened to be `ManualOnly` (not just
+       `AutoFixable`) would in fact overlap with `finalize_mutation_scope_repair_results`
+       and produce two `Manual` results for the same target — see the second
+       correction below, which fixes that overlap explicitly; it was not actually
+       absent as first claimed here. Added
        `finalize_mutation_scope_repair_results_reports_manual_when_an_attempted_autofixable_repair_stays_blocked`
        in `cli/src/services/doctor/inspect.rs`, using a `failing_repair_seam()` test
        helper (the same seam-injection pattern `no_op_repair_seam()` already
@@ -1591,6 +1597,87 @@ Persist this field in every plan; this is durable plan state, not chat state:
       locking, boundary locking, recovery generation semantics, durable
       `PendingAbandon`, atomic recovery clear, health status strings, or Codex/Pi
       behavior. T07 remains todo.
+  - Correction (2026-09-21, second pass): The prior correction's own claim that
+    `build_manual_fix_results` and `finalize_mutation_scope_repair_results` never
+    overlap was wrong. `build_manual_fix_results(&final_report)` iterates
+    `final_report.problems` and emits a `Manual` result for every
+    `ProblemFixability::ManualOnly` problem regardless of category or whether that
+    target's repair was ever attempted. An attempted `AutoFixable`-at-diagnosis
+    target whose final row ends `Blocked`/`Invalid` with `ManualOnly`
+    fixability (recomputed fresh at push time, independent of the attempt) produced
+    **two** `Manual` fix results for the same target: one from
+    `finalize_mutation_scope_repair_results` (which now unconditionally owns every
+    attempted target's outcome per the prior correction) and a second, duplicate one
+    from `build_manual_fix_results`. Fixed by making result ownership explicit
+    instead of deduplicating after the fact:
+    - `DoctorProblem` gains a `mutation_scope_target: Option<IntegrationTarget>`
+      field (`cli/src/services/doctor/types.rs`), set to `Some(target)` only at the
+      one call site that pushes a mutation-scope-health problem
+      (`push_mutation_scope_health_problem` in `inspect.rs`) and `None` at every
+      other `DoctorProblem` construction site (lifecycle-provider problems in
+      `mod.rs`, and every non-mutation-scope problem in `inspect.rs`). This gives
+      each mutation-scope-health `DoctorProblem` a structural link back to the
+      `IntegrationTarget` it describes — the same identity already carried by its
+      corresponding `MutationScopeHealthRow.target` — without parsing `summary`,
+      `remediation`, or comparing adapter names as strings.
+    - `build_manual_fix_results` (`cli/src/services/doctor/fixes.rs`) now takes a
+      second parameter, `attempted_mutation_scope_targets: &[IntegrationTarget]`,
+      and skips any `ManualOnly` problem whose `category` is `MutationScopeHealth`
+      and whose `mutation_scope_target` is in that slice — those targets' results are
+      now exclusively owned by `finalize_mutation_scope_repair_results`. A
+      never-attempted `ManualOnly` mutation-scope problem (never returned by
+      `repair_blocked_mutation_scope_targets`) is untouched by the new filter and
+      still produces its `Manual` result here exactly as before. Every non-
+      mutation-scope `ManualOnly` problem (config/hooks/assets/...) is also
+      untouched, since the new filter only ever excludes the `MutationScopeHealth`
+      category.
+    - The orchestration call site (`execute_doctor_with_lifecycle_providers` in
+      `mod.rs`) now passes `&mutation_scope_repairs` (the same
+      `Vec<IntegrationTarget>` `repair_blocked_mutation_scope_targets` returned, and
+      the same slice `finalize_mutation_scope_repair_results` already consumes) as
+      that second argument, so both functions agree on exactly which targets were
+      attempted.
+    - Added five aggregation-layer regressions in
+      `cli/src/services/doctor/inspect.rs`, each combining
+      `finalize_mutation_scope_repair_results` and `build_manual_fix_results` the
+      same way the real orchestration does and asserting the combined
+      `MutationScopeHealth`-category result count is exactly one:
+      `attempted_target_final_healthy_produces_exactly_one_fixed_and_no_manual`,
+      `attempted_target_final_recovering_produces_exactly_one_fixed_and_no_manual`,
+      `attempted_target_final_blocked_manual_only_produces_exactly_one_manual_result`
+      (the specific regression case: initial `Blocked` with the sole attempt
+      `PendingAbandon` — `AutoFixable` — repaired via the existing
+      `no_op_repair_seam()` helper, then the persisted state is overwritten with
+      `claude_blocked_state()`, an `Active`-phase attempt with no established
+      abandon intent, so the final row is `Blocked` with fixability recomputed to
+      `ManualOnly`; asserts exactly one combined result, that it is `Manual`, that
+      its detail names the exact persisted state path, and that it contains no
+      `delete` wording), `attempted_target_final_invalid_produces_exactly_one_manual_result`,
+      and `never_attempted_manual_only_target_still_produces_exactly_one_manual_result`.
+    - `collect_hook_health` in `inspect.rs` gained an
+      `#[allow(clippy::too_many_lines)]` alongside its pre-existing
+      `#[allow(dead_code)]`: adding the new `mutation_scope_target: None,` field to
+      its five unrelated `HookRollout`-category `DoctorProblem` literals pushed it
+      from 100 to 103 lines under `clippy::pedantic`'s `too_many_lines` lint; no
+      other change to that function.
+    - Verify: `nix build .#checks.x86_64-linux.cli-tests` -> `1757 passed; 0 failed;
+      1 ignored` (1752 pre-existing + 5 new); `nix build
+      .#checks.x86_64-linux.cli-clippy` -> clean; `nix build
+      .#checks.x86_64-linux.cli-fmt` -> clean.
+    - Result ownership is now explicit and total: an attempted mutation-scope
+      target's fix result is exclusively finalized from its final
+      `mutation_scope_health` row by `finalize_mutation_scope_repair_results`
+      (`Healthy`/`Recovering` -> `Fixed`, `Blocked`/`Invalid` -> `Manual`); a
+      never-attempted `ManualOnly` mutation-scope target's fix result is owned by
+      the generic `build_manual_fix_results` path; therefore every mutation-scope
+      target produces at most one fix result, closing the gap the first correction's
+      "no overlap" claim incorrectly asserted was already closed.
+    - No change to the `mutation_scope_health[]` JSON schema, adapter repairability
+      rules, Claude `Clear + PendingAbandon => Invalid`, owner-death proof, state
+      locks, OpenCode boundary locking, mutation-scope seams, recovery-generation
+      semantics, atomic recovery clearing, durable `PendingAbandon`, Codex/Pi
+      behavior, or health status strings. No direct adapter JSON editing from
+      doctor. T07 remains todo; not started.
 
 - [ ] T07: `Cross-adapter end-to-end regression and formal-model connection` (status:todo)
   - Task ID: T07
