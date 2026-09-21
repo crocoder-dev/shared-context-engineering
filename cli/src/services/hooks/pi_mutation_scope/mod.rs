@@ -6,7 +6,6 @@ pub(crate) mod health;
 mod lifecycle;
 mod os_lock;
 mod payload;
-pub(crate) mod process_owner;
 pub(crate) mod state;
 
 #[allow(unused_imports)]

@@ -452,7 +452,7 @@ pub(crate) fn force_attempt_owner_dead_for_tests(git_dir: &Path, scope_id: &str)
     state::set_attempt_owner_for_tests(
         git_dir,
         scope_id,
-        super::process_owner::ProcessOwner {
+        crate::services::hooks::mutation_scope_owner::ProcessOwner {
             pid: dead_pid,
             instance_token: None,
         },
