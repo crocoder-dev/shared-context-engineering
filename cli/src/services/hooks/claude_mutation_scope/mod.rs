@@ -35,6 +35,8 @@ use events::{
     RUN_IN_BACKGROUND_FIELD, SESSION_ID_FIELD, TOOL_INPUT_FIELD, TOOL_NAME_FIELD,
     TOOL_USE_ID_FIELD, WORKTREE_PATH_FIELD,
 };
+#[allow(unused_imports)]
+pub(crate) use health::{assess_repairability, Repairability};
 #[cfg(test)]
 pub(crate) use lifecycle::run_claude_mutation_scope_from_payload_at_state_root;
 #[cfg(test)]
@@ -42,9 +44,11 @@ pub(crate) use lifecycle::run_claude_mutation_scope_from_payload_at_state_root;
 use lifecycle::ClaudeModelStateResolver;
 #[allow(unused_imports)]
 use lifecycle::{
-    abandon_attempt, apply_recovery_barrier, BarrierOutcome, GitDirResolver, IngressSeam,
-    EXPLICIT_BACKGROUND_SHELL_DENY_REASON, FAIL_CLOSED_DENY_REASON,
+    abandon_attempt, apply_recovery_barrier, cleanup_attempts_matching, BarrierOutcome,
+    GitDirResolver, IngressSeam, EXPLICIT_BACKGROUND_SHELL_DENY_REASON, FAIL_CLOSED_DENY_REASON,
 };
+#[allow(unused_imports)]
+pub(crate) use lifecycle::{repair_blocked, RepairOutcome};
 #[allow(unused_imports)]
 pub(crate) use lifecycle::{
     run_claude_mutation_scope_from_payload, run_claude_mutation_scope_subcommand,
