@@ -7,8 +7,10 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::os_lock::{AdvisoryLockError, OsAdvisoryLock};
-use super::process_owner::{current_process_owner, is_definitely_dead, ProcessOwner};
 use super::{format_pi_scope_id, AttemptKey};
+use crate::services::hooks::mutation_scope_owner::{
+    current_process_owner, is_definitely_dead, ProcessOwner,
+};
 
 const SCE_STATE_DIR: &str = "sce";
 const ADAPTER_STATE_FILE: &str = "pi-mutation-scope-state.json";

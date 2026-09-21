@@ -176,13 +176,13 @@ fn tool_result_event_for_session(tool_name: &str, session_id: &str, tool_call_id
     .to_string()
 }
 
-fn dead_process_owner() -> super::process_owner::ProcessOwner {
+fn dead_process_owner() -> crate::services::hooks::mutation_scope_owner::ProcessOwner {
     let mut dead_child = std::process::Command::new("true")
         .spawn()
         .expect("spawning 'true' should succeed");
     let dead_pid = i32::try_from(dead_child.id()).expect("pid fits in i32");
     dead_child.wait().expect("child should exit and be reaped");
-    super::process_owner::ProcessOwner {
+    crate::services::hooks::mutation_scope_owner::ProcessOwner {
         pid: dead_pid,
         instance_token: None,
     }
@@ -643,7 +643,7 @@ fn a_pending_start_attempt_owned_by_a_dead_process_is_abandoned_not_replayed() {
     state::set_attempt_owner_for_tests(
         &git_dir,
         &scope_id,
-        super::process_owner::ProcessOwner {
+        crate::services::hooks::mutation_scope_owner::ProcessOwner {
             pid: dead_pid,
             instance_token: None,
         },
@@ -915,7 +915,7 @@ fn an_owner_that_cannot_be_positively_proven_dead_is_never_abandoned_by_an_unrel
     state::set_attempt_owner_for_tests(
         &git_dir,
         &scope_a,
-        super::process_owner::ProcessOwner {
+        crate::services::hooks::mutation_scope_owner::ProcessOwner {
             pid: std::process::id().cast_signed(),
             instance_token: None,
         },
