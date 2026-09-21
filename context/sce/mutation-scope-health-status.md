@@ -78,7 +78,7 @@ Each non-healthy status produces one `DoctorProblem` in a new
 | --- | --- | --- | --- | --- | --- |
 | `Healthy` | none | — | — | — | none |
 | `Recovering` | `MutationScopeHealthRecovering` | Warning | `no_action_required` | `no_action_required` | overall readiness may remain `ready` |
-| `Blocked` | `MutationScopeHealthBlocked` | Error | `manual_only` | `manual_steps` | overall readiness becomes `not_ready` |
+| `Blocked` | `MutationScopeHealthBlocked` | Error | `auto_fixable` or `manual_only` (dynamic — see "Repairability" below) | `doctor_fix` or `manual_steps` | overall readiness becomes `not_ready` |
 | `Invalid` | `MutationScopeHealthInvalid` | Error | `manual_only` | `manual_steps` | overall readiness becomes `not_ready` |
 
 `sce doctor --fix` never deletes a state file, clears `recovery_pending`/a
@@ -150,14 +150,28 @@ seam call; that serialization is entirely adapter-owned (OpenCode's
 `AdapterBoundaryLock` around the whole repair; Claude's own per-transaction
 state lock with no added boundary lock). A `ManualOnly` row is never passed
 to `repair_blocked` at all and falls through unchanged to the existing
-generic manual-result handling, which still renders a deterministic
+generic manual-result handling, which renders a deterministic
 manual-remediation result naming the real adapter state file path, stating
 plainly that no safe generic recovery command exists for it, and never
-recommending deletion of the state file — the `DoctorProblem`'s own
-rendered `fixability`/`remediation` text does not yet vary by this
-repairability fact (still the shared `manual_only` wording below regardless
-of a target's true repairability); that rendering surface is a separate,
-later concern from the repair pipeline described here.
+recommending deletion of the state file.
+
+The `DoctorProblem` rendered for a `Blocked` row is itself built from
+`assess_repairability`, so its `fixability`/`remediation` text vary with
+this same repairability fact rather than always carrying the shared
+`manual_only` wording: `AutoFixable` produces `fixability: auto_fixable`,
+`next_action: doctor_fix`, and remediation text naming `sce doctor --fix`
+explicitly, both in JSON (`problems[].remediation.text`) and in the human
+"Agent tracing" tree row's `Remediation:` line; `ManualOnly` keeps
+`fixability: manual_only`, `next_action: manual_steps`, and remediation text
+leading with the real state-file path and an explicit instruction not to
+delete it. `sce doctor --fix`'s own fix-result line for this category uses
+the same source text: a repaired target's `[fixed]` line reads `Recovered
+<adapter> Agent tracing (now <status>: <reason>).` from the freshly
+recomputed final health row, and an unresolved `ManualOnly`/`Invalid`
+target's `[manual]` line reads the adapter's own remediation text verbatim
+(leading `Agent tracing remains blocked. Inspect '<path>'. ...`) instead of
+the generic `"{summary} Manual remediation is still required."` wrapper
+every other manual-only doctor category still uses.
 
 `Recovering` is a distinct fixability, `no_action_required`: doctor performs
 no repair *because none is needed*, not because remediation is merely
