@@ -631,10 +631,17 @@ fn render_display_detail(lines: &mut Vec<String>, detail: &DoctorDisplayDetail, 
             lines.push(format!("{prefix}Problem: {summary}"));
             lines.push(format!("{prefix}Remediation: {remediation}"));
         }
-        DoctorDisplayDetail::MutationScopeHealth { reason, detail } => {
+        DoctorDisplayDetail::MutationScopeHealth {
+            reason,
+            detail,
+            remediation,
+        } => {
             lines.push(format!("{prefix}Reason: {reason}"));
             if let Some(detail) = detail {
                 lines.push(format!("{prefix}Detail: {detail}"));
+            }
+            if let Some(remediation) = remediation {
+                lines.push(format!("{prefix}Remediation: {remediation}"));
             }
         }
     }
@@ -668,6 +675,7 @@ fn mutation_scope_health_node(row: &MutationScopeHealthRow) -> DoctorDisplayNode
         vec![DoctorDisplayDetail::MutationScopeHealth {
             reason: row.reason.clone(),
             detail: row.detail.clone(),
+            remediation: row.remediation.clone(),
         }],
         Vec::new(),
     )
@@ -928,11 +936,22 @@ mod tests {
         reason: &str,
         detail: Option<&str>,
     ) -> MutationScopeHealthRow {
+        row_with_remediation(target, status, reason, detail, None)
+    }
+
+    fn row_with_remediation(
+        target: IntegrationTarget,
+        status: MutationScopeHealthStatus,
+        reason: &str,
+        detail: Option<&str>,
+        remediation: Option<&str>,
+    ) -> MutationScopeHealthRow {
         MutationScopeHealthRow {
             target,
             status,
             reason: reason.to_string(),
             detail: detail.map(str::to_string),
+            remediation: remediation.map(str::to_string),
         }
     }
 
@@ -991,6 +1010,35 @@ mod tests {
         assert!(lines
             .iter()
             .any(|line| line.contains("Detail: 2 stale attempts")));
+    }
+
+    #[test]
+    fn blocked_row_renders_remediation_when_present() {
+        let row = row_with_remediation(
+            IntegrationTarget::ClaudeCode,
+            MutationScopeHealthStatus::Blocked,
+            "stale attempts remain after a failed abandon",
+            None,
+            Some("Run 'sce doctor --fix' to recover this state."),
+        );
+        let lines = rendered_lines(&row);
+
+        assert!(lines.iter().any(
+            |line| line.contains("Remediation: Run 'sce doctor --fix' to recover this state.")
+        ));
+    }
+
+    #[test]
+    fn blocked_row_omits_remediation_line_when_absent() {
+        let row = row(
+            IntegrationTarget::ClaudeCode,
+            MutationScopeHealthStatus::Blocked,
+            "stale attempts remain after a failed abandon",
+            None,
+        );
+        let lines = rendered_lines(&row);
+
+        assert!(!lines.iter().any(|line| line.contains("Remediation:")));
     }
 
     #[test]
