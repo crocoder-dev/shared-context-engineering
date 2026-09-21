@@ -26,10 +26,11 @@ pub struct GitSnapshotService {
 
 impl GitSnapshotService {
     pub fn new(repository_root: &Path) -> Result<GitSnapshotService> {
-        let git_dir = resolve_git_dir(repository_root)?;
+        let repository_root = resolve_worktree_root(repository_root)?;
+        let git_dir = resolve_git_dir(&repository_root)?;
         Ok(GitSnapshotService {
             git_dir,
-            repository_root: repository_root.to_path_buf(),
+            repository_root,
         })
     }
 
@@ -711,6 +712,37 @@ mod tests {
 
         let ls_tree = run(&repo_root, &["ls-tree", "-r", "--name-only", &tree.0]);
         assert!(!ls_tree.contains("ignored.txt"));
+    }
+
+    #[test]
+    fn capture_from_nested_directory_uses_worktree_root_for_gitignore_rules() {
+        let repo = test_repo("nested-directory-ignore");
+        let repo_root = repo.root().to_path_buf();
+        let nested_root = repo_root.join("cli");
+        init_repo(&repo_root);
+        std::fs::write(repo_root.join(".gitignore"), b"cli/target/\n")
+            .expect(".gitignore should be writable");
+        std::fs::write(repo_root.join("README.md"), b"tracked\n")
+            .expect("README should be writable");
+        commit_all(&repo_root, "add ignore rule");
+
+        std::fs::create_dir_all(nested_root.join("target"))
+            .expect("nested target directory should be creatable");
+        std::fs::write(nested_root.join("target/artifact"), b"ignored\n")
+            .expect("ignored artifact should be writable");
+
+        let service = GitSnapshotService::new(&nested_root)
+            .expect("service should resolve the containing worktree root");
+        let tree = service
+            .capture_tree()
+            .expect("capture should succeed from a nested directory");
+
+        let ls_tree = run(&repo_root, &["ls-tree", "-r", "--name-only", &tree.0]);
+        assert!(ls_tree.contains("README.md"));
+        assert!(
+            !ls_tree.lines().any(|path| path == "cli/target/artifact"),
+            "ignored files below cli/target must not enter a snapshot: {ls_tree}"
+        );
     }
 
     #[test]
