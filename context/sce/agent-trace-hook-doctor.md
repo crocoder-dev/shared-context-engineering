@@ -198,6 +198,7 @@ Repair behavior must:
 - add new internal doctor-owned repair routines only for safe gaps with no existing canonical repair command
 - stay idempotent across repeated `--fix` runs
 - remain bounded to SCE-owned paths/files and explicit permission normalization on those paths
+- for a `blocked` mutation-scope Agent-tracing row, delegate to that adapter's own proven repair (see [mutation-scope-health-status.md](mutation-scope-health-status.md))
 
 ## ServiceLifecycle trait
 

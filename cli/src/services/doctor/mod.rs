@@ -22,7 +22,10 @@ pub(crate) mod types;
 pub mod command;
 
 use fixes::build_manual_fix_results;
-use inspect::{build_report_with_lifecycle_problems, repair_merge_target_configs};
+use inspect::{
+    build_report_with_lifecycle_problems, finalize_mutation_scope_repair_results,
+    repair_blocked_mutation_scope_targets, repair_merge_target_configs,
+};
 use render::render_report;
 use types::{
     DoctorFixResultRecord, DoctorProblem, FixResult, HookDoctorReport, ProblemCategory,
@@ -148,6 +151,7 @@ fn execute_doctor_with_lifecycle_providers(
         repository_root,
         &policy_readiness,
     ));
+    let mutation_scope_repairs = repair_blocked_mutation_scope_targets(&initial_report);
     let final_problems = diagnose_lifecycle_providers(context, &providers);
     let final_doctor_problems = final_problems
         .into_iter()
@@ -160,6 +164,10 @@ fn execute_doctor_with_lifecycle_providers(
         final_doctor_problems,
         &policy_readiness,
     );
+    fix_results.extend(finalize_mutation_scope_repair_results(
+        &mutation_scope_repairs,
+        &final_report.mutation_scope_health,
+    ));
     fix_results.extend(build_manual_fix_results(&final_report));
 
     DoctorExecution {
