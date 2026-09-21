@@ -171,6 +171,33 @@ pub(super) fn dispatch_opencode_hook_event(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RepairOutcome {
+    Repaired,
+    NoOp,
+}
+
+pub(crate) fn repair_blocked(
+    git_dir: &Path,
+    repository_root: &Path,
+    logger: Option<&dyn Logger>,
+    seam: IngressSeam,
+) -> Result<RepairOutcome> {
+    with_boundary_lock(git_dir, || {
+        state::normalize_recovery_after_boundary_lock_acquired(git_dir)?;
+
+        let Some(generation) = state::reprove_dead_owner_pending_start_and_begin_repair(git_dir)?
+        else {
+            return Ok(RepairOutcome::NoOp);
+        };
+
+        match resolve_recovery(git_dir, repository_root, generation, logger, seam)? {
+            RecoveryResolution::Cleared => Ok(RepairOutcome::Repaired),
+            RecoveryResolution::Unresolved => Ok(RepairOutcome::NoOp),
+        }
+    })
+}
+
 pub(super) fn with_boundary_lock<T>(
     git_dir: &Path,
     operation: impl FnOnce() -> Result<T>,

@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use super::os_lock::{AdvisoryLockError, OsAdvisoryLock};
 use super::{format_opencode_scope_id, AttemptKey};
+use crate::services::hooks::mutation_scope_owner::{
+    current_process_owner, is_definitely_dead, ProcessOwner,
+};
 
 const SCE_STATE_DIR: &str = "sce";
 const ADAPTER_STATE_FILE: &str = "opencode-mutation-scope-state.json";
@@ -52,6 +55,8 @@ pub(crate) struct AdapterAttempt {
     pub call_id: String,
     pub tool_name: String,
     pub phase: AttemptPhase,
+    #[serde(default)]
+    pub owner: Option<ProcessOwner>,
 }
 
 impl AdapterAttempt {
@@ -246,6 +251,7 @@ fn allocate_pending_start(
         call_id: key.call_id.clone(),
         tool_name: tool_name.to_string(),
         phase: AttemptPhase::PendingStart,
+        owner: Some(current_process_owner()),
     };
     state.attempts.push(attempt.clone());
     attempt
@@ -355,10 +361,10 @@ pub(crate) fn arm_recovery(git_dir: &Path) -> Result<u64> {
     Ok(generation)
 }
 
-pub(crate) fn begin_terminal_cleanup(git_dir: &Path, scope_ids: &[String]) -> Result<u64> {
-    let _lock = acquire_lock(git_dir)?;
-    let mut state = read_state(git_dir)?;
-
+fn transition_to_pending_abandon_and_arm_flush(
+    state: &mut AdapterState,
+    scope_ids: &[String],
+) -> u64 {
     for attempt in &mut state.attempts {
         if scope_ids
             .iter()
@@ -379,8 +385,50 @@ pub(crate) fn begin_terminal_cleanup(git_dir: &Path, scope_ids: &[String]) -> Re
         }
     };
     state.recovery = RecoveryState::Flushing { generation };
+    generation
+}
+
+pub(crate) fn begin_terminal_cleanup(git_dir: &Path, scope_ids: &[String]) -> Result<u64> {
+    let _lock = acquire_lock(git_dir)?;
+    let mut state = read_state(git_dir)?;
+
+    let generation = transition_to_pending_abandon_and_arm_flush(&mut state, scope_ids);
     write_state_durably(git_dir, &state)?;
     Ok(generation)
+}
+
+pub(crate) fn reprove_dead_owner_pending_start_and_begin_repair(
+    git_dir: &Path,
+) -> Result<Option<u64>> {
+    let _lock = acquire_lock(git_dir)?;
+    let mut state = read_state(git_dir)?;
+
+    let pending_start: Vec<&AdapterAttempt> = state
+        .attempts
+        .iter()
+        .filter(|attempt| attempt.phase == AttemptPhase::PendingStart)
+        .collect();
+
+    if pending_start.is_empty() {
+        return Ok(None);
+    }
+
+    let every_owner_is_positively_dead = pending_start
+        .iter()
+        .all(|attempt| attempt.owner.as_ref().is_some_and(is_definitely_dead));
+
+    if !every_owner_is_positively_dead {
+        return Ok(None);
+    }
+
+    let dead_scope_ids: Vec<String> = pending_start
+        .iter()
+        .map(|attempt| attempt.scope_id.clone())
+        .collect();
+
+    let generation = transition_to_pending_abandon_and_arm_flush(&mut state, &dead_scope_ids);
+    write_state_durably(git_dir, &state)?;
+    Ok(Some(generation))
 }
 
 pub(crate) fn arm_and_begin_recovery_flush(git_dir: &Path) -> Result<u64> {
@@ -447,6 +495,25 @@ pub(crate) fn seed_attempt_for_tests(
     let attempt = seeded.clone();
     write_state_durably(git_dir, &state).expect("test seed write");
     attempt
+}
+
+#[cfg(test)]
+pub(crate) fn set_attempt_owner_for_tests(
+    git_dir: &Path,
+    scope_id: &str,
+    owner: Option<ProcessOwner>,
+) -> AdapterAttempt {
+    let _lock = acquire_lock(git_dir).expect("test owner-override lock");
+    let mut state = read_state(git_dir).expect("test owner-override read");
+    let attempt = state
+        .attempts
+        .iter_mut()
+        .find(|attempt| attempt.scope_id == scope_id)
+        .expect("attempt to override must already exist");
+    attempt.owner = owner;
+    let updated = attempt.clone();
+    write_state_durably(git_dir, &state).expect("test owner-override write");
+    updated
 }
 
 #[cfg(test)]
