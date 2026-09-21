@@ -309,12 +309,13 @@ pub(super) fn apply_recovery_barrier(
     }
 
     match seam(repository_root, &flush_payload(), logger) {
-        Ok(_) => match state::clear_recovery_pending(git_dir) {
-            Ok(()) => BarrierOutcome::Proceed,
+        Ok(_) => match state::clear_recovery_pending_if_quiescent(git_dir) {
+            Ok(state::ClearRecoveryOutcome::Cleared) => BarrierOutcome::Proceed,
+            Ok(state::ClearRecoveryOutcome::StillPending) => BarrierOutcome::Deny,
             Err(error) => {
                 log_pre_tool_use_fail_closed(
                     logger,
-                    "recovery_barrier.clear_recovery_pending",
+                    "recovery_barrier.clear_recovery_pending_if_quiescent",
                     &error,
                 );
                 BarrierOutcome::Deny
@@ -437,11 +438,31 @@ pub(super) fn cleanup_attempts_matching(
         .filter(|attempt| predicate(attempt))
         .collect();
 
-    for attempt in &stale {
-        abandon_attempt(git_dir, repository_root, attempt, logger, seam)?;
+    if stale.is_empty() {
+        return Ok(String::new());
     }
 
-    Ok(String::new())
+    let stale_scope_ids: Vec<String> = stale
+        .iter()
+        .map(|attempt| attempt.scope_id.clone())
+        .collect();
+    state::mark_recovery_pending_and_pending_abandon(git_dir, &stale_scope_ids)?;
+
+    let mut first_error: Option<anyhow::Error> = None;
+    for attempt in &stale {
+        if let Err(error) =
+            abandon_marked_attempt(git_dir, repository_root, &attempt.scope_id, logger, seam)
+        {
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+        }
+    }
+
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(String::new()),
+    }
 }
 
 pub(super) fn attempt_matches_key(attempt: &state::AdapterAttempt, key: &AttemptKey) -> bool {
@@ -457,9 +478,59 @@ pub(super) fn abandon_attempt(
     logger: Option<&dyn Logger>,
     seam: IngressSeam,
 ) -> Result<()> {
-    state::mark_recovery_pending(git_dir)?;
+    state::mark_recovery_pending_and_pending_abandon(
+        git_dir,
+        std::slice::from_ref(&attempt.scope_id),
+    )?;
 
-    seam(repository_root, &abandon_payload(&attempt.scope_id), logger)?;
-    state::remove_attempt(git_dir, &attempt.scope_id)?;
+    abandon_marked_attempt(git_dir, repository_root, &attempt.scope_id, logger, seam)
+}
+
+fn abandon_marked_attempt(
+    git_dir: &Path,
+    repository_root: &Path,
+    scope_id: &str,
+    logger: Option<&dyn Logger>,
+    seam: IngressSeam,
+) -> Result<()> {
+    seam(repository_root, &abandon_payload(scope_id), logger)?;
+    state::remove_attempt(git_dir, scope_id)?;
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RepairOutcome {
+    Repaired,
+    NoOp,
+}
+
+pub(crate) fn repair_blocked(
+    git_dir: &Path,
+    repository_root: &Path,
+    logger: Option<&dyn Logger>,
+    seam: IngressSeam,
+) -> Result<RepairOutcome> {
+    let Some(attempts) = state::reprove_pending_abandon(git_dir)? else {
+        return Ok(RepairOutcome::NoOp);
+    };
+
+    let mut any_failed = false;
+    for attempt in &attempts {
+        if abandon_marked_attempt(git_dir, repository_root, &attempt.scope_id, logger, seam)
+            .is_err()
+        {
+            any_failed = true;
+        }
+    }
+
+    let cleared = matches!(
+        state::clear_recovery_pending_if_quiescent(git_dir)?,
+        state::ClearRecoveryOutcome::Cleared
+    );
+
+    if any_failed || !cleared {
+        Ok(RepairOutcome::NoOp)
+    } else {
+        Ok(RepairOutcome::Repaired)
+    }
 }

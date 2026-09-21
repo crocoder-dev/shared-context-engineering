@@ -901,7 +901,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
     not-yet-wired addition.
   - Context synchronization: synced
 
-- [ ] T04: `Claude: persisted terminal-cleanup evidence and safe PendingAbandon repair` (status:todo)
+- [x] T04: `Claude: persisted terminal-cleanup evidence and safe PendingAbandon repair` (status:done)
   - Task ID: T04
   - Scope: In — `cli/src/services/hooks/claude_mutation_scope/{state,mod,health}.rs`.
     Add a `PendingAbandon` `AttemptPhase` variant alongside the existing
@@ -952,7 +952,200 @@ Persist this field in every plan; this is durable plan state, not chat state:
     `Blocked`, stays `ManualOnly` until a new abandonment establishes real
     `PendingAbandon` evidence.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_mutation_scope`
-  - Context synchronization: pending
+  - Completed: 2026-09-21
+  - Files changed: `cli/src/services/hooks/claude_mutation_scope/state.rs` (adds
+    `AttemptPhase::PendingAbandon`; adds a pure `transition_to_pending_abandon`
+    helper plus a durable `mark_recovery_pending_and_pending_abandon(git_dir,
+    scope_ids)` state-lock transaction that, in one read-modify-write, sets
+    `recovery_pending = true` and transitions every named scope_id to
+    `PendingAbandon` — replacing the original two-write
+    `mark_recovery_pending()` + `mark_pending_abandon()` sequence so there is
+    no crash boundary between the barrier and the abandonment evidence; makes
+    `mark_active` re-read the persisted phase under the state lock and match
+    on it: `PendingStart -> Active` (allowed), `Active -> Active` (safe
+    idempotent no-op), `PendingAbandon -> Active` (rejected with an error and
+    no state mutation), so an established abandon intent can never be
+    resurrected by an in-flight start; adds `reprove_pending_abandon(git_dir)`,
+    a lock-protected read-only re-proof returning the full current attempt
+    list only when `recovery_pending` is true, attempts are non-empty, and
+    every attempt is already `PendingAbandon`; adds the `#[cfg(test)]`
+    `set_attempt_phase_for_tests` helper);
+    `cli/src/services/hooks/claude_mutation_scope/lifecycle.rs` (factors
+    `abandon_attempt`'s seam-call-plus-removal tail into a shared
+    `abandon_marked_attempt` helper; changes both `abandon_attempt` and
+    `cleanup_attempts_matching` to call the single atomic
+    `mark_recovery_pending_and_pending_abandon` instead of the old two
+    separate `mark_recovery_pending()` + `mark_pending_abandon()` calls, so
+    the batch case still marks every selected attempt in one write before any
+    seam call, and the state lock is never held across a seam call; rewrites
+    `cleanup_attempts_matching` to process each stale attempt independently
+    after that one write — continuing through the whole batch and returning
+    the first error only after every attempt was attempted, rather than the
+    previous early-return-on-first-failure loop that left later-matched
+    attempts completely untouched; adds `RepairOutcome` and `repair_blocked`);
+    `cli/src/services/hooks/claude_mutation_scope/health.rs`
+    (adds the local `Repairability { AutoFixable, ManualOnly }` enum and
+    `assess_repairability`; extends the existing AC3 regression to assert the
+    durable `PendingAbandon` evidence and a successful `repair_blocked` run;
+    adds regression tests covering the not-blocked case, a legacy
+    attempt never marked `PendingAbandon`, a mixed-phase coexistence case
+    (both `assess_repairability` and `repair_blocked` proven to leave it
+    fully untouched), the concurrent-race re-proof refusal, the
+    interrupted-repair resume, the batch-marking fix for
+    `cleanup_attempts_matching`, the start-vs-cleanup activation race against
+    an established `PendingAbandon` (`mark_active` losing the race leaves
+    `AutoFixable` evidence that `repair_blocked` then resolves to `Healthy`),
+    and a partial-batch `repair_blocked` run where one of two attempts fails
+    to abandon (the successful one is removed, the failed one stays
+    `PendingAbandon`, `recovery_pending` stays armed, outcome is `NoOp`));
+    `cli/src/services/hooks/claude_mutation_scope/mod.rs`
+    (re-exports `assess_repairability`, `Repairability`, `repair_blocked`,
+    `RepairOutcome`, and `cleanup_attempts_matching`, each
+    `#[allow(unused_imports)]` pending T05's doctor wiring and test-module
+    access, matching the `pi_mutation_scope`/`opencode_mutation_scope::mod.rs`
+    precedent).
+  - Result: Claude's `AttemptPhase` gains a `PendingAbandon` variant recording
+    that abandonment has already been decided for an attempt, durably
+    persisted before any seam `abandon` call — replacing the prior ambiguity
+    where a failed abandon left an attempt's phase untouched (`PendingStart`
+    or `Active`) with no evidence distinguishing "abandonment decided,
+    awaiting retry" from "may still be running." Investigation of the actual
+    barrier logic (`apply_recovery_barrier` reads `state.recovery_pending`
+    directly) confirmed the whole-file flag is still structurally required,
+    so it is kept alongside the new per-attempt phase rather than replaced,
+    per the plan's own "decide from the actual barrier logic" instruction.
+    The barrier flag and the per-attempt evidence are established as one
+    durable state transition, not two: `recovery_pending = true` and every
+    named attempt's transition to `PendingAbandon` are read, updated, and
+    written inside a single `AdapterStateLock` acquisition
+    (`mark_recovery_pending_and_pending_abandon`), so there is no crash
+    boundary at which the barrier could be armed with the corresponding
+    `PendingAbandon` evidence not yet persisted (or vice versa). An initial
+    version of this task left `mark_recovery_pending()` and
+    `mark_pending_abandon()` as two separate durable writes; that was
+    corrected because a crash between them could leave `recovery_pending =
+    true` with an attempt still `PendingStart`/`Active` — the exact ambiguity
+    `assess_repairability` must treat as `ManualOnly` even though cleanup had
+    already durably decided to abandon. Separately, `mark_active` is now
+    monotonic with respect to `PendingAbandon`: it re-reads the persisted
+    phase under the state lock and only allows `PendingStart -> Active`
+    (`Active -> Active` is a safe idempotent no-op); `PendingAbandon ->
+    Active` is rejected with an error and no state mutation, so a start seam
+    that was already in flight when cleanup established abandonment can never
+    resurrect the attempt to `Active` after the fact. `establish_start` is
+    unchanged beyond this: it still calls the seam and then `mark_active`
+    with no new Claude boundary lock, so losing this race fails PreToolUse
+    closed (per existing fail-closed behavior) while the durable
+    `PendingAbandon`/`recovery_pending` evidence set by cleanup is left
+    intact and retryable.
+    `cleanup_attempts_matching`'s early-return-on-first-failure loop was
+    confirmed reachable (`SessionEnd` matches every attempt in a session
+    regardless of `agent_id`, and `WorktreeRemove` matches every tracked
+    attempt unconditionally, so either can legitimately match more than one
+    attempt at once) and corrected: every matched attempt is now durably
+    marked `PendingAbandon` in one write before any seam call is attempted,
+    so a failure abandoning one attempt can never leave a sibling attempt in
+    the batch without its own retryable evidence.
+    `assess_repairability` classifies `AutoFixable` only when every attempt
+    currently in the adapter's state is `PendingAbandon`; any attempt still
+    `PendingStart`/`Active` (no established abandon intent) forces
+    `ManualOnly` for the whole adapter, proven by a test that also asserts
+    `repair_blocked` leaves both attempts in such a mixed state completely
+    untouched. `repair_blocked` re-reads and re-proves this same "every
+    attempt is `PendingAbandon`" condition inside one lock-protected,
+    read-only state transaction (`reprove_pending_abandon`) — Claude's
+    `PendingAbandon` transition already happened durably before repair ever
+    runs, so unlike OpenCode's dead-owner proof there is no transition to
+    perform at this step, only a fresh re-proof — then releases the lock
+    before retrying each attempt's already-established seam `abandon` call
+    independently, removing only the ones that succeed, and clears the
+    `recovery_pending` barrier in a final state transaction only once no
+    attempts remain. A losing re-proof (an attempt no longer `PendingAbandon`
+    by the time the lock is acquired) is a safe no-op with no seam call,
+    proven by a test that forces exactly that race via the new
+    `set_attempt_phase_for_tests` helper. Investigation finding for the
+    plan's conditional owner-evidence question: no currently-reachable Claude
+    shape needs dead-owner liveness proof. Because `assess_repairability`
+    requires every attempt in the adapter's state to be `PendingAbandon`
+    (not just the ones a particular cleanup decided to abandon), any
+    coexisting `PendingStart`/`Active` attempt with no established abandon
+    intent is already, structurally, excluded from `AutoFixable` — proven
+    directly by `assess_repairability_is_manual_only_when_one_of_several_attempts_has_no_established_abandon_intent`.
+    T02's shared `mutation_scope_owner` primitive is therefore not consumed
+    by this task; no unused machinery was added for it.
+  - Verify outcomes: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_mutation_scope` -> `131 passed; 0 failed` (117 baseline + 8 regressions from the initial pass + 6 regressions from the atomic-persistence and monotonic-`mark_active` correction: `mark_recovery_pending_and_pending_abandon_establishes_both_facts_in_one_durable_write`, `mark_recovery_pending_and_pending_abandon_failed_write_leaves_no_partial_invariant`, `mark_active_is_idempotent_when_already_active`, `mark_active_is_forbidden_once_pending_abandon_is_established`, `mark_active_losing_the_race_against_an_established_pending_abandon_leaves_repairable_terminal_evidence`, and `repair_blocked_removes_only_successfully_abandoned_attempts_and_keeps_recovery_pending_when_one_fails`); `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check` -> clean; `SCE_CLI_PACKAGE_FALLBACK=1 nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets` -> no warnings; `grep -rn "SystemTime\|Instant::now\|\.elapsed()\|modified()" cli/src/services/hooks/claude_mutation_scope` -> only the pre-existing, unrelated `AdapterStateLock` lock-timeout deadline (unchanged by this task), matching AC3's "no staleness use outside unrelated lock-timeout constants."
+  - Context impact: Claude's persisted state file gains a new reachable
+    `AttemptPhase` variant (`pending_abandon`) and three new `pub(crate)`
+    symbols (`Repairability`, `assess_repairability`, `repair_blocked`/
+    `RepairOutcome`) not yet consumed by doctor — T05 wires them into
+    `execute_doctor_with_lifecycle_providers`, matching T03's OpenCode
+    precedent exactly. No user-visible behavior changed yet (`sce doctor
+    --fix` still cannot repair Claude until T05 dispatches to these
+    functions), no existing `MutationScope*` type or JSON shape changed, and
+    `classify_health`'s existing four status boundaries and their triggering
+    conditions are unchanged (confirmed by every pre-existing health test
+    passing unmodified). `domain`-scoped: `context/cli/claude-mutation-scope-integration.md`
+    (named in this plan's own "Context sync" section) describes the new
+    `PendingAbandon` phase and its safety semantics once T05/T06 make the
+    repair path reachable through `sce doctor --fix`; recording that
+    dependency here for T05's own context-sync pass rather than updating
+    that doc prematurely for a repair path doctor cannot yet invoke, mirroring
+    T03's identical deferral for OpenCode's context docs. No root context file
+    (`overview.md`/`architecture.md`/`glossary.md`/`patterns.md`/
+    `context-map.md`) is implicated by an adapter-internal, not-yet-wired
+    addition.
+  - Deviation: `lifecycle.rs` was touched even though this task's own scope
+    line names only `{state,mod,health}.rs`, because `abandon_attempt` and
+    `cleanup_attempts_matching` — both explicitly named as needing behavior
+    changes in this task's own scope text — live in `lifecycle.rs`, not
+    `health.rs` or `state.rs`; T03's OpenCode task explicitly listed
+    `lifecycle.rs` for the equivalent change, so this mirrors that precedent
+    rather than expanding scope. `Repairability` and `RepairOutcome` are
+    defined locally in this module (`health.rs` and `lifecycle.rs`
+    respectively) rather than in the shared `mutation_scope_health.rs`,
+    matching T03's identical deviation and reasoning: T05 is the task scoped
+    to add the shared `Repairability` enum there.
+  - Correction (2026-09-21): the initial T04 pass left two crash/concurrency
+    gaps, both closed narrowly without touching T05 scope, OpenCode, Pi,
+    Codex, doctor orchestration, rendering, or the Quint model. First,
+    `recovery_pending = true` and the initial `PendingAbandon` transition
+    were two separate durable transactions (`mark_recovery_pending()` then
+    `mark_pending_abandon()`); a crash between them could leave the barrier
+    armed with an attempt still `PendingStart`/`Active`, which
+    `assess_repairability` correctly treats as `ManualOnly` even though
+    cleanup had already durably decided to abandon. Fixed by replacing both
+    call sites (`abandon_attempt`, `cleanup_attempts_matching`) with one
+    state-layer operation, `mark_recovery_pending_and_pending_abandon`, that
+    performs the read, both field updates, and the durable write inside a
+    single `AdapterStateLock` acquisition — the batch case still marks every
+    selected attempt in that one write before any seam call, and the lock is
+    still never held across a seam call. Second, `mark_active` unconditionally
+    set `attempt.phase = Active`, so an in-flight `PreToolUse` start whose
+    seam call had already succeeded could overwrite an already-established
+    `PendingAbandon` back to `Active` if cleanup won the race first. Fixed by
+    making `mark_active` re-read the persisted phase under the state lock and
+    branch on it: `PendingStart -> Active` (allowed), `Active -> Active`
+    (safe idempotent no-op), `PendingAbandon -> Active` (rejected with an
+    error and no state mutation). `establish_start` needed no change — the
+    existing `seam(start)?; mark_active(...)?;` sequence now fails closed on
+    the error instead of resurrecting the attempt, per existing PreToolUse
+    fail-closed behavior, and no new Claude boundary lock was added. New
+    regressions: two state-level tests proving the atomic operation
+    establishes both facts in one write and that an injected pre-rename write
+    failure leaves neither fact persisted; two state-level tests proving
+    `mark_active`'s three-way branch; a lifecycle-level race regression
+    (`mark_active_losing_the_race_against_an_established_pending_abandon_leaves_repairable_terminal_evidence`)
+    proving that losing the activation race leaves `recovery_pending == true`
+    and the attempt `PendingAbandon`, that `classify_health` is `Blocked` and
+    `assess_repairability` is `AutoFixable` (not `ManualOnly`), and that
+    `repair_blocked` then resolves the whole state to `Healthy`; and a
+    partial-batch `repair_blocked` regression proving a successful abandon in
+    a batch is removed while a failed sibling stays `PendingAbandon` with
+    `recovery_pending` still armed. All prior wording in this entry
+    describing `mark_recovery_pending()` followed by `mark_pending_abandon()`
+    as the final implementation has been corrected above; that two-write
+    sequence is no longer present in the codebase.
+  - Context synchronization: synced
 
 - [ ] T05: `Shared repairability contract and doctor --fix orchestration` (status:todo)
   - Task ID: T05
