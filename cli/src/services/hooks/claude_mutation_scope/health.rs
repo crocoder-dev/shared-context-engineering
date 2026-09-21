@@ -47,6 +47,19 @@ pub(crate) fn classify_health(git_dir: &Path) -> MutationScopeAdapterHealth {
         }
     };
 
+    let has_pending_abandon = state
+        .attempts
+        .iter()
+        .any(|attempt| attempt.phase == state::AttemptPhase::PendingAbandon);
+
+    if !state.recovery_pending && has_pending_abandon {
+        return MutationScopeAdapterHealth::new(
+            ActorKind::ClaudeCode,
+            MutationScopeHealthStatus::Invalid,
+            "PendingAbandon means terminal cleanup has been durably established, therefore the recovery barrier cannot legitimately already be clear.",
+        );
+    }
+
     if !state.recovery_pending {
         return MutationScopeAdapterHealth::new(
             ActorKind::ClaudeCode,
@@ -723,6 +736,93 @@ mod tests {
         );
         assert_eq!(after.attempts.len(), 1);
         assert_eq!(after.attempts[0].phase, state::AttemptPhase::PendingAbandon);
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    fn hand_constructed_attempt(
+        attempt_seq: u64,
+        tool_use_id: &str,
+        phase: state::AttemptPhase,
+    ) -> state::AdapterAttempt {
+        state::AdapterAttempt {
+            attempt_seq,
+            scope_id: format!("claude|s=session-1:a|c={attempt_seq}:{tool_use_id}"),
+            session_id: "session-1".to_string(),
+            agent_id: None,
+            tool_use_id: tool_use_id.to_string(),
+            tool_name: "Edit".to_string(),
+            phase,
+        }
+    }
+
+    fn write_hand_constructed_state(git_dir: &Path, state: &state::AdapterState) {
+        let path = state::state_path(git_dir);
+        std::fs::create_dir_all(path.parent().expect("state path has a parent"))
+            .expect("state dir should be created");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(state).expect("serialize adapter state"),
+        )
+        .expect("write hand-constructed adapter state");
+    }
+
+    #[test]
+    fn clear_recovery_with_pending_abandon_is_invalid() {
+        let git_dir = unique_test_git_dir("invalid-clear-pending-abandon");
+        write_hand_constructed_state(
+            &git_dir,
+            &state::AdapterState {
+                version: 1,
+                next_attempt_seq: 2,
+                recovery_pending: false,
+                attempts: vec![hand_constructed_attempt(
+                    1,
+                    "toolu_1",
+                    state::AttemptPhase::PendingAbandon,
+                )],
+            },
+        );
+
+        let health = classify_health(&git_dir);
+        assert_eq!(
+            health.status,
+            MutationScopeHealthStatus::Invalid,
+            "recovery_pending == false with an unresolved PendingAbandon attempt is a \
+             structurally impossible state and must never classify Healthy"
+        );
+        assert_eq!(
+            assess_repairability(&git_dir),
+            Repairability::ManualOnly,
+            "doctor must not auto-repair an impossible Claude state"
+        );
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn invalid_takes_priority_over_blocked_in_mixed_impossible_state() {
+        let git_dir = unique_test_git_dir("invalid-priority-mixed");
+        write_hand_constructed_state(
+            &git_dir,
+            &state::AdapterState {
+                version: 1,
+                next_attempt_seq: 3,
+                recovery_pending: false,
+                attempts: vec![
+                    hand_constructed_attempt(1, "toolu_1", state::AttemptPhase::PendingAbandon),
+                    hand_constructed_attempt(2, "toolu_2", state::AttemptPhase::PendingStart),
+                ],
+            },
+        );
+
+        let health = classify_health(&git_dir);
+        assert_eq!(
+            health.status,
+            MutationScopeHealthStatus::Invalid,
+            "Clear + unresolved PendingAbandon must take priority over an otherwise-Blocked \
+             shape from a coexisting PendingStart attempt"
+        );
 
         remove_test_git_dir(&git_dir);
     }
