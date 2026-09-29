@@ -348,227 +348,323 @@ mod tests {
         parse_mutation_scope_payload(payload)
     }
 
-    fn error_of(payload: &str) -> String {
-        parse(payload)
-            .expect_err("expected the payload to be rejected")
-            .to_string()
+    struct ParseCase {
+        label: &'static str,
+        payload: &'static str,
+        expected: MutationScopePayload,
+    }
+
+    struct InvalidCase {
+        label: &'static str,
+        payload: &'static str,
+        expected_fragment: &'static str,
+    }
+
+    fn assert_all_rejected(cases: &[InvalidCase]) {
+        for case in cases {
+            let error = parse(case.payload)
+                .expect_err(&format!(
+                    "{}: expected the payload to be rejected",
+                    case.label
+                ))
+                .to_string();
+            assert!(
+                error.contains(case.expected_fragment),
+                "{}: expected error containing {:?}, got: {error}",
+                case.label,
+                case.expected_fragment
+            );
+        }
     }
 
     #[test]
-    fn start_maps_all_fields_verbatim() {
-        let payload = parse(
-            r#"{"operation":"start","scope_id":"  scope-A  ","event_id":"e1","actor_kind":"claude_code"}"#,
-        )
-        .expect("valid start payload");
+    fn valid_operation_payloads_parse_exactly() {
+        let cases = [
+            ParseCase {
+                label: "start preserves identity values verbatim",
+                payload: r#"{"operation":"start","scope_id":"  scope-A  ","event_id":"event-start","actor_kind":"claude_code"}"#,
+                expected: MutationScopePayload::Start {
+                    scope_id: "  scope-A  ".to_string(),
+                    event_id: "event-start".to_string(),
+                    actor_kind: ActorKind::ClaudeCode,
+                },
+            },
+            ParseCase {
+                label: "advance",
+                payload: r#"{"operation":"advance","scope_id":"scope-B","event_id":"event-advance","actor_kind":"codex"}"#,
+                expected: MutationScopePayload::Advance {
+                    scope_id: "scope-B".to_string(),
+                    event_id: "event-advance".to_string(),
+                    actor_kind: ActorKind::Codex,
+                },
+            },
+            ParseCase {
+                label: "close",
+                payload: r#"{"operation":"close","scope_id":"scope-C","event_id":"event-close","actor_kind":"opencode"}"#,
+                expected: MutationScopePayload::Close {
+                    scope_id: "scope-C".to_string(),
+                    event_id: "event-close".to_string(),
+                    actor_kind: ActorKind::OpenCode,
+                },
+            },
+            ParseCase {
+                label: "flush takes no identity",
+                payload: r#"{"operation":"flush"}"#,
+                expected: MutationScopePayload::Flush,
+            },
+            ParseCase {
+                label: "abandon takes only scope_id",
+                payload: r#"{"operation":"abandon","scope_id":"scope-D"}"#,
+                expected: MutationScopePayload::Abandon {
+                    scope_id: "scope-D".to_string(),
+                },
+            },
+        ];
 
-        assert_eq!(
-            payload,
-            MutationScopePayload::Start {
-                scope_id: "  scope-A  ".to_string(),
-                event_id: "e1".to_string(),
-                actor_kind: ActorKind::ClaudeCode,
-            }
-        );
+        for case in cases {
+            let parsed = parse(case.payload)
+                .unwrap_or_else(|error| panic!("{}: expected valid payload: {error}", case.label));
+            assert_eq!(parsed, case.expected, "{}", case.label);
+        }
     }
 
     #[test]
-    fn advance_and_close_parse_to_their_variants() {
-        assert_eq!(
-            parse(r#"{"operation":"advance","scope_id":"A","event_id":"e2","actor_kind":"codex"}"#)
-                .expect("valid advance payload"),
-            MutationScopePayload::Advance {
-                scope_id: "A".to_string(),
-                event_id: "e2".to_string(),
-                actor_kind: ActorKind::Codex,
-            }
-        );
-
-        assert_eq!(
-            parse(
-                r#"{"operation":"close","scope_id":"A","event_id":"e3","actor_kind":"opencode"}"#
-            )
-            .expect("valid close payload"),
-            MutationScopePayload::Close {
-                scope_id: "A".to_string(),
-                event_id: "e3".to_string(),
-                actor_kind: ActorKind::OpenCode,
-            }
-        );
-    }
-
-    #[test]
-    fn every_actor_kind_wire_string_maps() {
+    fn actor_kind_wire_values_map_exactly() {
         for (wire, expected) in [
             ("claude_code", ActorKind::ClaudeCode),
             ("codex", ActorKind::Codex),
             ("opencode", ActorKind::OpenCode),
             ("pi", ActorKind::Pi),
         ] {
-            let payload = parse(&format!(
+            let payload = format!(
                 r#"{{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"{wire}"}}"#
-            ))
-            .expect("valid start payload");
-            match payload {
-                MutationScopePayload::Start { actor_kind, .. } => assert_eq!(actor_kind, expected),
-                other => panic!("expected Start, got {other:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn flush_takes_no_identity_fields() {
-        assert_eq!(
-            parse(r#"{"operation":"flush"}"#).expect("valid flush payload"),
-            MutationScopePayload::Flush
-        );
-    }
-
-    #[test]
-    fn abandon_takes_only_scope_id() {
-        assert_eq!(
-            parse(r#"{"operation":"abandon","scope_id":"A"}"#).expect("valid abandon payload"),
-            MutationScopePayload::Abandon {
-                scope_id: "A".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn empty_or_blank_payload_is_rejected() {
-        assert!(parse("").is_err());
-        assert!(parse("   \n\t ").is_err());
-    }
-
-    #[test]
-    fn malformed_json_is_rejected() {
-        assert!(parse("{").is_err());
-        assert!(parse(r#"{"operation":"start""#).is_err());
-        assert!(parse("not json at all").is_err());
-    }
-
-    #[test]
-    fn non_object_json_is_rejected() {
-        assert!(parse("123").is_err());
-        assert!(parse(r#""start""#).is_err());
-        assert!(parse(r#"["start"]"#).is_err());
-        assert!(parse("null").is_err());
-    }
-
-    #[test]
-    fn missing_operation_is_rejected() {
-        assert!(parse(r#"{"scope_id":"A","event_id":"e1","actor_kind":"pi"}"#).is_err());
-    }
-
-    #[test]
-    fn unknown_operation_is_rejected() {
-        let error =
-            error_of(r#"{"operation":"reopen","scope_id":"A","event_id":"e1","actor_kind":"pi"}"#);
-        assert!(error.contains("'operation'"), "unexpected error: {error}");
-    }
-
-    #[test]
-    fn operation_wrong_type_is_rejected() {
-        assert!(parse(r#"{"operation":5}"#).is_err());
-    }
-
-    #[test]
-    fn unknown_actor_kind_is_rejected() {
-        let error = error_of(
-            r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"cursor"}"#,
-        );
-        assert!(error.contains("'actor_kind'"), "unexpected error: {error}");
-    }
-
-    #[test]
-    fn missing_scope_or_event_or_actor_is_rejected() {
-        assert!(parse(r#"{"operation":"start","event_id":"e1","actor_kind":"pi"}"#).is_err());
-        assert!(parse(r#"{"operation":"start","scope_id":"A","actor_kind":"pi"}"#).is_err());
-        assert!(parse(r#"{"operation":"start","scope_id":"A","event_id":"e1"}"#).is_err());
-    }
-
-    #[test]
-    fn empty_or_blank_scope_id_or_event_id_is_rejected() {
-        assert!(
-            parse(r#"{"operation":"start","scope_id":"","event_id":"e1","actor_kind":"pi"}"#)
-                .is_err()
-        );
-        assert!(parse(
-            r#"{"operation":"start","scope_id":"   ","event_id":"e1","actor_kind":"pi"}"#
-        )
-        .is_err());
-        assert!(
-            parse(r#"{"operation":"start","scope_id":"A","event_id":"","actor_kind":"pi"}"#)
-                .is_err()
-        );
-        assert!(
-            parse(r#"{"operation":"start","scope_id":"A","event_id":"\t","actor_kind":"pi"}"#)
-                .is_err()
-        );
-        assert!(parse(r#"{"operation":"abandon","scope_id":"  "}"#).is_err());
-    }
-
-    #[test]
-    fn wrong_field_json_type_is_rejected() {
-        assert!(
-            parse(r#"{"operation":"start","scope_id":123,"event_id":"e1","actor_kind":"pi"}"#)
-                .is_err()
-        );
-        assert!(
-            parse(r#"{"operation":"start","scope_id":"A","event_id":true,"actor_kind":"pi"}"#)
-                .is_err()
-        );
-        assert!(parse(
-            r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":["pi"]}"#
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn unexpected_field_is_rejected() {
-        let error = error_of(
-            r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"pi","attempt_id":"x"}"#,
-        );
-        assert!(
-            error.contains("unexpected field 'attempt_id'"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn any_worktree_id_key_is_rejected_with_a_dedicated_diagnostic() {
-        for payload in [
-            r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"pi","worktree_id":"wt"}"#,
-            r#"{"operation":"flush","worktree_id":"wt"}"#,
-            r#"{"operation":"abandon","scope_id":"A","worktree_id":"wt"}"#,
-        ] {
-            let error = error_of(payload);
-            assert!(
-                error.contains("'worktree_id'"),
-                "unexpected error for {payload}: {error}"
+            );
+            let parsed = parse(&payload)
+                .unwrap_or_else(|error| panic!("{wire}: expected valid payload: {error}"));
+            assert_eq!(
+                parsed,
+                MutationScopePayload::Start {
+                    scope_id: "A".to_string(),
+                    event_id: "e1".to_string(),
+                    actor_kind: expected,
+                },
+                "{wire}"
             );
         }
     }
 
     #[test]
-    fn flush_rejects_any_scope_event_or_actor_field() {
-        assert!(parse(r#"{"operation":"flush","scope_id":"A"}"#).is_err());
-        assert!(parse(r#"{"operation":"flush","event_id":"e1"}"#).is_err());
-        assert!(parse(r#"{"operation":"flush","actor_kind":"pi"}"#).is_err());
+    fn invalid_payload_envelopes_are_rejected() {
+        assert_all_rejected(&[
+            InvalidCase {
+                label: "empty payload",
+                payload: "",
+                expected_fragment: "expected a JSON object, got an empty payload",
+            },
+            InvalidCase {
+                label: "whitespace-only payload",
+                payload: "   \n\t ",
+                expected_fragment: "expected a JSON object, got an empty payload",
+            },
+            InvalidCase {
+                label: "unterminated object",
+                payload: "{",
+                expected_fragment: "expected valid JSON",
+            },
+            InvalidCase {
+                label: "incomplete object",
+                payload: r#"{"operation":"start""#,
+                expected_fragment: "expected valid JSON",
+            },
+            InvalidCase {
+                label: "non-JSON text",
+                payload: "not json at all",
+                expected_fragment: "expected valid JSON",
+            },
+            InvalidCase {
+                label: "JSON number",
+                payload: "123",
+                expected_fragment: "expected a JSON object",
+            },
+            InvalidCase {
+                label: "JSON string",
+                payload: r#""start""#,
+                expected_fragment: "expected a JSON object",
+            },
+            InvalidCase {
+                label: "JSON array",
+                payload: r#"["start"]"#,
+                expected_fragment: "expected a JSON object",
+            },
+            InvalidCase {
+                label: "JSON null",
+                payload: "null",
+                expected_fragment: "expected a JSON object",
+            },
+            InvalidCase {
+                label: "missing operation",
+                payload: r#"{"scope_id":"A","event_id":"e1","actor_kind":"pi"}"#,
+                expected_fragment: "missing required field 'operation'",
+            },
+            InvalidCase {
+                label: "unknown operation",
+                payload: r#"{"operation":"reopen","scope_id":"A","event_id":"e1","actor_kind":"pi"}"#,
+                expected_fragment: "field 'operation' must be one of",
+            },
+            InvalidCase {
+                label: "numeric operation",
+                payload: r#"{"operation":5}"#,
+                expected_fragment: "field 'operation' must be a string",
+            },
+        ]);
     }
 
     #[test]
-    fn abandon_rejects_event_and_actor_fields() {
-        assert!(parse(r#"{"operation":"abandon","scope_id":"A","event_id":"e1"}"#).is_err());
-        assert!(parse(r#"{"operation":"abandon","scope_id":"A","actor_kind":"pi"}"#).is_err());
+    fn invalid_required_fields_are_rejected() {
+        assert_all_rejected(&[
+            InvalidCase {
+                label: "start missing scope_id",
+                payload: r#"{"operation":"start","event_id":"e1","actor_kind":"pi"}"#,
+                expected_fragment: "missing required field 'scope_id'",
+            },
+            InvalidCase {
+                label: "start missing event_id",
+                payload: r#"{"operation":"start","scope_id":"A","actor_kind":"pi"}"#,
+                expected_fragment: "missing required field 'event_id'",
+            },
+            InvalidCase {
+                label: "start missing actor_kind",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"e1"}"#,
+                expected_fragment: "missing required field 'actor_kind'",
+            },
+            InvalidCase {
+                label: "abandon missing scope_id",
+                payload: r#"{"operation":"abandon"}"#,
+                expected_fragment: "missing required field 'scope_id'",
+            },
+            InvalidCase {
+                label: "start empty scope_id",
+                payload: r#"{"operation":"start","scope_id":"","event_id":"e1","actor_kind":"pi"}"#,
+                expected_fragment: "field 'scope_id' must be a non-blank string",
+            },
+            InvalidCase {
+                label: "start whitespace scope_id",
+                payload: r#"{"operation":"start","scope_id":"   ","event_id":"e1","actor_kind":"pi"}"#,
+                expected_fragment: "field 'scope_id' must be a non-blank string",
+            },
+            InvalidCase {
+                label: "start empty event_id",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"","actor_kind":"pi"}"#,
+                expected_fragment: "field 'event_id' must be a non-blank string",
+            },
+            InvalidCase {
+                label: "start tab event_id",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"\t","actor_kind":"pi"}"#,
+                expected_fragment: "field 'event_id' must be a non-blank string",
+            },
+            InvalidCase {
+                label: "abandon whitespace scope_id",
+                payload: r#"{"operation":"abandon","scope_id":"  "}"#,
+                expected_fragment: "field 'scope_id' must be a non-blank string",
+            },
+            InvalidCase {
+                label: "start numeric scope_id",
+                payload: r#"{"operation":"start","scope_id":123,"event_id":"e1","actor_kind":"pi"}"#,
+                expected_fragment: "field 'scope_id' must be a string",
+            },
+            InvalidCase {
+                label: "start boolean event_id",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":true,"actor_kind":"pi"}"#,
+                expected_fragment: "field 'event_id' must be a string",
+            },
+            InvalidCase {
+                label: "start array actor_kind",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":["pi"]}"#,
+                expected_fragment: "field 'actor_kind' must be a string",
+            },
+            InvalidCase {
+                label: "start unknown actor_kind",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"cursor"}"#,
+                expected_fragment: "field 'actor_kind' must be one of",
+            },
+        ]);
     }
 
     #[test]
-    fn abandon_missing_scope_id_is_rejected() {
-        assert!(parse(r#"{"operation":"abandon"}"#).is_err());
+    fn operation_schema_rejects_forbidden_fields() {
+        const WORKTREE: &str = "worktree identity is derived from the invoking checkout";
+
+        assert_all_rejected(&[
+            InvalidCase {
+                label: "start rejects attempt_id",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"pi","attempt_id":"x"}"#,
+                expected_fragment: "unexpected field 'attempt_id'",
+            },
+            InvalidCase {
+                label: "advance rejects attempt_id",
+                payload: r#"{"operation":"advance","scope_id":"A","event_id":"e1","actor_kind":"pi","attempt_id":"x"}"#,
+                expected_fragment: "unexpected field 'attempt_id'",
+            },
+            InvalidCase {
+                label: "close rejects attempt_id",
+                payload: r#"{"operation":"close","scope_id":"A","event_id":"e1","actor_kind":"pi","attempt_id":"x"}"#,
+                expected_fragment: "unexpected field 'attempt_id'",
+            },
+            InvalidCase {
+                label: "flush rejects scope_id",
+                payload: r#"{"operation":"flush","scope_id":"A"}"#,
+                expected_fragment: "unexpected field 'scope_id'",
+            },
+            InvalidCase {
+                label: "flush rejects event_id",
+                payload: r#"{"operation":"flush","event_id":"e1"}"#,
+                expected_fragment: "unexpected field 'event_id'",
+            },
+            InvalidCase {
+                label: "flush rejects actor_kind",
+                payload: r#"{"operation":"flush","actor_kind":"pi"}"#,
+                expected_fragment: "unexpected field 'actor_kind'",
+            },
+            InvalidCase {
+                label: "abandon rejects event_id",
+                payload: r#"{"operation":"abandon","scope_id":"A","event_id":"e1"}"#,
+                expected_fragment: "unexpected field 'event_id'",
+            },
+            InvalidCase {
+                label: "abandon rejects actor_kind",
+                payload: r#"{"operation":"abandon","scope_id":"A","actor_kind":"pi"}"#,
+                expected_fragment: "unexpected field 'actor_kind'",
+            },
+            InvalidCase {
+                label: "start rejects worktree_id",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"pi","worktree_id":"wt"}"#,
+                expected_fragment: WORKTREE,
+            },
+            InvalidCase {
+                label: "advance rejects worktree_id",
+                payload: r#"{"operation":"advance","scope_id":"A","event_id":"e1","actor_kind":"pi","worktree_id":"wt"}"#,
+                expected_fragment: WORKTREE,
+            },
+            InvalidCase {
+                label: "close rejects worktree_id",
+                payload: r#"{"operation":"close","scope_id":"A","event_id":"e1","actor_kind":"pi","worktree_id":"wt"}"#,
+                expected_fragment: WORKTREE,
+            },
+            InvalidCase {
+                label: "flush rejects worktree_id",
+                payload: r#"{"operation":"flush","worktree_id":"wt"}"#,
+                expected_fragment: WORKTREE,
+            },
+            InvalidCase {
+                label: "abandon rejects worktree_id",
+                payload: r#"{"operation":"abandon","scope_id":"A","worktree_id":"wt"}"#,
+                expected_fragment: WORKTREE,
+            },
+        ]);
     }
 
     mod runtime_dispatch {
-        use std::cell::Cell;
+        use std::cell::{Cell, RefCell};
 
         use super::*;
         use crate::services::mutation_trace::protocol;
@@ -606,55 +702,136 @@ mod tests {
             panic!("abandon_scope must not be invoked for this payload");
         }
 
-        #[test]
-        fn start_forwards_identities_verbatim_to_coordinate() {
-            let result = drive_mutation_scope(
-                Path::new("/unused"),
-                MutationScopePayload::Start {
-                    scope_id: "A".to_string(),
-                    event_id: "e1".to_string(),
-                    actor_kind: ActorKind::ClaudeCode,
-                },
-                None,
-                |_root, boundary| {
-                    match boundary {
-                        RuntimeBoundary::Start {
-                            scope,
-                            event,
-                            actor_kind,
-                        } => {
-                            assert_eq!(scope.0, "A");
-                            assert_eq!(event.0, "e1");
-                            assert_eq!(*actor_kind, ActorKind::ClaudeCode);
-                        }
-                        other => panic!("expected RuntimeBoundary::Start, got {other:?}"),
-                    }
-                    Ok(committed_outcome())
-                },
-                unreachable_abandon,
-            );
+        fn ids(scope: &str, event: &str) -> (ScopeId, EventId) {
+            (ScopeId(scope.to_string()), EventId(event.to_string()))
+        }
 
-            assert_eq!(result.expect("start should succeed"), "");
+        fn assert_runtime_boundary_eq(
+            actual: &RuntimeBoundary,
+            expected: &RuntimeBoundary,
+            label: &str,
+        ) {
+            match (actual, expected) {
+                (
+                    RuntimeBoundary::Start {
+                        scope: actual_scope,
+                        event: actual_event,
+                        actor_kind: actual_actor,
+                    },
+                    RuntimeBoundary::Start {
+                        scope: expected_scope,
+                        event: expected_event,
+                        actor_kind: expected_actor,
+                    },
+                )
+                | (
+                    RuntimeBoundary::Advance {
+                        scope: actual_scope,
+                        event: actual_event,
+                        actor_kind: actual_actor,
+                    },
+                    RuntimeBoundary::Advance {
+                        scope: expected_scope,
+                        event: expected_event,
+                        actor_kind: expected_actor,
+                    },
+                )
+                | (
+                    RuntimeBoundary::Close {
+                        scope: actual_scope,
+                        event: actual_event,
+                        actor_kind: actual_actor,
+                    },
+                    RuntimeBoundary::Close {
+                        scope: expected_scope,
+                        event: expected_event,
+                        actor_kind: expected_actor,
+                    },
+                ) => {
+                    assert_eq!(actual_scope, expected_scope, "{label}: scope");
+                    assert_eq!(actual_event, expected_event, "{label}: event");
+                    assert_eq!(actual_actor, expected_actor, "{label}: actor");
+                }
+                (RuntimeBoundary::Flush, RuntimeBoundary::Flush) => {}
+                _ => panic!("{label}: runtime boundary variant mismatch"),
+            }
         }
 
         #[test]
-        fn flush_maps_to_flush_boundary_without_identity() {
-            let result = drive_mutation_scope(
-                Path::new("/unused"),
-                MutationScopePayload::Flush,
-                None,
-                |_root, boundary| {
-                    assert!(matches!(boundary, RuntimeBoundary::Flush));
-                    Ok(committed_outcome())
-                },
-                unreachable_abandon,
-            );
+        fn coordinate_payloads_forward_exact_runtime_boundaries() {
+            let (scope_a, event_a) = ids("  scope-A  ", "event-start");
+            let (scope_b, event_b) = ids("scope-B", "event-advance");
+            let (scope_c, event_c) = ids("scope-C", "event-close");
 
-            assert_eq!(result.expect("flush should succeed"), "");
+            let cases = [
+                (
+                    "start",
+                    MutationScopePayload::Start {
+                        scope_id: scope_a.0.clone(),
+                        event_id: event_a.0.clone(),
+                        actor_kind: ActorKind::ClaudeCode,
+                    },
+                    RuntimeBoundary::Start {
+                        scope: scope_a,
+                        event: event_a,
+                        actor_kind: ActorKind::ClaudeCode,
+                    },
+                ),
+                (
+                    "advance",
+                    MutationScopePayload::Advance {
+                        scope_id: scope_b.0.clone(),
+                        event_id: event_b.0.clone(),
+                        actor_kind: ActorKind::Codex,
+                    },
+                    RuntimeBoundary::Advance {
+                        scope: scope_b,
+                        event: event_b,
+                        actor_kind: ActorKind::Codex,
+                    },
+                ),
+                (
+                    "close",
+                    MutationScopePayload::Close {
+                        scope_id: scope_c.0.clone(),
+                        event_id: event_c.0.clone(),
+                        actor_kind: ActorKind::OpenCode,
+                    },
+                    RuntimeBoundary::Close {
+                        scope: scope_c,
+                        event: event_c,
+                        actor_kind: ActorKind::OpenCode,
+                    },
+                ),
+                ("flush", MutationScopePayload::Flush, RuntimeBoundary::Flush),
+            ];
+
+            for (label, payload, expected) in cases {
+                let calls = Cell::new(0_u32);
+                let result = drive_mutation_scope(
+                    Path::new("/unused"),
+                    payload,
+                    None,
+                    |_root, boundary| {
+                        assert_runtime_boundary_eq(boundary, &expected, label);
+                        calls.set(calls.get() + 1);
+                        Ok(committed_outcome())
+                    },
+                    unreachable_abandon,
+                );
+
+                assert_eq!(
+                    result.unwrap_or_else(|error| panic!("{label}: expected success: {error}")),
+                    "",
+                    "{label}"
+                );
+                assert_eq!(calls.get(), 1, "{label}: coordinate call count");
+            }
         }
 
         #[test]
-        fn abandon_calls_abandon_scope_only() {
+        fn abandon_dispatches_only_to_abandon_scope() {
+            let seen = RefCell::new(Vec::new());
             let result = drive_mutation_scope(
                 Path::new("/unused"),
                 MutationScopePayload::Abandon {
@@ -663,29 +840,13 @@ mod tests {
                 None,
                 unreachable_coordinate,
                 |_root, scope| {
-                    assert_eq!(scope.0, "A");
+                    seen.borrow_mut().push(scope.0.clone());
                     Ok(abandoned_outcome())
                 },
             );
 
             assert_eq!(result.expect("abandon should succeed"), "");
-        }
-
-        #[test]
-        fn successful_boundary_produces_empty_stdout() {
-            let result = drive_mutation_scope(
-                Path::new("/unused"),
-                MutationScopePayload::Advance {
-                    scope_id: "A".to_string(),
-                    event_id: "e2".to_string(),
-                    actor_kind: ActorKind::Codex,
-                },
-                None,
-                |_root, _boundary| Ok(committed_outcome()),
-                unreachable_abandon,
-            );
-
-            assert_eq!(result.expect("advance should succeed"), "");
+            assert_eq!(seen.into_inner(), vec!["A".to_string()]);
         }
 
         #[test]
@@ -765,12 +926,6 @@ mod tests {
                 |_root, _scope| Err(AbandonScopeError::Other(anyhow!("lock acquisition failed"))),
             );
 
-            assert!(result.is_err());
-        }
-
-        #[test]
-        fn malformed_payload_returns_err() {
-            let result = run_mutation_scope_from_payload(Path::new("/unused"), "{", None);
             assert!(result.is_err());
         }
     }
