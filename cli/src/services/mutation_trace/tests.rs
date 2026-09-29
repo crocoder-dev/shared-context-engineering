@@ -104,8 +104,6 @@ fn prepare_and_commit(
     commit(&prepared, attempt)
 }
 
-/// Table-driven: `is_live`/`is_terminal` over every `ScopeStatus` variant.
-/// Refines `isLive`/`isTerminal` (`spec/mutation_cursor.qnt:167-170`).
 #[test]
 fn scope_status_live_and_terminal_table() {
     let cases = [
@@ -124,17 +122,11 @@ fn scope_status_live_and_terminal_table() {
     }
 }
 
-/// Table-driven: `boundary_worktree` resolution across boundary kinds and
-/// scope-map states. Proves the lookup is keyed by each boundary's own
-/// `ScopeId` (not a hardcoded scope), resolves `None` for a scope absent
-/// from the map, and resolves `Flush` directly without consulting the map
-/// at all. Refines `boundaryWorktree` (`spec/mutation_cursor.qnt:172-178`).
 #[test]
 fn boundary_worktree_resolution_table() {
     let scopes = scopes();
     let empty_scopes = BTreeMap::new();
 
-    // (label, boundary, use_empty_scope_map, expected)
     let cases = [
         (
             "start keyed to scope0's worktree",
@@ -190,36 +182,59 @@ fn boundary_worktree_resolution_table() {
     }
 }
 
-/// Table-driven: `boundary_scope`/`boundary_event`/`boundary_event_key`
-/// across boundary kinds. Every hook boundary (`Start`/`Advance`/`Close`)
-/// yields its own scope/event, correctly paired into an `EventKey`; `Flush`
-/// yields `None` for all three, since it carries no scope or event. Refines
-/// `boundaryScope`/`boundaryEvent`/`boundaryEventKey`
-/// (`spec/mutation_cursor.qnt:180-202`).
 #[test]
 fn boundary_scope_event_and_key_table() {
-    for boundary in [start_boundary(), advance_boundary(), close_boundary()] {
-        assert!(boundary_scope(&boundary).is_some(), "{boundary:?}");
-        assert!(boundary_event(&boundary).is_some(), "{boundary:?}");
-        assert!(boundary_event_key(&boundary).is_some(), "{boundary:?}");
-    }
-    assert_eq!(boundary_scope(&flush_boundary()), None);
-    assert_eq!(boundary_event(&flush_boundary()), None);
-    assert_eq!(boundary_event_key(&flush_boundary()), None);
+    let cases = [
+        (
+            "start",
+            start_boundary(),
+            Some(scope("scope0")),
+            Some(event("event0")),
+        ),
+        (
+            "advance",
+            advance_boundary(),
+            Some(scope("scope0")),
+            Some(event("event1")),
+        ),
+        (
+            "close",
+            close_boundary(),
+            Some(scope("scope0")),
+            Some(event("event2")),
+        ),
+        ("flush", flush_boundary(), None, None),
+    ];
 
-    let key = boundary_event_key(&start_boundary()).expect("start boundary has an event key");
-    assert_eq!(key.scope_id, scope("scope0"));
-    assert_eq!(key.event_id, event("event0"));
+    for (label, boundary, expected_scope, expected_event) in cases {
+        assert_eq!(
+            boundary_scope(&boundary),
+            expected_scope,
+            "boundary_scope({label})"
+        );
+        assert_eq!(
+            boundary_event(&boundary),
+            expected_event,
+            "boundary_event({label})"
+        );
+
+        let expected_key = match (&expected_scope, &expected_event) {
+            (Some(scope_id), Some(event_id)) => Some(EventKey {
+                scope_id: scope_id.clone(),
+                event_id: event_id.clone(),
+            }),
+            _ => None,
+        };
+        assert_eq!(
+            boundary_event_key(&boundary),
+            expected_key,
+            "boundary_event_key({label})"
+        );
+    }
 }
 
-/// Table-driven: `is_hook`/`is_start`/`is_advance`/`is_close`/`is_flush`
-/// over every boundary kind. Makes the full truth table explicit and proves
-/// exactly one of `is_start`/`is_advance`/`is_close`/`is_flush` holds per
-/// boundary. Refines `isHook`/`isStart`/`isAdvance`/`isClose`/`isFlush`
-/// (`spec/mutation_cursor.qnt:204-234`).
 #[test]
 fn boundary_kind_predicate_table() {
-    // label, boundary, hook, start, advance, close, flush
     let cases = [
         ("start", start_boundary(), true, true, false, false, false),
         (
@@ -236,15 +251,20 @@ fn boundary_kind_predicate_table() {
     ];
     for (label, boundary, hook, start, advance, close, flush) in cases {
         assert_eq!(is_hook(&boundary), hook, "is_hook({label})");
-        assert_eq!(is_start(&boundary), start, "is_start({label})");
-        assert_eq!(is_advance(&boundary), advance, "is_advance({label})");
-        assert_eq!(is_close(&boundary), close, "is_close({label})");
-        assert_eq!(is_flush(&boundary), flush, "is_flush({label})");
+
+        let actual = [
+            is_start(&boundary),
+            is_advance(&boundary),
+            is_close(&boundary),
+            is_flush(&boundary),
+        ];
         assert_eq!(
-            [start, advance, close, flush]
-                .iter()
-                .filter(|flag| **flag)
-                .count(),
+            actual,
+            [start, advance, close, flush],
+            "kind predicates for {label}"
+        );
+        assert_eq!(
+            actual.iter().filter(|flag| **flag).count(),
             1,
             "exactly one kind predicate should hold for {label}"
         );
@@ -503,13 +523,6 @@ fn commit_rejects_an_externally_tainted_worktree_even_with_a_fresh_revision_and_
     );
 }
 
-/// Table-driven: an accepted attempt whose boundary does not "observe" its
-/// scope (an already-`Active` `Start`, a `NeverSeen` `Advance`, or a
-/// terminal `Close`) still advances the worktree revision and marks the
-/// hook's `EventKey` processed, but leaves the cursor and scope status
-/// untouched. Refines the `observes` guard at
-/// `spec/mutation_cursor.qnt:462-483`; each row is a real prepare+commit
-/// sequence, not a manually constructed post-state.
 #[test]
 fn accepted_but_non_observing_boundaries_advance_revision_without_observing_effects() {
     let cases = [
@@ -527,6 +540,11 @@ fn accepted_but_non_observing_boundaries_advance_revision_without_observing_effe
             "close on an abandoned (terminal) scope",
             close_boundary(),
             ScopeStatus::Abandoned,
+        ),
+        (
+            "close on a closed (terminal) scope",
+            close_boundary(),
+            ScopeStatus::Closed,
         ),
     ];
 
@@ -666,123 +684,101 @@ fn live_scopes_on_filters_by_worktree_and_liveness() {
 }
 
 #[test]
-fn attribution_for_is_ineligible_unscoped_when_no_scope_is_live() {
-    let mut state = ProtocolState::default();
-    state
-        .worktrees
-        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+fn attribution_for_classification_table() {
+    struct Case {
+        label: &'static str,
+        worktree_state: Option<WorktreeState>,
+        externally_tainted: bool,
+        live_scopes: &'static [&'static str],
+        expected: Attribution,
+    }
 
-    assert_eq!(
-        attribution_for(&state, &worktree("wt0")),
-        Attribution::IneligibleUnscoped
-    );
-}
-
-#[test]
-fn attribution_for_is_ai_exclusive_for_exactly_one_live_scope() {
-    let mut state = ProtocolState::default();
-    state
-        .worktrees
-        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
-    state.scopes.insert(
-        scope("scope0"),
-        scope_with_status(ScopeStatus::Active, worktree("wt0")),
-    );
-
-    assert_eq!(
-        attribution_for(&state, &worktree("wt0")),
-        Attribution::AiExclusive(scope("scope0"))
-    );
-}
-
-#[test]
-fn attribution_for_is_ai_contended_for_multiple_live_scopes() {
-    let mut state = ProtocolState::default();
-    state
-        .worktrees
-        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
-    state.scopes.insert(
-        scope("scope0"),
-        scope_with_status(ScopeStatus::Active, worktree("wt0")),
-    );
-    state.scopes.insert(
-        scope("scope1"),
-        scope_with_status(ScopeStatus::Active, worktree("wt0")),
-    );
-
-    assert_eq!(
-        attribution_for(&state, &worktree("wt0")),
-        Attribution::AiContended
-    );
-}
-
-#[test]
-fn attribution_for_is_ineligible_unscoped_when_worktree_has_a_snapshot_failure_even_with_an_active_scope(
-) {
-    let mut state = ProtocolState::default();
-    state.worktrees.insert(
-        worktree("wt0"),
-        WorktreeState {
-            cursor_tree: tree("tree0"),
-            revision: 0,
-            tainted: true,
-            failure_kind: FailureKind::SnapshotFailure,
-            needs_rebaseline: false,
+    let cases = [
+        Case {
+            label: "no live scopes",
+            worktree_state: Some(healthy_worktree(tree("tree0"), 0)),
+            externally_tainted: false,
+            live_scopes: &[],
+            expected: Attribution::IneligibleUnscoped,
         },
-    );
-    state.scopes.insert(
-        scope("scope0"),
-        scope_with_status(ScopeStatus::Active, worktree("wt0")),
-    );
-
-    assert_eq!(
-        attribution_for(&state, &worktree("wt0")),
-        Attribution::IneligibleUnscoped
-    );
-}
-
-#[test]
-fn attribution_for_is_ineligible_unscoped_when_worktree_is_externally_tainted_even_with_an_active_scope(
-) {
-    let mut state = ProtocolState::default();
-    state
-        .worktrees
-        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
-    state.external_taint.insert(worktree("wt0"));
-    state.scopes.insert(
-        scope("scope0"),
-        scope_with_status(ScopeStatus::Active, worktree("wt0")),
-    );
-
-    assert_eq!(
-        attribution_for(&state, &worktree("wt0")),
-        Attribution::IneligibleUnscoped
-    );
-}
-
-#[test]
-fn attribution_for_is_ineligible_unscoped_when_worktree_needs_rebaseline_even_with_an_active_scope()
-{
-    let mut state = ProtocolState::default();
-    state.worktrees.insert(
-        worktree("wt0"),
-        WorktreeState {
-            cursor_tree: tree("tree0"),
-            revision: 0,
-            tainted: false,
-            failure_kind: FailureKind::Healthy,
-            needs_rebaseline: true,
+        Case {
+            label: "one live scope",
+            worktree_state: Some(healthy_worktree(tree("tree0"), 0)),
+            externally_tainted: false,
+            live_scopes: &["scope0"],
+            expected: Attribution::AiExclusive(scope("scope0")),
         },
-    );
-    state.scopes.insert(
-        scope("scope0"),
-        scope_with_status(ScopeStatus::Active, worktree("wt0")),
-    );
+        Case {
+            label: "two live scopes",
+            worktree_state: Some(healthy_worktree(tree("tree0"), 0)),
+            externally_tainted: false,
+            live_scopes: &["scope0", "scope1"],
+            expected: Attribution::AiContended,
+        },
+        Case {
+            label: "active scope + snapshot taint",
+            worktree_state: Some(WorktreeState {
+                cursor_tree: tree("tree0"),
+                revision: 0,
+                tainted: true,
+                failure_kind: FailureKind::SnapshotFailure,
+                needs_rebaseline: false,
+            }),
+            externally_tainted: false,
+            live_scopes: &["scope0"],
+            expected: Attribution::IneligibleUnscoped,
+        },
+        Case {
+            label: "active scope + external taint",
+            worktree_state: Some(healthy_worktree(tree("tree0"), 0)),
+            externally_tainted: true,
+            live_scopes: &["scope0"],
+            expected: Attribution::IneligibleUnscoped,
+        },
+        Case {
+            label: "active scope + needs_rebaseline",
+            worktree_state: Some(WorktreeState {
+                cursor_tree: tree("tree0"),
+                revision: 0,
+                tainted: false,
+                failure_kind: FailureKind::Healthy,
+                needs_rebaseline: true,
+            }),
+            externally_tainted: false,
+            live_scopes: &["scope0"],
+            expected: Attribution::IneligibleUnscoped,
+        },
+        Case {
+            label: "missing durable worktree",
+            worktree_state: None,
+            externally_tainted: false,
+            live_scopes: &["scope0"],
+            expected: Attribution::IneligibleUnscoped,
+        },
+    ];
 
-    assert_eq!(
-        attribution_for(&state, &worktree("wt0")),
-        Attribution::IneligibleUnscoped
-    );
+    for case in cases {
+        let mut state = ProtocolState::default();
+        if let Some(worktree_state) = case.worktree_state {
+            state.worktrees.insert(worktree("wt0"), worktree_state);
+        }
+        if case.externally_tainted {
+            state.external_taint.insert(worktree("wt0"));
+        }
+        for scope_id in case.live_scopes {
+            state.scopes.insert(
+                scope(scope_id),
+                scope_with_status(ScopeStatus::Active, worktree("wt0")),
+            );
+        }
+
+        assert_eq!(
+            attribution_for(&state, &worktree("wt0")),
+            case.expected,
+            "{}",
+            case.label
+        );
+    }
 }
 
 #[test]
@@ -932,45 +928,39 @@ fn taint_changes_exactly_tainted_failure_kind_and_revision() {
 }
 
 #[test]
-fn taint_is_a_no_op_when_already_tainted() {
-    let mut state = ProtocolState::default();
-    state.worktrees.insert(
-        worktree("wt0"),
-        WorktreeState {
-            cursor_tree: tree("tree0"),
-            revision: 0,
-            tainted: true,
-            failure_kind: FailureKind::SnapshotFailure,
-            needs_rebaseline: false,
-        },
-    );
+fn taint_is_a_no_op_for_blocked_preconditions() {
+    let already_snapshot_tainted = {
+        let mut state = ProtocolState::default();
+        state.worktrees.insert(
+            worktree("wt0"),
+            WorktreeState {
+                cursor_tree: tree("tree0"),
+                revision: 0,
+                tainted: true,
+                failure_kind: FailureKind::SnapshotFailure,
+                needs_rebaseline: false,
+            },
+        );
+        state
+    };
+    let already_externally_tainted = {
+        let mut state = ProtocolState::default();
+        state
+            .worktrees
+            .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+        state.external_taint.insert(worktree("wt0"));
+        state
+    };
+    let unknown_worktree = ProtocolState::default();
 
-    let next = taint(&state, &worktree("wt0"));
-
-    assert_eq!(next, state);
-}
-
-#[test]
-fn taint_is_a_no_op_when_externally_tainted() {
-    let mut state = ProtocolState::default();
-    state
-        .worktrees
-        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
-    state.external_taint.insert(worktree("wt0"));
-
-    let next = taint(&state, &worktree("wt0"));
-
-    assert_eq!(next, state);
-}
-
-#[test]
-fn taint_is_a_no_op_for_an_unknown_worktree() {
-    let state = ProtocolState::default();
-
-    let next = taint(&state, &worktree("unknown"));
-
-    assert_eq!(next, state);
-    assert!(!next.worktrees.contains_key(&worktree("unknown")));
+    for (label, state) in [
+        ("already snapshot-tainted", already_snapshot_tainted),
+        ("already externally tainted", already_externally_tainted),
+        ("unknown worktree", unknown_worktree),
+    ] {
+        let next = taint(&state, &worktree("wt0"));
+        assert_eq!(next, state, "{label}");
+    }
 }
 
 #[test]
@@ -995,26 +985,28 @@ fn database_failure_changes_exactly_external_taint() {
 }
 
 #[test]
-fn database_failure_is_a_no_op_when_already_externally_tainted() {
-    let mut state = ProtocolState::default();
-    state
-        .worktrees
-        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
-    state.external_taint.insert(worktree("wt0"));
+fn database_failure_is_a_no_op_for_blocked_preconditions() {
+    let already_externally_tainted = {
+        let mut state = ProtocolState::default();
+        state
+            .worktrees
+            .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+        state.external_taint.insert(worktree("wt0"));
+        state
+    };
+    let unknown_worktree = ProtocolState::default();
 
-    let next = database_failure(&state, &worktree("wt0"));
-
-    assert_eq!(next, state);
-}
-
-#[test]
-fn database_failure_is_a_no_op_for_an_unknown_worktree() {
-    let state = ProtocolState::default();
-
-    let next = database_failure(&state, &worktree("unknown"));
-
-    assert_eq!(next, state);
-    assert!(!next.external_taint.contains(&worktree("unknown")));
+    for (label, state, target) in [
+        (
+            "already externally tainted",
+            already_externally_tainted,
+            worktree("wt0"),
+        ),
+        ("unknown worktree", unknown_worktree, worktree("unknown")),
+    ] {
+        let next = database_failure(&state, &target);
+        assert_eq!(next, state, "{label}");
+    }
 }
 
 #[test]
@@ -1071,10 +1063,6 @@ fn abandon_preserves_other_live_scopes_on_the_same_worktree() {
     );
 }
 
-/// Table-driven: `abandon` is a guarded no-op for every non-live
-/// `ScopeStatus` (`NeverSeen`, `Closed`, `Abandoned`) — only `Active`
-/// scopes can be abandoned. Refines the `isLive` guard in `abandonLiveScope`
-/// (`spec/mutation_cursor.qnt:739-805`).
 #[test]
 fn abandon_is_a_no_op_for_non_live_scope_statuses() {
     for status in [
@@ -1302,25 +1290,27 @@ fn recover_with_only_needs_rebaseline_preserves_live_scopes() {
 }
 
 #[test]
-fn recover_is_a_no_op_on_an_already_healthy_worktree_with_no_rebaseline_need() {
-    let mut state = ProtocolState::default();
-    state
-        .worktrees
-        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+fn recover_is_a_no_op_for_blocked_preconditions() {
+    let already_healthy = {
+        let mut state = ProtocolState::default();
+        state
+            .worktrees
+            .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+        state
+    };
+    let unknown_worktree = ProtocolState::default();
 
-    let next = recover(&state, &worktree("wt0"), tree("tree1"));
-
-    assert_eq!(next, state);
-}
-
-#[test]
-fn recover_is_a_no_op_for_an_unknown_worktree() {
-    let state = ProtocolState::default();
-
-    let next = recover(&state, &worktree("unknown"), tree("tree1"));
-
-    assert_eq!(next, state);
-    assert!(!next.worktrees.contains_key(&worktree("unknown")));
+    for (label, state, target) in [
+        (
+            "already healthy, no rebaseline need",
+            already_healthy,
+            worktree("wt0"),
+        ),
+        ("unknown worktree", unknown_worktree, worktree("unknown")),
+    ] {
+        let next = recover(&state, &target, tree("tree1"));
+        assert_eq!(next, state, "{label}");
+    }
 }
 
 // T07: cross-action state-sequence tests. Each of the eight scenarios below
