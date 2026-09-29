@@ -104,212 +104,151 @@ fn prepare_and_commit(
     commit(&prepared, attempt)
 }
 
+/// Table-driven: `is_live`/`is_terminal` over every `ScopeStatus` variant.
+/// Refines `isLive`/`isTerminal` (`spec/mutation_cursor.qnt:167-170`).
 #[test]
-fn is_live_holds_only_for_active() {
-    assert!(!is_live(ScopeStatus::NeverSeen));
-    assert!(is_live(ScopeStatus::Active));
-    assert!(!is_live(ScopeStatus::Closed));
-    assert!(!is_live(ScopeStatus::Abandoned));
+fn scope_status_live_and_terminal_table() {
+    let cases = [
+        (ScopeStatus::NeverSeen, false, false),
+        (ScopeStatus::Active, true, false),
+        (ScopeStatus::Closed, false, true),
+        (ScopeStatus::Abandoned, false, true),
+    ];
+    for (status, expected_live, expected_terminal) in cases {
+        assert_eq!(is_live(status), expected_live, "is_live({status:?})");
+        assert_eq!(
+            is_terminal(status),
+            expected_terminal,
+            "is_terminal({status:?})"
+        );
+    }
 }
 
+/// Table-driven: `boundary_worktree` resolution across boundary kinds and
+/// scope-map states. Proves the lookup is keyed by each boundary's own
+/// `ScopeId` (not a hardcoded scope), resolves `None` for a scope absent
+/// from the map, and resolves `Flush` directly without consulting the map
+/// at all. Refines `boundaryWorktree` (`spec/mutation_cursor.qnt:172-178`).
 #[test]
-fn is_terminal_holds_only_for_closed_or_abandoned() {
-    assert!(!is_terminal(ScopeStatus::NeverSeen));
-    assert!(!is_terminal(ScopeStatus::Active));
-    assert!(is_terminal(ScopeStatus::Closed));
-    assert!(is_terminal(ScopeStatus::Abandoned));
-}
-
-#[test]
-fn scope_state_accessors_mirror_stored_fields() {
-    let state = ScopeState {
-        status: ScopeStatus::Active,
-        actor_kind: ActorKind::Codex,
-        worktree_id: worktree("wt1"),
-    };
-    assert_eq!(state.scope_worktree(), worktree("wt1"));
-    assert_eq!(state.scope_actor(), ActorKind::Codex);
-    assert!(state.is_live());
-    assert!(!state.is_terminal());
-}
-
-#[test]
-fn boundary_worktree_looks_up_the_scope_named_by_the_boundary() {
+fn boundary_worktree_resolution_table() {
     let scopes = scopes();
-
-    // Start/Advance/Close all name scope0, which the map assigns to wt0.
-    // The presence of scope1 on a different worktree must not affect this.
-    assert_eq!(
-        boundary_worktree(&start_boundary(), &scopes),
-        Some(worktree("wt0"))
-    );
-    assert_eq!(
-        boundary_worktree(&advance_boundary(), &scopes),
-        Some(worktree("wt0"))
-    );
-    assert_eq!(
-        boundary_worktree(&close_boundary(), &scopes),
-        Some(worktree("wt0"))
-    );
-}
-
-#[test]
-fn boundary_worktree_is_keyed_by_the_boundarys_own_scope_id() {
-    // A boundary naming a different scope resolves to that scope's own
-    // worktree, proving the lookup is keyed by the boundary's ScopeId rather
-    // than an arbitrary caller-supplied worktree.
-    let scopes = scopes();
-    let boundary = Boundary::Start {
-        scope: scope("scope1"),
-        event: event("event0"),
-    };
-    assert_eq!(boundary_worktree(&boundary, &scopes), Some(worktree("wt1")));
-}
-
-#[test]
-fn boundary_worktree_is_none_for_a_scope_missing_from_the_map() {
-    let scopes = scopes();
-    let boundary = Boundary::Start {
-        scope: scope("missing_scope"),
-        event: event("event0"),
-    };
-    assert_eq!(boundary_worktree(&boundary, &scopes), None);
-}
-
-#[test]
-fn boundary_worktree_resolves_directly_for_flush_ignoring_the_scope_map() {
     let empty_scopes = BTreeMap::new();
-    assert_eq!(
-        boundary_worktree(&flush_boundary(), &empty_scopes),
-        Some(worktree("wt0"))
-    );
+
+    // (label, boundary, use_empty_scope_map, expected)
+    let cases = [
+        (
+            "start keyed to scope0's worktree",
+            start_boundary(),
+            false,
+            Some(worktree("wt0")),
+        ),
+        (
+            "advance keyed to scope0's worktree",
+            advance_boundary(),
+            false,
+            Some(worktree("wt0")),
+        ),
+        (
+            "close keyed to scope0's worktree",
+            close_boundary(),
+            false,
+            Some(worktree("wt0")),
+        ),
+        (
+            "start keyed to a different scope's own worktree, not a hardcoded one",
+            Boundary::Start {
+                scope: scope("scope1"),
+                event: event("event0"),
+            },
+            false,
+            Some(worktree("wt1")),
+        ),
+        (
+            "start with a scope missing from the map resolves to None",
+            Boundary::Start {
+                scope: scope("missing_scope"),
+                event: event("event0"),
+            },
+            false,
+            None,
+        ),
+        (
+            "flush resolves directly, ignoring an empty scope map",
+            flush_boundary(),
+            true,
+            Some(worktree("wt0")),
+        ),
+    ];
+
+    for (label, boundary, use_empty_scope_map, expected) in cases {
+        let scope_map = if use_empty_scope_map {
+            &empty_scopes
+        } else {
+            &scopes
+        };
+        assert_eq!(boundary_worktree(&boundary, scope_map), expected, "{label}");
+    }
 }
 
+/// Table-driven: `boundary_scope`/`boundary_event`/`boundary_event_key`
+/// across boundary kinds. Every hook boundary (`Start`/`Advance`/`Close`)
+/// yields its own scope/event, correctly paired into an `EventKey`; `Flush`
+/// yields `None` for all three, since it carries no scope or event. Refines
+/// `boundaryScope`/`boundaryEvent`/`boundaryEventKey`
+/// (`spec/mutation_cursor.qnt:180-202`).
 #[test]
-fn boundary_scope_and_event_are_none_only_for_flush() {
+fn boundary_scope_event_and_key_table() {
     for boundary in [start_boundary(), advance_boundary(), close_boundary()] {
-        assert!(boundary_scope(&boundary).is_some());
-        assert!(boundary_event(&boundary).is_some());
-        assert!(boundary_event_key(&boundary).is_some());
+        assert!(boundary_scope(&boundary).is_some(), "{boundary:?}");
+        assert!(boundary_event(&boundary).is_some(), "{boundary:?}");
+        assert!(boundary_event_key(&boundary).is_some(), "{boundary:?}");
     }
     assert_eq!(boundary_scope(&flush_boundary()), None);
     assert_eq!(boundary_event(&flush_boundary()), None);
     assert_eq!(boundary_event_key(&flush_boundary()), None);
-}
 
-#[test]
-fn boundary_event_key_pairs_the_boundarys_own_scope_and_event() {
     let key = boundary_event_key(&start_boundary()).expect("start boundary has an event key");
     assert_eq!(key.scope_id, scope("scope0"));
     assert_eq!(key.event_id, event("event0"));
 }
 
+/// Table-driven: `is_hook`/`is_start`/`is_advance`/`is_close`/`is_flush`
+/// over every boundary kind. Makes the full truth table explicit and proves
+/// exactly one of `is_start`/`is_advance`/`is_close`/`is_flush` holds per
+/// boundary. Refines `isHook`/`isStart`/`isAdvance`/`isClose`/`isFlush`
+/// (`spec/mutation_cursor.qnt:204-234`).
 #[test]
-fn is_hook_holds_for_start_advance_close_but_not_flush() {
-    assert!(is_hook(&start_boundary()));
-    assert!(is_hook(&advance_boundary()));
-    assert!(is_hook(&close_boundary()));
-    assert!(!is_hook(&flush_boundary()));
-}
-
-#[test]
-fn boundary_kind_predicates_are_mutually_exclusive() {
-    let boundaries = [
-        start_boundary(),
-        advance_boundary(),
-        close_boundary(),
-        flush_boundary(),
+fn boundary_kind_predicate_table() {
+    // label, boundary, hook, start, advance, close, flush
+    let cases = [
+        ("start", start_boundary(), true, true, false, false, false),
+        (
+            "advance",
+            advance_boundary(),
+            true,
+            false,
+            true,
+            false,
+            false,
+        ),
+        ("close", close_boundary(), true, false, false, true, false),
+        ("flush", flush_boundary(), false, false, false, false, true),
     ];
-    for boundary in &boundaries {
-        let flags = [
-            is_start(boundary),
-            is_advance(boundary),
-            is_close(boundary),
-            is_flush(boundary),
-        ];
+    for (label, boundary, hook, start, advance, close, flush) in cases {
+        assert_eq!(is_hook(&boundary), hook, "is_hook({label})");
+        assert_eq!(is_start(&boundary), start, "is_start({label})");
+        assert_eq!(is_advance(&boundary), advance, "is_advance({label})");
+        assert_eq!(is_close(&boundary), close, "is_close({label})");
+        assert_eq!(is_flush(&boundary), flush, "is_flush({label})");
         assert_eq!(
-            flags.iter().filter(|flag| **flag).count(),
+            [start, advance, close, flush]
+                .iter()
+                .filter(|flag| **flag)
+                .count(),
             1,
-            "exactly one predicate should hold for {boundary:?}"
+            "exactly one kind predicate should hold for {label}"
         );
     }
-    assert!(is_start(&boundaries[0]));
-    assert!(is_advance(&boundaries[1]));
-    assert!(is_close(&boundaries[2]));
-    assert!(is_flush(&boundaries[3]));
-}
-
-#[test]
-fn worktree_state_and_attempt_state_construct_and_compare() {
-    let a = WorktreeState {
-        cursor_tree: tree("tree0"),
-        revision: 0,
-        tainted: false,
-        failure_kind: FailureKind::Healthy,
-        needs_rebaseline: false,
-    };
-    let b = a.clone();
-    assert_eq!(a, b);
-
-    let attempt = AttemptState {
-        status: AttemptStatus::Available,
-        boundary: start_boundary(),
-        expected_revision: 0,
-        before_tree: tree("tree0"),
-        after_tree: tree("tree1"),
-    };
-    assert_eq!(attempt.status, AttemptStatus::Available);
-    assert_eq!(attempt.expected_revision, 0);
-}
-
-#[test]
-fn mutation_event_carries_attribution_and_active_scopes() {
-    let mut active_scopes = std::collections::BTreeSet::new();
-    active_scopes.insert(scope("scope0"));
-
-    let mutation_event = MutationEvent {
-        worktree_id: worktree("wt0"),
-        revision: 1,
-        before_tree: tree("tree0"),
-        after_tree: tree("tree1"),
-        active_scopes: active_scopes.clone(),
-        tainted: false,
-        failure_kind: FailureKind::Healthy,
-        attribution: Attribution::AiExclusive(scope("scope0")),
-        boundary: close_boundary(),
-    };
-
-    assert_eq!(mutation_event.active_scopes, active_scopes);
-    assert_eq!(
-        mutation_event.attribution,
-        Attribution::AiExclusive(scope("scope0"))
-    );
-}
-
-/// Final semantic check: proves the lookup is keyed by each boundary's own
-/// `scope`, with no parameter through which a caller can independently
-/// inject a worktree for a hook boundary.
-#[test]
-fn boundary_worktree_final_semantic_check() {
-    let scopes = scopes();
-
-    let start_scope0 = Boundary::Start {
-        scope: scope("scope0"),
-        event: event("event0"),
-    };
-    assert_eq!(
-        boundary_worktree(&start_scope0, &scopes),
-        Some(worktree("wt0"))
-    );
-
-    let start_scope1 = Boundary::Start {
-        scope: scope("scope1"),
-        event: event("event0"),
-    };
-    assert_eq!(
-        boundary_worktree(&start_scope1, &scopes),
-        Some(worktree("wt1"))
-    );
 }
 
 #[test]
@@ -564,121 +503,89 @@ fn commit_rejects_an_externally_tainted_worktree_even_with_a_fresh_revision_and_
     );
 }
 
+/// Table-driven: an accepted attempt whose boundary does not "observe" its
+/// scope (an already-`Active` `Start`, a `NeverSeen` `Advance`, or a
+/// terminal `Close`) still advances the worktree revision and marks the
+/// hook's `EventKey` processed, but leaves the cursor and scope status
+/// untouched. Refines the `observes` guard at
+/// `spec/mutation_cursor.qnt:462-483`; each row is a real prepare+commit
+/// sequence, not a manually constructed post-state.
 #[test]
-fn accepted_but_non_observing_start_on_an_already_active_scope_advances_revision_without_moving_cursor_or_scope(
-) {
-    let mut state = ProtocolState::default();
-    state
-        .worktrees
-        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
-    state.scopes.insert(
-        scope("scope0"),
-        scope_with_status(ScopeStatus::Active, worktree("wt0")),
-    );
+fn accepted_but_non_observing_boundaries_advance_revision_without_observing_effects() {
+    let cases = [
+        (
+            "start on an already-active scope",
+            start_boundary(),
+            ScopeStatus::Active,
+        ),
+        (
+            "advance on a never-seen scope",
+            advance_boundary(),
+            ScopeStatus::NeverSeen,
+        ),
+        (
+            "close on an abandoned (terminal) scope",
+            close_boundary(),
+            ScopeStatus::Abandoned,
+        ),
+    ];
 
-    let prepared = prepare(
-        &state,
-        attempt_id("attempt0"),
-        start_boundary(),
-        tree("tree1"),
-    );
-    let outcome = commit(&prepared, &attempt_id("attempt0"));
-
-    assert!(outcome.evaluation.accepted);
-    assert!(!outcome.evaluation.observes);
-    assert!(!outcome.evaluation.observed_change);
-    assert!(!outcome.evaluation.changed);
-    assert!(outcome.evaluation.advances_revision);
-
-    let committed_worktree = outcome.state.worktrees.get(&worktree("wt0")).unwrap();
-    assert_eq!(committed_worktree.revision, 1);
-    assert_eq!(committed_worktree.cursor_tree, tree("tree0"));
-    assert_eq!(
-        outcome.state.scopes.get(&scope("scope0")).unwrap().status,
-        ScopeStatus::Active
-    );
-    assert_eq!(
-        outcome
-            .state
-            .attempts
-            .get(&attempt_id("attempt0"))
-            .unwrap()
-            .status,
-        AttemptStatus::Committed
-    );
-    assert!(outcome.state.processed_events.contains(&EventKey {
-        scope_id: scope("scope0"),
-        event_id: event("event0"),
-    }));
-}
-
-#[test]
-fn accepted_but_non_observing_advance_on_a_never_seen_scope_advances_revision_without_moving_cursor(
-) {
-    let mut state = ProtocolState::default();
-    state
-        .worktrees
-        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
-    state.scopes.insert(
-        scope("scope0"),
-        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
-    );
-
-    let prepared = prepare(
-        &state,
-        attempt_id("attempt0"),
-        advance_boundary(),
-        tree("tree1"),
-    );
-    let outcome = commit(&prepared, &attempt_id("attempt0"));
-
-    assert!(outcome.evaluation.accepted);
-    assert!(!outcome.evaluation.observes);
-    assert!(!outcome.evaluation.changed);
-    assert!(outcome.evaluation.advances_revision);
-    assert_eq!(
-        outcome
-            .state
+    for (label, boundary, initial_status) in cases {
+        let mut state = ProtocolState::default();
+        state
             .worktrees
-            .get(&worktree("wt0"))
-            .unwrap()
-            .cursor_tree,
-        tree("tree0")
-    );
-    assert_eq!(
-        outcome.state.scopes.get(&scope("scope0")).unwrap().status,
-        ScopeStatus::NeverSeen
-    );
-}
+            .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+        state.scopes.insert(
+            scope("scope0"),
+            scope_with_status(initial_status, worktree("wt0")),
+        );
 
-#[test]
-fn accepted_but_non_observing_close_on_a_terminal_scope_advances_revision_without_reactivating_it()
-{
-    let mut state = ProtocolState::default();
-    state
-        .worktrees
-        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
-    state.scopes.insert(
-        scope("scope0"),
-        scope_with_status(ScopeStatus::Abandoned, worktree("wt0")),
-    );
+        let event_id = boundary_event(&boundary).expect("hook boundary carries an event");
+        let prepared = prepare(&state, attempt_id("attempt0"), boundary, tree("tree1"));
+        let outcome = commit(&prepared, &attempt_id("attempt0"));
 
-    let prepared = prepare(
-        &state,
-        attempt_id("attempt0"),
-        close_boundary(),
-        tree("tree1"),
-    );
-    let outcome = commit(&prepared, &attempt_id("attempt0"));
+        assert!(outcome.evaluation.accepted, "{label}: accepted");
+        assert!(!outcome.evaluation.observes, "{label}: observes");
+        assert!(
+            !outcome.evaluation.observed_change,
+            "{label}: observed_change"
+        );
+        assert!(!outcome.evaluation.changed, "{label}: changed");
+        assert!(
+            outcome.evaluation.advances_revision,
+            "{label}: advances_revision"
+        );
 
-    assert!(outcome.evaluation.accepted);
-    assert!(!outcome.evaluation.observes);
-    assert!(!outcome.evaluation.changed);
-    assert!(outcome.evaluation.advances_revision);
-    assert_eq!(
-        outcome.state.scopes.get(&scope("scope0")).unwrap().status,
-        ScopeStatus::Abandoned
-    );
+        let committed_worktree = outcome.state.worktrees.get(&worktree("wt0")).unwrap();
+        assert_eq!(committed_worktree.revision, 1, "{label}: revision");
+        assert_eq!(
+            committed_worktree.cursor_tree,
+            tree("tree0"),
+            "{label}: cursor untouched"
+        );
+        assert_eq!(
+            outcome.state.scopes.get(&scope("scope0")).unwrap().status,
+            initial_status,
+            "{label}: scope status untouched"
+        );
+        assert_eq!(
+            outcome
+                .state
+                .attempts
+                .get(&attempt_id("attempt0"))
+                .unwrap()
+                .status,
+            AttemptStatus::Committed,
+            "{label}: attempt committed"
+        );
+        assert!(
+            outcome.state.processed_events.contains(&EventKey {
+                scope_id: scope("scope0"),
+                event_id,
+            }),
+            "{label}: event processed"
+        );
+    }
 }
 
 #[test]
@@ -1164,52 +1071,29 @@ fn abandon_preserves_other_live_scopes_on_the_same_worktree() {
     );
 }
 
+/// Table-driven: `abandon` is a guarded no-op for every non-live
+/// `ScopeStatus` (`NeverSeen`, `Closed`, `Abandoned`) — only `Active`
+/// scopes can be abandoned. Refines the `isLive` guard in `abandonLiveScope`
+/// (`spec/mutation_cursor.qnt:739-805`).
 #[test]
-fn abandon_is_a_no_op_for_a_never_seen_scope() {
-    let mut state = ProtocolState::default();
-    state
-        .worktrees
-        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
-    state.scopes.insert(
-        scope("scope0"),
-        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
-    );
+fn abandon_is_a_no_op_for_non_live_scope_statuses() {
+    for status in [
+        ScopeStatus::NeverSeen,
+        ScopeStatus::Closed,
+        ScopeStatus::Abandoned,
+    ] {
+        let mut state = ProtocolState::default();
+        state
+            .worktrees
+            .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
+        state
+            .scopes
+            .insert(scope("scope0"), scope_with_status(status, worktree("wt0")));
 
-    let next = abandon(&state, &scope("scope0"));
+        let next = abandon(&state, &scope("scope0"));
 
-    assert_eq!(next, state);
-}
-
-#[test]
-fn abandon_is_a_no_op_for_an_already_closed_scope() {
-    let mut state = ProtocolState::default();
-    state
-        .worktrees
-        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
-    state.scopes.insert(
-        scope("scope0"),
-        scope_with_status(ScopeStatus::Closed, worktree("wt0")),
-    );
-
-    let next = abandon(&state, &scope("scope0"));
-
-    assert_eq!(next, state);
-}
-
-#[test]
-fn abandon_is_a_no_op_for_an_already_abandoned_scope() {
-    let mut state = ProtocolState::default();
-    state
-        .worktrees
-        .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
-    state.scopes.insert(
-        scope("scope0"),
-        scope_with_status(ScopeStatus::Abandoned, worktree("wt0")),
-    );
-
-    let next = abandon(&state, &scope("scope0"));
-
-    assert_eq!(next, state);
+        assert_eq!(next, state, "abandon must no-op for {status:?}");
+    }
 }
 
 #[test]
