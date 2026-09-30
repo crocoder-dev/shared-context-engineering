@@ -4588,6 +4588,8 @@ mod tests {
         let state_home = sandbox.join("state");
         let config_home = sandbox.join("config");
         let cache_home = sandbox.join("cache");
+        let home = sandbox.join("home");
+        std::fs::create_dir_all(&home).expect("create sandbox home");
         std::fs::create_dir_all(&state_home).expect("create sandbox state home");
         std::fs::create_dir_all(&config_home).expect("create sandbox config home");
         std::fs::create_dir_all(&cache_home).expect("create sandbox cache home");
@@ -4596,8 +4598,10 @@ mod tests {
         let prior_config = std::env::var_os("XDG_CONFIG_HOME");
         let prior_cache = std::env::var_os("XDG_CACHE_HOME");
         let prior_no_color = std::env::var_os("NO_COLOR");
+        let prior_home = std::env::var_os("HOME");
 
         unsafe {
+            std::env::set_var("HOME", &home);
             std::env::set_var("XDG_STATE_HOME", &state_home);
             std::env::set_var("XDG_CONFIG_HOME", &config_home);
             std::env::set_var("XDG_CACHE_HOME", &cache_home);
@@ -4622,6 +4626,10 @@ mod tests {
             match prior_no_color {
                 Some(value) => std::env::set_var("NO_COLOR", value),
                 None => std::env::remove_var("NO_COLOR"),
+            }
+            match prior_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
             }
         }
 

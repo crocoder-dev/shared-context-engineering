@@ -165,14 +165,6 @@ fn mutation_cursor_guarded_recover_invokes_real_recover() -> impl Driver {
 /// Generated-trace refinement: replays Quint-generated randomized
 /// traces through the real `protocol.rs`, comparing `ModelState` against
 /// Quint's semantic state after every step.
-///
-/// `max_samples` is bounded by memory, not runtime: `quint run --mbt`
-/// materializes every sampled trace as ITF JSON in one Node process, peaking
-/// at ~3.5 GB for 500 samples versus ~1.8 GB for 200. Under `nix flake check`
-/// contention the larger run intermittently fails with an opaque "Quint
-/// returned non-zero code." The pinned seed does not make traces
-/// reproducible: Quint's Rust backend samples across threads and
-/// `quint-connect` cannot pass `--n-threads 1`.
 #[quint_run(
     spec = "../spec/mutation_cursor.qnt",
     max_samples = 200,
