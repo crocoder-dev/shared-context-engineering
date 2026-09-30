@@ -25,7 +25,7 @@ each real adapter releases before every mutation-scope seam call.
 | `Health = Healthy \| Recovering \| Blocked \| Invalid` via `adapterHealth(phase, recovery)` | each adapter's own `classify_health`, computed from every attempt's phase plus the one shared recovery fact — never from a single attempt in isolation |
 | `FixState = NotAttempted \| RepairAttempted \| RepairCompleted \| ReportedFixed \| ReportedManual` (adapter-wide) | doctor's one fix-result lifecycle per adapter target (`assess_repairability` -> `repair_blocked` -> re-diagnose -> one `DoctorFixResultRecord`) |
 | `OwnerReading = SeenAlive \| SeenDead \| SeenUnknown` | `mutation_scope_owner::is_definitely_dead`'s `Alive`/`Dead`/`Unknown` result (PID + `/proc` start-time liveness, never time-based) |
-| `stateTxn: StateTxnHolder` | OpenCode's `AdapterStateLock` transaction (and Claude's equivalent short state-file lock) around one re-read/re-prove/durable-transition step — **not** OpenCode's coarser `AdapterBoundaryLock`, which this model has no dedicated variable for (see below) |
+| `stateTxn: StateTxnHolder` | OpenCode's adapter-state lock (`state::STATE_LOCK`) transaction (and Claude's equivalent short state-file lock) around one re-read/re-prove/durable-transition step — **not** OpenCode's coarser adapter-boundary lock (`state::BOUNDARY_LOCK`), which this model has no dedicated variable for (see below) |
 
 `RecoveryState`/`FixState` are single adapter-wide variables, not
 per-attempt: both real adapters report one health value and one fix result
@@ -36,7 +36,7 @@ remains `PendingAbandon`, so a second obligation can join an in-flight
 recovery pipeline without disturbing it.
 
 **Scope boundary:** `stateTxn` verifies only the short per-transaction lock.
-OpenCode's `AdapterBoundaryLock` — which serializes a repair's whole
+OpenCode's adapter-boundary lock — which serializes a repair's whole
 lifecycle, seam calls included — is a separate, coarser concern outside this
 model's variables; T03 is responsible for acquiring it around the whole
 `repair_blocked` call, wrapping (not replacing) the `stateTxn`-shaped

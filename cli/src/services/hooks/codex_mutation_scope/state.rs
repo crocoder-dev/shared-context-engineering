@@ -1,20 +1,21 @@
 use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::os_lock::{AdvisoryLockError, OsAdvisoryLock};
+use crate::services::hooks::mutation_scope_lock::{AdapterLockSpec, OsAdvisoryLock};
+
 use super::{format_codex_scope_id, AttemptKey};
 
 const SCE_STATE_DIR: &str = "sce";
 const ADAPTER_STATE_FILE: &str = "codex-mutation-scope-state.json";
-const ADAPTER_STATE_LOCK_FILE: &str = "codex-mutation-scope-state.lock";
-const STATE_LOCK_WHAT: &str = "adapter-state";
 
-const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const STATE_LOCK: AdapterLockSpec =
+    AdapterLockSpec::state("codex-mutation-scope-state.lock");
+pub(crate) const BOUNDARY_LOCK: AdapterLockSpec =
+    AdapterLockSpec::boundary("codex-mutation-scope-boundary.lock");
 
 const ADAPTER_STATE_VERSION: u32 = 3;
 
@@ -124,26 +125,6 @@ pub(crate) fn state_path(git_dir: &Path) -> PathBuf {
     adapter_state_dir(git_dir).join(ADAPTER_STATE_FILE)
 }
 
-fn lock_path(git_dir: &Path) -> PathBuf {
-    adapter_state_dir(git_dir).join(ADAPTER_STATE_LOCK_FILE)
-}
-
-struct AdapterStateLock {
-    _inner: OsAdvisoryLock,
-}
-
-impl AdapterStateLock {
-    fn acquire(git_dir: &Path, timeout: Duration) -> Result<AdapterStateLock, AdvisoryLockError> {
-        let inner = OsAdvisoryLock::acquire(
-            &adapter_state_dir(git_dir),
-            lock_path(git_dir),
-            timeout,
-            STATE_LOCK_WHAT,
-        )?;
-        Ok(AdapterStateLock { _inner: inner })
-    }
-}
-
 pub(crate) fn read_state(git_dir: &Path) -> Result<AdapterState> {
     let path = state_path(git_dir);
     if !path.exists() {
@@ -240,9 +221,8 @@ where
     Ok(())
 }
 
-fn acquire_lock(git_dir: &Path) -> Result<AdapterStateLock> {
-    AdapterStateLock::acquire(git_dir, DEFAULT_LOCK_TIMEOUT)
-        .map_err(|err| anyhow!("Failed to acquire adapter-state lock: {err}"))
+fn acquire_lock(git_dir: &Path) -> Result<OsAdvisoryLock> {
+    STATE_LOCK.acquire(&adapter_state_dir(git_dir))
 }
 
 fn allocate_pending_start(
@@ -456,6 +436,7 @@ pub(crate) fn arm_mark_active_failure_for_tests() {
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::thread;
+    use std::time::Duration;
 
     use super::*;
 
@@ -1299,7 +1280,7 @@ mod tests {
         let git_dir = unique_test_git_dir("leftover-lock-file");
         let dir = adapter_state_dir(&git_dir);
         std::fs::create_dir_all(&dir).expect("state dir should be created");
-        std::fs::write(lock_path(&git_dir), b"leftover")
+        std::fs::write(STATE_LOCK.path(&dir), b"leftover")
             .expect("leftover lock file should be writable");
 
         let decision = admit_tracked_attempt(
@@ -1375,42 +1356,6 @@ mod tests {
     }
 
     #[test]
-    fn a_second_acquirer_blocks_until_the_first_releases() {
-        use std::sync::mpsc;
-
-        let git_dir = unique_test_git_dir("lock-contention");
-        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
-
-        let holder = AdapterStateLock::acquire(&git_dir, Duration::from_secs(5))
-            .expect("first acquirer should succeed immediately");
-
-        let (result_tx, result_rx) = mpsc::channel();
-        let git_dir_clone = git_dir.clone();
-        let handle = thread::spawn(move || {
-            let result = AdapterStateLock::acquire(&git_dir_clone, Duration::from_secs(5));
-            let _ = result_tx.send(());
-            result
-        });
-
-        assert!(
-            result_rx.recv_timeout(Duration::from_millis(300)).is_err(),
-            "second acquirer should not succeed while the first still holds the lock"
-        );
-
-        drop(holder);
-
-        result_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("second acquirer should complete once the first releases the lock");
-        assert!(handle
-            .join()
-            .expect("second acquirer thread should not panic")
-            .is_ok());
-
-        remove_test_git_dir(&git_dir);
-    }
-
-    #[test]
     fn every_locked_helper_releases_the_state_lock_before_returning() {
         let git_dir = unique_test_git_dir("lock-released-between-helpers");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
@@ -1430,7 +1375,8 @@ mod tests {
             .expect("relinquish_recovery_flush must acquire the lock");
 
         drop(
-            AdapterStateLock::acquire(&git_dir, Duration::from_millis(200))
+            STATE_LOCK
+                .acquire_with_timeout(&adapter_state_dir(&git_dir), Duration::from_millis(200))
                 .expect("the state lock must be free once every helper has returned"),
         );
 
@@ -1446,7 +1392,9 @@ mod tests {
 
         let sce_dir = git_dir.join(SCE_STATE_DIR);
         assert!(state_path(&git_dir).starts_with(&sce_dir));
-        assert!(lock_path(&git_dir).starts_with(&sce_dir));
+        assert!(STATE_LOCK
+            .path(&adapter_state_dir(&git_dir))
+            .starts_with(&sce_dir));
 
         let mut found_state_file = false;
         for entry in std::fs::read_dir(&sce_dir).expect("sce dir should be readable") {
