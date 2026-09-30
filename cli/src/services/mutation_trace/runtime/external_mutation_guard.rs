@@ -523,7 +523,7 @@ mod unix_impl {
     #[derive(Clone, Copy, Debug, Default)]
     pub(super) struct GuardTestHooks {
         pub(super) fail_lifetime_token: bool,
-        pub(super) fail_after_first_poll: bool,
+        pub(super) fail_after_first_output: bool,
     }
 
     pub(crate) struct ArmedExternalMutationGuard<P> {
@@ -612,6 +612,7 @@ mod unix_impl {
 
                 let poll_timeout =
                     supervision_poll_timeout(finalization_started, last_stream_activity);
+                let stream_activity_before_poll = last_stream_activity;
                 if let Err(source) = poll_and_consume_streams(
                     &mut self.lifetime,
                     &mut stdout,
@@ -627,7 +628,9 @@ mod unix_impl {
                 if lifetime_complete {
                     self.ownership.mark_lifetime_complete();
                 }
-                if self.hooks.fail_after_first_poll {
+                if self.hooks.fail_after_first_output
+                    && last_stream_activity != stream_activity_before_poll
+                {
                     self.ownership.abandon_after_spawn_without_unlock();
                     return Err(GuardError::Wait(io::Error::other(
                         "injected post-spawn supervision failure",
@@ -900,7 +903,7 @@ mod tests {
             cancel_rx,
             GuardTestHooks {
                 fail_lifetime_token: true,
-                fail_after_first_poll: false,
+                fail_after_first_output: false,
             },
         );
 
@@ -948,7 +951,7 @@ mod tests {
             cancel_rx,
             GuardTestHooks {
                 fail_lifetime_token: false,
-                fail_after_first_poll: true,
+                fail_after_first_output: true,
             },
         );
 
@@ -1000,7 +1003,7 @@ mod tests {
             cancel_rx,
             GuardTestHooks {
                 fail_lifetime_token: false,
-                fail_after_first_poll: true,
+                fail_after_first_output: true,
             },
         );
 
@@ -1504,12 +1507,14 @@ mod tests {
         let repo = TestRepo::new("cancel-request");
         let (cancel_tx, cancel_rx) = mpsc::channel();
 
+        let (ready_tx, ready_rx) = mpsc::channel();
+
         let root = repo.root.clone();
         let state_root = repo.state_root.clone();
         let handle = std::thread::spawn(move || {
             run_external_mutation_guard(
                 &root,
-                &request("trap 'exit 9' TERM; sleep 30"),
+                &request("trap 'exit 9' TERM; printf ready; sleep 30"),
                 || {
                     crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
                         &root,
@@ -1517,12 +1522,20 @@ mod tests {
                         "external-mutation-guard test assertions",
                     )
                 },
-                |_event| {},
+                move |event| {
+                    if let GuardEvent::Stdout(chunk) = event {
+                        if String::from_utf8_lossy(&chunk).contains("ready") {
+                            ready_tx.send(()).ok();
+                        }
+                    }
+                },
                 cancel_rx,
             )
         });
 
-        std::thread::sleep(Duration::from_millis(200));
+        ready_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the shell should report readiness after installing its trap");
         cancel_tx
             .send(())
             .expect("cancel channel should still be open");
