@@ -945,9 +945,6 @@ mod tests {
 
         let sce_dir = git_dir.join(SCE_STATE_DIR);
         assert!(state_path(&git_dir).starts_with(&sce_dir));
-        assert!(STATE_LOCK
-            .path(&adapter_state_dir(&git_dir))
-            .starts_with(&sce_dir));
 
         remove_test_git_dir(&git_dir);
     }

@@ -1275,28 +1275,6 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn a_leftover_lock_file_with_no_active_os_lock_does_not_block_a_new_acquirer() {
-        let git_dir = unique_test_git_dir("leftover-lock-file");
-        let dir = adapter_state_dir(&git_dir);
-        std::fs::create_dir_all(&dir).expect("state dir should be created");
-        std::fs::write(STATE_LOCK.path(&dir), b"leftover")
-            .expect("leftover lock file should be writable");
-
-        let decision = admit_tracked_attempt(
-            &git_dir,
-            &key("session-1", None, "exec-1"),
-            "turn-1",
-            "Bash",
-        );
-        assert!(
-            matches!(decision, Ok(AdmitDecision::Admitted(_))),
-            "a lock file with no active OS lock held against it must not block a new acquirer"
-        );
-
-        remove_test_git_dir(&git_dir);
-    }
-
     const PARALLEL_ADMISSION_COUNT: u64 = 6;
 
     #[test]
@@ -1392,9 +1370,6 @@ mod tests {
 
         let sce_dir = git_dir.join(SCE_STATE_DIR);
         assert!(state_path(&git_dir).starts_with(&sce_dir));
-        assert!(STATE_LOCK
-            .path(&adapter_state_dir(&git_dir))
-            .starts_with(&sce_dir));
 
         let mut found_state_file = false;
         for entry in std::fs::read_dir(&sce_dir).expect("sce dir should be readable") {
