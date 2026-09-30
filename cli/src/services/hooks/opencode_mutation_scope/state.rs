@@ -1,12 +1,12 @@
 use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::os_lock::{AdvisoryLockError, OsAdvisoryLock};
+use crate::services::hooks::mutation_scope_lock::{AdapterLockSpec, OsAdvisoryLock};
+
 use super::{format_opencode_scope_id, AttemptKey};
 use crate::services::hooks::mutation_scope_owner::{
     current_process_owner, is_definitely_dead, ProcessOwner,
@@ -14,10 +14,11 @@ use crate::services::hooks::mutation_scope_owner::{
 
 const SCE_STATE_DIR: &str = "sce";
 const ADAPTER_STATE_FILE: &str = "opencode-mutation-scope-state.json";
-const ADAPTER_STATE_LOCK_FILE: &str = "opencode-mutation-scope-state.lock";
-const STATE_LOCK_WHAT: &str = "adapter-state";
 
-const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const STATE_LOCK: AdapterLockSpec =
+    AdapterLockSpec::state("opencode-mutation-scope-state.lock");
+pub(crate) const BOUNDARY_LOCK: AdapterLockSpec =
+    AdapterLockSpec::boundary("opencode-mutation-scope-boundary.lock");
 
 const ADAPTER_STATE_VERSION: u32 = 1;
 
@@ -119,26 +120,6 @@ pub(crate) fn state_path(git_dir: &Path) -> PathBuf {
     adapter_state_dir(git_dir).join(ADAPTER_STATE_FILE)
 }
 
-fn lock_path(git_dir: &Path) -> PathBuf {
-    adapter_state_dir(git_dir).join(ADAPTER_STATE_LOCK_FILE)
-}
-
-struct AdapterStateLock {
-    _inner: OsAdvisoryLock,
-}
-
-impl AdapterStateLock {
-    fn acquire(git_dir: &Path, timeout: Duration) -> Result<AdapterStateLock, AdvisoryLockError> {
-        let inner = OsAdvisoryLock::acquire(
-            &adapter_state_dir(git_dir),
-            lock_path(git_dir),
-            timeout,
-            STATE_LOCK_WHAT,
-        )?;
-        Ok(AdapterStateLock { _inner: inner })
-    }
-}
-
 pub(crate) fn read_state(git_dir: &Path) -> Result<AdapterState> {
     let path = state_path(git_dir);
     if !path.exists() {
@@ -235,9 +216,8 @@ where
     Ok(())
 }
 
-fn acquire_lock(git_dir: &Path) -> Result<AdapterStateLock> {
-    AdapterStateLock::acquire(git_dir, DEFAULT_LOCK_TIMEOUT)
-        .map_err(|err| anyhow!("Failed to acquire adapter-state lock: {err}"))
+fn acquire_lock(git_dir: &Path) -> Result<OsAdvisoryLock> {
+    STATE_LOCK.acquire(&adapter_state_dir(git_dir))
 }
 
 fn allocate_pending_start(
@@ -520,6 +500,7 @@ pub(crate) fn set_attempt_owner_for_tests(
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::thread;
+    use std::time::Duration;
 
     use super::*;
 
@@ -1136,7 +1117,9 @@ mod tests {
 
         let sce_dir = git_dir.join(SCE_STATE_DIR);
         assert!(state_path(&git_dir).starts_with(&sce_dir));
-        assert!(lock_path(&git_dir).starts_with(&sce_dir));
+        assert!(STATE_LOCK
+            .path(&adapter_state_dir(&git_dir))
+            .starts_with(&sce_dir));
 
         remove_test_git_dir(&git_dir);
     }

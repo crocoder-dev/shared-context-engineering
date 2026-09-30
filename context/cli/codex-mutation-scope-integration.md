@@ -142,7 +142,10 @@ Version-3 JSON stores `next_attempt_seq`, recovery generation,
 tool, lane turn, and `pending_start`/`active` phase. Writes stage, `sync_data`,
 rename, and sync the directory where supported. The boundary lock serializes
 state-to-ingress-to-state across hook processes (boundary lock then state lock);
-file existence alone is never ownership.
+file existence alone is never ownership. Both locks are `AdapterLockSpec`
+identities (`state::STATE_LOCK`, `state::BOUNDARY_LOCK`) over the single
+OS advisory-lock implementation in `cli/src/services/hooks/mutation_scope_lock.rs`,
+shared with the OpenCode and Pi adapters.
 
 Positive cleanup arms `recovery_pending`, abandons matching tracked scopes via
 generic `abandon`, and removes settled attempts. Known attempts keep tracked

@@ -132,8 +132,8 @@ it changes none of the ordinary hook lifecycle above and none of
   `mutation_scope_owner::is_definitely_dead` proves dead; otherwise
   `ManualOnly` (no owner recorded, a live owner, or unprovable liveness).
 - `repair_blocked(git_dir, repository_root, logger, seam)` acquires the
-  `AdapterBoundaryLock`, normalizes an orphaned `Flushing`, then — in one
-  `AdapterStateLock` transaction — re-reads state fresh and re-evaluates
+  adapter-boundary lock (`state::BOUNDARY_LOCK`), normalizes an orphaned `Flushing`, then — in one
+  adapter-state lock (`state::STATE_LOCK`) transaction — re-reads state fresh and re-evaluates
   liveness against the *current* state rather than trusting any earlier
   read. Only attempts still `PendingStart` with a still-dead owner at that
   moment transition to `PendingAbandon`, using the same durable

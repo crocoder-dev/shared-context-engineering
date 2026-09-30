@@ -1,12 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 
 use crate::services::hooks;
 use crate::services::mutation_trace::runtime::resolve_git_dir;
 use crate::services::observability::traits::Logger;
 
-use super::boundary_lock::{AdapterBoundaryLock, DEFAULT_BOUNDARY_LOCK_TIMEOUT};
 use super::state::{self, AdmitDecision, RecoveryFlushCompletion};
 use super::{
     abandon_payload, flush_payload, parse_pi_hook_event, pi_scope_close_event_id,
@@ -162,8 +161,7 @@ pub(super) fn with_boundary_lock<T>(
     git_dir: &Path,
     operation: impl FnOnce() -> Result<T>,
 ) -> Result<T> {
-    let _boundary = AdapterBoundaryLock::acquire(git_dir, DEFAULT_BOUNDARY_LOCK_TIMEOUT)
-        .map_err(|error| anyhow!("Failed to acquire adapter boundary lock: {error}"))?;
+    let _boundary = state::BOUNDARY_LOCK.acquire(&state::adapter_state_dir(git_dir))?;
     operation()
 }
 

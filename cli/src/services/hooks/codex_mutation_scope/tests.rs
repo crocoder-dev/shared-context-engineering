@@ -2249,10 +2249,9 @@ mod driver {
         }
 
         assert!(
-            !crate::services::hooks::codex_mutation_scope::boundary_lock::boundary_lock_path(
-                &git_dir
-            )
-            .exists(),
+            !state::BOUNDARY_LOCK
+                .path(&state::adapter_state_dir(&git_dir))
+                .exists(),
             "Test M: no untracked tool may create the adapter boundary lock",
         );
         assert!(
@@ -2299,10 +2298,9 @@ mod driver {
             "an untracked PostToolUse resolves no git dir and creates no adapter state directory",
         );
         assert!(
-            !crate::services::hooks::codex_mutation_scope::boundary_lock::boundary_lock_path(
-                &git_dir
-            )
-            .exists(),
+            !state::BOUNDARY_LOCK
+                .path(&state::adapter_state_dir(&git_dir))
+                .exists(),
             "an untracked PostToolUse must not create the adapter boundary lock",
         );
 
@@ -2359,10 +2357,9 @@ mod driver {
                  state lock, or boundary lock",
         );
         assert!(
-            !crate::services::hooks::codex_mutation_scope::boundary_lock::boundary_lock_path(
-                &git_dir
-            )
-            .exists(),
+            !state::BOUNDARY_LOCK
+                .path(&state::adapter_state_dir(&git_dir))
+                .exists(),
             "a complete successful MCP lifecycle creates no boundary lock",
         );
 
@@ -2485,7 +2482,8 @@ mod driver {
     }
 
     fn boundary_lock_exists(git_dir: &Path) -> bool {
-        crate::services::hooks::codex_mutation_scope::boundary_lock::boundary_lock_path(git_dir)
+        state::BOUNDARY_LOCK
+            .path(&state::adapter_state_dir(git_dir))
             .exists()
     }
 

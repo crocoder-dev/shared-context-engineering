@@ -1,10 +1,8 @@
 #![allow(dead_code)]
 
-mod boundary_lock;
 mod events;
 pub(crate) mod health;
 mod lifecycle;
-mod os_lock;
 mod payload;
 pub(crate) mod state;
 

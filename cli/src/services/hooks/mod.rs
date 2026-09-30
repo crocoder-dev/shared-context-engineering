@@ -29,6 +29,7 @@ mod claude_transforms;
 mod commit_hooks;
 mod conversation_trace;
 mod diff_trace;
+mod mutation_scope_lock;
 mod runtime;
 
 pub mod claude_bridge_session;
