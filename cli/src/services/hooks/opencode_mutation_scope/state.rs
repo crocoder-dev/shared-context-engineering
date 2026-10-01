@@ -506,9 +506,9 @@ mod state_conformance {
 
     const FIXTURE_SESSION: &str = "ses-conformance";
     const FIXTURE_PHASES: [AttemptPhase; 3] = [
-        AttemptPhase::PendingStart,
         AttemptPhase::Active,
         AttemptPhase::PendingAbandon,
+        AttemptPhase::PendingStart,
     ];
 
     struct OpenCodeStateConformance;
@@ -524,14 +524,10 @@ mod state_conformance {
         type State = AdapterState;
 
         const ADAPTER: &'static str = "opencode";
-        const SUPPORTED_VERSION: u32 = 1;
+        const SUPPORTED_VERSION: u32 = ADAPTER_STATE_VERSION;
 
         fn state_path(git_dir: &Path) -> PathBuf {
             state_path(git_dir)
-        }
-
-        fn default_state() -> AdapterState {
-            AdapterState::default()
         }
 
         fn fixture_state(
