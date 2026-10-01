@@ -85,104 +85,68 @@ fn pre_tool_use(payload: &str) -> CodexToolExecution {
     }
 }
 
-#[test]
-fn ac2_empty_payload_is_rejected() {
-    let error = parse_codex_hook_event("   ").unwrap_err().to_string();
-    assert_eq!(
-            error,
-            "Invalid Codex hook event payload from STDIN: expected a JSON object, got an empty payload."
-        );
-}
+mod ingress_conformance {
+    use super::*;
+    use crate::services::hooks::mutation_scope_ingress_conformance::{
+        self as conformance, mutation_scope_ingress_conformance_tests, IngressConformance,
+    };
 
-#[test]
-fn ac2_non_object_json_is_rejected() {
-    for payload in ["[]", "\"PreToolUse\"", "42", "null"] {
-        let error = parse_codex_hook_event(payload).unwrap_err().to_string();
-        assert!(
-            error.contains("expected a JSON object"),
-            "payload {payload:?} produced {error:?}"
-        );
+    struct CodexIngressConformance;
+
+    fn unreachable_bash_policy(_root: &Path, command: &str) -> Result<CodexBashPolicyDecision> {
+        panic!("the Bash policy preflight must not run for rejected ingress (command: {command})");
     }
-}
 
-#[test]
-fn ac2_invalid_json_is_rejected() {
-    let error = parse_codex_hook_event("{not json").unwrap_err().to_string();
-    assert!(
-        error.contains("Invalid Codex hook event payload from STDIN: expected valid JSON"),
-        "{error:?}"
-    );
-}
+    impl IngressConformance for CodexIngressConformance {
+        const ADAPTER: &'static str = "Codex";
+        const EVENT_NAME_FIELD: &'static str = HOOK_EVENT_NAME_FIELD;
+        const REQUIRED_START_FIELDS: &'static [&'static str] = &[
+            SESSION_ID_FIELD,
+            TURN_ID_FIELD,
+            CWD_FIELD,
+            TOOL_NAME_FIELD,
+            TOOL_USE_ID_FIELD,
+        ];
+        const OPTIONAL_START_FIELDS: &'static [(&'static str, &'static str)] = &[
+            (AGENT_ID_FIELD, "01a07c24-bb59-7ca0-80f7-99cf940a486e"),
+            (AGENT_TYPE_FIELD, "default"),
+        ];
+        const UNSUPPORTED_EVENT_NAMES: &'static [&'static str] = &[
+            "SessionStart",
+            "SubagentStart",
+            "UserPromptSubmit",
+            "PreCompact",
+        ];
 
-#[test]
-fn ac2_unsupported_hook_event_name_is_rejected() {
-    for name in [
-        "SessionStart",
-        "SubagentStart",
-        "UserPromptSubmit",
-        "PreCompact",
-    ] {
-        let payload =
-            pre_tool_use_json(&[(HOOK_EVENT_NAME_FIELD, Value::String(name.to_string()))]);
-        let error = parse_codex_hook_event(&payload).unwrap_err().to_string();
-        assert!(
-            error.contains(&format!("unsupported hook_event_name '{name}'")),
-            "{error:?}"
-        );
+        fn tracked_start() -> Map<String, Value> {
+            serde_json::from_str(&pre_tool_use_json(&[]))
+                .expect("the tracked PreToolUse fixture is a JSON object")
+        }
+
+        fn parse(payload: &str) -> Result<()> {
+            parse_codex_hook_event(payload).map(|_| ())
+        }
+
+        fn run(payload: &str) -> Result<String> {
+            run_codex_mutation_scope_from_payload(payload, None)
+        }
+
+        fn run_with_seams(
+            payload: &str,
+            resolve_git_dir: conformance::GitDirResolver,
+            seam: conformance::IngressSeam,
+        ) -> Result<String> {
+            run_codex_mutation_scope_from_payload_with_bash_policy(
+                payload,
+                None,
+                resolve_git_dir,
+                seam,
+                &unreachable_bash_policy,
+            )
+        }
     }
-}
 
-#[test]
-fn ac2_missing_required_fields_are_rejected_without_fabricating_identity() {
-    for field in [
-        SESSION_ID_FIELD,
-        TURN_ID_FIELD,
-        CWD_FIELD,
-        TOOL_NAME_FIELD,
-        TOOL_USE_ID_FIELD,
-    ] {
-        let mut object: Map<String, Value> = serde_json::from_str(&pre_tool_use_json(&[])).unwrap();
-        object.remove(field);
-        let payload = Value::Object(object).to_string();
-
-        let error = parse_codex_hook_event(&payload).unwrap_err().to_string();
-        assert!(
-            error.contains(&format!("'{field}'")),
-            "missing {field} produced {error:?}"
-        );
-    }
-}
-
-#[test]
-fn ac2_blank_required_fields_are_rejected() {
-    for field in [SESSION_ID_FIELD, TURN_ID_FIELD, CWD_FIELD, TOOL_NAME_FIELD] {
-        let payload = pre_tool_use_json(&[(field, Value::String("   ".to_string()))]);
-        let error = parse_codex_hook_event(&payload).unwrap_err().to_string();
-        assert!(
-            error.contains(&format!("field '{field}' must be a non-blank string")),
-            "blank {field} produced {error:?}"
-        );
-    }
-}
-
-#[test]
-fn ac2_wrong_typed_fields_are_rejected() {
-    let payload = pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::Bool(true))]);
-    let error = parse_codex_hook_event(&payload).unwrap_err().to_string();
-    assert!(
-        error.contains("field 'tool_use_id' must be a string"),
-        "{error:?}"
-    );
-}
-
-#[test]
-fn ac2_wrong_typed_optional_agent_id_is_rejected() {
-    let payload = pre_tool_use_json(&[(AGENT_ID_FIELD, Value::Bool(false))]);
-    let error = parse_codex_hook_event(&payload).unwrap_err().to_string();
-    assert!(
-        error.contains("field 'agent_id' must be null, absent, or a non-blank string"),
-        "{error:?}"
-    );
+    mutation_scope_ingress_conformance_tests!(CodexIngressConformance);
 }
 
 #[test]
@@ -1784,24 +1748,6 @@ mod driver {
         assert_eq!(attempts[0].tool_use_id, "exec-b");
 
         remove_test_git_dir(&git_dir);
-    }
-
-    #[test]
-    fn malformed_payload_propagates_as_a_real_error_not_fail_open() {
-        let error = run_codex_mutation_scope_from_payload("not json", None).unwrap_err();
-        assert!(error.to_string().contains("valid JSON"));
-    }
-
-    #[test]
-    fn unsupported_event_name_propagates_as_a_real_error() {
-        let payload = json!({
-            HOOK_EVENT_NAME_FIELD: "UserPromptSubmit",
-            SESSION_ID_FIELD: "session-1",
-            CWD_FIELD: CWD,
-        })
-        .to_string();
-        let error = run_codex_mutation_scope_from_payload(&payload, None).unwrap_err();
-        assert!(error.to_string().contains("unsupported hook_event_name"));
     }
 
     fn spawn_pre_tool_use(

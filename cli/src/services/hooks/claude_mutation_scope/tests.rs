@@ -36,6 +36,56 @@ fn identity(session_id: &str, agent_id: Option<&str>, tool_use_id: &str) -> Atte
     }
 }
 
+mod ingress_conformance {
+    use super::*;
+    use crate::services::hooks::mutation_scope_ingress_conformance::{
+        self as conformance, mutation_scope_ingress_conformance_tests, IngressConformance,
+    };
+
+    struct ClaudeIngressConformance;
+
+    impl IngressConformance for ClaudeIngressConformance {
+        const ADAPTER: &'static str = "Claude";
+        const EVENT_NAME_FIELD: &'static str = HOOK_EVENT_NAME_FIELD;
+        const REQUIRED_START_FIELDS: &'static [&'static str] = &[
+            SESSION_ID_FIELD,
+            CWD_FIELD,
+            TOOL_NAME_FIELD,
+            TOOL_USE_ID_FIELD,
+        ];
+        const OPTIONAL_START_FIELDS: &'static [(&'static str, &'static str)] = &[
+            (AGENT_ID_FIELD, "agent-1"),
+            (PROMPT_ID_FIELD, "prompt-1"),
+            (AGENT_TYPE_FIELD, "general-purpose"),
+        ];
+        const UNSUPPORTED_EVENT_NAMES: &'static [&'static str] =
+            &["PostToolBatch", "PreCompact", "Notification"];
+
+        fn tracked_start() -> Map<String, Value> {
+            serde_json::from_str(&pre_tool_use_json(&[]))
+                .expect("the tracked PreToolUse fixture is a JSON object")
+        }
+
+        fn parse(payload: &str) -> Result<()> {
+            parse_claude_hook_event(payload).map(|_| ())
+        }
+
+        fn run(payload: &str) -> Result<String> {
+            run_claude_mutation_scope_from_payload(payload, None)
+        }
+
+        fn run_with_seams(
+            payload: &str,
+            resolve_git_dir: conformance::GitDirResolver,
+            seam: conformance::IngressSeam,
+        ) -> Result<String> {
+            run_claude_mutation_scope_from_payload_with(payload, None, resolve_git_dir, seam)
+        }
+    }
+
+    mutation_scope_ingress_conformance_tests!(ClaudeIngressConformance);
+}
+
 #[test]
 fn pre_tool_use_parses_required_and_optional_fields() {
     let payload = pre_tool_use_json(&[
@@ -101,59 +151,6 @@ fn pre_tool_use_prompt_id_and_agent_type_are_optional() {
 }
 
 #[test]
-fn missing_required_fields_are_rejected_without_fabricating_identity() {
-    for field in [
-        SESSION_ID_FIELD,
-        CWD_FIELD,
-        TOOL_NAME_FIELD,
-        TOOL_USE_ID_FIELD,
-    ] {
-        let mut object: serde_json::Map<String, Value> =
-            serde_json::from_str(&pre_tool_use_json(&[])).unwrap();
-        object.remove(field);
-        let payload = Value::Object(object).to_string();
-
-        let error = parse_claude_hook_event(&payload).unwrap_err();
-        assert!(
-            error.to_string().contains(&format!("'{field}'")),
-            "expected missing-field error to name '{field}', got: {error}"
-        );
-    }
-}
-
-#[test]
-fn wrong_type_required_field_is_rejected() {
-    let payload = pre_tool_use_json(&[(SESSION_ID_FIELD, Value::from(42))]);
-
-    let error = parse_claude_hook_event(&payload).unwrap_err();
-    assert!(error.to_string().contains("session_id"));
-}
-
-#[test]
-fn empty_string_required_field_is_rejected() {
-    let payload = pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String(String::new()))]);
-
-    let error = parse_claude_hook_event(&payload).unwrap_err();
-    assert!(error.to_string().contains("non-blank"));
-}
-
-#[test]
-fn wrong_type_optional_field_is_rejected() {
-    let payload = pre_tool_use_json(&[(PROMPT_ID_FIELD, Value::from(1))]);
-
-    let error = parse_claude_hook_event(&payload).unwrap_err();
-    assert!(error.to_string().contains("prompt_id"));
-}
-
-#[test]
-fn empty_optional_field_is_rejected() {
-    let payload = pre_tool_use_json(&[(AGENT_ID_FIELD, Value::String(String::new()))]);
-
-    let error = parse_claude_hook_event(&payload).unwrap_err();
-    assert!(error.to_string().contains("agent_id"));
-}
-
-#[test]
 fn null_optional_field_is_none() {
     let payload = pre_tool_use_json(&[(AGENT_ID_FIELD, Value::Null)]);
 
@@ -162,38 +159,6 @@ fn null_optional_field_is_none() {
         panic!("expected PreToolUse");
     };
     assert_eq!(execution.identity.agent_id, None);
-}
-
-#[test]
-fn empty_payload_is_rejected() {
-    let error = parse_claude_hook_event("").unwrap_err();
-    assert!(error.to_string().contains("empty payload"));
-
-    let error = parse_claude_hook_event("   ").unwrap_err();
-    assert!(error.to_string().contains("empty payload"));
-}
-
-#[test]
-fn malformed_json_is_rejected() {
-    let error = parse_claude_hook_event("{not json").unwrap_err();
-    assert!(error.to_string().contains("valid JSON"));
-}
-
-#[test]
-fn non_object_json_is_rejected() {
-    let error = parse_claude_hook_event("[1, 2, 3]").unwrap_err();
-    assert!(error.to_string().contains("JSON object"));
-}
-
-#[test]
-fn unsupported_hook_event_name_is_rejected() {
-    let payload = pre_tool_use_json(&[(
-        HOOK_EVENT_NAME_FIELD,
-        Value::String("PostToolBatch".to_string()),
-    )]);
-
-    let error = parse_claude_hook_event(&payload).unwrap_err();
-    assert!(error.to_string().contains("unsupported hook_event_name"));
 }
 
 #[test]
@@ -2060,12 +2025,6 @@ mod driver {
         assert!(!warnings.is_empty(), "the flush failure must be logged");
 
         remove_test_git_dir(&git_dir);
-    }
-
-    #[test]
-    fn malformed_payload_propagates_as_a_real_error_not_fail_open() {
-        let error = run_claude_mutation_scope_from_payload("not json", None).unwrap_err();
-        assert!(error.to_string().contains("valid JSON"));
     }
 }
 

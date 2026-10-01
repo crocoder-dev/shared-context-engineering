@@ -29,6 +29,8 @@ mod claude_transforms;
 mod commit_hooks;
 mod conversation_trace;
 mod diff_trace;
+#[cfg(test)]
+mod mutation_scope_ingress_conformance;
 mod mutation_scope_lock;
 #[cfg(test)]
 mod mutation_scope_state_conformance;
