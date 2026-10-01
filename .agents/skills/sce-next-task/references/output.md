@@ -71,9 +71,6 @@ Run the final validation:
 
 # Implementation gate
 
-Always show this gate at the start of the **Task execution phase**, before editing any
-file.
-
 The gate is user-facing prose. It is never serialized into a YAML result. This
 file is the only authority for the gate's content and order.
 
@@ -104,7 +101,7 @@ file is the only authority for the gate's content and order.
 
 ## Approach
 
-Describe the smallest coherent implementation approach in 2–5 steps.
+Describe the smallest coherent implementation approach with enough detail for approval.
 
 ## Assumptions
 

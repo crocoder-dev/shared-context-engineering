@@ -2,8 +2,22 @@
 
 Run this phase for step 2 of the workflow, and again for each revision in step 4.
 
-Input: the change request, and the complete `loaded` brief from the context load
-phase. Pass the brief verbatim; do not restate, summarize, or reinterpret it.
+Inputs are one of:
+
+- Initial authoring: `change_request` and `loaded_context_brief`.
+- Clarification continuation: `original_request`, `clarification_answers`,
+  and `loaded_context_brief`.
+- Existing-plan revision: `plan_path`, `correction`, and
+  `loaded_context_brief`.
+
+Pass `loaded_context_brief` verbatim.
+
+For clarification continuation, preserve `original_request` and resolve it with
+the supplied `clarification_answers`.
+
+For an existing-plan revision, read `plan_path` and interpret `correction`
+against that plan. A terse correction is not ambiguous merely because it omits
+scope and terminology already present in the plan.
 
 This phase owns the planning process:
 
@@ -29,19 +43,6 @@ The context brief is the durable memory this plan starts from. Treat its
 `key_facts` as recorded current state, its `gaps` as areas with no durable
 context, and its `drift` as recorded context that no longer matches the code.
 
-When no brief is supplied, load the context named by the change request before
-authoring, and follow the selection discipline in *Inspect relevant context*.
-
-Answers the user gave to earlier clarification questions arrive as part of the
-change request. Incorporate them into the plan.
-
-A revision of a plan authored earlier in the session also arrives as the change
-request, and it is usually terse: a task boundary the user disagrees with, an
-ordering they want changed, work they want added or dropped. Read it against the
-existing plan, which supplies the scope, criteria, and terminology it omits.
-Terseness is not ambiguity. Do not set internal status `needs_clarification` for
-detail the plan already carries; ask only when the revision itself is genuinely
-undecidable.
 
 ## 2.1 Resolve the plan target
 

@@ -1,7 +1,7 @@
 ---
 name: sce-decision
 description: >
-  Write one immutable ADR for one decision already qualified by context synchronization
+  Record one already-qualified decision as an immutable ADR, reusing an equivalent active ADR when present
 compatibility: claude
 ---
 
@@ -9,10 +9,11 @@ compatibility: claude
 
 ## Purpose
 
-Write exactly one architecture decision record for one decision already qualified
-by successful task context synchronization. Return a deterministic internal
-result to the invoking synchronization phase. Do not render an independent
-user-visible response.
+Resolve exactly one architecture decision record for one decision already
+qualified by successful task context synchronization. Reuse an equivalent active
+ADR when one exists; otherwise write a new immutable ADR. Return a deterministic
+internal result to the invoking synchronization phase. Do not render an
+independent user-visible response.
 
 ## Input
 
@@ -22,7 +23,7 @@ synchronization. It must identify:
 - One decision stated as a single durable choice.
 - Why it qualifies under the decision gate.
 - The implementation / task-verification evidence establishing the decision.
-- The resolved plan path and relevant task IDs, when applicable.
+- The resolved plan path, plus relevant task IDs when applicable.
 - Related current-state context and existing ADR paths.
 - An optional requested status.
 
@@ -39,9 +40,9 @@ rerun that threshold here.
 Require the request to state why the caller qualified the decision and include
 supporting evidence. If the request explicitly represents a nonqualifying gate
 outcome, return `not_qualified` (or `skipped` when the caller deliberately skipped
-the gate) without writing an ADR. If a claimed qualification is unsupported by
-its supplied evidence, return `not_qualified`. Missing, contradictory, or
-otherwise unsafe material input remains `blocked`.
+the gate) without writing an ADR. For a qualified request, do not reassess the
+qualification threshold. Missing or contradictory qualification evidence is
+unsafe decision-writing input and returns `blocked`.
 
 `not_qualified` and `skipped` are non-blocking to the invoking synchronization
 phase.
@@ -69,7 +70,8 @@ Read `context/decisions/` and the supplied related ADR paths before writing.
 - Reuse an existing ADR only when it records an equivalent decision and has an
   active status: `Proposed` or `Accepted`. Return its path without creating a
   duplicate. Never reuse a `Rejected`, `Deprecated`, or `Superseded` ADR.
-- Existing ADRs are immutable regardless of status. Never edit an ADR whose status is `Accepted`; do not edit, overwrite, or silently change the status of any existing record.
+- Existing ADRs are immutable regardless of status; never edit, overwrite, or
+  change the status of an existing record.
 - A correction, reversal, or any changed decision always creates a new dated ADR;
   it references and supersedes the prior record when applicable, rather than
   modifying that record.
@@ -99,7 +101,7 @@ synchronization phase owns linking the new ADR from authoritative context.
 
 Confirm that exactly one ADR was created or one existing matching ADR was reused;
 the filename, status, sections, and references satisfy this contract; every
-referenced repository path exists when practical to check; and no accepted ADR
+referenced repository path exists when practical to check; and no existing ADR
 was modified.
 
 ### 6. Return the result
@@ -107,11 +109,11 @@ was modified.
 Return exactly one internal result:
 
 - `written`: include `status`, `adr_path`, `decision`, `decision_status`,
-  `created` (`true` for a new ADR and `false` for reuse), `supersedes`, and
-  concise verification evidence.
-- `not_qualified` or `skipped`: include `status`, the reason the decision gate
-  did not produce an ADR, and concise supporting evidence. These results are
-  non-blocking; the invoking synchronization phase continues normally.
+  `created` (`true` for a new ADR and `false` for reuse), `supersedes` (the prior
+  ADR path or `null`), and `verification`.
+- `not_qualified` or `skipped`: include `status`, `reason`, and `evidence`.
+  These results are non-blocking; the invoking synchronization phase continues
+  normally.
 - `blocked`: include `status`, the specific `problem`, its `impact`, and the
   `required_action`. Use this only when decision writing cannot proceed safely.
 
@@ -126,8 +128,6 @@ Do not:
 - Write more than one ADR per request.
 - Run outside successful task context synchronization.
 - Create a command, prompt, context root, or decisions directory.
-- Modify application code, tests, plans, current-state context, or existing
-  accepted ADRs.
-- Treat every context update as an architecture decision.
+- Modify application code, tests, plans, current-state context, or existing ADRs.
 - Choose among unresolved material alternatives on the user's behalf.
 - Create a Git commit or push changes.

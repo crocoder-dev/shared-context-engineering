@@ -250,9 +250,6 @@ a normal work session, then rerun validation.
 
 `/validate {plan path}`
 
-Do not stop after the repair. The plan is not finished until `/validate`
-returns `validated`.
-
 ---
 
 ## Blocked report

@@ -309,9 +309,9 @@ local requiredHandoverSkillTokens = new Listing {
   "### Loader path (one path argument)"
   "references/handover-template.md"
   "**Completeness contract**"
-  "Writer mode never overwrites an existing handover file"
+  "Never overwrite an existing file"
   "Loading is read-only"
-  "Never invoke another SCE skill, sibling SCE package, or SCE workflow command"
+  "Do not invoke another SCE skill, package, or workflow command."
 }
 
 local requiredHandoverTemplateCompletenessTokens = new Listing {
@@ -327,7 +327,7 @@ local requiredHandoverTemplateCompletenessTokens = new Listing {
 
 local requiredHandoverSkillCompletenessConsumerTokens = new Listing {
   "sole\nauthority for the persisted schema and **Completeness contract**"
-  "validate the written file against the template's **Completeness\ncontract**"
+  "validate the written file against the template's **Completeness contract**"
   "Validate the file against\nthe template's **Completeness contract**"
 }
 
@@ -355,12 +355,12 @@ local expectedExecutionContract = (allowsDecision: Boolean) ->
 
   Own this workflow from input through its terminal user-visible response.
   Follow its steps, gates, and stops in order; do not add, skip, reorder, or merge them.
-  Keep internal phase results private and continue immediately until a defined wait or stop.
+  Keep intermediate workflow state private and continue immediately until a defined wait or stop.
   Resume user waits in this same skill and session.
-  Render user-visible output only from the named workflow layouts or phase reports.
+  Render user-visible output only from the named workflow layouts or reports.
   Do not expose raw internal state or add text around a rendered layout or report.
   Non-SCE helpers may assist, but must return to the active step without changing
-  phase order, gates, waits, writes, validation, stops, or terminal output.
+  workflow order, gates, waits, writes, validation, stops, or terminal output.
   """ + "\n" + if (allowsDecision)
     """
     Do not invoke another SCE skill, package, or workflow command except `sce-decision`,
@@ -372,10 +372,10 @@ local expectedExecutionContract = (allowsDecision: Boolean) ->
 local compactContractClauses = new Listing {
   "Own this workflow from input through its terminal user-visible response."
   "Follow its steps, gates, and stops in order; do not add, skip, reorder, or merge them."
-  "Keep internal phase results private and continue immediately until a defined wait or stop."
+  "Keep intermediate workflow state private and continue immediately until a defined wait or stop."
   "Resume user waits in this same skill and session."
-  "Render user-visible output only from the named workflow layouts or phase reports.\nDo not expose raw internal state or add text around a rendered layout or report."
-  "Non-SCE helpers may assist, but must return to the active step without changing\nphase order, gates, waits, writes, validation, stops, or terminal output."
+  "Render user-visible output only from the named workflow layouts or reports.\nDo not expose raw internal state or add text around a rendered layout or report."
+  "Non-SCE helpers may assist, but must return to the active step without changing\nworkflow order, gates, waits, writes, validation, stops, or terminal output."
 }
 
 hidden hasExpectedExecutionContract = (text: String, allowsDecision: Boolean) ->
@@ -1235,8 +1235,8 @@ hidden assertWorkflowLanguageConsistency = (artifacts: Mapping) ->
               let (handoverTemplate = artifacts["config/\(target)/skills/sce-handover/references/handover-template.md"])
                 let (planTemplate = artifacts["config/\(target)/skills/sce-change-to-plan/references/plan-template.md"])
                   let (contextSync = artifacts["config/\(target)/skills/sce-next-task/references/context-sync.md"])
-                    next.contains("Keep internal phase results private")
-                    && next.contains("named workflow layouts or phase reports")
+                    next.contains("Keep intermediate workflow state private")
+                    && next.contains("named workflow layouts or reports")
                     && next.contains("**Implementation complete**")
                     && commitRef.contains("# Atomic commit phase")
                     && commitRef.contains("The phase is complete after:")

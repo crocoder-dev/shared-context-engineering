@@ -57,8 +57,8 @@ changes.
 
 ### 4. Write each message
 
-Follow `references/commit-message-style.md` for the subject pattern, the body
-rules, issue references, the plan-citation rule, and the anti-patterns.
+Follow `references/commit-message-style.md` for the subject pattern, body
+rules, and issue references.
 
 ### 5. Apply the plan-citation rule
 
@@ -73,18 +73,7 @@ cite faithfully:
 - In `bypass` mode, infer the citation when the diff supports it, and otherwise
   omit it. Never stop, and never invent a slug or task ID.
 
-### 6. Apply context-file guidance gating
-
-This step applies in `regular` mode only. Skip it entirely in `bypass` mode; do
-not classify staged scope there.
-
-Classify the staged diff:
-
-- Context-only (`context/**`): context-file-focused guidance is allowed.
-- Mixed (`context/**` plus non-`context/**`): suppress default context-file
-  commit reminders and give guidance that reflects the full staged scope.
-
-### 7. Propose split guidance
+### 6. Propose split guidance
 
 This step applies in `regular` mode only.
 
@@ -95,7 +84,7 @@ each.
 When the staged changes form one unit, return one message and no split
 guidance. Do not split coherent work to appear thorough.
 
-### 8. Validate the result
+### 7. Validate the result
 
 Confirm before returning that:
 
@@ -103,6 +92,18 @@ Confirm before returning that:
 - Every staged file belongs to exactly one returned message.
 - No plan slug or task ID appears that the staged diff does not support.
 - The mode's own constraints hold.
+
+## Result contract
+
+Return exactly one internal result:
+
+- `blocked`: one or more issues, each carrying its problem, impact, and
+  required decision.
+- `proposal`: regular mode only. Include one or more commits, each with its
+  complete message and covered files. Include split rationale only when more
+  than one commit is returned.
+- `bypass_message`: bypass mode only. Include exactly one complete message and
+  the full staged file list.
 
 ## Bypass execution handoff
 

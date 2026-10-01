@@ -191,7 +191,7 @@ Set internal status `blocked` for every other non-successful outcome, including:
 Do not determine whether the plan is complete. The `/next-task` workflow owns
 that decision after context synchronization.
 
-Before returning a `complete` result, verify that it satisfies the authoritative
+A `complete` result must satisfy the authoritative
 handoff contract above.
 
 ## 2.9 Return the result

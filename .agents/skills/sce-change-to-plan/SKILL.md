@@ -10,12 +10,12 @@ description: >
 
 Own this workflow from input through its terminal user-visible response.
 Follow its steps, gates, and stops in order; do not add, skip, reorder, or merge them.
-Keep internal phase results private and continue immediately until a defined wait or stop.
+Keep intermediate workflow state private and continue immediately until a defined wait or stop.
 Resume user waits in this same skill and session.
-Render user-visible output only from the named workflow layouts or phase reports.
+Render user-visible output only from the named workflow layouts or reports.
 Do not expose raw internal state or add text around a rendered layout or report.
 Non-SCE helpers may assist, but must return to the active step without changing
-phase order, gates, waits, writes, validation, stops, or terminal output.
+workflow order, gates, waits, writes, validation, stops, or terminal output.
 Do not invoke another SCE skill, package, or workflow command.
 
 ## Phase references
@@ -121,9 +121,13 @@ Then stop and wait. Do not implement, and do not run the handoff yourself.
 
 ### 4. Revise the plan on request
 
-When the user answers clarification questions from step 2, resume the **Initial-clarification continuation** with `original_request`, `clarification_answers`, and the same `loaded_context_brief` from step 1. Preserve `original_request` unchanged and never ask the user for the original change request again. When the user answers open questions listed in the summary or requests changes to an already-written plan, resume the **Existing-plan revision continuation** with `plan_path`, `correction`, and the same `loaded_context_brief`. Do not ask them to rerun `/change-to-plan`.
+When the user answers clarification questions from step 2, resume the **Initial-clarification continuation** with `original_request`, `clarification_answers`, and the current `loaded_context_brief`. Preserve `original_request` unchanged and never ask the user for the original change request again. When the user answers open questions listed in the summary or requests changes to an already-written plan, resume the **Existing-plan revision continuation** with `plan_path`, `correction`, and the current `loaded_context_brief`. Do not ask them to rerun `/change-to-plan`.
 
-Run the **Plan authoring phase** with the applicable continuation fields. The brief still holds; durable context did not change because the user disagreed with a task boundary. Do not reload it.
+Reuse `loaded_context_brief` when the revision stays within the focus it covers.
+If the revision materially expands the plan into an area the brief did not cover,
+rerun the **Context load phase** for the expanded focus before running the
+**Plan authoring phase**. Do not reload context for revisions already covered by
+the brief.
 
 An answer that resolves a doubt removes that open question. An answer that does not resolve it leaves the question standing; do not drop it because the user replied to it. If the reply raises a new doubt, the revised plan carries a new open question.
 
@@ -143,7 +147,6 @@ Stop.
 
 - Plan at most one change request per invocation. Revisions to the plan that request produced are part of the same invocation, not a second request.
 - Read each phase's reference before running that phase.
-- Always tell the user the plan can be revised, and always name its assumptions as the first thing worth checking.
 - Do not gate the handoff on open questions listed in the plan summary. Blocking questions return `needs_clarification` before any plan is written. Offering revision is not the same as demanding it, and inventing doubts to justify a review gate is not allowed.
 - Do not suppress, soften, or answer an open question or clarification question on the user's behalf.
 - Do not defer the user's revision to a rerun of `/change-to-plan`, and do not defer it to the implementation phase. Revise the plan here.

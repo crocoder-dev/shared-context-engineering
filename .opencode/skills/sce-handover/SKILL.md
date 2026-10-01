@@ -11,12 +11,12 @@ compatibility: opencode
 
 Own this workflow from input through its terminal user-visible response.
 Follow its steps, gates, and stops in order; do not add, skip, reorder, or merge them.
-Keep internal phase results private and continue immediately until a defined wait or stop.
+Keep intermediate workflow state private and continue immediately until a defined wait or stop.
 Resume user waits in this same skill and session.
-Render user-visible output only from the named workflow layouts or phase reports.
+Render user-visible output only from the named workflow layouts or reports.
 Do not expose raw internal state or add text around a rendered layout or report.
 Non-SCE helpers may assist, but must return to the active step without changing
-phase order, gates, waits, writes, validation, stops, or terminal output.
+workflow order, gates, waits, writes, validation, stops, or terminal output.
 Do not invoke another SCE skill, package, or workflow command.
 
 ## Input
@@ -81,14 +81,15 @@ confirmed facts.
 #### 4. Confirm the context root
 
 When `context/` does not exist, there is no durable location to write to.
+Do not create it; `sce setup --bootstrap-context` owns context bootstrap.
 Render the **Writer blocked** layout with `sce setup --bootstrap-context` as
 the required action, and stop without writing a file.
 
 #### 5. Write exactly one file
 
-Write the composed document to the path resolved in step 2. Before reporting
-success, validate the written file against the template's **Completeness
-contract**.
+Write only the composed handover document to the path resolved in step 2.
+Do not change plan or task state or edit any other file. Before reporting
+success, validate the written file against the template's **Completeness contract**.
 
 #### 6. Report
 
@@ -128,17 +129,3 @@ step for continuation in the current session.
 Loading is read-only: do not edit any file, mark a plan task complete, change
 repository state, or begin the recommended next step. Presenting the loaded
 guidance is the entire loader contract.
-
-## Rules
-
-- Handle at most one handover per invocation, in exactly one mode.
-- Writer mode never overwrites an existing handover file.
-- Writer mode never marks a plan task complete or edits any file outside the
-  one handover document it writes.
-- Loader mode never edits a file, writes a new file, or changes plan or task
-  state.
-- Never invoke another SCE skill, sibling SCE package, or SCE workflow command.
-- Never treat a file outside `context/handovers/`, or a non-Markdown file, as a
-  loadable handover.
-- Never create the `context/` root; `sce setup --bootstrap-context` owns that.
-- Do not begin, plan, or automate the loaded handover's recommended next step.
