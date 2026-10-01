@@ -106,9 +106,13 @@ Then stop and wait. Do not implement, and do not run the handoff yourself.
 
 ### 4. Revise the plan on request
 
-When the user answers clarification questions from step 2, resume the **Initial-clarification continuation** with `original_request`, `clarification_answers`, and the same `loaded_context_brief` from step 1. Preserve `original_request` unchanged and never ask the user for the original change request again. When the user answers open questions listed in the summary or requests changes to an already-written plan, resume the **Existing-plan revision continuation** with `plan_path`, `correction`, and the same `loaded_context_brief`. Do not ask them to rerun `/change-to-plan`.
+When the user answers clarification questions from step 2, resume the **Initial-clarification continuation** with `original_request`, `clarification_answers`, and the current `loaded_context_brief`. Preserve `original_request` unchanged and never ask the user for the original change request again. When the user answers open questions listed in the summary or requests changes to an already-written plan, resume the **Existing-plan revision continuation** with `plan_path`, `correction`, and the current `loaded_context_brief`. Do not ask them to rerun `/change-to-plan`.
 
-Run the **Plan authoring phase** with the applicable continuation fields. The brief still holds; durable context did not change because the user disagreed with a task boundary. Do not reload it.
+Reuse `loaded_context_brief` when the revision stays within the focus it covers.
+If the revision materially expands the plan into an area the brief did not cover,
+rerun the **Context load phase** for the expanded focus before running the
+**Plan authoring phase**. Do not reload context for revisions already covered by
+the brief.
 
 An answer that resolves a doubt removes that open question. An answer that does not resolve it leaves the question standing; do not drop it because the user replied to it. If the reply raises a new doubt, the revised plan carries a new open question.
 
@@ -128,7 +132,6 @@ Stop.
 
 - Plan at most one change request per invocation. Revisions to the plan that request produced are part of the same invocation, not a second request.
 - Read each phase's reference before running that phase.
-- Always tell the user the plan can be revised, and always name its assumptions as the first thing worth checking.
 - Do not gate the handoff on open questions listed in the plan summary. Blocking questions return `needs_clarification` before any plan is written. Offering revision is not the same as demanding it, and inventing doubts to justify a review gate is not allowed.
 - Do not suppress, soften, or answer an open question or clarification question on the user's behalf.
 - Do not defer the user's revision to a rerun of `/change-to-plan`, and do not defer it to the implementation phase. Revise the plan here.
@@ -245,8 +248,22 @@ changeToPlanPlanAuthoring = """
 
 Run this phase for step 2 of the workflow, and again for each revision in step 4.
 
-Input: the change request, and the complete `loaded` brief from the context load
-phase. Pass the brief verbatim; do not restate, summarize, or reinterpret it.
+Inputs are one of:
+
+- Initial authoring: `change_request` and `loaded_context_brief`.
+- Clarification continuation: `original_request`, `clarification_answers`,
+  and `loaded_context_brief`.
+- Existing-plan revision: `plan_path`, `correction`, and
+  `loaded_context_brief`.
+
+Pass `loaded_context_brief` verbatim.
+
+For clarification continuation, preserve `original_request` and resolve it with
+the supplied `clarification_answers`.
+
+For an existing-plan revision, read `plan_path` and interpret `correction`
+against that plan. A terse correction is not ambiguous merely because it omits
+scope and terminology already present in the plan.
 
 This phase owns the planning process:
 
@@ -272,19 +289,6 @@ The context brief is the durable memory this plan starts from. Treat its
 `key_facts` as recorded current state, its `gaps` as areas with no durable
 context, and its `drift` as recorded context that no longer matches the code.
 
-When no brief is supplied, load the context named by the change request before
-authoring, and follow the selection discipline in *Inspect relevant context*.
-
-Answers the user gave to earlier clarification questions arrive as part of the
-change request. Incorporate them into the plan.
-
-A revision of a plan authored earlier in the session also arrives as the change
-request, and it is usually terse: a task boundary the user disagrees with, an
-ordering they want changed, work they want added or dropped. Read it against the
-existing plan, which supplies the scope, criteria, and terminology it omits.
-Terseness is not ambiguity. Do not set internal status `needs_clarification` for
-detail the plan already carries; ask only when the revision itself is genuinely
-undecidable.
 
 ## 2.1 Resolve the plan target
 
@@ -705,7 +709,7 @@ candidate plan paths and explain that naming one candidate resolves it.
 
 {total-tasks} {task|tasks} planned.
 
-This plan is a draft. State a correction and it will be updated.
+This plan is a draft. Check its assumptions first; state any correction and it will be updated.
 
 Next step:
 
@@ -955,7 +959,7 @@ local readyContinuationLayout = model.semanticReference.apply(
 
   {total-tasks} tasks planned.
 
-  This plan is a draft. State a correction and it will be updated.
+  This plan is a draft. Check its assumptions first; state any correction and it will be updated.
 
   Next step:
 
@@ -1078,9 +1082,13 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
 
     ### 4. Revise the plan on request
 
-    When the user answers clarification questions from step 2, resume the **Initial-clarification continuation** with `original_request`, `clarification_answers`, and the same `loaded_context_brief` from step 1. Preserve `original_request` unchanged and never ask the user for the original change request again. When the user answers open questions listed in the summary or requests changes to an already-written plan, resume the **Existing-plan revision continuation** with `plan_path`, `correction`, and the same `loaded_context_brief`. Do not ask them to rerun `/change-to-plan`.
+    When the user answers clarification questions from step 2, resume the **Initial-clarification continuation** with `original_request`, `clarification_answers`, and the current `loaded_context_brief`. Preserve `original_request` unchanged and never ask the user for the original change request again. When the user answers open questions listed in the summary or requests changes to an already-written plan, resume the **Existing-plan revision continuation** with `plan_path`, `correction`, and the current `loaded_context_brief`. Do not ask them to rerun `/change-to-plan`.
 
-    \(invoke.render.apply(mode)) \(planAuthoring.render.apply(mode)) with the applicable continuation fields. The brief still holds; durable context did not change because the user disagreed with a task boundary. Do not reload it.
+    Reuse `loaded_context_brief` when the revision stays within the focus it covers.
+    If the revision materially expands the plan into an area the brief did not cover,
+    rerun the **Context load phase** for the expanded focus before running the
+    **Plan authoring phase**. Do not reload context for revisions already covered by
+    the brief.
 
     An answer that resolves a doubt removes that open question. An answer that does not resolve it leaves the question standing; do not drop it because the user replied to it. If the reply raises a new doubt, the revised plan carries a new open question.
 
@@ -1099,7 +1107,6 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     ## Rules
 
     - Plan at most one change request per invocation. Revisions to the plan that request produced are part of the same invocation, not a second request.
-    - Always tell the user the plan can be revised, and always name its assumptions as the first thing worth checking.
     - Do not gate the handoff on open questions listed in the plan summary. Blocking questions return `needs_clarification` before any plan is written. Offering revision is not the same as demanding it, and inventing doubts to justify a review gate is not allowed.
     - Do not suppress, soften, or answer an open question or clarification question on the user's behalf.
     - Do not defer the user's revision to a rerun of `/change-to-plan`, and do not defer it to the implementation phase. Revise the plan here.
@@ -1469,19 +1476,6 @@ local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
     The context brief is the durable memory this plan starts from. Treat its
     `key_facts` as recorded current state, its `gaps` as areas with no durable
     context, and its `drift` as recorded context that no longer matches the code.
-
-    When no brief is supplied, load the context named by the change request before
-    authoring, and follow the selection discipline in *Inspect relevant context*.
-
-    Answers the user gave to earlier clarification questions arrive as part of the
-    change request. Incorporate them into the plan.
-
-    A revision of a plan authored earlier in the session also arrives as the change
-    request, and it is usually terse: a task boundary the user disagrees with, an
-    ordering they want changed, work they want added or dropped. Read it against the
-    existing plan, which supplies the scope, criteria, and terminology it omits.
-    Terseness is not ambiguity. Do not \(returnLower.render.apply(mode)) `needs_clarification` for detail the
-    plan already carries; ask only when the revision itself is genuinely undecidable.
 
     \(model.packageOnlyBlock.apply("## Workflow").render.apply(mode))\(planAuthoringHeadings.stepHeading.apply(mode, 1, "Resolve the plan target"))
 
