@@ -2266,167 +2266,114 @@ mod tests {
     }
 
     #[test]
-    fn register_scope_provenance_stores_a_known_model_and_reads_it_back() {
-        let (_fixture, db) = registered_scope_store("provenance-known-model");
-        let store = MutationTraceStore::new(&db);
+    fn scope_provenance_loads_exactly_what_was_registered_or_none() {
+        let cases = [
+            (
+                "session and model",
+                Some(provenance("scope-1", "cx_session-1", Some("codex/gpt-5"))),
+            ),
+            (
+                "session without a model",
+                Some(provenance("scope-1", "cc_session-1", None)),
+            ),
+            ("no provenance registered", None),
+        ];
 
-        let expected = provenance("scope-1", "cx_session-1", Some("codex/gpt-5"));
-        let stored = store
-            .register_scope_provenance(&expected)
-            .expect("registering provenance for a registered scope should succeed");
+        for (index, (label, registered)) in cases.into_iter().enumerate() {
+            let (_fixture, db) = registered_scope_store(&format!("provenance-round-trip-{index}"));
+            let store = MutationTraceStore::new(&db);
 
-        assert_eq!(stored, expected);
-        assert_eq!(
-            store
-                .load_scope_provenance(&ScopeId("scope-1".to_string()))
-                .expect("load_scope_provenance should succeed"),
-            Some(expected)
-        );
+            if let Some(incoming) = &registered {
+                assert_eq!(
+                    &store
+                        .register_scope_provenance(incoming)
+                        .unwrap_or_else(|error| panic!("{label}: registration failed: {error}")),
+                    incoming,
+                    "{label}: returned row"
+                );
+            }
+
+            assert_eq!(
+                store
+                    .load_scope_provenance(&ScopeId("scope-1".to_string()))
+                    .expect("load_scope_provenance should succeed"),
+                registered,
+                "{label}: loaded row"
+            );
+        }
     }
 
     #[test]
-    fn register_scope_provenance_stores_a_null_model_and_reads_it_back() {
-        let (_fixture, db) = registered_scope_store("provenance-null-model");
-        let store = MutationTraceStore::new(&db);
+    fn register_scope_provenance_keeps_the_first_model_observation_including_none() {
+        let cases: [(&str, Option<&str>, Option<&str>); 5] = [
+            ("none then none", None, None),
+            ("none then a model", None, Some("model-a")),
+            ("a model then none", Some("model-a"), None),
+            (
+                "a model then the same model",
+                Some("model-a"),
+                Some("model-a"),
+            ),
+            (
+                "a model then another model",
+                Some("model-a"),
+                Some("model-b"),
+            ),
+        ];
 
-        let expected = provenance("scope-1", "cc_session-1", None);
-        let stored = store
-            .register_scope_provenance(&expected)
-            .expect("provenance with no model should be valid");
+        for (index, (label, first_model, replay_model)) in cases.into_iter().enumerate() {
+            let (_fixture, db) = registered_scope_store(&format!("provenance-first-model-{index}"));
+            let store = MutationTraceStore::new(&db);
 
-        assert_eq!(stored, expected);
-        assert_eq!(
+            let first = provenance("scope-1", "cc_session-1", first_model);
             store
-                .load_scope_provenance(&ScopeId("scope-1".to_string()))
-                .expect("load_scope_provenance should succeed"),
-            Some(expected)
-        );
-    }
+                .register_scope_provenance(&first)
+                .unwrap_or_else(|error| panic!("{label}: first registration failed: {error}"));
 
-    #[test]
-    fn register_scope_provenance_replayed_identically_is_an_idempotent_no_op() {
-        let (_fixture, db) = registered_scope_store("provenance-identical-replay");
-        let store = MutationTraceStore::new(&db);
+            let replayed = store
+                .register_scope_provenance(&provenance("scope-1", "cc_session-1", replay_model))
+                .unwrap_or_else(|error| {
+                    panic!("{label}: a same-session replay must succeed: {error}")
+                });
 
-        let incoming = provenance("scope-1", "cx_session-1", Some("codex/gpt-5"));
-        store
-            .register_scope_provenance(&incoming)
-            .expect("first registration should succeed");
-
-        let replayed = store
-            .register_scope_provenance(&incoming)
-            .expect("an identical replay should succeed");
-
-        assert_eq!(replayed, incoming);
-        assert_eq!(provenance_row_count(&db), 1);
-    }
-
-    #[test]
-    fn register_scope_provenance_keeps_a_stored_null_model_when_one_is_later_discovered() {
-        let (_fixture, db) = registered_scope_store("provenance-existing-null-incoming-model");
-        let store = MutationTraceStore::new(&db);
-
-        let first = provenance("scope-1", "cc_session-1", None);
-        store
-            .register_scope_provenance(&first)
-            .expect("first registration should succeed");
-
-        let stored = store
-            .register_scope_provenance(&provenance(
-                "scope-1",
-                "cc_session-1",
-                Some("claude/opus-5"),
-            ))
-            .expect("a later model discovery must not fail the registration");
-
-        assert_eq!(stored, first);
-        assert_eq!(
-            store
-                .load_scope_provenance(&ScopeId("scope-1".to_string()))
-                .expect("load_scope_provenance should succeed"),
-            Some(first)
-        );
-    }
-
-    #[test]
-    fn register_scope_provenance_keeps_a_stored_model_when_the_replay_has_none() {
-        let (_fixture, db) = registered_scope_store("provenance-existing-model-incoming-null");
-        let store = MutationTraceStore::new(&db);
-
-        let first = provenance("scope-1", "cc_session-1", Some("claude/opus-5"));
-        store
-            .register_scope_provenance(&first)
-            .expect("first registration should succeed");
-
-        let stored = store
-            .register_scope_provenance(&provenance("scope-1", "cc_session-1", None))
-            .expect("a replay without a model must not fail the registration");
-
-        assert_eq!(stored, first);
-        assert_eq!(
-            store
-                .load_scope_provenance(&ScopeId("scope-1".to_string()))
-                .expect("load_scope_provenance should succeed"),
-            Some(first)
-        );
-    }
-
-    #[test]
-    fn register_scope_provenance_keeps_the_first_model_when_a_later_one_disagrees() {
-        let (_fixture, db) = registered_scope_store("provenance-model-disagreement");
-        let store = MutationTraceStore::new(&db);
-
-        let first = provenance("scope-1", "cc_session-1", Some("claude/sonnet-5"));
-        store
-            .register_scope_provenance(&first)
-            .expect("first registration should succeed");
-
-        let stored = store
-            .register_scope_provenance(&provenance(
-                "scope-1",
-                "cc_session-1",
-                Some("claude/opus-5"),
-            ))
-            .expect("a model disagreement must not fail the registration");
-
-        assert_eq!(stored, first);
-        assert_eq!(
-            store
-                .load_scope_provenance(&ScopeId("scope-1".to_string()))
-                .expect("load_scope_provenance should succeed"),
-            Some(first)
-        );
+            assert_eq!(replayed, first, "{label}: returned row");
+            assert_eq!(
+                store
+                    .load_scope_provenance(&ScopeId("scope-1".to_string()))
+                    .expect("load_scope_provenance should succeed"),
+                Some(first),
+                "{label}: stored row"
+            );
+        }
     }
 
     #[test]
     fn register_scope_provenance_errors_on_a_session_conflict_without_rewriting_the_row() {
-        let (_fixture, db) = registered_scope_store("provenance-session-conflict");
-        let store = MutationTraceStore::new(&db);
+        for (index, first_model) in [Some("model-a"), None].into_iter().enumerate() {
+            let (_fixture, db) =
+                registered_scope_store(&format!("provenance-session-conflict-{index}"));
+            let store = MutationTraceStore::new(&db);
 
-        let first = provenance("scope-1", "cc_session-1", Some("claude/opus-5"));
-        store
-            .register_scope_provenance(&first)
-            .expect("first registration should succeed");
-
-        let error = store
-            .register_scope_provenance(&provenance(
-                "scope-1",
-                "cc_session-2",
-                Some("claude/opus-5"),
-            ))
-            .expect_err("a different session for the same scope should error");
-        assert!(error.to_string().contains("scope-1"));
-        assert!(error.to_string().contains("cc_session-1"));
-        assert!(error.to_string().contains("cc_session-2"));
-
-        assert_eq!(
+            let first = provenance("scope-1", "cc_session-1", first_model);
             store
-                .load_scope_provenance(&ScopeId("scope-1".to_string()))
-                .expect("load_scope_provenance should succeed"),
-            Some(first),
-            "a session conflict must never rewrite the stored row"
-        );
-        assert_eq!(provenance_row_count(&db), 1);
+                .register_scope_provenance(&first)
+                .expect("first registration should succeed");
+
+            let error = store
+                .register_scope_provenance(&provenance("scope-1", "cc_session-2", Some("model-b")))
+                .expect_err("a different session for the same scope should error");
+            assert!(error.to_string().contains("scope-1"));
+            assert!(error.to_string().contains("cc_session-1"));
+            assert!(error.to_string().contains("cc_session-2"));
+
+            assert_eq!(
+                store
+                    .load_scope_provenance(&ScopeId("scope-1".to_string()))
+                    .expect("load_scope_provenance should succeed"),
+                Some(first),
+                "a session conflict must never rewrite the stored session or model"
+            );
+        }
     }
 
     #[test]
@@ -2456,19 +2403,6 @@ mod tests {
                 .expect("load_scope should succeed")
                 .is_none(),
             "registering provenance must never create a scope implicitly"
-        );
-    }
-
-    #[test]
-    fn load_scope_provenance_returns_none_for_a_scope_without_provenance() {
-        let (_fixture, db) = registered_scope_store("provenance-absent");
-        let store = MutationTraceStore::new(&db);
-
-        assert_eq!(
-            store
-                .load_scope_provenance(&ScopeId("scope-1".to_string()))
-                .expect("load_scope_provenance should succeed"),
-            None
         );
     }
 

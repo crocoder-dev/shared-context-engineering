@@ -653,12 +653,6 @@ mod tests {
         }
     }
 
-    fn error_of(payload: &str) -> String {
-        parse(payload)
-            .expect_err("expected the payload to be rejected")
-            .to_string()
-    }
-
     #[test]
     fn valid_operation_payloads_parse_exactly() {
         let cases = [
@@ -712,149 +706,155 @@ mod tests {
     }
 
     #[test]
-    fn start_parses_provenance_with_a_model() {
-        let payload = parse(
-            r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{"session_id":"cx_session-1","model_id":"gpt-5-codex"}}"#,
-        )
-        .expect("valid start payload with provenance");
-
-        assert_eq!(
-            payload,
-            MutationScopePayload::Start {
-                scope_id: "A".to_string(),
-                event_id: "e1".to_string(),
-                actor_kind: ActorKind::Codex,
-                provenance: Some(StartProvenance {
+    fn valid_start_provenance_parses_exactly() {
+        let cases = [
+            (
+                "session and model",
+                r#"{"session_id":"cx_session-1","model_id":"gpt-5-codex"}"#,
+                StartProvenance {
                     session_id: "cx_session-1".to_string(),
                     model_id: Some("gpt-5-codex".to_string()),
-                }),
-            }
-        );
-    }
+                },
+            ),
+            (
+                "session only",
+                r#"{"session_id":"cc_session-1"}"#,
+                StartProvenance {
+                    session_id: "cc_session-1".to_string(),
+                    model_id: None,
+                },
+            ),
+            (
+                "session with a null model",
+                r#"{"session_id":"cc_session-1","model_id":null}"#,
+                StartProvenance {
+                    session_id: "cc_session-1".to_string(),
+                    model_id: None,
+                },
+            ),
+        ];
 
-    #[test]
-    fn start_parses_provenance_without_a_model() {
-        for payload in [
-            r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"claude_code","provenance":{"session_id":"cc_session-1"}}"#,
-            r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"claude_code","provenance":{"session_id":"cc_session-1","model_id":null}}"#,
-        ] {
+        for (label, provenance, expected) in cases {
+            let payload = format!(
+                r#"{{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{provenance}}}"#
+            );
+            let parsed = parse(&payload)
+                .unwrap_or_else(|error| panic!("{label}: expected valid payload: {error}"));
             assert_eq!(
-                parse(payload).expect("valid start payload with a model-less provenance"),
+                parsed,
                 MutationScopePayload::Start {
                     scope_id: "A".to_string(),
                     event_id: "e1".to_string(),
-                    actor_kind: ActorKind::ClaudeCode,
-                    provenance: Some(StartProvenance {
-                        session_id: "cc_session-1".to_string(),
-                        model_id: None,
-                    }),
-                }
+                    actor_kind: ActorKind::Codex,
+                    provenance: Some(expected),
+                },
+                "{label}"
             );
         }
     }
 
     #[test]
-    fn provenance_is_rejected_on_every_operation_other_than_start() {
-        for payload in [
-            r#"{"operation":"advance","scope_id":"A","event_id":"e2","actor_kind":"codex","provenance":{"session_id":"cx_session-1"}}"#,
-            r#"{"operation":"close","scope_id":"A","event_id":"e3","actor_kind":"codex","provenance":{"session_id":"cx_session-1"}}"#,
-            r#"{"operation":"flush","provenance":{"session_id":"cx_session-1"}}"#,
-            r#"{"operation":"abandon","scope_id":"A","provenance":{"session_id":"cx_session-1"}}"#,
-        ] {
-            let error = error_of(payload);
-            assert_eq!(
-                error, "Invalid mutation-scope payload from STDIN: unexpected field 'provenance'.",
-                "unexpected error for {payload}"
-            );
-        }
-    }
+    #[allow(clippy::too_many_lines)]
+    fn invalid_provenance_shapes_are_rejected() {
+        const NOT_ON_THIS_OPERATION: &str = "unexpected field 'provenance'.";
+        const NOT_AN_OBJECT: &str = "field 'provenance' must be a JSON object";
+        const SESSION_NOT_A_STRING: &str = "field 'session_id' must be a string";
+        const SESSION_BLANK: &str = "field 'session_id' must be a non-blank string";
+        const MODEL_NOT_A_STRING: &str = "field 'model_id' must be a string";
+        const MODEL_BLANK: &str = "field 'model_id' must be a non-blank string";
 
-    #[test]
-    fn provenance_without_a_session_id_is_rejected() {
-        assert!(parse(
-            r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{"model_id":"gpt-5-codex"}}"#
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn blank_or_non_string_provenance_session_id_is_rejected() {
-        for payload in [
-            r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{"session_id":""}}"#,
-            r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{"session_id":"   "}}"#,
-            r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{"session_id":null}}"#,
-            r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{"session_id":7}}"#,
-        ] {
-            let error = error_of(payload);
-            assert!(
-                error.contains("'session_id'"),
-                "unexpected error for {payload}: {error}"
-            );
-        }
-    }
-
-    #[test]
-    fn blank_or_non_string_provenance_model_id_is_rejected() {
-        for payload in [
-            r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{"session_id":"cx_session-1","model_id":""}}"#,
-            r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{"session_id":"cx_session-1","model_id":"  "}}"#,
-            r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{"session_id":"cx_session-1","model_id":42}}"#,
-        ] {
-            let error = error_of(payload);
-            assert!(
-                error.contains("'model_id'"),
-                "unexpected error for {payload}: {error}"
-            );
-        }
-    }
-
-    #[test]
-    fn non_object_provenance_is_rejected() {
-        for provenance in ["\"cx_session-1\"", "[]", "5", "true", "null"] {
-            let error = error_of(&format!(
-                r#"{{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{provenance}}}"#
-            ));
-            assert!(
-                error.contains("field 'provenance' must be a JSON object"),
-                "unexpected error for provenance {provenance}: {error}"
-            );
-        }
-    }
-
-    #[test]
-    fn unexpected_provenance_key_is_rejected() {
-        let error = error_of(
-            r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{"session_id":"cx_session-1","agent_id":"sub"}}"#,
-        );
-        assert_eq!(
-            error,
-            "Invalid mutation-scope payload from STDIN: unexpected field 'provenance.agent_id'."
-        );
-    }
-
-    #[test]
-    fn advance_and_close_parse_to_their_variants() {
-        assert_eq!(
-            parse(r#"{"operation":"advance","scope_id":"A","event_id":"e2","actor_kind":"codex"}"#)
-                .expect("valid advance payload"),
-            MutationScopePayload::Advance {
-                scope_id: "A".to_string(),
-                event_id: "e2".to_string(),
-                actor_kind: ActorKind::Codex,
-            }
-        );
-
-        assert_eq!(
-            parse(
-                r#"{"operation":"close","scope_id":"A","event_id":"e3","actor_kind":"opencode"}"#
-            )
-            .expect("valid close payload"),
-            MutationScopePayload::Close {
-                scope_id: "A".to_string(),
-                event_id: "e3".to_string(),
-                actor_kind: ActorKind::OpenCode,
-            }
-        );
+        assert_all_rejected(&[
+            InvalidCase {
+                label: "advance rejects provenance",
+                payload: r#"{"operation":"advance","scope_id":"A","event_id":"e2","actor_kind":"codex","provenance":{"session_id":"cx_session-1"}}"#,
+                expected_fragment: NOT_ON_THIS_OPERATION,
+            },
+            InvalidCase {
+                label: "close rejects provenance",
+                payload: r#"{"operation":"close","scope_id":"A","event_id":"e3","actor_kind":"codex","provenance":{"session_id":"cx_session-1"}}"#,
+                expected_fragment: NOT_ON_THIS_OPERATION,
+            },
+            InvalidCase {
+                label: "flush rejects provenance",
+                payload: r#"{"operation":"flush","provenance":{"session_id":"cx_session-1"}}"#,
+                expected_fragment: NOT_ON_THIS_OPERATION,
+            },
+            InvalidCase {
+                label: "abandon rejects provenance",
+                payload: r#"{"operation":"abandon","scope_id":"A","provenance":{"session_id":"cx_session-1"}}"#,
+                expected_fragment: NOT_ON_THIS_OPERATION,
+            },
+            InvalidCase {
+                label: "null provenance",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":null}"#,
+                expected_fragment: NOT_AN_OBJECT,
+            },
+            InvalidCase {
+                label: "string provenance",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":"cx_session-1"}"#,
+                expected_fragment: NOT_AN_OBJECT,
+            },
+            InvalidCase {
+                label: "array provenance",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":[]}"#,
+                expected_fragment: NOT_AN_OBJECT,
+            },
+            InvalidCase {
+                label: "numeric provenance",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":5}"#,
+                expected_fragment: NOT_AN_OBJECT,
+            },
+            InvalidCase {
+                label: "boolean provenance",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":true}"#,
+                expected_fragment: NOT_AN_OBJECT,
+            },
+            InvalidCase {
+                label: "missing session_id",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{"model_id":"gpt-5-codex"}}"#,
+                expected_fragment: "missing required field 'session_id'",
+            },
+            InvalidCase {
+                label: "empty session_id",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{"session_id":""}}"#,
+                expected_fragment: SESSION_BLANK,
+            },
+            InvalidCase {
+                label: "whitespace session_id",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{"session_id":"   "}}"#,
+                expected_fragment: SESSION_BLANK,
+            },
+            InvalidCase {
+                label: "null session_id",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{"session_id":null}}"#,
+                expected_fragment: SESSION_NOT_A_STRING,
+            },
+            InvalidCase {
+                label: "numeric session_id",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{"session_id":7}}"#,
+                expected_fragment: SESSION_NOT_A_STRING,
+            },
+            InvalidCase {
+                label: "empty model_id",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{"session_id":"cx_session-1","model_id":""}}"#,
+                expected_fragment: MODEL_BLANK,
+            },
+            InvalidCase {
+                label: "whitespace model_id",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{"session_id":"cx_session-1","model_id":"  "}}"#,
+                expected_fragment: MODEL_BLANK,
+            },
+            InvalidCase {
+                label: "numeric model_id",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{"session_id":"cx_session-1","model_id":42}}"#,
+                expected_fragment: MODEL_NOT_A_STRING,
+            },
+            InvalidCase {
+                label: "unexpected provenance key",
+                payload: r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"codex","provenance":{"session_id":"cx_session-1","agent_id":"sub"}}"#,
+                expected_fragment: "unexpected field 'provenance.agent_id'",
+            },
+        ]);
     }
 
     #[test]
@@ -1136,49 +1136,6 @@ mod tests {
             (ScopeId(scope.to_string()), EventId(event.to_string()))
         }
 
-        #[test]
-        fn start_forwards_identities_verbatim_to_coordinate() {
-            let result = drive_mutation_scope(
-                Path::new("/unused"),
-                MutationScopePayload::Start {
-                    scope_id: "A".to_string(),
-                    event_id: "e1".to_string(),
-                    actor_kind: ActorKind::ClaudeCode,
-                    provenance: Some(StartProvenance {
-                        session_id: "cc_session-1".to_string(),
-                        model_id: Some("claude/opus".to_string()),
-                    }),
-                },
-                None,
-                |_root, boundary| {
-                    match boundary {
-                        RuntimeBoundary::Start {
-                            scope,
-                            event,
-                            actor_kind,
-                            provenance,
-                        } => {
-                            assert_eq!(scope.0, "A");
-                            assert_eq!(event.0, "e1");
-                            assert_eq!(*actor_kind, ActorKind::ClaudeCode);
-                            assert_eq!(
-                                *provenance,
-                                Some(StartProvenance {
-                                    session_id: "cc_session-1".to_string(),
-                                    model_id: Some("claude/opus".to_string()),
-                                })
-                            );
-                        }
-                        other => panic!("expected RuntimeBoundary::Start, got {other:?}"),
-                    }
-                    Ok(committed_outcome())
-                },
-                unreachable_abandon,
-            );
-
-            assert_eq!(result.expect("start should succeed"), "");
-        }
-
         fn assert_runtime_boundary_eq(
             actual: &RuntimeBoundary,
             expected: &RuntimeBoundary,
@@ -1190,16 +1147,24 @@ mod tests {
                         scope: actual_scope,
                         event: actual_event,
                         actor_kind: actual_actor,
-                        ..
+                        provenance: actual_provenance,
                     },
                     RuntimeBoundary::Start {
                         scope: expected_scope,
                         event: expected_event,
                         actor_kind: expected_actor,
-                        ..
+                        provenance: expected_provenance,
                     },
-                )
-                | (
+                ) => {
+                    assert_eq!(actual_scope, expected_scope, "{label}: scope");
+                    assert_eq!(actual_event, expected_event, "{label}: event");
+                    assert_eq!(actual_actor, expected_actor, "{label}: actor");
+                    assert_eq!(
+                        actual_provenance, expected_provenance,
+                        "{label}: provenance"
+                    );
+                }
+                (
                     RuntimeBoundary::Advance {
                         scope: actual_scope,
                         event: actual_event,
@@ -1233,14 +1198,25 @@ mod tests {
         }
 
         #[test]
+        #[allow(clippy::too_many_lines)]
         fn coordinate_payloads_forward_exact_runtime_boundaries() {
             let (scope_a, event_a) = ids("  scope-A  ", "event-start");
             let (scope_b, event_b) = ids("scope-B", "event-advance");
             let (scope_c, event_c) = ids("scope-C", "event-close");
+            let (scope_d, event_d) = ids("scope-D", "event-start-model");
+            let (scope_e, event_e) = ids("scope-E", "event-start-session");
+            let with_model = StartProvenance {
+                session_id: "cx_session-1".to_string(),
+                model_id: Some("gpt-5-codex".to_string()),
+            };
+            let without_model = StartProvenance {
+                session_id: "cc_session-1".to_string(),
+                model_id: None,
+            };
 
             let cases = [
                 (
-                    "start",
+                    "start without provenance",
                     MutationScopePayload::Start {
                         scope_id: scope_a.0.clone(),
                         event_id: event_a.0.clone(),
@@ -1252,6 +1228,36 @@ mod tests {
                         event: event_a,
                         actor_kind: ActorKind::ClaudeCode,
                         provenance: None,
+                    },
+                ),
+                (
+                    "start with session and model provenance",
+                    MutationScopePayload::Start {
+                        scope_id: scope_d.0.clone(),
+                        event_id: event_d.0.clone(),
+                        actor_kind: ActorKind::Codex,
+                        provenance: Some(with_model.clone()),
+                    },
+                    RuntimeBoundary::Start {
+                        scope: scope_d,
+                        event: event_d,
+                        actor_kind: ActorKind::Codex,
+                        provenance: Some(with_model),
+                    },
+                ),
+                (
+                    "start with session-only provenance",
+                    MutationScopePayload::Start {
+                        scope_id: scope_e.0.clone(),
+                        event_id: event_e.0.clone(),
+                        actor_kind: ActorKind::Pi,
+                        provenance: Some(without_model.clone()),
+                    },
+                    RuntimeBoundary::Start {
+                        scope: scope_e,
+                        event: event_e,
+                        actor_kind: ActorKind::Pi,
+                        provenance: Some(without_model),
                     },
                 ),
                 (
@@ -2120,7 +2126,7 @@ mod tests {
         }
 
         #[test]
-        fn test8_start_with_provenance_registers_it_before_the_protocol_start_commits() {
+        fn start_registers_provenance_before_committing_protocol_start() {
             let repo = IngressRepo::new("provenance-start");
 
             assert_eq!(
@@ -2149,7 +2155,7 @@ mod tests {
         }
 
         #[test]
-        fn test9_start_without_provenance_persists_no_provenance_row() {
+        fn start_without_provenance_creates_no_provenance() {
             let repo = IngressRepo::new("provenance-absent");
 
             repo.drive(START_A_E1)
@@ -2160,8 +2166,11 @@ mod tests {
                 scope_status(&db, "A").map(|(_, status)| status),
                 Some("active".to_string())
             );
-            assert_eq!(scope_provenance(&db, "A"), None);
-            assert_eq!(count(&db, "mutation_trace_scope_provenance"), 0);
+            assert_eq!(
+                count(&db, "mutation_trace_scope_provenance"),
+                0,
+                "a start that carried no provenance must not reach provenance persistence"
+            );
             assert_eq!(
                 processed_events(&db),
                 vec![("A".to_string(), "e1".to_string())]
@@ -2171,14 +2180,18 @@ mod tests {
         }
 
         #[test]
-        fn test10_replayed_start_provenance_is_idempotent_and_keeps_the_first_model() {
+        fn replayed_start_with_provenance_commits_nothing_new() {
             let repo = IngressRepo::new("provenance-replay");
 
             repo.drive(START_A_E1_WITH_PROVENANCE)
                 .expect("the first start should succeed");
-            let revision_after_start = {
+            let (revision_before, processed_before, provenance_before) = {
                 let db = repo.db();
-                worktree_revision(&db)
+                (
+                    worktree_revision(&db),
+                    processed_events(&db),
+                    scope_provenance(&db, "A"),
+                )
             };
 
             assert_eq!(
@@ -2186,39 +2199,17 @@ mod tests {
                     .expect("an identical replay should succeed"),
                 ""
             );
-            assert_eq!(
-                repo.drive(
-                    r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"claude_code","provenance":{"session_id":"cc_session-1"}}"#
-                )
-                .expect("a replay that discovered no model should succeed"),
-                ""
-            );
-            assert_eq!(
-                repo.drive(
-                    r#"{"operation":"start","scope_id":"A","event_id":"e1","actor_kind":"claude_code","provenance":{"session_id":"cc_session-1","model_id":"claude/sonnet"}}"#
-                )
-                .expect("a replay whose model disagrees should still succeed"),
-                ""
-            );
 
             let db = repo.db();
-            assert_eq!(count(&db, "mutation_trace_scope_provenance"), 1);
-            assert_eq!(
-                scope_provenance(&db, "A"),
-                Some(("cc_session-1".to_string(), Some("claude/opus".to_string()))),
-                "model_id is immutable first-observed metadata"
-            );
-            assert_eq!(worktree_revision(&db), revision_after_start);
-            assert_eq!(
-                processed_events(&db),
-                vec![("A".to_string(), "e1".to_string())]
-            );
+            assert_eq!(scope_provenance(&db, "A"), provenance_before);
+            assert_eq!(worktree_revision(&db), revision_before);
+            assert_eq!(processed_events(&db), processed_before);
 
             assert_raw_agent_trace_tables_untouched(&db);
         }
 
         #[test]
-        fn test11_conflicting_provenance_session_fails_the_start_without_rewriting_the_row() {
+        fn provenance_conflict_prevents_start_commit() {
             let repo = IngressRepo::new("provenance-session-conflict");
 
             repo.drive(START_A_E1_WITH_PROVENANCE)
@@ -2247,19 +2238,19 @@ mod tests {
             );
 
             let db = repo.db();
-            assert_eq!(scope_provenance(&db, "A"), provenance_before);
-            assert_eq!(count(&db, "mutation_trace_scope_provenance"), 1);
+            assert_eq!(
+                processed_events(&db),
+                processed_before,
+                "the fresh event e9 must not be processed once provenance registration fails"
+            );
             assert_eq!(worktree_revision(&db), revision_before);
-            assert_eq!(processed_events(&db), processed_before);
-            assert!(!processed_events(&db)
-                .into_iter()
-                .any(|(scope_id, event_id)| scope_id == "A" && event_id == "e9"));
+            assert_eq!(scope_provenance(&db, "A"), provenance_before);
 
             assert_raw_agent_trace_tables_untouched(&db);
         }
 
         #[test]
-        fn test13_a_start_admitted_without_provenance_is_never_backfilled_by_a_replay() {
+        fn admitted_scope_is_never_backfilled_with_replay_provenance() {
             let repo = IngressRepo::new("provenance-no-late-backfill");
 
             repo.drive(START_A_E1)
@@ -2296,31 +2287,6 @@ mod tests {
             assert_eq!(processed_events(&db), processed_before);
 
             assert_raw_agent_trace_tables_untouched(&db);
-        }
-
-        #[test]
-        fn test12_no_provenance_row_ever_exists_without_its_owning_scope() {
-            let repo = IngressRepo::new("provenance-owning-scope");
-
-            repo.drive(START_A_E1_WITH_PROVENANCE)
-                .expect("the start should succeed");
-
-            let db = repo.db();
-            let orphans = db
-                .query_map(
-                    "SELECT COUNT(*) FROM mutation_trace_scope_provenance p \
-                     LEFT JOIN mutation_trace_scopes s ON s.scope_id = p.scope_id \
-                     WHERE s.scope_id IS NULL",
-                    (),
-                    |row| row.get::<i64>(0).map_err(anyhow::Error::from),
-                )
-                .expect("orphan query should succeed")
-                .into_iter()
-                .next()
-                .expect("a count row should exist");
-
-            assert_eq!(orphans, 0);
-            assert_eq!(count(&db, "mutation_trace_scope_provenance"), 1);
         }
     }
 
