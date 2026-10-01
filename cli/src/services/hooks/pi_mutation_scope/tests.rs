@@ -42,108 +42,59 @@ fn tool_call(payload: &str) -> PiToolCall {
     }
 }
 
-#[test]
-fn empty_payload_is_rejected() {
-    let error = parse_pi_hook_event("   ").unwrap_err().to_string();
-    assert_eq!(
-        error,
-        "Invalid Pi hook event payload from STDIN: expected a JSON object, got an empty payload."
-    );
-}
+mod ingress_conformance {
+    use super::*;
+    use crate::services::hooks::mutation_scope_ingress_conformance::{
+        self as conformance, mutation_scope_ingress_conformance_tests,
+        CheckoutResolutionConformance, IngressConformance,
+    };
 
-#[test]
-fn non_object_json_is_rejected() {
-    for payload in ["[]", "\"ToolCall\"", "42", "null"] {
-        let error = parse_pi_hook_event(payload).unwrap_err().to_string();
-        assert!(
-            error.contains("expected a JSON object"),
-            "payload {payload:?} produced {error:?}"
-        );
+    struct PiIngressConformance;
+
+    impl IngressConformance for PiIngressConformance {
+        const ADAPTER: &'static str = "Pi";
+        const EVENT_NAME_FIELD: &'static str = HOOK_EVENT_NAME_FIELD;
+        const REQUIRED_START_FIELDS: &'static [&'static str] = &[
+            SESSION_ID_FIELD,
+            TOOL_CALL_ID_FIELD,
+            CWD_FIELD,
+            TOOL_NAME_FIELD,
+        ];
+        const OPTIONAL_START_FIELDS: &'static [(&'static str, &'static str)] =
+            &[(MODEL_FIELD, "openai-codex/gpt-5.5")];
+        const UNSUPPORTED_EVENT_NAMES: &'static [&'static str] =
+            &["PreToolUse", "tool_call", "chat.params"];
+
+        fn tracked_start() -> Map<String, Value> {
+            serde_json::from_str(&tool_event_json(HOOK_EVENT_TOOL_CALL, &[]))
+                .expect("the tracked ToolCall fixture is a JSON object")
+        }
+
+        fn parse(payload: &str) -> Result<()> {
+            parse_pi_hook_event(payload).map(|_| ())
+        }
+
+        fn run(payload: &str) -> Result<String> {
+            run_pi_mutation_scope_from_payload(payload, None)
+        }
+
+        fn run_with_seams(
+            payload: &str,
+            resolve_git_dir: conformance::GitDirResolver,
+            seam: conformance::IngressSeam,
+        ) -> Result<String> {
+            run_pi_mutation_scope_from_payload_with_seams(payload, None, resolve_git_dir, seam)
+        }
     }
-}
 
-#[test]
-fn invalid_json_is_rejected() {
-    let error = parse_pi_hook_event("{not json").unwrap_err().to_string();
-    assert!(
-        error.contains("Invalid Pi hook event payload from STDIN: expected valid JSON"),
-        "{error:?}"
-    );
-}
-
-#[test]
-fn unsupported_hook_event_name_is_rejected() {
-    for name in ["PreToolUse", "tool_call", "chat.params", ""] {
-        let payload = tool_event_json(name, &[]);
-        let error = parse_pi_hook_event(&payload).unwrap_err().to_string();
-        assert!(
-            error.contains("hook_event_name"),
-            "name {name:?} produced {error:?}"
-        );
+    impl CheckoutResolutionConformance for PiIngressConformance {
+        const CWD_FIELD: &'static str = CWD_FIELD;
+        const FAIL_CLOSED_MESSAGE: &'static str = FAIL_CLOSED_MESSAGE;
     }
-}
 
-#[test]
-fn missing_required_fields_are_rejected_without_fabricating_identity() {
-    for field in [
-        SESSION_ID_FIELD,
-        TOOL_CALL_ID_FIELD,
-        CWD_FIELD,
-        TOOL_NAME_FIELD,
-    ] {
-        let mut object: Map<String, Value> =
-            serde_json::from_str(&tool_event_json(HOOK_EVENT_TOOL_CALL, &[])).unwrap();
-        object.remove(field);
-        let payload = Value::Object(object).to_string();
-
-        let error = parse_pi_hook_event(&payload).unwrap_err().to_string();
-        assert!(
-            error.contains(&format!("'{field}'")),
-            "missing {field} produced {error:?}"
-        );
-    }
-}
-
-#[test]
-fn blank_required_fields_are_rejected() {
-    for field in [
-        SESSION_ID_FIELD,
-        TOOL_CALL_ID_FIELD,
-        CWD_FIELD,
-        TOOL_NAME_FIELD,
-    ] {
-        let payload = tool_event_json(
-            HOOK_EVENT_TOOL_CALL,
-            &[(field, Value::String("   ".to_string()))],
-        );
-        let error = parse_pi_hook_event(&payload).unwrap_err().to_string();
-        assert!(
-            error.contains(&format!("field '{field}' must be a non-blank string")),
-            "blank {field} produced {error:?}"
-        );
-    }
-}
-
-#[test]
-fn wrong_typed_fields_are_rejected() {
-    let payload = tool_event_json(
-        HOOK_EVENT_TOOL_CALL,
-        &[(TOOL_CALL_ID_FIELD, Value::Bool(true))],
-    );
-    let error = parse_pi_hook_event(&payload).unwrap_err().to_string();
-    assert!(
-        error.contains("field 'tool_call_id' must be a string"),
-        "{error:?}"
-    );
-}
-
-#[test]
-fn wrong_typed_optional_model_is_rejected() {
-    let payload = tool_event_json(HOOK_EVENT_TOOL_CALL, &[(MODEL_FIELD, Value::Bool(false))]);
-    let error = parse_pi_hook_event(&payload).unwrap_err().to_string();
-    assert!(
-        error.contains("field 'model' must be null, absent, or a non-blank string"),
-        "{error:?}"
+    mutation_scope_ingress_conformance_tests!(PiIngressConformance);
+    mutation_scope_ingress_conformance_tests!(
+        PiIngressConformance => tracked_start_fails_closed_when_its_checkout_cannot_be_resolved
     );
 }
 
@@ -282,20 +233,6 @@ fn provenance_without_model_evidence_is_null() {
 }
 
 #[test]
-fn run_from_payload_fails_closed_when_a_tracked_start_cannot_resolve_its_checkout() {
-    let payload = tool_event_json(
-        HOOK_EVENT_TOOL_CALL,
-        &[(
-            CWD_FIELD,
-            Value::String("/nonexistent/sce/pi/checkout".to_string()),
-        )],
-    );
-    let error = run_pi_mutation_scope_from_payload(&payload, None)
-        .expect_err("a tracked Start that cannot resolve its checkout must fail closed");
-    assert!(error.to_string().contains(FAIL_CLOSED_MESSAGE), "{error:?}");
-}
-
-#[test]
 fn run_from_payload_is_neutral_for_untracked_events() {
     for tool_name in ["read", "grep", "find", "ls", "probe_mutate"] {
         let payload = tool_event_json(
@@ -307,14 +244,6 @@ fn run_from_payload_is_neutral_for_untracked_events() {
             String::new()
         );
     }
-}
-
-#[test]
-fn run_from_payload_surfaces_malformed_input() {
-    let error = run_pi_mutation_scope_from_payload("{bad", None)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("expected valid JSON"), "{error:?}");
 }
 
 #[test]
