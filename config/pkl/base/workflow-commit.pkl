@@ -157,7 +157,6 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
 
     - Reading and analyzing the staged diff.
     - Deciding whether staged changes form one coherent unit or several.
-    - Classifying staged scope and applying context-file guidance gating.
     - Writing every commit message subject and body.
     - Applying the plan-citation body rule.
 
@@ -301,8 +300,8 @@ local renderAtomicCommitSkillBody = (mode: model.WorkflowRenderMode) -> """
 
     \(atomicCommitHeadings.stepHeading.apply(mode, 4, "Write each message"))
 
-    Follow \(commitMessageStyle.render.apply(mode)) for the subject pattern, the body
-    rules, issue references, the plan-citation rule, and the anti-patterns.
+    Follow \(commitMessageStyle.render.apply(mode)) for the subject pattern, body
+    rules, and issue references.
 
     \(atomicCommitHeadings.stepHeading.apply(mode, 5, "Apply the plan-citation rule"))
 
@@ -317,18 +316,7 @@ local renderAtomicCommitSkillBody = (mode: model.WorkflowRenderMode) -> """
     - In `bypass` mode, infer the citation when the diff supports it, and otherwise
       omit it. Never stop, and never invent a slug or task ID.
 
-    \(atomicCommitHeadings.stepHeading.apply(mode, 6, "Apply context-file guidance gating"))
-
-    This step applies in `regular` mode only. Skip it entirely in `bypass` mode; do
-    not classify staged scope there.
-
-    Classify the staged diff:
-
-    - Context-only (`context/**`): context-file-focused guidance is allowed.
-    - Mixed (`context/**` plus non-`context/**`): suppress default context-file
-      commit reminders and give guidance that reflects the full staged scope.
-
-    \(atomicCommitHeadings.stepHeading.apply(mode, 7, "Propose split guidance"))
+    \(atomicCommitHeadings.stepHeading.apply(mode, 6, "Propose split guidance"))
 
     This step applies in `regular` mode only.
 
@@ -339,7 +327,7 @@ local renderAtomicCommitSkillBody = (mode: model.WorkflowRenderMode) -> """
     When the staged changes form one unit, return one message and no split
     guidance. Do not split coherent work to appear thorough.
 
-    \(atomicCommitHeadings.stepHeading.apply(mode, 8, "Validate the result"))
+    \(atomicCommitHeadings.stepHeading.apply(mode, 7, "Validate the result"))
 
     Confirm before returning that:
 
@@ -347,6 +335,18 @@ local renderAtomicCommitSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Every staged file belongs to exactly one returned message.
     - No plan slug or task ID appears that the staged diff does not support.
     - The mode's own constraints hold.
+
+    \(atomicCommitHeadings.section.apply(mode, "Result contract"))
+
+    Return exactly one internal result:
+
+    - `blocked`: one or more issues, each carrying its problem, impact, and
+      required decision.
+    - `proposal`: regular mode only. Include one or more commits, each with its
+      complete message and covered files. Include split rationale only when more
+      than one commit is returned.
+    - `bypass_message`: bypass mode only. Include exactly one complete message and
+      the full staged file list.
 
     \(atomicCommitHeadings.section.apply(mode, "Bypass execution handoff"))
 
@@ -431,7 +431,7 @@ local renderCommitMessageStyle = (mode: model.WorkflowRenderMode) -> """
     - Start with `scope: Subject` for most code changes.
       - Common scopes: `runtime`, `language`, `objects`, `tests`, `CI`, `README`.
       - Combined scopes are fine when needed (for example `language+runtime`).
-    - Use an imperative verb in the subject: `Fix`, `Add`, `Refactor`, `Remove`, `Implement`, `Update`, `Rewrite`, `Use`, `Allow`.
+    - Use an imperative verb in the subject.
     - Keep the subject specific and technical (name the subsystem and actual change).
     - Keep the subject to one line and do not end it with a period.
     - Add a body when the change is non-trivial.
@@ -455,17 +455,6 @@ local renderCommitMessageStyle = (mode: model.WorkflowRenderMode) -> """
     Fixes #<id>   (optional)
     ```
 
-    ## Size-based defaults
-
-    1. Small fix: subject + 1 short reason line.
-    2. Medium refactor: subject + short why + short what changed.
-    3. Large architectural change: subject + context + bullets for major changes + impact/tradeoffs.
-
-    ## Anti-patterns to avoid
-
-    - Vague subjects like "misc updates" or "cleanup".
-    - Bodies that only repeat the subject without explaining why or impact.
-    - Overly playful tone in serious bug-fix or architectural change.
     """
 
 local commitSkillBody = (argumentsReference: String, invocationExample: String) -> """
