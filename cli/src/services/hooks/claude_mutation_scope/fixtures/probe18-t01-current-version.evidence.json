@@ -1,0 +1,41 @@
+{
+  "probe": "T01",
+  "tested_at_utc": "2026-10-01",
+  "claude_version": "2.1.284",
+  "settings": "isolated temporary settings passed with --settings and --setting-sources user; the repository .claude/settings.json was not changed",
+  "capture_hook": "scratchpad/t01-capture/capture.sh",
+  "capture_directory": "/tmp/sce-claude-t01/events",
+  "captured_events": [
+    {
+      "hook_event_name": "SessionStart",
+      "captured_at": "2026-10-01T20:39:15.014Z",
+      "payload": "empty stdin"
+    }
+  ],
+  "attempts": [
+    {
+      "kind": "hooked_session",
+      "command": "claude --print --output-format text --settings <isolated-settings> --setting-sources user --permission-mode bypassPermissions --dangerously-skip-permissions 'Reply with exactly OK and do not use any tools.'",
+      "result": "no model response or tool event after more than 120 seconds; interrupted with SIGINT"
+    },
+    {
+      "kind": "control_session_without_hooks",
+      "command": "claude --print --no-session-persistence --settings '{\"hooks\":{}}' --setting-sources user --permission-mode auto --max-budget-usd 0.01 'Reply with exactly OK.'",
+      "result": "no model response after 30 seconds; interrupted with SIGINT"
+    },
+    {
+      "kind": "bare_control",
+      "command": "claude --print --bare --no-session-persistence ...",
+      "result": "exited immediately with 'Not logged in'; bare mode only accepts API-key authentication in this environment"
+    }
+  ],
+  "probe_cases": "The 14 T01 cases were not run in the current-version session because no model turn completed, so no tool or lifecycle payload could be produced. Each case is therefore recorded as not capturable for this run rather than inferred from absent events.",
+  "prior_evidence": {
+    "version": "2.1.258",
+    "fixture": "probe14-run-in-background-true.post_tool_use.json",
+    "observed": "PostToolUse acknowledged a background Bash after 8ms and carried backgroundTaskId bm2b4006o",
+    "status": "prior-version evidence only; not sufficient to satisfy the current-version T01 gate"
+  },
+  "decision_gate": "stop_and_revise_toward_sce_owned_process_supervision",
+  "reason": "The installed version did not produce the terminal lifecycle evidence required to establish G1-G4 and a proven G5 boundary. The existing background denial must remain in place."
+}

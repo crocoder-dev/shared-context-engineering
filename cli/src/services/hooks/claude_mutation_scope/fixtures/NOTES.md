@@ -318,3 +318,45 @@ double-fork, or daemonizing patterns this probe did not exercise — those
 remain unproven, and D20's unsupported-boundary wording stays in place
 regardless, since this PR implements no detection or supervision either way,
 and no static shell-command inspection is added.
+
+## T01 managed-background lifecycle probe (Claude Code 2.1.284)
+
+### Capture outcome
+
+T01 was attempted on the installed Claude Code `2.1.284` on 2026-10-01. The
+probe used an isolated temporary settings file containing an additive capture
+hook and `--setting-sources user`; the repository `.claude/settings.json` was
+not changed. The capture hook received one empty-stdin `SessionStart` event at
+`2026-10-01T20:39:15.014Z`, then the non-interactive Claude session produced no
+model response or tool event for more than 120 seconds and was interrupted.
+A no-hook control invocation behaved the same way for 30 seconds. A `--bare`
+control exited immediately because this environment's authentication is
+Claude.ai OAuth, while bare mode requires an API key. The machine-readable
+record is `probe18-t01-current-version.evidence.json`.
+
+No current-version tool or lifecycle payload was fabricated from the missing
+response. The 14 cases are recorded as not capturable for this run because the
+session never reached a model turn: successful background Bash; non-zero exit;
+cancellation/kill; another tool while active; Stop; StopFailure;
+UserPromptSubmit; SubagentStop; SessionEnd; a repository mutation after the
+initial acknowledgement; Claude process exit; idle-session completion;
+foreground-to-background transition; and mid-session hook-registration
+changes. Existing `probe14-*` and `probe17-*` fixtures remain prior-version
+evidence from Claude Code `2.1.258`, not current-version T01 captures.
+
+### G1-G7 and boundary answers
+
+| Determination | Claude 2.1.284 result | Evidence |
+|---|---|---|
+| G1: acknowledgement precedes process completion and carries an identifier | unknown | No background tool call reached the hook capture; `probe14` shows this only on 2.1.258. |
+| G2: later terminal event for success, failure, and cancellation | unknown | No current-version terminal event was observed. |
+| G3: stable identifier joins acknowledgement and terminal event | unknown | No current-version pair was observed. |
+| G4: last child write < termination <= terminal event delivery | unknown | No child write, termination, or terminal event timestamps were produced. |
+| G5: lifecycle boundaries prove no further mutation | unknown for Stop, StopFailure, UserPromptSubmit, SubagentStop, SessionEnd, WorktreeRemove, and Claude process exit | None of the required current-version boundary sequences ran. |
+| G6: terminal event arrives while session is idle | unknown | No background task completed. |
+| G7: registration and settings-snapshot behavior | unknown | No lifecycle sequence reached the point where registration behavior could be tested. |
+
+Under the plan, `unknown` is treated as `no`. The decision gate is therefore
+**stop and revise toward SCE-owned process supervision**: the current denial
+stays in place, and T02 must not proceed as an implementation of the
+hook-driven lifecycle until a later probe establishes the required contract.
