@@ -22,7 +22,6 @@ fn render_text(report: &AgentTraceSyncReport) -> String {
     let uploaded = [
         report.streams.messages.uploaded,
         report.streams.parts.uploaded,
-        report.streams.diff_traces.uploaded,
         report.streams.agent_traces.uploaded,
     ];
     let heading = if uploaded.iter().all(|count| *count == 0) {
@@ -125,5 +124,42 @@ mod tests {
 
         assert!(value.get("diff_traces").is_none());
         assert!(value.get("agent_traces").is_none());
+    }
+
+    fn report_with_uploads(
+        messages: usize,
+        parts: usize,
+        diff_traces: usize,
+        agent_traces: usize,
+    ) -> AgentTraceSyncReport {
+        let mut report = sample_report();
+        report.streams.messages.uploaded = messages;
+        report.streams.parts.uploaded = parts;
+        report.streams.diff_traces.uploaded = diff_traces;
+        report.streams.agent_traces.uploaded = agent_traces;
+        report
+    }
+
+    #[test]
+    fn text_heading_is_already_synced_when_three_active_streams_uploaded_nothing() {
+        assert_eq!(
+            render_text(&report_with_uploads(0, 0, 0, 0)),
+            style::heading(ALREADY_SYNCED_HEADING)
+        );
+        assert_eq!(
+            render_text(&report_with_uploads(0, 0, 1, 0)),
+            style::heading(ALREADY_SYNCED_HEADING)
+        );
+    }
+
+    #[test]
+    fn text_heading_is_complete_when_any_active_stream_uploaded_rows() {
+        for report in [
+            report_with_uploads(1, 0, 0, 0),
+            report_with_uploads(0, 1, 0, 0),
+            report_with_uploads(0, 0, 0, 1),
+        ] {
+            assert_eq!(render_text(&report), style::heading(COMPLETE_HEADING));
+        }
     }
 }

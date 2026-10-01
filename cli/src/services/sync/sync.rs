@@ -1,8 +1,3 @@
-//! `sce sync` orchestration: resolves the current repository's Agent
-//! Trace storage, fetches authoritative control-plane cursors, then
-//! synchronizes each of the four independent capture streams in the fixed
-//! `messages -> parts -> diff_traces -> agent_traces` order.
-//!
 //! Consumes the already-shipped [`crate::services::agent_trace_sync`] engine
 //! and [`crate::services::agent_trace_sync::control_plane`] client as-is; adds
 //! no local sync cursor or persisted progress of its own.
@@ -36,7 +31,6 @@ use crate::services::sync::progress::{NoopProgressReporter, ProgressReporter};
 
 static SYNC_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
-/// Full sync result across all four capture streams, ready for rendering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentTraceSyncReport {
     pub repository_id: String,
@@ -61,7 +55,6 @@ pub struct StreamSyncReport {
     pub batches: usize,
 }
 
-/// Progress emitted while the four trace streams are synchronized.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SyncProgressEvent {
     Started {
@@ -159,10 +152,6 @@ impl TraceSyncError {
     }
 }
 
-/// Resolves the current repository's Agent Trace storage (the same
-/// `ContextWithRepoRoot`/`AgentTraceStorageContext`/`resolve_agent_trace_storage`
-/// path used by the sync command) and control-plane configuration, then
-/// synchronizes all four capture streams.
 #[allow(dead_code)]
 pub fn run_current_sync(repo_root: &Path) -> Result<AgentTraceSyncReport, TraceSyncError> {
     let mut progress = NoopProgressReporter;
@@ -236,9 +225,6 @@ where
     )
 }
 
-/// Testable core: synchronizes all four streams given an already-resolved
-/// repository identity, an open Agent Trace database, and a configured
-/// control-plane client (production or test-double).
 #[cfg(test)]
 pub(crate) fn run_sync_against(
     repository_id: &str,
@@ -338,7 +324,14 @@ where
         .map_err(TraceSyncError::ControlPlane)?;
     let progress = Rc::new(RefCell::new(progress));
 
-    let (messages, parts, diff_traces, agent_traces) = try_join_four(
+    let diff_traces = StreamSyncReport {
+        uploaded: 0,
+        initial_cursor: state.cursors.diff_traces,
+        final_cursor: state.cursors.diff_traces,
+        batches: 0,
+    };
+
+    let (messages, parts, agent_traces) = try_join_three(
         sync_one_stream(
             client,
             repository_id,
@@ -359,17 +352,6 @@ where
             "parts",
             |cursor, limit| reader.read_parts_after(cursor, limit),
             |request| Box::pin(async move { client.ingest_parts(&request).await }),
-            Rc::clone(&progress),
-        ),
-        sync_one_stream(
-            client,
-            repository_id,
-            source_instance_id,
-            IngestionStream::DiffTraces,
-            state.cursors.diff_traces,
-            "diff_traces",
-            |cursor, limit| reader.read_diff_traces_after(cursor, limit),
-            |request| Box::pin(async move { client.ingest_diff_traces(&request).await }),
             Rc::clone(&progress),
         ),
         sync_one_stream(
@@ -398,26 +380,18 @@ where
     })
 }
 
-async fn try_join_four<A, B, C, D, OA, OB, OC, OD, E>(
-    a: A,
-    b: B,
-    c: C,
-    d: D,
-) -> Result<(OA, OB, OC, OD), E>
+async fn try_join_three<A, B, C, OA, OB, OC, E>(a: A, b: B, c: C) -> Result<(OA, OB, OC), E>
 where
     A: Future<Output = Result<OA, E>>,
     B: Future<Output = Result<OB, E>>,
     C: Future<Output = Result<OC, E>>,
-    D: Future<Output = Result<OD, E>>,
 {
     let mut a = Box::pin(a);
     let mut b = Box::pin(b);
     let mut c = Box::pin(c);
-    let mut d = Box::pin(d);
     let mut a_output = None;
     let mut b_output = None;
     let mut c_output = None;
-    let mut d_output = None;
 
     poll_fn(|context| {
         if a_output.is_none() {
@@ -435,24 +409,13 @@ where
                 c_output = Some(result?);
             }
         }
-        if d_output.is_none() {
-            if let Poll::Ready(result) = d.as_mut().poll(context) {
-                d_output = Some(result?);
-            }
-        }
 
-        match (
-            a_output.take(),
-            b_output.take(),
-            c_output.take(),
-            d_output.take(),
-        ) {
-            (Some(a), Some(b), Some(c), Some(d)) => Poll::Ready(Ok((a, b, c, d))),
-            (a, b, c, d) => {
+        match (a_output.take(), b_output.take(), c_output.take()) {
+            (Some(a), Some(b), Some(c)) => Poll::Ready(Ok((a, b, c))),
+            (a, b, c) => {
                 a_output = a;
                 b_output = b;
                 c_output = c;
-                d_output = d;
                 Poll::Pending
             }
         }
@@ -633,9 +596,10 @@ mod tests {
         AgentTraceInsert, DiffTraceInsert, InsertMessageInsert, InsertPartInsert, MessageRole,
         PartType, PAYLOAD_TYPE_PATCH,
     };
+    use crate::services::agent_trace_export::JS_MAX_SAFE_INTEGER;
     use crate::services::agent_trace_sync::control_plane::CredentialStore;
     use crate::services::agent_trace_sync::test_http_server::{
-        CannedResponse, ConcurrentBatchTestServer, TestHttpServer,
+        CannedResponse, CapturedRequest, ConcurrentBatchTestServer, TestHttpServer,
     };
     use crate::services::auth::TokenResponse;
     use crate::services::token_storage::StoredTokens;
@@ -753,6 +717,106 @@ mod tests {
         .expect("seed progress messages");
     }
 
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct DiffTraceRowSnapshot {
+        id: i64,
+        time_ms: i64,
+        session_id: String,
+        patch: String,
+        created_at: String,
+        model_id: Option<String>,
+        tool_name: Option<String>,
+        tool_version: Option<String>,
+        payload_type: String,
+    }
+
+    fn diff_trace_rows(db: &RepositoryAgentTraceDb) -> Vec<DiffTraceRowSnapshot> {
+        db.query_map(
+            "SELECT id, time_ms, session_id, patch, created_at, model_id, tool_name, tool_version, payload_type FROM diff_traces ORDER BY id ASC",
+            (),
+            |row| {
+                Ok(DiffTraceRowSnapshot {
+                    id: row.get(0)?,
+                    time_ms: row.get(1)?,
+                    session_id: row.get(2)?,
+                    patch: row.get(3)?,
+                    created_at: row.get(4)?,
+                    model_id: row.get(5)?,
+                    tool_name: row.get(6)?,
+                    tool_version: row.get(7)?,
+                    payload_type: row.get(8)?,
+                })
+            },
+        )
+        .expect("diff_traces snapshot query should succeed")
+    }
+
+    fn insert_diff_trace_row(db: &RepositoryAgentTraceDb, id: i64, time_ms: i64) {
+        db.execute(
+            "INSERT INTO diff_traces (id, time_ms, session_id, patch, model_id, tool_name, tool_version, payload_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            (
+                id,
+                time_ms,
+                "sess-1",
+                "Index: a\n",
+                Option::<&str>::None,
+                Option::<&str>::None,
+                Option::<&str>::None,
+                PAYLOAD_TYPE_PATCH,
+            ),
+        )
+        .expect("direct diff_trace insert should succeed");
+    }
+
+    fn diff_traces_compatibility_report(server_cursor: i64) -> StreamSyncReport {
+        StreamSyncReport {
+            uploaded: 0,
+            initial_cursor: server_cursor,
+            final_cursor: server_cursor,
+            batches: 0,
+        }
+    }
+
+    fn assert_state_request(
+        request: &CapturedRequest,
+        repository_id: &str,
+        source_instance_id: &str,
+    ) {
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/agent-trace/ingestion/state");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&request.body)
+                .expect("state request body should be JSON"),
+            json!({
+                "repositoryId": repository_id,
+                "sourceInstanceId": source_instance_id,
+            })
+        );
+    }
+
+    fn state_request_count(requests: &[CapturedRequest]) -> usize {
+        requests
+            .iter()
+            .filter(|request| request.path == "/agent-trace/ingestion/state")
+            .count()
+    }
+
+    fn sorted_batch_streams(requests: &[CapturedRequest]) -> Vec<String> {
+        let mut streams = requests
+            .iter()
+            .filter(|request| request.path == "/agent-trace/ingestion/batch")
+            .map(|request| {
+                serde_json::from_str::<serde_json::Value>(&request.body)
+                    .expect("batch request body should be JSON")["stream"]
+                    .as_str()
+                    .expect("batch request should name its stream")
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        streams.sort();
+        streams
+    }
+
     fn state_response(
         messages: i64,
         parts: i64,
@@ -857,12 +921,6 @@ mod tests {
                     batches: 0,
                 },
                 SyncProgressEvent::StreamCompleted {
-                    stream: "diff_traces",
-                    uploaded: 0,
-                    cursor: 0,
-                    batches: 0,
-                },
-                SyncProgressEvent::StreamCompleted {
                     stream: "agent_traces",
                     uploaded: 0,
                     cursor: 0,
@@ -902,17 +960,19 @@ mod tests {
     }
 
     #[test]
-    fn full_sync_uploads_all_four_streams_and_second_run_is_naturally_incremental() {
+    fn full_sync_uploads_three_remote_streams_and_second_run_is_naturally_incremental() {
         let db_path = unique_test_db_path("full-sync");
         let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-full-sync")
             .expect("metadata should initialize");
         seed_one_row_per_stream(&db);
+        let diff_traces_before = diff_trace_rows(&db);
+        assert_eq!(diff_traces_before.len(), 1);
+        let unsynced_diff_traces = diff_traces_compatibility_report(0);
 
         let server = TestHttpServer::start();
         server.queue_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
-        server.queue_response(CannedResponse::json(200, &batch_response(1)));
         server.queue_response(CannedResponse::json(200, &batch_response(1)));
         server.queue_response(CannedResponse::json(200, &batch_response(1)));
         server.queue_response(CannedResponse::json(200, &batch_response(1)));
@@ -926,11 +986,21 @@ mod tests {
         )
         .expect("first sync should succeed");
 
-        assert_eq!(server.call_count(), 5);
+        let first_run_requests = server.captured_requests();
+        assert_eq!(first_run_requests.len(), 4);
+        assert_state_request(
+            &first_run_requests[0],
+            &metadata.repository_id,
+            &metadata.source_instance_id,
+        );
+        assert_eq!(state_request_count(&first_run_requests), 1);
+        assert_eq!(
+            sorted_batch_streams(&first_run_requests),
+            vec!["agent_traces", "messages", "parts"]
+        );
         for stream in [
             report.streams.messages,
             report.streams.parts,
-            report.streams.diff_traces,
             report.streams.agent_traces,
         ] {
             assert_eq!(stream.uploaded, 1);
@@ -938,8 +1008,10 @@ mod tests {
             assert_eq!(stream.final_cursor, 1);
             assert_eq!(stream.batches, 1);
         }
+        assert_eq!(report.streams.diff_traces, unsynced_diff_traces);
+        assert_eq!(diff_trace_rows(&db), diff_traces_before);
 
-        server.queue_response(CannedResponse::json(200, &state_response(1, 1, 1, 1)));
+        server.queue_response(CannedResponse::json(200, &state_response(1, 1, 0, 1)));
 
         let second_report = run_sync_against(
             &metadata.repository_id,
@@ -949,15 +1021,21 @@ mod tests {
         )
         .expect("second sync should succeed");
 
+        let all_requests = server.captured_requests();
         assert_eq!(
-            server.call_count(),
-            6,
+            all_requests.len(),
+            5,
             "second run should only re-check /state and re-read no already-synced rows"
         );
+        assert_eq!(all_requests[4].path, "/agent-trace/ingestion/state");
+        assert_eq!(
+            sorted_batch_streams(&all_requests),
+            vec!["agent_traces", "messages", "parts"]
+        );
+        assert!(!sorted_batch_streams(&all_requests).contains(&"diff_traces".to_string()));
         for stream in [
             second_report.streams.messages,
             second_report.streams.parts,
-            second_report.streams.diff_traces,
             second_report.streams.agent_traces,
         ] {
             assert_eq!(stream.uploaded, 0);
@@ -965,6 +1043,8 @@ mod tests {
             assert_eq!(stream.final_cursor, 1);
             assert_eq!(stream.batches, 0);
         }
+        assert_eq!(second_report.streams.diff_traces, unsynced_diff_traces);
+        assert_eq!(diff_trace_rows(&db), diff_traces_before);
 
         let db_file_name = db_path
             .file_name()
@@ -992,7 +1072,81 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_sync_overlaps_all_four_stream_batches_after_one_state_request() {
+    fn sync_succeeds_when_local_diff_trace_row_is_rejected_by_export_reader() {
+        let db_path = unique_test_db_path("rejected-diff-trace");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let metadata = db
+            .verify_or_initialize_repository_metadata("repo-rejected-diff-trace")
+            .expect("metadata should initialize");
+        seed_messages(&db, 1);
+        insert_diff_trace_row(&db, 1, JS_MAX_SAFE_INTEGER + 1);
+        let diff_traces_before = diff_trace_rows(&db);
+
+        let server = TestHttpServer::start();
+        server.queue_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
+        server.queue_response(CannedResponse::json(200, &batch_response(1)));
+        let client = test_client(&server);
+
+        let report = run_sync_against(
+            &metadata.repository_id,
+            &metadata.source_instance_id,
+            &db,
+            &client,
+        )
+        .expect("sync should not read local diff_traces rows");
+
+        let requests = server.captured_requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(sorted_batch_streams(&requests), vec!["messages"]);
+        assert_eq!(report.streams.messages.uploaded, 1);
+        assert_eq!(
+            report.streams.diff_traces,
+            diff_traces_compatibility_report(0)
+        );
+        assert_eq!(diff_trace_rows(&db), diff_traces_before);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn diff_traces_report_echoes_server_cursor_without_uploading_newer_local_rows() {
+        let db_path = unique_test_db_path("diff-traces-compat");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let metadata = db
+            .verify_or_initialize_repository_metadata("repo-diff-traces-compat")
+            .expect("metadata should initialize");
+        seed_one_row_per_stream(&db);
+        insert_diff_trace_row(&db, 124, 1_700_000_000_124);
+        let diff_traces_before = diff_trace_rows(&db);
+        assert_eq!(diff_traces_before.len(), 2);
+
+        let server = TestHttpServer::start();
+        server.queue_response(CannedResponse::json(200, &state_response(1, 1, 123, 1)));
+        let client = test_client(&server);
+
+        let report = run_sync_against(
+            &metadata.repository_id,
+            &metadata.source_instance_id,
+            &db,
+            &client,
+        )
+        .expect("sync should succeed");
+
+        let requests = server.captured_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(state_request_count(&requests), 1);
+        assert!(sorted_batch_streams(&requests).is_empty());
+        assert_eq!(
+            report.streams.diff_traces,
+            diff_traces_compatibility_report(123)
+        );
+        assert_eq!(diff_trace_rows(&db), diff_traces_before);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn concurrent_sync_overlaps_all_three_stream_batches_after_one_state_request() {
         let db_path = unique_test_db_path("concurrent-overlap");
         let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
         let metadata = db
@@ -1002,7 +1156,7 @@ mod tests {
 
         let server = ConcurrentBatchTestServer::start(Duration::from_millis(100));
         server.queue_state_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
-        for stream in ["messages", "parts", "diff_traces", "agent_traces"] {
+        for stream in ["messages", "parts", "agent_traces"] {
             server.queue_batch_response(stream, 0, CannedResponse::json(200, &batch_response(1)));
         }
         let client = test_client_at(&server.base_url);
@@ -1016,16 +1170,17 @@ mod tests {
         .expect("concurrent sync should succeed");
 
         assert_eq!(server.state_request_count(), 1);
-        assert_eq!(server.captured_requests().len(), 5);
-        assert_eq!(server.max_in_flight(), 4);
-        for stream in ["messages", "parts", "diff_traces", "agent_traces"] {
+        assert_eq!(server.captured_requests().len(), 4);
+        assert_eq!(server.max_in_flight(), 3);
+        for stream in ["messages", "parts", "agent_traces"] {
             assert_eq!(server.max_in_flight_for(stream), 1, "stream {stream}");
             assert_eq!(server.expected_cursors_for(stream), vec![0]);
         }
+        assert_eq!(server.max_in_flight_for("diff_traces"), 0);
+        assert!(server.expected_cursors_for("diff_traces").is_empty());
         for stream in [
             report.streams.messages,
             report.streams.parts,
-            report.streams.diff_traces,
             report.streams.agent_traces,
         ] {
             assert_eq!(stream.uploaded, 1);
@@ -1207,7 +1362,7 @@ mod tests {
 
         let server = TestHttpServer::start();
         server.queue_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
-        for _ in 0..4 {
+        for _ in 0..3 {
             server.queue_response(CannedResponse::json(
                 404,
                 &json!({"message": "unknown ingestion route"}),

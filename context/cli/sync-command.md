@@ -55,10 +55,17 @@ flowchart LR
 The command resolves repository storage through `agent_trace_storage`, builds an
 `AuthenticatedControlPlaneClient` from stored WorkOS credentials and the
 resolved `control_plane_base_url`, then performs one authoritative `/state`
-request before starting the four concurrent stream state machines:
-`messages`, `parts`, `diff_traces`, and `agent_traces`. Batches and cursor
-refreshes remain sequential within each stream, and final reporting retains the
-fixed stream order.
+request before starting the three concurrent remote stream state machines:
+`messages`, `parts`, and `agent_traces`. Batches and cursor refreshes remain
+sequential within each stream, and final reporting retains the fixed stream
+order.
+
+The local database has four capture streams (`messages`, `parts`,
+`diff_traces`, `agent_traces`); `sce sync` remotely synchronizes three of them. `diff_traces`
+stays local: sync never reads its rows, sends no batch with
+`"stream": "diff_traces"`, and emits no progress event for it. See
+[Agent Trace sync architecture](agent-trace-sync-command.md#local-capture-streams-versus-remote-streams)
+for the release gate that governs this.
 
 The control plane is the sole cursor authority. Sync creates no local cursor,
 `agent-trace-sync.db`, Turso Sync state, `BridgeLock`, or local data warehouse.
@@ -68,11 +75,12 @@ authoritative control-plane cursors.
 ## Output contract
 
 The final text report contains only a completion heading after the progress
-display. It says `Agent Trace already synced.` when all four streams uploaded
-zero rows; otherwise it says `Agent Trace sync complete.`. During text mode,
-four progress rows are created immediately
-in the fixed order
-`messages`, `parts`, `diff_traces`, `agent_traces`. Each row uses a 15-column
+display. It says `Agent Trace already synced.` when the three remote streams
+(`messages`, `parts`, `agent_traces`) uploaded zero rows; otherwise it says
+`Agent Trace sync complete.`. The `diffTraces` compatibility entry does not
+affect the heading. During text mode, three progress rows are created
+immediately in the fixed order `messages`, `parts`, `agent_traces`; there is no
+`diff_traces` row. Each row uses a 15-column
 stream-label field, starts at `0 rows uploaded`, and has its own steady spinner.
 Accepted batches update only their stream's cumulative count. A stream replaces
 its spinner with a styled `✓` and its final count as soon as that stream's
@@ -93,6 +101,13 @@ sink, emits no progress on stderr, and emits this JSON-only stdout shape:
   }
 }
 ```
+
+`streams.diffTraces` is a temporary compatibility no-op entry, retained so the
+JSON shape does not change during the compatibility window. It always reports
+`uploaded: 0` and `batches: 0`, with `initialCursor == finalCursor ==
+state.cursors.diffTraces` from the `/state` response. It is built from that
+server cursor alone, even when local `diff_traces` rows exist beyond it, and it
+does not mean the stream is synchronized.
 
 Authentication refresh, conflict reconciliation, ambiguous batch recovery,
 terminal protocol failures, ownership rejection, and sanitized control-plane
@@ -131,3 +146,4 @@ architecture.
 - [CLI error-code taxonomy](../sce/cli-error-code-taxonomy.md)
 - [Trace-sync progress stream contract](../decisions/2026-08-13-trace-sync-progress-stream-contract.md)
 - [Automatic Agent Trace synchronization](agent-trace-auto-sync.md)
+- [Retire diff_traces from remote sync through a staged compatibility gate](../decisions/2026-10-01-retire-diff-traces-remote-sync-compatibility-gate.md)

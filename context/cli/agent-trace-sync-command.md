@@ -23,12 +23,35 @@ flowchart LR
 ```
 
 - **hooks/plugins** write local capture rows (`messages`, `parts`, `diff_traces`, `agent_traces`) into the current repository's `RepositoryAgentTraceDb` during normal Git/editor activity — this is unchanged by sync.
-- **`AgentTraceExportReader`** (PR #198) is the read-only local export boundary sync uses to read rows after a cursor; sync never queries the repository DB directly.
-- **`sce sync`** resolves repository storage through `agent_trace_storage` (not the hook-runtime resolver), builds an `AuthenticatedControlPlaneClient` from stored WorkOS credentials and the resolved `control_plane_base_url`, and drives one authoritative `/state` call before starting four concurrent stream state machines. Each stream keeps its own batches and reconciliation refreshes sequential and cursor-safe; the bounded per-stream reconciliation loop remains independent. With no environment or config override, that base is `https://sce.crocoderlab.dev`; it is distinct from the `https://sce.crocoder.dev` SCE web and config-schema URL owner.
+- **`AgentTraceExportReader`** (PR #198) is the read-only local export boundary sync uses to read rows after a cursor; sync never queries the repository DB directly. The reader exposes four `read_*_after` methods; `sce sync` consumes three and never calls `read_diff_traces_after`.
+- **`sce sync`** resolves repository storage through `agent_trace_storage` (not the hook-runtime resolver), builds an `AuthenticatedControlPlaneClient` from stored WorkOS credentials and the resolved `control_plane_base_url`, and drives one authoritative `/state` call before starting three concurrent remote stream state machines (`messages`, `parts`, `agent_traces`). Each stream keeps its own batches and reconciliation refreshes sequential and cursor-safe; the bounded per-stream reconciliation loop remains independent. With no environment or config override, that base is `https://sce.crocoderlab.dev`; it is distinct from the `https://sce.crocoder.dev` SCE web and config-schema URL owner.
 - **Credential runtime boundary:** `AuthenticatedControlPlaneClient` keeps the synchronous `CredentialStore` behind an `Arc` and runs every token-storage `load`/`save` through `tokio::task::spawn_blocking`. The underlying encrypted auth DB and Linux Secret Service/zbus APIs are blocking and may create their own Tokio runtime, so they must never execute directly inside the async control-plane request future. Token refresh and HTTP requests remain asynchronous; only credential persistence crosses the blocking boundary. The client owns a refresh single-flight guard: expired-token callers re-check credentials after acquiring it, and callers retrying the same rejected access token reuse a token saved by an earlier refresh; valid-token resolution does not acquire the guard.
 - **control plane** is the sole source of cursor truth: every invocation starts from `POST /agent-trace/ingestion/state`, uploads via `POST /agent-trace/ingestion/batch`, and advances a stream's cursor only from a validated batch response (`accepted == rows.len()` and `cursor == rows.last().sourceRowId`), never by inferring `cursor + rows.len()`.
 
-The four streams (`messages`, `parts`, `diff_traces`, `agent_traces`) start concurrently after the single authoritative state response; batches and cursor-refresh calls remain sequential within each stream. Accepted-batch progress and stream-completion events may arrive as their respective futures complete. Text mode creates four aligned `indicatif` rows immediately on `stderr`, before any accepted batch can be reported, each with a 15-column stream label, a steady spinner, and a `0 rows uploaded` starting message. Accepted batches update only their stream's cumulative count; each stream changes its spinner to a shared-policy styled `✓` with its final count as soon as its own future completes, including an empty stream with zero uploaded rows. After the progress rows, the final text report contains only a status heading: `Agent Trace already synced.` when all four streams uploaded zero rows, otherwise `Agent Trace sync complete.`. Non-TTY output uses stable aligned plain snapshots without ANSI or terminal-control sequences, and `NO_COLOR` disables completion styling. JSON mode uses a no-op progress sink and retains its JSON-only stdout contract without human progress on `stderr`.
+The three remote streams (`messages`, `parts`, `agent_traces`) start concurrently after the single authoritative state response; batches and cursor-refresh calls remain sequential within each stream. Accepted-batch progress and stream-completion events may arrive as their respective futures complete. Text mode creates three aligned `indicatif` rows immediately on `stderr`, before any accepted batch can be reported, each with a 15-column stream label, a steady spinner, and a `0 rows uploaded` starting message. Accepted batches update only their stream's cumulative count; each stream changes its spinner to a shared-policy styled `✓` with its final count as soon as its own future completes, including an empty stream with zero uploaded rows. After the progress rows, the final text report contains only a status heading: `Agent Trace already synced.` when the three remote streams uploaded zero rows, otherwise `Agent Trace sync complete.`. Non-TTY output uses stable aligned plain snapshots without ANSI or terminal-control sequences, and `NO_COLOR` disables completion styling. JSON mode uses a no-op progress sink and retains its JSON-only stdout contract without human progress on `stderr`.
+
+## Local capture streams versus remote streams
+
+- **Local capture streams (four):** `messages`, `parts`, `diff_traces`, `agent_traces`.
+- **Remote `sce sync` streams (three):** `messages`, `parts`, `agent_traces`.
+
+`diff_traces` stays local with no remote upload. Its table, hook ingress, structured-patch reconstruction, post-commit patch intersection, staged-diff AI-overlap, and attribution are unaffected by sync, and sync neither reads nor changes its rows.
+
+The client still decodes `cursors.diffTraces` from `/state` as a mandatory field and echoes it in the `streams.diffTraces` JSON entry as a compatibility no-op (see [sync-command.md](sync-command.md#output-contract)). These protocol surfaces are retained, unused by the active sync path, until the compatibility-removal phase: `IngestionStream::DiffTraces`, `AuthenticatedControlPlaneClient::ingest_diff_traces`, `AgentTraceExportReader::read_diff_traces_after`, `AgentTraceDiffTraceExportRow`, the `diff_traces` batch request serialization, and `AgentTraceCursors.diff_traces`.
+
+### Release gate
+
+Each step must not start before the one above it is complete.
+
+```mermaid
+flowchart TD
+    P2["Phase 2: SCE stops POSTing diff_traces batches<br/>still decodes /state.cursors.diffTraces"] --> R[merge and release a new SCE version]
+    R --> V[verify and adopt it so supported clients no longer upload diff_traces]
+    V --> P3["Phase 3: Control Plane stops accepting and storing new diff_traces batches<br/>/state keeps returning cursors.diffTraces"]
+    P3 --> CR["Later compatibility-removal phase:<br/>remove /state.cursors.diffTraces and the retained client/server surfaces"]
+```
+
+Phase 3 only stops new `diff_traces` batch ingestion and persistence. `/state.cursors.diffTraces` remains required through the compatibility window because the Phase 2 client decodes it as mandatory; a Control Plane that dropped it would break every Phase 2 client. Removing that cursor and the retained surfaces belongs to the later compatibility-removal phase, which removes them from both sides together. The decision is recorded in [Retire diff_traces from remote sync through a staged compatibility gate](../decisions/2026-10-01-retire-diff-traces-remote-sync-compatibility-gate.md).
 
 ## No-local-persistence invariants
 
@@ -61,3 +84,4 @@ Because every invocation starts from the control plane's authoritative `/state` 
 - [auth-db.md](../sce/auth-db.md) — encrypted WorkOS credential storage sync authenticates through.
 - [CLI error-code taxonomy](../sce/cli-error-code-taxonomy.md) — the `CliError`/`UserError` typed boundary that authentication-failure classification renders through.
 - [Trace-sync progress stream contract](../decisions/2026-08-13-trace-sync-progress-stream-contract.md) — stderr progress/timestamps and stdout/JSON compatibility boundary.
+- [Retire diff_traces from remote sync through a staged compatibility gate](../decisions/2026-10-01-retire-diff-traces-remote-sync-compatibility-gate.md) — three remote streams, retained compatibility surfaces, and the release gate.

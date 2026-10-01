@@ -189,7 +189,7 @@ Both triggers compare `OLD.*` vs `NEW.*` for all mutable columns (excluding `upd
 - `fix()` bootstraps the resolved repository DB parent directory for auto-fixable parent-readiness problems, with the same global parent fallback outside repository context.
 - `setup()` resolves repository storage through `agent_trace_storage`, opens/creates `<state_root>/sce/repos/<repository-id>/agent-trace.db` with the repository schema, validates `repository_metadata.repository_id`, and emits setup messaging with the repository ID, `source_instance_id` (`RepositoryMetadata` from the same resolution call), and initialized DB path. Hook runtime lazy initialization remains available for repositories where setup has not run or schema metadata is incomplete.
 - `sce doctor` surfaces lifecycle-owned repository Agent Trace DB health in the `Configuration` section, with `[PASS]`/`[FAIL]`/`[MISS]` status tokens. Outside repository context the lifecycle reports the actionable "requires a Git repository" diagnostic instead of probing a sentinel path. JSON output includes the resolved `agent_trace_db` field; checkout identity is no longer reported (see `context/cli/checkout-identity.md`).
-- `sce sync` reads repository DB rows through the read-only export boundary before sending them to the control plane. See [context/cli/sync-command.md](../cli/sync-command.md).
+- `sce sync` reads `messages`, `parts`, and `agent_traces` rows through the read-only export boundary before sending them to the control plane; `diff_traces` rows are not read or uploaded. See [context/cli/sync-command.md](../cli/sync-command.md).
 
 ## Runtime writers
 
@@ -232,7 +232,7 @@ Post-commit intersection rows are written by the active `post-commit` hook flow 
 
 ## Export reader (read-only)
 
-`cli/src/services/agent_trace_export/mod.rs` defines `AgentTraceExportReader<'a>`, a read-only incremental reader over one repository-scoped `RepositoryAgentTraceDb` (`AgentTraceExportReader::new(&db)`), composing directly with `ResolvedAgentTraceStorage` from `agent_trace_storage` without generating or owning `source_instance_id` itself. `claude_model_state` is outside this reader's four exported streams and is not synchronized. See [agent-trace-export-readers.md](agent-trace-export-readers.md) for the full reader boundary, the storage-resolver composition point, the four stream query shapes, and the explicit no-local-cursor / no-sync-db / no-Turso-Sync / no-ETL / no-DWH statement.
+`cli/src/services/agent_trace_export/mod.rs` defines `AgentTraceExportReader<'a>`, a read-only incremental reader over one repository-scoped `RepositoryAgentTraceDb` (`AgentTraceExportReader::new(&db)`), composing directly with `ResolvedAgentTraceStorage` from `agent_trace_storage` without generating or owning `source_instance_id` itself. The reader exposes four `read_*_after` methods (`messages`, `parts`, `diff_traces`, `agent_traces`); `sce sync` consumes three and leaves `diff_traces` local, with `read_diff_traces_after` retained as a compatibility surface with no active caller. `claude_model_state` has no reader method and is not synchronized. See [agent-trace-export-readers.md](agent-trace-export-readers.md) for the full reader boundary, the storage-resolver composition point, the four reader query shapes, and the explicit no-local-cursor / no-sync-db / no-Turso-Sync / no-ETL / no-DWH statement.
 
 ## Staged-diff AI-overlap evidence gate
 
