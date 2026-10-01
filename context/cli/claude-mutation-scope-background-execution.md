@@ -19,6 +19,26 @@ background-execution terminal signal. This is a deliberate correctness boundary,
 not a Bash security policy. Background **subagents** are not excluded — their
 internal mutation-capable tool calls still establish their own scopes.
 
+## T01 current-version probe result
+
+On 2026-10-01, the installed Claude Code version was `2.1.284`. A T01 probe
+using an isolated temporary settings file and an additive capture hook reached
+`SessionStart`, but the non-interactive session produced no model response or
+tool/lifecycle event after more than 120 seconds. A no-hook control behaved the
+same way. The result is recorded in
+`cli/src/services/hooks/claude_mutation_scope/fixtures/probe18-t01-current-version.evidence.json`
+and the detailed G1-G7 table is in `fixtures/NOTES.md`.
+
+The existing `probe14-*` and `probe17-*` evidence was captured on Claude Code
+`2.1.258`, so it is retained as prior-version evidence and does not establish
+the current-version terminal contract. G1-G7 therefore remain unknown for
+`2.1.284`; per the plan, the decision gate stops here and the denial remains
+in force until a later probe can establish a reliable completion signal and a
+proven no-more-mutation boundary. The fallback direction is SCE-owned process
+supervision, not admission based on the acknowledgement event alone. This
+constraint is recorded in the
+[Claude background admission decision](../decisions/2026-10-01-claude-background-admission-requires-proven-lifecycle.md).
+
 **Self-detaching descendants are a separate, explicit unsupported boundary
 (D20).** A `run_in_background = false` call can still leave a repository-mutating
 descendant running after `PostToolUse` returns when the invoked command detaches

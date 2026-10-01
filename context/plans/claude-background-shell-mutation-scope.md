@@ -906,7 +906,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Probe and record the Claude managed-background shell lifecycle` (status:todo)
+- [x] T01: `Probe and record the Claude managed-background shell lifecycle` (status:done)
   - Task ID: T01
   - Scope: In — on the installed Claude Code version, capture raw hook payloads
     with wall-clock capture timestamps, and make the background command write
@@ -946,7 +946,12 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Verify: `git status --short` shows only new fixture files, `NOTES.md`, and
     the context document; `git diff -- .claude/settings.json` is empty;
     `claude --version` matches the version recorded in `NOTES.md`.
-  - Context synchronization: pending
+  - Completed: 2026-10-01
+  - Files changed: `cli/src/services/hooks/claude_mutation_scope/fixtures/probe18-t01-current-version.evidence.json`, `cli/src/services/hooks/claude_mutation_scope/fixtures/NOTES.md`, `context/cli/claude-mutation-scope-background-execution.md`
+  - Result: Captured the current Claude Code version and the isolated probe attempt. Claude 2.1.284 reached SessionStart but produced no model response or tool/lifecycle event within the probe timeout; all 14 cases were recorded as not capturable for this run, with prior 2.1.258 fixtures retained as prior-version evidence. G1-G7 remain unknown, so the decision gate is stop and revise toward SCE-owned process supervision; the existing background denial was unchanged.
+  - Verify: Passed before the lifecycle write: `git status --short --untracked-files=all` listed only the new fixture, `fixtures/NOTES.md`, and the context document; `git diff -- .claude/settings.json` was empty; `claude --version` reported `2.1.284`, matching `NOTES.md`. The evidence fixture also passed JSON parsing and `git diff --check` passed.
+  - Context impact: repository-wide behavior and Claude adapter lifecycle boundary; updated the background-execution context document and fixture notes with the current-version probe limitation and the stop decision so T02 cannot assume an unproven terminal contract.
+  - Context synchronization: synced
 
 - [ ] T02: `Define and prove conservative managed-background protocol safety` (status:todo)
   - Task ID: T02
