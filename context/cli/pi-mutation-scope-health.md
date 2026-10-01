@@ -52,6 +52,8 @@ process-instance identity cannot be positively established, per
 `is_definitely_dead` in the shared `hooks/mutation_scope_owner.rs`) is therefore ordinary in-flight
 state: it never blocks any other admission, and this adapter's D10
 stale-owner sweep leaves it completely untouched (proven by
+`clear_recovery_is_healthy_with_a_live_owner_pending_start_attempt_never_swept_by_an_unrelated_start`
+and
 `clear_recovery_is_healthy_with_an_uncertain_owner_pending_start_attempt_never_swept_by_an_unrelated_start`
 in `health.rs`'s own test module, and by
 `an_owner_that_cannot_be_positively_proven_dead_is_never_abandoned_by_an_unrelated_start`
