@@ -1394,9 +1394,6 @@ local EXECUTION_CONTRACT = """
 local renderImplementationGate = (mode: model.WorkflowRenderMode) -> """
     # Implementation gate
     
-    Always show this gate at the start of \(taskExecution.render.apply(mode)), before editing any
-    file.
-    
     The gate is user-facing prose. It is never serialized into a YAML result. This
     file is the only authority for the gate's content and order.
     
@@ -1427,7 +1424,7 @@ local renderImplementationGate = (mode: model.WorkflowRenderMode) -> """
     
     ## Approach
     
-    Describe the smallest coherent implementation approach in 2–5 steps.
+    Describe the smallest coherent implementation approach with enough detail for approval.
     
     ## Assumptions
     
@@ -1806,7 +1803,7 @@ Set internal status `blocked` for every other non-successful outcome, including:
 Do not determine whether the plan is complete. The `/next-task` workflow owns
 that decision after context synchronization.
 
-Before returning a `complete` result, verify that it satisfies the authoritative
+A `complete` result must satisfy the authoritative
 handoff contract above.
 
 ## 2.9 Return the result
@@ -1911,9 +1908,6 @@ Run the final validation:
 
 # Implementation gate
 
-Always show this gate at the start of the **Task execution phase**, before editing any
-file.
-
 The gate is user-facing prose. It is never serialized into a YAML result. This
 file is the only authority for the gate's content and order.
 
@@ -1944,7 +1938,7 @@ file is the only authority for the gate's content and order.
 
 ## Approach
 
-Describe the smallest coherent implementation approach in 2–5 steps.
+Describe the smallest coherent implementation approach with enough detail for approval.
 
 ## Assumptions
 
