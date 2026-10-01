@@ -8,6 +8,10 @@ Supersedes: `{context/decisions/YYYY-MM-DD-prior-decision.md}`
 
 Omit `Task` or `Supersedes` only when it does not apply. Do not omit `Plan`.
 
+Populate sections only from the validated request and supporting evidence. Do
+not invent content to satisfy the template; when the evidence establishes no
+content for a section, record `None documented.` instead.
+
 ## Context
 
 {Forces, constraints, and evidence that require this decision.}

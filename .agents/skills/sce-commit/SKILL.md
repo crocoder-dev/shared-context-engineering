@@ -10,12 +10,12 @@ description: >
 
 Own this workflow from input through its terminal user-visible response.
 Follow its steps, gates, and stops in order; do not add, skip, reorder, or merge them.
-Keep internal phase results private and continue immediately until a defined wait or stop.
+Keep intermediate workflow state private and continue immediately until a defined wait or stop.
 Resume user waits in this same skill and session.
-Render user-visible output only from the named workflow layouts or phase reports.
+Render user-visible output only from the named workflow layouts or reports.
 Do not expose raw internal state or add text around a rendered layout or report.
 Non-SCE helpers may assist, but must return to the active step without changing
-phase order, gates, waits, writes, validation, stops, or terminal output.
+workflow order, gates, waits, writes, validation, stops, or terminal output.
 Do not invoke another SCE skill, package, or workflow command.
 
 ## Phase reference

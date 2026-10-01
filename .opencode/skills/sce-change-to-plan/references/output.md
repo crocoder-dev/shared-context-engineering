@@ -46,7 +46,7 @@ candidate plan paths and explain that naming one candidate resolves it.
 
 {total-tasks} {task|tasks} planned.
 
-This plan is a draft. State a correction and it will be updated.
+This plan is a draft. Check its assumptions first; state any correction and it will be updated.
 
 Next step:
 
