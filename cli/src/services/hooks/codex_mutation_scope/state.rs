@@ -433,6 +433,146 @@ pub(crate) fn arm_mark_active_failure_for_tests() {
 }
 
 #[cfg(test)]
+mod state_conformance {
+    use super::*;
+    use crate::services::hooks::mutation_scope_state_conformance::{
+        mutation_scope_state_conformance_tests, CompletionView, FlushClaimView, RecoveryView,
+        StateConformance,
+    };
+
+    const FIXTURE_SESSION: &str = "session-conformance";
+    const FIXTURE_PHASES: [AttemptPhase; 2] = [AttemptPhase::PendingStart, AttemptPhase::Active];
+
+    struct CodexStateConformance;
+
+    fn fixture_key(index: usize) -> AttemptKey {
+        AttemptKey {
+            session_id: FIXTURE_SESSION.to_string(),
+            agent_id: (index % 2 == 1).then(|| format!("agent-{index}")),
+            tool_use_id: format!("exec-{index}"),
+        }
+    }
+
+    impl StateConformance for CodexStateConformance {
+        type State = AdapterState;
+
+        const ADAPTER: &'static str = "codex";
+        const SUPPORTED_VERSION: u32 = 3;
+
+        fn state_path(git_dir: &Path) -> PathBuf {
+            state_path(git_dir)
+        }
+
+        fn default_state() -> AdapterState {
+            AdapterState::default()
+        }
+
+        fn fixture_state(
+            recovery: RecoveryView,
+            next_recovery_generation: u64,
+            attempt_count: usize,
+        ) -> AdapterState {
+            let mut state = AdapterState {
+                next_recovery_generation,
+                recovery: match recovery {
+                    RecoveryView::Clear => RecoveryState::Clear,
+                    RecoveryView::Pending(generation) => RecoveryState::Pending { generation },
+                    RecoveryView::Flushing(generation) => RecoveryState::Flushing { generation },
+                },
+                ..AdapterState::default()
+            };
+            for index in 0..attempt_count {
+                allocate_pending_start(
+                    &mut state,
+                    &fixture_key(index),
+                    &format!("turn-{index}"),
+                    "apply_patch",
+                );
+                state.attempts[index].phase = FIXTURE_PHASES[index % FIXTURE_PHASES.len()];
+            }
+            state
+        }
+
+        fn read_state(git_dir: &Path) -> Result<AdapterState> {
+            read_state(git_dir)
+        }
+
+        fn persist(git_dir: &Path, state: &AdapterState) -> Result<()> {
+            write_state_durably(git_dir, state)
+        }
+
+        fn persist_with_before_rename_hook<F>(
+            git_dir: &Path,
+            state: &AdapterState,
+            before_rename: F,
+        ) -> Result<()>
+        where
+            F: FnOnce(&Path, &Path) -> Result<()>,
+        {
+            write_state_durably_inner(git_dir, state, before_rename)
+        }
+
+        fn recovery_view(state: &AdapterState) -> RecoveryView {
+            match state.recovery {
+                RecoveryState::Clear => RecoveryView::Clear,
+                RecoveryState::Pending { generation } => RecoveryView::Pending(generation),
+                RecoveryState::Flushing { generation } => RecoveryView::Flushing(generation),
+            }
+        }
+
+        fn next_recovery_generation(state: &AdapterState) -> u64 {
+            state.next_recovery_generation
+        }
+
+        fn scope_ids(state: &AdapterState) -> Vec<String> {
+            state
+                .attempts
+                .iter()
+                .map(|attempt| attempt.scope_id.clone())
+                .collect()
+        }
+
+        fn remove_attempt(git_dir: &Path, scope_id: &str) -> Result<()> {
+            remove_attempt(git_dir, scope_id)
+        }
+
+        fn normalize_recovery_after_boundary_lock_acquired(git_dir: &Path) -> Result<()> {
+            normalize_recovery_after_boundary_lock_acquired(git_dir)
+        }
+
+        fn complete_recovery_flush(git_dir: &Path, generation: u64) -> Result<CompletionView> {
+            Ok(match complete_recovery_flush(git_dir, generation)? {
+                RecoveryFlushCompletion::Cleared => CompletionView::Cleared,
+                RecoveryFlushCompletion::Superseded => CompletionView::Superseded,
+            })
+        }
+
+        fn relinquish_recovery_flush(git_dir: &Path, generation: u64) -> Result<()> {
+            relinquish_recovery_flush(git_dir, generation)
+        }
+
+        fn claim_flush_by_admitting_a_new_attempt(
+            git_dir: &Path,
+            contender: usize,
+        ) -> Result<FlushClaimView> {
+            let decision = admit_tracked_attempt(
+                git_dir,
+                &fixture_key(contender),
+                &format!("turn-{contender}"),
+                "Bash",
+            )?;
+            Ok(match decision {
+                AdmitDecision::FlushClaimed { generation } => FlushClaimView::Claimed(generation),
+                AdmitDecision::RecoveryBlocked => FlushClaimView::Blocked,
+                other => FlushClaimView::Other(format!("{other:?}")),
+            })
+        }
+    }
+
+    mutation_scope_state_conformance_tests!(CodexStateConformance);
+}
+
+#[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::thread;
@@ -495,19 +635,6 @@ mod tests {
             }
             other => panic!("expected Admitted, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn read_state_returns_default_when_file_is_absent() {
-        let git_dir = unique_test_git_dir("read-default");
-
-        let state = read_state(&git_dir).expect("missing state file should read as default");
-        assert_eq!(state, AdapterState::default());
-        assert_eq!(state.version, 3);
-        assert!(state.recovery.is_clear());
-        assert_eq!(state.next_recovery_generation, 1);
-
-        remove_test_git_dir(&git_dir);
     }
 
     #[test]
@@ -647,9 +774,11 @@ mod tests {
         let git_dir = unique_test_git_dir("admit-persists-pending-start");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
 
-        let AdmitDecision::Admitted(allocated) =
-            admit(&git_dir, &key("session-1", None, "exec-1"), "Bash")
-        else {
+        let AdmitDecision::Admitted(allocated) = admit(
+            &git_dir,
+            &key("session-7", Some("agent-2"), "exec-9"),
+            "apply_patch",
+        ) else {
             panic!("expected Admitted");
         };
 
@@ -659,8 +788,13 @@ mod tests {
             1,
             "I2: PendingStart must be durable before admit returns"
         );
-        assert_eq!(state.attempts[0].scope_id, allocated.attempt.scope_id);
+        assert_eq!(state.attempts[0], allocated.attempt);
         assert_eq!(state.attempts[0].phase, AttemptPhase::PendingStart);
+        assert_eq!(state.attempts[0].session_id, "session-7");
+        assert_eq!(state.attempts[0].turn_id, TEST_TURN);
+        assert_eq!(state.attempts[0].agent_id.as_deref(), Some("agent-2"));
+        assert_eq!(state.attempts[0].tool_use_id, "exec-9");
+        assert_eq!(state.attempts[0].tool_name, "apply_patch");
 
         remove_test_git_dir(&git_dir);
     }
@@ -837,61 +971,6 @@ mod tests {
     }
 
     #[test]
-    fn only_one_concurrent_caller_claims_the_flush_for_a_generation() {
-        let git_dir = unique_test_git_dir("one-flush-owner");
-        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
-        let generation = arm_recovery(&git_dir).expect("arming recovery should succeed");
-
-        let handles: Vec<_> = ["a", "b"]
-            .into_iter()
-            .map(|suffix| {
-                let git_dir = git_dir.clone();
-                thread::spawn(move || {
-                    admit_tracked_attempt(
-                        &git_dir,
-                        &key("session-1", None, &format!("exec-{suffix}")),
-                        &format!("turn-{suffix}"),
-                        "Bash",
-                    )
-                    .expect("admit should not error")
-                })
-            })
-            .collect();
-
-        let mut decisions: Vec<AdmitDecision> = handles
-            .into_iter()
-            .map(|handle| handle.join().expect("thread should not panic"))
-            .collect();
-        decisions.sort_by_key(|decision| format!("{decision:?}"));
-
-        let flush_claims = decisions
-            .iter()
-            .filter(|decision| matches!(decision, AdmitDecision::FlushClaimed { .. }))
-            .count();
-        let blocked = decisions
-            .iter()
-            .filter(|decision| matches!(decision, AdmitDecision::RecoveryBlocked))
-            .count();
-        assert_eq!(
-            flush_claims, 1,
-            "I3: exactly one process may claim Flushing(g)"
-        );
-        assert_eq!(
-            blocked, 1,
-            "the other concurrent caller must stay fail-closed"
-        );
-        assert_eq!(
-            decisions.iter().find_map(|decision| match decision {
-                AdmitDecision::FlushClaimed { generation } => Some(*generation),
-                _ => None,
-            }),
-            Some(generation),
-        );
-
-        remove_test_git_dir(&git_dir);
-    }
-
-    #[test]
     fn arm_recovery_moves_clear_to_pending_with_a_fresh_generation() {
         let git_dir = unique_test_git_dir("arm-clear-to-pending");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
@@ -944,35 +1023,6 @@ mod tests {
     }
 
     #[test]
-    fn complete_recovery_flush_clears_only_with_the_matching_generation() {
-        let git_dir = unique_test_git_dir("complete-matching-generation");
-        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
-
-        arm_recovery(&git_dir).expect("arm");
-        admit(&git_dir, &key("session-1", None, "exec-new"), "Bash");
-
-        assert_eq!(
-            complete_recovery_flush(&git_dir, 2).expect("wrong-generation completion"),
-            RecoveryFlushCompletion::Superseded,
-        );
-        assert_eq!(
-            read_state(&git_dir).expect("state readable").recovery,
-            RecoveryState::Flushing { generation: 1 },
-        );
-
-        assert_eq!(
-            complete_recovery_flush(&git_dir, 1).expect("matching completion"),
-            RecoveryFlushCompletion::Cleared,
-        );
-        assert!(read_state(&git_dir)
-            .expect("state readable")
-            .recovery
-            .is_clear());
-
-        remove_test_git_dir(&git_dir);
-    }
-
-    #[test]
     fn complete_recovery_flush_is_a_no_op_when_a_newer_recovery_was_armed() {
         let git_dir = unique_test_git_dir("complete-superseded-by-newer");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
@@ -1012,29 +1062,6 @@ mod tests {
     }
 
     #[test]
-    fn normalize_after_boundary_lock_reclaims_orphaned_flushing_to_pending_same_generation() {
-        let git_dir = unique_test_git_dir("normalize-orphaned-flushing");
-        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
-
-        arm_recovery(&git_dir).expect("arm g1");
-        admit(&git_dir, &key("session-1", None, "exec-new"), "Bash");
-        assert_eq!(
-            read_state(&git_dir).expect("state readable").recovery,
-            RecoveryState::Flushing { generation: 1 },
-        );
-        let next_generation_before = read_state(&git_dir)
-            .expect("state readable")
-            .next_recovery_generation;
-
-        normalize_recovery_after_boundary_lock_acquired(&git_dir)
-            .expect("normalize should succeed");
-
-        let state = read_state(&git_dir).expect("state readable");
-        assert_eq!(state.recovery, RecoveryState::Pending { generation: 1 });
-        assert_eq!(state.next_recovery_generation, next_generation_before);
-    }
-
-    #[test]
     fn normalize_after_boundary_lock_is_a_no_op_for_clear_or_pending() {
         let git_dir = unique_test_git_dir("normalize-noop");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
@@ -1056,29 +1083,6 @@ mod tests {
     }
 
     #[test]
-    fn relinquish_recovery_flush_returns_a_claimed_generation_to_pending() {
-        let git_dir = unique_test_git_dir("relinquish-to-pending");
-        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
-
-        arm_recovery(&git_dir).expect("arm");
-        admit(&git_dir, &key("session-1", None, "exec-new"), "Bash");
-
-        relinquish_recovery_flush(&git_dir, 1).expect("relinquish should succeed");
-        assert_eq!(
-            read_state(&git_dir).expect("state readable").recovery,
-            RecoveryState::Pending { generation: 1 },
-        );
-
-        relinquish_recovery_flush(&git_dir, 1).expect("second relinquish is a no-op");
-        assert_eq!(
-            read_state(&git_dir).expect("state readable").recovery,
-            RecoveryState::Pending { generation: 1 },
-        );
-
-        remove_test_git_dir(&git_dir);
-    }
-
-    #[test]
     fn relinquish_recovery_flush_is_a_no_op_for_a_superseded_generation() {
         let git_dir = unique_test_git_dir("relinquish-superseded");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
@@ -1091,26 +1095,6 @@ mod tests {
         assert_eq!(
             read_state(&git_dir).expect("state readable").recovery,
             RecoveryState::Pending { generation: 2 },
-        );
-
-        remove_test_git_dir(&git_dir);
-    }
-
-    #[test]
-    fn recovery_state_survives_serialization_and_reload() {
-        let git_dir = unique_test_git_dir("recovery-round-trip");
-        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
-
-        arm_recovery(&git_dir).expect("arm");
-        assert_eq!(
-            read_state(&git_dir).expect("reload pending").recovery,
-            RecoveryState::Pending { generation: 1 },
-        );
-
-        admit(&git_dir, &key("session-1", None, "exec-new"), "Bash");
-        assert_eq!(
-            read_state(&git_dir).expect("reload flushing").recovery,
-            RecoveryState::Flushing { generation: 1 },
         );
 
         remove_test_git_dir(&git_dir);
@@ -1147,130 +1131,6 @@ mod tests {
             .expect("state readable")
             .attempts
             .is_empty());
-
-        remove_test_git_dir(&git_dir);
-    }
-
-    #[test]
-    fn removing_an_already_removed_attempt_is_a_safe_no_op() {
-        let git_dir = unique_test_git_dir("remove-idempotent");
-        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
-        let attempt = admit_and_activate(&git_dir, &key("session-1", None, "exec-1"), "Bash");
-
-        remove_attempt(&git_dir, &attempt.scope_id).expect("first removal should succeed");
-        remove_attempt(&git_dir, &attempt.scope_id)
-            .expect("duplicate terminal delivery after cleanup must be a safe no-op");
-
-        assert!(read_state(&git_dir)
-            .expect("state readable")
-            .attempts
-            .is_empty());
-
-        remove_test_git_dir(&git_dir);
-    }
-
-    #[test]
-    fn state_round_trips_durably_through_the_canonical_path() {
-        let git_dir = unique_test_git_dir("round-trip");
-        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
-
-        let attempt = admit_and_activate(
-            &git_dir,
-            &key("session-7", Some("agent-2"), "exec-9"),
-            "apply_patch",
-        );
-        arm_recovery(&git_dir).expect("arming recovery should succeed");
-
-        let reloaded = read_state(&git_dir).expect("state should reload");
-        assert_eq!(reloaded.version, ADAPTER_STATE_VERSION);
-        assert_eq!(reloaded.next_attempt_seq, 2);
-        assert_eq!(reloaded.recovery, RecoveryState::Pending { generation: 1 });
-        assert_eq!(reloaded.attempts.len(), 1);
-        assert_eq!(reloaded.attempts[0].phase, AttemptPhase::Active);
-        assert_eq!(reloaded.attempts[0].turn_id, "turn-1");
-        assert_eq!(reloaded.attempts[0].agent_id.as_deref(), Some("agent-2"));
-        assert_eq!(reloaded.attempts[0].tool_name, "apply_patch");
-        assert_eq!(reloaded.attempts[0].scope_id, attempt.scope_id);
-
-        remove_test_git_dir(&git_dir);
-    }
-
-    #[test]
-    fn malformed_state_file_is_rejected_without_fabricating_bookkeeping() {
-        let git_dir = unique_test_git_dir("malformed-json");
-        let dir = adapter_state_dir(&git_dir);
-        std::fs::create_dir_all(&dir).expect("state dir should be created");
-        std::fs::write(state_path(&git_dir), b"not json")
-            .expect("malformed file should be written");
-
-        let error = read_state(&git_dir).expect_err("malformed state file must be rejected");
-        assert!(error.to_string().contains("malformed"));
-
-        remove_test_git_dir(&git_dir);
-    }
-
-    #[test]
-    fn an_unsupported_or_prior_version_state_file_is_rejected() {
-        for payload in [
-            serde_json::json!({
-                "version": 99,
-                "next_attempt_seq": 1,
-                "next_recovery_generation": 1,
-                "recovery": { "phase": "clear" },
-                "attempts": []
-            }),
-            serde_json::json!({
-                "version": 1,
-                "next_attempt_seq": 1,
-                "recovery_pending": false,
-                "attempts": []
-            }),
-            serde_json::json!({
-                "version": 2,
-                "next_attempt_seq": 1,
-                "next_recovery_generation": 1,
-                "recovery": { "phase": "clear" },
-                "attempts": []
-            }),
-        ] {
-            let git_dir = unique_test_git_dir("unsupported-version");
-            let dir = adapter_state_dir(&git_dir);
-            std::fs::create_dir_all(&dir).expect("state dir should be created");
-            std::fs::write(state_path(&git_dir), payload.to_string())
-                .expect("state file should be written");
-
-            let error = read_state(&git_dir).expect_err("unsupported version must be rejected");
-            assert!(
-                error.to_string().contains("unsupported version"),
-                "payload {payload} produced {error}"
-            );
-
-            remove_test_git_dir(&git_dir);
-        }
-    }
-
-    #[test]
-    fn interruption_before_rename_leaves_the_canonical_path_unaffected() {
-        let git_dir = unique_test_git_dir("interrupted-before-rename");
-        let dir = adapter_state_dir(&git_dir);
-        std::fs::create_dir_all(&dir).expect("state dir should be created");
-
-        let state = AdapterState {
-            next_attempt_seq: 5,
-            ..AdapterState::default()
-        };
-        let result = write_state_durably_inner(&git_dir, &state, |tmp_path, canonical_path| {
-            assert!(tmp_path.exists());
-            assert!(!canonical_path.exists());
-            Err(anyhow!("injected interruption before rename"))
-        });
-
-        assert!(result.is_err());
-        assert!(!state_path(&git_dir).exists());
-        assert_eq!(
-            read_state(&git_dir).expect("read should not error on an absent canonical file"),
-            AdapterState::default(),
-        );
 
         remove_test_git_dir(&git_dir);
     }
@@ -1357,29 +1217,6 @@ mod tests {
                 .acquire_with_timeout(&adapter_state_dir(&git_dir), Duration::from_millis(200))
                 .expect("the state lock must be free once every helper has returned"),
         );
-
-        remove_test_git_dir(&git_dir);
-    }
-
-    #[test]
-    fn adapter_state_files_live_only_below_git_dir_sce() {
-        let git_dir = unique_test_git_dir("path-boundary");
-        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
-
-        admit(&git_dir, &key("session-1", None, "exec-1"), "Bash");
-
-        let sce_dir = git_dir.join(SCE_STATE_DIR);
-        assert!(state_path(&git_dir).starts_with(&sce_dir));
-
-        let mut found_state_file = false;
-        for entry in std::fs::read_dir(&sce_dir).expect("sce dir should be readable") {
-            let entry = entry.expect("dir entry should be readable");
-            assert!(entry.path().starts_with(&sce_dir));
-            if entry.path() == state_path(&git_dir) {
-                found_state_file = true;
-            }
-        }
-        assert!(found_state_file);
 
         remove_test_git_dir(&git_dir);
     }

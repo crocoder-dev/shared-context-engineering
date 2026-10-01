@@ -146,6 +146,12 @@ file existence alone is never ownership. Both locks are `AdapterLockSpec`
 identities (`state::STATE_LOCK`, `state::BOUNDARY_LOCK`) over the single
 OS advisory-lock implementation in `cli/src/services/hooks/mutation_scope_lock.rs`,
 shared with the OpenCode and Pi adapters.
+The persistence and recovery-bookkeeping contracts common to the Codex, OpenCode,
+and Pi state files (missing/malformed/wrong-version reads, durable replace,
+remove, normalize, complete, relinquish, single flush claimant) are asserted once
+by the test-only suite in `cli/src/services/hooks/mutation_scope_state_conformance.rs`,
+instantiated per adapter as `<adapter>_mutation_scope::state::state_conformance`;
+admission, lane, phase, and owner semantics stay in each adapter's own tests.
 
 Positive cleanup arms `recovery_pending`, abandons matching tracked scopes via
 generic `abandon`, and removes settled attempts. Known attempts keep tracked

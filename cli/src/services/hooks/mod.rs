@@ -30,6 +30,8 @@ mod commit_hooks;
 mod conversation_trace;
 mod diff_trace;
 mod mutation_scope_lock;
+#[cfg(test)]
+mod mutation_scope_state_conformance;
 mod runtime;
 
 pub mod claude_bridge_session;
