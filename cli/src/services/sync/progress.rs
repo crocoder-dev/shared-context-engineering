@@ -35,7 +35,7 @@ impl<E> ProgressReporter<E> for NoopProgressReporter {
     fn report(&mut self, _event: E) {}
 }
 
-const STREAM_LABELS: [&str; 4] = ["messages", "parts", "diff_traces", "agent_traces"];
+const STREAM_LABELS: [&str; 3] = ["messages", "parts", "agent_traces"];
 const STREAM_LABEL_WIDTH: usize = 15;
 const STEADY_TICK_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -270,8 +270,21 @@ mod tests {
         let output = String::from_utf8(output).expect("progress output should be UTF-8");
         assert!(output.contains("messages        "));
         assert!(output.contains("parts           "));
-        assert!(output.contains("diff_traces     "));
         assert!(output.contains("agent_traces    "));
+        assert!(!output.contains("diff_traces"));
+        let first_render = output
+            .lines()
+            .take(STREAM_LABELS.len() + 1)
+            .map(|line| {
+                line.split_whitespace()
+                    .nth(1)
+                    .expect("progress row has a stream label")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            first_render,
+            vec!["messages", "parts", "agent_traces", "messages"]
+        );
         assert!(output.contains("messages        500 rows uploaded"));
         assert!(output.contains("parts           0 rows uploaded"));
         assert!(output.contains("✓ parts           0 rows uploaded"));

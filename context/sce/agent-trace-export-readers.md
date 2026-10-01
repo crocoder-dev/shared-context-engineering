@@ -12,7 +12,7 @@ flowchart LR
 
 - **SCE local source DB** — the existing repository-scoped `RepositoryAgentTraceDb` (see [agent-trace-db.md](agent-trace-db.md)), written by the hook/lifecycle paths already documented there. This reader does not change its writer, schema, or migrations.
 - **Incremental export reader** — `AgentTraceExportReader<'a>`, described below. Read-only, stateless across calls, no network.
-- **Control-plane client** — `sce sync` (see [agent-trace-sync-command.md](../cli/agent-trace-sync-command.md)) composes this reader with the authenticated control-plane HTTP client; the reader itself remains unaware of that caller.
+- **Control-plane client** — `sce sync` (see [agent-trace-sync-command.md](../cli/agent-trace-sync-command.md)) composes this reader with the authenticated control-plane HTTP client; the reader itself remains unaware of that caller. `sce sync` consumes three of the four reader methods (`read_messages_after`, `read_parts_after`, `read_agent_traces_after`).
 
 ## Composition point
 
@@ -39,7 +39,7 @@ Four methods, one per capture stream, sharing one shape: `(cursor: i64, limit: u
 SELECT ... FROM <table> WHERE id > ?1 ORDER BY id ASC LIMIT ?2
 ```
 
-against `messages`, `parts`, `diff_traces`, and `agent_traces` respectively (`read_messages_after`, `read_parts_after`, `read_diff_traces_after`, `read_agent_traces_after`). `cursor` is the last server-accepted `id` for that stream; the reader makes no gap or contiguity assumption about IDs. `claude_model_state` is local attribution state outside these four export streams and has no reader method or sync cursor. `diff_traces.patch` / `payload_type` and `agent_traces.trace_json` are returned raw and unmodified — no patch parsing, no JSON reparsing.
+against `messages`, `parts`, `diff_traces`, and `agent_traces` respectively (`read_messages_after`, `read_parts_after`, `read_diff_traces_after`, `read_agent_traces_after`). `cursor` is the last server-accepted `id` for that stream; the reader makes no gap or contiguity assumption about IDs. `claude_model_state` is local attribution state outside these four reader methods and has no reader method or sync cursor. `diff_traces.patch` / `payload_type` and `agent_traces.trace_json` are returned raw and unmodified — no patch parsing, no JSON reparsing.
 
 Every call validates, before executing any query:
 
@@ -51,6 +51,10 @@ and validates, per returned row before returning:
 - every exportable numeric field falls within `0..=9_007_199_254_740_991` (`Number.MAX_SAFE_INTEGER`), rejecting out-of-range rows instead of truncating or casting.
 
 Each stream has an owned `serde::Serialize` export-row DTO (`AgentTraceMessageExportRow`, `AgentTracePartExportRow`, `AgentTraceDiffTraceExportRow`, `AgentTraceAgentTraceExportRow`) with `#[serde(rename_all = "camelCase")]` matching the shipped control-plane ingestion contract; `sourceRowId` is the local `id` unmodified. `post_commit_patch_intersections` is not exported by any reader method.
+
+## Compatibility window
+
+The reader still exposes all four `read_*_after` methods, but `sce sync` consumes only three. `read_diff_traces_after` and `AgentTraceDiffTraceExportRow` are deferred-cleanup surfaces with no active caller: `diff_traces` is a local-only capture stream that is no longer uploaded. They keep their signature, validation, and serialization until the compatibility-removal phase described in [agent-trace-sync-command.md](../cli/agent-trace-sync-command.md#release-gate).
 
 ## What does not exist
 
