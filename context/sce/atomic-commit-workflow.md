@@ -80,9 +80,8 @@ output. On failure it reports the failure and stops — no retry, amend, additio
 staging, fallback commit, or fabricated hash. Either way, the command deletes the
 temp file after the commit attempt, including on failure, where practical.
 
-Bypass mode relaxes three regular-mode rules: no split proposals, no
-context-file guidance gating, and plan citations are best-effort rather than
-blocking.
+Bypass mode relaxes two regular-mode rules: no split proposals, and plan
+citations are best-effort rather than blocking.
 
 ## Ownership boundary
 
@@ -94,7 +93,6 @@ says:
 - Deciding whether staged changes form one coherent unit or several.
 - Choosing scope and writing every subject and body.
 - The plan-citation body rule.
-- Staged-scope classification and context-file guidance gating.
 
 Each rule is stated once by its owner. The skill never commits and never asks
 about staging.
@@ -127,12 +125,12 @@ reference describes the procedure and result branches, while the workflow keeps
 the statuses internal rather than serializing them between packages. No
 `commit-contract.yaml` artifact or YAML result-contract section is generated.
 
-- `proposal` — regular mode, one or more messages and an optional split rationale.
+- `proposal` — regular mode, one or more complete messages with their covered
+  files, plus split rationale when more than one commit is proposed.
 - `bypass_message` — bypass mode, exactly one message plus the full staged file
   list.
-- `blocked` — messages cannot be written faithfully. Categories are
-  `no_staged_changes`, `plan_citation_ambiguity`, `unreadable_diff`, and
-  `contradictory_context`.
+- `blocked` — messages cannot be written faithfully; each issue carries its
+  problem, impact, and required decision.
 
 Every target renders only the applicable layout from `references/output.md`.
 Every staged file still belongs to exactly one commit message. The analysis phase
