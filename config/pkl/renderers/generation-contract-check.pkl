@@ -228,7 +228,7 @@ local expectedDecisionDocumentPaths = new Mapping {
 }
 
 local requiredDecisionSkillTokens = new Listing {
-  "already qualified"
+  "qualified by successful task context synchronization"
   "YYYY-MM-DD-<decision-slug>.md"
   "`Proposed`"
   "`Accepted`"
@@ -236,7 +236,7 @@ local requiredDecisionSkillTokens = new Listing {
   "`Deprecated`"
   "`Superseded`"
   "otherwise default"
-  "Never edit an ADR whose status is `Accepted`"
+  "Existing ADRs are immutable regardless of status"
   "creates a new dated ADR"
   "references/adr-template.md"
   "exactly one ADR"
