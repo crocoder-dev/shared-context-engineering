@@ -44,8 +44,10 @@ below. Reachability was checked by driving the real dispatcher, not inferred.
 All twelve cells are additionally locked down as a completeness proof by
 `health_classification_matrix_covers_all_twelve_recovery_and_attempt_phase_combinations`
 in `cli/src/services/hooks/opencode_mutation_scope/health.rs`, which asserts
-the classifier's output for every row against hand-built state (including an
-always-present `Active` attempt, proving it never changes the result); the
+the classifier's output for every row against hand-built state, each row both
+with and without an `Active` attempt (proving it never changes the result, and
+covering the empty-attempts and lone-`PendingAbandon` shapes). That matrix is
+the single owner of pure state-shape classification; the
 real-dispatch regressions below separately prove *why* the semantically
 meaningful equivalence classes have those classifications by driving
 production code, not just the classifier's output:

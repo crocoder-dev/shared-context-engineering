@@ -150,48 +150,6 @@ mod tests {
     }
 
     #[test]
-    fn recovery_pending_false_is_healthy_even_with_live_attempts() {
-        let git_dir = unique_test_git_dir("recovery-false");
-        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
-        state::allocate_attempt(&git_dir, &key("toolu_1"), "Write")
-            .expect("allocation should succeed");
-
-        let health = classify_health(&git_dir);
-
-        assert_eq!(health.status, MutationScopeHealthStatus::Healthy);
-
-        remove_test_git_dir(&git_dir);
-    }
-
-    #[test]
-    fn recovery_pending_true_with_empty_attempts_is_recovering() {
-        let git_dir = unique_test_git_dir("recovering");
-        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
-        state::mark_recovery_pending(&git_dir).expect("marking recovery pending should succeed");
-
-        let health = classify_health(&git_dir);
-
-        assert_eq!(health.status, MutationScopeHealthStatus::Recovering);
-
-        remove_test_git_dir(&git_dir);
-    }
-
-    #[test]
-    fn recovery_pending_true_with_non_empty_attempts_is_blocked() {
-        let git_dir = unique_test_git_dir("blocked");
-        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
-        state::allocate_attempt(&git_dir, &key("toolu_1"), "Write")
-            .expect("allocation should succeed");
-        state::mark_recovery_pending(&git_dir).expect("marking recovery pending should succeed");
-
-        let health = classify_health(&git_dir);
-
-        assert_eq!(health.status, MutationScopeHealthStatus::Blocked);
-
-        remove_test_git_dir(&git_dir);
-    }
-
-    #[test]
     fn malformed_state_file_is_invalid_with_the_read_error_surfaced() {
         let git_dir = unique_test_git_dir("malformed");
         let path = state::state_path(&git_dir);
@@ -768,8 +726,58 @@ mod tests {
     }
 
     #[test]
-    fn clear_recovery_with_pending_abandon_is_invalid() {
-        let git_dir = unique_test_git_dir("invalid-clear-pending-abandon");
+    fn health_classification_table_covers_every_recovery_pending_and_attempt_phase_shape() {
+        use state::AttemptPhase::{Active, PendingAbandon, PendingStart};
+        use MutationScopeHealthStatus::{Blocked, Healthy, Invalid, Recovering};
+
+        let rows: [(bool, &[state::AttemptPhase], MutationScopeHealthStatus); 12] = [
+            (false, &[], Healthy),
+            (false, &[PendingStart], Healthy),
+            (false, &[Active], Healthy),
+            (false, &[PendingAbandon], Invalid),
+            (false, &[PendingAbandon, PendingStart], Invalid),
+            (false, &[PendingAbandon, Active], Invalid),
+            (true, &[], Recovering),
+            (true, &[PendingStart], Blocked),
+            (true, &[Active], Blocked),
+            (true, &[PendingAbandon], Blocked),
+            (true, &[PendingAbandon, PendingStart], Blocked),
+            (true, &[PendingAbandon, Active], Blocked),
+        ];
+
+        for (index, (recovery_pending, phases, expected)) in rows.into_iter().enumerate() {
+            let git_dir = unique_test_git_dir(&format!("table-{index}"));
+            let attempts: Vec<state::AdapterAttempt> = (1u64..)
+                .zip(phases)
+                .map(|(attempt_seq, phase)| {
+                    hand_constructed_attempt(attempt_seq, &format!("toolu_{attempt_seq}"), *phase)
+                })
+                .collect();
+            let next_attempt_seq = attempts.last().map_or(1, |attempt| attempt.attempt_seq + 1);
+            write_hand_constructed_state(
+                &git_dir,
+                &state::AdapterState {
+                    version: 1,
+                    next_attempt_seq,
+                    recovery_pending,
+                    attempts,
+                },
+            );
+
+            assert_eq!(
+                classify_health(&git_dir).status,
+                expected,
+                "row {index}: recovery_pending={recovery_pending} phases={phases:?}",
+            );
+
+            remove_test_git_dir(&git_dir);
+        }
+    }
+
+    #[test]
+    fn assess_repairability_is_manual_only_for_an_impossible_clear_recovery_with_a_pending_abandon_attempt(
+    ) {
+        let git_dir = unique_test_git_dir("assess-invalid-clear-pending-abandon");
         write_hand_constructed_state(
             &git_dir,
             &state::AdapterState {
@@ -784,44 +792,10 @@ mod tests {
             },
         );
 
-        let health = classify_health(&git_dir);
-        assert_eq!(
-            health.status,
-            MutationScopeHealthStatus::Invalid,
-            "recovery_pending == false with an unresolved PendingAbandon attempt is a \
-             structurally impossible state and must never classify Healthy"
-        );
         assert_eq!(
             assess_repairability(&git_dir),
             Repairability::ManualOnly,
             "doctor must not auto-repair an impossible Claude state"
-        );
-
-        remove_test_git_dir(&git_dir);
-    }
-
-    #[test]
-    fn invalid_takes_priority_over_blocked_in_mixed_impossible_state() {
-        let git_dir = unique_test_git_dir("invalid-priority-mixed");
-        write_hand_constructed_state(
-            &git_dir,
-            &state::AdapterState {
-                version: 1,
-                next_attempt_seq: 3,
-                recovery_pending: false,
-                attempts: vec![
-                    hand_constructed_attempt(1, "toolu_1", state::AttemptPhase::PendingAbandon),
-                    hand_constructed_attempt(2, "toolu_2", state::AttemptPhase::PendingStart),
-                ],
-            },
-        );
-
-        let health = classify_health(&git_dir);
-        assert_eq!(
-            health.status,
-            MutationScopeHealthStatus::Invalid,
-            "Clear + unresolved PendingAbandon must take priority over an otherwise-Blocked \
-             shape from a coexisting PendingStart attempt"
         );
 
         remove_test_git_dir(&git_dir);

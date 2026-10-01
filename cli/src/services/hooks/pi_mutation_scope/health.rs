@@ -213,13 +213,38 @@ mod tests {
     }
 
     #[test]
-    fn clear_recovery_is_healthy_with_a_live_owner_pending_start_attempt() {
+    fn clear_recovery_is_healthy_with_a_live_owner_pending_start_attempt_never_swept_by_an_unrelated_start(
+    ) {
         let git_dir = unique_test_git_dir("clear-live-owner");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
-        state::seed_attempt_for_tests(
+        let attempt = state::seed_attempt_for_tests(
             &git_dir,
             &key("ses-1", "call-1"),
             "bash",
+            AttemptPhase::PendingStart,
+        );
+
+        assert_eq!(
+            classify_health(&git_dir).status,
+            MutationScopeHealthStatus::Healthy
+        );
+
+        let seam = RecordingSeam::new();
+        drive(&git_dir, &seam, &tool_call_event("ses-c", "call-c"))
+            .expect("an unrelated session's Start must proceed alongside a live-owner attempt");
+        assert_eq!(
+            seam.calls.lock().expect("seam mutex").clone(),
+            vec!["start".to_string()],
+            "no D10 sweep may fire for an owner that is still alive"
+        );
+        let after = state::read_state(&git_dir).expect("state readable");
+        assert_eq!(
+            after
+                .attempts
+                .iter()
+                .find(|a| a.scope_id == attempt.scope_id)
+                .expect("the live-owner attempt is still tracked")
+                .phase,
             AttemptPhase::PendingStart,
         );
 
@@ -505,41 +530,6 @@ mod tests {
     }
 
     #[test]
-    fn clear_recovery_with_a_pending_abandon_attempt_is_a_structurally_impossible_state_classified_invalid(
-    ) {
-        let git_dir = unique_test_git_dir("clear-with-pending-abandon-invalid");
-        let dir = state::adapter_state_dir(&git_dir);
-        std::fs::create_dir_all(&dir).expect("state dir should be created");
-        std::fs::write(
-            state::state_path(&git_dir),
-            serde_json::json!({
-                "version": 2,
-                "next_attempt_seq": 2,
-                "next_recovery_generation": 1,
-                "recovery": { "phase": "clear" },
-                "attempts": [{
-                    "attempt_seq": 1,
-                    "scope_id": "pi-tool-v1|n=1|s=5:ses-1|c=6:call-1",
-                    "session_id": "ses-1",
-                    "tool_call_id": "call-1",
-                    "tool_name": "bash",
-                    "phase": "pending_abandon",
-                    "owner": { "pid": 999_999, "instance_token": null },
-                }],
-            })
-            .to_string(),
-        )
-        .expect("hand-seeded state file should be writable");
-
-        assert_eq!(
-            classify_health(&git_dir).status,
-            MutationScopeHealthStatus::Invalid
-        );
-
-        remove_test_git_dir(&git_dir);
-    }
-
-    #[test]
     fn malformed_state_file_is_invalid_with_the_read_error_surfaced() {
         let git_dir = unique_test_git_dir("malformed");
         let dir = state::adapter_state_dir(&git_dir);
@@ -583,24 +573,27 @@ mod tests {
     fn write_matrix_state(
         git_dir: &Path,
         recovery: RecoveryState,
+        bystander_owner: Option<ProcessOwner>,
         has_pending_abandon: bool,
         has_dead_owner_attempt: bool,
-        live_owner: ProcessOwner,
         dead_owner: ProcessOwner,
     ) {
         std::fs::create_dir_all(state::adapter_state_dir(git_dir))
             .expect("adapter state dir should be created");
 
-        let mut attempts = vec![matrix_attempt(
-            "call-live",
-            AttemptPhase::PendingStart,
-            live_owner,
-        )];
+        let mut attempts = Vec::new();
+        if let Some(owner) = bystander_owner {
+            attempts.push(matrix_attempt(
+                "call-bystander",
+                AttemptPhase::PendingStart,
+                owner,
+            ));
+        }
         if has_pending_abandon {
             attempts.push(matrix_attempt(
                 "call-abandon",
                 AttemptPhase::PendingAbandon,
-                live_owner,
+                crate::services::hooks::mutation_scope_owner::current_process_owner(),
             ));
         }
         if has_dead_owner_attempt {
@@ -640,6 +633,15 @@ mod tests {
             instance_token: None,
         };
         let live_owner = crate::services::hooks::mutation_scope_owner::current_process_owner();
+        let uncertain_owner = ProcessOwner {
+            pid: std::process::id().cast_signed(),
+            instance_token: None,
+        };
+        let bystanders = [
+            ("none", None),
+            ("live-owner", Some(live_owner)),
+            ("uncertain-owner", Some(uncertain_owner)),
+        ];
 
         let clear = RecoveryState::Clear;
         let pending = RecoveryState::Pending { generation: 1 };
@@ -663,24 +665,27 @@ mod tests {
         for (index, (recovery, has_pending_abandon, has_dead_owner_attempt, expected)) in
             rows.into_iter().enumerate()
         {
-            let git_dir = unique_test_git_dir(&format!("matrix-{index}"));
-            write_matrix_state(
-                &git_dir,
-                recovery,
-                has_pending_abandon,
-                has_dead_owner_attempt,
-                live_owner,
-                dead_owner,
-            );
+            for (bystander, bystander_owner) in bystanders {
+                let git_dir = unique_test_git_dir(&format!("matrix-{index}-{bystander}"));
+                write_matrix_state(
+                    &git_dir,
+                    recovery,
+                    bystander_owner,
+                    has_pending_abandon,
+                    has_dead_owner_attempt,
+                    dead_owner,
+                );
 
-            assert_eq!(
-                classify_health(&git_dir).status,
-                expected,
-                "row {index}: recovery={recovery:?} has_pending_abandon={has_pending_abandon} \
-                 has_dead_owner_attempt={has_dead_owner_attempt}",
-            );
+                assert_eq!(
+                    classify_health(&git_dir).status,
+                    expected,
+                    "row {index}: recovery={recovery:?} bystander={bystander} \
+                     has_pending_abandon={has_pending_abandon} \
+                     has_dead_owner_attempt={has_dead_owner_attempt}",
+                );
 
-            remove_test_git_dir(&git_dir);
+                remove_test_git_dir(&git_dir);
+            }
         }
     }
 

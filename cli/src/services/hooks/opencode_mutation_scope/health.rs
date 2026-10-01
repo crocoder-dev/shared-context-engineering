@@ -233,19 +233,6 @@ mod tests {
     }
 
     #[test]
-    fn clear_recovery_is_healthy_even_with_active_attempts() {
-        let git_dir = unique_test_git_dir("clear-with-active");
-        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
-        state::seed_attempt_for_tests(&git_dir, &key("call-1"), "write", AttemptPhase::Active);
-
-        let health = classify_health(&git_dir);
-
-        assert_eq!(health.status, MutationScopeHealthStatus::Healthy);
-
-        remove_test_git_dir(&git_dir);
-    }
-
-    #[test]
     fn pending_start_with_clear_recovery_is_blocked_and_denies_repeated_unrelated_admissions_ac4() {
         let git_dir = unique_test_git_dir("pending-start-blocked");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
@@ -609,38 +596,6 @@ mod tests {
     }
 
     #[test]
-    fn clear_recovery_with_a_pending_abandon_attempt_is_a_structurally_impossible_state_classified_invalid(
-    ) {
-        let git_dir = unique_test_git_dir("clear-with-pending-abandon-invalid");
-        let dir = state::adapter_state_dir(&git_dir);
-        std::fs::create_dir_all(&dir).expect("state dir should be created");
-        std::fs::write(
-            state::state_path(&git_dir),
-            serde_json::json!({
-                "version": 1,
-                "next_recovery_generation": 1,
-                "recovery": { "phase": "clear" },
-                "attempts": [{
-                    "scope_id": "oc-tool-v1|s=8:ses-main|c=6:call-1",
-                    "session_id": "ses-main",
-                    "call_id": "call-1",
-                    "tool_name": "write",
-                    "phase": "pending_abandon",
-                }],
-            })
-            .to_string(),
-        )
-        .expect("hand-seeded state file should be writable");
-
-        assert_eq!(
-            classify_health(&git_dir).status,
-            MutationScopeHealthStatus::Invalid
-        );
-
-        remove_test_git_dir(&git_dir);
-    }
-
-    #[test]
     fn malformed_state_file_is_invalid_with_the_read_error_surfaced() {
         let git_dir = unique_test_git_dir("malformed");
         let dir = state::adapter_state_dir(&git_dir);
@@ -683,13 +638,17 @@ mod tests {
     fn write_matrix_state(
         git_dir: &Path,
         recovery: RecoveryState,
+        has_active: bool,
         has_pending_abandon: bool,
         has_pending_start: bool,
     ) {
         std::fs::create_dir_all(state::adapter_state_dir(git_dir))
             .expect("adapter state dir should be created");
 
-        let mut attempts = vec![matrix_attempt("call-active", AttemptPhase::Active)];
+        let mut attempts = Vec::new();
+        if has_active {
+            attempts.push(matrix_attempt("call-active", AttemptPhase::Active));
+        }
         if has_pending_abandon {
             attempts.push(matrix_attempt("call-abandon", AttemptPhase::PendingAbandon));
         }
@@ -736,17 +695,26 @@ mod tests {
         for (index, (recovery, has_pending_abandon, has_pending_start, expected)) in
             rows.into_iter().enumerate()
         {
-            let git_dir = unique_test_git_dir(&format!("matrix-{index}"));
-            write_matrix_state(&git_dir, recovery, has_pending_abandon, has_pending_start);
+            for has_active in [false, true] {
+                let git_dir = unique_test_git_dir(&format!("matrix-{index}-{has_active}"));
+                write_matrix_state(
+                    &git_dir,
+                    recovery,
+                    has_active,
+                    has_pending_abandon,
+                    has_pending_start,
+                );
 
-            assert_eq!(
-                classify_health(&git_dir).status,
-                expected,
-                "row {index}: recovery={recovery:?} has_pending_abandon={has_pending_abandon} \
-                 has_pending_start={has_pending_start}",
-            );
+                assert_eq!(
+                    classify_health(&git_dir).status,
+                    expected,
+                    "row {index}: recovery={recovery:?} has_active={has_active} \
+                     has_pending_abandon={has_pending_abandon} \
+                     has_pending_start={has_pending_start}",
+                );
 
-            remove_test_git_dir(&git_dir);
+                remove_test_git_dir(&git_dir);
+            }
         }
     }
 
