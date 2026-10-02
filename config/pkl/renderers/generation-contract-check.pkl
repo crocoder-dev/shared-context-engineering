@@ -1230,6 +1230,7 @@ hidden assertWorkflowLanguageConsistency = (artifacts: Mapping) ->
     if (
       targets.every((target) ->
         let (next = artifacts["config/\(target)/skills/sce-next-task/SKILL.md"])
+          let (validate = artifacts["config/\(target)/skills/sce-validate/SKILL.md"])
           let (commitRef = artifacts["config/\(target)/skills/sce-commit/references/atomic-commit.md"])
             let (validationRef = artifacts["config/\(target)/skills/sce-validate/references/validation.md"])
               let (handoverTemplate = artifacts["config/\(target)/skills/sce-handover/references/handover-template.md"])
@@ -1255,6 +1256,10 @@ hidden assertWorkflowLanguageConsistency = (artifacts: Mapping) ->
                     && !next.contains("Record only the internal state")
                     && !validationRef.contains("Markdown result")
                     && !validationRef.contains("Validation Result")
+                    && validate.contains("Return the blocked Markdown report unchanged")
+                    && validate.contains("Return the failed Markdown handoff unchanged")
+                    && !validate.contains("Do not rewrite it into a shorter summary")
+                    && !validate.contains("Do not implement remaining plan tasks")
       )
     ) "workflow language: shared vocabulary, phase naming, report naming, and document format are consistent"
     else throw("generated workflow language/format drifted from the shared T11 conventions")
