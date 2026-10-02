@@ -33,7 +33,7 @@ let
 
     outputHashMode = "flat";
     outputHashAlgo = "sha256";
-    outputHash = "sha256-p8fzi7KWNltCEopHvXFmswASt9ov7UWxh/XU8mGLgH0=";
+    outputHash = "sha256-6nNnt2G23RlrK0uZrtMGOovuq2kyLzmPyshiRA2Dj68=";
   };
 
   regenerateApp = pkgs.writeShellApplication {
