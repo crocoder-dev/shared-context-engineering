@@ -6,6 +6,7 @@ use crate::services::hooks;
 use crate::services::mutation_trace::runtime::resolve_git_dir;
 use crate::services::observability::traits::Logger;
 
+use super::events::BASH_TOOL_NAME;
 use super::state;
 use super::{
     abandon_payload, classify_tool, claude_scope_close_event_id, claude_scope_start_event_id,
@@ -245,6 +246,10 @@ pub(super) fn handle_pre_tool_use(
         return String::new();
     }
 
+    if is_untracked_background_bash(execution) {
+        return String::new();
+    }
+
     if is_explicit_background_shell(&identity.tool_name, execution.run_in_background) {
         return pre_tool_use_deny_json(EXPLICIT_BACKGROUND_SHELL_DENY_REASON);
     }
@@ -279,6 +284,10 @@ pub(super) fn handle_pre_tool_use(
             pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON)
         }
     }
+}
+
+fn is_untracked_background_bash(execution: &ClaudeToolExecution) -> bool {
+    execution.run_in_background && execution.identity.tool_name == BASH_TOOL_NAME
 }
 
 pub(super) enum BarrierOutcome {

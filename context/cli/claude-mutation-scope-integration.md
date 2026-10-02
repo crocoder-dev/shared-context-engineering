@@ -35,7 +35,8 @@ below.
 executions. Two parallel mutation-capable tools produce two simultaneously live
 scopes and may correctly yield `AiContended`; sequential tool calls are
 sequential scopes. `SessionStart`, `UserPromptSubmit`, and `SubagentStart`
-establish no scope.
+establish no scope, and neither does native background `Bash` (see
+[Background shell execution](#background-shell-execution)).
 
 `classify_tool(tool_name)`:
 
@@ -52,8 +53,9 @@ establish no scope.
 
 `is_explicit_background_shell(tool_name, run_in_background)` is a separate
 model-only predicate (`true` only for `Bash`/`PowerShell` with
-`run_in_background == true`); its denial is in the driver — see
-[Background shell is unsupported](#background-shell-is-unsupported).
+`run_in_background == true`). The driver allows background `Bash` untracked
+before consulting it, so its denial applies only to background `PowerShell` —
+see [Background shell execution](#background-shell-execution).
 
 ## Identity and ScopeId / EventId derivation
 
@@ -108,7 +110,7 @@ can form. The adapter may call `checkout::resolve_git_dir` but not
 
 ## PreToolUse: write-ahead Start, fail-closed
 
-For a tracked mutation-capable tool, `handle_pre_tool_use` runs: explicit-background-shell check -> resolve `git_dir` -> recovery barrier ->
+For a mutation-capable tool, `handle_pre_tool_use` runs: background-`Bash` untracked allow (empty success, nothing below runs) -> explicit-background-shell deny (`PowerShell`) -> resolve `git_dir` -> recovery barrier ->
 write-ahead `Start` — persist `phase=pending_start`, resolve the canonical
 `cc_<session>` and the exact model-state key (`agent_id = ""` for the main
 agent), call the seam with the optional provenance snapshot, persist
@@ -131,8 +133,8 @@ The detailed error is logged via `Logger::warn`
 (`sce.hooks.claude_mutation_scope.pre_tool_use_fail_closed`); Claude's deny
 reason never carries it. Model-state lookup failures are logged separately as
 model-unavailable metadata and do not enter this deny path. The adapter never
-returns `allow`, so SCE cannot bypass Claude's permission system. A read-only or
-`Agent` `PreToolUse` returns empty stdout, no scope.
+returns `allow`, so SCE cannot bypass Claude's permission system. A read-only,
+`Agent`, or background-`Bash` `PreToolUse` returns empty stdout, no scope.
 
 ## PostToolUse / PostToolUseFailure: close the scope
 
@@ -210,9 +212,9 @@ checkout B's state and only that worktree's cursor. The adapter never accepts,
 derives, stores, or constructs a `WorktreeId`, and passes no `worktree_id` key
 to the seam.
 
-## Background shell is unsupported
+## Background shell execution
 
-An explicit `Bash.run_in_background = true` / `PowerShell.run_in_background = true` is denied in `PreToolUse` (fail-closed shape); self-detaching descendants are a separate, explicit unsupported boundary (D20). A new product decision, [Claude background Bash runs natively and untracked](../decisions/2026-10-02-claude-background-bash-untracked.md), permits native Claude background Bash as an unsupported mutation-attribution boundary (no mutation scope, no adapter attempt, no lifecycle tracking, no attribution guarantee); the current adapter still denies `Bash(run_in_background=true)` until T03 of `claude-background-shell-mutation-scope` implements that decision, and background `PowerShell` stays denied. See [Claude mutation-scope background and detached execution boundaries](claude-mutation-scope-background-execution.md) for the full denial text, the accepted A/B attribution consequence, and both boundaries.
+Native Claude background Bash is operationally supported but unsupported for mutation attribution: `Bash(run_in_background=true)` is allowed in `PreToolUse` with no mutation scope, no adapter attempt, no lifecycle tracking, and no attribution guarantee, per [Claude background Bash runs natively and untracked](../decisions/2026-10-02-claude-background-bash-untracked.md); its later `PostToolUse` / `PostToolUseFailure` finds no attempt and is a no-op. An explicit `PowerShell.run_in_background = true` is denied in `PreToolUse` (fail-closed shape); self-detaching descendants are a separate, explicit unsupported boundary (D20). See [Claude mutation-scope background and detached execution boundaries](claude-mutation-scope-background-execution.md) for the accepted A/B attribution consequence, the PowerShell denial text, and both boundaries.
 
 ## Generated settings
 

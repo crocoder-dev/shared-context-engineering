@@ -963,34 +963,147 @@ mod driver {
         }
     }
 
-    #[test]
-    fn explicit_background_bash_is_denied_with_the_exact_reason_d20() {
-        let git_dir = unique_test_git_dir("explicit-background-bash");
-        let resolver = fixed_resolver(git_dir.clone());
-        let payload = pre_tool_use_json(&[
+    fn background_bash_pre_tool_use_json(tool_use_id: &str) -> String {
+        pre_tool_use_json(&[
             (TOOL_NAME_FIELD, Value::String("Bash".to_string())),
+            (TOOL_USE_ID_FIELD, Value::String(tool_use_id.to_string())),
             (
                 TOOL_INPUT_FIELD,
                 serde_json::json!({ "run_in_background": true }),
             ),
-        ]);
+        ])
+    }
+
+    fn background_bash_terminal_json(event_name: &str, tool_use_id: &str) -> String {
+        pre_tool_use_json(&[
+            (HOOK_EVENT_NAME_FIELD, Value::String(event_name.to_string())),
+            (TOOL_NAME_FIELD, Value::String("Bash".to_string())),
+            (TOOL_USE_ID_FIELD, Value::String(tool_use_id.to_string())),
+            (
+                TOOL_INPUT_FIELD,
+                serde_json::json!({ "run_in_background": true }),
+            ),
+        ])
+    }
+
+    #[test]
+    fn explicit_background_bash_is_allowed_untracked_before_any_repository_or_seam_access() {
+        let resolver = |_: &str| -> Result<PathBuf> {
+            panic!("untracked background Bash must never resolve a git dir")
+        };
+        let model_state_resolver = |_: &Path, _: &str, _: &str| -> Result<Option<String>> {
+            panic!("untracked background Bash must never resolve model state")
+        };
+
+        let output = start_with_model_resolver(
+            &background_bash_pre_tool_use_json("toolu_background"),
+            None,
+            &resolver,
+            &model_state_resolver,
+            &unreachable_seam,
+        )
+        .expect("background Bash should be allowed");
+
+        assert_eq!(output, "");
+    }
+
+    #[test]
+    fn explicit_background_bash_is_allowed_while_the_recovery_barrier_is_armed() {
+        let git_dir = unique_test_git_dir("background-bash-recovery-barrier");
+        let resolver = fixed_resolver(git_dir.clone());
+        state::mark_recovery_pending(&git_dir).expect("recovery should arm");
+        let state_before = adapter_state_file_bytes(&git_dir);
 
         let output = run_claude_mutation_scope_from_payload_with(
-            &payload,
+            &background_bash_pre_tool_use_json("toolu_background"),
             None,
             &resolver,
             &unreachable_seam,
         )
-        .expect("an explicit background shell should still return Ok with a deny payload");
+        .expect("background Bash should be allowed");
 
+        assert_eq!(output, "");
         assert_eq!(
-            output,
-            pre_tool_use_deny_json(EXPLICIT_BACKGROUND_SHELL_DENY_REASON)
+            adapter_state_file_bytes(&git_dir),
+            state_before,
+            "untracked background Bash must not read through or clear the recovery barrier"
         );
-        assert!(
-            !git_dir.exists(),
-            "D20: denial must precede any adapter-state I/O"
-        );
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    fn adapter_state_file_bytes(git_dir: &Path) -> Vec<u8> {
+        std::fs::read(state::state_path(git_dir)).expect("adapter state file should be readable")
+    }
+
+    #[test]
+    fn terminal_hooks_for_untracked_background_bash_are_no_ops_with_no_live_attempt() {
+        for event_name in [HOOK_EVENT_POST_TOOL_USE, HOOK_EVENT_POST_TOOL_USE_FAILURE] {
+            let git_dir = unique_test_git_dir("background-bash-terminal-no-attempt");
+            let resolver = fixed_resolver(git_dir.clone());
+
+            let output = run_claude_mutation_scope_from_payload_with(
+                &background_bash_terminal_json(event_name, "toolu_background"),
+                None,
+                &resolver,
+                &unreachable_seam,
+            )
+            .expect("a terminal hook for untracked background Bash must be a safe no-op");
+
+            assert_eq!(output, "");
+            assert!(
+                !state::state_path(&git_dir).exists(),
+                "{event_name} for untracked background Bash must not create adapter state"
+            );
+
+            remove_test_git_dir(&git_dir);
+        }
+    }
+
+    #[test]
+    fn terminal_hooks_for_untracked_background_bash_leave_an_unrelated_live_attempt_untouched() {
+        for event_name in [HOOK_EVENT_POST_TOOL_USE, HOOK_EVENT_POST_TOOL_USE_FAILURE] {
+            let git_dir = unique_test_git_dir("background-bash-terminal-unrelated-attempt");
+            let resolver = fixed_resolver(git_dir.clone());
+
+            run_claude_mutation_scope_from_payload_with(
+                &pre_tool_use_json(&[]),
+                None,
+                &resolver,
+                &ok_seam,
+            )
+            .expect("the unrelated foreground PreToolUse should establish an attempt");
+            run_claude_mutation_scope_from_payload_with(
+                &background_bash_pre_tool_use_json("toolu_background"),
+                None,
+                &resolver,
+                &unreachable_seam,
+            )
+            .expect("background Bash should be allowed");
+
+            let state_before = state::read_state(&git_dir).expect("state should be readable");
+            assert_eq!(state_before.attempts.len(), 1);
+            assert_eq!(state_before.attempts[0].tool_use_id, "toolu_1");
+            let state_bytes_before = adapter_state_file_bytes(&git_dir);
+
+            let output = run_claude_mutation_scope_from_payload_with(
+                &background_bash_terminal_json(event_name, "toolu_background"),
+                None,
+                &resolver,
+                &unreachable_seam,
+            )
+            .expect("a terminal hook for untracked background Bash must be a safe no-op");
+
+            assert_eq!(output, "");
+            assert_eq!(
+                state::read_state(&git_dir).expect("state should be readable"),
+                state_before,
+                "{event_name} for untracked background Bash must not transition another attempt"
+            );
+            assert_eq!(adapter_state_file_bytes(&git_dir), state_bytes_before);
+
+            remove_test_git_dir(&git_dir);
+        }
     }
 
     #[test]
@@ -1016,6 +1129,10 @@ mod driver {
         assert_eq!(
             output,
             pre_tool_use_deny_json(EXPLICIT_BACKGROUND_SHELL_DENY_REASON)
+        );
+        assert!(
+            !git_dir.exists(),
+            "the PowerShell denial must precede any adapter-state I/O"
         );
     }
 
@@ -3240,31 +3357,167 @@ mod production_regressions {
     }
 
     #[test]
-    fn test15_explicit_background_bash_is_denied_with_no_scope() {
+    fn test15_explicit_background_bash_is_allowed_untracked_with_no_scope_or_attempt() {
         let repo = ClaudeRepo::new("test15-explicit-background-bash");
         let cwd = repo.cwd();
+        let state_path = state::state_path(&repo.git_dir());
 
         let output = repo
             .drive(&background_pre_tool_use_for(
                 &cwd,
                 "session-1",
-                "toolu_1",
+                "toolu_background",
                 None,
             ))
-            .expect("an explicit background shell must still return Ok with a deny payload");
+            .expect("background Bash should be allowed");
 
-        assert_eq!(
-            output,
-            pre_tool_use_deny_json(EXPLICIT_BACKGROUND_SHELL_DENY_REASON)
-        );
+        assert_eq!(output, "");
         assert!(
-            repo.adapter_state().attempts.is_empty(),
-            "AC21: an explicit background shell must create no scope"
+            !state_path.exists(),
+            "untracked background Bash must create no adapter state"
         );
+
+        for (terminal_event, payload) in [
+            (
+                HOOK_EVENT_POST_TOOL_USE,
+                post_tool_use_for(&cwd, "session-1", "Bash", "toolu_background", None),
+            ),
+            (
+                HOOK_EVENT_POST_TOOL_USE_FAILURE,
+                post_tool_use_failure_for(&cwd, "session-1", "Bash", "toolu_background", None),
+            ),
+        ] {
+            assert_eq!(
+                repo.drive(&payload)
+                    .expect("a terminal hook for untracked background Bash must be a no-op"),
+                ""
+            );
+            assert!(
+                !state_path.exists(),
+                "{terminal_event} for untracked background Bash must create no adapter state"
+            );
+        }
 
         let db = repo.db();
         assert_eq!(count(&db, "mutation_trace_scopes"), 0);
         assert_eq!(count(&db, "mutation_trace_events"), 0);
+        assert!(processed_events(&db).is_empty());
+
+        assert_raw_agent_trace_tables_untouched(&db);
+    }
+
+    #[test]
+    fn test19_terminal_hooks_for_untracked_background_bash_do_not_transition_a_live_foreground_attempt(
+    ) {
+        let repo = ClaudeRepo::new("test19-background-terminal-unrelated");
+        let cwd = repo.cwd();
+
+        repo.drive(&pre_tool_use_for(
+            &cwd,
+            "session-1",
+            "Write",
+            "toolu_foreground",
+            None,
+        ))
+        .expect("the foreground PreToolUse should succeed");
+        let scope_id = repo.adapter_state().attempts[0].scope_id.clone();
+
+        assert_eq!(
+            repo.drive(&background_pre_tool_use_for(
+                &cwd,
+                "session-1",
+                "toolu_background",
+                None,
+            ))
+            .expect("background Bash should be allowed"),
+            ""
+        );
+
+        let state_before = repo.adapter_state();
+        let scope_before = scope_status(&repo.db(), &scope_id);
+        let processed_before = processed_events(&repo.db());
+
+        for payload in [
+            post_tool_use_for(&cwd, "session-1", "Bash", "toolu_background", None),
+            post_tool_use_failure_for(&cwd, "session-1", "Bash", "toolu_background", None),
+        ] {
+            assert_eq!(
+                repo.drive(&payload)
+                    .expect("a terminal hook for untracked background Bash must be a no-op"),
+                ""
+            );
+            assert_eq!(repo.adapter_state(), state_before);
+        }
+
+        let db = repo.db();
+        assert_eq!(count(&db, "mutation_trace_scopes"), 1);
+        assert_eq!(scope_status(&db, &scope_id), scope_before);
+        assert_eq!(processed_events(&db), processed_before);
+        assert_eq!(count(&db, "mutation_trace_events"), 0);
+
+        assert_raw_agent_trace_tables_untouched(&db);
+    }
+
+    #[test]
+    fn test20_untracked_background_bash_mutation_is_observed_at_foreground_close_with_no_attribution_guarantee(
+    ) {
+        let repo = ClaudeRepo::new("test20-background-a-foreground-b");
+        let cwd = repo.cwd();
+
+        assert_eq!(
+            repo.drive(&background_pre_tool_use_for(
+                &cwd,
+                "session-1",
+                "toolu_background_a",
+                None,
+            ))
+            .expect("background A should be allowed"),
+            ""
+        );
+        assert!(!state::state_path(&repo.git_dir()).exists());
+
+        repo.drive(&pre_tool_use_for(
+            &cwd,
+            "session-1",
+            "Write",
+            "toolu_foreground_b",
+            None,
+        ))
+        .expect("foreground B PreToolUse should succeed");
+        let state_with_b = repo.adapter_state();
+        assert_eq!(state_with_b.attempts.len(), 1);
+        assert_eq!(state_with_b.attempts[0].tool_use_id, "toolu_foreground_b");
+        let scope_b = state_with_b.attempts[0].scope_id.clone();
+
+        fs::write(repo.root.join("background-a.txt"), "written by A\n")
+            .expect("untracked background A's write should write");
+
+        repo.drive(&post_tool_use_for(
+            &cwd,
+            "session-1",
+            "Write",
+            "toolu_foreground_b",
+            None,
+        ))
+        .expect("foreground B PostToolUse should succeed");
+
+        let db = repo.db();
+        let worktree_id = repo.worktree_id();
+        assert_eq!(count(&db, "mutation_trace_scopes"), 1);
+        assert_eq!(
+            mutation_events_for(&db, &worktree_id),
+            vec![(
+                "ai_exclusive".to_string(),
+                Some(scope_b),
+                "close".to_string(),
+            )],
+            "no attribution guarantee: untracked background A's mutation is observed at \
+                 tracked foreground B's close boundary and attributed to B"
+        );
+        assert_eq!(
+            worktree_row(&db, &worktree_id).map(|(_, cursor_tree, _)| cursor_tree),
+            Some(repo.working_tree())
+        );
 
         assert_raw_agent_trace_tables_untouched(&db);
     }
