@@ -1136,6 +1136,248 @@ mod driver {
         );
     }
 
+    const PROBE17_SELF_DETACHING_FOREGROUND_PRE_TOOL_USE: &str =
+        include_str!("fixtures/probe17-detached-child-after-post-tool-use.pre_tool_use.json");
+    const PROBE17_SELF_DETACHING_FOREGROUND_POST_TOOL_USE: &str =
+        include_str!("fixtures/probe17-detached-child-after-post-tool-use.post_tool_use.json");
+
+    fn recorded_operations(payloads: &RefCell<Vec<String>>) -> Vec<String> {
+        payloads
+            .borrow()
+            .iter()
+            .map(|payload| {
+                let value: Value = serde_json::from_str(payload).expect("seam payload is JSON");
+                value["operation"]
+                    .as_str()
+                    .expect("seam payload carries an operation")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    fn tool_payload(
+        event_name: &str,
+        tool_name: &str,
+        tool_use_id: &str,
+        tool_input: Option<&Value>,
+    ) -> String {
+        let mut overrides = vec![
+            (HOOK_EVENT_NAME_FIELD, Value::String(event_name.to_string())),
+            (TOOL_NAME_FIELD, Value::String(tool_name.to_string())),
+            (TOOL_USE_ID_FIELD, Value::String(tool_use_id.to_string())),
+        ];
+        if let Some(tool_input) = tool_input {
+            overrides.push((TOOL_INPUT_FIELD, tool_input.clone()));
+        }
+        pre_tool_use_json(&overrides)
+    }
+
+    fn assert_tracked_foreground_lifecycle(
+        label: &str,
+        tool_name: &str,
+        tool_input: Option<&Value>,
+        terminal_event: &str,
+    ) {
+        let git_dir = unique_test_git_dir(label);
+        let resolver = fixed_resolver(git_dir.clone());
+        let payloads: RefCell<Vec<String>> = RefCell::new(Vec::new());
+        let seam = |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| -> Result<String> {
+            payloads.borrow_mut().push(payload.to_string());
+            Ok(String::new())
+        };
+        let case = format!("{tool_name} with tool_input {tool_input:?} then {terminal_event}");
+
+        let output = run_claude_mutation_scope_from_payload_with(
+            &tool_payload(
+                HOOK_EVENT_PRE_TOOL_USE,
+                tool_name,
+                "toolu_foreground",
+                tool_input,
+            ),
+            None,
+            &resolver,
+            &seam,
+        )
+        .expect("foreground PreToolUse should succeed");
+
+        assert_eq!(output, "", "{case}");
+        assert_eq!(recorded_operations(&payloads), vec!["start"], "{case}");
+        let started = state::read_state(&git_dir).expect("state should be readable");
+        assert_eq!(started.attempts.len(), 1, "{case}");
+        assert_eq!(started.attempts[0].tool_use_id, "toolu_foreground");
+        assert_eq!(started.attempts[0].tool_name, tool_name);
+        assert_eq!(
+            started.attempts[0].phase,
+            state::AttemptPhase::Active,
+            "{case}"
+        );
+        assert!(!started.recovery_pending, "{case}");
+
+        let output = run_claude_mutation_scope_from_payload_with(
+            &tool_payload(terminal_event, tool_name, "toolu_foreground", tool_input),
+            None,
+            &resolver,
+            &seam,
+        )
+        .expect("the foreground terminal hook should close the scope");
+
+        assert_eq!(output, "", "{case}");
+        assert_eq!(
+            recorded_operations(&payloads),
+            vec!["start", "close"],
+            "{case}"
+        );
+        let closed = state::read_state(&git_dir).expect("state should be readable");
+        assert!(closed.attempts.is_empty(), "{case}");
+        assert!(!closed.recovery_pending, "{case}");
+
+        remove_test_git_dir(&git_dir);
+    }
+
+    #[test]
+    fn foreground_bash_with_run_in_background_false_or_absent_keeps_the_tracked_lifecycle() {
+        let tool_inputs = [
+            None,
+            Some(serde_json::json!({ "command": "true" })),
+            Some(serde_json::json!({ "command": "true", "run_in_background": false })),
+            Some(serde_json::json!({ "command": "true", "run_in_background": null })),
+        ];
+
+        for tool_input in &tool_inputs {
+            for terminal_event in [HOOK_EVENT_POST_TOOL_USE, HOOK_EVENT_POST_TOOL_USE_FAILURE] {
+                assert_tracked_foreground_lifecycle(
+                    "foreground-bash-tracked",
+                    "Bash",
+                    tool_input.as_ref(),
+                    terminal_event,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn foreground_powershell_keeps_the_tracked_lifecycle() {
+        let tool_input = serde_json::json!({ "run_in_background": false });
+
+        for terminal_event in [HOOK_EVENT_POST_TOOL_USE, HOOK_EVENT_POST_TOOL_USE_FAILURE] {
+            assert_tracked_foreground_lifecycle(
+                "foreground-powershell-tracked",
+                "PowerShell",
+                Some(&tool_input),
+                terminal_event,
+            );
+        }
+    }
+
+    #[test]
+    fn non_shell_mutation_capable_tools_stay_tracked_even_with_run_in_background_true() {
+        let tool_input = serde_json::json!({ "run_in_background": true });
+
+        for tool_name in [
+            "Write",
+            "Edit",
+            "NotebookEdit",
+            "MultiEdit",
+            "mcp__claude-in-chrome__navigate",
+            "SomeBrandNewTool",
+        ] {
+            for terminal_event in [HOOK_EVENT_POST_TOOL_USE, HOOK_EVENT_POST_TOOL_USE_FAILURE] {
+                assert_tracked_foreground_lifecycle(
+                    "non-shell-run-in-background-tracked",
+                    tool_name,
+                    Some(&tool_input),
+                    terminal_event,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn read_only_and_delegation_tools_with_run_in_background_true_create_no_scope() {
+        let resolver = |_: &str| -> Result<PathBuf> {
+            panic!("a read-only or delegation tool must never resolve a git dir")
+        };
+        let model_state_resolver = |_: &Path, _: &str, _: &str| -> Result<Option<String>> {
+            panic!("a read-only or delegation tool must never resolve model state")
+        };
+        let tool_input = serde_json::json!({ "run_in_background": true });
+
+        for tool_name in [
+            "Read",
+            "Glob",
+            "Grep",
+            "WebFetch",
+            "WebSearch",
+            "AskUserQuestion",
+            "Agent",
+        ] {
+            let output = start_with_model_resolver(
+                &tool_payload(
+                    HOOK_EVENT_PRE_TOOL_USE,
+                    tool_name,
+                    "toolu_untracked",
+                    Some(&tool_input),
+                ),
+                None,
+                &resolver,
+                &model_state_resolver,
+                &unreachable_seam,
+            )
+            .expect("read-only and delegation PreToolUse should succeed");
+
+            assert_eq!(output, "", "{tool_name}");
+        }
+    }
+
+    #[test]
+    fn self_detaching_foreground_bash_fixture_keeps_the_ordinary_tracked_path() {
+        let execution = parsed_pre_tool_use(PROBE17_SELF_DETACHING_FOREGROUND_PRE_TOOL_USE);
+        assert_eq!(execution.identity.tool_name, "Bash");
+        assert!(!execution.run_in_background);
+
+        let git_dir = unique_test_git_dir("probe17-self-detaching-foreground");
+        let resolver = fixed_resolver(git_dir.clone());
+        let payloads: RefCell<Vec<String>> = RefCell::new(Vec::new());
+        let seam = |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| -> Result<String> {
+            payloads.borrow_mut().push(payload.to_string());
+            Ok(String::new())
+        };
+
+        let output = run_claude_mutation_scope_from_payload_with(
+            PROBE17_SELF_DETACHING_FOREGROUND_PRE_TOOL_USE,
+            None,
+            &resolver,
+            &seam,
+        )
+        .expect("the self-detaching foreground PreToolUse should succeed");
+
+        assert_eq!(output, "");
+        assert_eq!(recorded_operations(&payloads), vec!["start"]);
+        let started = state::read_state(&git_dir).expect("state should be readable");
+        assert_eq!(started.attempts.len(), 1);
+        assert_eq!(
+            started.attempts[0].tool_use_id,
+            execution.identity.tool_use_id
+        );
+        assert_eq!(started.attempts[0].phase, state::AttemptPhase::Active);
+
+        let output = run_claude_mutation_scope_from_payload_with(
+            PROBE17_SELF_DETACHING_FOREGROUND_POST_TOOL_USE,
+            None,
+            &resolver,
+            &seam,
+        )
+        .expect("the self-detaching foreground PostToolUse should close the scope");
+
+        assert_eq!(output, "");
+        assert_eq!(recorded_operations(&payloads), vec!["start", "close"]);
+        let closed = state::read_state(&git_dir).expect("state should be readable");
+        assert!(closed.attempts.is_empty());
+        assert!(!closed.recovery_pending);
+
+        remove_test_git_dir(&git_dir);
+    }
+
     #[test]
     fn write_ahead_pending_start_persists_before_the_seam_start_call_ac7() {
         let git_dir = unique_test_git_dir("write-ahead");

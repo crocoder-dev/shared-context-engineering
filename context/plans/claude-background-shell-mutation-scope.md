@@ -61,7 +61,7 @@ performs final validation. Decision and documentation criteria (AC1-AC3) come
 first because they must hold before the implementation criteria (AC4-AC9) may
 be satisfied.
 
-- [ ] AC1: A new Accepted ADR exists that explicitly `Supersedes:`
+- [x] AC1: A new Accepted ADR exists that explicitly `Supersedes:`
   `context/decisions/2026-10-01-claude-background-admission-requires-proven-lifecycle.md`
   and records native background Bash as an accepted unsupported-attribution
   boundary. It states that SCE permits Claude-managed
@@ -75,7 +75,7 @@ be satisfied.
   - Validate: inspect the new `context/decisions/2026-10-02-*.md` record for
     `Status: Accepted`, the `Supersedes:` line naming the 2026-10-01 ADR, the
     decision statement, and the A/B consequence block.
-- [ ] AC2: The 2026-10-01 fail-closed ADR and the T01 evidence fixture are
+- [x] AC2: The 2026-10-01 fail-closed ADR and the T01 evidence fixture are
   byte-unchanged; the old ADR still reads `Status: Accepted` and carries no
   backlink.
   - Validate: for each of
@@ -84,7 +84,7 @@ be satisfied.
     `cli/src/services/hooks/claude_mutation_scope/fixtures/probe18-t01-current-version.evidence.json`,
     `git log --format=%H -- <path>` lists exactly one commit (the one that
     added the file) and `git status --short -- <path>` is empty.
-- [ ] AC3: The behavior-enabling task did not land before a new Accepted ADR
+- [x] AC3: The behavior-enabling task did not land before a new Accepted ADR
   existed that explicitly `Supersedes:` the 2026-10-01 fail-closed
   background-admission ADR and records native background Bash as an accepted
   unsupported-attribution boundary. Once the plan is complete, durable
@@ -103,7 +103,7 @@ be satisfied.
     `context/cli/claude-mutation-scope-integration.md`, and the
     `context/context-map.md` entries for the final contract sentence and for
     the absence of any "still denies until T03" statement.
-- [ ] AC4: Claude `Bash` with `run_in_background=true` returns the existing
+- [x] AC4: Claude `Bash` with `run_in_background=true` returns the existing
   allow shape (`String::new()`), before repository resolution, the recovery
   barrier, model-state resolution, and normal mutation-scope establishment; no
   generic `start` is invoked and no adapter attempt is persisted.
@@ -111,16 +111,16 @@ be satisfied.
     output, zero git-dir resolver calls, zero seam `start` calls, an unchanged
     adapter-state file, and zero `mutation_trace_scopes` /
     `mutation_trace_events` rows.
-- [ ] AC5: A later `PostToolUse` or `PostToolUseFailure` for that intentionally
+- [x] AC5: A later `PostToolUse` or `PostToolUseFailure` for that intentionally
   untracked background Bash is harmless and does not transition another
   attempt.
   - Validate: focused terminal-hook regressions drive each event after an
     untracked background admission, with and without an unrelated live
     foreground attempt, and assert no close/abandon seam call or state change.
-- [ ] AC6: Background `PowerShell` remains denied.
+- [x] AC6: Background `PowerShell` remains denied.
   - Validate: a focused `PowerShell` background `PreToolUse` regression asserts
     the existing deny payload and no scope/attempt creation.
-- [ ] AC7: The accepted attribution limitation is executable: an untracked
+- [x] AC7: The accepted attribution limitation is executable: an untracked
   background A can mutate while tracked foreground B is live, and SCE observes
   that mutation at B's boundary under the existing protocol; no test or
   protocol machinery attempts to distinguish A from B.
@@ -128,7 +128,7 @@ be satisfied.
     against a real Git repository and Agent Trace DB, asserts the result the
     existing protocol actually produces, and names in its test name or
     assertion message that the result carries no attribution guarantee.
-- [ ] AC8: Foreground Claude `Bash` and other existing mutation-capable tools
+- [x] AC8: Foreground Claude `Bash` and other existing mutation-capable tools
   retain their current lifecycle, attribution, failure, read-only, and
   delegation behavior byte-for-byte or semantically unchanged; the probe17
   detached-descendant fixtures and D20 boundary are unchanged.
@@ -136,7 +136,7 @@ be satisfied.
     passes with no changed expected output for foreground tests;
     `git diff main -- cli/src/services/hooks/claude_mutation_scope/fixtures/`
     shows no change to any `probe17-*` or `probe14-*` file.
-- [ ] AC9: The change introduces no background lifecycle or persistence design:
+- [x] AC9: The change introduces no background lifecycle or persistence design:
   no suppressor, safety latch, worktree taint, unknown epoch, attribution
   filter, adapter-state version, background correlation, new terminal hook,
   capability gate, process supervision, mutation-protocol or Quint change,
@@ -331,16 +331,59 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context synchronization: synced
   - Synchronization record: `context/cli/claude-mutation-scope-background-execution.md`, `context/cli/claude-mutation-scope-integration.md`, and the three background-related `context/context-map.md` annotations now state the final contract — native Claude background Bash is operationally supported but unsupported for mutation attribution — with the Bash deny text and every "adapter still denies until T03" statement removed, the PowerShell denial kept, and the integration context's `handle_pre_tool_use` order matching the code. T03's end-revision change list is the three `Files changed` paths above plus those three context files. The decision gate reused `context/decisions/2026-10-02-claude-background-bash-untracked.md`; no new ADR was written, and that immutable record keeps its as-written "until T03" wording. The two code files were committed during the task as `85750ccb`.
 
-- [ ] T04: `Lock the unchanged foreground Claude contract` (status:todo)
+- [x] T04: `Lock the unchanged foreground Claude contract` (status:done)
   - Task ID: T04
   - Scope: In — preserve or add narrow foreground assertions in the Claude adapter tests: foreground `Bash` (`run_in_background` false or absent) still establishes, closes, and fails through the existing tracked path; other mutation-capable Claude tools (including unknown tool names) are unchanged, including when they carry `run_in_background=true`; read-only and delegation tools are unchanged; a self-detaching foreground command keeps the ordinary tracked path with the probe17 fixtures and D20 documentation untouched. Out — changing foreground lifecycle semantics, broad test rewrites, fixture edits, or a validation-only repository-wide task.
   - Dependencies: T03
   - Done when: foreground behavior and stable output remain byte-for-byte or semantically unchanged, the focused foreground assertions pass alongside the existing Claude adapter tests, and the cumulative diff contains only the intentional Bash background admission plus focused coverage and the planned context/decision records.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_mutation_scope` passes; comparing T04's start revision (the `/next-task` Git baseline) with T04's end revision, the task-local change list contains only `cli/src/services/hooks/claude_mutation_scope/tests.rs`, this plan, and any context file its synchronization touches; as deliberately plan-wide checks, `git diff main -- cli/src/services/hooks/claude_mutation_scope/fixtures/` shows no `probe14-*` or `probe17-*` change and `git diff --name-only main` shows no change to `spec/mutation_cursor.qnt`, `cli/src/services/mutation_trace/`, `cli/migrations/`, doctor sources, or the adapter state format.
-  - Context synchronization: pending
+  - Completed: 2026-10-02
+  - Files changed: `cli/src/services/hooks/claude_mutation_scope/tests.rs`, `context/plans/claude-background-shell-mutation-scope.md`
+  - Result: Added five driver-level regressions to the Claude adapter tests and changed no production code. `foreground_bash_with_run_in_background_false_or_absent_keeps_the_tracked_lifecycle` drives `Bash` with no `tool_input`, with `tool_input` lacking the flag, with `run_in_background=false`, and with `run_in_background=null`, each through `PostToolUse` and `PostToolUseFailure`, asserting one seam `start`, an `Active` attempt, then one seam `close`, an empty attempt list, and no recovery barrier. `foreground_powershell_keeps_the_tracked_lifecycle` pins the same for foreground `PowerShell`. `non_shell_mutation_capable_tools_stay_tracked_even_with_run_in_background_true` pins the same lifecycle for `Write`, `Edit`, `NotebookEdit`, `MultiEdit`, an MCP tool, and an unknown tool name carrying `run_in_background=true`. `read_only_and_delegation_tools_with_run_in_background_true_create_no_scope` drives every known read-only tool and `Agent` with `run_in_background=true` against panicking git-dir and model-state resolvers and an unreachable seam. `self_detaching_foreground_bash_fixture_keeps_the_ordinary_tracked_path` replays the unmodified probe17 `PreToolUse` and `PostToolUse` fixtures through `include_str!` and asserts the tracked start and close. Existing production regressions `test1`, `test2`, `test17`, and `test18` were left as written and still pass with unchanged expected output.
+  - Verify: Passed: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_mutation_scope` — 144 passed, 0 failed (139 before this task plus the five new tests). Also passed: `cargo clippy --all-targets -- -D warnings` through the same wrapper, and `git diff --check`. Task-local change list at task execution, against baseline `HEAD` `c4e3ce22` with a clean worktree: `tests.rs` and this plan. Plan-wide checks passed: `git diff --name-only main -- cli/src/services/hooks/claude_mutation_scope/fixtures/` lists only `NOTES.md` and `probe18-t01-current-version.evidence.json`, so no `probe14-*` or `probe17-*` file changed; `git diff --name-only main` lists nothing under `spec/mutation_cursor.qnt`, `cli/src/services/mutation_trace/`, `cli/migrations/`, `cli/src/services/doctor`, or `cli/src/services/hooks/claude_mutation_scope/state.rs`.
+  - Context impact: none — test-only coverage of behavior that durable context already documents. The probe17 fixtures are now compile-time inputs of the adapter test module, which contradicts the plan assumption that no Rust test references them; `fixtures/NOTES.md` and the D20 documentation are unchanged.
+  - Context synchronization: synced
+  - Synchronization record: no context file changed. `context/cli/claude-mutation-scope-background-execution.md`, `context/cli/claude-mutation-scope-integration.md`, and the `context/context-map.md` annotations already state the foreground, read-only/delegation, background-`PowerShell`, and D20 behavior the new tests pin; `context/overview.md`, `context/architecture.md`, `context/glossary.md`, and `context/patterns.md` make no statement about it. No decision qualified. T04's end-revision change list is the two `Files changed` paths above.
 
 ## Open questions
 
 None. The product direction, ADR supersession convention, task ordering, and
 the decision-versus-implementation wording for the T02→T03 window are all
 specified by the user.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-10-02
+
+### Commands run
+
+- `nix flake check` -> exit 0 (all checks passed: `cli-tests`, `cli-clippy`, `cli-fmt`, and the mutation-trace Quint connect test, on `x86_64-linux`)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_mutation_scope` -> exit 0 (144 passed, 0 failed, 0 ignored)
+- `git log --format=%H -- <path>` and `git status --short -- <path>` for the 2026-10-01 ADR and `probe18-t01-current-version.evidence.json` -> exit 0 (each lists exactly one commit, `0badb22f`; status empty)
+- `git log --format=%H -- context/decisions/2026-10-02-*.md` and `git log main..HEAD -- cli/src/services/hooks/claude_mutation_scope/lifecycle.rs` -> exit 0 (ADR commit `f91a43af` precedes lifecycle commit `c4e3ce22` on the linear branch history)
+- `git diff --name-only main` -> exit 0 (ten paths, listed under AC9)
+- `git diff --name-only main -- cli/src/services/hooks/claude_mutation_scope/fixtures/` -> exit 0 (only `NOTES.md` and `probe18-t01-current-version.evidence.json`)
+- `git status --short --untracked-files=all` before and after the test runs -> exit 0 (empty both times)
+
+### Success-criteria verification
+
+- [x] AC1: A new Accepted ADR supersedes the 2026-10-01 ADR and records native background Bash as an accepted unsupported-attribution boundary -> inspected `context/decisions/2026-10-02-claude-background-bash-untracked.md`: `Status: Accepted`, `Supersedes:` naming the 2026-10-01 ADR, the decision statement (native, no mutation-scope tracking, lifecycle completion unproven, no attribution guarantee), and the A/B consequence block stated as an accepted tradeoff outside SCE's guarantees.
+- [x] AC2: The 2026-10-01 ADR and the T01 evidence fixture are byte-unchanged -> `git log` lists exactly one commit (`0badb22f`, the adding commit) for each path and `git status --short` is empty for each; the old ADR was never edited after it was added.
+- [x] AC3: The behavior-enabling task did not land before the superseding ADR, and current-state context states the final contract -> plan shows T02 `(status:done)`, `Context synchronization: synced`, `Completed: 2026-10-02`, no later than T03's `2026-10-02`; ADR commit `f91a43af` is an ancestor of lifecycle commit `c4e3ce22`; inspected `context/cli/claude-mutation-scope-background-execution.md`, `context/cli/claude-mutation-scope-integration.md`, and the `context/context-map.md` entries: each states "operationally supported but unsupported for mutation attribution", names the 2026-10-02 ADR, and carries no "still denies until T03" wording; the T01 section, `probe14-*`/`probe17-*` evidence, D20 boundary, and the unproven-lifecycle statement are retained.
+- [x] AC4: Background `Bash` returns the allow shape before repository resolution, the recovery barrier, model-state resolution, and scope establishment -> `explicit_background_bash_is_allowed_untracked_before_any_repository_or_seam_access` (panicking git-dir and model-state resolvers, unreachable seam, empty output), `explicit_background_bash_is_allowed_while_the_recovery_barrier_is_armed` (state file byte-unchanged), and `test15_explicit_background_bash_is_allowed_untracked_with_no_scope_or_attempt` (no adapter-state file, zero `mutation_trace_scopes` and `mutation_trace_events` rows) pass.
+- [x] AC5: Later `PostToolUse`/`PostToolUseFailure` for untracked background Bash is harmless -> `terminal_hooks_for_untracked_background_bash_are_no_ops_with_no_live_attempt`, `terminal_hooks_for_untracked_background_bash_leave_an_unrelated_live_attempt_untouched`, and `test19_terminal_hooks_for_untracked_background_bash_do_not_transition_a_live_foreground_attempt` pass, covering both events with and without an unrelated live foreground attempt, an unreachable seam, and unchanged state.
+- [x] AC6: Background `PowerShell` remains denied -> `explicit_background_powershell_is_denied_ac21` passes, asserting the existing deny payload, an unreachable seam, and no adapter-state I/O.
+- [x] AC7: The accepted attribution limitation is executable -> `test20_untracked_background_bash_mutation_is_observed_at_foreground_close_with_no_attribution_guarantee` passes against a real Git repository and Agent Trace DB, pinning one `ai_exclusive` `close` event attributed to B's scope with the cursor at the tree containing A's write; the test name and assertion message both state there is no attribution guarantee.
+- [x] AC8: Foreground behavior is unchanged and the probe fixtures are untouched -> the focused selection passes 144/0; the only lines removed from `tests.rs` against `main` belong to the two replaced background-Bash denial tests, so no foreground expected output changed; the fixtures diff against `main` lists no `probe17-*` or `probe14-*` file.
+- [x] AC9: No background lifecycle or persistence design was introduced -> `git diff --name-only main` lists only `lifecycle.rs` and `tests.rs` under `cli/src/services/hooks/claude_mutation_scope/`, the T01 fixture and `fixtures/NOTES.md`, this plan, the three context files, and the 2026-10-01 and 2026-10-02 decision records; nothing under `spec/mutation_cursor.qnt`, `cli/src/services/mutation_trace/`, `cli/migrations/`, doctor sources, or the adapter `state.rs`.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- The `sce` binary installed on this machine predates this branch: its `PreToolUse` hook still denied a `Bash(run_in_background=true)` call during this validation run. The new admission takes effect only after an `sce` build containing `c4e3ce22` is installed.
+- `nix flake check` covered `x86_64-linux` only; `aarch64-linux`, `aarch64-darwin`, and `x86_64-darwin` were omitted as incompatible systems.
+- Lifecycle completion for Claude background Bash remains unproven by design, so mutations from a native background Bash process can be attributed to an overlapping tracked scope.
