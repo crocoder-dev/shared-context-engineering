@@ -69,18 +69,12 @@ Do not write the Validation Report yourself.
 
 Branch on the report's `Status:`.
 
-`blocked` -> Print the blocked Markdown report as returned. Do not rephrase it
-into a different layout. Stop.
+`blocked` -> Return the blocked Markdown report unchanged. Stop.
 
-`failed` -> Print the failed Markdown report as returned. It is already a session
-handoff: self-contained, actionable, and ending with `/validate {plan-path}` after
-repairs.
+`failed` -> Return the failed Markdown handoff unchanged. Stop.
 
-Do not rewrite it into a shorter summary. Do not drop the retry command. Do not
-add an alternate continuation that replaces `/validate`. Stop.
-
-`validated` -> Print the complete validated Markdown result as returned.
-Continue to the next step.
+`validated` -> Return the complete validated Markdown result, then continue to
+the next step.
 
 ### 2. Report completion
 
@@ -99,8 +93,6 @@ Stop.
   returns `blocked`, and this workflow stops.
 - On `failed`, print the handoff Markdown as returned and stop. Preserve the
   retry `/validate {plan-path}` instruction.
-- Do not implement remaining plan tasks from this workflow unless the user
-  explicitly continues in-session after a failed handoff.
 - Do not create a Git commit or push changes.
 - Do not mark the plan archived or delete the plan.
 - Do not execute a follow-up `/next-task`, `/change-to-plan`, or `/validate`
