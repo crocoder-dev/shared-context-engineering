@@ -29,7 +29,7 @@ path = "src/main.rs"
 anyhow = "1"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
-turso = { version = "0.7.0" }
+turso = { version = "0.8.1" }
 clap_complete = "4"
 dirs = "6"
 hmac = "0.13"
