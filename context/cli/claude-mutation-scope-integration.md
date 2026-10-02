@@ -212,7 +212,7 @@ to the seam.
 
 ## Background shell is unsupported
 
-An explicit `Bash.run_in_background = true` / `PowerShell.run_in_background = true` is denied in `PreToolUse` (fail-closed shape); self-detaching descendants are a separate, explicit unsupported boundary (D20). See [Claude mutation-scope background and detached execution boundaries](claude-mutation-scope-background-execution.md) for the full denial text and both boundaries.
+An explicit `Bash.run_in_background = true` / `PowerShell.run_in_background = true` is denied in `PreToolUse` (fail-closed shape); self-detaching descendants are a separate, explicit unsupported boundary (D20). A new product decision, [Claude background Bash runs natively and untracked](../decisions/2026-10-02-claude-background-bash-untracked.md), permits native Claude background Bash as an unsupported mutation-attribution boundary (no mutation scope, no adapter attempt, no lifecycle tracking, no attribution guarantee); the current adapter still denies `Bash(run_in_background=true)` until T03 of `claude-background-shell-mutation-scope` implements that decision, and background `PowerShell` stays denied. See [Claude mutation-scope background and detached execution boundaries](claude-mutation-scope-background-execution.md) for the full denial text, the accepted A/B attribution consequence, and both boundaries.
 
 ## Generated settings
 
