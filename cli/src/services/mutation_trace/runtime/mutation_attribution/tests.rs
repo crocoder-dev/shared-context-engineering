@@ -62,7 +62,6 @@ fn page_row(
         revision,
         before_tree: tree(before),
         after_tree: tree(after),
-        tainted: false,
         failure_kind: FailureKind::Healthy,
         attribution_kind: kind,
         attribution_scope_id: scope.map(|id| ScopeId(id.to_owned())),

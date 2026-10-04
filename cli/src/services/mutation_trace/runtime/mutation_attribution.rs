@@ -352,7 +352,7 @@ where
 }
 
 fn transition_origin(row: &MutationEventPageRow) -> TransitionOrigin {
-    let healthy = !row.tainted && row.failure_kind == FailureKind::Healthy;
+    let healthy = row.failure_kind == FailureKind::Healthy;
     match (&row.attribution_kind, &row.attribution_scope_id) {
         (AttributionKind::AiExclusive, Some(scope_id)) if healthy => {
             TransitionOrigin::MutationAi(scope_id.clone())

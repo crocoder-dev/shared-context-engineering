@@ -109,14 +109,14 @@ no criterion depends on work from a later task than its owner.
   
   Running `006`'s SQL body again on an already-migrated database succeeds and changes nothing. This proves only that the SQL body can be re-run. It does not prove the migration runner is safe under concurrency.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db` passes, including the new legacy-normalization test(s) and the test that runs the SQL body twice.
-- [ ] AC8 (owner: T03): Store decoding validates the redundant health pair, and `mutation_attribution::transition_origin` decides health from `FailureKind` alone.
+- [x] AC8 (owner: T03): Store decoding validates the redundant health pair, and `mutation_attribution::transition_origin` decides health from `FailureKind` alone.
   - `store.rs` has one shared validator for the pair. It returns `Ok` for `(false, Healthy)` and `(true, SnapshotFailure)` and `Err` for `(false, SnapshotFailure)` and `(true, Healthy)`.
   - All three decoders (`worktree_state_row_from_turso`, `mutation_event_row_from_turso`, `mutation_event_page_row_from_turso`) call it and pass the `Err` up with `Result` and the column/table context. No ordinary read silently repairs a value.
   - With a `005`-only fixture holding an inconsistent row, `load_worktree` and the mutation-event read paths return `Err` instead of a value.
   - The derived read projection `MutationEventPageRow` no longer has a `tainted` field. Its decoder still selects and validates the column.
   - `transition_origin` treats an event as healthy exactly when `failure_kind == FailureKind::Healthy`.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` passes, including the four-case validator test and the decoder rejection tests. Inspect `MutationEventPageRow` in `store.rs` (no `tainted` field) and `transition_origin` in `runtime/mutation_attribution.rs` (no `tainted` read).
-- [ ] AC9 (owner: T03): Across the whole mutation-trace implementation, no non-test `.tainted` read decides health. Every remaining read only copies, persists (SQL bind/encode), validates (through the shared validator) or materializes the redundant bit. This holds only after T03, which removes the last semantic read (`transition_origin`'s `row.tainted`).
+- [x] AC9 (owner: T03): Across the whole mutation-trace implementation, no non-test `.tainted` read decides health. Every remaining read only copies, persists (SQL bind/encode), validates (through the shared validator) or materializes the redundant bit. This holds only after T03, which removes the last semantic read (`transition_origin`'s `row.tainted`).
   - Validate: `nix shell nixpkgs#ripgrep -c rg -n '\.tainted\b|\btainted\b' cli/src/services/mutation_trace --glob '!**/tests.rs' --glob '!**/mbt/**'`. Inspect every hit outside a `#[cfg(test)]` module and confirm that each one is a copy, persist, validate or materialize use, never a branch condition, guard or boolean health predicate.
 
 ### Full validation
@@ -321,7 +321,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized to the mutation-trace store. `context/cli/mutation-trace-store.md` was synchronized to document migration `006` (rebuild, cross-column health `CHECK`, `failure_kind`-authoritative normalization, re-runnable body, runner behavior unchanged). `context/context-map.md` was synchronized with its `mutation-trace-store.md` annotation extended to cover the same. No root architecture or terminology change.
   - Context synchronization: synced
 
-- [ ] T03: `Reject inconsistent health pairs when decoding store rows` (status:todo)
+- [x] T03: `Reject inconsistent health pairs when decoding store rows` (status:done)
   - Task ID: T03
   - Scope: In:
     - the private shared `validate_health_encoding` in `store.rs`, called from `worktree_state_row_from_turso`, `mutation_event_row_from_turso` and `mutation_event_page_row_from_turso`
@@ -343,11 +343,37 @@ Persist this field in every plan; this is durable plan state, not chat state:
     - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`
     - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db`
     - the AC8 inspections and the AC9 repository-wide Rust inspection
-  - Context synchronization: pending
+  - Completed: 2026-10-04
+  - Files changed:
+    - `cli/src/services/agent_trace_db/repository.rs`
+    - `cli/src/services/mutation_trace/runtime/mutation_attribution.rs`
+    - `cli/src/services/mutation_trace/runtime/mutation_attribution/tests.rs`
+    - `cli/src/services/mutation_trace/store.rs`
+  - Result:
+    - New private `store.rs` validator `validate_health_encoding(tainted, failure_kind) -> Result<()>`. It fails with the stable message `inconsistent mutation-trace health encoding: tainted=<bool> with failure_kind=<kind>`.
+    - `worktree_state_row_from_turso`, `mutation_event_row_from_turso` and `mutation_event_page_row_from_turso` call it after decoding `failure_kind` and add the context `invalid <table>.tainted/failure_kind pair`. No read repairs a value.
+    - `MutationEventPageRow` no longer has a `tainted` field. Its decoder still selects and validates the column. The `page_row` test builder and one existing page-reader assertion dropped the field.
+    - `transition_origin` now computes `healthy` as `row.failure_kind == FailureKind::Healthy`.
+    - The `005`-only fixture (`PreHealthInvariantDbSpec` + `seed_pre_health_invariant_fixture`) moved, without behavior change, from `repository.rs`'s private `tests` module into a `#[cfg(test)] pub(crate) mod pre_health_invariant_fixture`, so the store tests can reuse it.
+    - New tests in `store.rs`:
+      - `validate_health_encoding_accepts_only_pairs_that_match_failure_kind` (four cases)
+      - `load_worktree_rejects_a_stored_health_pair_that_disagrees_with_failure_kind`
+      - `load_mutation_event_rejects_a_stored_health_pair_that_disagrees_with_failure_kind`
+      - `load_mutation_event_page_rejects_a_stored_health_pair_that_disagrees_with_failure_kind`
+      
+      Each rejection test covers both inconsistent pairs on a seeded `005`-only DB reopened with `open_without_migrations_at`, so `006` does not normalize the rows first.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`: passed (389 passed, 0 failed).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db`: 41 passed, 1 failed.
+      - The failure is the known pre-existing `equal_time_same_kind_observations_use_a_stable_tie_break_and_concurrent_writes_converge` flake (`database is locked`), recorded under T02. It failed again on clean `HEAD` `446dc4dc` with T03 stashed.
+      - With `-- --skip equal_time_same_kind_observations`, the run passed: 41 passed, 0 failed.
+    - Extra check: `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`: passed.
+    - AC8 inspection: passed. `MutationEventPageRow` has no `tainted` field, and `transition_origin` does not read `tainted`.
+    - AC9 inspection: passed. The non-test hits are field copies (`protocol.rs:363`, `:384`, `:515`, `store.rs:708`), constructions (`protocol.rs:437`, `:582`), SQL column lists and binds (`store.rs` SQL constants, `:959`, `:1002`), decoder reads that only feed `validate_health_encoding` and materialization, and the validator itself. Every other hit is inside a `#[cfg(test)]` module, an external-taint marker name, or a type field declaration.
+  - Deviation: the `claude_model_state` concurrency flake is still out of scope and needs separate follow-up.
+  - Context impact: localized to the mutation-trace store and attribution. `context/cli/mutation-trace-store.md` was synchronized to document the shared fail-closed `validate_health_encoding` decoder validation and that `MutationEventPageRow` no longer retains `tainted`. `context/cli/mutation-trace-agent-attribution.md` was synchronized to state that `MutationAi(scope)` determines event health from `failure_kind` alone. No root architecture or terminology change.
+  - Context synchronization: synced
 
 ## Open questions
 
-None. The request fixes the source of truth, migration strategy, validation
-boundary, task ownership, test matrix and non-goals. The only unknown is
-whether `turso` `0.8.1` supports the rebuild statements. T02 checks that with
-a probe test and stops if they are missing.
+None.
