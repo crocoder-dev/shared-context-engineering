@@ -64,8 +64,13 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
     - the attempt cap;
     - the 100 ms-hold single-attempt assertion;
     - a regression assertion that an Agent Trace `query`/`query_map` call still resolves the existing generic query retry policy.
-- [ ] AC4: When the contention policy is exhausted, the returned error and one structured `tracing` event `sce.agent_trace_db.contention_exhausted` carry `db_name`, `operation`, `attempts`, `busy_timeout_ms`, `contention_deadline_ms`, `elapsed_ms` and `cause`. The event goes only to the configured observability path (log file / stderr per logger config), never stdout. Hook fail-open behavior is unchanged.
-  - Validate: the T05 test asserts the error text and the fields of the captured `tracing` event. Inspection confirms no new stdout writes on hook paths.
+- [ ] AC4: When the contention policy is exhausted, the returned error carries `db_name`, `operation`, `attempts`, `busy_timeout_ms`, `contention_deadline_ms`, `elapsed_ms` and `cause`. Existing hook fail-open paths log that error through the configured SCE `Logger`. Log-file/stderr routing stays as it is today, stdout is unchanged, and hook fail-open behavior is unchanged.
+  - The DB layer also emits one structured `tracing` event, `sce.agent_trace_db.contention_exhausted`, with the same contention fields.
+  - This event is a telemetry instrumentation point. It reaches a sink only when a tracing subscriber is installed. Production currently runs with `NoopTelemetry`, and PR #299 does not add a production tracing subscriber.
+  - Validate:
+    - the T05 unit tests prove the error text and the shape of the structured `tracing` event, using a test-only capturing subscriber;
+    - the existing hook/logger tests (`... test --manifest-path cli/Cargo.toml hooks`) and the existing hook fail-open `log.error(...)` paths show the returned error stays observable through the production `Logger` path;
+    - inspection confirms no new stdout writes on hook paths.
 - [ ] AC5: Opening an already-initialized repository Agent Trace DB through the hook runtime issues zero write statements. The metadata guarantees still hold: repository-ID mismatch is an error, the source instance ID is stable and never overwritten, and concurrent first initialization converges on one ID. An initialized hook open succeeds while another connection holds `BEGIN IMMEDIATE`.
   - Validate: the T06 write-statement-count test passes with 0 writes; the converted hook-open-under-write-lock test passes; existing `verify_or_initialize_repository_metadata` tests pass.
 - [ ] AC6: `insert_conversation_text_event` and the mutation-trace CAS batch keep their whole-transaction semantics. Message and part commit together. The first delivery returns `Ok(true)` and a duplicate replay returns `Ok(false)`. An injected mid-transaction failure leaves no orphans. Every retry restarts the whole unit from `BEGIN IMMEDIATE`, never an individual statement.
@@ -201,7 +206,7 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
   - read-only `query`, `query_values` and `query_map`, because there is no evidence the read paths need the write-contention policy;
   - `passive_checkpoint`. It is documented as never blocking on readers or writers, it is best-effort post-commit maintenance whose failure is already logged and swallowed (`sce.agent_trace_db.passive_checkpoint_failed`), and no investigation evidence shows it losing work to writer contention;
   - append-only single-statement writes with no conflict clause (`INSERT_DIFF_TRACE_SQL`, `INSERT_POST_COMMIT_PATCH_INTERSECTION_SQL`, `INSERT_AGENT_TRACE_SQL`, multi-row `insert_parts`), the last-writer `UPSERT_CLAUDE_MODEL_STATE_SQL`, the sync/export `insert_messages` batches, and migration statements. Widening the policy to them needs separate proof of replay safety.
-- Production observability is the structured `tracing` event `sce.agent_trace_db.contention_exhausted` through the existing logger. It is available only where logging is configured (log file / stderr), and the plan does not claim it is otherwise user-visible. Process-local atomic counters (attempts, outer retries, exhaustions) are test instrumentation only. They are meaningful inside the in-process Rust suite, not across hook processes, and are not production-wide telemetry.
+- Production observability of contention exhaustion is the returned structured error. Existing hook fail-open handlers log it through the configured SCE `Logger` (log file / stderr per logger config), and the plan does not claim it is otherwise user-visible. The structured `tracing` event `sce.agent_trace_db.contention_exhausted` is kept as a telemetry instrumentation point for future telemetry work. Production runs with `NoopTelemetry` and has no tracing subscriber, so the raw event is not persisted during normal CLI execution. No `Logger` dependency is added to `TursoDb`, and no telemetry runtime or tracing-to-`Logger` bridge is added in this PR. Process-local atomic counters (attempts, outer retries, exhaustions) are test instrumentation only. They are meaningful inside the in-process Rust suite, not across hook processes, and are not production-wide telemetry.
 - Turso 0.8.1 does not expose how often or how long its busy handler waited, so no busy-handler wait count is reported. Measurements cover outer attempts and retries, contention exhaustions and latency only.
 - The only existing statement-count seam is the `#[cfg(test)]` `count_read_statements`. T06 adds a parallel `count_write_statements` seam with the same thread-local pattern rather than asserting on SQL strings.
 - `hook_open_metadata_write_exhausts_retry_budget_while_write_lock_is_held` characterizes the bug being fixed. T06 converts it into a positive test (an initialized hook open succeeds under a held write lock) instead of deleting it.
@@ -465,17 +470,51 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
   - Context impact: localized behavior change in the shared Turso DB layer. Agent Trace write units now have the outer write-contention retry layer, and there is a new opt-in `execute_idempotent_write` entrypoint. This affects `context/sce/shared-turso-db.md` (the outer-retry layer and its scope; the stale "5 attempts" Agent Trace text) and `context/sce/agent-trace-db.md` (the contention contract).
   - Context synchronization: synced
 
-- [ ] T05: `Make exhausted Agent Trace DB contention failures observable` (status:todo)
+- [x] T05: `Make exhausted Agent Trace DB contention failures observable` (status:done)
   - Task ID: T05
   - Scope: In — when the T04 policy is exhausted:
     - return an error carrying `db_name`, `operation`, `attempts`, `busy_timeout_ms`, `contention_deadline_ms`, `elapsed_ms` and `cause` (database busy / busy timeout exhausted), worded so the deadline is described as a retry-scheduling cutoff;
-    - emit one structured `tracing::warn!` event `sce.agent_trace_db.contention_exhausted` with the same fields through the existing logger only (never stdout);
+    - emit one structured `tracing::warn!` event `sce.agent_trace_db.contention_exhausted` with the same fields, as a telemetry instrumentation point (never stdout; it has no production sink until a tracing subscriber is installed);
     - increment the test exhaustion counter.
     Add a test asserting the error fields and the captured event. Out — changing hook fail-open behavior; a metrics system; claims of user visibility when logging is not configured.
   - Dependencies: T04
   - Done when: AC4 holds; the stdout of the hook commands is unchanged.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db_contention_exhausted`; `... test --manifest-path cli/Cargo.toml hooks`.
-  - Context synchronization: pending
+  - Completed: 2026-10-04
+  - Files changed:
+    - `cli/src/services/db/mod.rs`
+    - `context/plans/agent-trace-db-write-contention.md` (this record)
+  - Result:
+    - `WriteContentionPolicy` now carries `db_name` (from `M::db_name()`).
+    - Exhaustion goes through a new `contention_exhausted_error` helper. It computes `elapsed` once, increments the `#[cfg(test)]` exhaustion counter, emits the event, and returns the error.
+    - Error text: `Operation '<op>' failed after <n> attempt(s) under write contention (db_name=<db>, operation=<op>, attempts=<n>, busy_timeout_ms=<ms>, contention_deadline_ms=<ms> [no retry is scheduled past this cutoff], elapsed_ms=<ms>, cause=database busy (busy timeout exhausted)). Last error: <turso error>. Try: <hint>`.
+      - The T04 prefix is unchanged.
+      - The deadline is worded as a retry-scheduling cutoff.
+      - Turso's `database is locked` text stays in `Last error`.
+    - Event: one `tracing::warn!(target: "sce", event_id = "sce.agent_trace_db.contention_exhausted", …)` with the fields `db_name`, `operation`, `attempts`, `busy_timeout_ms`, `contention_deadline_ms`, `elapsed_ms`, `cause` and `last_error`, following the `sce.resilience.retry` pattern. There are no stdout writes, and hook fail-open behavior is unchanged.
+    - The constants `CONTENTION_EXHAUSTED_EVENT_ID` and `CONTENTION_EXHAUSTED_CAUSE` hold the stable strings.
+    - Tests (prefix `agent_trace_db_contention_exhausted`). They use a minimal in-test capturing `tracing::Subscriber` installed with `tracing::subscriber::with_default`; no new crates.
+      - The exact error text and every event field, plus target `sce` and level `WARN`, on the fake-clock oversleep scenario (`elapsed_ms=810`).
+      - Exactly one event, with `attempts=2`, after the attempt cap.
+      - No event for success-after-retry or for deterministic errors.
+    - The T04 oversleep test now asserts `elapsed_ms=810`; it previously asserted the interim `elapsed=810ms`.
+    - Observability scope boundary (amended 2026-10-05):
+      - The `tracing` event is kept as an instrumentation point for future telemetry/OTEL integration.
+      - Production currently uses `NoopTelemetry`, so the raw event itself is not persisted during normal CLI execution. `sce.resilience.retry` behaves the same way.
+      - The returned error carries every AC4 field. Existing hook fail-open handlers already pass it to the configured SCE `Logger` through `log.error(...)` (for example `sce.hooks.codex.error` and the conversation-trace hook).
+      - No `Logger` dependency was added to `TursoDb`, and no telemetry runtime was added in this PR.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db_contention_exhausted`: passed (3 passed).
+    - `... test --manifest-path cli/Cargo.toml hooks`: passed (806 passed, 1 ignored).
+    - Additional:
+      - `... agent_trace_db`: passed (72 passed, 3 ignored).
+      - `... mutation_trace`: passed (389 passed).
+      - `... services::db::`: passed (41 passed).
+      - `nix build .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt`: passed.
+      - Inspection: the diff adds no `print!`/`println!`/stdout writes.
+  - Amendment (2026-10-05): AC4, the observability assumption and this task's scope were reworded to match the production observability above. T05 runtime code is unchanged. `context/sce/cli-observability-contract.md` was corrected so it no longer claims that app runtime installs a production tracing subscriber.
+  - Context impact: localized observability change. The exhaustion error shape and the `sce.agent_trace_db.contention_exhausted` event affect `context/sce/shared-turso-db.md` and `context/sce/agent-trace-db.md` (the contention contract: what gets reported on exhaustion and where it is visible).
+  - Context synchronization: synced
 
 - [ ] T06: `Make hook-runtime repository metadata open read-only when initialized` (status:todo)
   - Task ID: T06
@@ -512,4 +551,11 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
 ## Open questions
 
 - PR #297's branch carries test-only stabilizers for this same contention (`c6cbc94a` retries locked SQLite writes in concurrent repository tests; `94dd0937` stabilizes convergence checks). Once this fix lands, those test-side retries may be redundant and could mask a regression. Should they be revisited in a follow-up after both PRs merge? This plan leaves them alone.
+- Follow-up, not in this plan: proper CLI telemetry / OTEL integration, as a separate future telemetry effort. It would:
+  - replace production `NoopTelemetry` with a real telemetry runtime;
+  - install a tracing subscriber during command execution;
+  - export structured tracing events through OTEL, covering `sce.resilience.retry` and `sce.agent_trace_db.contention_exhausted`;
+  - define trace/session/repository correlation;
+  - avoid `Logger` → tracing → `Logger` feedback or duplicate events;
+  - keep the existing file/stderr `Logger` behavior during migration.
 - Follow-up, not in this plan: generic `RetryPolicy.timeout_ms` is still documented and rendered as a per-attempt timeout for every database, even though `run_with_retry_sync` only checks elapsed time after a synchronous call returns. Should the generic cleanup become its own plan?
