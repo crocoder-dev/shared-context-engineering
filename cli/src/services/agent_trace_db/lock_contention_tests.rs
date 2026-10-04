@@ -528,6 +528,11 @@ fn assert_strict_if_requested(summaries: &[LevelSummary]) {
             summary.lock_errors,
             summary.other_errors
         );
+        assert_eq!(
+            summary.lost_events, 0,
+            "{} concurrent writers lost {} distinct event(s)",
+            summary.writers, summary.lost_events
+        );
     }
 }
 
@@ -564,6 +569,111 @@ fn concurrent_distinct_events_without_outer_retry_characterizes_ingestion_loss()
 }
 
 const SCE_BIN_ENV: &str = "SCE_BIN";
+
+struct HookLevelSummary {
+    writers: usize,
+    expected: i64,
+    persisted_messages: i64,
+    persisted_parts: i64,
+    nonzero_exits: usize,
+}
+
+fn assert_hook_levels(levels: &[HookLevelSummary], strict: bool) {
+    for level in levels {
+        assert!(
+            level.persisted_messages <= level.expected,
+            "{} hook writers persisted {} messages for {} distinct events",
+            level.writers,
+            level.persisted_messages,
+            level.expected
+        );
+        assert!(
+            level.persisted_parts <= level.expected,
+            "{} hook writers persisted {} parts for {} distinct events",
+            level.writers,
+            level.persisted_parts,
+            level.expected
+        );
+        if strict {
+            assert_eq!(
+                level.persisted_messages, level.expected,
+                "{} hook writers lost message rows",
+                level.writers
+            );
+            assert_eq!(
+                level.persisted_parts, level.expected,
+                "{} hook writers lost part rows",
+                level.writers
+            );
+            assert_eq!(
+                level.nonzero_exits, 0,
+                "{} hook writers had non-zero exits",
+                level.writers
+            );
+        }
+    }
+
+    if strict {
+        let total_lost: i64 = levels
+            .iter()
+            .map(|level| level.expected - level.persisted_messages)
+            .sum();
+        let total_nonzero_exits: usize = levels.iter().map(|level| level.nonzero_exits).sum();
+        assert_eq!(total_lost, 0, "real hook processes lost distinct events");
+        assert_eq!(
+            total_nonzero_exits, 0,
+            "real hook processes exited with a non-zero status"
+        );
+    }
+}
+
+#[test]
+fn lock_contention_hook_level_assertions_reject_over_persistence() {
+    let over_persisted = [HookLevelSummary {
+        writers: 2,
+        expected: 4,
+        persisted_messages: 5,
+        persisted_parts: 5,
+        nonzero_exits: 0,
+    }];
+    let result = std::panic::catch_unwind(|| assert_hook_levels(&over_persisted, false));
+    assert!(
+        result.is_err(),
+        "over-persistence must fail even outside strict mode"
+    );
+}
+
+#[test]
+fn lock_contention_hook_level_assertions_enforce_strict_loss_and_exit_status() {
+    let lost = [HookLevelSummary {
+        writers: 2,
+        expected: 4,
+        persisted_messages: 3,
+        persisted_parts: 3,
+        nonzero_exits: 0,
+    }];
+    assert_hook_levels(&lost, false);
+    assert!(std::panic::catch_unwind(|| assert_hook_levels(&lost, true)).is_err());
+
+    let nonzero_exit = [HookLevelSummary {
+        writers: 2,
+        expected: 4,
+        persisted_messages: 4,
+        persisted_parts: 4,
+        nonzero_exits: 1,
+    }];
+    assert_hook_levels(&nonzero_exit, false);
+    assert!(std::panic::catch_unwind(|| assert_hook_levels(&nonzero_exit, true)).is_err());
+
+    let clean = [HookLevelSummary {
+        writers: 3,
+        expected: 6,
+        persisted_messages: 6,
+        persisted_parts: 6,
+        nonzero_exits: 0,
+    }];
+    assert_hook_levels(&clean, true);
+}
 const DEFAULT_PROCESS_ROUNDS: usize = 50;
 const DEFAULT_PROCESS_WRITER_COUNTS: &[usize] = &[2, 3, 4];
 
@@ -733,7 +843,7 @@ fn concurrent_real_codex_hook_processes_persist_every_distinct_event() {
     eprintln!(
         "writers | rounds | expected | persisted msgs | persisted parts | lost | rounds w/ loss | non-zero exits | stderr lines | p50 ms | p95 ms | p99 ms | max ms"
     );
-    let mut total_lost = 0;
+    let mut levels = Vec::new();
     for writers in env_writer_counts(DEFAULT_PROCESS_WRITER_COUNTS) {
         let harness = HookProcessHarness::create(sce.clone(), &format!("hooks-{writers}w"));
         let mut persisted_messages = 0;
@@ -765,7 +875,6 @@ fn concurrent_real_codex_hook_processes_persist_every_distinct_event() {
 
         let expected = i64::try_from(writers * rounds).expect("count fits i64");
         let lost = expected - persisted_messages;
-        total_lost += lost;
         let latency = latency_percentiles(&latencies);
         eprintln!(
             "{:>7} | {:>6} | {:>8} | {:>14} | {:>15} | {:>4} | {:>14} | {:>14} | {:>12} | {:>6} | {:>6} | {:>6} | {:>6}",
@@ -787,11 +896,16 @@ fn concurrent_real_codex_hook_processes_persist_every_distinct_event() {
             eprintln!("        first stderr: {sample}");
         }
         fs::remove_dir_all(&harness.work).expect("hook harness dir should be removed");
+        levels.push(HookLevelSummary {
+            writers,
+            expected,
+            persisted_messages,
+            persisted_parts,
+            nonzero_exits,
+        });
     }
 
-    if strict_mode() {
-        assert_eq!(total_lost, 0, "real hook processes lost distinct events");
-    }
+    assert_hook_levels(&levels, strict_mode());
 }
 
 #[test]
