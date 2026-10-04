@@ -43,6 +43,8 @@ const QUERY_RETRY_HINT: &str = "retry after the database lock clears; if the iss
 const AGENT_TRACE_DB_CONFIG_KEY: &str = "agent_trace_db";
 const AGENT_TRACE_DB_BUSY_TIMEOUT_MS: u64 = 500;
 const AGENT_TRACE_DB_CONTENTION_DEADLINE_MS: u64 = 1_250;
+const AGENT_TRACE_DB_WRITE_CONTENTION_MAX_ATTEMPTS: u32 = 2;
+const AGENT_TRACE_DB_WRITE_CONTENTION_BACKOFF_CAP_MS: u64 = 100;
 
 pub mod encryption_key;
 
@@ -295,15 +297,24 @@ async fn execute_insert_pair_if_absent_body(
     second_sql: &str,
     second_params: turso::params::Params,
     fail_before_second: bool,
-) -> Result<bool> {
-    let mut rows = tx
-        .query(exists_sql, exists_params)
-        .await
-        .map_err(|e| anyhow::anyhow!("{db_name} existence check failed: {exists_sql}: {e}"))?;
+) -> std::result::Result<bool, WriteAttemptFailure> {
+    let mut rows = tx.query(exists_sql, exists_params).await.map_err(|e| {
+        classify_turso_error(
+            db_name,
+            &format!("existence check failed: {exists_sql}"),
+            &e,
+        )
+    })?;
     let already_exists = rows
         .next()
         .await
-        .map_err(|e| anyhow::anyhow!("{db_name} existence row fetch failed: {exists_sql}: {e}"))?
+        .map_err(|e| {
+            classify_turso_error(
+                db_name,
+                &format!("existence row fetch failed: {exists_sql}"),
+                &e,
+            )
+        })?
         .is_some();
 
     if already_exists {
@@ -312,15 +323,17 @@ async fn execute_insert_pair_if_absent_body(
 
     tx.execute(first_sql, first_params)
         .await
-        .map_err(|e| anyhow::anyhow!("{db_name} execute failed: {first_sql}: {e}"))?;
+        .map_err(|e| classify_turso_error(db_name, &format!("execute failed: {first_sql}"), &e))?;
 
     if fail_before_second {
-        anyhow::bail!("{db_name} injected failure before second statement (test-only)");
+        return Err(WriteAttemptFailure::Deterministic(anyhow::anyhow!(
+            "{db_name} injected failure before second statement (test-only)"
+        )));
     }
 
     tx.execute(second_sql, second_params)
         .await
-        .map_err(|e| anyhow::anyhow!("{db_name} execute failed: {second_sql}: {e}"))?;
+        .map_err(|e| classify_turso_error(db_name, &format!("execute failed: {second_sql}"), &e))?;
 
     Ok(true)
 }
@@ -352,25 +365,30 @@ impl<'a> TransactionStatement<'a> {
     }
 }
 
-#[allow(dead_code)]
 fn is_retryable_turso_error(error: &turso::Error) -> bool {
     matches!(error, turso::Error::Busy(_) | turso::Error::BusySnapshot(_))
 }
 
-#[allow(dead_code)]
-enum CasBatchFailure {
+enum WriteAttemptFailure {
     Retryable(anyhow::Error),
     Deterministic(anyhow::Error),
 }
 
-#[allow(dead_code)]
-fn classify_turso_error(db_name: &str, action: &str, error: &turso::Error) -> CasBatchFailure {
+impl WriteAttemptFailure {
+    fn into_error(self) -> anyhow::Error {
+        match self {
+            Self::Retryable(err) | Self::Deterministic(err) => err,
+        }
+    }
+}
+
+fn classify_turso_error(db_name: &str, action: &str, error: &turso::Error) -> WriteAttemptFailure {
     let wrapped = anyhow::anyhow!("{db_name} {action}: {error}");
 
     if is_retryable_turso_error(error) {
-        CasBatchFailure::Retryable(wrapped)
+        WriteAttemptFailure::Retryable(wrapped)
     } else {
-        CasBatchFailure::Deterministic(wrapped)
+        WriteAttemptFailure::Deterministic(wrapped)
     }
 }
 
@@ -382,11 +400,11 @@ enum CasBatchAttemptOutcome {
 
 #[allow(dead_code)]
 fn cas_batch_failure_into_attempt_result(
-    failure: CasBatchFailure,
+    failure: WriteAttemptFailure,
 ) -> Result<CasBatchAttemptOutcome> {
     match failure {
-        CasBatchFailure::Retryable(err) => Err(err),
-        CasBatchFailure::Deterministic(err) => Ok(CasBatchAttemptOutcome::Deterministic(err)),
+        WriteAttemptFailure::Retryable(err) => Err(err),
+        WriteAttemptFailure::Deterministic(err) => Ok(CasBatchAttemptOutcome::Deterministic(err)),
     }
 }
 
@@ -396,7 +414,7 @@ async fn execute_cas_batch_body(
     db_name: &str,
     guard: &TransactionStatement<'_>,
     statements: &[TransactionStatement<'_>],
-) -> std::result::Result<bool, CasBatchFailure> {
+) -> std::result::Result<bool, WriteAttemptFailure> {
     let guard_rows_affected = tx
         .execute(guard.sql, guard.params.clone())
         .await
@@ -408,7 +426,7 @@ async fn execute_cas_batch_body(
         0 => return Ok(false),
         1 => {}
         n => {
-            return Err(CasBatchFailure::Deterministic(anyhow::anyhow!(
+            return Err(WriteAttemptFailure::Deterministic(anyhow::anyhow!(
                 "{db_name} CAS guard affected {n} rows; expected 0 or 1: {}",
                 guard.sql
             )));
@@ -425,7 +443,7 @@ async fn execute_cas_batch_body(
 
         if let Some(expected) = statement.expected_rows_affected {
             if rows_affected != expected {
-                return Err(CasBatchFailure::Deterministic(anyhow::anyhow!(
+                return Err(WriteAttemptFailure::Deterministic(anyhow::anyhow!(
                     "{db_name} statement affected {rows_affected} rows; expected {expected}: {}",
                     statement.sql
                 )));
@@ -524,12 +542,10 @@ fn busy_timeout_from_config<M: DbSpec>(
 /// start; it does not interrupt a running Turso operation. It is taken from
 /// `policies.database_retry.agent_trace_db.contention_deadline_ms` when
 /// configured. Every other database resolves to zero.
-#[cfg_attr(not(test), allow(dead_code))]
 fn resolve_contention_deadline<M: DbSpec>() -> std::time::Duration {
     contention_deadline_from_config::<M>(crate::services::config::get_database_retry_config())
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn contention_deadline_from_config<M: DbSpec>(
     config: Option<&DatabaseRetryConfig>,
 ) -> std::time::Duration {
@@ -552,6 +568,119 @@ fn agent_trace_db_millis<M: DbSpec>(
         .and_then(|config| config.agent_trace_db.as_ref())
         .and_then(select);
     std::time::Duration::from_millis(configured.unwrap_or(default_ms))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WriteContentionPolicy {
+    max_attempts: u32,
+    backoff_cap: std::time::Duration,
+    busy_timeout: std::time::Duration,
+    contention_deadline: std::time::Duration,
+}
+
+fn write_contention_policy<M: DbSpec>() -> Option<WriteContentionPolicy> {
+    if M::db_config_key() != AGENT_TRACE_DB_CONFIG_KEY {
+        return None;
+    }
+    Some(WriteContentionPolicy {
+        max_attempts: AGENT_TRACE_DB_WRITE_CONTENTION_MAX_ATTEMPTS,
+        backoff_cap: std::time::Duration::from_millis(
+            AGENT_TRACE_DB_WRITE_CONTENTION_BACKOFF_CAP_MS,
+        ),
+        busy_timeout: resolve_busy_timeout::<M>(),
+        contention_deadline: resolve_contention_deadline::<M>(),
+    })
+}
+
+fn write_contention_backoff(
+    jitter: &mut impl rand::Rng,
+    cap: std::time::Duration,
+) -> std::time::Duration {
+    let cap_ms = u64::try_from(cap.as_millis()).unwrap_or(u64::MAX);
+    std::time::Duration::from_millis(jitter.gen_range(0..=cap_ms))
+}
+
+fn write_contention_retry_may_sleep(
+    policy: WriteContentionPolicy,
+    elapsed: std::time::Duration,
+    backoff: std::time::Duration,
+) -> bool {
+    let Some(remaining) = policy.contention_deadline.checked_sub(elapsed) else {
+        return false;
+    };
+    !remaining.is_zero() && remaining >= backoff.saturating_add(policy.busy_timeout)
+}
+
+fn write_contention_retry_may_start_now(
+    policy: WriteContentionPolicy,
+    elapsed: std::time::Duration,
+) -> bool {
+    write_contention_retry_may_sleep(policy, elapsed, std::time::Duration::ZERO)
+}
+
+fn run_with_write_contention_retry<T>(
+    policy: WriteContentionPolicy,
+    operation_name: &str,
+    retry_hint: &str,
+    attempt: impl FnMut(u32) -> std::result::Result<T, WriteAttemptFailure>,
+) -> Result<T> {
+    let mut jitter = rand::thread_rng();
+    let started_at = std::time::Instant::now();
+    run_with_write_contention_retry_using(
+        policy,
+        &mut || write_contention_backoff(&mut jitter, policy.backoff_cap),
+        &mut std::thread::sleep,
+        &mut || started_at.elapsed(),
+        operation_name,
+        retry_hint,
+        attempt,
+    )
+}
+
+fn run_with_write_contention_retry_using<T>(
+    policy: WriteContentionPolicy,
+    draw_backoff: &mut impl FnMut() -> std::time::Duration,
+    sleep: &mut impl FnMut(std::time::Duration),
+    elapsed: &mut impl FnMut() -> std::time::Duration,
+    operation_name: &str,
+    retry_hint: &str,
+    mut attempt: impl FnMut(u32) -> std::result::Result<T, WriteAttemptFailure>,
+) -> Result<T> {
+    let mut attempt_number = 0;
+
+    loop {
+        attempt_number += 1;
+        #[cfg(test)]
+        note_write_contention(|counts| counts.attempts += 1);
+
+        let error = match attempt(attempt_number) {
+            Ok(value) => return Ok(value),
+            Err(WriteAttemptFailure::Deterministic(error)) => return Err(error),
+            Err(WriteAttemptFailure::Retryable(error)) => error,
+        };
+
+        if attempt_number < policy.max_attempts {
+            let backoff = draw_backoff();
+            if write_contention_retry_may_sleep(policy, elapsed(), backoff) {
+                sleep(backoff);
+                if write_contention_retry_may_start_now(policy, elapsed()) {
+                    #[cfg(test)]
+                    note_write_contention(|counts| counts.outer_retries += 1);
+                    continue;
+                }
+            }
+        }
+
+        #[cfg(test)]
+        note_write_contention(|counts| counts.exhaustions += 1);
+
+        return Err(anyhow::anyhow!(
+            "Operation '{operation_name}' failed after {attempt_number} attempt(s) under write contention (busy_timeout={}ms, contention_deadline={}ms, elapsed={}ms). Last error: {error}. Try: {retry_hint}",
+            policy.busy_timeout.as_millis(),
+            policy.contention_deadline.as_millis(),
+            elapsed().as_millis(),
+        ));
+    }
 }
 
 /// Install `busy_timeout` on `conn`; a zero timeout leaves the handler unset.
@@ -596,6 +725,37 @@ pub(crate) fn count_read_statements<T>(body: impl FnOnce() -> T) -> (T, usize) {
     let result = body();
     let issued = READ_STATEMENTS_ISSUED.with(std::cell::Cell::get);
     (result, issued)
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct WriteContentionCounts {
+    pub(crate) attempts: u32,
+    pub(crate) outer_retries: u32,
+    pub(crate) exhaustions: u32,
+}
+
+#[cfg(test)]
+thread_local! {
+    static WRITE_CONTENTION_COUNTS: std::cell::Cell<WriteContentionCounts> =
+        const { std::cell::Cell::new(WriteContentionCounts { attempts: 0, outer_retries: 0, exhaustions: 0 }) };
+}
+
+#[cfg(test)]
+fn note_write_contention(update: impl FnOnce(&mut WriteContentionCounts)) {
+    WRITE_CONTENTION_COUNTS.with(|cell| {
+        let mut counts = cell.get();
+        update(&mut counts);
+        cell.set(counts);
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn count_write_contention<T>(body: impl FnOnce() -> T) -> (T, WriteContentionCounts) {
+    WRITE_CONTENTION_COUNTS.with(|cell| cell.set(WriteContentionCounts::default()));
+    let result = body();
+    let counts = WRITE_CONTENTION_COUNTS.with(std::cell::Cell::get);
+    (result, counts)
 }
 
 /// Generic Turso database adapter.
@@ -745,6 +905,32 @@ impl<M: DbSpec> TursoDb<M> {
         )
     }
 
+    pub fn execute_idempotent_write(
+        &self,
+        sql: &str,
+        params: impl turso::params::IntoParams,
+    ) -> Result<u64> {
+        let Some(policy) = write_contention_policy::<M>() else {
+            return self.execute(sql, params);
+        };
+        let db_name = M::db_name();
+        let params = turso::params::IntoParams::into_params(params)
+            .map_err(|e| anyhow::anyhow!("{db_name} parameter conversion failed: {sql}: {e}"))?;
+        let operation_name = format!("execute {db_name} database query");
+
+        run_with_write_contention_retry(policy, &operation_name, QUERY_RETRY_HINT, |_| {
+            block_on_isolated(&self.core.runtime, async {
+                self.core
+                    .conn
+                    .execute(sql, params.clone())
+                    .await
+                    .map_err(|e| {
+                        classify_turso_error(db_name, &format!("execute failed: {sql}"), &e)
+                    })
+            })
+        })
+    }
+
     /// Execute a SQL query that returns rows.
     ///
     /// # Arguments
@@ -873,46 +1059,54 @@ impl<M: DbSpec> TursoDb<M> {
             anyhow::anyhow!("{db_name} parameter conversion failed: {second_sql}: {e}")
         })?;
 
+        let run_attempt = || {
+            block_on_isolated(&self.core.runtime, async {
+                let tx = turso::transaction::Transaction::new_unchecked(
+                    &self.core.conn,
+                    turso::transaction::TransactionBehavior::Immediate,
+                )
+                .await
+                .map_err(|e| classify_turso_error(db_name, "failed to begin transaction", &e))?;
+
+                let outcome = execute_insert_pair_if_absent_body(
+                    &tx,
+                    db_name,
+                    exists_sql,
+                    exists_params.clone(),
+                    first_sql,
+                    first_params.clone(),
+                    second_sql,
+                    second_params.clone(),
+                    fail_before_second,
+                )
+                .await;
+
+                match outcome {
+                    Ok(inserted) => {
+                        tx.commit().await.map_err(|e| {
+                            classify_turso_error(db_name, "failed to commit transaction", &e)
+                        })?;
+                        Ok(inserted)
+                    }
+                    Err(failure) => {
+                        let _ = tx.rollback().await;
+                        Err(failure)
+                    }
+                }
+            })
+        };
+
+        if let Some(policy) = write_contention_policy::<M>() {
+            return run_with_write_contention_retry(policy, operation_name, retry_hint, |_| {
+                run_attempt()
+            });
+        }
+
         run_with_retry_sync(
             resolve_query_retry_policy::<M>(),
             operation_name,
             retry_hint,
-            |_| {
-                block_on_isolated(&self.core.runtime, async {
-                    let tx = turso::transaction::Transaction::new_unchecked(
-                        &self.core.conn,
-                        turso::transaction::TransactionBehavior::Immediate,
-                    )
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{db_name} failed to begin transaction: {e}"))?;
-
-                    let outcome = execute_insert_pair_if_absent_body(
-                        &tx,
-                        db_name,
-                        exists_sql,
-                        exists_params.clone(),
-                        first_sql,
-                        first_params.clone(),
-                        second_sql,
-                        second_params.clone(),
-                        fail_before_second,
-                    )
-                    .await;
-
-                    match outcome {
-                        Ok(inserted) => {
-                            tx.commit().await.map_err(|e| {
-                                anyhow::anyhow!("{db_name} failed to commit transaction: {e}")
-                            })?;
-                            Ok(inserted)
-                        }
-                        Err(err) => {
-                            let _ = tx.rollback().await;
-                            Err(err)
-                        }
-                    }
-                })
-            },
+            |_| run_attempt().map_err(WriteAttemptFailure::into_error),
         )
     }
 
@@ -983,43 +1177,43 @@ impl<M: DbSpec> TursoDb<M> {
     ) -> Result<bool> {
         let db_name = M::db_name();
 
+        let run_attempt = || {
+            block_on_isolated(&self.core.runtime, async {
+                let tx = turso::transaction::Transaction::new_unchecked(
+                    &self.core.conn,
+                    turso::transaction::TransactionBehavior::Immediate,
+                )
+                .await
+                .map_err(|e| classify_turso_error(db_name, "failed to begin transaction", &e))?;
+
+                match execute_cas_batch_body(&tx, db_name, guard, statements).await {
+                    Ok(applied) => {
+                        tx.commit().await.map_err(|e| {
+                            classify_turso_error(db_name, "failed to commit transaction", &e)
+                        })?;
+                        Ok(applied)
+                    }
+                    Err(failure) => {
+                        let _ = tx.rollback().await;
+                        Err(failure)
+                    }
+                }
+            })
+        };
+
+        if let Some(policy) = write_contention_policy::<M>() {
+            return run_with_write_contention_retry(policy, operation_name, retry_hint, |_| {
+                run_attempt()
+            });
+        }
+
         let outcome = run_with_retry_sync(
             resolve_query_retry_policy::<M>(),
             operation_name,
             retry_hint,
-            |_| {
-                block_on_isolated(&self.core.runtime, async {
-                    let tx = match turso::transaction::Transaction::new_unchecked(
-                        &self.core.conn,
-                        turso::transaction::TransactionBehavior::Immediate,
-                    )
-                    .await
-                    {
-                        Ok(tx) => tx,
-                        Err(e) => {
-                            return cas_batch_failure_into_attempt_result(classify_turso_error(
-                                db_name,
-                                "failed to begin transaction",
-                                &e,
-                            ));
-                        }
-                    };
-
-                    match execute_cas_batch_body(&tx, db_name, guard, statements).await {
-                        Ok(applied) => match tx.commit().await {
-                            Ok(()) => Ok(CasBatchAttemptOutcome::Settled(applied)),
-                            Err(e) => cas_batch_failure_into_attempt_result(classify_turso_error(
-                                db_name,
-                                "failed to commit transaction",
-                                &e,
-                            )),
-                        },
-                        Err(failure) => {
-                            let _ = tx.rollback().await;
-                            cas_batch_failure_into_attempt_result(failure)
-                        }
-                    }
-                })
+            |_| match run_attempt() {
+                Ok(applied) => Ok(CasBatchAttemptOutcome::Settled(applied)),
+                Err(failure) => cas_batch_failure_into_attempt_result(failure),
             },
         )?;
 
@@ -1350,6 +1544,8 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
 mod tests {
     use std::thread;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    use rand::SeedableRng;
 
     use super::*;
 
@@ -1905,12 +2101,12 @@ mod tests {
         );
 
         match failure {
-            CasBatchFailure::Retryable(err) => {
+            WriteAttemptFailure::Retryable(err) => {
                 let message = err.to_string();
                 assert!(message.contains("failed to begin transaction"));
                 assert!(message.contains("database is locked"));
             }
-            CasBatchFailure::Deterministic(err) => {
+            WriteAttemptFailure::Deterministic(err) => {
                 panic!("Busy should classify as retryable, got deterministic: {err}")
             }
         }
@@ -1926,12 +2122,12 @@ mod tests {
         );
 
         match failure {
-            CasBatchFailure::Deterministic(err) => {
+            WriteAttemptFailure::Deterministic(err) => {
                 let message = err.to_string();
                 assert!(message.contains("failed to commit transaction"));
                 assert!(message.contains("UNIQUE constraint failed"));
             }
-            CasBatchFailure::Retryable(err) => {
+            WriteAttemptFailure::Retryable(err) => {
                 panic!("Constraint should classify as deterministic, got retryable: {err}")
             }
         }
@@ -2058,5 +2254,422 @@ mod tests {
             budget_ms <= QUERY_RETRY_FAILURE_BUDGET_MS,
             "default query retry failure budget was {budget_ms}ms; expected <= {QUERY_RETRY_FAILURE_BUDGET_MS}ms"
         );
+    }
+
+    fn write_contention_test_policy(
+        busy_timeout_ms: u64,
+        contention_deadline_ms: u64,
+    ) -> WriteContentionPolicy {
+        WriteContentionPolicy {
+            max_attempts: AGENT_TRACE_DB_WRITE_CONTENTION_MAX_ATTEMPTS,
+            backoff_cap: Duration::from_millis(AGENT_TRACE_DB_WRITE_CONTENTION_BACKOFF_CAP_MS),
+            busy_timeout: Duration::from_millis(busy_timeout_ms),
+            contention_deadline: Duration::from_millis(contention_deadline_ms),
+        }
+    }
+
+    fn busy_failure() -> WriteAttemptFailure {
+        classify_turso_error(
+            "agent trace test",
+            "failed to begin transaction",
+            &turso::Error::Busy(String::from("database is locked")),
+        )
+    }
+
+    fn run_write_contention_test<T>(
+        policy: WriteContentionPolicy,
+        attempt: impl FnMut(u32) -> std::result::Result<T, WriteAttemptFailure>,
+    ) -> (Result<T>, Vec<Duration>, WriteContentionCounts) {
+        let mut jitter = rand::rngs::StdRng::seed_from_u64(7);
+        let clock = std::cell::Cell::new(Duration::ZERO);
+        let mut sleeps = Vec::new();
+        let (result, counts) = count_write_contention(|| {
+            run_with_write_contention_retry_using(
+                policy,
+                &mut || write_contention_backoff(&mut jitter, policy.backoff_cap),
+                &mut |backoff| {
+                    sleeps.push(backoff);
+                    clock.set(clock.get() + backoff);
+                },
+                &mut || clock.get(),
+                "write contention test",
+                "retry the operation",
+                attempt,
+            )
+        });
+        (result, sleeps, counts)
+    }
+
+    struct OversleepOutcome {
+        result: Result<&'static str>,
+        attempt_calls: u32,
+        counts: WriteContentionCounts,
+    }
+
+    fn run_oversleep_scenario(
+        busy_at: Duration,
+        backoff: Duration,
+        oversleep: Duration,
+    ) -> OversleepOutcome {
+        let policy = write_contention_test_policy(500, 1_250);
+        let clock = std::cell::Cell::new(Duration::ZERO);
+        let mut attempt_calls = 0;
+        let (result, counts) = count_write_contention(|| {
+            run_with_write_contention_retry_using(
+                policy,
+                &mut || backoff,
+                &mut |requested| clock.set(clock.get() + requested + oversleep),
+                &mut || clock.get(),
+                "write contention test",
+                "retry the operation",
+                |_| {
+                    attempt_calls += 1;
+                    if attempt_calls == 1 {
+                        clock.set(busy_at);
+                        Err(busy_failure())
+                    } else {
+                        Ok("written")
+                    }
+                },
+            )
+        });
+        OversleepOutcome {
+            result,
+            attempt_calls,
+            counts,
+        }
+    }
+
+    #[test]
+    fn agent_trace_db_write_contention_retry_seeded_jitter_is_reproducible_and_bounded() {
+        let cap = Duration::from_millis(AGENT_TRACE_DB_WRITE_CONTENTION_BACKOFF_CAP_MS);
+        let draw = |seed| {
+            let mut jitter = rand::rngs::StdRng::seed_from_u64(seed);
+            (0..64)
+                .map(|_| write_contention_backoff(&mut jitter, cap))
+                .collect::<Vec<_>>()
+        };
+
+        let first = draw(42);
+        assert_eq!(
+            first,
+            draw(42),
+            "a seeded jitter source must be reproducible"
+        );
+        assert!(first.iter().all(|backoff| *backoff <= cap));
+        assert!(
+            first.iter().any(|backoff| *backoff != first[0]),
+            "full jitter should vary across draws"
+        );
+        assert_eq!(
+            write_contention_backoff(&mut rand::rngs::StdRng::seed_from_u64(1), Duration::ZERO),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn agent_trace_db_write_contention_retry_start_rule_boundaries() {
+        let policy = write_contention_test_policy(500, 1_250);
+        let backoff = Duration::from_millis(50);
+
+        assert!(write_contention_retry_may_sleep(
+            policy,
+            Duration::from_millis(699),
+            backoff
+        ));
+        assert!(write_contention_retry_may_sleep(
+            policy,
+            Duration::from_millis(700),
+            backoff
+        ));
+        assert!(!write_contention_retry_may_sleep(
+            policy,
+            Duration::from_millis(701),
+            backoff
+        ));
+        assert!(!write_contention_retry_may_sleep(
+            policy,
+            Duration::from_millis(1_250),
+            backoff
+        ));
+        assert!(!write_contention_retry_may_sleep(
+            policy,
+            Duration::from_secs(5),
+            backoff
+        ));
+
+        let no_wait = write_contention_test_policy(0, 1_250);
+        assert!(write_contention_retry_may_sleep(
+            no_wait,
+            Duration::from_millis(1_249),
+            Duration::ZERO
+        ));
+        assert!(
+            !write_contention_retry_may_sleep(
+                no_wait,
+                Duration::from_millis(1_250),
+                Duration::ZERO
+            ),
+            "nothing starts once the deadline has expired, even with zero backoff and busy timeout"
+        );
+        assert!(
+            !write_contention_retry_may_sleep(
+                write_contention_test_policy(0, 0),
+                Duration::ZERO,
+                Duration::ZERO
+            ),
+            "a zero contention deadline never starts an outer retry"
+        );
+    }
+
+    #[test]
+    fn agent_trace_db_write_contention_retry_post_sleep_admission_requires_a_full_busy_timeout() {
+        let policy = write_contention_test_policy(500, 1_250);
+
+        assert!(write_contention_retry_may_start_now(
+            policy,
+            Duration::from_millis(749)
+        ));
+        assert!(
+            write_contention_retry_may_start_now(policy, Duration::from_millis(750)),
+            "remaining == busy_timeout must still admit the next attempt"
+        );
+        assert!(!write_contention_retry_may_start_now(
+            policy,
+            Duration::from_millis(751)
+        ));
+        assert!(!write_contention_retry_may_start_now(
+            policy,
+            Duration::from_millis(1_250)
+        ));
+        assert!(!write_contention_retry_may_start_now(
+            write_contention_test_policy(0, 1_250),
+            Duration::from_millis(1_250)
+        ));
+    }
+
+    #[test]
+    fn agent_trace_db_write_contention_retry_rejects_a_retry_after_the_backoff_sleep_oversleeps() {
+        let outcome = run_oversleep_scenario(
+            Duration::from_millis(690),
+            Duration::from_millis(50),
+            Duration::from_millis(70),
+        );
+
+        let message = outcome
+            .result
+            .expect_err("an oversleep past the admission budget must exhaust")
+            .to_string();
+        assert!(
+            message.contains("failed after 1 attempt(s) under write contention"),
+            "{message}"
+        );
+        assert!(message.contains("elapsed=810ms"), "{message}");
+        assert!(message.contains("database is locked"), "{message}");
+        assert_eq!(outcome.attempt_calls, 1, "attempt 2 must not run");
+        assert_eq!(
+            outcome.counts,
+            WriteContentionCounts {
+                attempts: 1,
+                outer_retries: 0,
+                exhaustions: 1
+            }
+        );
+    }
+
+    #[test]
+    fn agent_trace_db_write_contention_retry_admits_a_retry_when_post_sleep_remaining_equals_busy_timeout(
+    ) {
+        let outcome = run_oversleep_scenario(
+            Duration::from_millis(690),
+            Duration::from_millis(50),
+            Duration::from_millis(10),
+        );
+
+        assert_eq!(
+            outcome
+                .result
+                .expect("remaining == busy_timeout must admit attempt 2"),
+            "written"
+        );
+        assert_eq!(outcome.attempt_calls, 2);
+        assert_eq!(
+            outcome.counts,
+            WriteContentionCounts {
+                attempts: 2,
+                outer_retries: 1,
+                exhaustions: 0
+            }
+        );
+    }
+
+    #[test]
+    fn agent_trace_db_write_contention_retry_retries_busy_and_busy_snapshot_once() {
+        for failure in [
+            turso::Error::Busy(String::from("database is locked")),
+            turso::Error::BusySnapshot(String::from("snapshot is stale")),
+        ] {
+            let mut failure = Some(failure);
+            let (result, sleeps, counts) = run_write_contention_test(
+                write_contention_test_policy(0, 30_000),
+                |_| match failure.take() {
+                    Some(error) => Err(classify_turso_error("agent trace test", "write", &error)),
+                    None => Ok("written"),
+                },
+            );
+
+            assert_eq!(result.expect("the retry should succeed"), "written");
+            assert_eq!(sleeps.len(), 1);
+            assert!(
+                sleeps[0] <= Duration::from_millis(AGENT_TRACE_DB_WRITE_CONTENTION_BACKOFF_CAP_MS)
+            );
+            assert_eq!(
+                counts,
+                WriteContentionCounts {
+                    attempts: 2,
+                    outer_retries: 1,
+                    exhaustions: 0
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn agent_trace_db_write_contention_retry_fails_deterministic_errors_once_without_sleeping() {
+        for error in [
+            turso::Error::Constraint(String::from("UNIQUE constraint failed")),
+            turso::Error::Misuse(String::from("misuse")),
+            turso::Error::Readonly(String::from("readonly")),
+        ] {
+            let mut error = Some(error);
+            let (result, sleeps, counts) =
+                run_write_contention_test(write_contention_test_policy(0, 30_000), |_| {
+                    Err::<(), _>(classify_turso_error(
+                        "agent trace test",
+                        "write",
+                        &error
+                            .take()
+                            .expect("a deterministic error must not be retried"),
+                    ))
+                });
+
+            assert!(result.is_err());
+            assert!(sleeps.is_empty(), "a deterministic error must not sleep");
+            assert_eq!(
+                counts,
+                WriteContentionCounts {
+                    attempts: 1,
+                    outer_retries: 0,
+                    exhaustions: 0
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn agent_trace_db_write_contention_retry_caps_outer_attempts_at_two() {
+        let (result, sleeps, counts) =
+            run_write_contention_test(write_contention_test_policy(0, 30_000), |_| {
+                Err::<(), _>(busy_failure())
+            });
+
+        let message = result
+            .expect_err("persistent Busy must exhaust")
+            .to_string();
+        assert!(message.contains("failed after 2 attempt(s)"), "{message}");
+        assert!(message.contains("database is locked"), "{message}");
+        assert!(message.contains("Try: retry the operation"), "{message}");
+        assert_eq!(sleeps.len(), 1);
+        assert_eq!(
+            counts,
+            WriteContentionCounts {
+                attempts: 2,
+                outer_retries: 1,
+                exhaustions: 1
+            }
+        );
+    }
+
+    #[test]
+    fn agent_trace_db_write_contention_retry_starts_no_retry_the_rule_disallows() {
+        for policy in [
+            write_contention_test_policy(0, 0),
+            write_contention_test_policy(1_251, 1_250),
+        ] {
+            let (result, sleeps, counts) =
+                run_write_contention_test(policy, |_| Err::<(), _>(busy_failure()));
+
+            let message = result.expect_err("Busy must fail").to_string();
+            assert!(message.contains("failed after 1 attempt(s)"), "{message}");
+            assert!(sleeps.is_empty());
+            assert_eq!(
+                counts,
+                WriteContentionCounts {
+                    attempts: 1,
+                    outer_retries: 0,
+                    exhaustions: 1
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn agent_trace_db_write_contention_retry_policy_applies_only_to_agent_trace_db() {
+        assert_eq!(
+            write_contention_policy::<AgentTraceTestDbSpec>(),
+            Some(write_contention_test_policy(
+                AGENT_TRACE_DB_BUSY_TIMEOUT_MS,
+                AGENT_TRACE_DB_CONTENTION_DEADLINE_MS
+            ))
+        );
+        assert_eq!(write_contention_policy::<TestDbSpec>(), None);
+    }
+
+    #[test]
+    fn agent_trace_db_write_contention_retry_leaves_reads_and_other_writes_on_the_generic_policy() {
+        assert_eq!(
+            resolve_query_retry_policy::<AgentTraceTestDbSpec>(),
+            QUERY_RETRY_POLICY
+        );
+
+        let db_path = unique_test_db_path();
+        let db = TursoDb::<AgentTraceTestDbSpec>::new_at(&db_path).expect("test DB should open");
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)", ())
+            .expect("table should be created");
+
+        let ((), generic) = count_write_contention(|| {
+            db.execute("INSERT INTO t (id, v) VALUES (1, 'a')", ())
+                .expect("generic execute should succeed");
+            db.query("SELECT v FROM t", ())
+                .expect("query should succeed");
+            db.query_values("SELECT v FROM t", ())
+                .expect("query_values should succeed");
+            db.query_map("SELECT v FROM t", (), |row| {
+                row.get::<String>(0).map_err(Into::into)
+            })
+            .expect("query_map should succeed");
+            db.passive_checkpoint()
+                .expect("passive checkpoint should succeed");
+        });
+        assert_eq!(
+            generic,
+            WriteContentionCounts::default(),
+            "reads, passive_checkpoint, and generic execute must not use the write-contention policy"
+        );
+
+        let (affected, opted_in) = count_write_contention(|| {
+            db.execute_idempotent_write(
+                "INSERT INTO t (id, v) VALUES (1, 'b') ON CONFLICT (id) DO NOTHING",
+                (),
+            )
+            .expect("idempotent write should succeed")
+        });
+        assert_eq!(affected, 0);
+        assert_eq!(opted_in.attempts, 1);
+
+        drop(db);
+        if let Some(parent) = db_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
     }
 }

@@ -8,6 +8,8 @@ use std::{
 
 use anyhow::Result;
 
+use crate::services::db::count_write_contention;
+
 use super::repository::RepositoryAgentTraceDb;
 use super::{InsertMessageInsert, InsertPartInsert, MessageRole, PartType};
 
@@ -273,6 +275,22 @@ fn busy_timeout_production_insert_waits_for_begin_immediate_holder() {
         sample.elapsed >= hold / 2,
         "the insert should have waited for the holder, took {:?}",
         sample.elapsed
+    );
+}
+
+#[test]
+fn agent_trace_db_write_contention_retry_hundred_ms_hold_succeeds_on_the_first_attempt() {
+    let hold = Duration::from_millis(BUSY_TIMEOUT_PRODUCTION_HOLD_MS);
+
+    let (sample, counts) = count_write_contention(|| insert_while_write_lock_is_held(hold));
+
+    assert_eq!(sample.outcome, WriteOutcome::Inserted);
+    assert_eq!((sample.messages, sample.parts), (1, 1));
+    assert_eq!(
+        (counts.attempts, counts.outer_retries, counts.exhaustions),
+        (1, 0, 0),
+        "Turso's busy timeout should absorb a {}ms hold without an outer retry",
+        hold.as_millis()
     );
 }
 

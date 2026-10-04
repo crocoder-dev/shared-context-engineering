@@ -536,7 +536,7 @@ impl<'a> MutationTraceStore<'a> {
     /// `initial_tree`. A no-op when the worktree row already exists — an
     /// existing cursor, revision, or failure state is never overwritten.
     pub fn initialize_worktree(&self, worktree: &WorktreeId, initial_tree: &TreeId) -> Result<()> {
-        self.db.execute(
+        self.db.execute_idempotent_write(
             INSERT_WORKTREE_IF_ABSENT_SQL,
             (
                 worktree.0.as_str(),
@@ -575,7 +575,7 @@ impl<'a> MutationTraceStore<'a> {
             );
         }
 
-        self.db.execute(
+        self.db.execute_idempotent_write(
             INSERT_SCOPE_IF_ABSENT_SQL,
             (
                 scope.0.as_str(),
@@ -860,7 +860,7 @@ impl<'a> MutationTraceStore<'a> {
             );
         }
 
-        self.db.execute(
+        self.db.execute_idempotent_write(
             INSERT_SCOPE_PROVENANCE_IF_ABSENT_SQL,
             (
                 provenance.scope_id.0.as_str(),
