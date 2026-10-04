@@ -43,17 +43,17 @@ How this plan is proven complete. Each criterion is observable and names the
 check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation.
 
-- [ ] AC1: In the Quint model, a `Close` whose target scope was `NeverSeen` right before the transition, with an observed tree change, emits a mutation event attributed `IneligibleUnscoped`, regardless of other live scopes. The scope still ends `Closed`, and acceptance, observation and cursor/rebaseline semantics are unchanged. In the healthy regression run the cursor advances to the observed tree.
+- [x] AC1: In the Quint model, a `Close` whose target scope was `NeverSeen` right before the transition, with an observed tree change, emits a mutation event attributed `IneligibleUnscoped`, regardless of other live scopes. The scope still ends `Closed`, and acceptance, observation and cursor/rebaseline semantics are unchanged. In the healthy regression run the cursor advances to the observed tree.
   - Validate: `nix run .#quint -- test spec/mutation_cursor.qnt --match '^test.*'` passes, including a new named run that reproduces the bug (Claude `Scope0` Active, Codex `Scope2` NeverSeen, `mutate(WT0, Tree1)`, `Close(Scope2)`) and expects `IneligibleUnscoped`, `scopes.get(Scope2).status == Closed`, `worktrees.get(WT0).cursorTree == Tree1`, no `AiExclusive(Scope0)` event, and `Safety`.
-- [ ] AC2: The model records every accepted close-from-`NeverSeen` boundary in the verification-only `closeFromNeverSeenHistory` (keyed by `(worktreeId, revision)`). It also states and checks `CloseFromNeverSeenNeverGetsPositiveAttribution`: every mutation event whose `(worktreeId, revision)` is in that history is `IneligibleUnscoped`, never `AiExclusive(_)` or `AiContended`. The invariant identifies these events through the history, not through `event.activeScopes`, and it is part of `SafetyAttribution`.
+- [x] AC2: The model records every accepted close-from-`NeverSeen` boundary in the verification-only `closeFromNeverSeenHistory` (keyed by `(worktreeId, revision)`). It also states and checks `CloseFromNeverSeenNeverGetsPositiveAttribution`: every mutation event whose `(worktreeId, revision)` is in that history is `IneligibleUnscoped`, never `AiExclusive(_)` or `AiContended`. The invariant identifies these events through the history, not through `event.activeScopes`, and it is part of `SafetyAttribution`.
   - Validate: `nix run .#quint -- typecheck spec/mutation_cursor.qnt` succeeds. Inspect `spec/mutation_cursor.qnt`: `closeFromNeverSeenHistory` is declared, initialized and assigned in every action, and `commitAttempt` adds to it on an accepted `Close` from `NeverSeen`. The invariant is defined over that history and listed in `SafetyAttribution`.
-- [ ] AC3: `AttributionMatchesObservedScopes` accepts the corrected behavior. Its first branch requires `event.attribution == IneligibleUnscoped` for any event whose `(worktreeId, revision)` is in `closeFromNeverSeenHistory`. The existing failure, no-active-scope, unconfirmed-required-scope, single-scope and contended branches follow in their current order and are otherwise unchanged. The new regression run, and every existing `test*` run, satisfies `Safety` with this invariant in place.
+- [x] AC3: `AttributionMatchesObservedScopes` accepts the corrected behavior. Its first branch requires `event.attribution == IneligibleUnscoped` for any event whose `(worktreeId, revision)` is in `closeFromNeverSeenHistory`. The existing failure, no-active-scope, unconfirmed-required-scope, single-scope and contended branches follow in their current order and are otherwise unchanged. The new regression run, and every existing `test*` run, satisfies `Safety` with this invariant in place.
   - Validate: inspect `AttributionMatchesObservedScopes` in `spec/mutation_cursor.qnt` for the leading close-from-`NeverSeen` branch; `nix run .#quint -- test spec/mutation_cursor.qnt --match '^test.*'` passes, and the new run's `.expect(Safety)` holds.
-- [ ] AC4: Rust `attribution_for_boundary` / `commit` produce the same result: the regression case (A Active Claude, B NeverSeen Codex, cursor tree0, observed tree1, `Close(B)`) gives `accepted = true`, `observes = true`, exactly one mutation event, attribution `IneligibleUnscoped` (explicitly asserted `!= AiExclusive(A)`), and B `Closed`. A lone `NeverSeen` scope closed over a tree change also gives `IneligibleUnscoped`. `Active -> Close` over a tree change keeps its current attribution (`AiExclusive` for the closing scope). `Close(NeverSeen)` with `before == after` still emits no mutation event.
+- [x] AC4: Rust `attribution_for_boundary` / `commit` produce the same result: the regression case (A Active Claude, B NeverSeen Codex, cursor tree0, observed tree1, `Close(B)`) gives `accepted = true`, `observes = true`, exactly one mutation event, attribution `IneligibleUnscoped` (explicitly asserted `!= AiExclusive(A)`), and B `Closed`. A lone `NeverSeen` scope closed over a tree change also gives `IneligibleUnscoped`. `Active -> Close` over a tree change keeps its current attribution (`AiExclusive` for the closing scope). `Close(NeverSeen)` with `before == after` still emits no mutation event.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` passes, including the four new deterministic tests.
-- [ ] AC5: The Rust kernel still refines the Quint model under Quint Connect, including the new named scenario (picked up by the `test.*` backstop) and generated traces. Quint traces containing `closeFromNeverSeenHistory` deserialize without error, and the history is excluded from the compared `ModelState`.
+- [x] AC5: The Rust kernel still refines the Quint model under Quint Connect, including the new named scenario (picked up by the `test.*` backstop) and generated traces. Quint traces containing `closeFromNeverSeenHistory` deserialize without error, and the history is excluded from the compared `ModelState`.
   - Validate: `nix build .#checks.x86_64-linux.mutation-trace-quint-connect --print-build-logs` succeeds. Inspect `cli/src/services/mutation_trace/mbt/model.rs`: `WireModelState` has a `close_from_never_seen_history: IgnoredAny` field in its verification-only group, and `ModelState` has no corresponding field.
-- [ ] AC6: `spec/mutation_cursor.md` lists the close-from-`NeverSeen` rule in the attribution rules, lists the new invariant and scenario in the verification section, and no longer implies that a close-only boundary can receive positive attribution.
+- [x] AC6: `spec/mutation_cursor.md` lists the close-from-`NeverSeen` rule in the attribution rules, lists the new invariant and scenario in the verification section, and no longer implies that a close-only boundary can receive positive attribution.
   - Validate: inspect the "Attribution is computed for the transition observed *at a boundary*" list and the "Verification properties and scenarios" section of `spec/mutation_cursor.md`.
 
 ### Full validation
@@ -120,14 +120,49 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized — mutation-trace protocol attribution rule and Quint Connect wire model; affects `context/cli/mutation-trace-protocol.md` and `context/cli/mutation-trace-quint-connect.md` per the plan's Context sync section.
   - Context synchronization: synced
 
-- [ ] T02: `Document close-from-NeverSeen attribution in the mutation-cursor spec` (status:todo)
+- [x] T02: `Document close-from-NeverSeen attribution in the mutation-cursor spec` (status:done)
   - Task ID: T02
   - Scope: In — `spec/mutation_cursor.md`: add the rule to the boundary attribution list (ahead of the live-scope cases), explain why a close-only boundary cannot confirm or attribute (its `Start` was never durably observed), and add the invariant and the new deterministic scenario to "Verification properties and scenarios". Out — Quint/Rust code, `context/` files (handled by context sync).
   - Dependencies: T01
   - Done when: the attribution section states that `Close` from `NeverSeen` always yields `IneligibleUnscoped`, the verification section lists the new invariant and scenario, and no sentence implies positive attribution at a close-only boundary.
   - Verify: inspect `spec/mutation_cursor.md` attribution and verification sections; `nix run .#quint -- typecheck spec/mutation_cursor.qnt` (sanity, no code change expected).
-  - Context synchronization: pending
+  - Completed: 2026-10-04
+  - Files changed: `spec/mutation_cursor.md`
+  - Result: The boundary attribution list now leads with `Close(scope)` from `NeverSeen` → `IneligibleUnscoped` (regardless of other live scopes), with the remaining cases demoted to "otherwise". A new paragraph explains that `Close(NeverSeen)` keeps acceptance/observation/cursor/`Closed` semantics but cannot confirm or attribute because its `Start` was never durably observed, and that only `Active -> Close` is eligible for positive attribution. The "unconfirmed at every boundary except its own `Close`" sentence now says "`Close` from `Active`". The verification section lists `CloseFromNeverSeenNeverGetsPositiveAttribution` (via `closeFromNeverSeenHistory` and the leading `AttributionMatchesObservedScopes` branch) and the `testCloseFromNeverSeenNeverGetsPositiveAttribution` run.
+  - Verify outcomes: inspected attribution and verification sections of `spec/mutation_cursor.md` (rule, rationale, invariant and scenario present; no close-only positive-attribution wording remains); `nix run .#quint -- typecheck spec/mutation_cursor.qnt` passed (exit 0).
+  - Context impact: none beyond the plan's Context sync section — spec prose only; `context/cli/mutation-trace-protocol.md` and `context/cli/mutation-trace-quint-connect.md` remain covered by context sync.
+  - Context synchronization: synced
 
 ## Open questions
 
 None. The request specifies the rule, the invariants, the wire-model handling, the tests and the scope boundaries. The code confirms the bug path: `observes` accepts `NeverSeen` for `Close`, while `liveScopesOn` / `live_scopes_on` filter to `Active`. It also confirms the two consistency points: `AttributionMatchesObservedScopes` would demand `AiExclusive` for a single active scope, and `WireModelState` uses `deny_unknown_fields`.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-10-04
+
+### Commands run
+
+- `nix flake check` -> exit 0 (all 4 flake checks passed: cli-clippy, cli-fmt, cli-tests, mutation-trace-quint-connect)
+- `nix run .#quint -- typecheck spec/mutation_cursor.qnt` -> exit 0 (typecheck clean)
+- `nix run .#quint -- test spec/mutation_cursor.qnt --match '^test.*'` -> exit 0 (41 passing, including `testCloseFromNeverSeenNeverGetsPositiveAttribution`)
+- `nix build .#checks.x86_64-linux.mutation-trace-quint-connect --print-build-logs` -> exit 0 (check derivation built green)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` -> exit 0 (373 passed, 0 failed)
+
+### Success-criteria verification
+
+- [x] AC1: Quint `Close` from `NeverSeen` over a tree change yields `IneligibleUnscoped` with unchanged lifecycle/cursor semantics -> `testCloseFromNeverSeenNeverGetsPositiveAttribution` passes; it sets Scope0 Active, mutates WT0 to Tree1, closes NeverSeen Scope2 and expects `IneligibleUnscoped` with `activeScopes == {Scope0}`, Scope2 `Closed`, cursor `Tree1`, no `AiExclusive(Scope0)`, and `Safety`.
+- [x] AC2: `closeFromNeverSeenHistory` recorded and `CloseFromNeverSeenNeverGetsPositiveAttribution` checked -> typecheck passed; inspected `spec/mutation_cursor.qnt`: var declared (l.294), initialized `Set()` in `init`, carried by every action, extended in accepted `commitAttempt` branch on `isClose(boundary) and currentScope.status == NeverSeen` with `state.revision + 1`; invariant defined via `isCloseFromNeverSeenEvent` (history-keyed, not `activeScopes`) and listed in `SafetyAttribution`.
+- [x] AC3: `AttributionMatchesObservedScopes` accepts corrected behavior -> inspected: leading `isCloseFromNeverSeenEvent` branch requires `IneligibleUnscoped`, followed by the failure, no-active-scope, unconfirmed-required, single-scope and contended branches in original order; all 41 `test*` runs pass with `.expect(Safety)`.
+- [x] AC4: Rust `attribution_for_boundary` / `commit` match -> `mutation_trace` tests pass, including `a_close_from_never_seen_codex_scope_beside_a_live_claude_scope_is_ineligible_not_exclusive`, `a_close_from_a_lone_never_seen_scope_over_a_tree_change_is_ineligible`, `a_close_from_an_active_scope_over_a_tree_change_keeps_exclusive_attribution`, and `a_close_from_a_never_seen_scope_without_a_tree_change_emits_no_mutation_event`.
+- [x] AC5: Rust kernel still refines the Quint model -> Quint Connect check built green (standalone and inside `nix flake check`); inspected `cli/src/services/mutation_trace/mbt/model.rs`: `WireModelState` has `close_from_never_seen_history: IgnoredAny` in the verification-only group, and `ModelState` has no corresponding field.
+- [x] AC6: `spec/mutation_cursor.md` documents the rule -> inspected: the boundary attribution list leads with `Close(scope)` from `NeverSeen` -> `IneligibleUnscoped`, followed by a rationale paragraph saying only `Active -> Close` is eligible for positive attribution; the "unconfirmed" sentence now reads "`Close` from `Active`"; the verification section lists `CloseFromNeverSeenNeverGetsPositiveAttribution` and `testCloseFromNeverSeenNeverGetsPositiveAttribution`.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- None identified.
