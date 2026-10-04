@@ -368,7 +368,7 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
   - Context impact: localized config-contract change. There are two new Agent Trace-only keys under `policies.database_retry.agent_trace_db`, and `local_db`/`auth_db` reject them. This affects `context/cli/config-precedence-contract.md` and `context/sce/shared-turso-db.md` (config layer for `busy_timeout_ms`/`contention_deadline_ms`). Outer-retry behavior is not changed yet (T04).
   - Context synchronization: synced
 
-- [ ] T04: `Add Agent Trace DB write-contention retry for safe write units` (status:todo)
+- [x] T04: `Add Agent Trace DB write-contention retry for safe write units` (status:done)
   - Task ID: T04
   - Scope: In — an Agent Trace DB write-contention retry seam, applied only when `M::db_config_key() == "agent_trace_db"` and only to the write-capable operations enumerated under "Write-contention retry scope" in Assumptions:
     - `execute_transactional_insert_pair_if_absent` (used by `insert_conversation_text_event`); the retry unit is the whole `BEGIN IMMEDIATE` → check message → insert message → insert part → `COMMIT` transaction;
@@ -402,7 +402,68 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
   - Dependencies: T03
   - Done when: AC3 holds; the default never yields more than 2 attempts on the enumerated write operations and never starts an attempt in violation of the retry-start rule; reads and non-enumerated writes keep their existing retry policy; existing `agent_trace_db` and `mutation_trace` tests pass unchanged.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db_write_contention_retry`; `... agent_trace_db`; `... mutation_trace`; `... resilience`.
-  - Context synchronization: pending
+  - Completed: 2026-10-04
+  - Files changed:
+    - `cli/src/services/db/mod.rs`
+    - `cli/src/services/agent_trace_db/repository.rs`
+    - `cli/src/services/mutation_trace/store.rs`
+    - `cli/src/services/agent_trace_db/lock_contention_tests.rs`
+    - `context/plans/agent-trace-db-write-contention.md` (this record)
+  - Result:
+    - Policy: `WriteContentionPolicy` holds `max_attempts`, `backoff_cap`, `busy_timeout` and `contention_deadline`. `write_contention_policy::<M>()` returns `Some` only for `agent_trace_db`. It uses the fixed constants `AGENT_TRACE_DB_WRITE_CONTENTION_MAX_ATTEMPTS = 2` and `AGENT_TRACE_DB_WRITE_CONTENTION_BACKOFF_CAP_MS = 100`, plus the T02/T03 resolvers for `busy_timeout` and `contention_deadline`. `resolve_contention_deadline` is now live, and its `dead_code` allowances are removed.
+    - `run_with_write_contention_retry` is the production wrapper. It uses `rand::thread_rng()` for full-jitter backoff `0..=cap`, `std::thread::sleep`, and a monotonic `std::time::Instant` started at the operation start. It delegates to the private `run_with_write_contention_retry_using`, which takes the backoff source, the sleep function and an elapsed-time clock (`FnMut() -> Duration`) as injected parameters. This seam is not public.
+    - Retry admission is checked at two points, with `remaining = contention_deadline - elapsed` and `elapsed` measured from the operation start:
+      1. Before the backoff sleep, `write_contention_retry_may_sleep` requires enough budget for the backoff plus a full busy-timeout wait: `remaining >= backoff + busy_timeout`.
+      2. After the backoff sleep has actually returned, with elapsed time recomputed, `write_contention_retry_may_start_now` requires enough budget for a full busy-timeout wait: `remaining >= busy_timeout`. Equality still admits the attempt.
+      
+      Neither check admits anything once the deadline has expired, and failing either one exhausts the policy. Scheduler oversleep therefore cannot start a new attempt outside the admission contract. A running attempt is never interrupted.
+    - `outer_retries` is incremented only after the post-sleep check succeeds, so it counts additional attempts actually admitted.
+      - retries only `WriteAttemptFailure::Retryable`, which is typed `Busy`/`BusySnapshot` via `is_retryable_turso_error`; deterministic failures return after one attempt with no sleep.
+    - `CasBatchFailure` is renamed `WriteAttemptFailure` and gains `into_error`.
+    - Retry units:
+      - `execute_insert_pair_if_absent_body` now classifies each typed `turso::Error` with `classify_turso_error`, keeping the existing message wording.
+      - `execute_transactional_insert_pair_if_absent` and `execute_transactional_cas_batch` build one attempt closure that runs the whole `BEGIN IMMEDIATE` → `COMMIT` unit. They route it through the contention retry for Agent Trace; every other DB stays on the unchanged generic `run_with_retry_sync` path.
+      - New `TursoDb::execute_idempotent_write` runs the complete statement under the contention policy on Agent Trace and delegates to `execute` everywhere else.
+      - Only the five enumerated writes switch to `execute_idempotent_write`: `INSERT_REPOSITORY_METADATA_SQL` and `CLAIM_SOURCE_INSTANCE_ID_SQL` in `repository.rs`, and `INSERT_WORKTREE_IF_ABSENT_SQL`, `INSERT_SCOPE_IF_ABSENT_SQL` and `INSERT_SCOPE_PROVENANCE_IF_ABSENT_SQL` in `store.rs`.
+    - Reads, `passive_checkpoint`, generic `execute` and migrations are unchanged.
+    - Deviation (user request): the code carries no comments. The planned doc comments were removed, and the `busy_timeout`-scope and deadline-semantics statements live in `context/sce/shared-turso-db.md` instead.
+    - Interim exhaustion error (T05 reshapes it): `Operation '<op>' failed after <n> attempt(s) under write contention (busy_timeout=…ms, contention_deadline=…ms, elapsed=…ms). Last error: <cause>. Try: <hint>`. The cause keeps Turso's `database is locked` text.
+    - Test instrumentation: `#[cfg(test)]` `WriteContentionCounts { attempts, outer_retries, exhaustions }` read through `count_write_contention`.
+    - Tests (prefix `agent_trace_db_write_contention_retry`):
+      - seeded jitter is reproducible and stays within the cap;
+      - retry-start boundaries: remaining just above, equal to and just below `backoff + busy_timeout`, plus an expired deadline and a zero deadline;
+      - post-sleep admission boundaries: remaining just above, equal to and just below `busy_timeout`, plus an expired deadline;
+      - an oversleep regression on a fake clock (`busy_timeout = 500`, `contention_deadline = 1250`, Busy at 690 ms, backoff 50 ms, sleep ends at 810 ms): attempt 2 never runs, giving `attempts = 1`, `outer_retries = 0`, `exhaustions = 1` and a contention-exhaustion error;
+      - the adjacent case where the sleep ends at 750 ms, so post-sleep remaining equals `busy_timeout`: attempt 2 is admitted, giving `attempts = 2` and `outer_retries = 1`;
+      - `Busy` and `BusySnapshot` are each retried once;
+      - deterministic errors (`Constraint`, `Misuse`, `Readonly`) fail once and never sleep;
+      - the attempt cap of 2 under persistent `Busy`;
+      - no retry where the rule disallows one;
+      - the policy applies only to `agent_trace_db`;
+      - regression: Agent Trace `query`/`query_values`/`query_map`/`passive_checkpoint`/`execute` resolve `QUERY_RETRY_POLICY` and record zero contention attempts;
+      - the 100 ms-hold production `insert_conversation_text_event` succeeds with `attempts = 1`, `outer_retries = 0`, `exhaustions = 0`.
+    - Deviation: the counters are thread-local, following the `count_read_statements` pattern, not global atomics. Parallel tests cannot skew each other, and T07 writer threads can read their own counts.
+    - Interim lock-budget boundary (debug build; T07 recalibrates it):
+
+      | hold ms | outcome | elapsed ms | rows (msg/part) |
+      | --- | --- | --- | --- |
+      | 50 | Ok(true) | 81 | 1/1 |
+      | 100 | Ok(true) | 128 | 1/1 |
+      | 200 | Ok(true) | 260 | 1/1 |
+      | 300 | Ok(true) | 350 | 1/1 |
+      | 500 | Ok(true) | 533 | 1/1 |
+      | 1000 | Ok(true) | 1081 | 1/1 |
+      | 4000 | database is locked (2 attempts) | 1007 | 0/0 |
+
+      The 4 000 ms hold now fails cleanly after 2 attempts in about 1.0 s; after T02 it took about 2.8 s and 5 attempts. The hook-open metadata write under a 4 000 ms hold now fails after 2 attempts in 1 054 ms.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db_write_contention_retry`: passed (9 passed).
+    - `... agent_trace_db`: passed (66 passed, 3 ignored).
+    - `... mutation_trace`: passed (389 passed).
+    - `... resilience`: passed (6 passed).
+    - Additional: `... lock_contention -- --nocapture` passed (7 passed, 3 ignored); `... services::db::` passed (35 passed); `nix build .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt` passed.
+  - Context impact: localized behavior change in the shared Turso DB layer. Agent Trace write units now have the outer write-contention retry layer, and there is a new opt-in `execute_idempotent_write` entrypoint. This affects `context/sce/shared-turso-db.md` (the outer-retry layer and its scope; the stale "5 attempts" Agent Trace text) and `context/sce/agent-trace-db.md` (the contention contract).
+  - Context synchronization: synced
 
 - [ ] T05: `Make exhausted Agent Trace DB contention failures observable` (status:todo)
   - Task ID: T05

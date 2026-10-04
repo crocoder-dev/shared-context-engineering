@@ -192,10 +192,10 @@ the transaction and propagate out of `commit()` as `Err`, never as
 `CasResult::Conflict`, and neither is retried unless the underlying error is
 `Busy`/`BusySnapshot`.
 
-`execute_transactional_cas_batch` keeps three outcomes distinct: a stale
-revision is a `Conflict` that is never retried; a transient DB failure
-(`Busy`/`BusySnapshot`) retries the whole transaction from a fresh
-`BEGIN IMMEDIATE`; and any other deterministic SQL/constraint failure
+`execute_transactional_cas_batch` keeps three outcomes distinct: a stale revision is a
+`Conflict` that is never retried; a transient failure (`Busy`/`BusySnapshot`) retries the
+whole transaction from a fresh `BEGIN IMMEDIATE` under the Agent Trace write-contention
+policy ([shared-turso-db.md](../sce/shared-turso-db.md)); any other deterministic failure
 propagates out of `commit()` as `Err`, never as `CasResult::Conflict`.
 
 `DurableTransition`'s six fields are private — `between()` is the only way to
@@ -206,8 +206,8 @@ them.
 
 ## Initialization
 
-`initialize_worktree`/`register_scope` are idempotent idle-inserts (`INSERT
-... ON CONFLICT DO NOTHING`) outside the CAS commit path:
+`initialize_worktree`/`register_scope` are idempotent idle-inserts (`INSERT ... ON
+CONFLICT DO NOTHING` via `execute_idempotent_write`) outside the CAS commit path:
 `initialize_worktree` never overwrites an existing cursor, and
 `register_scope` requires the referenced worktree to already have a durable
 row and never auto-creates it. An existing scope is returned unchanged only

@@ -157,7 +157,7 @@ impl RepositoryAgentTraceDb {
         &self,
         repository_id: &str,
     ) -> Result<RepositoryMetadata> {
-        self.execute(INSERT_REPOSITORY_METADATA_SQL, (repository_id,))?;
+        self.execute_idempotent_write(INSERT_REPOSITORY_METADATA_SQL, (repository_id,))?;
 
         let Some((stored_repository_id, source_instance_id)) =
             self.select_repository_metadata_row()?
@@ -183,7 +183,7 @@ impl RepositoryAgentTraceDb {
         }
 
         let candidate = generate_source_instance_id();
-        self.execute(CLAIM_SOURCE_INSTANCE_ID_SQL, (candidate.as_str(),))?;
+        self.execute_idempotent_write(CLAIM_SOURCE_INSTANCE_ID_SQL, (candidate.as_str(),))?;
 
         let (final_repository_id, final_source_instance_id) =
             self.select_repository_metadata_row()?.ok_or_else(|| {
