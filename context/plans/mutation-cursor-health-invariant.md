@@ -66,7 +66,7 @@ check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation. Each criterion names the one task that owns it, and
 no criterion depends on work from a later task than its owner.
 
-- [ ] AC1 (owner: T01): Protocol and coordinator health decisions use `FailureKind`.
+- [x] AC1 (owner: T01): Protocol and coordinator health decisions use `FailureKind`.
   - `protocol::recover` treats a worktree as needing recovery when `failure_kind != Healthy || external_taint || needs_rebaseline`.
   - `protocol::recover` picks strong recovery (abandon every live scope on the worktree) when `failure_kind != Healthy || external_taint`. It picks weak recovery (keep live scopes) only when `failure_kind == Healthy && !external_taint && needs_rebaseline`.
   - `protocol::taint` is a guarded no-op when `failure_kind != Healthy` or the worktree is externally tainted.
@@ -76,16 +76,16 @@ no criterion depends on work from a later task than its owner.
   
   This criterion does not cover `MutationEventPageRow` or `mutation_attribution::transition_origin`. Those belong to AC8.
   - Validate: `nix shell nixpkgs#ripgrep -c rg -n '\.tainted\b' cli/src/services/mutation_trace/protocol.rs cli/src/services/mutation_trace/runtime/coordinator.rs`. Inspect every hit outside a `#[cfg(test)]` module and confirm it is a field copy, never part of a branch condition, guard or boolean health predicate.
-- [ ] AC2 (owner: T01): Synthetic, pure regression state `failure_kind=SnapshotFailure, tainted=false, needs_rebaseline=true`, with active scope A on the worktree and no external taint. `protocol::recover(state, wt, observed)` takes the strong path: A becomes `Abandoned`, `cursor_tree == observed`, `failure_kind == Healthy`, `tainted == false`, `needs_rebaseline == false`, and the revision advances by one.
+- [x] AC2 (owner: T01): Synthetic, pure regression state `failure_kind=SnapshotFailure, tainted=false, needs_rebaseline=true`, with active scope A on the worktree and no external taint. `protocol::recover(state, wt, observed)` takes the strong path: A becomes `Abandoned`, `cursor_tree == observed`, `failure_kind == Healthy`, `tainted == false`, `needs_rebaseline == false`, and the revision advances by one.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` passes, including the new named protocol test for this state.
-- [ ] AC3 (owner: T01): Coordinator recovery admission: `needs_recovery` returns `true` for `failure_kind=SnapshotFailure, tainted=false, needs_rebaseline=false` with no external taint. The test calls the private function from `coordinator.rs`'s own `#[cfg(test)] mod tests`; its visibility does not change.
+- [x] AC3 (owner: T01): Coordinator recovery admission: `needs_recovery` returns `true` for `failure_kind=SnapshotFailure, tainted=false, needs_rebaseline=false` with no external taint. The test calls the private function from `coordinator.rs`'s own `#[cfg(test)] mod tests`; its visibility does not change.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` passes, including the new named coordinator test.
-- [ ] AC4 (owner: T01): Existing semantics hold on consistent states.
+- [x] AC4 (owner: T01): Existing semantics hold on consistent states.
   - `failure_kind=Healthy, tainted=false, needs_rebaseline=true` with active scope A recovers weakly: A stays `Active`, cursor = observed, `needs_rebaseline == false`.
   - `failure_kind=SnapshotFailure, tainted=true` with active scope A recovers strongly: A becomes `Abandoned` and the worktree is `Healthy`/untainted.
   - All existing protocol, coordinator and attribution tests pass unchanged.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` passes, including explicit named tests for both cases (new tests, or existing ones named in the task's completion record).
-- [ ] AC5 (owner: T01): The Quint model makes its semantic health decisions from `failureKind != Healthy`.
+- [x] AC5 (owner: T01): The Quint model makes its semantic health decisions from `failureKind != Healthy`.
   - `taint` and `verifyTaint` guard on `state.failureKind != Healthy`.
   - `recover` and `verifyRecover` admit on `failureKind != Healthy or externalTaint or needsRebaseline`.
   - `recoverNeeded`'s `abandonLiveScopes` is `state.failureKind != Healthy or externalTaint.contains(worktree)`.
@@ -217,7 +217,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Derive mutation-cursor health decisions from failure_kind` (status:todo)
+- [x] T01: `Derive mutation-cursor health decisions from failure_kind` (status:done)
   - Task ID: T01
   - Scope: In:
     - Rust `protocol::taint` guard; `protocol::recover` no-op guard and `abandon_live_scopes`
@@ -249,7 +249,29 @@ Persist this field in every plan; this is durable plan state, not chat state:
     - `nix run .#quint -- test spec/mutation_cursor.qnt --match '^test.*'`
     - `nix build .#checks.x86_64-linux.mutation-trace-quint-connect --print-build-logs`
     - the AC1 Rust inspection (`protocol.rs`, `runtime/coordinator.rs`) and the AC5 Quint inspection
-  - Context synchronization: pending
+  - Completed: 2026-10-04
+  - Files changed:
+    - `cli/src/services/mutation_trace/mod.rs`
+    - `cli/src/services/mutation_trace/protocol.rs`
+    - `cli/src/services/mutation_trace/runtime/coordinator.rs`
+    - `cli/src/services/mutation_trace/tests.rs`
+    - `spec/mutation_cursor.md`
+    - `spec/mutation_cursor.qnt`
+  - Result:
+    - Rust `protocol::taint` guard, `protocol::recover` admission and `abandon_live_scopes`, coordinator `needs_recovery`, and the `run_taint_retry_loop_inner` "already unhealthy" read-back now use `failure_kind != FailureKind::Healthy`. Doc comments updated.
+    - Quint `taint`, `recoverNeeded` (`abandonLiveScopes`), `recover`, `verifyTaint` and `verifyRecover` now guard on `failureKind`. State fields, `FailureKindMatchesTaint` and `MutationFailureKindMatchesTaint` are unchanged.
+    - New tests: `recover_reads_health_from_failure_kind_and_takes_the_strong_path_when_tainted_disagrees` (AC2), `needs_recovery_reads_health_from_failure_kind_even_if_tainted_disagrees` (AC3, in `coordinator.rs` tests), `taint_is_a_no_op_when_failure_kind_is_unhealthy_even_if_tainted_disagrees`.
+    - AC4 is pinned by the existing tests `recover_with_only_needs_rebaseline_preserves_live_scopes` (weak) and `recover_from_snapshot_taint_abandons_live_scopes_and_rebaselines_cursor` (strong), so no duplicate tests were added.
+    - `mod.rs` refinement-matrix rows and `spec/mutation_cursor.md` record `failureKind` as the semantic health source and `tainted` as the redundant bit.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`: passed (376 passed, 0 failed)
+    - `nix run .#quint -- typecheck spec/mutation_cursor.qnt`: passed (exit 0)
+    - `nix run .#quint -- test spec/mutation_cursor.qnt --match '^test.*'`: passed (41 passing)
+    - `nix build .#checks.x86_64-linux.mutation-trace-quint-connect --print-build-logs`: passed (exit 0, no `mbt/` change)
+    - AC1 inspection: passed. In `protocol.rs` and `runtime/coordinator.rs`, the only non-test `.tainted` reads are field copies at `protocol.rs:363`, `:384` and `:515`. This covers the protocol and coordinator only. `runtime/mutation_attribution.rs::transition_origin` still reads `row.tainted` by design; that repository-wide guarantee belongs to T03 / AC9.
+    - AC5 inspection: passed. The remaining `tainted` reads in `spec/mutation_cursor.qnt` are type fields, constructions, copies (`commit` event build, `abandonLiveScope`), the two equality invariants, one `test*` assertion and a comment.
+  - Context impact: localized to the mutation-trace domain. `context/cli/mutation-trace-protocol.md` and `context/cli/mutation-trace-runtime-coordinator.md` need their health/recovery wording switched to `failure_kind` terms per the plan's Context sync section. No root-level architecture or terminology change.
+  - Context synchronization: synced
 
 - [ ] T02: `Enforce the health invariant with forward migration 006` (status:todo)
   - Task ID: T02

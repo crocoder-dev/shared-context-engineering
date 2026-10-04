@@ -9,8 +9,8 @@ use crate::services::mutation_trace::store::{
     CasResult, DurableTransition, MutationTraceStore, ScopeProvenance,
 };
 use crate::services::mutation_trace::types::{
-    self, ActorKind, AttemptId, Boundary, EventId, MutationEvent, ScopeId, ScopeStatus, TreeId,
-    WorktreeId,
+    self, ActorKind, AttemptId, Boundary, EventId, FailureKind, MutationEvent, ScopeId,
+    ScopeStatus, TreeId, WorktreeId,
 };
 
 use super::git_snapshot::GitSnapshotService;
@@ -456,7 +456,10 @@ fn needs_recovery(state: &types::ProtocolState, worktree_id: &WorktreeId) -> boo
         || state
             .worktrees
             .get(worktree_id)
-            .is_some_and(|worktree_state| worktree_state.tainted || worktree_state.needs_rebaseline)
+            .is_some_and(|worktree_state| {
+                worktree_state.failure_kind != FailureKind::Healthy
+                    || worktree_state.needs_rebaseline
+            })
 }
 
 fn build_outcome(
@@ -563,11 +566,14 @@ where
         let tainted_state = protocol::taint(&state, worktree_id);
         match DurableTransition::between(&state, &tainted_state, worktree_id)? {
             None => {
-                let currently_tainted = state
-                    .worktrees
-                    .get(worktree_id)
-                    .is_some_and(|worktree_state| worktree_state.tainted);
-                return Ok(currently_tainted);
+                let currently_unhealthy =
+                    state
+                        .worktrees
+                        .get(worktree_id)
+                        .is_some_and(|worktree_state| {
+                            worktree_state.failure_kind != FailureKind::Healthy
+                        });
+                return Ok(currently_unhealthy);
             }
             Some(transition) => match store.commit(&transition)? {
                 CasResult::Applied => return Ok(true),
@@ -808,6 +814,24 @@ mod tests {
             ),
         )
         .expect("worktree insert should succeed");
+    }
+
+    #[test]
+    fn needs_recovery_reads_health_from_failure_kind_even_if_tainted_disagrees() {
+        let worktree_id = WorktreeId("wt0".to_string());
+        let mut state = types::ProtocolState::default();
+        state.worktrees.insert(
+            worktree_id.clone(),
+            types::WorktreeState {
+                cursor_tree: TreeId("tree0".to_string()),
+                revision: 1,
+                tainted: false,
+                failure_kind: FailureKind::SnapshotFailure,
+                needs_rebaseline: false,
+            },
+        );
+
+        assert!(needs_recovery(&state, &worktree_id));
     }
 
     #[test]

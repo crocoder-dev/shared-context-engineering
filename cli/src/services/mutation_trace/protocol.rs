@@ -402,7 +402,10 @@ impl ResolvedAttempt {
 /// Sets `tainted=true` and `failure_kind=SnapshotFailure`, advances
 /// `revision` by one, and leaves `cursor_tree`/`needs_rebaseline` untouched.
 /// A guarded no-op (refining Quint's `stutter`) when `worktree` is already
-/// `tainted`, already in `external_taint`, has no durable state, or is
+/// unhealthy (`failure_kind != Healthy`; `failure_kind` is the semantic
+/// health source of truth and `tainted` is the redundant bit
+/// `FailureKindMatchesTaint` keeps equal to it), already in `external_taint`,
+/// has no durable state, or is
 /// already at `revision: u64::MAX` (see [`next_revision`] — this last case
 /// has no Quint counterpart either, since Quint's `revision` is unbounded).
 ///
@@ -416,7 +419,9 @@ pub fn taint(state: &ProtocolState, worktree: &WorktreeId) -> ProtocolState {
     let Some(worktree_state) = state.worktrees.get(worktree) else {
         return state.clone();
     };
-    if worktree_state.tainted || state.external_taint.contains(worktree) {
+    if worktree_state.failure_kind != FailureKind::Healthy
+        || state.external_taint.contains(worktree)
+    {
         return state.clone();
     }
     let Some(next_rev) = next_revision(worktree_state.revision) else {
@@ -534,13 +539,17 @@ pub fn abandon(state: &ProtocolState, scope: &ScopeId) -> ProtocolState {
 ///
 /// Sets `cursor_tree=observed_tree`, `tainted=false`,
 /// `failure_kind=Healthy`, `needs_rebaseline=false`, advances `revision` by
-/// one, and removes `worktree` from `external_taint`. When the worktree was
-/// `tainted` or externally tainted, every live scope on it is transitioned to
-/// `Abandoned` (preserving `actor_kind`/`worktree_id`); a worktree recovering
-/// only from `needs_rebaseline` preserves its live scopes untouched.
+/// one, and removes `worktree` from `external_taint`. Health is read from
+/// `failure_kind`, never from the redundant `tainted` bit. When
+/// `failure_kind != Healthy` or the worktree is externally tainted, every
+/// live scope on it is transitioned to `Abandoned` (preserving
+/// `actor_kind`/`worktree_id`); a worktree recovering only from
+/// `needs_rebaseline` (`failure_kind == Healthy`, not externally tainted)
+/// preserves its live scopes untouched.
 ///
-/// A guarded no-op (refining Quint's `stutter`) when the worktree is already
-/// healthy, not externally tainted, and does not need rebaseline; when
+/// A guarded no-op (refining Quint's `stutter`) when the worktree has
+/// `failure_kind == Healthy`, is not externally tainted, and does not need
+/// rebaseline; when
 /// `worktree` has no durable state — the same existence contract
 /// [`taint`]/[`database_failure`]/[`abandon`] enforce; or when `worktree` is
 /// already at `revision: u64::MAX` (see [`next_revision`]; no Quint
@@ -554,14 +563,15 @@ pub fn recover(
         return state.clone();
     };
     let externally_tainted = state.external_taint.contains(worktree);
-    if !worktree_state.tainted && !externally_tainted && !worktree_state.needs_rebaseline {
+    let unhealthy = worktree_state.failure_kind != FailureKind::Healthy;
+    if !unhealthy && !externally_tainted && !worktree_state.needs_rebaseline {
         return state.clone();
     }
     let Some(next_rev) = next_revision(worktree_state.revision) else {
         return state.clone();
     };
 
-    let abandon_live_scopes = worktree_state.tainted || externally_tainted;
+    let abandon_live_scopes = unhealthy || externally_tainted;
 
     let mut next = state.clone();
     next.worktrees.insert(
