@@ -60,6 +60,34 @@ transition are unchanged.
 - `tests.rs` — `#[cfg(test)]` coverage for the current slice, sibling to
   `mod.rs`.
 
+### Health source of truth
+
+`WorktreeState` and `MutationEvent` store snapshot health twice, as
+`failure_kind` and `tainted`. `failure_kind` is the semantic source of truth;
+`tainted` is a redundant bit that `FailureKindMatchesTaint` /
+`MutationFailureKindMatchesTaint` require to equal `failure_kind != Healthy`.
+Protocol and coordinator health decisions use `failure_kind` as the semantic
+source of truth and do not consult `tainted` to decide health:
+
+- `taint` is a guarded no-op when `failure_kind != Healthy` or the worktree is
+  externally tainted.
+- `recover` runs when `failure_kind != Healthy || external_taint ||
+  needs_rebaseline`. It takes the strong path (abandon every live scope on the
+  worktree) when `failure_kind != Healthy || external_taint`, and the weak path
+  (keep live scopes) only when `failure_kind == Healthy`, the worktree is not
+  externally tainted, and `needs_rebaseline` is set.
+- The runtime coordinator's recovery admission uses the same predicate (see
+  [mutation-trace-runtime-coordinator.md](mutation-trace-runtime-coordinator.md)).
+
+Within the protocol kernel and coordinator, non-test reads of `tainted` only
+copy or materialize the redundant bit into a new `WorktreeState` or
+`MutationEvent`. The mutation-attribution read path
+(`runtime::mutation_attribution::transition_origin`) still checks both
+`tainted` and `failure_kind`; the `mutation-cursor-health-invariant` plan's
+T03 removes that remaining semantic `tainted` read once store decoding
+validates the pair. The Quint model's `taint`, `recover`, `recoverNeeded`,
+`verifyTaint`, and `verifyRecover` guard on `failureKind` in the same way.
+
 See [mutation-trace-revision-refinement.md](mutation-trace-revision-refinement.md)
 for the Quint `int` → Rust `u64` worktree-revision refinement all four enforce.
 

@@ -1860,6 +1860,57 @@ fn recover_with_only_needs_rebaseline_preserves_live_scopes() {
 }
 
 #[test]
+fn recover_reads_health_from_failure_kind_and_takes_the_strong_path_when_tainted_disagrees() {
+    let mut state = ProtocolState::default();
+    state.worktrees.insert(
+        worktree("wt0"),
+        WorktreeState {
+            cursor_tree: tree("tree0"),
+            revision: 5,
+            tainted: false,
+            failure_kind: FailureKind::SnapshotFailure,
+            needs_rebaseline: true,
+        },
+    );
+    state.scopes.insert(
+        scope("scope0"),
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    );
+
+    let next = recover(&state, &worktree("wt0"), tree("tree1"));
+
+    let recovered = next.worktrees.get(&worktree("wt0")).unwrap();
+    assert_eq!(recovered.cursor_tree, tree("tree1"));
+    assert_eq!(recovered.revision, 6);
+    assert!(!recovered.tainted);
+    assert_eq!(recovered.failure_kind, FailureKind::Healthy);
+    assert!(!recovered.needs_rebaseline);
+    assert_eq!(
+        next.scopes.get(&scope("scope0")).unwrap().status,
+        ScopeStatus::Abandoned
+    );
+}
+
+#[test]
+fn taint_is_a_no_op_when_failure_kind_is_unhealthy_even_if_tainted_disagrees() {
+    let mut state = ProtocolState::default();
+    state.worktrees.insert(
+        worktree("wt0"),
+        WorktreeState {
+            cursor_tree: tree("tree0"),
+            revision: 2,
+            tainted: false,
+            failure_kind: FailureKind::SnapshotFailure,
+            needs_rebaseline: false,
+        },
+    );
+
+    let next = taint(&state, &worktree("wt0"));
+
+    assert_eq!(next, state);
+}
+
+#[test]
 fn recover_is_a_no_op_for_blocked_preconditions() {
     let already_healthy = {
         let mut state = ProtocolState::default();

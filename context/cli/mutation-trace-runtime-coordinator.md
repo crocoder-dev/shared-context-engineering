@@ -176,8 +176,8 @@ exercising the public API end to end. Only harness/command wiring remains.
   (below) and return without touching the rest of the pipeline; on success,
   idempotently materialize the worktree row and, for hook boundaries, the
   scope row; then loop (bounded, `MAX_CAS_RETRY_ATTEMPTS = 5`, no backoff):
-  load durable state fresh, recover first if the worktree is tainted, needs
-  rebaseline, or inherited an external-taint marker (overlaid as
+  load durable state fresh, recover first if the worktree's `failure_kind`
+  is not `Healthy`, it needs rebaseline, or it inherited an external-taint marker (overlaid as
   `database_failure`; its CAS commit reuses the one captured tree), then
   `prepare`/`commit` the triggering boundary against that state (a second CAS
   commit) — reloading and recomputing from scratch on `Conflict`, without ever
@@ -190,7 +190,7 @@ exercising the public API end to end. Only harness/command wiring remains.
   concurrently while this invocation's own capture is still in flight is
   still found and correctly tainted. No durable worktree row on that fresh
   read means no taint to record (`persisted_taint: false`, no write); an
-  already-tainted no-op reads back the current flag instead of assuming
+  already-unhealthy no-op reports `failure_kind != Healthy` instead of assuming
   success; otherwise the loop commits the taint transition and retries on
   `Conflict`, reporting `persisted_taint: false` only once every bounded
   attempt has been exhausted.

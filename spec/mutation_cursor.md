@@ -39,6 +39,8 @@ Hook replay identity is scoped by `ScopeId` and `EventId` through `EventKey`. Th
 
 A snapshot failure occurs while the database is healthy. `taint(worktree)` therefore records `SnapshotFailure` in the durable worktree state and increments the worktree revision. This invalidates speculative attempts that were already prepared before the failure. It does not quarantine later attempts: once a subsequent snapshot is prepared against the tainted state and the normal freshness checks pass, it may advance the cursor. Because failure states weaken attribution, any evidence emitted while tainted is `IneligibleUnscoped` until recovery.
 
+`failureKind` is the semantic source of truth for snapshot health. `tainted` is a redundant stored bit that `FailureKindMatchesTaint` (and `MutationFailureKindMatchesTaint` for mutation events) proves equal to `failureKind != Healthy`. Every semantic health decision reads `failureKind`: `taint` and `verifyTaint` are guarded on `failureKind != Healthy`, `recover` and `verifyRecover` admit on `failureKind != Healthy or externalTaint or needsRebaseline`, and `recoverNeeded` abandons live scopes exactly when `failureKind != Healthy or externalTaint`. Reads of `tainted` only copy it forward, construct a `MutationEvent`, or state the equality invariants. On every reachable state the two readings agree, so this choice changes no reachable behavior; it fixes which field the implementation must trust when the stored pair could disagree.
+
 Database unavailability is different. `databaseFailure(worktree)` changes only:
 
 ```text
@@ -85,7 +87,7 @@ produce no evidence for the skipped interval
 clear needsRebaseline
 ```
 
-For external taint or snapshot failure, recovery retains the stronger existing behavior of abandoning active scopes. The recovery path is:
+For external taint or snapshot failure (`failureKind != Healthy`), recovery retains the stronger existing behavior of abandoning active scopes. Weak recovery, which preserves live scopes, applies only when `failureKind == Healthy`, the worktree is not externally tainted, and `needsRebaseline` is set. The recovery path is:
 
 ```text
 observe taint or externalTaint
@@ -179,7 +181,7 @@ The Rust/SQL implementation should map these model elements explicitly:
 | --- | --- |
 | `worktrees.cursorTree` | durable per-worktree cursor row |
 | `worktrees.revision` | transaction CAS revision |
-| `worktrees.tainted` / `failureKind` | durable snapshot-failure state when the DB is healthy |
+| `worktrees.tainted` / `failureKind` | durable snapshot-failure state when the DB is healthy; `failure_kind` is the semantic health source, `tainted` a redundant bit that must always equal `failure_kind != Healthy` |
 | `externalTaint` | external durability signal, such as the filesystem taint marker |
 | `processedEvents` | durable replay/idempotency key table or column |
 | `scopes` | durable scope lifecycle records, including abandonment |

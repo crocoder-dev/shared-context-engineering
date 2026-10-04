@@ -797,7 +797,7 @@ module mutation_cursor {
 
   action taint(worktree: WorktreeId): bool =
     if (
-      worktrees.get(worktree).tainted or
+      worktrees.get(worktree).failureKind != Healthy or
       externalTaint.contains(worktree)
     ) {
       mbtStutterAs(MbtTaint({ worktree: worktree }))
@@ -906,7 +906,7 @@ module mutation_cursor {
 
   action recoverNeeded(worktree: WorktreeId): bool = {
     val state = worktrees.get(worktree)
-    val abandonLiveScopes = state.tainted or externalTaint.contains(worktree)
+    val abandonLiveScopes = state.failureKind != Healthy or externalTaint.contains(worktree)
 
     all {
       worktrees' = worktrees.set(worktree, {
@@ -977,7 +977,7 @@ module mutation_cursor {
     val state = worktrees.get(worktree)
 
     if (
-      not(state.tainted) and
+      state.failureKind == Healthy and
       not(externalTaint.contains(worktree)) and
       not(state.needsRebaseline)
     ) {
@@ -1085,7 +1085,7 @@ module mutation_cursor {
     val state = worktrees.get(worktree)
 
     all {
-      not(state.tainted),
+      state.failureKind == Healthy,
       not(externalTaint.contains(worktree)),
       taintHealthy(worktree),
     }
@@ -1096,7 +1096,7 @@ module mutation_cursor {
     val state = worktrees.get(worktree)
 
     all {
-      state.tainted or
+      state.failureKind != Healthy or
         externalTaint.contains(worktree) or
         state.needsRebaseline,
       recoverNeeded(worktree),
