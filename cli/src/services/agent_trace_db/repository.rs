@@ -378,6 +378,11 @@ mod tests {
         .unwrap_or_else(|| panic!("table '{name}' should exist"))
     }
 
+    // These tests verify convergence/idempotency under concurrent writers, not the
+    // global production lock-retry budget. Retry exhausted lock contention at the
+    // test boundary so scheduler/load variance does not make those semantic tests
+    // flaky. Production retry behavior is intentionally unchanged and tracked
+    // separately.
     const DATABASE_LOCKED_ERROR: &str = "database is locked";
     const CONCURRENT_WRITE_DEADLINE: Duration = Duration::from_secs(30);
     const CONCURRENT_WRITE_RETRY_BACKOFF: Duration = Duration::from_millis(10);
@@ -630,7 +635,7 @@ mod tests {
                             500,
                         ))
                     })
-                    .expect("concurrent state write should succeed")
+                    .expect("concurrent state writer should eventually complete")
                 })
             })
             .collect();
@@ -879,7 +884,7 @@ mod tests {
                     retry_while_database_locked(|| {
                         db.verify_or_initialize_repository_metadata(&repository_id)
                     })
-                    .expect("concurrent metadata initialization should succeed")
+                    .expect("concurrent metadata initialization worker should eventually complete")
                 })
             })
             .collect();
@@ -1911,7 +1916,7 @@ COMMIT;";
                 handle
                     .join()
                     .expect("worker thread should not panic")
-                    .expect("every concurrent delivery attempt should succeed")
+                    .expect("every concurrent delivery worker should eventually complete")
             })
             .collect();
 
