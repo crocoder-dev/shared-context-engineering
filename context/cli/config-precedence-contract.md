@@ -106,6 +106,10 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `sce setup` writes this key: it records the selection resolved for the run and reads the stored value back when `--workflow` is absent, which is the only consumer of the key today. See [setup local bootstrap](../sce/setup-repo-local-config-bootstrap.md).
 
 - `policies` must be an object when present and currently allows `attribution_hooks`, `database_retry`, and `bash`.
+- `policies.database_retry` must be an object when present and allows `local_db`, `agent_trace_db`, and `auth_db`. `local_db` and `auth_db` allow only `connection_open` and `query`; `agent_trace_db` additionally allows the Agent Trace-only `busy_timeout_ms` and `contention_deadline_ms` keys.
+- `policies.database_retry.agent_trace_db.busy_timeout_ms` must be an integer in `0..=10000`; omitted values resolve to `500`, and `0` disables the Turso busy handler on Agent Trace DB connections.
+- `policies.database_retry.agent_trace_db.contention_deadline_ms` must be an integer in `0..=30000`; omitted values resolve to `1250`, and `0` means no outer write-contention retry is started. It bounds when another retry may start, not how long a running operation takes.
+- `busy_timeout_ms` or `contention_deadline_ms` under `local_db`/`auth_db` fails generated-schema validation (`Config file '<path>' failed schema validation against generated schema '<schema>': …`, naming the key); the Rust per-DB key check (`contains unknown key`, allowed keys `connection_open, query`) remains as a backstop. `query.timeout_ms` keeps its existing meaning for every database.
 - `policies.attribution_hooks` must be an object when present and currently allows `enabled`; explicit `enabled: false` remains a valid opt-out alongside the runtime `SCE_ATTRIBUTION_HOOKS_DISABLED` environment opt-out.
 - `policies.bash` must be an object when present and currently allows only `presets` and `custom`.
 - `policies.bash.presets` must be an array of unique built-in preset IDs: `forbid-git-all`, `forbid-git-commit`, `use-pnpm-over-npm`, `use-bun-over-npm`, `use-nix-flake-over-cargo`.
@@ -127,6 +131,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `validate` text output is limited to `SCE config validation`, `Validation issues`, and `Validation warnings` lines.
 - `validate` JSON output is limited to `result.command`, `result.valid`, `result.issues`, and `result.warnings`.
 - `show` includes resolved Agent Trace configuration under `result.resolved.agent_trace` (JSON: `repository_id` optional-value shape, `repository_remote` and `auto_sync` resolved-value shapes) and as per-key text lines, reporting `(unset)` for a missing `repository_id`, `source: default` for the `origin` remote fallback, and `source: default` for omitted `auto_sync`.
+- `show` includes `policies.database_retry` overrides with provenance; for `agent_trace_db` it also renders configured `busy_timeout_ms` and `contention_deadline_ms` (JSON integers under `agent_trace_db`, text lines suffixed `(busy_timeout_ms)` / `(contention_deadline_ms)`). Unset keys are omitted; their defaults apply at resolution.
 - Doctor consumes the same resolved `agent_trace.auto_sync` value and source metadata; its separate `post_commit_auto_sync` report fact documents hook readiness without launching synchronization.
 - `show` includes resolved bash-tool policies under `result.resolved.policies.bash`.
 - Bash-policy output includes resolved preset IDs, expanded custom entries (`id`, `match.argv_prefix`, `message`), and config-file source metadata when present.

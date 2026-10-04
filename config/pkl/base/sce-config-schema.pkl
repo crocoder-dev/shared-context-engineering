@@ -64,6 +64,30 @@ local perDbRetrySchema = new JsonSchema {
   }
 }
 
+local agentTraceDbRetrySchema = new JsonSchema {
+  type = "object"
+  description = "Retry policy overrides and write-contention settings for the Agent Trace database."
+  additionalProperties = false
+  properties {
+    ["connection_open"] = retryPolicyFieldsSchema
+    ["query"] = retryPolicyFieldsSchema
+    ["busy_timeout_ms"] = new JsonSchema {
+      type = "integer"
+      description = "Turso busy timeout in milliseconds applied to every Agent Trace database connection. 0 disables the busy handler."
+      minimum = 0
+      maximum = 10000
+      default = 500
+    }
+    ["contention_deadline_ms"] = new JsonSchema {
+      type = "integer"
+      description = "Deadline in milliseconds after which no further Agent Trace write-contention retry is started. It schedules retries and does not interrupt a running operation. 0 starts no outer retry."
+      minimum = 0
+      maximum = 30000
+      default = 1250
+    }
+  }
+}
+
 local sceConfigSchema = new JsonSchema {
   $schema = "https://json-schema.org/draft/2020-12/schema"
   $id = configSchemaUrl
@@ -160,7 +184,7 @@ local sceConfigSchema = new JsonSchema {
           additionalProperties = false
           properties {
             ["local_db"] = perDbRetrySchema
-            ["agent_trace_db"] = perDbRetrySchema
+            ["agent_trace_db"] = agentTraceDbRetrySchema
             ["auth_db"] = perDbRetrySchema
           }
         }

@@ -230,8 +230,18 @@ use crate::services::resilience::RetryPolicy;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DatabaseRetryConfig {
     pub(crate) local_db: Option<PerDbRetryConfig>,
-    pub(crate) agent_trace_db: Option<PerDbRetryConfig>,
+    pub(crate) agent_trace_db: Option<AgentTraceDbRetryConfig>,
     pub(crate) auth_db: Option<PerDbRetryConfig>,
+}
+
+pub(crate) const AGENT_TRACE_DB_BUSY_TIMEOUT_MAX_MS: u64 = 10_000;
+pub(crate) const AGENT_TRACE_DB_CONTENTION_DEADLINE_MAX_MS: u64 = 30_000;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AgentTraceDbRetryConfig {
+    pub(crate) retry: PerDbRetryConfig,
+    pub(crate) busy_timeout_ms: Option<u64>,
+    pub(crate) contention_deadline_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

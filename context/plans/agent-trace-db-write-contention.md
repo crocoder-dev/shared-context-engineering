@@ -325,7 +325,7 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
   - Context impact: localized behavior change. Agent Trace DB connections now carry a 500 ms Turso busy timeout. The planned `context/sce/shared-turso-db.md` layering text (multiprocess WAL vs. `busy_timeout_ms`) applies; the config key and outer-retry layers arrive in T03/T04.
   - Context synchronization: synced
 
-- [ ] T03: `Expose busy_timeout_ms and contention_deadline_ms in database_retry config` (status:todo)
+- [x] T03: `Expose busy_timeout_ms and contention_deadline_ms in database_retry config` (status:done)
   - Task ID: T03
   - Scope: In:
     - add `busy_timeout_ms` and `contention_deadline_ms` to the `agent_trace_db` database_retry config document and resolved config only (for example Agent Trace-only optional fields, so `local_db`/`auth_db` documents cannot carry them);
@@ -345,7 +345,28 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
   - Dependencies: T02
   - Done when: AC10 holds; configured values override the defaults for Agent Trace DB connections; invalid values are rejected; `local_db`/`auth_db` reject both keys.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml database_retry`; `nix run .#pkl-check-generated`.
-  - Context synchronization: pending
+  - Completed: 2026-10-04
+  - Files changed:
+    - `config/pkl/base/sce-config-schema.pkl`
+    - `cli/src/services/config/types.rs`
+    - `cli/src/services/config/schema.rs`
+    - `cli/src/services/config/render.rs`
+    - `cli/src/services/db/mod.rs`
+    - `context/plans/agent-trace-db-write-contention.md` (this record)
+  - Result:
+    - Pkl: a new `agentTraceDbRetrySchema` (`connection_open`, `query`, `busy_timeout_ms` 0..=10000 default 500, `contention_deadline_ms` 0..=30000 default 1250, `additionalProperties = false`) is used only for `agent_trace_db`. `local_db`/`auth_db` keep `perDbRetrySchema` unchanged.
+    - Types: `DatabaseRetryConfig.agent_trace_db` is now `AgentTraceDbRetryConfig { retry: PerDbRetryConfig, busy_timeout_ms, contention_deadline_ms }`. `PerDbRetryConfig` (used by `local_db`/`auth_db`) cannot carry the new keys. Upper-bound constants are `AGENT_TRACE_DB_BUSY_TIMEOUT_MAX_MS = 10_000` and `AGENT_TRACE_DB_CONTENTION_DEADLINE_MAX_MS = 30_000`.
+    - Parsing: `map_database_retry_config` passes a per-DB allowed-key list to `validate_object_keys`: `connection_open, busy_timeout_ms, contention_deadline_ms, query` for `agent_trace_db`, and `connection_open, query` for `local_db`/`auth_db`. A Rust bounds backstop rejects values above the maximum with `Config key 'policies.database_retry.agent_trace_db.<key>' in '<path>' must be <= <max>.`. Generated-schema validation runs first and catches out-of-range, negative and wrong-type values with the existing `failed schema validation` error.
+    - Resolution (`db/mod.rs`): `resolve_busy_timeout` now reads the configured `busy_timeout_ms` and falls back to 500; 0 leaves the busy handler unset. Added `AGENT_TRACE_DB_CONTENTION_DEADLINE_MS = 1_250` and `resolve_contention_deadline::<M>()` (zero for other DBs) for T04 to consume. It is `#[cfg_attr(not(test), allow(dead_code))]` until T04 wires it in. Pure `*_from_config` helpers make the override testable without the global `OnceLock`.
+    - Rendering: `sce config show` text and JSON output include `busy_timeout_ms` / `contention_deadline_ms` for `agent_trace_db` when they are configured. Like the existing per-DB overrides, they are omitted when unset. `query`/`connection_open` rendering is unchanged.
+    - Tests (all prefixed `database_retry`): accepts both keys; accepts 0 and the upper bounds; omitted keys stay unset; rejects out-of-range values; rejects wrong-type values; `local_db`/`auth_db` reject both keys with the `failed schema validation` error naming the key and path; the generated schema lists only `connection_open`/`query` for `local_db`/`auth_db`; the Rust per-DB key backstop keeps its `contains unknown key` wording; a regression test shows `query.timeout_ms` parsing is unchanged; resolver override, zero and default cases; JSON/text render for `agent_trace_db` only.
+    - Assumption: the versioned release schema snapshots under `schema/v*/config.json` are written at release bump and are left untouched.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml database_retry`: passed (14 passed).
+    - `nix run .#pkl-check-generated`: passed (ephemeral Pkl generation passed, 142 files).
+    - Additional: `... test --manifest-path cli/Cargo.toml busy_timeout` passed (5 passed); `... test --manifest-path cli/Cargo.toml config` passed (116 passed); `nix build .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt` passed.
+  - Context impact: localized config-contract change. There are two new Agent Trace-only keys under `policies.database_retry.agent_trace_db`, and `local_db`/`auth_db` reject them. This affects `context/cli/config-precedence-contract.md` and `context/sce/shared-turso-db.md` (config layer for `busy_timeout_ms`/`contention_deadline_ms`). Outer-retry behavior is not changed yet (T04).
+  - Context synchronization: synced
 
 - [ ] T04: `Add Agent Trace DB write-contention retry for safe write units` (status:todo)
   - Task ID: T04
