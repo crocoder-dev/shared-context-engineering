@@ -99,9 +99,9 @@ no criterion depends on work from a later task than its owner.
     - `nix run .#quint -- test spec/mutation_cursor.qnt --match '^test.*'`
     - `nix build .#checks.x86_64-linux.mutation-trace-quint-connect --print-build-logs`
     - Inspection: list every `tainted` read with `nix shell nixpkgs#ripgrep -c rg -n 'tainted' spec/mutation_cursor.qnt`. Confirm that each one is a copy, a construction, a representation-equality invariant or a test assertion, and that none decides semantic health or recovery behavior.
-- [ ] AC6 (owner: T02): After migration `006`, both `mutation_trace_worktrees` and `mutation_trace_events` accept `(tainted=0, 'healthy')` and `(tainted=1, 'snapshot_failure')`, and reject `(tainted=0, 'snapshot_failure')` and `(tainted=1, 'healthy')` with a `CHECK` error. The existing per-column allow-lists, the revision `BLOB` check, the attribution and boundary `CHECK`s, and the primary keys still apply.
+- [x] AC6 (owner: T02): After migration `006`, both `mutation_trace_worktrees` and `mutation_trace_events` accept `(tainted=0, 'healthy')` and `(tainted=1, 'snapshot_failure')`, and reject `(tainted=0, 'snapshot_failure')` and `(tainted=1, 'healthy')` with a `CHECK` error. The existing per-column allow-lists, the revision `BLOB` check, the attribution and boundary `CHECK`s, and the primary keys still apply.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db` passes, including eight new schema-constraint tests (four combinations × two tables) and the existing `mutation_trace_*` schema tests.
-- [ ] AC7 (owner: T02): A database migrated through `005` only that contains inconsistent legacy rows is upgraded by `006`:
+- [x] AC7 (owner: T02): A database migrated through `005` only that contains inconsistent legacy rows is upgraded by `006`:
   - a worktree row `('snapshot_failure', tainted=0)` becomes `tainted=1`, and a worktree row `('healthy', tainted=1)` becomes `tainted=0`;
   - the same two normalizations apply to `mutation_trace_events` rows.
   
@@ -270,10 +270,10 @@ Persist this field in every plan; this is durable plan state, not chat state:
     - `nix build .#checks.x86_64-linux.mutation-trace-quint-connect --print-build-logs`: passed (exit 0, no `mbt/` change)
     - AC1 inspection: passed. In `protocol.rs` and `runtime/coordinator.rs`, the only non-test `.tainted` reads are field copies at `protocol.rs:363`, `:384` and `:515`. This covers the protocol and coordinator only. `runtime/mutation_attribution.rs::transition_origin` still reads `row.tainted` by design; that repository-wide guarantee belongs to T03 / AC9.
     - AC5 inspection: passed. The remaining `tainted` reads in `spec/mutation_cursor.qnt` are type fields, constructions, copies (`commit` event build, `abandonLiveScope`), the two equality invariants, one `test*` assertion and a comment.
-  - Context impact: localized to the mutation-trace domain. `context/cli/mutation-trace-protocol.md` and `context/cli/mutation-trace-runtime-coordinator.md` need their health/recovery wording switched to `failure_kind` terms per the plan's Context sync section. No root-level architecture or terminology change.
+  - Context impact: localized to the mutation-trace domain. `context/cli/mutation-trace-protocol.md` and `context/cli/mutation-trace-runtime-coordinator.md` were synchronized to describe health and recovery in `failure_kind` terms per the plan's Context sync section. No root-level architecture or terminology change.
   - Context synchronization: synced
 
-- [ ] T02: `Enforce the health invariant with forward migration 006` (status:todo)
+- [x] T02: `Enforce the health invariant with forward migration 006` (status:done)
   - Task ID: T02
   - Scope: In:
     - the turso capability probe test
@@ -297,7 +297,29 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Verify:
     - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db`
     - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`
-  - Context synchronization: pending
+  - Completed: 2026-10-04
+  - Files changed:
+    - `cli/migrations/agent-trace-repository/006_mutation_trace_health_invariant.sql`
+    - `cli/src/services/agent_trace_db/repository.rs`
+  - Result:
+    - New migration `006_mutation_trace_health_invariant.sql` runs `BEGIN IMMEDIATE; … COMMIT;` and rebuilds `mutation_trace_worktrees` and `mutation_trace_events` using the Assumptions rebuild shape. Each table gets `CHECK (tainted = CASE WHEN failure_kind = 'healthy' THEN 0 ELSE 1 END)`; every other column, default, `CHECK` and primary key is copied verbatim from `004`. `tainted` is recomputed from `failure_kind` during the copy. Following the user's no-comments preference, the file has no SQL comments.
+    - Probe test `turso_supports_the_transactional_table_rebuild_used_by_migration_006` runs the rebuild statements through the real runner's `execute_batch` path, using a test-only `DbSpec`. It passed, so the plan's turso capability assumption holds.
+    - The `005`-only fixture uses a test-only `PreHealthInvariantDbSpec`, whose `migrations()` returns the first five embedded migrations. `001`–`005` are therefore applied and recorded by the real runner, without inserting them by hand through `open_without_migrations_at`. `db/mod.rs` is unchanged.
+    - AC6 tests: `mutation_trace_{worktrees,events}_{accepts_untainted_healthy,accepts_tainted_snapshot_failure,rejects_untainted_snapshot_failure,rejects_tainted_healthy}_pair` (8), plus `migration_006_keeps_the_existing_mutation_trace_column_checks_and_primary_keys`.
+    - AC7 tests:
+      - `migration_006_normalizes_legacy_health_pairs_from_failure_kind_and_preserves_other_columns` checks both tables and the four untouched tables, compared through `quote(...)` projections, and checks that `006` is recorded.
+      - `migration_006_sql_body_reruns_without_changing_schema_or_rows` deletes the `006` metadata row and reopens, so the real runner runs the body again.
+    - Schema-parity done check: `fresh_and_upgraded_databases_share_the_migration_006_table_sql`.
+    - The existing expected-migration-ID lists and the hook-runtime "never applies" message now include `006`.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db`: 41 passed, 1 failed.
+      - The failure is `equal_time_same_kind_observations_use_a_stable_tie_break_and_concurrent_writes_converge`: concurrent `claude_model_state` writers hit `database is locked` after 5 retries. The test is unrelated to T02 and already flaky: it failed 6/6 runs on clean baseline `a872c962` with T02 stashed, and 4/6 runs with T02 applied.
+      - With that one test skipped (`-- --skip equal_time_same_kind_observations`), the run passed: 41 passed, 0 failed, including all 13 new T02 tests.
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`: passed (385 passed, 0 failed).
+    - Extra check: `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`: passed.
+  - Deviation: T02 does not fix the `claude_model_state` concurrency flake, because it is outside this plan's scope. It needs separate follow-up.
+  - Context impact: localized to the mutation-trace store. `context/cli/mutation-trace-store.md` was synchronized to document migration `006` (rebuild, cross-column health `CHECK`, `failure_kind`-authoritative normalization, re-runnable body, runner behavior unchanged). `context/context-map.md` was synchronized with its `mutation-trace-store.md` annotation extended to cover the same. No root architecture or terminology change.
+  - Context synchronization: synced
 
 - [ ] T03: `Reject inconsistent health pairs when decoding store rows` (status:todo)
   - Task ID: T03

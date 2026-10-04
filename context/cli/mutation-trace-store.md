@@ -56,6 +56,24 @@ enum-shaped column (`ActorKind`, `FailureKind`, `ScopeStatus`, and the
 `Boundary`) has an explicit `encode_*`/`decode_*` function pair — none derives
 from `Debug` or a serde representation.
 
+## Health encoding invariant (migration 006)
+
+`failure_kind` is the semantic health source, and `tainted` is a redundant bit
+that must always equal `failure_kind != 'healthy'`. Migration
+`006_mutation_trace_health_invariant.sql` enforces this in the schema. Inside
+one `BEGIN IMMEDIATE … COMMIT`, it rebuilds `mutation_trace_worktrees` and
+`mutation_trace_events` and adds
+`CHECK (tainted = CASE WHEN failure_kind = 'healthy' THEN 0 ELSE 1 END)` to
+each. Every other column, `CHECK` and primary key is unchanged from `004`.
+While copying, the migration recomputes `tainted` from `failure_kind`, so a
+legacy inconsistent row is repaired with `failure_kind` taken as correct. All
+other columns are copied byte-for-byte, and no revision or timestamp is bumped.
+The four other mutation-trace tables are not touched. The SQL body can be
+re-run on an already-rebuilt schema without changing anything. This covers the
+case where the runner's non-atomic `execute_batch` → `INSERT __sce_migrations`
+sequence finished the body but not the metadata insert. The runner itself is
+unchanged, including the concurrent-opener race in that sequence.
+
 ## Read path
 
 `MutationTraceStore::load_worktree(worktree, scope, event_key)` is the hot
