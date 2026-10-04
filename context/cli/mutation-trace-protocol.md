@@ -27,11 +27,15 @@ module-level Quint refinement matrix (`mod.rs`) close out the
 
 `commit` materializes exactly one `MutationEvent` into `mutation_events` when
 `changed` is true, with `active_scopes`/`attribution` computed by
-`live_scopes_on`/`attribution_for` against the state as it existed *before*
-the same call's own scope-lifecycle transition — a `Start` boundary's emitted
-event never attributes the mutation to the scope it is about to activate, and
-a `Close` boundary's emitted event still attributes to the scope it is about
-to close.
+`live_scopes_on`/`attribution_for_boundary` against the state as it existed
+*before* the same call's own scope-lifecycle transition — a `Start` boundary's
+emitted event never attributes the mutation to the scope it is about to
+activate, and an `Active -> Close` boundary's emitted event still attributes
+to the scope it is about to close. A `Close` whose scope was `NeverSeen`
+(refining `boundaryClosesNeverSeenScope`) is always `IneligibleUnscoped`,
+whatever else is live: its `Start` was never durably observed, so it can
+neither confirm nor attribute; acceptance, cursor movement and the `Closed`
+transition are unchanged.
 
 ## Module layout
 
@@ -88,7 +92,7 @@ Two consequences follow from that choice:
   cannot represent. `boundary_worktree(boundary, scopes: &BTreeMap<ScopeId,
   ScopeState>)` resolves a hook boundary's worktree by reading the `ScopeId`
   out of the boundary and looking up that exact key in `scopes`, mirroring
-  how `commitAttempt`/`prepareAvailable` (`spec/mutation_cursor.qnt:418,458`)
+  how `commitAttempt`/`prepareAvailable` (`spec/mutation_cursor.qnt:536,496`)
   resolve it from `scopeWorktree(data.scope)` rather than from the boundary
   itself. The Rust refinement does not accept an arbitrary `ScopeState`
   alongside a boundary: the boundary's own `ScopeId` is the only key ever
@@ -104,121 +108,12 @@ Two consequences follow from that choice:
 types, they represent real, closed sets (supported harnesses; snapshot
 health), not bounded verification domains.
 
-## Runtime scope materialization
+## Runtime materialization
 
-The Quint model's `SCOPES` universe is finite: `init` populates every
-possible `ScopeId` with a `ScopeState` up front (`scopes' =
-SCOPES.mapBy(scope => { status: NeverSeen, actorKind: scopeActor(scope),
-worktreeId: scopeWorktree(scope) })`), so by the time any boundary is
-evaluated, `scopeActor`/`scopeWorktree` already resolve for that scope — its
-identity is a static fact of the model, not something a transition
-establishes.
-
-This module's `ScopeId` is an unbounded runtime string (see "Refinement
-decisions" above), so `ProtocolState.scopes` cannot be prepopulated with
-every possible scope the way `init` does. Materializing a newly observed
-scope's durable identity — `status: NeverSeen`, its `actor_kind`, and its
-`worktree_id` — is therefore an **adapter/store responsibility, not a
-protocol transition**:
-
-- Quint: a finite universe means every `ScopeState` value already exists at
-  `init`.
-- Rust production: an unbounded identifier space means `ScopeState` is
-  lazily materialized by the persistence/adapter layer *before* the scope's
-  `ScopeId` is ever passed into `prepare`/`commit`.
-
-Before invoking the pure protocol with a hook boundary (`Start`/`Advance`/
-`Close`) that references a `ScopeId`, the surrounding coordinator/store
-projection must ensure that scope already exists in `ProtocolState.scopes`.
-`prepare`/`commit` do not infer identity from hook context, command type, or
-any other heuristic: they never choose a default worktree, choose a default
-actor, or synthesize a new `NeverSeen` scope. `boundary_worktree` returning
-`None` for an unregistered scope, and `prepare`/`commit`'s resulting no-op,
-are exactly this boundary — a missing `ScopeId` is unresolved protocol
-input, not a scope the protocol may create.
-
-### Identity immutability
-
-Once a `ScopeId` is materialized, its `actor_kind` and `worktree_id` are
-immutable identity facts for the lifetime of that scope. Only lifecycle
-`status` transitions, exactly as the protocol already governs:
-
-```text
-NeverSeen -> Active -> Closed
-NeverSeen -> Closed
-Active -> Abandoned
-```
-
-If a future adapter observes an existing `ScopeId` with a conflicting
-`actor_kind` or `worktree_id`, that is an identity/protocol error to reject
-and report — never a record to silently overwrite. This is the concrete
-adapter-side half of `ScopeActorIdentityIsStable` (`spec/mutation_cursor.qnt`);
-the protocol-side half is that no transition in `protocol.rs` ever writes
-`actor_kind`/`worktree_id` (only `status` fields change).
-
-### Missing scope vs. `NeverSeen` scope
-
-These are not equivalent:
-
-- A **missing** `ScopeId` (absent from `ProtocolState.scopes`) means its
-  identity has not been materialized — invalid/unresolved protocol input.
-- An **existing** `ScopeState { status: NeverSeen, .. }` is a known,
-  materialized scope identity that simply has not yet had an accepted
-  `Start`.
-
-The production entry path never calls `prepare`/`commit` with the first
-case; the no-op behavior for a missing scope is a defensive kernel property,
-not a path the coordinator is expected to exercise.
-
-## Runtime worktree materialization
-
-The same representation/refinement boundary applies to `WorktreeId`, one
-level up from scope identity, and governs `taint`/`database_failure`/
-`abandon`/`recover`:
-
-- **Quint**: `WorktreeId` ranges over the finite `WORKTREES` universe, and
-  `init` materializes a `WorktreeState` for every member up front — every
-  `WorktreeId` already resolves before any action runs. This is why
-  `recordDatabaseFailure` (`spec/mutation_cursor.qnt:712-737`) states no
-  explicit worktree-existence guard: there is no state for it to guard
-  against. That omission is a fact about the closed, pre-populated Quint
-  domain, not evidence that an arbitrary unknown worktree is valid protocol
-  input.
-- **Rust production**: `WorktreeId` is an unbounded opaque runtime string, so
-  `ProtocolState.worktrees` contains only worktrees a future coordinator/
-  store layer has actually materialized. Every pure protocol action requires
-  its target `WorktreeId` to already exist in `ProtocolState.worktrees`; an
-  unknown `WorktreeId` is invalid/unresolved kernel input and causes a
-  defensive no-op, exactly as an unregistered `ScopeId` does for `prepare`/
-  `commit`. The pure kernel never creates a `WorktreeState`, infers one, or
-  synthesizes a worktree from context.
-
-A **missing** `WorktreeId` (absent from `ProtocolState.worktrees`) is not
-equivalent to a **healthy** `WorktreeState` (`tainted: false`,
-`failure_kind: Healthy`, ...): the former means the protocol has no
-materialized state for that identity at all, while the latter means the
-identity is known and currently healthy. `taint`, `database_failure`,
-`abandon`, and `recover` all enforce this distinction with the same existence
-guard — `abandon` resolves it through the referenced scope's own materialized
-`worktree_id` rather than taking a `WorktreeId` directly — which keeps
-`external_taint ⊆ ProtocolState.worktrees` an invariant of every state this
-module can produce, since `database_failure` is the sole path that inserts
-into `external_taint`. The concrete runtime refinement of `external_taint` is
-the worktree-local `<git-dir>/sce/mutation-cursor-tainted` marker (see
-[`mutation-trace-external-taint.md`](mutation-trace-external-taint.md)), armed
-write-ahead before Agent Trace DB acquisition and overlaid onto
-`database_failure` recovery only when a later invocation inherits it;
-`WorktreeProjection::into_protocol_state()` itself always returns an empty
-`external_taint`. A pre-protected marker inspect/persist failure means no
-mutation boundary committed; a marker-*clear* failure means the boundary already
-committed durably — the coordinator surfaces that as
-`CoordinateError::MarkerClearAfterCommit`, carrying the committed
-`CoordinateOutcome` so no evidence is lost, and leaves the marker armed so the
-next invocation still promotes it to protocol `external_taint`.
-
-Future responsibility split (mirrors "Runtime scope materialization" above):
-the coordinator/store layer resolves/materializes worktree identity/state and
-loads a `ProtocolState`; `protocol.rs` only transitions already-known ones.
+Scope and worktree materialization (the finite Quint universes vs. the
+unbounded Rust identity space, identity immutability, and missing scope vs.
+`NeverSeen` scope) lives in
+[`mutation-trace-runtime-materialization.md`](mutation-trace-runtime-materialization.md).
 
 ## Target end-state architecture
 

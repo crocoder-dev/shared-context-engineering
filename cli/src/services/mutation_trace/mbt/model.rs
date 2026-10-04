@@ -464,6 +464,7 @@ struct WireModelState {
     scope_history: IgnoredAny,
     abandon_history: IgnoredAny,
     start_history: IgnoredAny,
+    close_from_never_seen_history: IgnoredAny,
     recovery_history: IgnoredAny,
     taint_history: IgnoredAny,
     evidence_attempts: IgnoredAny,

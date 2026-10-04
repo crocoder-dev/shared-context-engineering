@@ -45,12 +45,10 @@ other action, invariant, or production logic, and never participating in
 freshness, lifecycle, attribution, revisions, cursor movement, taint,
 recovery, or mutation-evidence semantics.
 
-Because it is transport metadata, `mbtAction` has no field anywhere in the
-`mbt/model.rs` wire types
-([`WireModelState`](../../cli/src/services/mutation_trace/mbt/model.rs)). When
-the full top-level Quint state record deserializes, `serde`'s default
-unknown-field handling silently drops it — keeping it out of `ModelState`,
-the struct actually compared against the driver's projected state.
+Because it is transport metadata, `mbtAction` appears in
+[`WireModelState`](../../cli/src/services/mutation_trace/mbt/model.rs) only as
+an explicit `IgnoredAny` field (`deny_unknown_fields` rejects unlisted Quint
+variables), which keeps it out of `ModelState`, the compared struct.
 
 ## Operation identity vs. `MbtStutter`
 
@@ -122,9 +120,10 @@ describes. This mapping exists only inside the test-only `mbt` module.
 
 Every verification-only history the spec tracks for its own invariant
 checking (`cursorHistory`, `protocolHistory`, `scopeHistory`,
-`abandonHistory`, `startHistory`, `recoveryHistory`, `taintHistory`,
-`evidenceAttempts`, `scopeStartCount`, `everTerminal`, `mbtAction`) has no
-field in `ModelState` and is dropped the same way `mbtAction` is.
+`abandonHistory`, `startHistory`, `closeFromNeverSeenHistory`,
+`recoveryHistory`, `taintHistory`, `evidenceAttempts`, `scopeStartCount`,
+`everTerminal`, `mbtAction`) has no field in `ModelState` and is listed as an
+`IgnoredAny` field in `WireModelState`, the same way `mbtAction` is.
 
 ## `randomPrepare` stays one `step` branch
 

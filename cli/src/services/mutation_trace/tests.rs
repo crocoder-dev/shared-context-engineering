@@ -945,6 +945,105 @@ fn commit_boundary(state: &ProtocolState, boundary: Boundary, observed: TreeId) 
 }
 
 #[test]
+fn a_close_from_never_seen_codex_scope_beside_a_live_claude_scope_is_ineligible_not_exclusive() {
+    let state = state_with_scopes(&[
+        (
+            "claude-a",
+            scope_with_status(ScopeStatus::Active, worktree("wt0")),
+        ),
+        (
+            "codex-b",
+            codex_scope(ScopeStatus::NeverSeen, worktree("wt0")),
+        ),
+    ]);
+    let boundary = Boundary::Close {
+        scope: scope("codex-b"),
+        event: event("event0"),
+    };
+
+    let outcome = prepare_and_commit(&state, &attempt_id("attempt0"), boundary, tree("tree1"));
+
+    assert!(outcome.evaluation.accepted);
+    assert!(outcome.evaluation.observes);
+    assert_eq!(outcome.state.mutation_events.len(), 1);
+    let event = outcome.state.mutation_events.iter().next().unwrap();
+    assert_eq!(event.active_scopes, BTreeSet::from([scope("claude-a")]));
+    assert_eq!(event.attribution, Attribution::IneligibleUnscoped);
+    assert_ne!(
+        event.attribution,
+        Attribution::AiExclusive(scope("claude-a"))
+    );
+    assert_eq!(
+        outcome.state.scopes.get(&scope("codex-b")).unwrap().status,
+        ScopeStatus::Closed
+    );
+}
+
+#[test]
+fn a_close_from_a_lone_never_seen_scope_over_a_tree_change_is_ineligible() {
+    let state = state_with_scopes(&[(
+        "claude-a",
+        scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
+    )]);
+
+    let event = commit_boundary(
+        &state,
+        Boundary::Close {
+            scope: scope("claude-a"),
+            event: event("event0"),
+        },
+        tree("tree1"),
+    );
+
+    assert!(event.active_scopes.is_empty());
+    assert_eq!(event.attribution, Attribution::IneligibleUnscoped);
+}
+
+#[test]
+fn a_close_from_an_active_scope_over_a_tree_change_keeps_exclusive_attribution() {
+    let state = state_with_scopes(&[(
+        "claude-a",
+        scope_with_status(ScopeStatus::Active, worktree("wt0")),
+    )]);
+
+    let event = commit_boundary(
+        &state,
+        Boundary::Close {
+            scope: scope("claude-a"),
+            event: event("event0"),
+        },
+        tree("tree1"),
+    );
+
+    assert_eq!(
+        event.attribution,
+        Attribution::AiExclusive(scope("claude-a"))
+    );
+}
+
+#[test]
+fn a_close_from_a_never_seen_scope_without_a_tree_change_emits_no_mutation_event() {
+    let state = state_with_scopes(&[(
+        "codex-b",
+        codex_scope(ScopeStatus::NeverSeen, worktree("wt0")),
+    )]);
+    let boundary = Boundary::Close {
+        scope: scope("codex-b"),
+        event: event("event0"),
+    };
+
+    let outcome = prepare_and_commit(&state, &attempt_id("attempt0"), boundary, tree("tree0"));
+
+    assert!(outcome.evaluation.accepted);
+    assert!(!outcome.evaluation.changed);
+    assert!(outcome.state.mutation_events.is_empty());
+    assert_eq!(
+        outcome.state.scopes.get(&scope("codex-b")).unwrap().status,
+        ScopeStatus::Closed
+    );
+}
+
+#[test]
 fn an_unconfirmed_codex_scope_makes_another_harness_boundary_ineligible_instead_of_contended() {
     let state = state_with_scopes(&[
         ("codex-a", codex_scope(ScopeStatus::Active, worktree("wt0"))),

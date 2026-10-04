@@ -101,7 +101,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Suppress attribution for Close from NeverSeen in Quint and Rust` (status:todo)
+- [x] T01: `Suppress attribution for Close from NeverSeen in Quint and Rust` (status:done)
   - Task ID: T01
   - Scope: In —
     - `spec/mutation_cursor.qnt`: conservative `IneligibleUnscoped` branch for `Close` from `NeverSeen` in `attributionForBoundary`; verification-only `closeFromNeverSeenHistory` (declared, initialized, carried by every action, recorded in the accepted branch of `commitAttempt`); new `CloseFromNeverSeenNeverGetsPositiveAttribution` invariant in `SafetyAttribution`; leading close-from-`NeverSeen` branch in `AttributionMatchesObservedScopes`; named regression run (A Active `Scope0`, B NeverSeen `Scope2`).
@@ -113,7 +113,12 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Dependencies: none
   - Done when: Quint typechecks. All `test*` runs pass, including the new run, with `Safety` (and therefore the updated `AttributionMatchesObservedScopes` and the new invariant) holding. Rust mutation-trace tests pass, including the four new tests. The Quint Connect check builds green, with the new history deserialized as `IgnoredAny` and kept out of `ModelState`.
   - Verify: `nix run .#quint -- typecheck spec/mutation_cursor.qnt`; `nix run .#quint -- test spec/mutation_cursor.qnt --match '^test.*'`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace`; `nix build .#checks.x86_64-linux.mutation-trace-quint-connect --print-build-logs`.
-  - Context synchronization: pending
+  - Completed: 2026-10-04
+  - Files changed: `spec/mutation_cursor.qnt`; `cli/src/services/mutation_trace/protocol.rs`; `cli/src/services/mutation_trace/tests.rs`; `cli/src/services/mutation_trace/mbt/model.rs`
+  - Result: Quint adds `boundaryClosesNeverSeenScope` (checked first in `attributionForBoundary`), the `CloseFromNeverSeenCheckpoint` type and `closeFromNeverSeenHistory` var (initialized empty, carried by every action, extended in the accepted `commitAttempt` branch on `Close` from `NeverSeen` with `state.revision + 1`), `isCloseFromNeverSeenEvent`, the leading branch in `AttributionMatchesObservedScopes`, `CloseFromNeverSeenNeverGetsPositiveAttribution` in `SafetyAttribution`, and run `testCloseFromNeverSeenNeverGetsPositiveAttribution`. Rust adds `boundary_closes_never_seen_scope`, checked first in `attribution_for_boundary` with a doc comment; four deterministic tests; and `close_from_never_seen_history: IgnoredAny` in `WireModelState` (no `ModelState` field).
+  - Verify outcomes: Quint typecheck passed; Quint `test*` passed (41 passing, including the new run); Rust `mutation_trace` tests passed (373 passed, 0 failed, including the four new tests); Quint Connect check built green (16 passed, including generated traces and all named scenarios).
+  - Context impact: localized — mutation-trace protocol attribution rule and Quint Connect wire model; affects `context/cli/mutation-trace-protocol.md` and `context/cli/mutation-trace-quint-connect.md` per the plan's Context sync section.
+  - Context synchronization: synced
 
 - [ ] T02: `Document close-from-NeverSeen attribution in the mutation-cursor spec` (status:todo)
   - Task ID: T02
