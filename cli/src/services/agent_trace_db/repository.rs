@@ -311,7 +311,7 @@ mod tests {
     use std::{
         fs,
         path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
     use super::pre_health_invariant_fixture::seed_pre_health_invariant_fixture;
@@ -376,6 +376,25 @@ mod tests {
         .into_iter()
         .next()
         .unwrap_or_else(|| panic!("table '{name}' should exist"))
+    }
+
+    const DATABASE_LOCKED_ERROR: &str = "database is locked";
+    const CONCURRENT_WRITE_DEADLINE: Duration = Duration::from_secs(30);
+    const CONCURRENT_WRITE_RETRY_BACKOFF: Duration = Duration::from_millis(10);
+
+    fn retry_while_database_locked<T>(mut write: impl FnMut() -> Result<T>) -> Result<T> {
+        let deadline = Instant::now() + CONCURRENT_WRITE_DEADLINE;
+        loop {
+            match write() {
+                Err(error)
+                    if error.to_string().contains(DATABASE_LOCKED_ERROR)
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(CONCURRENT_WRITE_RETRY_BACKOFF);
+                }
+                outcome => return outcome,
+            }
+        }
     }
 
     fn claude_observation(
@@ -603,12 +622,14 @@ mod tests {
                 std::thread::spawn(move || {
                     let db = RepositoryAgentTraceDb::open_without_migrations_at(&*db_path)
                         .expect("repository DB should reopen for concurrent state write");
-                    db.upsert_claude_model_state(claude_observation(
-                        &format!("claude/model-{index}"),
-                        ObservationKind::PostModelSwitch,
-                        "picker",
-                        500,
-                    ))
+                    retry_while_database_locked(|| {
+                        db.upsert_claude_model_state(claude_observation(
+                            &format!("claude/model-{index}"),
+                            ObservationKind::PostModelSwitch,
+                            "picker",
+                            500,
+                        ))
+                    })
                     .expect("concurrent state write should succeed")
                 })
             })
@@ -855,8 +876,10 @@ mod tests {
                 std::thread::spawn(move || {
                     let db = RepositoryAgentTraceDb::open_without_migrations_at(&*db_path)
                         .expect("repository DB should reopen for concurrent claim");
-                    db.verify_or_initialize_repository_metadata(&repository_id)
-                        .expect("concurrent metadata initialization should succeed")
+                    retry_while_database_locked(|| {
+                        db.verify_or_initialize_repository_metadata(&repository_id)
+                    })
+                    .expect("concurrent metadata initialization should succeed")
                 })
             })
             .collect();
@@ -1874,8 +1897,10 @@ COMMIT;";
                 std::thread::spawn(move || {
                     let db = RepositoryAgentTraceDb::open_without_migrations_at(&*db_path)
                         .expect("repository DB should reopen for concurrent delivery");
-                    let (message, part) = conversation_text_event_fixture();
-                    db.insert_conversation_text_event(message, part)
+                    retry_while_database_locked(|| {
+                        let (message, part) = conversation_text_event_fixture();
+                        db.insert_conversation_text_event(message, part)
+                    })
                 })
             })
             .collect();
