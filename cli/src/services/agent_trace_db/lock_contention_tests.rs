@@ -12,9 +12,10 @@ use super::repository::RepositoryAgentTraceDb;
 use super::{InsertMessageInsert, InsertPartInsert, MessageRole, PartType};
 
 const DATABASE_LOCKED_ERROR: &str = "database is locked";
-const LOCK_HOLD_DURATIONS_MS: &[u64] = &[50, 100, 200, 300, 500, 1_000];
+const LOCK_HOLD_DURATIONS_MS: &[u64] = &[50, 100, 200, 300, 500, 1_000, 4_000];
 const RELIABLY_WITHIN_RETRY_BUDGET_MS: u64 = 100;
-const RELIABLY_BEYOND_RETRY_BUDGET_MS: u64 = 500;
+const RELIABLY_BEYOND_RETRY_BUDGET_MS: u64 = 4_000;
+const BUSY_TIMEOUT_PRODUCTION_HOLD_MS: u64 = 100;
 const ROUNDS_ENV: &str = "SCE_LOCK_CONTENTION_ROUNDS";
 const WRITERS_ENV: &str = "SCE_LOCK_CONTENTION_WRITERS";
 const STRICT_ENV: &str = "SCE_LOCK_CONTENTION_STRICT";
@@ -206,7 +207,7 @@ fn lock_budget_boundary_characterizes_single_writer_blocked_by_begin_immediate_h
         .map(|hold_ms| insert_while_write_lock_is_held(Duration::from_millis(*hold_ms)))
         .collect();
 
-    eprintln!("\nT01 lock-budget boundary (production QUERY_RETRY_POLICY, no busy_timeout)");
+    eprintln!("\nlock-budget boundary (production QUERY_RETRY_POLICY, Agent Trace busy_timeout)");
     eprintln!("hold_ms | outcome            | elapsed_ms | holder_released_ms | messages | parts");
     for sample in &samples {
         eprintln!(
@@ -253,6 +254,26 @@ fn lock_budget_boundary_characterizes_single_writer_blocked_by_begin_immediate_h
             );
         }
     }
+}
+
+#[test]
+fn busy_timeout_production_insert_waits_for_begin_immediate_holder() {
+    let hold = Duration::from_millis(BUSY_TIMEOUT_PRODUCTION_HOLD_MS);
+
+    let sample = insert_while_write_lock_is_held(hold);
+
+    assert_eq!(
+        sample.outcome,
+        WriteOutcome::Inserted,
+        "insert_conversation_text_event should wait out a {}ms holder",
+        hold.as_millis()
+    );
+    assert_eq!((sample.messages, sample.parts), (1, 1));
+    assert!(
+        sample.elapsed >= hold / 2,
+        "the insert should have waited for the holder, took {:?}",
+        sample.elapsed
+    );
 }
 
 struct LatencyPercentiles {

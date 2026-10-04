@@ -274,7 +274,7 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
   - Context impact: none to durable context. This is a test-only change plus plan evidence. The baseline numbers feed the `context/sce/agent-trace-db.md` measured-evidence summary planned for later tasks.
   - Context synchronization: synced
 
-- [ ] T02: `Configure Turso busy timeout on Agent Trace DB connections` (status:todo)
+- [x] T02: `Configure Turso busy timeout on Agent Trace DB connections` (status:done)
   - Task ID: T02
   - Scope: In:
     - one named default constant (`AGENT_TRACE_DB_BUSY_TIMEOUT_MS = 500`) resolved per `DbSpec` through a single resolver;
@@ -288,7 +288,42 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
   - Dependencies: T01
   - Done when: AC1 and AC2 hold; Agent Trace DB writes wait for transient lock contention inside Turso; the other DBs are unchanged.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml busy_timeout`; `... test --manifest-path cli/Cargo.toml agent_trace_db`.
-  - Context synchronization: pending
+  - Completed: 2026-10-04
+  - Files changed:
+    - `cli/src/services/db/mod.rs`
+    - `cli/src/services/agent_trace_db/lock_contention_tests.rs`
+    - `context/plans/agent-trace-db-write-contention.md` (this record)
+  - Result:
+    - Added `AGENT_TRACE_DB_BUSY_TIMEOUT_MS = 500` and the single resolver `resolve_busy_timeout::<M>()`. It returns 500 ms for `agent_trace_db` and zero for every other `DbSpec`. T03 feeds config into this resolver.
+    - `apply_busy_timeout` calls `Connection::busy_timeout(...)` on the connection returned by `connect()` inside `TursoDb::open_without_migrations_at`, the only local `TursoDb` open path (`new`, `new_at` and `open_without_migrations` all delegate to it). A zero timeout leaves the handler unset. `experimental_multiprocess_wal(true)` is unchanged.
+    - The resolver's doc comment explains how multiprocess WAL differs from the busy timeout.
+    - The encrypted `EncryptedTursoDb::new` path is `auth_db` only and does not use multiprocess WAL; it is untouched. `local_db` and `auth_db` resolve to zero, so their behavior is unchanged.
+    - Tests:
+      - `busy_timeout_resolves_default_for_agent_trace_db_and_zero_for_other_dbs`.
+      - `busy_timeout_unset_connection_returns_busy_promptly_on_begin_immediate` (control): a raw `BEGIN IMMEDIATE` with no SCE retry gets `turso::Error::Busy` in under half the hold.
+      - `busy_timeout_agent_trace_connection_waits_for_begin_immediate_holder`: a raw `BEGIN IMMEDIATE` on an Agent Trace connection waits for the holder and succeeds.
+      - `busy_timeout_production_insert_waits_for_begin_immediate_holder`: under a 100 ms hold, `insert_conversation_text_event` succeeds with no test-level retry, writes 1/1 rows, and its elapsed time is at least half the hold.
+    - Deviation: the two raw-connection tests hold the lock for 300 ms instead of ~100 ms. 300 ms is beyond the pre-fix generic retry budget, so the waiting test fails without the busy handler.
+    - Deviation (needed to keep existing non-ignored tests valid): the T01 characterization tests assumed the ~280 ms pre-fix budget. With a 500 ms busy timeout under the unchanged generic 5-attempt query retry, the interim worst case is about 2.8 s. So `LOCK_HOLD_DURATIONS_MS` gains a 4 000 ms hold and `RELIABLY_BEYOND_RETRY_BUDGET_MS` becomes 4 000. `hook_open_metadata_write_exhausts_retry_budget_while_write_lock_is_held` therefore holds for 4 s. Both tests are still recalibrated or converted by T07/T06. No assertion was removed or weakened in kind.
+    - Interim lock-budget boundary (debug build):
+
+      | hold ms | outcome | elapsed ms | rows (msg/part) |
+      | --- | --- | --- | --- |
+      | 50 | Ok(true) | 70 | 1/1 |
+      | 100 | Ok(true) | 119 | 1/1 |
+      | 200 | Ok(true) | 244 | 1/1 |
+      | 300 | Ok(true) | 344 | 1/1 |
+      | 500 | Ok(true) | 521 | 1/1 |
+      | 1000 | Ok(true) | 1043 | 1/1 |
+      | 4000 | database is locked (5 attempts) | 2784 | 0/0 |
+
+      Before the fix, 300, 500 and 1000 ms holds failed at about 280 ms.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml busy_timeout`: passed (4 passed).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db`: passed (49 passed, 3 ignored).
+    - Additional: `... test --manifest-path cli/Cargo.toml lock_contention -- --nocapture` passed (6 passed, 3 ignored) and produced the table above. `nix build .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt` passed.
+  - Context impact: localized behavior change. Agent Trace DB connections now carry a 500 ms Turso busy timeout. The planned `context/sce/shared-turso-db.md` layering text (multiprocess WAL vs. `busy_timeout_ms`) applies; the config key and outer-retry layers arrive in T03/T04.
+  - Context synchronization: synced
 
 - [ ] T03: `Expose busy_timeout_ms and contention_deadline_ms in database_retry config` (status:todo)
   - Task ID: T03
