@@ -455,10 +455,12 @@ mod tests {
                 String::from("003_claude_model_state"),
                 String::from("004_mutation_trace_protocol"),
                 String::from("005_mutation_scope_provenance"),
+                String::from("006_mutation_trace_health_invariant"),
             ],
             "repository DBs should be initialized from the baseline schema plus \
              its additive source-instance-id, Claude model-state, \
-             mutation-trace-protocol, and mutation-scope-provenance migrations"
+             mutation-trace-protocol, mutation-scope-provenance, and \
+             mutation-trace-health-invariant migrations"
         );
 
         db.ensure_schema_ready_for_hooks()
@@ -502,6 +504,7 @@ mod tests {
                 String::from("003_claude_model_state"),
                 String::from("004_mutation_trace_protocol"),
                 String::from("005_mutation_scope_provenance"),
+                String::from("006_mutation_trace_health_invariant"),
             ]
         );
 
@@ -1072,8 +1075,9 @@ mod tests {
                 String::from("003_claude_model_state"),
                 String::from("004_mutation_trace_protocol"),
                 String::from("005_mutation_scope_provenance"),
+                String::from("006_mutation_trace_health_invariant"),
             ],
-            "an existing 001+002 database should get 003, 004, and 005 applied on top through the setup/lifecycle path, without reapplying 001/002"
+            "an existing 001+002 database should get 003, 004, 005, and 006 applied on top through the setup/lifecycle path, without reapplying 001/002"
         );
 
         for table in [
@@ -1145,7 +1149,7 @@ mod tests {
                 String::from("001_repository_schema"),
                 String::from("002_repository_source_instance_id"),
             ],
-            "the no-migration hook-runtime path must never record or apply 003, 004, or 005"
+            "the no-migration hook-runtime path must never record or apply 003, 004, 005, or 006"
         );
 
         for table in [
@@ -1163,6 +1167,550 @@ mod tests {
         }
 
         drop(db);
+        remove_test_db(&db_path);
+    }
+
+    const TABLE_REBUILD_PROBE_SQL: &str = "BEGIN IMMEDIATE;
+CREATE TABLE probe_health (
+    tainted INTEGER NOT NULL CHECK (tainted IN (0, 1)),
+    failure_kind TEXT NOT NULL,
+    CHECK (tainted = CASE WHEN failure_kind = 'healthy' THEN 0 ELSE 1 END)
+);
+INSERT INTO probe_health (tainted, failure_kind) VALUES (0, 'healthy');
+CREATE TABLE probe_health_v006 (
+    tainted INTEGER NOT NULL CHECK (tainted IN (0, 1)),
+    failure_kind TEXT NOT NULL,
+    CHECK (tainted = CASE WHEN failure_kind = 'healthy' THEN 0 ELSE 1 END)
+);
+INSERT INTO probe_health_v006 (tainted, failure_kind)
+SELECT tainted, failure_kind FROM probe_health;
+DROP TABLE probe_health;
+ALTER TABLE probe_health_v006 RENAME TO probe_health;
+COMMIT;";
+
+    const TABLE_REBUILD_PROBE_MIGRATIONS: &[(&str, &str)] =
+        &[("probe_table_rebuild", TABLE_REBUILD_PROBE_SQL)];
+
+    struct TableRebuildProbeDbSpec;
+
+    impl DbSpec for TableRebuildProbeDbSpec {
+        fn db_name() -> &'static str {
+            "table rebuild probe DB"
+        }
+
+        fn db_path() -> Result<PathBuf> {
+            anyhow::bail!("table rebuild probe DB has no canonical path")
+        }
+
+        fn migrations() -> &'static [(&'static str, &'static str)] {
+            TABLE_REBUILD_PROBE_MIGRATIONS
+        }
+
+        fn db_config_key() -> &'static str {
+            "agent_trace_db"
+        }
+    }
+
+    #[test]
+    fn turso_supports_the_transactional_table_rebuild_used_by_migration_006() {
+        let db_path = unique_test_db_path("table-rebuild-probe");
+        let probe = TursoDb::<TableRebuildProbeDbSpec>::new_at(&db_path).expect(
+            "turso should run BEGIN IMMEDIATE, DROP TABLE, ALTER TABLE RENAME and COMMIT in one batch",
+        );
+
+        let tables = probe
+            .query_map(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'probe_health%'",
+                (),
+                |row| row.get::<String>(0).map_err(Into::into),
+            )
+            .expect("sqlite_master query should succeed");
+        assert_eq!(tables, vec![String::from("probe_health")]);
+
+        let rows = probe
+            .query_map(
+                "SELECT tainted, failure_kind FROM probe_health",
+                (),
+                |row| Ok((row.get::<i64>(0)?, row.get::<String>(1)?)),
+            )
+            .expect("renamed table should be readable");
+        assert_eq!(rows, vec![(0, String::from("healthy"))]);
+
+        probe
+            .execute(
+                "INSERT INTO probe_health (tainted, failure_kind) VALUES (1, 'snapshot_failure')",
+                (),
+            )
+            .expect("a consistent pair should satisfy the CASE check");
+        for (tainted, failure_kind) in [(0, "snapshot_failure"), (1, "healthy")] {
+            let error = probe
+                .execute(
+                    "INSERT INTO probe_health (tainted, failure_kind) VALUES (?1, ?2)",
+                    (tainted, failure_kind),
+                )
+                .expect_err("an inconsistent pair should violate the CASE check");
+            assert!(
+                error.to_string().contains("CHECK"),
+                "unexpected error: {error}"
+            );
+        }
+
+        drop(probe);
+        remove_test_db(&db_path);
+    }
+
+    const PRE_HEALTH_INVARIANT_MIGRATION_COUNT: usize = 5;
+    const HEALTH_INVARIANT_MIGRATION_ID: &str = "006_mutation_trace_health_invariant";
+    const HEALTH_INVARIANT_TABLES: [&str; 2] =
+        ["mutation_trace_worktrees", "mutation_trace_events"];
+
+    const WORKTREE_ROWS_SNAPSHOT_SQL: &str = "SELECT worktree_id, quote(cursor_tree) || '|' || quote(revision) || '|' || \
+         quote(failure_kind) || '|' || quote(needs_rebaseline) || '|' || quote(created_at) || '|' || \
+         quote(updated_at) FROM mutation_trace_worktrees ORDER BY worktree_id";
+    const EVENT_ROWS_SNAPSHOT_SQL: &str = "SELECT worktree_id || ':' || hex(revision), quote(before_tree) || '|' || \
+         quote(after_tree) || '|' || quote(failure_kind) || '|' || quote(attribution_kind) || '|' || \
+         quote(attribution_scope_id) || '|' || quote(boundary_kind) || '|' || quote(boundary_scope_id) || '|' || \
+         quote(boundary_event_id) || '|' || quote(created_at) FROM mutation_trace_events \
+         ORDER BY worktree_id, revision";
+    const WORKTREE_TAINT_SQL: &str =
+        "SELECT worktree_id, tainted FROM mutation_trace_worktrees ORDER BY worktree_id";
+    const EVENT_TAINT_SQL: &str =
+        "SELECT worktree_id || ':' || hex(revision), tainted FROM mutation_trace_events \
+         ORDER BY worktree_id, revision";
+    const UNTOUCHED_TABLE_SNAPSHOT_SQL: [&str; 4] = [
+        "SELECT scope_id, quote(worktree_id) || '|' || quote(actor_kind) || '|' || quote(status) || '|' || \
+         quote(created_at) || '|' || quote(updated_at) FROM mutation_trace_scopes ORDER BY scope_id",
+        "SELECT scope_id || ':' || event_id, quote(created_at) FROM mutation_trace_processed_events \
+         ORDER BY scope_id, event_id",
+        "SELECT worktree_id || ':' || hex(revision) || ':' || scope_id, '' \
+         FROM mutation_trace_event_active_scopes ORDER BY worktree_id, revision, scope_id",
+        "SELECT scope_id, quote(session_id) || '|' || quote(model_id) || '|' || quote(created_at) \
+         FROM mutation_trace_scope_provenance ORDER BY scope_id",
+    ];
+
+    const LEGACY_HEALTH_ROWS_SQL: [&str; 12] = [
+        "INSERT INTO mutation_trace_worktrees
+            (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline, created_at, updated_at)
+         VALUES ('wt-healthy-tainted', 'tree-a', X'0000000000000001', 1, 'healthy', 1,
+                 '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')",
+        "INSERT INTO mutation_trace_worktrees
+            (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline, created_at, updated_at)
+         VALUES ('wt-healthy-untainted', 'tree-b', X'0000000000000002', 0, 'healthy', 0,
+                 '2026-01-03T00:00:00.000Z', '2026-01-04T00:00:00.000Z')",
+        "INSERT INTO mutation_trace_worktrees
+            (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline, created_at, updated_at)
+         VALUES ('wt-snapshot-failure-tainted', 'tree-c', X'0000000000000003', 1, 'snapshot_failure', 0,
+                 '2026-01-05T00:00:00.000Z', '2026-01-06T00:00:00.000Z')",
+        "INSERT INTO mutation_trace_worktrees
+            (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline, created_at, updated_at)
+         VALUES ('wt-snapshot-failure-untainted', 'tree-d', X'00000000000000FF', 0, 'snapshot_failure', 1,
+                 '2026-01-07T00:00:00.000Z', '2026-01-08T00:00:00.000Z')",
+        "INSERT INTO mutation_trace_events
+            (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
+             attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id, created_at)
+         VALUES ('wt-events', X'0000000000000001', 'tree-0', 'tree-1', 1, 'healthy',
+                 'ai_exclusive', 'scope-1', 'start', 'scope-1', 'event-1', '2026-02-01T00:00:00.000Z')",
+        "INSERT INTO mutation_trace_events
+            (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
+             attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id, created_at)
+         VALUES ('wt-events', X'0000000000000002', 'tree-1', 'tree-2', 0, 'healthy',
+                 'ai_contended', NULL, 'advance', 'scope-1', 'event-2', '2026-02-02T00:00:00.000Z')",
+        "INSERT INTO mutation_trace_events
+            (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
+             attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id, created_at)
+         VALUES ('wt-events', X'0000000000000003', 'tree-2', 'tree-3', 1, 'snapshot_failure',
+                 'ineligible_unscoped', NULL, 'flush', NULL, NULL, '2026-02-03T00:00:00.000Z')",
+        "INSERT INTO mutation_trace_events
+            (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
+             attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id, created_at)
+         VALUES ('wt-events', X'0000000000000004', 'tree-3', 'tree-4', 0, 'snapshot_failure',
+                 'ineligible_unscoped', NULL, 'close', 'scope-1', 'event-3', '2026-02-04T00:00:00.000Z')",
+        "INSERT INTO mutation_trace_scopes (scope_id, worktree_id, actor_kind, status, created_at, updated_at)
+         VALUES ('scope-1', 'wt-events', 'codex', 'closed',
+                 '2026-03-01T00:00:00.000Z', '2026-03-02T00:00:00.000Z')",
+        "INSERT INTO mutation_trace_processed_events (scope_id, event_id, created_at)
+         VALUES ('scope-1', 'event-1', '2026-03-03T00:00:00.000Z')",
+        "INSERT INTO mutation_trace_event_active_scopes (worktree_id, revision, scope_id)
+         VALUES ('wt-events', X'0000000000000002', 'scope-1')",
+        "INSERT INTO mutation_trace_scope_provenance (scope_id, session_id, model_id, created_at)
+         VALUES ('scope-1', 'session-1', 'model-1', '2026-03-04T00:00:00.000Z')",
+    ];
+
+    struct PreHealthInvariantDbSpec;
+
+    impl DbSpec for PreHealthInvariantDbSpec {
+        fn db_name() -> &'static str {
+            "pre-006 repository Agent Trace DB"
+        }
+
+        fn db_path() -> Result<PathBuf> {
+            anyhow::bail!("pre-006 repository Agent Trace DB has no canonical path")
+        }
+
+        fn migrations() -> &'static [(&'static str, &'static str)] {
+            &generated_migrations::AGENT_TRACE_REPOSITORY_MIGRATIONS
+                [..PRE_HEALTH_INVARIANT_MIGRATION_COUNT]
+        }
+
+        fn db_config_key() -> &'static str {
+            "agent_trace_db"
+        }
+    }
+
+    fn seed_pre_health_invariant_fixture(db_path: &std::path::Path, statements: &[&str]) {
+        let fixture = TursoDb::<PreHealthInvariantDbSpec>::new_at(db_path)
+            .expect("pre-006 fixture DB should migrate through 005");
+        let applied_ids = fixture
+            .query_map(
+                "SELECT id FROM __sce_migrations ORDER BY id ASC",
+                (),
+                |row| row.get::<String>(0).map_err(Into::into),
+            )
+            .expect("migration metadata query should succeed");
+        assert_eq!(
+            applied_ids.last().map(String::as_str),
+            Some("005_mutation_scope_provenance"),
+            "the pre-006 fixture must stop at 005"
+        );
+        for statement in statements {
+            fixture
+                .execute(statement, ())
+                .unwrap_or_else(|error| panic!("fixture row should insert: {error}"));
+        }
+        drop(fixture);
+    }
+
+    fn keyed_text_rows(db: &RepositoryAgentTraceDb, sql: &str) -> Vec<(String, String)> {
+        db.query_map(sql, (), |row| {
+            Ok((row.get::<String>(0)?, row.get::<String>(1)?))
+        })
+        .expect("snapshot query should succeed")
+    }
+
+    fn keyed_flag_rows(db: &RepositoryAgentTraceDb, sql: &str) -> Vec<(String, i64)> {
+        db.query_map(sql, (), |row| {
+            Ok((row.get::<String>(0)?, row.get::<i64>(1)?))
+        })
+        .expect("flag query should succeed")
+    }
+
+    fn applied_migration_ids(db: &RepositoryAgentTraceDb) -> Vec<String> {
+        db.query_map(
+            "SELECT id FROM __sce_migrations ORDER BY id ASC",
+            (),
+            |row| row.get::<String>(0).map_err(Into::into),
+        )
+        .expect("migration metadata query should succeed")
+    }
+
+    fn health_table_rows(db: &RepositoryAgentTraceDb) -> Vec<Vec<(String, String)>> {
+        let mut snapshots = vec![
+            keyed_text_rows(db, WORKTREE_ROWS_SNAPSHOT_SQL),
+            keyed_text_rows(db, EVENT_ROWS_SNAPSHOT_SQL),
+        ];
+        snapshots.extend(
+            UNTOUCHED_TABLE_SNAPSHOT_SQL
+                .iter()
+                .map(|sql| keyed_text_rows(db, sql)),
+        );
+        snapshots
+    }
+
+    fn insert_health_pair(
+        db: &RepositoryAgentTraceDb,
+        table: &str,
+        tainted: i64,
+        failure_kind: &str,
+    ) -> Result<u64> {
+        let sql = match table {
+            "mutation_trace_worktrees" => {
+                "INSERT INTO mutation_trace_worktrees
+                    (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline)
+                 VALUES ('wt-1', 'tree-0', X'0000000000000000', ?1, ?2, 0)"
+            }
+            "mutation_trace_events" => {
+                "INSERT INTO mutation_trace_events
+                    (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
+                     attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id)
+                 VALUES ('wt-1', X'0000000000000001', 'tree-0', 'tree-1', ?1, ?2,
+                         'ineligible_unscoped', NULL, 'flush', NULL, NULL)"
+            }
+            other => panic!("unexpected health-invariant table '{other}'"),
+        };
+        db.execute(sql, (tainted, failure_kind))
+    }
+
+    fn assert_health_pair_accepted(table: &str, tainted: i64, failure_kind: &str) {
+        let db_path = unique_test_db_path("mutation-trace-health-accepted");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+
+        insert_health_pair(&db, table, tainted, failure_kind).unwrap_or_else(|error| {
+            panic!("{table} should accept (tainted={tainted}, '{failure_kind}'): {error}")
+        });
+        assert_eq!(row_count(&db, table), 1);
+
+        remove_test_db(&db_path);
+    }
+
+    fn assert_health_pair_rejected(table: &str, tainted: i64, failure_kind: &str) {
+        let db_path = unique_test_db_path("mutation-trace-health-rejected");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+
+        let error = insert_health_pair(&db, table, tainted, failure_kind).expect_err(&format!(
+            "{table} must reject (tainted={tainted}, '{failure_kind}')"
+        ));
+        assert!(
+            error.to_string().contains("CHECK"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(row_count(&db, table), 0);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn mutation_trace_worktrees_accepts_untainted_healthy_pair() {
+        assert_health_pair_accepted("mutation_trace_worktrees", 0, "healthy");
+    }
+
+    #[test]
+    fn mutation_trace_worktrees_accepts_tainted_snapshot_failure_pair() {
+        assert_health_pair_accepted("mutation_trace_worktrees", 1, "snapshot_failure");
+    }
+
+    #[test]
+    fn mutation_trace_worktrees_rejects_untainted_snapshot_failure_pair() {
+        assert_health_pair_rejected("mutation_trace_worktrees", 0, "snapshot_failure");
+    }
+
+    #[test]
+    fn mutation_trace_worktrees_rejects_tainted_healthy_pair() {
+        assert_health_pair_rejected("mutation_trace_worktrees", 1, "healthy");
+    }
+
+    #[test]
+    fn mutation_trace_events_accepts_untainted_healthy_pair() {
+        assert_health_pair_accepted("mutation_trace_events", 0, "healthy");
+    }
+
+    #[test]
+    fn mutation_trace_events_accepts_tainted_snapshot_failure_pair() {
+        assert_health_pair_accepted("mutation_trace_events", 1, "snapshot_failure");
+    }
+
+    #[test]
+    fn mutation_trace_events_rejects_untainted_snapshot_failure_pair() {
+        assert_health_pair_rejected("mutation_trace_events", 0, "snapshot_failure");
+    }
+
+    #[test]
+    fn mutation_trace_events_rejects_tainted_healthy_pair() {
+        assert_health_pair_rejected("mutation_trace_events", 1, "healthy");
+    }
+
+    #[test]
+    fn migration_006_keeps_the_existing_mutation_trace_column_checks_and_primary_keys() {
+        let db_path = unique_test_db_path("mutation-trace-health-existing-checks");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+
+        for (statement, expected) in [
+            (
+                "INSERT INTO mutation_trace_worktrees
+                    (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline)
+                 VALUES ('wt-1', 'tree-0', X'0000000000000000', 2, 'snapshot_failure', 0)",
+                "CHECK",
+            ),
+            (
+                "INSERT INTO mutation_trace_worktrees
+                    (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline)
+                 VALUES ('wt-1', 'tree-0', X'0000000000000000', 1, 'unknown', 0)",
+                "CHECK",
+            ),
+            (
+                "INSERT INTO mutation_trace_worktrees
+                    (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline)
+                 VALUES ('wt-1', 'tree-0', X'0000000000000000', 0, 'healthy', 2)",
+                "CHECK",
+            ),
+            (
+                "INSERT INTO mutation_trace_events
+                    (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
+                     attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id)
+                 VALUES ('wt-1', '12345678', 'tree-0', 'tree-1', 0, 'healthy',
+                         'ineligible_unscoped', NULL, 'flush', NULL, NULL)",
+                "CHECK",
+            ),
+            (
+                "INSERT INTO mutation_trace_events
+                    (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
+                     attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id)
+                 VALUES ('wt-1', X'0000000000000001', 'tree-0', 'tree-1', 0, 'healthy',
+                         'ineligible_unscoped', 'scope-1', 'flush', NULL, NULL)",
+                "CHECK",
+            ),
+            (
+                "INSERT INTO mutation_trace_events
+                    (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
+                     attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id)
+                 VALUES ('wt-1', X'0000000000000001', 'tree-0', 'tree-1', 0, 'healthy',
+                         'ineligible_unscoped', NULL, 'flush', 'scope-1', 'event-1')",
+                "CHECK",
+            ),
+        ] {
+            let error = db
+                .execute(statement, ())
+                .expect_err("a row violating a 004 column check must be rejected after 006");
+            assert!(
+                error.to_string().contains(expected),
+                "unexpected error: {error}"
+            );
+        }
+
+        insert_health_pair(&db, "mutation_trace_worktrees", 0, "healthy")
+            .expect("first worktree row should insert");
+        insert_health_pair(&db, "mutation_trace_events", 0, "healthy")
+            .expect("first event row should insert");
+        for table in HEALTH_INVARIANT_TABLES {
+            let error = insert_health_pair(&db, table, 0, "healthy")
+                .expect_err("a duplicate primary key must be rejected after 006");
+            assert!(
+                error.to_string().contains("UNIQUE") || error.to_string().contains("PRIMARY KEY"),
+                "unexpected error: {error}"
+            );
+        }
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn migration_006_normalizes_legacy_health_pairs_from_failure_kind_and_preserves_other_columns()
+    {
+        let db_path = unique_test_db_path("mutation-trace-health-legacy");
+        seed_pre_health_invariant_fixture(&db_path, &LEGACY_HEALTH_ROWS_SQL);
+
+        let legacy = RepositoryAgentTraceDb::open_without_migrations_at(&db_path)
+            .expect("pre-006 fixture should reopen without migrations");
+        let legacy_rows = health_table_rows(&legacy);
+        assert_eq!(
+            keyed_flag_rows(&legacy, WORKTREE_TAINT_SQL),
+            vec![
+                (String::from("wt-healthy-tainted"), 1),
+                (String::from("wt-healthy-untainted"), 0),
+                (String::from("wt-snapshot-failure-tainted"), 1),
+                (String::from("wt-snapshot-failure-untainted"), 0),
+            ]
+        );
+        drop(legacy);
+
+        let migrated =
+            RepositoryAgentTraceDb::new_at(&db_path).expect("pre-006 database should upgrade");
+
+        assert_eq!(
+            applied_migration_ids(&migrated).last().map(String::as_str),
+            Some(HEALTH_INVARIANT_MIGRATION_ID)
+        );
+        assert_eq!(
+            keyed_flag_rows(&migrated, WORKTREE_TAINT_SQL),
+            vec![
+                (String::from("wt-healthy-tainted"), 0),
+                (String::from("wt-healthy-untainted"), 0),
+                (String::from("wt-snapshot-failure-tainted"), 1),
+                (String::from("wt-snapshot-failure-untainted"), 1),
+            ]
+        );
+        assert_eq!(
+            keyed_flag_rows(&migrated, EVENT_TAINT_SQL),
+            vec![
+                (String::from("wt-events:0000000000000001"), 0),
+                (String::from("wt-events:0000000000000002"), 0),
+                (String::from("wt-events:0000000000000003"), 1),
+                (String::from("wt-events:0000000000000004"), 1),
+            ]
+        );
+        assert_eq!(
+            health_table_rows(&migrated),
+            legacy_rows,
+            "006 must preserve every non-tainted column and leave the other mutation-trace tables untouched"
+        );
+        migrated
+            .ensure_schema_ready_for_hooks()
+            .expect("upgraded repository DB schema should be ready for hooks");
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn fresh_and_upgraded_databases_share_the_migration_006_table_sql() {
+        let fresh_path = unique_test_db_path("mutation-trace-health-fresh-schema");
+        let fresh = RepositoryAgentTraceDb::new_at(&fresh_path).expect("fresh DB should open");
+
+        let upgraded_path = unique_test_db_path("mutation-trace-health-upgraded-schema");
+        seed_pre_health_invariant_fixture(&upgraded_path, &LEGACY_HEALTH_ROWS_SQL);
+        let upgraded = RepositoryAgentTraceDb::new_at(&upgraded_path)
+            .expect("pre-006 database should upgrade");
+
+        for table in HEALTH_INVARIANT_TABLES {
+            let fresh_sql = table_sql(&fresh, table);
+            assert!(
+                fresh_sql.contains("CASE WHEN failure_kind = 'healthy' THEN 0 ELSE 1 END"),
+                "{table} should carry the cross-column health check: {fresh_sql}"
+            );
+            assert_eq!(fresh_sql, table_sql(&upgraded, table));
+            assert!(!sqlite_object_exists(
+                &fresh,
+                "table",
+                &format!("{table}_v006")
+            ));
+            assert!(!sqlite_object_exists(
+                &upgraded,
+                "table",
+                &format!("{table}_v006")
+            ));
+        }
+
+        remove_test_db(&fresh_path);
+        remove_test_db(&upgraded_path);
+    }
+
+    #[test]
+    fn migration_006_sql_body_reruns_without_changing_schema_or_rows() {
+        let db_path = unique_test_db_path("mutation-trace-health-rerun");
+        seed_pre_health_invariant_fixture(&db_path, &LEGACY_HEALTH_ROWS_SQL);
+
+        let migrated =
+            RepositoryAgentTraceDb::new_at(&db_path).expect("pre-006 database should upgrade");
+        let schema_after_first_run =
+            HEALTH_INVARIANT_TABLES.map(|table| table_sql(&migrated, table));
+        let rows_after_first_run = health_table_rows(&migrated);
+        let worktree_taint_after_first_run = keyed_flag_rows(&migrated, WORKTREE_TAINT_SQL);
+        let event_taint_after_first_run = keyed_flag_rows(&migrated, EVENT_TAINT_SQL);
+        let migrations_after_first_run = applied_migration_ids(&migrated);
+        migrated
+            .execute(
+                "DELETE FROM __sce_migrations WHERE id = ?1",
+                (HEALTH_INVARIANT_MIGRATION_ID,),
+            )
+            .expect("test should drop the 006 metadata row to force a re-run");
+        drop(migrated);
+
+        let rerun = RepositoryAgentTraceDb::new_at(&db_path)
+            .expect("the 006 SQL body should re-run against an already-rebuilt schema");
+
+        assert_eq!(
+            HEALTH_INVARIANT_TABLES.map(|table| table_sql(&rerun, table)),
+            schema_after_first_run
+        );
+        assert_eq!(health_table_rows(&rerun), rows_after_first_run);
+        assert_eq!(
+            keyed_flag_rows(&rerun, WORKTREE_TAINT_SQL),
+            worktree_taint_after_first_run
+        );
+        assert_eq!(
+            keyed_flag_rows(&rerun, EVENT_TAINT_SQL),
+            event_taint_after_first_run
+        );
+        assert_eq!(applied_migration_ids(&rerun), migrations_after_first_run);
+
         remove_test_db(&db_path);
     }
 
