@@ -148,7 +148,7 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
 
 ## Task stack
 
-- [ ] T01: `Restore and wire the lock-contention suite and record the baseline` (status:todo)
+- [x] T01: `Restore and wire the lock-contention suite and record the baseline` (status:done)
   - Task ID: T01
   - Scope: In:
     - restore `cli/src/services/agent_trace_db/lock_contention_tests.rs` unchanged from the Nix store copy named in Assumptions;
@@ -159,7 +159,59 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
   - Dependencies: none
   - Done when: the suite is tracked and compiles as part of the test build; the non-ignored tests pass on unfixed code; the baseline table (N, rounds, lost events, lock errors, orphans, duplicates, latency percentiles) is recorded for the Rust API and hook-process runs.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml lock_contention`; the AC8/AC9 commands in non-strict mode to capture the baseline.
-  - Context synchronization: pending
+  - Completed: 2026-10-04
+  - Files changed:
+    - `cli/src/services/agent_trace_db/lock_contention_tests.rs` (restored verbatim from the Nix store copy, sha256 `e94912a71fc594af…`, then extended with latency reporting; staged in git so flake builds include it)
+    - `cli/src/services/agent_trace_db/mod.rs` (`#[cfg(test)] mod lock_contention_tests;`)
+    - `context/plans/agent-trace-db-write-contention.md` (this record)
+  - Result:
+    - The suite compiles in the test build and in `nix build .#default` / the flake clippy and fmt checks.
+    - Added a nearest-rank `latency_percentiles` helper (with the unit test `lock_contention_latency_percentiles_use_nearest_rank`) and p50/p95/p99/max columns to the in-process level report and to the hook-process report.
+    - Hook-process latency is now measured per process, from stdin release to process exit; each child is awaited on its own feeder thread.
+    - No production code changed and no existing assertion was changed.
+    - Deviation: the baseline did **not** reproduce ingestion loss at N=2–4, either in-process or with real hook processes, on this host (release builds, the plan's round counts). Loss reproduces at N=8: 1525 of 4000 distinct events lost. The single-writer lock-budget boundary confirms the root cause: any `BEGIN IMMEDIATE` hold of ≥300 ms exhausts `QUERY_RETRY_POLICY` after about 280 ms with no busy handler. The N=2–4 strict gates in AC8/AC9 already pass before the fix, so they act as regression gates; the 8-writer and boundary rows are the before-fix signal.
+  - Baseline (before fix, release build, non-strict, 2026-10-04, HEAD `5f77cf2d` + T01 test changes):
+    - Lock-budget boundary (debug build, single writer vs. a `BEGIN IMMEDIATE` holder):
+
+      | hold ms | outcome | elapsed ms | rows (msg/part) |
+      | --- | --- | --- | --- |
+      | 50 | Ok(true) | 91 | 1/1 |
+      | 100 | Ok(true) | 194 | 1/1 |
+      | 200 | Ok(true) | 294 | 1/1 |
+      | 300 | database is locked (5 attempts) | 279 | 0/0 |
+      | 500 | database is locked (5 attempts) | 280 | 0/0 |
+      | 1000 | database is locked (5 attempts) | 280 | 0/0 |
+
+    - Hook-open metadata under a 500 ms write lock: the schema check passes, and the metadata `INSERT … ON CONFLICT DO NOTHING` fails with `database is locked` after 5 attempts (276 ms).
+    - Rust production API (`insert_conversation_text_event`, per-write latency):
+
+      | mode | N | rounds | lost events | lock errors | orphans | duplicates | p50 ms | p95 ms | p99 ms | max ms |
+      | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+      | distinct | 2 | 1000 | 0 | 0 | 0 | 0 | 37 | 107 | 138 | 228 |
+      | distinct | 3 | 1000 | 0 | 0 | 0 | 0 | 68 | 207 | 231 | 372 |
+      | distinct | 4 | 500 | 0 | 0 | 0 | 0 | 87 | 212 | 318 | 384 |
+      | duplicate | 2 | 500 | 0 | 0 | 0 | 0 | 20 | 33 | 34 | 39 |
+      | duplicate | 3 | 500 | 0 | 0 | 0 | 0 | 44 | 135 | 207 | 2303 |
+      | duplicate | 4 | 500 | 0 | 0 | 0 | 0 | 83 | 190 | 286 | 347 |
+      | distinct (stress) | 8 | 500 | 1525 | 1525 (500/500 rounds) | 0 | 0 | 275 | 288 | 298 | 410 |
+      | duplicate (stress) | 8 | 500 | 0 | 1545 (500/500 rounds) | 0 | 0 | 275 | 284 | 296 | 351 |
+
+    - Real release `sce hooks codex` processes (`UserPromptSubmit`, distinct events, per-process latency):
+
+      | N | rounds | expected | persisted | lost | orphans | non-zero exits | stderr lines | p50 ms | p95 ms | p99 ms | max ms |
+      | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+      | 2 | 500 | 1000 | 1000 | 0 | 0 | 0 | 0 | 35 | 45 | 49 | 51 |
+      | 3 | 500 | 1500 | 1500 | 0 | 0 | 0 | 0 | 45 | 105 | 212 | 245 |
+      | 4 | 200 | 800 | 800 | 0 | 0 | 0 | 0 | 50 | 196 | 197 | 231 |
+
+    - Orphans and duplicates are enforced by the suite's per-round assertions (messages == parts; Ok(true) count == persisted rows; ≤1 insert per duplicate round). All runs passed them.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml lock_contention`: passed (3 passed, 3 ignored).
+    - AC8 commands (non-strict, release): `concurrent_distinct_events` with `WRITERS=2,3 ROUNDS=1000` and with `WRITERS=4 ROUNDS=500`; `concurrent_duplicate_delivery` with `WRITERS=2,3,4 ROUNDS=500`; `WRITERS=8 ROUNDS=500` for both. All ran and passed; results are in the table above.
+    - AC9 commands (non-strict, release): `nix build .#default`, then `concurrent_real_codex_hook_processes` with `WRITERS=2` / `3` and `ROUNDS=500`, and with `WRITERS=4 ROUNDS=200`. All ran and passed; results are in the table above.
+    - Additional: `nix build .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt` passed.
+  - Context impact: none to durable context. This is a test-only change plus plan evidence. The baseline numbers feed the `context/sce/agent-trace-db.md` measured-evidence summary planned for later tasks.
+  - Context synchronization: synced
 
 - [ ] T02: `Configure Turso busy timeout on Agent Trace DB connections` (status:todo)
   - Task ID: T02

@@ -12,6 +12,8 @@ use crate::services::{
 use serde_json::Value;
 
 pub mod lifecycle;
+#[cfg(test)]
+mod lock_contention_tests;
 pub mod repository;
 
 /// Payload type discriminator for diff trace source payloads.
