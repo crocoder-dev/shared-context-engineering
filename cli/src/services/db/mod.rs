@@ -39,6 +39,8 @@ const QUERY_RETRY_POLICY: RetryPolicy = RetryPolicy {
     max_backoff_ms: 100,
 };
 const QUERY_RETRY_HINT: &str = "retry after the database lock clears; if the issue persists, stop other SCE processes using this database and rerun the command";
+const AGENT_TRACE_DB_CONFIG_KEY: &str = "agent_trace_db";
+const AGENT_TRACE_DB_BUSY_TIMEOUT_MS: u64 = 500;
 
 pub mod encryption_key;
 
@@ -486,6 +488,39 @@ fn resolve_query_retry_policy<M: DbSpec>() -> RetryPolicy {
     QUERY_RETRY_POLICY
 }
 
+/// Resolve the Turso busy timeout applied to every connection opened for `M`.
+///
+/// Multiprocess WAL provides cross-process correctness and locking; it does
+/// not wait for a contended lock. The busy timeout is Turso's own wait policy
+/// for a `Busy` result: while another process holds the write lock, Turso
+/// sleeps in short phases until the lock clears or the timeout elapses, and
+/// only then returns `Busy`. Because `Transaction::new_unchecked(.., Immediate)`
+/// runs `BEGIN IMMEDIATE` through `Connection::execute` on the same connection,
+/// the wait also covers writer-lock acquisition. The timeout is connection-wide.
+///
+/// Only the Agent Trace DB has a busy timeout; every other database resolves
+/// to zero, which leaves Turso's busy handler unset.
+fn resolve_busy_timeout<M: DbSpec>() -> std::time::Duration {
+    if M::db_config_key() == AGENT_TRACE_DB_CONFIG_KEY {
+        std::time::Duration::from_millis(AGENT_TRACE_DB_BUSY_TIMEOUT_MS)
+    } else {
+        std::time::Duration::ZERO
+    }
+}
+
+/// Install `busy_timeout` on `conn`; a zero timeout leaves the handler unset.
+fn apply_busy_timeout(
+    conn: &turso::Connection,
+    db_name: &str,
+    busy_timeout: std::time::Duration,
+) -> Result<()> {
+    if busy_timeout.is_zero() {
+        return Ok(());
+    }
+    conn.busy_timeout(busy_timeout)
+        .map_err(|e| anyhow::anyhow!("failed to set {db_name} database busy timeout: {e}"))
+}
+
 #[cfg(test)]
 thread_local! {
     static READ_STATEMENTS_ISSUED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -598,6 +633,7 @@ impl<M: DbSpec> TursoDb<M> {
 
         let runtime = build_current_thread_runtime(db_name)?;
         let retry_policy = resolve_connection_open_retry_policy::<M>();
+        let busy_timeout = resolve_busy_timeout::<M>();
         let operation_name = format!("open {db_name} database connection");
 
         let conn = run_with_retry_sync(
@@ -619,9 +655,11 @@ impl<M: DbSpec> TursoDb<M> {
                                 db_path.display()
                             )
                         })?;
-                    db.connect().map_err(|e| {
+                    let conn = db.connect().map_err(|e| {
                         anyhow::anyhow!("failed to connect to {db_name} database: {e}")
-                    })
+                    })?;
+                    apply_busy_timeout(&conn, db_name, busy_timeout)?;
+                    Ok(conn)
                 })
             },
         )?;
@@ -1288,6 +1326,118 @@ mod tests {
 
         fn db_config_key() -> &'static str {
             "test_db"
+        }
+    }
+
+    struct AgentTraceTestDbSpec;
+
+    impl DbSpec for AgentTraceTestDbSpec {
+        fn db_name() -> &'static str {
+            "agent trace test"
+        }
+
+        fn db_path() -> Result<PathBuf> {
+            unreachable!("tests always open via TursoDb::new_at with an explicit path")
+        }
+
+        fn migrations() -> &'static [(&'static str, &'static str)] {
+            &[]
+        }
+
+        fn db_config_key() -> &'static str {
+            AGENT_TRACE_DB_CONFIG_KEY
+        }
+    }
+
+    const BUSY_TIMEOUT_LOCK_HOLD_MS: u64 = 300;
+
+    fn begin_immediate_while_write_lock_is_held<M: DbSpec>(
+        db_path: &Path,
+    ) -> (std::result::Result<u64, turso::Error>, Duration) {
+        let hold = Duration::from_millis(BUSY_TIMEOUT_LOCK_HOLD_MS);
+        drop(TursoDb::<TestDbSpec>::new_at(db_path).expect("test DB should be created up front"));
+        let contender =
+            TursoDb::<M>::open_without_migrations_at(db_path).expect("contender DB should open");
+        let lock_acquired = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let holder = {
+            let db_path = db_path.to_path_buf();
+            let lock_acquired = std::sync::Arc::clone(&lock_acquired);
+            thread::spawn(move || {
+                let holder = TursoDb::<TestDbSpec>::open_without_migrations_at(&db_path)
+                    .expect("holder DB should open");
+                holder
+                    .execute("BEGIN IMMEDIATE", ())
+                    .expect("holder should acquire the write lock");
+                lock_acquired.wait();
+                thread::sleep(hold);
+                holder
+                    .execute("COMMIT", ())
+                    .expect("holder should release the write lock");
+            })
+        };
+
+        lock_acquired.wait();
+        let started_at = Instant::now();
+        let outcome = block_on_isolated(&contender.core.runtime, async {
+            contender.core.conn.execute("BEGIN IMMEDIATE", ()).await
+        });
+        let elapsed = started_at.elapsed();
+        if outcome.is_ok() {
+            contender
+                .execute("ROLLBACK", ())
+                .expect("contender should release the write lock");
+        }
+        holder.join().expect("holder thread should not panic");
+        drop(contender);
+
+        (outcome, elapsed)
+    }
+
+    #[test]
+    fn busy_timeout_resolves_default_for_agent_trace_db_and_zero_for_other_dbs() {
+        assert_eq!(
+            resolve_busy_timeout::<AgentTraceTestDbSpec>(),
+            Duration::from_millis(AGENT_TRACE_DB_BUSY_TIMEOUT_MS)
+        );
+        assert_eq!(resolve_busy_timeout::<TestDbSpec>(), Duration::ZERO);
+    }
+
+    #[test]
+    fn busy_timeout_unset_connection_returns_busy_promptly_on_begin_immediate() {
+        let db_path = unique_test_db_path();
+
+        let (outcome, elapsed) = begin_immediate_while_write_lock_is_held::<TestDbSpec>(&db_path);
+
+        assert!(
+            matches!(outcome, Err(turso::Error::Busy(_))),
+            "a connection without a busy handler should get Busy, got {outcome:?}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(BUSY_TIMEOUT_LOCK_HOLD_MS / 2),
+            "Busy should be returned without waiting for the holder, took {elapsed:?}"
+        );
+        if let Some(parent) = db_path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn busy_timeout_agent_trace_connection_waits_for_begin_immediate_holder() {
+        let db_path = unique_test_db_path();
+
+        let (outcome, elapsed) =
+            begin_immediate_while_write_lock_is_held::<AgentTraceTestDbSpec>(&db_path);
+
+        assert!(
+            outcome.is_ok(),
+            "Turso's busy handler should wait out the holder, got {outcome:?}"
+        );
+        assert!(
+            elapsed >= Duration::from_millis(BUSY_TIMEOUT_LOCK_HOLD_MS / 2),
+            "BEGIN IMMEDIATE should have waited for the holder, took {elapsed:?}"
+        );
+        if let Some(parent) = db_path.parent() {
+            let _ = fs::remove_dir_all(parent);
         }
     }
 
