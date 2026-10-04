@@ -53,7 +53,7 @@ Runtime observability consumes the shared resolved observability config from `cl
 - All `CliError` instances are logged via `Logger::log_cli_error()` before user-facing stderr diagnostics are written; observability retains full technical detail independently of what is rendered to the terminal, and never writes a second competing stderr diagnostic for the same error.
 - Event records include deterministic metadata keys used by automation (`command`, `failure_class`, `component` when applicable).
 - Error log records include `error_code` and `error_class` fields for structured observability, plus `error_surface` (`user` for `CliError::User`, `internal` for `CliError::Internal`), `user_error` (the catalog `UserError::key()`, present only for `CliError::User`), and `error_source` (the full technical source chain, present whenever one was preserved — always for `CliError::Internal`, and for `CliError::User` only when constructed with `CliError::user_with_source`).
-- App runtime initializes tracing subscriber context before parse/dispatch and shuts down tracer provider on process exit.
+- App runtime wraps parse/dispatch in `Telemetry::with_default_subscriber`. Production uses `NoopTelemetry`, which installs no tracing subscriber and no tracer provider. Raw `tracing` events emitted outside `Logger`, such as `sce.resilience.retry` and `sce.agent_trace_db.contention_exhausted`, are instrumentation points with no production sink. `Logger` records still follow the file/stderr routing below.
 - Tracing event emission checks the `sce` target and requested tracing level before constructing serialized `fields` payloads; disabled or filtered tracing events return without building field JSON while enabled events preserve the same `event_id`, `event_message`, and `fields` payload shape.
 
 ## Format contract
@@ -71,8 +71,8 @@ Runtime observability consumes the shared resolved observability config from `cl
 - The concrete `services::observability::Logger` implements the trait while retaining the existing inherent methods and behavior.
 - `NoopLogger` is available from the same traits module for tests and future dependency-injected services that need a logger without side effects.
 - The same traits module exposes object-safe `services::observability::traits::Telemetry` with the current app subscriber boundary: `with_default_subscriber` for command-lifecycle execution.
-- The concrete `services::observability::TelemetryRuntime` implements the telemetry trait by delegating to its existing inherent method.
-- `cli/src/app.rs` stores the production logger and telemetry runtime as concrete `AppRuntime` fields, creates borrowed `AppContext` views for command execution, and exposes logger/telemetry access through associated-type context accessors instead of owned `Arc<dyn ...>` fields or object-erased accessor return values.
+- Production currently uses `NoopTelemetry` from the same traits module. Its `with_default_subscriber` implementation invokes the action directly and installs no tracing subscriber or tracer provider; the boundary is retained for future telemetry/OTEL integration.
+- `cli/src/app.rs` stores the concrete production `Logger` and `NoopTelemetry` as `AppRuntime` fields, creates borrowed `AppContext` views for command execution, and exposes logger/telemetry access through associated-type context accessors instead of owned `Arc<dyn ...>` fields or object-erased accessor return values.
 - Final stream rendering uses `RunOutcome<L: Logger>` in `cli/src/services/app_support.rs`, so classified-error and stdout-write-failure logging depends on the logger trait boundary rather than the concrete production logger type.
 - `run_command_lifecycle` expects the telemetry subscriber action to execute command dispatch at most once; if a telemetry implementation invokes the action again, the app returns a `SCE-ERR-RUNTIME` classified error rather than panicking or reparsing consumed arguments.
 

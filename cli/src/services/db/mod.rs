@@ -572,6 +572,7 @@ fn agent_trace_db_millis<M: DbSpec>(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct WriteContentionPolicy {
+    db_name: &'static str,
     max_attempts: u32,
     backoff_cap: std::time::Duration,
     busy_timeout: std::time::Duration,
@@ -583,6 +584,7 @@ fn write_contention_policy<M: DbSpec>() -> Option<WriteContentionPolicy> {
         return None;
     }
     Some(WriteContentionPolicy {
+        db_name: M::db_name(),
         max_attempts: AGENT_TRACE_DB_WRITE_CONTENTION_MAX_ATTEMPTS,
         backoff_cap: std::time::Duration::from_millis(
             AGENT_TRACE_DB_WRITE_CONTENTION_BACKOFF_CAP_MS,
@@ -671,16 +673,54 @@ fn run_with_write_contention_retry_using<T>(
             }
         }
 
-        #[cfg(test)]
-        note_write_contention(|counts| counts.exhaustions += 1);
-
-        return Err(anyhow::anyhow!(
-            "Operation '{operation_name}' failed after {attempt_number} attempt(s) under write contention (busy_timeout={}ms, contention_deadline={}ms, elapsed={}ms). Last error: {error}. Try: {retry_hint}",
-            policy.busy_timeout.as_millis(),
-            policy.contention_deadline.as_millis(),
-            elapsed().as_millis(),
+        return Err(contention_exhausted_error(
+            policy,
+            operation_name,
+            attempt_number,
+            elapsed(),
+            &error,
+            retry_hint,
         ));
     }
+}
+
+const CONTENTION_EXHAUSTED_EVENT_ID: &str = "sce.agent_trace_db.contention_exhausted";
+const CONTENTION_EXHAUSTED_CAUSE: &str = "database busy (busy timeout exhausted)";
+
+fn contention_exhausted_error(
+    policy: WriteContentionPolicy,
+    operation_name: &str,
+    attempts: u32,
+    elapsed: std::time::Duration,
+    last_error: &anyhow::Error,
+    retry_hint: &str,
+) -> anyhow::Error {
+    let busy_timeout_ms = u64::try_from(policy.busy_timeout.as_millis()).unwrap_or(u64::MAX);
+    let contention_deadline_ms =
+        u64::try_from(policy.contention_deadline.as_millis()).unwrap_or(u64::MAX);
+    let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+
+    #[cfg(test)]
+    note_write_contention(|counts| counts.exhaustions += 1);
+
+    tracing::warn!(
+        target: "sce",
+        event_id = CONTENTION_EXHAUSTED_EVENT_ID,
+        db_name = policy.db_name,
+        operation = operation_name,
+        attempts,
+        busy_timeout_ms,
+        contention_deadline_ms,
+        elapsed_ms,
+        cause = CONTENTION_EXHAUSTED_CAUSE,
+        last_error = %last_error,
+        "Agent Trace DB write contention retries exhausted"
+    );
+
+    anyhow::anyhow!(
+        "Operation '{operation_name}' failed after {attempts} attempt(s) under write contention (db_name={}, operation={operation_name}, attempts={attempts}, busy_timeout_ms={busy_timeout_ms}, contention_deadline_ms={contention_deadline_ms} [no retry is scheduled past this cutoff], elapsed_ms={elapsed_ms}, cause={CONTENTION_EXHAUSTED_CAUSE}). Last error: {last_error}. Try: {retry_hint}",
+        policy.db_name,
+    )
 }
 
 /// Install `busy_timeout` on `conn`; a zero timeout leaves the handler unset.
@@ -1542,6 +1582,7 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::thread;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -2261,6 +2302,7 @@ mod tests {
         contention_deadline_ms: u64,
     ) -> WriteContentionPolicy {
         WriteContentionPolicy {
+            db_name: "agent trace test",
             max_attempts: AGENT_TRACE_DB_WRITE_CONTENTION_MAX_ATTEMPTS,
             backoff_cap: Duration::from_millis(AGENT_TRACE_DB_WRITE_CONTENTION_BACKOFF_CAP_MS),
             busy_timeout: Duration::from_millis(busy_timeout_ms),
@@ -2464,7 +2506,7 @@ mod tests {
             message.contains("failed after 1 attempt(s) under write contention"),
             "{message}"
         );
-        assert!(message.contains("elapsed=810ms"), "{message}");
+        assert!(message.contains("elapsed_ms=810"), "{message}");
         assert!(message.contains("database is locked"), "{message}");
         assert_eq!(outcome.attempt_calls, 1, "attempt 2 must not run");
         assert_eq!(
@@ -2474,6 +2516,192 @@ mod tests {
                 outer_retries: 0,
                 exhaustions: 1
             }
+        );
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct CapturedEvent {
+        target: String,
+        level: String,
+        fields: BTreeMap<String, String>,
+    }
+
+    struct CapturedEventVisitor<'a>(&'a mut BTreeMap<String, String>);
+
+    impl tracing::field::Visit for CapturedEventVisitor<'_> {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.0.insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+            self.0.insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0
+                .insert(field.name().to_string(), format!("{value:?}"));
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturingSubscriber {
+        events: std::sync::Arc<std::sync::Mutex<Vec<CapturedEvent>>>,
+    }
+
+    impl tracing::Subscriber for CapturingSubscriber {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut fields = BTreeMap::new();
+            event.record(&mut CapturedEventVisitor(&mut fields));
+            self.events
+                .lock()
+                .expect("captured events mutex should not be poisoned")
+                .push(CapturedEvent {
+                    target: event.metadata().target().to_string(),
+                    level: event.metadata().level().to_string(),
+                    fields,
+                });
+        }
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    fn capture_tracing_events<T>(body: impl FnOnce() -> T) -> (T, Vec<CapturedEvent>) {
+        let subscriber = CapturingSubscriber::default();
+        let events = std::sync::Arc::clone(&subscriber.events);
+        let result = tracing::subscriber::with_default(subscriber, body);
+        let events = events
+            .lock()
+            .expect("captured events mutex should not be poisoned")
+            .clone();
+        (result, events)
+    }
+
+    fn contention_exhausted_events(events: &[CapturedEvent]) -> Vec<&CapturedEvent> {
+        events
+            .iter()
+            .filter(|event| {
+                event.fields.get("event_id").map(String::as_str)
+                    == Some(CONTENTION_EXHAUSTED_EVENT_ID)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn agent_trace_db_contention_exhausted_error_and_event_carry_every_field() {
+        let (outcome, events) = capture_tracing_events(|| {
+            run_oversleep_scenario(
+                Duration::from_millis(690),
+                Duration::from_millis(50),
+                Duration::from_millis(70),
+            )
+        });
+
+        let message = outcome
+            .result
+            .expect_err("an oversleep past the admission budget must exhaust")
+            .to_string();
+        assert_eq!(
+            message,
+            "Operation 'write contention test' failed after 1 attempt(s) under write contention \
+             (db_name=agent trace test, operation=write contention test, attempts=1, \
+             busy_timeout_ms=500, contention_deadline_ms=1250 [no retry is scheduled past this cutoff], \
+             elapsed_ms=810, cause=database busy (busy timeout exhausted)). \
+             Last error: agent trace test failed to begin transaction: database is locked. \
+             Try: retry the operation"
+        );
+        assert_eq!(outcome.counts.exhaustions, 1);
+
+        let exhausted = contention_exhausted_events(&events);
+        assert_eq!(
+            exhausted.len(),
+            1,
+            "exactly one exhaustion event: {events:?}"
+        );
+        let event = exhausted[0];
+        assert_eq!(event.target, "sce");
+        assert_eq!(event.level, "WARN");
+        let expected = [
+            ("db_name", "agent trace test"),
+            ("operation", "write contention test"),
+            ("attempts", "1"),
+            ("busy_timeout_ms", "500"),
+            ("contention_deadline_ms", "1250"),
+            ("elapsed_ms", "810"),
+            ("cause", "database busy (busy timeout exhausted)"),
+            (
+                "last_error",
+                "agent trace test failed to begin transaction: database is locked",
+            ),
+        ];
+        for (key, value) in expected {
+            assert_eq!(
+                event.fields.get(key).map(String::as_str),
+                Some(value),
+                "field {key}: {event:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_trace_db_contention_exhausted_event_is_emitted_once_after_the_attempt_cap() {
+        let (outcome, events) = capture_tracing_events(|| {
+            run_write_contention_test(write_contention_test_policy(0, 30_000), |_| {
+                Err::<(), _>(busy_failure())
+            })
+        });
+        let (result, _sleeps, counts) = outcome;
+
+        let message = result
+            .expect_err("persistent Busy must exhaust")
+            .to_string();
+        assert!(message.contains("attempts=2"), "{message}");
+        assert_eq!(counts.exhaustions, 1);
+
+        let exhausted = contention_exhausted_events(&events);
+        assert_eq!(exhausted.len(), 1, "{events:?}");
+        assert_eq!(
+            exhausted[0].fields.get("attempts").map(String::as_str),
+            Some("2")
+        );
+    }
+
+    #[test]
+    fn agent_trace_db_contention_exhausted_event_is_not_emitted_for_success_or_deterministic_errors(
+    ) {
+        let ((), events) = capture_tracing_events(|| {
+            let mut calls = 0;
+            let _ = run_write_contention_test(write_contention_test_policy(0, 30_000), |_| {
+                calls += 1;
+                if calls == 1 {
+                    Err(busy_failure())
+                } else {
+                    Ok(())
+                }
+            });
+            let _ = run_write_contention_test(write_contention_test_policy(0, 30_000), |_| {
+                Err::<(), _>(WriteAttemptFailure::Deterministic(anyhow::anyhow!(
+                    "constraint failed"
+                )))
+            });
+        });
+
+        assert!(
+            contention_exhausted_events(&events).is_empty(),
+            "{events:?}"
         );
     }
 
