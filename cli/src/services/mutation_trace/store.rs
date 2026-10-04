@@ -123,7 +123,6 @@ pub struct MutationEventPageRow {
     pub revision: u64,
     pub before_tree: TreeId,
     pub after_tree: TreeId,
-    pub tainted: bool,
     pub failure_kind: FailureKind,
     pub attribution_kind: AttributionKind,
     pub attribution_scope_id: Option<ScopeId>,
@@ -1089,6 +1088,14 @@ fn effective_referenced_scope<'k>(
     }
 }
 
+fn validate_health_encoding(tainted: bool, failure_kind: FailureKind) -> Result<()> {
+    let expected_tainted = failure_kind != FailureKind::Healthy;
+    if tainted != expected_tainted {
+        bail!("inconsistent mutation-trace health encoding: tainted={tainted} with failure_kind={failure_kind:?}");
+    }
+    Ok(())
+}
+
 fn tree_root_row_from_turso(row: &turso::Row) -> Result<TreeId> {
     let tree: String = row
         .get(0)
@@ -1113,11 +1120,15 @@ fn worktree_state_row_from_turso(row: &turso::Row) -> Result<WorktreeState> {
         .get(4)
         .context("failed to read mutation_trace_worktrees.needs_rebaseline")?;
 
+    let failure_kind = decode_failure_kind(&failure_kind)?;
+    validate_health_encoding(tainted, failure_kind)
+        .context("invalid mutation_trace_worktrees.tainted/failure_kind pair")?;
+
     Ok(WorktreeState {
         cursor_tree: TreeId(cursor_tree),
         revision: decode_revision(&revision_blob)?,
         tainted,
-        failure_kind: decode_failure_kind(&failure_kind)?,
+        failure_kind,
         needs_rebaseline,
     })
 }
@@ -1186,6 +1197,9 @@ fn mutation_event_page_row_from_turso(row: &turso::Row) -> Result<MutationEventP
     let attribution_scope_id: Option<String> = row
         .get(6)
         .context("failed to read mutation_trace_events.attribution_scope_id")?;
+    let failure_kind = decode_failure_kind(&failure_kind)?;
+    validate_health_encoding(tainted, failure_kind)
+        .context("invalid mutation_trace_events.tainted/failure_kind pair")?;
     let attribution_kind = decode_attribution_kind(&attribution_kind)?;
     reconstruct_attribution(attribution_kind, attribution_scope_id.clone())?;
     let attribution_scope_id = attribution_scope_id.map(ScopeId);
@@ -1194,8 +1208,7 @@ fn mutation_event_page_row_from_turso(row: &turso::Row) -> Result<MutationEventP
         revision: decode_revision(&revision_blob)?,
         before_tree: TreeId(before_tree),
         after_tree: TreeId(after_tree),
-        tainted,
-        failure_kind: decode_failure_kind(&failure_kind)?,
+        failure_kind,
         attribution_kind,
         attribution_scope_id,
     })
@@ -1245,11 +1258,15 @@ fn mutation_event_row_from_turso(row: &turso::Row) -> Result<MutationEventRow> {
         .get(8)
         .context("failed to read mutation_trace_events.boundary_event_id")?;
 
+    let failure_kind = decode_failure_kind(&failure_kind)?;
+    validate_health_encoding(tainted, failure_kind)
+        .context("invalid mutation_trace_events.tainted/failure_kind pair")?;
+
     Ok(MutationEventRow {
         before_tree,
         after_tree,
         tainted,
-        failure_kind: decode_failure_kind(&failure_kind)?,
+        failure_kind,
         attribution_kind: decode_attribution_kind(&attribution_kind)?,
         attribution_scope_id,
         boundary_kind: decode_boundary_kind(&boundary_kind)?,
@@ -1309,6 +1326,7 @@ mod tests {
     use std::thread;
 
     use super::*;
+    use crate::services::agent_trace_db::repository::pre_health_invariant_fixture::seed_pre_health_invariant_fixture;
     use crate::services::mutation_trace::protocol::{
         abandon, commit, database_failure, prepare, recover, taint,
     };
@@ -4559,7 +4577,6 @@ mod tests {
             );
             assert_eq!(rows[0].before_tree, TreeId("before".to_string()));
             assert_eq!(rows[0].after_tree, TreeId("after".to_string()));
-            assert!(!rows[0].tainted);
             assert_eq!(rows[0].failure_kind, FailureKind::Healthy);
             assert_eq!(rows[0].attribution_kind, AttributionKind::AiExclusive);
             assert_eq!(
@@ -4621,6 +4638,118 @@ mod tests {
                 .load_mutation_event_page(&WorktreeId("wt-1".to_string()), Some(1), 1)
                 .expect("page after the final cursor should load");
             assert!(empty_page.is_empty());
+        }
+    }
+
+    #[test]
+    fn validate_health_encoding_accepts_only_pairs_that_match_failure_kind() {
+        assert!(validate_health_encoding(false, FailureKind::Healthy).is_ok());
+        assert!(validate_health_encoding(true, FailureKind::SnapshotFailure).is_ok());
+
+        let untainted_failure = validate_health_encoding(false, FailureKind::SnapshotFailure)
+            .expect_err("an untainted snapshot failure must be rejected");
+        assert_eq!(
+            untainted_failure.to_string(),
+            "inconsistent mutation-trace health encoding: tainted=false with failure_kind=SnapshotFailure"
+        );
+
+        let tainted_healthy = validate_health_encoding(true, FailureKind::Healthy)
+            .expect_err("a tainted healthy pair must be rejected");
+        assert_eq!(
+            tainted_healthy.to_string(),
+            "inconsistent mutation-trace health encoding: tainted=true with failure_kind=Healthy"
+        );
+    }
+
+    const INCONSISTENT_HEALTH_PAIRS: [(i64, &str); 2] = [(0, "snapshot_failure"), (1, "healthy")];
+
+    fn open_pre_health_invariant_db(
+        label: &str,
+        statements: &[String],
+    ) -> (TestDbPath, RepositoryAgentTraceDb) {
+        let db_fixture = test_db_path(label);
+        let statements: Vec<&str> = statements.iter().map(String::as_str).collect();
+        seed_pre_health_invariant_fixture(db_fixture.path(), &statements);
+        let db = RepositoryAgentTraceDb::open_without_migrations_at(db_fixture.path())
+            .expect("pre-006 fixture DB should reopen without applying 006");
+        (db_fixture, db)
+    }
+
+    fn inconsistent_worktree_sql(worktree_id: &str, tainted: i64, failure_kind: &str) -> String {
+        format!(
+            "INSERT INTO mutation_trace_worktrees
+                (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline)
+             VALUES ('{worktree_id}', 'tree-1', X'0000000000000001', {tainted}, '{failure_kind}', 0)"
+        )
+    }
+
+    fn inconsistent_event_sql(worktree_id: &str, tainted: i64, failure_kind: &str) -> String {
+        format!(
+            "INSERT INTO mutation_trace_events
+                (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
+                 attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id)
+             VALUES ('{worktree_id}', X'0000000000000001', 'tree-0', 'tree-1', {tainted}, '{failure_kind}',
+                     'ineligible_unscoped', NULL, 'flush', NULL, NULL)"
+        )
+    }
+
+    fn assert_health_rejection(error: &anyhow::Error, table: &str) {
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains(&format!("invalid {table}.tainted/failure_kind pair")),
+            "missing table context: {rendered}"
+        );
+        assert!(
+            rendered.contains("inconsistent mutation-trace health encoding"),
+            "missing validator error: {rendered}"
+        );
+    }
+
+    #[test]
+    fn load_worktree_rejects_a_stored_health_pair_that_disagrees_with_failure_kind() {
+        for (tainted, failure_kind) in INCONSISTENT_HEALTH_PAIRS {
+            let (_db_fixture, db) = open_pre_health_invariant_db(
+                "inconsistent-worktree-health",
+                &[inconsistent_worktree_sql("wt-1", tainted, failure_kind)],
+            );
+            let store = MutationTraceStore::new(&db);
+
+            let error = store
+                .load_worktree(&WorktreeId("wt-1".to_string()), None, None)
+                .expect_err("an inconsistent worktree health pair must not load");
+            assert_health_rejection(&error, "mutation_trace_worktrees");
+        }
+    }
+
+    #[test]
+    fn load_mutation_event_rejects_a_stored_health_pair_that_disagrees_with_failure_kind() {
+        for (tainted, failure_kind) in INCONSISTENT_HEALTH_PAIRS {
+            let (_db_fixture, db) = open_pre_health_invariant_db(
+                "inconsistent-event-health",
+                &[inconsistent_event_sql("wt-1", tainted, failure_kind)],
+            );
+            let store = MutationTraceStore::new(&db);
+
+            let error = store
+                .load_mutation_event(&WorktreeId("wt-1".to_string()), 1)
+                .expect_err("an inconsistent mutation-event health pair must not load");
+            assert_health_rejection(&error, "mutation_trace_events");
+        }
+    }
+
+    #[test]
+    fn load_mutation_event_page_rejects_a_stored_health_pair_that_disagrees_with_failure_kind() {
+        for (tainted, failure_kind) in INCONSISTENT_HEALTH_PAIRS {
+            let (_db_fixture, db) = open_pre_health_invariant_db(
+                "inconsistent-event-page-health",
+                &[inconsistent_event_sql("wt-1", tainted, failure_kind)],
+            );
+            let store = MutationTraceStore::new(&db);
+
+            let error = store
+                .load_mutation_event_page(&WorktreeId("wt-1".to_string()), None, 1)
+                .expect_err("an inconsistent mutation-event health pair must not page");
+            assert_health_rejection(&error, "mutation_trace_events");
         }
     }
 }

@@ -314,6 +314,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    use super::pre_health_invariant_fixture::seed_pre_health_invariant_fixture;
     use super::*;
     use crate::services::agent_trace_db::{
         MessageRole, ObservationKind, PartType, PAYLOAD_TYPE_PATCH,
@@ -1259,7 +1260,6 @@ COMMIT;";
         remove_test_db(&db_path);
     }
 
-    const PRE_HEALTH_INVARIANT_MIGRATION_COUNT: usize = 5;
     const HEALTH_INVARIANT_MIGRATION_ID: &str = "006_mutation_trace_health_invariant";
     const HEALTH_INVARIANT_TABLES: [&str; 2] =
         ["mutation_trace_worktrees", "mutation_trace_events"];
@@ -1335,50 +1335,6 @@ COMMIT;";
         "INSERT INTO mutation_trace_scope_provenance (scope_id, session_id, model_id, created_at)
          VALUES ('scope-1', 'session-1', 'model-1', '2026-03-04T00:00:00.000Z')",
     ];
-
-    struct PreHealthInvariantDbSpec;
-
-    impl DbSpec for PreHealthInvariantDbSpec {
-        fn db_name() -> &'static str {
-            "pre-006 repository Agent Trace DB"
-        }
-
-        fn db_path() -> Result<PathBuf> {
-            anyhow::bail!("pre-006 repository Agent Trace DB has no canonical path")
-        }
-
-        fn migrations() -> &'static [(&'static str, &'static str)] {
-            &generated_migrations::AGENT_TRACE_REPOSITORY_MIGRATIONS
-                [..PRE_HEALTH_INVARIANT_MIGRATION_COUNT]
-        }
-
-        fn db_config_key() -> &'static str {
-            "agent_trace_db"
-        }
-    }
-
-    fn seed_pre_health_invariant_fixture(db_path: &std::path::Path, statements: &[&str]) {
-        let fixture = TursoDb::<PreHealthInvariantDbSpec>::new_at(db_path)
-            .expect("pre-006 fixture DB should migrate through 005");
-        let applied_ids = fixture
-            .query_map(
-                "SELECT id FROM __sce_migrations ORDER BY id ASC",
-                (),
-                |row| row.get::<String>(0).map_err(Into::into),
-            )
-            .expect("migration metadata query should succeed");
-        assert_eq!(
-            applied_ids.last().map(String::as_str),
-            Some("005_mutation_scope_provenance"),
-            "the pre-006 fixture must stop at 005"
-        );
-        for statement in statements {
-            fixture
-                .execute(statement, ())
-                .unwrap_or_else(|error| panic!("fixture row should insert: {error}"));
-        }
-        drop(fixture);
-    }
 
     fn keyed_text_rows(db: &RepositoryAgentTraceDb, sql: &str) -> Vec<(String, String)> {
         db.query_map(sql, (), |row| {
@@ -2076,5 +2032,63 @@ COMMIT;";
         let error = RepositoryAgentTraceDbSpec::db_path()
             .expect_err("repository DBs must not have a canonical spec path");
         assert!(error.to_string().contains("explicit-path"));
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod pre_health_invariant_fixture {
+    use std::path::{Path, PathBuf};
+
+    use anyhow::Result;
+
+    use crate::{
+        generated_migrations,
+        services::db::{DbSpec, TursoDb},
+    };
+
+    const PRE_HEALTH_INVARIANT_MIGRATION_COUNT: usize = 5;
+
+    struct PreHealthInvariantDbSpec;
+
+    impl DbSpec for PreHealthInvariantDbSpec {
+        fn db_name() -> &'static str {
+            "pre-006 repository Agent Trace DB"
+        }
+
+        fn db_path() -> Result<PathBuf> {
+            anyhow::bail!("pre-006 repository Agent Trace DB has no canonical path")
+        }
+
+        fn migrations() -> &'static [(&'static str, &'static str)] {
+            &generated_migrations::AGENT_TRACE_REPOSITORY_MIGRATIONS
+                [..PRE_HEALTH_INVARIANT_MIGRATION_COUNT]
+        }
+
+        fn db_config_key() -> &'static str {
+            "agent_trace_db"
+        }
+    }
+
+    pub(crate) fn seed_pre_health_invariant_fixture(db_path: &Path, statements: &[&str]) {
+        let fixture = TursoDb::<PreHealthInvariantDbSpec>::new_at(db_path)
+            .expect("pre-006 fixture DB should migrate through 005");
+        let applied_ids = fixture
+            .query_map(
+                "SELECT id FROM __sce_migrations ORDER BY id ASC",
+                (),
+                |row| row.get::<String>(0).map_err(Into::into),
+            )
+            .expect("migration metadata query should succeed");
+        assert_eq!(
+            applied_ids.last().map(String::as_str),
+            Some("005_mutation_scope_provenance"),
+            "the pre-006 fixture must stop at 005"
+        );
+        for statement in statements {
+            fixture
+                .execute(statement, ())
+                .unwrap_or_else(|error| panic!("fixture row should insert: {error}"));
+        }
+        drop(fixture);
     }
 }

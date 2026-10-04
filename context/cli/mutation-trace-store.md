@@ -58,21 +58,21 @@ from `Debug` or a serde representation.
 
 ## Health encoding invariant (migration 006)
 
-`failure_kind` is the semantic health source, and `tainted` is a redundant bit
-that must always equal `failure_kind != 'healthy'`. Migration
-`006_mutation_trace_health_invariant.sql` enforces this in the schema. Inside
-one `BEGIN IMMEDIATE … COMMIT`, it rebuilds `mutation_trace_worktrees` and
-`mutation_trace_events` and adds
-`CHECK (tainted = CASE WHEN failure_kind = 'healthy' THEN 0 ELSE 1 END)` to
-each. Every other column, `CHECK` and primary key is unchanged from `004`.
-While copying, the migration recomputes `tainted` from `failure_kind`, so a
-legacy inconsistent row is repaired with `failure_kind` taken as correct. All
-other columns are copied byte-for-byte, and no revision or timestamp is bumped.
-The four other mutation-trace tables are not touched. The SQL body can be
-re-run on an already-rebuilt schema without changing anything. This covers the
-case where the runner's non-atomic `execute_batch` → `INSERT __sce_migrations`
-sequence finished the body but not the metadata insert. The runner itself is
-unchanged, including the concurrent-opener race in that sequence.
+`failure_kind` is the semantic health source; `tainted` is a redundant bit that
+must equal `failure_kind != 'healthy'`. Migration
+`006_mutation_trace_health_invariant.sql` rebuilds `mutation_trace_worktrees`
+and `mutation_trace_events` inside one `BEGIN IMMEDIATE … COMMIT`, adding
+`CHECK (tainted = CASE WHEN failure_kind = 'healthy' THEN 0 ELSE 1 END)`; every
+other column, `CHECK` and primary key is unchanged from `004`. The copy
+recomputes `tainted` from `failure_kind` (legacy mismatches resolve to
+`failure_kind`), keeps other columns byte-for-byte, bumps no revision or
+timestamp, and leaves the other four tables untouched. The body re-runs as a
+no-op, covering a finished body whose `__sce_migrations` insert did not land;
+the runner and its concurrent-opener race are unchanged. Decoding fails
+closed: `worktree_state_row_from_turso`, `mutation_event_row_from_turso` and
+`mutation_event_page_row_from_turso` all call the shared
+`validate_health_encoding` and return `Err` with table context on a mismatch;
+no read repairs a value.
 
 ## Read path
 
@@ -96,8 +96,8 @@ projection load never pays for the full historical event set.
 
 `MutationTraceStore::load_mutation_event_page(worktree, revision_cursor,
 requested_limit)` is the attribution-history cold reader. It selects only the
-revision, tree transition, taint/failure state, attribution kind, and optional
-exclusive scope; filters by exact `worktree_id`; orders the fixed-width
+revision, tree transition, health pair (validated, but only `failure_kind` is
+kept on `MutationEventPageRow`), attribution kind, and optional exclusive scope; filters by exact `worktree_id`; orders the fixed-width
 big-endian revision BLOB descending; and applies `revision < cursor` when a
 cursor is supplied. Each request caps `requested_limit` at
 `MUTATION_ATTRIBUTION_PAGE_SIZE` (32), and it does not read active scopes,

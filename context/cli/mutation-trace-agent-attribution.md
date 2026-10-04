@@ -28,10 +28,12 @@ confined to the direct-evidence matchers in
 `LineProvenance` is `Unknown`, `MutationAi { scope_id }`, or `MutationNonAi`.
 A `TransitionOrigin` is:
 
-- `MutationAi(scope)` — a recorded event that is untainted, `FailureKind::Healthy`,
-  and `Attribution::AiExclusive(scope)`; its added lines become `MutationAi`.
-- `MutationNonAi` — any other recorded event (contended, unscoped, unhealthy, or
-  tainted); its added lines become `MutationNonAi`.
+- `MutationAi(scope)` — a recorded event whose `failure_kind` is
+  `FailureKind::Healthy` and whose attribution is `Attribution::AiExclusive(scope)`;
+  its added lines become `MutationAi`. Health is read from `failure_kind` alone;
+  the store's decode validator guarantees the redundant `tainted` bit agrees.
+- `MutationNonAi` — any other recorded event (contended, unscoped, or
+  unhealthy); its added lines become `MutationNonAi`.
 - `Unobserved` — a transition with no recorded event: the conservative baseline
   reload after a history gap, and the final latest-observed-tree to
   committed-tree tail. Its added lines are `Unknown`.
