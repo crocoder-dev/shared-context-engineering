@@ -89,6 +89,11 @@ module mutation_cursor {
     preservedScopes: Set[ScopeId],
   }
 
+  type CloseFromNeverSeenCheckpoint = {
+    worktreeId: WorktreeId,
+    revision: int,
+  }
+
   type RecoveryCheckpoint = {
     worktreeId: WorktreeId,
     revision: int,
@@ -286,6 +291,7 @@ module mutation_cursor {
   var scopeHistory: Set[ScopeCheckpoint]
   var abandonHistory: Set[AbandonCheckpoint]
   var startHistory: Set[StartCheckpoint]
+  var closeFromNeverSeenHistory: Set[CloseFromNeverSeenCheckpoint]
   var recoveryHistory: Set[RecoveryCheckpoint]
   var taintHistory: Set[DurableProtocolCheckpoint]
   var evidenceAttempts: Set[AttemptId]
@@ -349,8 +355,13 @@ module mutation_cursor {
       scopeRequiresConfirmation(scope) and not(boundaryConfirmsScope(boundary, scope))
     )
 
+  def boundaryClosesNeverSeenScope(boundary: Boundary): bool =
+    isClose(boundary) and scopes.get(boundaryScope(boundary)).status == NeverSeen
+
   def attributionForBoundary(worktree: WorktreeId, boundary: Boundary): Attribution =
-    if (hasUnconfirmedRequiredScope(liveScopesOn(worktree), boundary)) {
+    if (boundaryClosesNeverSeenScope(boundary)) {
+      IneligibleUnscoped
+    } else if (hasUnconfirmedRequiredScope(liveScopesOn(worktree), boundary)) {
       IneligibleUnscoped
     } else {
       attributionFor(worktree)
@@ -424,6 +435,7 @@ module mutation_cursor {
     scopeHistory' = Set(),
     abandonHistory' = Set(),
     startHistory' = Set(),
+    closeFromNeverSeenHistory' = Set(),
     recoveryHistory' = Set(),
     taintHistory' = Set(),
     evidenceAttempts' = Set(),
@@ -449,6 +461,7 @@ module mutation_cursor {
     scopeHistory' = scopeHistory,
     abandonHistory' = abandonHistory,
     startHistory' = startHistory,
+    closeFromNeverSeenHistory' = closeFromNeverSeenHistory,
     recoveryHistory' = recoveryHistory,
     taintHistory' = taintHistory,
     evidenceAttempts' = evidenceAttempts,
@@ -472,6 +485,7 @@ module mutation_cursor {
     scopeHistory' = scopeHistory,
     abandonHistory' = abandonHistory,
     startHistory' = startHistory,
+    closeFromNeverSeenHistory' = closeFromNeverSeenHistory,
     recoveryHistory' = recoveryHistory,
     taintHistory' = taintHistory,
     evidenceAttempts' = evidenceAttempts,
@@ -503,6 +517,7 @@ module mutation_cursor {
       scopeHistory' = scopeHistory,
       abandonHistory' = abandonHistory,
       startHistory' = startHistory,
+      closeFromNeverSeenHistory' = closeFromNeverSeenHistory,
       recoveryHistory' = recoveryHistory,
       taintHistory' = taintHistory,
       evidenceAttempts' = evidenceAttempts,
@@ -587,6 +602,7 @@ module mutation_cursor {
         scopeHistory' = scopeHistory,
         abandonHistory' = abandonHistory,
         startHistory' = startHistory,
+        closeFromNeverSeenHistory' = closeFromNeverSeenHistory,
         recoveryHistory' = recoveryHistory,
         taintHistory' = taintHistory,
         evidenceAttempts' = evidenceAttempts,
@@ -677,6 +693,15 @@ module mutation_cursor {
         } else {
           startHistory
         }
+      val nextCloseFromNeverSeenHistory =
+        if (isClose(boundary) and currentScope.status == NeverSeen) {
+          closeFromNeverSeenHistory.union(Set({
+            worktreeId: worktree,
+            revision: state.revision + 1,
+          }))
+        } else {
+          closeFromNeverSeenHistory
+        }
       val nextEvidenceAttempts =
         if (changed) evidenceAttempts.union(Set(attempt)) else evidenceAttempts
       val nextProcessed =
@@ -719,6 +744,7 @@ module mutation_cursor {
         scopeHistory' = nextScopeHistory,
         abandonHistory' = abandonHistory,
         startHistory' = nextStartHistory,
+        closeFromNeverSeenHistory' = nextCloseFromNeverSeenHistory,
         recoveryHistory' = recoveryHistory,
         taintHistory' = taintHistory,
         evidenceAttempts' = nextEvidenceAttempts,
@@ -760,6 +786,7 @@ module mutation_cursor {
       scopeHistory' = scopeHistory,
       abandonHistory' = abandonHistory,
       startHistory' = startHistory,
+      closeFromNeverSeenHistory' = closeFromNeverSeenHistory,
       recoveryHistory' = recoveryHistory,
       taintHistory' = taintHistory,
       evidenceAttempts' = evidenceAttempts,
@@ -792,6 +819,7 @@ module mutation_cursor {
     scopeHistory' = scopeHistory,
     abandonHistory' = abandonHistory,
     startHistory' = startHistory,
+    closeFromNeverSeenHistory' = closeFromNeverSeenHistory,
     recoveryHistory' = recoveryHistory,
     taintHistory' = taintHistory.union(Set(durableProtocolStateFor(worktree))),
     evidenceAttempts' = evidenceAttempts,
@@ -854,6 +882,7 @@ module mutation_cursor {
         cursorTree: state.cursorTree,
       })),
       startHistory' = startHistory,
+      closeFromNeverSeenHistory' = closeFromNeverSeenHistory,
       recoveryHistory' = recoveryHistory,
       taintHistory' = taintHistory,
       evidenceAttempts' = evidenceAttempts,
@@ -930,6 +959,7 @@ module mutation_cursor {
       scopeHistory' = scopeHistory,
       abandonHistory' = abandonHistory,
       startHistory' = startHistory,
+      closeFromNeverSeenHistory' = closeFromNeverSeenHistory,
       recoveryHistory' = recoveryHistory.union(Set({
         worktreeId: worktree,
         revision: state.revision + 1,
@@ -1283,8 +1313,16 @@ module mutation_cursor {
       attributionFor(worktree) == IneligibleUnscoped
   })
 
+  def isCloseFromNeverSeenEvent(event: MutationEvent): bool =
+    closeFromNeverSeenHistory.exists(checkpoint =>
+      checkpoint.worktreeId == event.worktreeId and
+      checkpoint.revision == event.revision
+    )
+
   val AttributionMatchesObservedScopes = mutationEvents.forall(event => {
-    if (event.failureKind != Healthy) {
+    if (isCloseFromNeverSeenEvent(event)) {
+      event.attribution == IneligibleUnscoped
+    } else if (event.failureKind != Healthy) {
       event.attribution == IneligibleUnscoped
     } else if (event.activeScopes.size() == 0) {
       event.attribution == IneligibleUnscoped
@@ -1344,6 +1382,12 @@ module mutation_cursor {
 
       liveRequired.size() >= 2 implies event.attribution == IneligibleUnscoped
     })
+
+  val CloseFromNeverSeenNeverGetsPositiveAttribution =
+    mutationEvents.forall(event =>
+      isCloseFromNeverSeenEvent(event) implies
+        event.attribution == IneligibleUnscoped
+    )
 
   val StartDoesNotAbandonExistingScopes =
     startHistory.forall(start =>
@@ -1467,6 +1511,7 @@ module mutation_cursor {
     NoPositiveAttributionWithUnconfirmedRequiredScope,
     UnconfirmedRequiredScopeBlocksCrossHarnessAttribution,
     MultipleLiveRequiredScopesSuppressPositiveAttribution,
+    CloseFromNeverSeenNeverGetsPositiveAttribution,
     StartDoesNotAbandonExistingScopes,
   }
 
@@ -1938,6 +1983,29 @@ module mutation_cursor {
         )
       )
       .expect(HasCodexConfirmedExclusiveEvidence)
+      .expect(Safety)
+
+  run testCloseFromNeverSeenNeverGetsPositiveAttribution =
+    init
+      .then(prepare(Attempt0, Start({ scope: Scope0, event: Event0 })))
+      .then(commitAttempt(Attempt0))
+      .then(mutate(WT0, Tree1))
+      .then(prepare(Attempt1, Close({ scope: Scope2, event: Event1 })))
+      .then(commitAttempt(Attempt1))
+      .expect(scopes.get(Scope0).status == Active)
+      .expect(scopes.get(Scope2).status == Closed)
+      .expect(worktrees.get(WT0).cursorTree == Tree1)
+      .expect(
+        mutationEvents.exists(event =>
+          event.afterTree == Tree1 and
+          event.activeScopes == Set(Scope0) and
+          event.boundary == Close({ scope: Scope2, event: Event1 }) and
+          event.attribution == IneligibleUnscoped
+        )
+      )
+      .expect(
+        not(mutationEvents.exists(event => event.attribution == AiExclusive(Scope0)))
+      )
       .expect(Safety)
 
   run testSecondLiveCodexScopeSuppressesConfirmedCodexClose =

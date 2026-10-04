@@ -91,11 +91,31 @@ pub fn has_unconfirmed_required_scope(
     })
 }
 
+/// Whether `boundary` closes a scope whose pre-boundary status in `state` is
+/// `NeverSeen`. Refines `boundaryClosesNeverSeenScope`.
+pub fn boundary_closes_never_seen_scope(state: &ProtocolState, boundary: &Boundary) -> bool {
+    is_close(boundary)
+        && boundary_scope(boundary)
+            .and_then(|scope| state.scopes.get(&scope))
+            .is_some_and(|scope_state| scope_state.status == ScopeStatus::NeverSeen)
+}
+
+/// The attribution for a mutation observed at `boundary`, read from the
+/// pre-boundary `state`. Refines `attributionForBoundary`.
+///
+/// A `Close` of a `NeverSeen` scope is always `IneligibleUnscoped`: its
+/// `Start` was never durably observed, so the boundary can neither confirm
+/// nor attribute the change, whatever other scopes are live. Otherwise an
+/// unconfirmed live confirmation-required scope suppresses attribution, and
+/// the remaining cases fall through to [`attribution_for`].
 pub fn attribution_for_boundary(
     state: &ProtocolState,
     worktree: &WorktreeId,
     boundary: &Boundary,
 ) -> Attribution {
+    if boundary_closes_never_seen_scope(state, boundary) {
+        return Attribution::IneligibleUnscoped;
+    }
     let live = live_scopes_on(state, worktree);
     if has_unconfirmed_required_scope(state, &live, boundary) {
         return Attribution::IneligibleUnscoped;
