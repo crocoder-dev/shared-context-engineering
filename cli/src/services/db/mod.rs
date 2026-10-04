@@ -13,6 +13,7 @@ use std::{
 use anyhow::{Context, Result};
 use turso::Value as TursoValue;
 
+use crate::services::config::{AgentTraceDbRetryConfig, DatabaseRetryConfig};
 use crate::services::lifecycle::{
     HealthCategory, HealthFixability, HealthProblem, HealthProblemKind, HealthSeverity,
 };
@@ -41,6 +42,7 @@ const QUERY_RETRY_POLICY: RetryPolicy = RetryPolicy {
 const QUERY_RETRY_HINT: &str = "retry after the database lock clears; if the issue persists, stop other SCE processes using this database and rerun the command";
 const AGENT_TRACE_DB_CONFIG_KEY: &str = "agent_trace_db";
 const AGENT_TRACE_DB_BUSY_TIMEOUT_MS: u64 = 500;
+const AGENT_TRACE_DB_CONTENTION_DEADLINE_MS: u64 = 1_250;
 
 pub mod encryption_key;
 
@@ -458,7 +460,7 @@ fn resolve_connection_open_retry_policy<M: DbSpec>() -> RetryPolicy {
     if let Some(config) = crate::services::config::get_database_retry_config() {
         let per_db = match M::db_config_key() {
             "local_db" => config.local_db.as_ref(),
-            "agent_trace_db" => config.agent_trace_db.as_ref(),
+            "agent_trace_db" => config.agent_trace_db.as_ref().map(|db| &db.retry),
             "auth_db" => config.auth_db.as_ref(),
             _ => None,
         };
@@ -475,7 +477,7 @@ fn resolve_query_retry_policy<M: DbSpec>() -> RetryPolicy {
     if let Some(config) = crate::services::config::get_database_retry_config() {
         let per_db = match M::db_config_key() {
             "local_db" => config.local_db.as_ref(),
-            "agent_trace_db" => config.agent_trace_db.as_ref(),
+            "agent_trace_db" => config.agent_trace_db.as_ref().map(|db| &db.retry),
             "auth_db" => config.auth_db.as_ref(),
             _ => None,
         };
@@ -498,14 +500,58 @@ fn resolve_query_retry_policy<M: DbSpec>() -> RetryPolicy {
 /// runs `BEGIN IMMEDIATE` through `Connection::execute` on the same connection,
 /// the wait also covers writer-lock acquisition. The timeout is connection-wide.
 ///
-/// Only the Agent Trace DB has a busy timeout; every other database resolves
-/// to zero, which leaves Turso's busy handler unset.
+/// Only the Agent Trace DB has a busy timeout, taken from
+/// `policies.database_retry.agent_trace_db.busy_timeout_ms` when configured;
+/// every other database resolves to zero, which leaves Turso's busy handler
+/// unset.
 fn resolve_busy_timeout<M: DbSpec>() -> std::time::Duration {
-    if M::db_config_key() == AGENT_TRACE_DB_CONFIG_KEY {
-        std::time::Duration::from_millis(AGENT_TRACE_DB_BUSY_TIMEOUT_MS)
-    } else {
-        std::time::Duration::ZERO
+    busy_timeout_from_config::<M>(crate::services::config::get_database_retry_config())
+}
+
+fn busy_timeout_from_config<M: DbSpec>(
+    config: Option<&DatabaseRetryConfig>,
+) -> std::time::Duration {
+    agent_trace_db_millis::<M>(
+        config,
+        |db| db.busy_timeout_ms,
+        AGENT_TRACE_DB_BUSY_TIMEOUT_MS,
+    )
+}
+
+/// Resolve the Agent Trace write-contention deadline for `M`.
+///
+/// The deadline decides whether another outer write-contention retry may
+/// start; it does not interrupt a running Turso operation. It is taken from
+/// `policies.database_retry.agent_trace_db.contention_deadline_ms` when
+/// configured. Every other database resolves to zero.
+#[cfg_attr(not(test), allow(dead_code))]
+fn resolve_contention_deadline<M: DbSpec>() -> std::time::Duration {
+    contention_deadline_from_config::<M>(crate::services::config::get_database_retry_config())
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn contention_deadline_from_config<M: DbSpec>(
+    config: Option<&DatabaseRetryConfig>,
+) -> std::time::Duration {
+    agent_trace_db_millis::<M>(
+        config,
+        |db| db.contention_deadline_ms,
+        AGENT_TRACE_DB_CONTENTION_DEADLINE_MS,
+    )
+}
+
+fn agent_trace_db_millis<M: DbSpec>(
+    config: Option<&DatabaseRetryConfig>,
+    select: impl Fn(&AgentTraceDbRetryConfig) -> Option<u64>,
+    default_ms: u64,
+) -> std::time::Duration {
+    if M::db_config_key() != AGENT_TRACE_DB_CONFIG_KEY {
+        return std::time::Duration::ZERO;
     }
+    let configured = config
+        .and_then(|config| config.agent_trace_db.as_ref())
+        .and_then(select);
+    std::time::Duration::from_millis(configured.unwrap_or(default_ms))
 }
 
 /// Install `busy_timeout` on `conn`; a zero timeout leaves the handler unset.
@@ -1400,6 +1446,78 @@ mod tests {
             Duration::from_millis(AGENT_TRACE_DB_BUSY_TIMEOUT_MS)
         );
         assert_eq!(resolve_busy_timeout::<TestDbSpec>(), Duration::ZERO);
+    }
+
+    fn agent_trace_retry_config(
+        busy_timeout_ms: Option<u64>,
+        contention_deadline_ms: Option<u64>,
+    ) -> DatabaseRetryConfig {
+        DatabaseRetryConfig {
+            local_db: None,
+            agent_trace_db: Some(AgentTraceDbRetryConfig {
+                retry: crate::services::config::PerDbRetryConfig {
+                    connection_open: None,
+                    query: None,
+                },
+                busy_timeout_ms,
+                contention_deadline_ms,
+            }),
+            auth_db: None,
+        }
+    }
+
+    #[test]
+    fn database_retry_configured_busy_timeout_overrides_agent_trace_default() {
+        let config = agent_trace_retry_config(Some(1_500), None);
+        assert_eq!(
+            busy_timeout_from_config::<AgentTraceTestDbSpec>(Some(&config)),
+            Duration::from_millis(1_500)
+        );
+        assert_eq!(
+            busy_timeout_from_config::<TestDbSpec>(Some(&config)),
+            Duration::ZERO
+        );
+
+        let disabled = agent_trace_retry_config(Some(0), None);
+        assert_eq!(
+            busy_timeout_from_config::<AgentTraceTestDbSpec>(Some(&disabled)),
+            Duration::ZERO
+        );
+
+        let unset = agent_trace_retry_config(None, None);
+        assert_eq!(
+            busy_timeout_from_config::<AgentTraceTestDbSpec>(Some(&unset)),
+            Duration::from_millis(AGENT_TRACE_DB_BUSY_TIMEOUT_MS)
+        );
+    }
+
+    #[test]
+    fn database_retry_contention_deadline_resolves_default_and_configured_value() {
+        assert_eq!(
+            resolve_contention_deadline::<AgentTraceTestDbSpec>(),
+            Duration::from_millis(AGENT_TRACE_DB_CONTENTION_DEADLINE_MS)
+        );
+        assert_eq!(
+            AGENT_TRACE_DB_CONTENTION_DEADLINE_MS, 1_250,
+            "contention deadline default"
+        );
+        assert_eq!(resolve_contention_deadline::<TestDbSpec>(), Duration::ZERO);
+
+        let config = agent_trace_retry_config(None, Some(3_500));
+        assert_eq!(
+            contention_deadline_from_config::<AgentTraceTestDbSpec>(Some(&config)),
+            Duration::from_millis(3_500)
+        );
+        assert_eq!(
+            contention_deadline_from_config::<TestDbSpec>(Some(&config)),
+            Duration::ZERO
+        );
+
+        let zero = agent_trace_retry_config(None, Some(0));
+        assert_eq!(
+            contention_deadline_from_config::<AgentTraceTestDbSpec>(Some(&zero)),
+            Duration::ZERO
+        );
     }
 
     #[test]

@@ -18,8 +18,9 @@ use serde_json::Value;
 
 use super::policy::{parse_bash_policy_presets, parse_custom_bash_policies, CustomBashPolicyEntry};
 use super::types::{
-    parse_optional_workflow_id, ConfigPathSource, DatabaseRetryConfig, IntegrationTargetId,
-    IntegrationsConfig, LogFormat, LogLevel,
+    parse_optional_workflow_id, AgentTraceDbRetryConfig, ConfigPathSource, DatabaseRetryConfig,
+    IntegrationTargetId, IntegrationsConfig, LogFormat, LogLevel, PerDbRetryConfig,
+    AGENT_TRACE_DB_BUSY_TIMEOUT_MAX_MS, AGENT_TRACE_DB_CONTENTION_DEADLINE_MAX_MS,
 };
 use crate::services::resilience::RetryPolicy;
 
@@ -46,6 +47,17 @@ pub(crate) const TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
 
 pub(crate) const TOP_LEVEL_CONFIG_KEYS_DESCRIPTION: &str =
     "$schema, log_level, log_format, log_to_file, workos_client_id, control_plane_base_url, agent_trace, policies, integrations, log_dir, log_file_retention_limit";
+
+const PER_DB_RETRY_KEYS: &[&str] = &["connection_open", "query"];
+const PER_DB_RETRY_KEYS_DESCRIPTION: &str = "connection_open, query";
+const AGENT_TRACE_DB_RETRY_KEYS: &[&str] = &[
+    "connection_open",
+    "busy_timeout_ms",
+    "contention_deadline_ms",
+    "query",
+];
+const AGENT_TRACE_DB_RETRY_KEYS_DESCRIPTION: &str =
+    "connection_open, busy_timeout_ms, contention_deadline_ms, query";
 
 static CONFIG_SCHEMA_VALIDATOR: OnceLock<Validator> = OnceLock::new();
 
@@ -130,8 +142,16 @@ pub(crate) struct ParsedCustomBashPolicyMatchDocument {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub(crate) struct ParsedDatabaseRetryConfigDocument {
     pub(crate) local_db: Option<ParsedPerDbRetryConfigDocument>,
-    pub(crate) agent_trace_db: Option<ParsedPerDbRetryConfigDocument>,
+    pub(crate) agent_trace_db: Option<ParsedAgentTraceDbRetryConfigDocument>,
     pub(crate) auth_db: Option<ParsedPerDbRetryConfigDocument>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct ParsedAgentTraceDbRetryConfigDocument {
+    pub(crate) connection_open: Option<ParsedRetryPolicyDocument>,
+    pub(crate) query: Option<ParsedRetryPolicyDocument>,
+    pub(crate) busy_timeout_ms: Option<u64>,
+    pub(crate) contention_deadline_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -538,7 +558,10 @@ pub(crate) fn map_database_retry_config(
             })
         };
 
-    let build_per_db = |db_key: &str| -> Result<Option<super::types::PerDbRetryConfig>> {
+    let per_db_object = |db_key: &str,
+                         allowed_keys: &[&str],
+                         allowed_keys_description: &str|
+     -> Result<Option<&serde_json::Map<String, Value>>> {
         let Some(db_value) = database_retry_object.get(db_key) else {
             return Ok(None);
         };
@@ -554,56 +577,133 @@ pub(crate) fn map_database_retry_config(
             db_object,
             path,
             Some(&format!("policies.database_retry.{db_key}")),
-            &["connection_open", "query"],
-            "connection_open, query",
+            allowed_keys,
+            allowed_keys_description,
         )?;
+
+        Ok(Some(db_object))
+    };
+
+    let build_policy = |db_key: &str,
+                        db_object: &serde_json::Map<String, Value>,
+                        op_key: &str,
+                        typed_policy: Option<&ParsedRetryPolicyDocument>|
+     -> Result<Option<RetryPolicy>> {
+        let Some(op_value) = db_object.get(op_key) else {
+            return Ok(None);
+        };
+
+        let _op_object = op_value.as_object().with_context(|| {
+            format!(
+                "Config key 'policies.database_retry.{db_key}.{op_key}' in '{}' must be an object.",
+                path.display()
+            )
+        })?;
+
+        let parsed = typed_policy.with_context(|| {
+            format!(
+                "Config key 'policies.database_retry.{db_key}.{op_key}' in '{}' could not be parsed.",
+                path.display()
+            )
+        })?;
+
+        let context = format!("policies.database_retry.{db_key}.{op_key}");
+        build_retry_policy(parsed, &context).map(Some)
+    };
+
+    let build_per_db = |db_key: &str| -> Result<Option<PerDbRetryConfig>> {
+        let Some(db_object) =
+            per_db_object(db_key, PER_DB_RETRY_KEYS, PER_DB_RETRY_KEYS_DESCRIPTION)?
+        else {
+            return Ok(None);
+        };
 
         let typed_db = typed.and_then(|doc| match db_key {
             "local_db" => doc.local_db.as_ref(),
-            "agent_trace_db" => doc.agent_trace_db.as_ref(),
             "auth_db" => doc.auth_db.as_ref(),
             _ => None,
         });
 
-        let build_policy = |op_key: &str| -> Result<Option<RetryPolicy>> {
-            let Some(op_value) = db_object.get(op_key) else {
-                return Ok(None);
-            };
+        Ok(Some(PerDbRetryConfig {
+            connection_open: build_policy(
+                db_key,
+                db_object,
+                "connection_open",
+                typed_db.and_then(|db| db.connection_open.as_ref()),
+            )?,
+            query: build_policy(
+                db_key,
+                db_object,
+                "query",
+                typed_db.and_then(|db| db.query.as_ref()),
+            )?,
+        }))
+    };
 
-            let _op_object = op_value.as_object().with_context(|| {
-                format!(
-                    "Config key 'policies.database_retry.{db_key}.{op_key}' in '{}' must be an object.",
-                    path.display()
-                )
-            })?;
-
-            let typed_policy = typed_db.and_then(|db| match op_key {
-                "connection_open" => db.connection_open.as_ref(),
-                "query" => db.query.as_ref(),
-                _ => None,
-            });
-
-            let parsed = typed_policy.with_context(|| {
-                format!(
-                    "Config key 'policies.database_retry.{db_key}.{op_key}' in '{}' could not be parsed.",
-                    path.display()
-                )
-            })?;
-
-            let context = format!("policies.database_retry.{db_key}.{op_key}");
-            build_retry_policy(parsed, &context).map(Some)
+    let build_agent_trace_db = || -> Result<Option<AgentTraceDbRetryConfig>> {
+        let db_key = "agent_trace_db";
+        let Some(db_object) = per_db_object(
+            db_key,
+            AGENT_TRACE_DB_RETRY_KEYS,
+            AGENT_TRACE_DB_RETRY_KEYS_DESCRIPTION,
+        )?
+        else {
+            return Ok(None);
         };
 
-        Ok(Some(super::types::PerDbRetryConfig {
-            connection_open: build_policy("connection_open")?,
-            query: build_policy("query")?,
+        let typed_db = typed.and_then(|doc| doc.agent_trace_db.as_ref());
+
+        let bounded_millis = |key: &str, value: Option<u64>, max: u64| -> Result<Option<u64>> {
+            let Some(value) = value else {
+                if db_object.contains_key(key) {
+                    bail!(
+                        "Config key 'policies.database_retry.{db_key}.{key}' in '{}' could not be parsed.",
+                        path.display()
+                    );
+                }
+                return Ok(None);
+            };
+            if value > max {
+                bail!(
+                    "Config key 'policies.database_retry.{db_key}.{key}' in '{}' must be <= {max}.",
+                    path.display()
+                );
+            }
+            Ok(Some(value))
+        };
+
+        Ok(Some(AgentTraceDbRetryConfig {
+            retry: PerDbRetryConfig {
+                connection_open: build_policy(
+                    db_key,
+                    db_object,
+                    "connection_open",
+                    typed_db.and_then(|db| db.connection_open.as_ref()),
+                )?,
+                query: build_policy(
+                    db_key,
+                    db_object,
+                    "query",
+                    typed_db.and_then(|db| db.query.as_ref()),
+                )?,
+            },
+            busy_timeout_ms: bounded_millis(
+                "busy_timeout_ms",
+                typed_db.and_then(|db| db.busy_timeout_ms),
+                AGENT_TRACE_DB_BUSY_TIMEOUT_MAX_MS,
+            )?,
+            contention_deadline_ms: bounded_millis(
+                "contention_deadline_ms",
+                typed_db.and_then(|db| db.contention_deadline_ms),
+                AGENT_TRACE_DB_CONTENTION_DEADLINE_MAX_MS,
+            )?,
         }))
     };
 
     Ok(Some(FileConfigValue {
         value: DatabaseRetryConfig {
             local_db: build_per_db("local_db")?,
-            agent_trace_db: build_per_db("agent_trace_db")?,
+            agent_trace_db: build_agent_trace_db()?,
             auth_db: build_per_db("auth_db")?,
         },
         source,
@@ -852,6 +952,213 @@ mod agent_trace_config_tests {
             .unwrap_err()
             .to_string();
 
+        assert!(error.contains("failed schema validation"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod database_retry_config_tests {
+    use std::path::Path;
+
+    use serde_json::Value;
+
+    use super::{parse_file_config, ConfigPathSource, FileConfig, SCE_CONFIG_SCHEMA_JSON};
+    use crate::services::resilience::RetryPolicy;
+
+    fn parse(raw: &str) -> anyhow::Result<FileConfig> {
+        parse_file_config(
+            raw,
+            Path::new("/tmp/sce-config.json"),
+            ConfigPathSource::Flag,
+        )
+    }
+
+    fn parse_error(raw: &str) -> String {
+        parse(raw).unwrap_err().to_string()
+    }
+
+    fn generated_database_retry_object(db_key: &str) -> Value {
+        let schema: Value = serde_json::from_str(SCE_CONFIG_SCHEMA_JSON).unwrap();
+        schema["properties"]["policies"]["properties"]["database_retry"]["properties"][db_key]
+            .clone()
+    }
+
+    fn property_keys(object: &Value) -> Vec<String> {
+        let mut keys = object["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys
+    }
+
+    #[test]
+    fn database_retry_agent_trace_db_accepts_contention_keys() {
+        let config = parse(
+            r#"{"policies":{"database_retry":{"agent_trace_db":{"busy_timeout_ms":750,"contention_deadline_ms":2000}}}}"#,
+        )
+        .unwrap();
+
+        let agent_trace_db = config.database_retry.unwrap().value.agent_trace_db.unwrap();
+        assert_eq!(agent_trace_db.busy_timeout_ms, Some(750));
+        assert_eq!(agent_trace_db.contention_deadline_ms, Some(2000));
+        assert_eq!(agent_trace_db.retry.connection_open, None);
+        assert_eq!(agent_trace_db.retry.query, None);
+    }
+
+    #[test]
+    fn database_retry_agent_trace_db_accepts_zero_and_upper_bounds() {
+        for (busy_timeout_ms, contention_deadline_ms) in [(0, 0), (10_000, 30_000)] {
+            let config = parse(&format!(
+                r#"{{"policies":{{"database_retry":{{"agent_trace_db":{{"busy_timeout_ms":{busy_timeout_ms},"contention_deadline_ms":{contention_deadline_ms}}}}}}}}}"#
+            ))
+            .unwrap();
+            let agent_trace_db = config.database_retry.unwrap().value.agent_trace_db.unwrap();
+            assert_eq!(agent_trace_db.busy_timeout_ms, Some(busy_timeout_ms));
+            assert_eq!(
+                agent_trace_db.contention_deadline_ms,
+                Some(contention_deadline_ms)
+            );
+        }
+    }
+
+    #[test]
+    fn database_retry_agent_trace_db_omitted_contention_keys_stay_unset() {
+        let config = parse(
+            r#"{"policies":{"database_retry":{"agent_trace_db":{"query":{"max_attempts":3,"timeout_ms":150,"initial_backoff_ms":10,"max_backoff_ms":50}}}}}"#,
+        )
+        .unwrap();
+
+        let agent_trace_db = config.database_retry.unwrap().value.agent_trace_db.unwrap();
+        assert_eq!(agent_trace_db.busy_timeout_ms, None);
+        assert_eq!(agent_trace_db.contention_deadline_ms, None);
+    }
+
+    #[test]
+    fn database_retry_agent_trace_db_rejects_out_of_range_values() {
+        for raw in [
+            r#"{"policies":{"database_retry":{"agent_trace_db":{"busy_timeout_ms":10001}}}}"#,
+            r#"{"policies":{"database_retry":{"agent_trace_db":{"busy_timeout_ms":-1}}}}"#,
+            r#"{"policies":{"database_retry":{"agent_trace_db":{"contention_deadline_ms":30001}}}}"#,
+            r#"{"policies":{"database_retry":{"agent_trace_db":{"contention_deadline_ms":-5}}}}"#,
+        ] {
+            let error = parse_error(raw);
+            assert!(error.contains("failed schema validation"), "{error}");
+        }
+    }
+
+    #[test]
+    fn database_retry_agent_trace_db_rejects_wrong_type_values() {
+        for raw in [
+            r#"{"policies":{"database_retry":{"agent_trace_db":{"busy_timeout_ms":"500"}}}}"#,
+            r#"{"policies":{"database_retry":{"agent_trace_db":{"busy_timeout_ms":1.5}}}}"#,
+            r#"{"policies":{"database_retry":{"agent_trace_db":{"contention_deadline_ms":true}}}}"#,
+            r#"{"policies":{"database_retry":{"agent_trace_db":{"contention_deadline_ms":null}}}}"#,
+        ] {
+            let error = parse_error(raw);
+            assert!(error.contains("failed schema validation"), "{error}");
+        }
+    }
+
+    #[test]
+    fn database_retry_local_and_auth_db_reject_contention_keys() {
+        for db_key in ["local_db", "auth_db"] {
+            for key in ["busy_timeout_ms", "contention_deadline_ms"] {
+                let error = parse_error(&format!(
+                    r#"{{"policies":{{"database_retry":{{"{db_key}":{{"{key}":500}}}}}}}}"#
+                ));
+                assert!(
+                    error.starts_with("Config file '/tmp/sce-config.json' failed schema validation against generated schema"),
+                    "{error}"
+                );
+                assert!(error.contains(key), "{error}");
+                assert!(
+                    error.contains(&format!("/policies/database_retry/{db_key}")),
+                    "{error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn database_retry_generated_schema_publishes_contention_keys_only_on_agent_trace_db() {
+        for db_key in ["local_db", "auth_db"] {
+            let object = generated_database_retry_object(db_key);
+            assert_eq!(property_keys(&object), vec!["connection_open", "query"]);
+            assert_eq!(object["additionalProperties"], Value::Bool(false));
+        }
+
+        let agent_trace_db = generated_database_retry_object("agent_trace_db");
+        assert_eq!(
+            property_keys(&agent_trace_db),
+            vec![
+                "busy_timeout_ms",
+                "connection_open",
+                "contention_deadline_ms",
+                "query"
+            ]
+        );
+        assert_eq!(agent_trace_db["additionalProperties"], Value::Bool(false));
+        let busy_timeout = &agent_trace_db["properties"]["busy_timeout_ms"];
+        assert_eq!(busy_timeout["minimum"], 0);
+        assert_eq!(busy_timeout["maximum"], 10_000);
+        assert_eq!(busy_timeout["default"], 500);
+        let contention_deadline = &agent_trace_db["properties"]["contention_deadline_ms"];
+        assert_eq!(contention_deadline["minimum"], 0);
+        assert_eq!(contention_deadline["maximum"], 30_000);
+        assert_eq!(contention_deadline["default"], 1_250);
+    }
+
+    #[test]
+    fn database_retry_per_db_key_check_rejects_contention_keys_as_backstop() {
+        let object = serde_json::json!({"busy_timeout_ms": 500});
+        let error = super::validate_object_keys(
+            object.as_object().unwrap(),
+            Path::new("/tmp/sce-config.json"),
+            Some("policies.database_retry.local_db"),
+            super::PER_DB_RETRY_KEYS,
+            super::PER_DB_RETRY_KEYS_DESCRIPTION,
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(
+            error,
+            "Config key 'policies.database_retry.local_db' in '/tmp/sce-config.json' contains unknown key 'busy_timeout_ms'. Allowed keys: connection_open, query."
+        );
+    }
+
+    #[test]
+    fn database_retry_query_timeout_ms_parsing_is_unchanged() {
+        let config = parse(
+            r#"{"policies":{"database_retry":{"local_db":{"query":{"max_attempts":4,"timeout_ms":300,"initial_backoff_ms":20,"max_backoff_ms":80}},"agent_trace_db":{"query":{"max_attempts":3,"timeout_ms":150,"initial_backoff_ms":10,"max_backoff_ms":50},"busy_timeout_ms":250}}}}"#,
+        )
+        .unwrap();
+
+        let database_retry = config.database_retry.unwrap().value;
+        assert_eq!(
+            database_retry.local_db.unwrap().query,
+            Some(RetryPolicy {
+                max_attempts: 4,
+                timeout_ms: 300,
+                initial_backoff_ms: 20,
+                max_backoff_ms: 80,
+            })
+        );
+        assert_eq!(
+            database_retry.agent_trace_db.unwrap().retry.query,
+            Some(RetryPolicy {
+                max_attempts: 3,
+                timeout_ms: 150,
+                initial_backoff_ms: 10,
+                max_backoff_ms: 50,
+            })
+        );
+
+        let error = parse_error(
+            r#"{"policies":{"database_retry":{"agent_trace_db":{"query":{"max_attempts":3,"timeout_ms":0,"initial_backoff_ms":10,"max_backoff_ms":50}}}}}"#,
+        );
         assert!(error.contains("failed schema validation"), "{error}");
     }
 }

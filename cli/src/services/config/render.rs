@@ -7,7 +7,7 @@ use super::resolver::{
     AuthConfigKeySpec, RuntimeConfig, CONTROL_PLANE_BASE_URL_KEY, PRECEDENCE_DESCRIPTION,
     WORKOS_CLIENT_ID_KEY,
 };
-use super::types::DatabaseRetryConfig;
+use super::types::{AgentTraceDbRetryConfig, DatabaseRetryConfig};
 use super::{ConfigPathSource, ReportFormat, ResolvedOptionalValue, ValueSource};
 
 #[allow(clippy::too_many_lines)]
@@ -429,6 +429,26 @@ fn format_per_db_retry_text(
     lines
 }
 
+fn format_agent_trace_db_retry_text(config: &AgentTraceDbRetryConfig) -> Vec<String> {
+    let db_label = "agent_trace_db";
+    let mut lines = format_per_db_retry_text(&config.retry, db_label);
+    if let Some(busy_timeout_ms) = config.busy_timeout_ms {
+        lines.push(format!(
+            "      {}: {} (busy_timeout_ms)",
+            style::label(db_label),
+            style::value(&format!("{busy_timeout_ms}ms"))
+        ));
+    }
+    if let Some(contention_deadline_ms) = config.contention_deadline_ms {
+        lines.push(format!(
+            "      {}: {} (contention_deadline_ms)",
+            style::label(db_label),
+            style::value(&format!("{contention_deadline_ms}ms"))
+        ));
+    }
+    lines
+}
+
 fn format_database_retry_text(value: &ResolvedOptionalValue<DatabaseRetryConfig>) -> String {
     match (value.value.as_ref(), value.source) {
         (Some(config), Some(source)) => {
@@ -436,8 +456,8 @@ fn format_database_retry_text(value: &ResolvedOptionalValue<DatabaseRetryConfig>
             if let Some(ref per_db) = config.local_db {
                 lines.extend(format_per_db_retry_text(per_db, "local_db"));
             }
-            if let Some(ref per_db) = config.agent_trace_db {
-                lines.extend(format_per_db_retry_text(per_db, "agent_trace_db"));
+            if let Some(ref agent_trace_db) = config.agent_trace_db {
+                lines.extend(format_agent_trace_db_retry_text(agent_trace_db));
             }
             if let Some(ref per_db) = config.auth_db {
                 lines.extend(format_per_db_retry_text(per_db, "auth_db"));
@@ -492,6 +512,22 @@ fn format_per_db_retry_json(config: &super::types::PerDbRetryConfig) -> Value {
     Value::Object(obj)
 }
 
+fn format_agent_trace_db_retry_json(config: &AgentTraceDbRetryConfig) -> Value {
+    let mut value = format_per_db_retry_json(&config.retry);
+    if let Value::Object(ref mut obj) = value {
+        if let Some(busy_timeout_ms) = config.busy_timeout_ms {
+            obj.insert("busy_timeout_ms".to_string(), json!(busy_timeout_ms));
+        }
+        if let Some(contention_deadline_ms) = config.contention_deadline_ms {
+            obj.insert(
+                "contention_deadline_ms".to_string(),
+                json!(contention_deadline_ms),
+            );
+        }
+    }
+    value
+}
+
 fn format_database_retry_json(value: &ResolvedOptionalValue<DatabaseRetryConfig>) -> Value {
     let config = value.value.as_ref();
     let mut resolved = serde_json::Map::new();
@@ -499,10 +535,10 @@ fn format_database_retry_json(value: &ResolvedOptionalValue<DatabaseRetryConfig>
         if let Some(ref per_db) = c.local_db {
             resolved.insert("local_db".to_string(), format_per_db_retry_json(per_db));
         }
-        if let Some(ref per_db) = c.agent_trace_db {
+        if let Some(ref agent_trace_db) = c.agent_trace_db {
             resolved.insert(
                 "agent_trace_db".to_string(),
-                format_per_db_retry_json(per_db),
+                format_agent_trace_db_retry_json(agent_trace_db),
             );
         }
         if let Some(ref per_db) = c.auth_db {
@@ -514,4 +550,117 @@ fn format_database_retry_json(value: &ResolvedOptionalValue<DatabaseRetryConfig>
         "source": value.source.map(ValueSource::as_str),
         "config_source": value.source.and_then(ValueSource::config_source).map(ConfigPathSource::as_str),
     })
+}
+
+#[cfg(test)]
+mod database_retry_render_tests {
+    use serde_json::json;
+
+    use super::{format_database_retry_json, format_database_retry_text};
+    use crate::services::config::{
+        AgentTraceDbRetryConfig, ConfigPathSource, DatabaseRetryConfig, PerDbRetryConfig,
+        ResolvedOptionalValue, ValueSource,
+    };
+    use crate::services::resilience::RetryPolicy;
+
+    fn query_policy() -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: 3,
+            timeout_ms: 150,
+            initial_backoff_ms: 10,
+            max_backoff_ms: 50,
+        }
+    }
+
+    fn resolved(
+        busy_timeout_ms: Option<u64>,
+        contention_deadline_ms: Option<u64>,
+    ) -> ResolvedOptionalValue<DatabaseRetryConfig> {
+        ResolvedOptionalValue {
+            value: Some(DatabaseRetryConfig {
+                local_db: Some(PerDbRetryConfig {
+                    connection_open: None,
+                    query: Some(query_policy()),
+                }),
+                agent_trace_db: Some(AgentTraceDbRetryConfig {
+                    retry: PerDbRetryConfig {
+                        connection_open: None,
+                        query: Some(query_policy()),
+                    },
+                    busy_timeout_ms,
+                    contention_deadline_ms,
+                }),
+                auth_db: None,
+            }),
+            source: Some(ValueSource::ConfigFile(ConfigPathSource::Flag)),
+        }
+    }
+
+    #[test]
+    fn database_retry_json_renders_contention_keys_for_agent_trace_db_only() {
+        let rendered = format_database_retry_json(&resolved(Some(750), Some(2_000)));
+
+        assert_eq!(
+            rendered["resolved"],
+            json!({
+                "local_db": {
+                    "query": {
+                        "max_attempts": 3,
+                        "timeout_ms": 150,
+                        "initial_backoff_ms": 10,
+                        "max_backoff_ms": 50,
+                    },
+                },
+                "agent_trace_db": {
+                    "query": {
+                        "max_attempts": 3,
+                        "timeout_ms": 150,
+                        "initial_backoff_ms": 10,
+                        "max_backoff_ms": 50,
+                    },
+                    "busy_timeout_ms": 750,
+                    "contention_deadline_ms": 2000,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn database_retry_json_omits_unset_contention_keys() {
+        let rendered = format_database_retry_json(&resolved(None, None));
+
+        let agent_trace_db = rendered["resolved"]["agent_trace_db"].as_object().unwrap();
+        assert!(!agent_trace_db.contains_key("busy_timeout_ms"));
+        assert!(!agent_trace_db.contains_key("contention_deadline_ms"));
+        assert_eq!(
+            rendered["resolved"]["agent_trace_db"]["query"]["timeout_ms"],
+            150
+        );
+    }
+
+    #[test]
+    fn database_retry_text_renders_contention_keys_for_agent_trace_db() {
+        let rendered = format_database_retry_text(&resolved(Some(750), Some(0)));
+
+        let busy_line = rendered
+            .lines()
+            .find(|line| line.contains("(busy_timeout_ms)"))
+            .unwrap();
+        assert!(busy_line.contains("agent_trace_db"), "{rendered}");
+        assert!(busy_line.contains("750ms"), "{rendered}");
+        let deadline_line = rendered
+            .lines()
+            .find(|line| line.contains("(contention_deadline_ms)"))
+            .unwrap();
+        assert!(deadline_line.contains("agent_trace_db"), "{rendered}");
+        assert!(deadline_line.contains("0ms"), "{rendered}");
+        assert_eq!(
+            rendered
+                .lines()
+                .filter(|line| line.contains("3 attempts, 150ms timeout, 10..50ms backoff (query)"))
+                .count(),
+            2,
+            "{rendered}"
+        );
+    }
 }
