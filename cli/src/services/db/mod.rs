@@ -655,7 +655,13 @@ fn run_with_write_contention_retry_using<T>(
         #[cfg(test)]
         note_write_contention(|counts| counts.attempts += 1);
 
-        let error = match attempt(attempt_number) {
+        #[cfg(test)]
+        note_write_contention_timeline(WriteContentionTimelineEvent::AttemptStart);
+        let outcome = attempt(attempt_number);
+        #[cfg(test)]
+        note_write_contention_timeline(WriteContentionTimelineEvent::AttemptEnd);
+
+        let error = match outcome {
             Ok(value) => return Ok(value),
             Err(WriteAttemptFailure::Deterministic(error)) => return Err(error),
             Err(WriteAttemptFailure::Retryable(error)) => error,
@@ -664,7 +670,13 @@ fn run_with_write_contention_retry_using<T>(
         if attempt_number < policy.max_attempts {
             let backoff = draw_backoff();
             if write_contention_retry_may_sleep(policy, elapsed(), backoff) {
+                #[cfg(test)]
+                note_write_contention_timeline(WriteContentionTimelineEvent::BackoffRequested(
+                    backoff,
+                ));
                 sleep(backoff);
+                #[cfg(test)]
+                note_write_contention_timeline(WriteContentionTimelineEvent::BackoffSlept);
                 if write_contention_retry_may_start_now(policy, elapsed()) {
                     #[cfg(test)]
                     note_write_contention(|counts| counts.outer_retries += 1);
@@ -814,6 +826,37 @@ pub(crate) fn count_write_contention<T>(body: impl FnOnce() -> T) -> (T, WriteCo
     let result = body();
     let counts = WRITE_CONTENTION_COUNTS.with(std::cell::Cell::get);
     (result, counts)
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WriteContentionTimelineEvent {
+    AttemptStart,
+    AttemptEnd,
+    BackoffRequested(std::time::Duration),
+    BackoffSlept,
+}
+
+#[cfg(test)]
+thread_local! {
+    static WRITE_CONTENTION_TIMELINE: std::cell::RefCell<Vec<(std::time::Instant, WriteContentionTimelineEvent)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn note_write_contention_timeline(event: WriteContentionTimelineEvent) {
+    let now = std::time::Instant::now();
+    WRITE_CONTENTION_TIMELINE.with(|timeline| timeline.borrow_mut().push((now, event)));
+}
+
+#[cfg(test)]
+pub(crate) fn record_write_contention_timeline<T>(
+    body: impl FnOnce() -> T,
+) -> (T, Vec<(std::time::Instant, WriteContentionTimelineEvent)>) {
+    WRITE_CONTENTION_TIMELINE.with(|timeline| timeline.borrow_mut().clear());
+    let result = body();
+    let timeline = WRITE_CONTENTION_TIMELINE.with(std::cell::RefCell::take);
+    (result, timeline)
 }
 
 /// Generic Turso database adapter.
