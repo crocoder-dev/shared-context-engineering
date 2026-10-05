@@ -4,7 +4,439 @@ This doc records the measured behavior of the Agent Trace DB contention contract
 
 This doc keeps **Contract** (what tests assert) apart from **Observed on reference host** (what one campaign measured on one machine). Nothing under "Observed" is a guarantee.
 
-## Test environment
+This is the canonical detailed measurement source. Plans and other context docs summarize it and link here.
+
+## Policy history
+
+| Policy (`busy_timeout_ms` / `contention_deadline_ms` / max attempts / backoff cap) | Status | Evidence |
+| --- | --- | --- |
+| 1000 / 2250 / 2 / 100 ms | **current defaults** | [Current campaign](#current-campaign-1000--2250--2--100) |
+| 500 / 1250 / 2 / 100 ms | superseded | [Supported-load failure](#supported-load-failure-under-the-500--1250-policy) and [historical campaign](#historical-campaign-500--1250--2--100) |
+
+Why the defaults were tuned:
+
+- Under 500 / 1250, a final validation run of the strict N=2–4 suite failed. A supported-load writer held the Agent Trace writer lock for about 1.6–1.7 s, and the waiting writers exhausted the policy after about 1.0–1.1 s. One distinct event was lost.
+- The 500 / 1250 policy cannot cover a lock hold above about 1.05 s. Its held-lock transition sat between a holder release of 1026 ms (succeeded) and 1503 ms (exhausted).
+- 1000 / 2250 keeps the same two-attempt architecture and raises only the time budget. It was measured first; a third attempt was not tried, because this candidate passed.
+- Only the default time budget changed. Retry classification (typed `Busy`/`BusySnapshot`), whole-transaction retry units, the 2-attempt cap, the full-jitter algorithm, the post-backoff admission re-check, deterministic-error behavior, hook fail-open behavior, the metadata read-only fast path and exhaustion observability are unchanged.
+
+## Contractual assertions (current)
+
+These are the only assertions the suite makes.
+
+- Held-lock boundary (`lock_budget_boundary_characterizes_single_writer_blocked_by_begin_immediate_holder`), holds of 100, 250, 500, 750, 1000, 1500, 1750, 2000, 2250, 2500 and 3000 ms:
+  - holds ≤ 1000 ms must succeed with 0 exhaustions;
+  - holds ≥ 3000 ms must fail with the `under write contention` error and exactly 1 exhaustion;
+  - every failure leaves 0 message and 0 part rows;
+  - every sample makes 1–2 attempts, and `outer_retries + 1 == attempts`.
+  - 1500–2500 ms is characterization only.
+  - Margin basis: an exhausting writer cannot give up before about 2000 ms (two 1000 ms busy waits), so a ≤ 1000 ms hold has about 1000 ms of slack. The latest exhaustion observed in 110 samples was 2094 ms, so a ≥ 3000 ms hold has about 900 ms of slack. The earlier contract (≤ 250 ms succeeds, ≥ 2000 ms exhausts) used comparable slack against the 500 / 1250 policy.
+- Every in-process round:
+  - `messages == parts`;
+  - the `Ok(true)` count equals the persisted rows;
+  - no writer exceeds 2 attempts;
+  - every duplicate round inserts at most once.
+- `SCE_LOCK_CONTENTION_STRICT=1` adds, per level:
+  - 0 lock errors, 0 other errors, 0 lost events and 0 exhaustions;
+  - for hook processes: every expected message and part persisted, and 0 non-zero exits.
+- Strict supported levels (unchanged):
+
+  | Suite | Levels (N × rounds) |
+  | --- | --- |
+  | distinct events | 2×1000, 3×1000, 4×500 |
+  | duplicate delivery | 2×500, 3×500, 4×500 |
+  | hook processes | 2×500, 3×500, 4×200 |
+
+  N=8 is stress characterization, not a supported requirement.
+
+## Current campaign: 1000 / 2250 / 2 / 100
+
+### Environment and artifacts
+
+- Same reference host as the historical campaign (see [Test environment](#test-environment)): bare-metal AMD Ryzen 9 5900X, 24 threads, 46 GiB RAM, Linux 6.18.37, `/tmp` on ext4 over LUKS dm-crypt on NVMe, Turso crate 0.8.1, rustc 1.95.0. The same io_uring PSI/iowait caveat applies.
+- Campaign date 2026-10-05, Unix ms 1791206344424–1791209382718 (50.6 minutes of measured runs). Load average (1 min) before each run ranged 0.77–5.78.
+- Commit: `HEAD` `e72116239fa8f05befe9fb8e1220c79100914490` plus the working-tree policy change. The `cli/` + `config/` diff at build time had sha256 `3f78fe790fb2e9d10e070e2ab903be256634e8461baf8a23e0515b1f74498c91`.
+  - `AGENT_TRACE_DB_BUSY_TIMEOUT_MS` 500 → 1000 and `AGENT_TRACE_DB_CONTENTION_DEADLINE_MS` 1250 → 2250 in `cli/src/services/db/mod.rs`, with matching Pkl schema defaults.
+  - The boundary hold set was extended to 100–3000 ms, with a provisional exhaustion threshold of 3000 ms and the old success threshold of 250 ms.
+  - After the campaign, the success threshold was raised to 1000 ms from this data. That is a test-only change; the measured binaries predate it.
+- The policy ran with defaults, with no `policies.database_retry.agent_trace_db` override.
+- Frozen release artifacts, built once before the first run:
+  - test binary sha256 `d257dda55923bec809953e84489c927e2a410fb24d15119c1419eca03f917cf1`;
+  - `sce` sha256 `c90b428162f60ef374374d3dcc5272a72bec837b0f079c3d9c482e0e5e2f526e`.
+- Methodology and run order are identical to the historical campaign ([Measurement methodology](#measurement-methodology)): A = 10 boundary runs, B = 5 strict matrices, C = 5 N=8 stress runs, D = 5 strict real-hook matrices. Every level ran as its own strict-mode process with `uptime`, `/proc/pressure/*`, `vmstat 1 5` and `iostat -xz 1 5` captured before it, and the external host monitor ran for the whole campaign.
+- 65 runs, all exit 0. No post-failure snapshot was needed. Nothing was rerun, replaced or dropped. The raw `SCE_MEAS` logs, host snapshots and monitor JSONL were kept in the session scratchpad and are not committed.
+
+### Held-lock results
+
+Contract: ≤ 1000 ms succeeds, ≥ 3000 ms exhausts, failure leaves 0/0 rows, ≤ 2 attempts. All 10 runs satisfied it: 110/110 samples, 0 invariant violations.
+
+Observed on reference host (10 runs × 11 holds):
+
+- **The success/exhaust transition lies between 2000 and 2250 ms of requested hold.** Actual holder release was 2004–2013 ms for the 2000 ms hold (10/10 succeeded) versus 2254–2265 ms for the 2250 ms hold (10/10 exhausted).
+- **Exhausted writers gave up at 2001–2094 ms**: a `1000.1–1000.2 ms` busy wait, the drawn backoff (≤ 0.1 ms oversleep), and a second `1000.1–1000.2 ms` busy wait. No admission rejection occurred; every exhaustion made both attempts.
+- **Holds of 1500–2000 ms succeeded on attempt 2** (30/30). This covers the 1.6–1.7 s holder that failed the 500 / 1250 validation run. The 2000 ms hold is borderline: it succeeded because the second busy wait ended a few ms after the release, and a smaller backoff draw could tip it to exhaustion. It is characterization only.
+- **Holds up to 1000 ms succeeded on attempt 1** (50/50), including 750 ms holds that needed an outer retry under 500 / 1250.
+- One 2500 ms sample released at 2977 ms, a delayed holder release. It exhausted at about 2.0 s as specified.
+
+#### Held-lock raw samples
+
+| run | hold ms | holder released ms | writer elapsed ms | result | attempts | outer retries | exhaustions | messages | parts | attempt1 ms | backoff req/actual ms | attempt2 ms |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 100 | 104.1 | 115.9 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 115.9 | - | - |
+| 1 | 250 | 254.3 | 341.8 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 341.8 | - | - |
+| 1 | 500 | 512.1 | 541.8 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 541.8 | - | - |
+| 1 | 750 | 754.4 | 841.4 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 841.4 | - | - |
+| 1 | 1000 | 1004.5 | 1018.0 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 1018.0 | - | - |
+| 1 | 1500 | 1504.5 | 1583.6 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 34/34.1 | 549.3 |
+| 1 | 1750 | 1762.5 | 1862.5 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 14/14.1 | 848.3 |
+| 1 | 2000 | 2004.4 | 2085.2 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 81/81.1 | 1004.0 |
+| 1 | 2250 | 2254.4 | 2056.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 56/56.1 | 1000.2 |
+| 1 | 2500 | 2976.9 | 2015.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 15/15.1 | 1000.2 |
+| 1 | 3000 | 3004.4 | 2008.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 8/8.1 | 1000.2 |
+| 2 | 100 | 103.9 | 115.6 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 115.5 | - | - |
+| 2 | 250 | 262.2 | 340.7 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 340.7 | - | - |
+| 2 | 500 | 515.5 | 540.8 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 540.8 | - | - |
+| 2 | 750 | 762.6 | 840.7 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 840.7 | - | - |
+| 2 | 1000 | 1012.7 | 1023.3 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 1023.3 | - | - |
+| 2 | 1500 | 1512.7 | 1562.1 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 20/20.1 | 541.8 |
+| 2 | 1750 | 1762.6 | 1848.5 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 7/7.1 | 841.3 |
+| 2 | 2000 | 2012.5 | 2052.4 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.1 | 39/39.1 | 1013.2 |
+| 2 | 2250 | 2262.6 | 2042.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 42/42.1 | 1000.2 |
+| 2 | 2500 | 2509.8 | 2003.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 3/3.1 | 1000.2 |
+| 2 | 3000 | 3005.3 | 2014.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 14/14.1 | 1000.2 |
+| 3 | 100 | 104.2 | 116.7 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 116.7 | - | - |
+| 3 | 250 | 253.9 | 341.7 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 341.7 | - | - |
+| 3 | 500 | 504.3 | 541.2 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 541.2 | - | - |
+| 3 | 750 | 754.4 | 842.3 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 842.3 | - | - |
+| 3 | 1000 | 1004.4 | 1038.4 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 1038.4 | - | - |
+| 3 | 1500 | 1504.6 | 1523.4 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 75/75.1 | 448.1 |
+| 3 | 1750 | 1754.7 | 1771.6 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.1 | 26/26.1 | 745.4 |
+| 3 | 2000 | 2004.2 | 2065.6 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 53/53.0 | 1012.4 |
+| 3 | 2250 | 2254.3 | 2070.4 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 70/70.1 | 1000.2 |
+| 3 | 2500 | 2513.1 | 2010.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 10/10.1 | 1000.2 |
+| 3 | 3000 | 3012.4 | 2008.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 8/8.1 | 1000.2 |
+| 4 | 100 | 103.9 | 115.2 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 115.1 | - | - |
+| 4 | 250 | 269.8 | 341.5 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 341.5 | - | - |
+| 4 | 500 | 512.0 | 540.1 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 540.1 | - | - |
+| 4 | 750 | 762.5 | 841.9 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 841.9 | - | - |
+| 4 | 1000 | 1012.5 | 1020.4 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 1020.4 | - | - |
+| 4 | 1500 | 1512.2 | 1550.8 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 9/9.1 | 541.6 |
+| 4 | 1750 | 1765.8 | 1844.6 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 3/3.1 | 841.4 |
+| 4 | 2000 | 2004.1 | 2017.2 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.1 | 78/78.1 | 939.0 |
+| 4 | 2250 | 2256.5 | 2043.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 43/43.1 | 1000.2 |
+| 4 | 2500 | 2504.1 | 2030.4 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 30/30.1 | 1000.2 |
+| 4 | 3000 | 3008.3 | 2086.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 86/86.0 | 1000.2 |
+| 5 | 100 | 104.2 | 134.6 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 134.5 | - | - |
+| 5 | 250 | 258.0 | 346.7 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 346.7 | - | - |
+| 5 | 500 | 505.3 | 547.5 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 547.5 | - | - |
+| 5 | 750 | 754.3 | 847.0 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 847.0 | - | - |
+| 5 | 1000 | 1004.4 | 1022.1 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 1022.1 | - | - |
+| 5 | 1500 | 1511.9 | 1590.6 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 41/41.1 | 549.4 |
+| 5 | 1750 | 1754.1 | 1828.7 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 73/73.1 | 755.5 |
+| 5 | 2000 | 2004.3 | 2059.4 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 41/41.1 | 1018.2 |
+| 5 | 2250 | 2264.9 | 2073.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 73/73.1 | 1000.3 |
+| 5 | 2500 | 2512.4 | 2053.6 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 53/53.1 | 1000.3 |
+| 5 | 3000 | 3012.5 | 2038.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 38/38.1 | 1000.2 |
+| 6 | 100 | 104.0 | 115.9 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 115.9 | - | - |
+| 6 | 250 | 270.3 | 341.6 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 341.6 | - | - |
+| 6 | 500 | 514.9 | 540.6 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 540.5 | - | - |
+| 6 | 750 | 762.2 | 841.4 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 841.4 | - | - |
+| 6 | 1000 | 1012.5 | 1020.6 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 1020.6 | - | - |
+| 6 | 1500 | 1515.1 | 1523.3 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 79/79.1 | 444.1 |
+| 6 | 1750 | 1762.5 | 1779.5 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 38/38.1 | 741.3 |
+| 6 | 2000 | 2012.2 | 2060.9 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 44/44.1 | 1016.7 |
+| 6 | 2250 | 2253.9 | 2036.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 36/36.1 | 1000.2 |
+| 6 | 2500 | 2509.1 | 2054.4 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 54/54.1 | 1000.2 |
+| 6 | 3000 | 3013.8 | 2053.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 53/53.1 | 1000.2 |
+| 7 | 100 | 104.3 | 116.3 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 116.3 | - | - |
+| 7 | 250 | 262.4 | 340.6 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 340.6 | - | - |
+| 7 | 500 | 512.1 | 540.9 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 540.9 | - | - |
+| 7 | 750 | 761.9 | 840.2 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 840.2 | - | - |
+| 7 | 1000 | 1004.5 | 1016.2 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 1016.2 | - | - |
+| 7 | 1500 | 1504.5 | 1568.8 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 27/27.1 | 541.6 |
+| 7 | 1750 | 1754.6 | 1797.5 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 57/57.1 | 740.3 |
+| 7 | 2000 | 2004.2 | 2024.0 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 83/83.1 | 940.7 |
+| 7 | 2250 | 2254.2 | 2027.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 27/27.1 | 1000.3 |
+| 7 | 2500 | 2513.5 | 2020.7 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.3 | 20/20.1 | 1000.3 |
+| 7 | 3000 | 3004.3 | 2086.6 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 86/86.1 | 1000.3 |
+| 8 | 100 | 104.0 | 115.9 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 115.8 | - | - |
+| 8 | 250 | 271.1 | 340.6 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 340.6 | - | - |
+| 8 | 500 | 512.3 | 540.2 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 540.2 | - | - |
+| 8 | 750 | 762.1 | 840.3 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 840.3 | - | - |
+| 8 | 1000 | 1019.0 | 1027.6 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 1027.6 | - | - |
+| 8 | 1500 | 1512.0 | 1570.4 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 30/30.1 | 540.2 |
+| 8 | 1750 | 1763.4 | 1775.0 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 31/31.1 | 743.8 |
+| 8 | 2000 | 2012.4 | 2023.7 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 83/83.1 | 940.5 |
+| 8 | 2250 | 2262.2 | 2094.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 94/94.0 | 1000.2 |
+| 8 | 2500 | 2512.9 | 2076.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 76/76.1 | 1000.2 |
+| 8 | 3000 | 3013.0 | 2018.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 18/18.1 | 1000.2 |
+| 9 | 100 | 103.8 | 115.0 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 115.0 | - | - |
+| 9 | 250 | 254.3 | 340.9 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 340.9 | - | - |
+| 9 | 500 | 512.3 | 540.6 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 540.6 | - | - |
+| 9 | 750 | 762.4 | 841.1 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 841.1 | - | - |
+| 9 | 1000 | 1012.5 | 1024.4 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 1024.3 | - | - |
+| 9 | 1500 | 1512.6 | 1593.6 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 52/52.1 | 541.4 |
+| 9 | 1750 | 1762.4 | 1805.6 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 63/63.1 | 742.4 |
+| 9 | 2000 | 2012.7 | 2021.5 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 5/5.1 | 1016.2 |
+| 9 | 2250 | 2262.0 | 2055.4 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 55/55.1 | 1000.2 |
+| 9 | 2500 | 2505.0 | 2001.4 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 1/1.0 | 1000.2 |
+| 9 | 3000 | 3012.8 | 2073.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 73/73.1 | 1000.2 |
+| 10 | 100 | 104.2 | 116.5 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 116.5 | - | - |
+| 10 | 250 | 262.4 | 341.8 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 341.8 | - | - |
+| 10 | 500 | 512.1 | 541.2 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 541.2 | - | - |
+| 10 | 750 | 767.0 | 841.1 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 841.1 | - | - |
+| 10 | 1000 | 1012.3 | 1020.2 | Ok(true) | 1 | 0 | 0 | 1 | 1 | 1020.2 | - | - |
+| 10 | 1500 | 1512.0 | 1557.5 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 17/17.1 | 540.3 |
+| 10 | 1750 | 1762.1 | 1775.0 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 34/34.1 | 740.8 |
+| 10 | 2000 | 2012.6 | 2027.2 | Ok(true) | 2 | 1 | 0 | 1 | 1 | 1000.2 | 11/11.1 | 1016.0 |
+| 10 | 2250 | 2262.1 | 2067.4 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 67/67.1 | 1000.2 |
+| 10 | 2500 | 2512.3 | 2030.4 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 30/30.1 | 1000.2 |
+| 10 | 3000 | 3016.1 | 2039.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 1000.2 | 39/39.1 | 1000.2 |
+
+#### Held-lock per-hold aggregate (10 runs)
+
+| hold ms | success | exhausted | attempt-1 success | attempt-2 success | writer p50 ms | writer p95 ms | writer max ms | holder release p50 ms | holder release max ms |
+|---|---|---|---|---|---|---|---|---|---|
+| 100 | 10/10 | 0/10 | 10 | 0 | 115.9 | 134.6 | 134.6 | 104.0 | 104.3 |
+| 250 | 10/10 | 0/10 | 10 | 0 | 341.5 | 346.7 | 346.7 | 262.2 | 271.1 |
+| 500 | 10/10 | 0/10 | 10 | 0 | 540.8 | 547.5 | 547.5 | 512.1 | 515.5 |
+| 750 | 10/10 | 0/10 | 10 | 0 | 841.1 | 847.0 | 847.0 | 762.1 | 767.0 |
+| 1000 | 10/10 | 0/10 | 10 | 0 | 1020.6 | 1038.4 | 1038.4 | 1012.3 | 1019.0 |
+| 1500 | 10/10 | 0/10 | 0 | 10 | 1562.1 | 1593.6 | 1593.6 | 1512.0 | 1515.1 |
+| 1750 | 10/10 | 0/10 | 0 | 10 | 1797.5 | 1862.5 | 1862.5 | 1762.4 | 1765.8 |
+| 2000 | 10/10 | 0/10 | 0 | 10 | 2027.2 | 2085.2 | 2085.2 | 2004.4 | 2012.7 |
+| 2250 | 0/10 | 10/10 | 0 | 0 | 2055.4 | 2094.5 | 2094.5 | 2256.5 | 2264.9 |
+| 2500 | 0/10 | 10/10 | 0 | 0 | 2020.7 | 2076.5 | 2076.5 | 2512.3 | 2976.9 |
+| 3000 | 0/10 | 10/10 | 0 | 0 | 2038.5 | 2086.6 | 2086.6 | 3012.4 | 3016.1 |
+
+### Strict N=2–4 results
+
+| run | mode | N | rounds | total writes | expected rows | persisted rows | lost | lock errors | other errors | orphan rows | duplicate rows | attempts | outer retries | exhaustions | p50 ms | p95 ms | p99 ms | max ms | ops ≥500 ms | in-proc stall gaps ≥50 ms (max) | exit |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | distinct | 2 | 1000 | 2000 | 2000 | 2000 | 0 | 0 | 0 | 0 | 0 | 2000 | 0 | 0 | 30.1 | 93.0 | 128.9 | 180.2 | 0 | 0 (0) | 0 |
+| 2 | distinct | 2 | 1000 | 2000 | 2000 | 2000 | 0 | 0 | 0 | 0 | 0 | 2000 | 0 | 0 | 29.1 | 61.6 | 110.7 | 254.7 | 0 | 0 (0) | 0 |
+| 3 | distinct | 2 | 1000 | 2000 | 2000 | 2000 | 0 | 0 | 0 | 0 | 0 | 2000 | 0 | 0 | 29.6 | 63.6 | 101.8 | 241.6 | 0 | 0 (0) | 0 |
+| 4 | distinct | 2 | 1000 | 2000 | 2000 | 2000 | 0 | 0 | 0 | 0 | 0 | 2000 | 0 | 0 | 21.7 | 60.7 | 113.5 | 189.1 | 0 | 0 (0) | 0 |
+| 5 | distinct | 2 | 1000 | 2000 | 2000 | 2000 | 0 | 0 | 0 | 0 | 0 | 2000 | 0 | 0 | 30.1 | 92.3 | 135.3 | 292.9 | 0 | 0 (0) | 0 |
+| 1 | distinct | 3 | 1000 | 3000 | 3000 | 3000 | 0 | 0 | 0 | 0 | 0 | 3000 | 0 | 0 | 50.2 | 126.8 | 201.8 | 303.7 | 0 | 0 (0) | 0 |
+| 2 | distinct | 3 | 1000 | 3000 | 3000 | 3000 | 0 | 0 | 0 | 0 | 0 | 3000 | 0 | 0 | 36.1 | 111.1 | 171.3 | 292.8 | 0 | 0 (0) | 0 |
+| 3 | distinct | 3 | 1000 | 3000 | 3000 | 3000 | 0 | 0 | 0 | 0 | 0 | 3000 | 0 | 0 | 41.8 | 102.6 | 147.6 | 212.7 | 0 | 0 (0) | 0 |
+| 4 | distinct | 3 | 1000 | 3000 | 3000 | 3000 | 0 | 0 | 0 | 0 | 0 | 3000 | 0 | 0 | 31.4 | 67.2 | 134.2 | 236.2 | 0 | 0 (0) | 0 |
+| 5 | distinct | 3 | 1000 | 3000 | 3000 | 3000 | 0 | 0 | 0 | 0 | 0 | 3000 | 0 | 0 | 34.4 | 106.2 | 148.6 | 230.1 | 0 | 0 (0) | 0 |
+| 1 | distinct | 4 | 500 | 2000 | 2000 | 2000 | 0 | 0 | 0 | 0 | 0 | 2000 | 0 | 0 | 45.2 | 87.4 | 132.3 | 250.8 | 0 | 0 (0) | 0 |
+| 2 | distinct | 4 | 500 | 2000 | 2000 | 2000 | 0 | 0 | 0 | 0 | 0 | 2000 | 0 | 0 | 31.3 | 65.8 | 98.9 | 221.4 | 0 | 0 (0) | 0 |
+| 3 | distinct | 4 | 500 | 2000 | 2000 | 2000 | 0 | 0 | 0 | 0 | 0 | 2000 | 0 | 0 | 32.1 | 97.1 | 144.4 | 399.4 | 0 | 0 (0) | 0 |
+| 4 | distinct | 4 | 500 | 2000 | 2000 | 2000 | 0 | 0 | 0 | 0 | 0 | 2000 | 0 | 0 | 33.5 | 84.3 | 167.2 | 230.9 | 0 | 0 (0) | 0 |
+| 5 | distinct | 4 | 500 | 2000 | 2000 | 2000 | 0 | 0 | 0 | 0 | 0 | 2000 | 0 | 0 | 45.3 | 99.4 | 164.5 | 273.4 | 0 | 0 (0) | 0 |
+| 1 | duplicate | 2 | 500 | 1000 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 1000 | 0 | 0 | 29.7 | 66.3 | 130.7 | 181.4 | 0 | 0 (0) | 0 |
+| 2 | duplicate | 2 | 500 | 1000 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 1000 | 0 | 0 | 17.0 | 26.9 | 28.1 | 32.8 | 0 | 0 (0) | 0 |
+| 3 | duplicate | 2 | 500 | 1000 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 1000 | 0 | 0 | 25.9 | 37.0 | 54.5 | 99.0 | 0 | 0 (0) | 0 |
+| 4 | duplicate | 2 | 500 | 1000 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 1000 | 0 | 0 | 25.5 | 43.2 | 52.9 | 117.7 | 0 | 0 (0) | 0 |
+| 5 | duplicate | 2 | 500 | 1000 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 1000 | 0 | 0 | 23.2 | 42.5 | 76.5 | 147.4 | 0 | 0 (0) | 0 |
+| 1 | duplicate | 3 | 500 | 1500 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 1500 | 0 | 0 | 16.7 | 40.1 | 41.4 | 42.0 | 0 | 0 (0) | 0 |
+| 2 | duplicate | 3 | 500 | 1500 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 1500 | 0 | 0 | 26.2 | 41.8 | 45.1 | 74.1 | 0 | 0 (0) | 0 |
+| 3 | duplicate | 3 | 500 | 1500 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 1500 | 0 | 0 | 26.3 | 41.7 | 42.8 | 46.3 | 0 | 0 (0) | 0 |
+| 4 | duplicate | 3 | 500 | 1500 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 1500 | 0 | 0 | 26.0 | 41.5 | 41.9 | 44.9 | 0 | 0 (0) | 0 |
+| 5 | duplicate | 3 | 500 | 1500 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 1500 | 0 | 0 | 22.2 | 41.3 | 41.7 | 42.4 | 0 | 0 (0) | 0 |
+| 1 | duplicate | 4 | 500 | 2000 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 2000 | 0 | 0 | 26.1 | 61.3 | 61.7 | 65.5 | 0 | 0 (0) | 0 |
+| 2 | duplicate | 4 | 500 | 2000 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 2000 | 0 | 0 | 40.2 | 69.3 | 93.7 | 258.0 | 0 | 0 (0) | 0 |
+| 3 | duplicate | 4 | 500 | 2000 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 2000 | 0 | 0 | 40.7 | 63.9 | 136.9 | 205.8 | 0 | 0 (0) | 0 |
+| 4 | duplicate | 4 | 500 | 2000 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 2000 | 0 | 0 | 26.2 | 61.4 | 61.6 | 86.3 | 0 | 0 (0) | 0 |
+| 5 | duplicate | 4 | 500 | 2000 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 2000 | 0 | 0 | 39.6 | 62.5 | 105.3 | 168.8 | 0 | 0 (0) | 0 |
+
+**Aggregate across runs** (latency percentiles are of per-run values; pooled raw latencies are not retained, so the pooled column is the worst per-run value)
+
+| mode | N | runs passing strict | total writes | expected rows | persisted | lost | lock errors | other errors | exhaustions | exhaustion rate | outer retries | attempts | p50 range ms | p95 range ms | p99 range ms | worst max ms |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| distinct | 2 | 5/5 | 10000 | 10000 | 10000 | 0 | 0 | 0 | 0 | 0 / 10000 = 0.000% | 0 | 10000 | 21.7–30.1 | 60.7–93.0 | 101.8–135.3 | 292.9 |
+| distinct | 3 | 5/5 | 15000 | 15000 | 15000 | 0 | 0 | 0 | 0 | 0 / 15000 = 0.000% | 0 | 15000 | 31.4–50.2 | 67.2–126.8 | 134.2–201.8 | 303.7 |
+| distinct | 4 | 5/5 | 10000 | 10000 | 10000 | 0 | 0 | 0 | 0 | 0 / 10000 = 0.000% | 0 | 10000 | 31.3–45.3 | 65.8–99.4 | 98.9–167.2 | 399.4 |
+| duplicate | 2 | 5/5 | 5000 | 2500 | 2500 | 0 | 0 | 0 | 0 | 0 / 5000 = 0.000% | 0 | 5000 | 17.0–29.7 | 26.9–66.3 | 28.1–130.7 | 181.4 |
+| duplicate | 3 | 5/5 | 7500 | 2500 | 2500 | 0 | 0 | 0 | 0 | 0 / 7500 = 0.000% | 0 | 7500 | 16.7–26.3 | 40.1–41.8 | 41.4–45.1 | 74.1 |
+| duplicate | 4 | 5/5 | 10000 | 2500 | 2500 | 0 | 0 | 0 | 0 | 0 / 10000 = 0.000% | 0 | 10000 | 26.1–40.7 | 61.3–69.3 | 61.6–136.9 | 258.0 |
+
+Strict matrices passing: 5/5. Writes: 57500. Distinct events requested: 35000, distinct events lost: 0. Exhaustions: 0. Lock errors: 0.
+
+### N=8 stress results
+
+**Stress characterization — not a supported requirement**
+
+| run | mode | N | rounds | total writes | expected rows | persisted rows | lost | lock errors | other errors | orphan rows | duplicate rows | attempts | outer retries | exhaustions | p50 ms | p95 ms | p99 ms | max ms | ops ≥500 ms | in-proc stall gaps ≥50 ms (max) | exit |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | distinct | 8 | 500 | 4000 | 4000 | 4000 | 0 | 0 | 0 | 0 | 0 | 4000 | 0 | 0 | 90.4 | 251.9 | 454.1 | 780.9 | 27 | 0 (0) | 0 |
+| 2 | distinct | 8 | 500 | 4000 | 4000 | 4000 | 0 | 0 | 0 | 0 | 0 | 4000 | 0 | 0 | 89.6 | 241.2 | 443.6 | 672.7 | 14 | 0 (0) | 0 |
+| 3 | distinct | 8 | 500 | 4000 | 4000 | 4000 | 0 | 0 | 0 | 0 | 0 | 4000 | 0 | 0 | 79.6 | 192.7 | 274.9 | 573.2 | 3 | 0 (0) | 0 |
+| 4 | distinct | 8 | 500 | 4000 | 4000 | 4000 | 0 | 0 | 0 | 0 | 0 | 4000 | 0 | 0 | 96.5 | 260.8 | 546.4 | 859.1 | 47 | 0 (0) | 0 |
+| 5 | distinct | 8 | 500 | 4000 | 4000 | 4000 | 0 | 0 | 0 | 0 | 0 | 4000 | 0 | 0 | 91.0 | 243.9 | 440.8 | 745.9 | 23 | 0 (0) | 0 |
+| 1 | duplicate | 8 | 500 | 4000 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 4000 | 0 | 0 | 86.6 | 218.4 | 349.0 | 841.2 | 13 | 0 (0) | 0 |
+| 2 | duplicate | 8 | 500 | 4000 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 4000 | 0 | 0 | 86.3 | 239.5 | 351.1 | 661.4 | 9 | 0 (0) | 0 |
+| 3 | duplicate | 8 | 500 | 4000 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 4000 | 0 | 0 | 86.3 | 237.0 | 436.8 | 847.9 | 28 | 0 (0) | 0 |
+| 4 | duplicate | 8 | 500 | 4000 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 4000 | 0 | 0 | 86.4 | 196.9 | 352.0 | 683.1 | 13 | 0 (0) | 0 |
+| 5 | duplicate | 8 | 500 | 4000 | 500 | 500 | 0 | 0 | 0 | 0 | 0 | 4000 | 0 | 0 | 86.1 | 187.5 | 295.9 | 637.0 | 4 | 0 (0) | 0 |
+
+**Aggregate across runs** (latency percentiles are of per-run values; pooled raw latencies are not retained, so the pooled column is the worst per-run value)
+
+| mode | N | runs passing strict | total writes | expected rows | persisted | lost | lock errors | other errors | exhaustions | exhaustion rate | outer retries | attempts | p50 range ms | p95 range ms | p99 range ms | worst max ms |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| distinct | 8 | 5/5 | 20000 | 20000 | 20000 | 0 | 0 | 0 | 0 | 0 / 20000 = 0.000% | 0 | 20000 | 79.6–96.5 | 192.7–260.8 | 274.9–546.4 | 859.1 |
+| duplicate | 8 | 5/5 | 20000 | 2500 | 2500 | 0 | 0 | 0 | 0 | 0 / 20000 = 0.000% | 0 | 20000 | 86.1–86.6 | 187.5–239.5 | 295.9–436.8 | 847.9 |
+
+N=8 writes: 40000. Distinct events requested: 20000, lost: 0. Exhaustions: 0. Lock errors: 0.
+
+### Real-hook results
+
+| run | N | rounds | expected | persisted msgs | persisted parts | lost | fail-open lost | non-zero exits | stderr outputs | stderr lines | p50 ms | p95 ms | p99 ms | max ms | procs ≥500 ms | in-proc stall gaps ≥50 ms (max) | exit |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 2 | 500 | 1000 | 1000 | 1000 | 0 | 0 | 0 | 0 | 0 | 25.2 | 37.0 | 37.5 | 41.6 | 0 | 0 (0) | 0 |
+| 2 | 2 | 500 | 1000 | 1000 | 1000 | 0 | 0 | 0 | 0 | 0 | 25.7 | 38.0 | 51.9 | 104.3 | 0 | 0 (0) | 0 |
+| 3 | 2 | 500 | 1000 | 1000 | 1000 | 0 | 0 | 0 | 0 | 0 | 29.8 | 74.0 | 127.2 | 221.1 | 0 | 0 (0) | 0 |
+| 4 | 2 | 500 | 1000 | 1000 | 1000 | 0 | 0 | 0 | 0 | 0 | 27.5 | 37.5 | 40.1 | 44.5 | 0 | 0 (0) | 0 |
+| 5 | 2 | 500 | 1000 | 1000 | 1000 | 0 | 0 | 0 | 0 | 0 | 26.8 | 37.4 | 41.1 | 44.6 | 0 | 0 (0) | 0 |
+| 1 | 3 | 500 | 1500 | 1500 | 1500 | 0 | 0 | 0 | 0 | 0 | 36.6 | 60.8 | 135.1 | 191.7 | 0 | 0 (0) | 0 |
+| 2 | 3 | 500 | 1500 | 1500 | 1500 | 0 | 0 | 0 | 0 | 0 | 36.6 | 69.6 | 98.5 | 211.6 | 0 | 0 (0) | 0 |
+| 3 | 3 | 500 | 1500 | 1500 | 1500 | 0 | 0 | 0 | 0 | 0 | 36.9 | 53.9 | 77.6 | 185.7 | 0 | 0 (0) | 0 |
+| 4 | 3 | 500 | 1500 | 1500 | 1500 | 0 | 0 | 0 | 0 | 0 | 37.7 | 80.6 | 114.7 | 235.8 | 0 | 0 (0) | 0 |
+| 5 | 3 | 500 | 1500 | 1500 | 1500 | 0 | 0 | 0 | 0 | 0 | 36.8 | 58.1 | 96.7 | 225.4 | 0 | 0 (0) | 0 |
+| 1 | 4 | 200 | 800 | 800 | 800 | 0 | 0 | 0 | 0 | 0 | 57.4 | 127.3 | 193.3 | 262.9 | 0 | 0 (0) | 0 |
+| 2 | 4 | 200 | 800 | 800 | 800 | 0 | 0 | 0 | 0 | 0 | 63.9 | 154.3 | 227.7 | 388.3 | 0 | 0 (0) | 0 |
+| 3 | 4 | 200 | 800 | 800 | 800 | 0 | 0 | 0 | 0 | 0 | 51.6 | 97.1 | 107.5 | 260.7 | 0 | 0 (0) | 0 |
+| 4 | 4 | 200 | 800 | 800 | 800 | 0 | 0 | 0 | 0 | 0 | 51.0 | 87.4 | 114.3 | 247.4 | 0 | 0 (0) | 0 |
+| 5 | 4 | 200 | 800 | 800 | 800 | 0 | 0 | 0 | 0 | 0 | 50.7 | 78.3 | 103.1 | 196.6 | 0 | 0 (0) | 0 |
+
+**Aggregate**
+
+| N | runs passing strict | expected | persisted | lost | fail-open lost | non-zero exits | stderr lines | p50 range ms | p95 range ms | p99 range ms | worst max ms |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2 | 5/5 | 5000 | 5000 | 0 | 0 | 0 | 0 | 25.2–29.8 | 37.0–74.0 | 37.5–127.2 | 221.1 |
+| 3 | 5/5 | 7500 | 7500 | 0 | 0 | 0 | 0 | 36.6–37.7 | 53.9–80.6 | 77.6–135.1 | 235.8 |
+| 4 | 5/5 | 4000 | 4000 | 0 | 0 | 0 | 0 | 50.7–63.9 | 78.3–154.3 | 103.1–227.7 | 388.3 |
+
+### Slow operations (≥ 500 ms)
+
+Attempt duration is the time inside one Turso attempt (busy-handler wait included). Backoff actual vs requested shows scheduler oversleep. 'Outside' is time not inside an attempt or backoff.
+
+
+#### B (strict N=2–4): 0 slow ops
+
+
+#### C (N=8 stress): 181 slow ops
+
+- Ok(false), 1 attempt(s): 67
+- Ok(true), 1 attempt(s): 114
+- longest single attempt: 859.1 ms; worst backoff oversleep: 0.0 ms; worst time outside attempts/backoff: 0.02 ms
+
+### Every exhausted operation
+
+None. No operation exhausted the policy in this campaign.
+
+### Host monitor summary (whole campaign)
+
+- campaign window: 1791206344424–1791209382718 (50.6 min), 3037 1 s samples
+- external monitor sleep-gap events ≥50 ms: 0; max 0.0 ms
+- psi_cpu_some_ms: p50 1.1, p99 2.9, max 5.7
+- psi_mem_some_ms: p50 0.0, p99 0.0, max 0.0
+- psi_io_full_ms: p50 398.2, p99 945.6, max 974.4 — io_uring idle-wait artifact, not usable (see Test environment)
+- cpu_iowait_pct: p50 9.8, p99 18.6, max 20.0 — same artifact
+- disk busy ms per 1 s (max of nvme0n1/dm-0): p50 593, p99 950, max 1004
+- procs_blocked: p50 3, max 7
+
+### Current-campaign conclusions
+
+Correctness: no correctness violation in any of the 114,110 measured write operations (A 110 boundary samples, B 57,500, C 40,000, D 16,500 hook events). There were 0 orphan rows and 0 duplicate logical events across all 10,000 duplicate rounds (7,500 at N=2–4, 2,500 at N=8). Every failure left 0/0 rows, and no writer exceeded 2 attempts.
+
+Availability (observed on reference host):
+
+| Scope | Exhaustions | Lost distinct events |
+| --- | --- | --- |
+| Strict N=2–4 in-process | 0 / 57,500 writes; 5/5 strict matrices passed | 0 / 35,000 |
+| Real hooks N=2–4 | not countable (no cross-process counters) | 0 / 16,500 events; 0 fail-open losses; 0 non-zero exits; 0 stderr records; 15/15 level-runs passed |
+| N=8 stress, distinct | 0 / 20,000 | 0 / 20,000 |
+| N=8 stress, duplicate | 0 / 20,000 | 0 (no logical-event loss) |
+| Held lock, actual release ≤ 2013 ms | 0 / 80 samples | n/a |
+| Held lock, actual release ≥ 2254 ms | 30 / 30 samples (by design) | n/a |
+
+Supported-load slow operations: none. No strict N=2–4 operation took ≥ 500 ms, so this campaign did not reproduce a supported-load lock holder of 1.6–1.7 s. Coverage of such a holder rests on the held-lock experiment (1500–2000 ms holds succeeded 30/30), not on a reproduced concurrent incident.
+
+N=8 stress: the former exhaustion mode did not appear. There were 181 operations ≥ 500 ms, all of them single-attempt (`Ok(true)` 114, `Ok(false)` 67). The longest single attempt was 859 ms; backoff oversleep was 0.0 ms and time outside attempts/backoff was ≤ 0.02 ms.
+
+Host: the external monitor recorded 0 sleep-gap events ≥ 50 ms in 50.6 minutes. CPU PSI stayed at p99 2.9 ms/s. Device busy time had the same profile as the historical campaign (p50 593, max 1004 ms/s). As before, IO PSI and iowait are not usable on this host.
+
+## Supported-load failure under the 500 / 1250 policy
+
+During final validation of the 500 / 1250 policy (2026-10-05, release build from `HEAD` `e72116239fa8f05befe9fb8e1220c79100914490`, run through `nix develop -c ./scripts/run-cli-cargo.sh test --release`), the strict AC8 suite failed at supported levels. The run was a single pass, not part of the protocol above. **No host IO evidence (`vmstat`, `iostat`, monitor) was captured for it**, so the cause of the long holder transactions is not known.
+
+| Level | Rounds | Result | Lock errors | Exhaustions | Lost distinct events | p50 / p95 / p99 / max ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| distinct N=2 | 1000 | pass | 0 | 0 | 0 | 30 / 93 / 135 / 1138 |
+| distinct N=3 | 1000 | pass | 0 | 0 | 0 | 45 / 105 / 151 / 236 |
+| distinct N=4 | 500 | **fail** | 1 | 1 | **1** | 45 / 173 / 254 / 1666 |
+| duplicate N=2 | 500 | pass | 0 | 0 | 0 | 18 / 26 / 26 / 34 |
+| duplicate N=3 | 500 | **fail** | 2 | 2 | 0 (another writer persisted the event) | 40 / 119 / 168 / 1616 |
+| duplicate N=4 | 500 | pass | 0 | 0 | 0 | 62 / 123 / 177 / 400 |
+| distinct N=8 (stress) | 500 | non-strict | 2 | 2 | 2 | 105 / 360 / 530 / 2134 |
+| duplicate N=8 (stress) | 500 | non-strict | 0 | 0 | 0 | 86 / 245 / 451 / 650 |
+
+Retry timelines of the failing supported rounds (test-only instrumentation):
+
+| Level | Round | Operation | Result | Elapsed ms | Attempt durations ms | Backoff requested / actual ms | Outside attempts + backoff ms |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| distinct N=4 | 384 | holder | `Ok(true)` | 1666.8 | 1666.8 | - | 0.00 |
+| distinct N=4 | 384 | waiter | `database is locked` | 1006.5 | 500.2 + 500.2 | 6 / 6.1 | 0.01 |
+| duplicate N=3 | 338 | holder | `Ok(true)` | 1616.1 | 1616.1 | - | 0.00 |
+| duplicate N=3 | 338 | waiter | `database is locked` | 1089.5 | 500.2 + 500.2 | 89 / 89.1 | 0.01 |
+| duplicate N=3 | 338 | waiter | `database is locked` | 1064.5 | 500.2 + 500.2 | 64 / 64.1 | 0.02 |
+
+Why the waiters exhausted:
+
+- **The holder kept the writer lock beyond the waiter's budget.** The holding transaction's single attempt took 1616–1667 ms; the waiters gave up at 1006–1090 ms.
+- **Retry admission did not reject attempt 2.** Every waiter made both attempts.
+- **Turso did not return `Busy` early.** Each busy wait lasted the full 500.2 ms.
+- **No scheduler delay was observed.** Backoff matched the request within 0.1 ms, time outside attempts and backoff was ≤ 0.02 ms, and the in-process gap monitor recorded 0 gaps ≥ 50 ms.
+- Why the holder transaction took 1.6–1.7 s is not established; no host evidence was captured.
+
+This failure stays in the dataset. It is the reason the defaults were tuned.
+
+## Policy comparison: 500 / 1250 / 2 vs 1000 / 2250 / 2
+
+All figures are observed on the reference host, not guarantees. The 500 / 1250 column combines the historical campaign and the failed validation run.
+
+| Measure | 500 / 1250 / 2 | 1000 / 2250 / 2 |
+| --- | --- | --- |
+| Supported N=2–4 in-process loss | 0 / 35,000 distinct (campaign); **1 / 7,000** distinct (validation run) | 0 / 35,000 distinct |
+| Supported N=2–4 in-process exhaustions | 0 / 57,500 (campaign); **3 / 11,500** (validation run) | 0 / 57,500 |
+| Supported strict matrices passed | 5/5 (campaign); validation run failed | 5/5 |
+| Real hooks N=2–4 | 0 / 16,500 lost | 0 / 16,500 lost |
+| In-process p50 range (distinct N=2 / 3 / 4) | 22.5–42.6 / 36.7–69.0 / 43.6–54.4 ms | 21.7–30.1 / 31.4–50.2 / 31.3–45.3 ms |
+| In-process p95 range (distinct N=2 / 3 / 4) | 44–95 / 92–141 / 69–145 ms | 61–93 / 67–127 / 66–99 ms |
+| In-process p99 range (distinct N=2 / 3 / 4) | 87–137 / 138–216 / 156–220 ms | 102–135 / 134–202 / 99–167 ms |
+| In-process worst max, supported | 404 ms (campaign); 1666 ms (validation run) | 399 ms |
+| Real-hook worst max (N=2 / 3 / 4) | 223 / 105 / 543 ms | 221 / 236 / 388 ms |
+| Held-lock transition (actual holder release) | succeeded ≤ 1026 ms; exhausted ≥ 1503 ms | succeeded ≤ 2013 ms; exhausted ≥ 2254 ms |
+| Exhausting writer latency (blocked write gives up) | 1.0–1.1 s (observed 1003–1099 ms) | 2.0–2.1 s (observed 2001–2094 ms) |
+| N=8 stress exhaustions | 16 / 40,000 (campaign, 1 of 5 duplicate runs); 2 / 8,000 (validation run) | 0 / 40,000 |
+| N=8 stress worst max | 1834 ms (campaign); 2134 ms (validation run) | 859 ms |
+
+Latency cost of the larger budget:
+
+- **Worst blocked-hook latency roughly doubles: about +1.0 s.** A write that exhausts now blocks its hook for about 2.0–2.1 s instead of 1.0–1.1 s. The bounded-wait property is unchanged: no hook waits indefinitely, and no wait exceeds two busy timeouts plus at most 100 ms backoff.
+- **Writes blocked 0.5–1.0 s no longer pay for an outer retry.** A 750 ms hold completed at 841–847 ms on attempt 1, versus 771–860 ms through a retry before. The cost is similar.
+- **The uncontended and normally contended path is unchanged.** Neither policy produced supported-load slow operations in its campaign, and the per-run percentile ranges overlap. The busy timeout only adds latency when a lock is held longer than the old 500 ms.
+
+### Policy decision
+
+Adopt 1000 / 2250 / 2 / 100 ms as the defaults.
+
+- All 5 supported strict in-process matrices and all 5 strict real-hook matrices passed, with 0 lock errors, 0 exhaustions and 0 lost events.
+- The policy covers the 1.6–1.7 s lock holder that failed the 500 / 1250 validation run, with about 300 ms of slack before the observed 2.0–2.1 s exhaustion point.
+- The former N=8 exhaustion mode did not occur (0 / 40,000).
+- The price is about +1 s of worst-case blocked-hook latency on exhausting writes.
+- Limit: a supported-load holder above about 2 s would still exhaust this policy. If that is observed, the next step is not further timeout tuning. Bounded synchronous hook latency, no durable queue or spool, and unbounded writer-lock duration together mean zero-loss ingestion cannot be guaranteed. That would need a product/architecture decision between accepting occasional fail-open ingestion loss and introducing eventual persistence (spool or queue).
+
+## Historical campaign: 500 / 1250 / 2 / 100
+
+**Superseded.** The sections below are the full measurement campaign for the earlier 500 / 1250 defaults, kept unchanged as evidence. Their contract, conclusions and policy decision describe that policy, not the current defaults.
+
+### Test environment
 
 | Item | Value |
 | --- | --- |
@@ -20,7 +452,7 @@ This doc keeps **Contract** (what tests assert) apart from **Observed on referen
 
 Host-health caveat: on this host `/proc/pressure/io` reads about 40–95% "full" even when idle. The disk had 0 requests in flight and flat `io_ms` counters at the same time. The cause is Ghostty's renderer and IO threads parked in `io_cqring_wait`: the kernel accounts io_uring CQ waits as iowait. Two "blocked" tasks therefore appear in `vmstat`'s `b` column, and about 8–9% shows as `wa`, permanently. IO PSI, `vmstat wa`/`b` and `cpu_iowait` are **not** usable as host-stall evidence here. This doc uses scheduler-gap monitors, CPU PSI, per-device busy time, and the operation timelines.
 
-## Exact commit/config
+### Exact commit/config
 
 - `git rev-parse HEAD` → `a33797054ae774783124c4b312be209dd94e6e36` (branch `agent-trace-db-write-contention`); `git status --short` was clean before the campaign.
 - Measurement build = HEAD + a **test-only** instrumentation diff, sha256 `61e92a853fc9d6e03703bbcc0e8bc82c93dbabf620d43b1bad445a0caaf241a9`:
@@ -41,7 +473,7 @@ Host-health caveat: on this host `/proc/pressure/io` reads about 40–95% "full"
   - test binary sha256 `3d5445513b25accd34473898864f556d6c4f61c34a64ffdbc5d5a7cc9f90a312`;
   - `sce` sha256 `c044fd62cc0d8baae60fcb07734d3c1d8850eb34ecddf8fc832104a0339ce29a`.
 
-## Contractual assertions
+### Contractual assertions
 
 These are the only assertions the suite makes.
 
@@ -69,7 +501,7 @@ These are the only assertions the suite makes.
 
   N=8 is stress characterization, not a supported requirement.
 
-## Measurement methodology
+### Measurement methodology
 
 Artifacts were built once and frozen:
 
@@ -110,7 +542,7 @@ SCE_LOCK_CONTENTION_STRICT=1 SCE_LOCK_CONTENTION_WRITERS=<N> SCE_LOCK_CONTENTION
   - Percentiles are nearest-rank per level-run. Raw per-write latencies were not retained, so cross-run aggregates report the range of per-run percentiles and the worst max.
 - Two smoke runs preceded the protocol and are not in the dataset: one boundary run, which passed, and hook N=2×5, which passed. Nothing was rerun or replaced, and no run was dropped.
 
-## Held-lock results
+### Held-lock results
 
 Contract: ≤ 250 ms succeeds, ≥ 2000 ms exhausts, failure leaves 0/0 rows, ≤ 2 attempts. All 10 runs satisfied it: 70/70 samples, 10/10 test passes.
 
@@ -214,7 +646,7 @@ Raw samples:
 | 10 | 1500 | 1505.9 | 1098.4 | database is locked | 2 | 1 | 1 | 0 | 0 | 500.1 | 98/98.0 | 500.2 |
 | 10 | 2000 | 2035.5 | 1021.5 | database is locked | 2 | 1 | 1 | 0 | 0 | 500.2 | 21/21.1 | 500.2 |
 
-## Strict N=2–4 results
+### Strict N=2–4 results
 
 | run | mode | N | rounds | total writes | expected rows | persisted rows | lost | lock errors | other errors | orphan rows | duplicate rows | attempts | outer retries | exhaustions | p50 ms | p95 ms | p99 ms | max ms | ops ≥500 ms | in-proc stall gaps ≥50 ms (max) | exit |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -264,7 +696,7 @@ Strict matrices passing: 5/5. Writes: 57500. Distinct events requested: 35000, d
 
 Every strict write in B committed on its first attempt: 57,500 writes, 0 outer retries, and no operation ≥ 500 ms. The in-process scheduler-gap monitor recorded 0 gaps ≥ 50 ms in all 30 level-runs.
 
-## N=8 stress results
+### N=8 stress results
 
 **Stress characterization — not a supported requirement.**
 
@@ -290,7 +722,7 @@ Aggregate across runs: (latency percentiles are of per-run values; pooled raw la
 
 N=8 writes: 40000. Distinct events requested: 20000, lost: 0. Exhaustions: 16. Lock errors: 16.
 
-## Real-hook results
+### Real-hook results
 
 | run | N | rounds | expected | persisted msgs | persisted parts | lost | fail-open lost | non-zero exits | stderr outputs | stderr lines | p50 ms | p95 ms | p99 ms | max ms | procs ≥500 ms | in-proc stall gaps ≥50 ms (max) | exit |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -320,7 +752,7 @@ Aggregate:
 
 There was no fail-open persistence loss: in no round was an event lost while the hook exited 0. One hook process took ≥ 500 ms: 542.5 ms, D-m4 N=4. Process-local contention counters do not exist across processes, so the table shows no attempt or exhaustion figures for hooks.
 
-## Observed failures
+### Observed failures
 
 Only one run exited non-zero: **`C-r2-duplicate-n8`** (N=8 stress, duplicate delivery, run 2 of 5, exit 101). The strict assertion failed with `8 concurrent writers produced 16 lock error(s) and 0 other error(s)`.
 
@@ -365,7 +797,7 @@ Anatomy of the failure (from the test-only timelines):
 
   Normal attempts in the same run were tens of ms. The waiters exhausted because some connection held the write lock (or the commit path) for more than about 1.05 s.
 
-## Host correlation
+### Host correlation
 
 - campaign window (Unix ms): 1791196162002–1791199102331 (49.0 min), 2938 1 s samples
 - external monitor sleep-gap events ≥50 ms: 0; max 0.0 ms
@@ -381,10 +813,10 @@ Slow-operation anatomy (all operations ≥ 500 ms):
 Attempt duration is the time inside one Turso attempt (busy-handler wait included). Backoff actual vs requested shows scheduler oversleep. 'Outside' is time not inside an attempt or backoff.
 
 
-#### B (strict N=2–4): 0 slow ops
+##### B (strict N=2–4): 0 slow ops
 
 
-#### C (N=8 stress): 107 slow ops
+##### C (N=8 stress): 107 slow ops
 
 - Ok(false), 1 attempt(s): 34
 - Ok(false), 2 attempt(s): 13
@@ -417,18 +849,18 @@ None of these waives the strict failure. The failure is outside the supported N=
 
 The previous version of this doc said that 1–2 s whole-host stalls had made strict N=2–4 runs fail, and that such failures should be treated as host noise. Neither claim is supported by this campaign. No strict N=2–4 run failed, and no scheduler stall was observed. That guidance is withdrawn.
 
-## Conclusions
+### Conclusions
 
-### Correctness
+#### Correctness
 
 No correctness violation in any of the 114,070 measured write operations (A 70 boundary samples, B 57,500, C 40,000, D 16,500 hook events).
 
 - 0 orphan message/part rows (`messages == parts` in every round and every hook round).
-- 0 duplicate logical events (duplicate delivery inserted at most once in all 5,000 duplicate rounds).
+- 0 duplicate logical events (duplicate delivery inserted at most once in all 10,000 duplicate rounds: 7,500 at N=2–4 and 2,500 at N=8).
 - 0 partial commits (every failed write left 0/0 rows).
 - 0 writers above 2 attempts.
 
-### Availability
+#### Availability (observed on reference host)
 
 | Scope | Exhaustions | Lost distinct events |
 | --- | --- | --- |
@@ -439,7 +871,7 @@ No correctness violation in any of the 114,070 measured write operations (A 70 b
 | Held lock, actual release ≤ 1026 ms | 0 / 50 samples | n/a |
 | Held lock, actual release ≥ 1503 ms | 20 / 20 samples (by design) | n/a |
 
-### Latency (observed on reference host)
+#### Latency (observed on reference host)
 
 | Load | p50 | p95 | p99 | Worst max |
 | --- | --- | --- | --- | --- |
@@ -451,7 +883,7 @@ No correctness violation in any of the 114,070 measured write operations (A 70 b
 
 Ranges are across the 5 runs. The worst max is the largest single write across all runs.
 
-### Policy decision
+#### Policy decision
 
 Overall verdict: current defaults (500 ms busy timeout / 1250 ms deadline / 2 attempts / 100 ms backoff cap) are **adequate** for the supported N=2–4 range, and **borderline at N=8 stress**.
 

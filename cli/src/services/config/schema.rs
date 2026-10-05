@@ -1104,11 +1104,11 @@ mod database_retry_config_tests {
         let busy_timeout = &agent_trace_db["properties"]["busy_timeout_ms"];
         assert_eq!(busy_timeout["minimum"], 0);
         assert_eq!(busy_timeout["maximum"], 10_000);
-        assert_eq!(busy_timeout["default"], 500);
+        assert_eq!(busy_timeout["default"], 1_000);
         let contention_deadline = &agent_trace_db["properties"]["contention_deadline_ms"];
         assert_eq!(contention_deadline["minimum"], 0);
         assert_eq!(contention_deadline["maximum"], 30_000);
-        assert_eq!(contention_deadline["default"], 1_250);
+        assert_eq!(contention_deadline["default"], 2_250);
     }
 
     #[test]

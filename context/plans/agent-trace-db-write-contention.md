@@ -50,13 +50,13 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
 
 ## Acceptance criteria
 
-- [ ] AC1: Every Agent Trace DB connection opened by SCE has Turso's busy handler set to the resolved `busy_timeout_ms` (default 500 ms), and `experimental_multiprocess_wal(true)` stays enabled on every local open path.
+- [x] AC1: Every Agent Trace DB connection opened by SCE has Turso's busy handler set to the resolved `busy_timeout_ms` (default 1000 ms; 500 ms before T08), and `experimental_multiprocess_wal(true)` stays enabled on every local open path.
   - Validate: the T02 busy-timeout tests pass (`nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml busy_timeout`), and inspection of `cli/src/services/db/mod.rs` shows `experimental_multiprocess_wal(true)` and the `busy_timeout` call on every local `TursoDb` open path.
-- [ ] AC2: Turso's busy handler covers the failing writer-lock acquisition. Turso 0.8.1's `Transaction::new_unchecked(conn, TransactionBehavior::Immediate)` runs `BEGIN IMMEDIATE` through `Connection::execute(...)` on the same connection. With connection A holding `BEGIN IMMEDIATE` for about 100 ms:
+- [x] AC2: Turso's busy handler covers the failing writer-lock acquisition. Turso 0.8.1's `Transaction::new_unchecked(conn, TransactionBehavior::Immediate)` runs `BEGIN IMMEDIATE` through `Connection::execute(...)` on the same connection. With connection A holding `BEGIN IMMEDIATE` for about 100 ms:
   - a control connection without a busy handler returns `Busy` promptly;
   - the production `insert_conversation_text_event` on a busy-timeout-configured Agent Trace DB connection waits and succeeds, with no test-level retry around the call.
   - Validate: the T02 direct busy-handler tests pass.
-- [ ] AC3: Agent Trace write-capable operations (the enumerated set in T04) use at most two outer attempts, retry only typed `Busy`/`BusySnapshot` failures, use bounded full jitter, and never start another outer attempt after the contention retry-start rule disallows it. A retry starts only when `remaining_deadline >= jittered_backoff + busy_timeout`, and never once the contention deadline has expired. Deterministic errors fail after exactly one attempt with no sleep. A ~100 ms lock hold succeeds with `attempts = 1` and `outer_retries = 0`. Read-only query APIs (`query`, `query_values`, `query_map`), `passive_checkpoint`, and Agent Trace writes outside the enumerated set retain their existing outer retry semantics.
+- [x] AC3: Agent Trace write-capable operations (the enumerated set in T04) use at most two outer attempts, retry only typed `Busy`/`BusySnapshot` failures, use bounded full jitter, and never start another outer attempt after the contention retry-start rule disallows it. A retry starts only when `remaining_deadline >= jittered_backoff + busy_timeout`, and never once the contention deadline has expired. Deterministic errors fail after exactly one attempt with no sleep. A ~100 ms lock hold succeeds with `attempts = 1` and `outer_retries = 0`. Read-only query APIs (`query`, `query_values`, `query_map`), `passive_checkpoint`, and Agent Trace writes outside the enumerated set retain their existing outer retry semantics.
   - Validate: the T04 unit tests (`... test --manifest-path cli/Cargo.toml agent_trace_db_write_contention_retry`) pass. They cover:
     - a seeded jitter seam;
     - retry-start rule boundary cases (remaining just above, equal to, and just below `backoff + busy_timeout`, and an expired deadline);
@@ -64,24 +64,25 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
     - the attempt cap;
     - the 100 ms-hold single-attempt assertion;
     - a regression assertion that an Agent Trace `query`/`query_map` call still resolves the existing generic query retry policy.
-- [ ] AC4: When the contention policy is exhausted, the returned error carries `db_name`, `operation`, `attempts`, `busy_timeout_ms`, `contention_deadline_ms`, `elapsed_ms` and `cause`. Existing hook fail-open paths log that error through the configured SCE `Logger`. Log-file/stderr routing stays as it is today, stdout is unchanged, and hook fail-open behavior is unchanged.
+- [x] AC4: When the contention policy is exhausted, the returned error carries `db_name`, `operation`, `attempts`, `busy_timeout_ms`, `contention_deadline_ms`, `elapsed_ms` and `cause`. Existing hook fail-open paths log that error through the configured SCE `Logger`. Log-file/stderr routing stays as it is today, stdout is unchanged, and hook fail-open behavior is unchanged.
   - The DB layer also emits one structured `tracing` event, `sce.agent_trace_db.contention_exhausted`, with the same contention fields.
   - This event is a telemetry instrumentation point. It reaches a sink only when a tracing subscriber is installed. Production currently runs with `NoopTelemetry`, and PR #299 does not add a production tracing subscriber.
   - Validate:
     - the T05 unit tests prove the error text and the shape of the structured `tracing` event, using a test-only capturing subscriber;
     - the existing hook/logger tests (`... test --manifest-path cli/Cargo.toml hooks`) and the existing hook fail-open `log.error(...)` paths show the returned error stays observable through the production `Logger` path;
     - inspection confirms no new stdout writes on hook paths.
-- [ ] AC5: Opening an already-initialized repository Agent Trace DB through the hook runtime issues zero write statements. The metadata guarantees still hold: repository-ID mismatch is an error, the source instance ID is stable and never overwritten, and concurrent first initialization converges on one ID. An initialized hook open succeeds while another connection holds `BEGIN IMMEDIATE`.
+- [x] AC5: Opening an already-initialized repository Agent Trace DB through the hook runtime issues zero write statements. The metadata guarantees still hold: repository-ID mismatch is an error, the source instance ID is stable and never overwritten, and concurrent first initialization converges on one ID. An initialized hook open succeeds while another connection holds `BEGIN IMMEDIATE`.
   - Validate: the T06 write-statement-count test passes with 0 writes; the converted hook-open-under-write-lock test passes; existing `verify_or_initialize_repository_metadata` tests pass.
-- [ ] AC6: `insert_conversation_text_event` and the mutation-trace CAS batch keep their whole-transaction semantics. Message and part commit together. The first delivery returns `Ok(true)` and a duplicate replay returns `Ok(false)`. An injected mid-transaction failure leaves no orphans. Every retry restarts the whole unit from `BEGIN IMMEDIATE`, never an individual statement.
+- [x] AC6: `insert_conversation_text_event` and the mutation-trace CAS batch keep their whole-transaction semantics. Message and part commit together. The first delivery returns `Ok(true)` and a duplicate replay returns `Ok(false)`. An injected mid-transaction failure leaves no orphans. Every retry restarts the whole unit from `BEGIN IMMEDIATE`, never an individual statement.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db` and `... mutation_trace` pass.
-- [ ] AC7: The lock-budget boundary test characterizes busy timeout, outer retry and the contention retry-start deadline together. One connection holds `BEGIN IMMEDIATE` for 100, 250, 500, 750, 1000, 1500 or 2000 ms while another calls the real production API. Assertions use wide margins and are stated as outcome and retry policy, not wall-clock cutoffs:
-  - holds ≤ 250 ms succeed;
-  - holds ≥ 2000 ms exhaust the configured contention policy and fail cleanly;
-  - every failure leaves 0 partial rows;
-  - the middle holds are reported (outcome, latency, attempts), not asserted.
+- [x] AC7: The lock-budget boundary test characterizes busy timeout, outer retry and the contention retry-start deadline together. One connection holds `BEGIN IMMEDIATE` for 100, 250, 500, 750, 1000, 1500, 1750, 2000, 2250, 2500 or 3000 ms while another calls the real production API. Assertions use wide margins and are stated as outcome and retry policy, not wall-clock cutoffs:
+  - holds ≤ 1000 ms succeed;
+  - holds ≥ 3000 ms exhaust the configured contention policy and fail cleanly;
+  - every failure leaves 0 partial rows, every sample makes at most 2 attempts, and `outer_retries + 1 == attempts`;
+  - the middle holds (1500–2500 ms) are reported (outcome, latency, attempts, retry timeline), not asserted.
+  - These thresholds come from the T08 10-run held-lock dataset for the 1000 / 2250 defaults. The T07 thresholds (≤ 250 ms succeed, ≥ 2000 ms exhaust) belonged to the superseded 500 / 1250 defaults.
   - Validate: `... test --manifest-path cli/Cargo.toml lock_budget_boundary -- --nocapture` passes and prints per-hold outcome, latency and attempts.
-- [ ] AC8: The Rust production-API suite (`insert_conversation_text_event`) passes the strict levels N=2–4: distinct-event 2×1000, 3×1000, 4×500, and duplicate-delivery 2×500, 3×500, 4×500. These levels are regression gates on the reference host; the T01 baseline already passes them before the fix. The test enforces:
+- [x] AC8: The Rust production-API suite (`insert_conversation_text_event`) passes the strict levels N=2–4: distinct-event 2×1000, 3×1000, 4×500, and duplicate-delivery 2×500, 3×500, 4×500. These levels are regression gates on the reference host; the T01 baseline already passes them before the fix. The test enforces:
   - always, per round: `messages == parts` (no orphan rows); the `Ok(true)` count equals the persisted message rows; distinct events never report `Ok(false)`; a duplicate-delivery round inserts at most once, and exactly once when at least one writer completed (no duplicate persisted events);
   - under `SCE_LOCK_CONTENTION_STRICT=1`, per writer level: 0 lock errors, 0 other errors and 0 lost distinct events.
   - 8 writers runs as non-strict stress/characterization only. If the fixed system makes N=8 reliable within acceptable latency, that result is reported, but N=8 is not a supported semantic requirement unless deliberately decided.
@@ -90,21 +91,21 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
     - the same with `WRITERS=4 ROUNDS=500`;
     - `concurrent_duplicate_delivery` with `WRITERS=2,3,4 ROUNDS=500`;
     - a non-strict `WRITERS=8` run.
-- [ ] AC9: Real release `sce hooks codex` `UserPromptSubmit` processes pass the strict levels 2×500, 3×500 and 4×200. These levels are regression gates on the reference host; the T01 baseline already passes them before the fix. `concurrent_real_codex_hook_processes_persist_every_distinct_event` enforces:
+- [x] AC9: Real release `sce hooks codex` `UserPromptSubmit` processes pass the strict levels 2×500, 3×500 and 4×200. These levels are regression gates on the reference host; the T01 baseline already passes them before the fix. `concurrent_real_codex_hook_processes_persist_every_distinct_event` enforces:
   - always, per round: `messages == parts` (no orphan rows);
   - always, per writer level: `persisted_messages <= expected` and `persisted_parts <= expected` (no over-persistence or duplicate events);
   - under `SCE_LOCK_CONTENTION_STRICT=1`, per writer level: `persisted_messages == expected`, `persisted_parts == expected`, and 0 non-zero hook exits;
   - under `SCE_LOCK_CONTENTION_STRICT=1`, across all levels: `total_lost == 0` and `total_nonzero_exits == 0`.
   - Hook stderr lines are recorded and reported but are not a strict invariant. Hooks fail open, and the contention fix may legitimately emit diagnostics through the configured logging path. "Lock-exhaustion failures" in hook processes show up as lost events, because the hook fails open; they are covered by the lost-event and persisted-count assertions.
   - Validate: `nix build .#default`, then `SCE_BIN=$PWD/result/bin/sce SCE_LOCK_CONTENTION_STRICT=1 SCE_LOCK_CONTENTION_WRITERS=2,3 SCE_LOCK_CONTENTION_ROUNDS=500 nix develop -c ./scripts/run-cli-cargo.sh test --release --manifest-path cli/Cargo.toml concurrent_real_codex_hook_processes -- --ignored --nocapture`, and the same with `WRITERS=4 ROUNDS=200`. Record p50/p95/p99/max per-event latency next to the T01 baseline. Hook processes are separate processes, so in-process counters are unavailable; report persisted-row outcomes and latency only, and no retry counts unless they are derived from the hook log file.
-- [ ] AC10: `busy_timeout_ms` and `contention_deadline_ms` are Agent Trace-only settings. They are accepted, validated and documented only under `policies.database_retry.agent_trace_db`:
+- [x] AC10: `busy_timeout_ms` and `contention_deadline_ms` are Agent Trace-only settings. They are accepted, validated and documented only under `policies.database_retry.agent_trace_db`:
   - `policies.database_retry.local_db` and `policies.database_retry.auth_db` keep their existing keys (`connection_open`, `query`) only, and reject `busy_timeout_ms` and `contention_deadline_ms` through the existing config-validation path. The generated-schema check runs first and fails with the existing stable `Config file '<path>' failed schema validation against generated schema '<schema>': …` error, naming the offending key. The Rust per-DB key check (`validate_object_keys`, allowed keys `connection_open, query` for `local_db`/`auth_db`) stays as a backstop with its existing `contains unknown key` wording;
   - the generated config schema publishes the two keys only on the `agent_trace_db` object; the `local_db`/`auth_db` objects keep `additionalProperties = false` with only `connection_open` and `query`;
   - both are non-negative integers with upper bounds;
   - `busy_timeout_ms = 0` disables the Turso busy handler;
   - `contention_deadline_ms = 0` means no outer retry is started;
   - both are rendered by `sce config show` in text and JSON and published in the generated config schema;
-  - defaults (500 / 1250) apply when they are unset;
+  - defaults (1000 / 2250; 500 / 1250 before T08) apply when they are unset;
   - existing `query.timeout_ms` behavior and rendering are unchanged.
   - Validate: the T03 config tests (`... test --manifest-path cli/Cargo.toml database_retry`) pass, including the `local_db`/`auth_db` rejection tests for both keys and an unchanged-`query.timeout_ms` regression assertion; `nix run .#pkl-check-generated` passes.
 
@@ -169,12 +170,17 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
 
 - PR #299 (`agent-trace-db-write-contention`) is stacked on `mutation-trace-health-invariant` (PR #297). After #297 merges, the branch is rebased onto the updated `main` before final merge if necessary.
 - Historical (T01, complete): T01 recovered the original investigation harness from a local Nix flake-source snapshot and committed it to the branch. `lock_contention_tests.rs` is now version-controlled and registered as a `#[cfg(test)]` module in `agent_trace_db/mod.rs`. No later task depends on a Nix store path.
-- Initial defaults, to be tuned only from T07 evidence:
+- Initial defaults, to be tuned only from measured evidence:
   - `busy_timeout_ms = 500`;
   - `contention_deadline_ms = 1250`;
   - outer `max_attempts = 2`;
   - full-jitter backoff `random(0..=100 ms)`.
-- Retry-start rule: after a typed `Busy`/`BusySnapshot`, compute `backoff = jitter(0..=cap)` and `remaining = contention_deadline - (now - operation_start)`. Launch the next attempt only if attempts remain and `remaining >= backoff + busy_timeout`; otherwise fail. With the defaults, a second attempt is normally possible only if the first one returned within about 650–750 ms.
+- Current defaults, tuned in T08 from the failed final validation run and the T08 measurement campaign:
+  - `busy_timeout_ms = 1000`;
+  - `contention_deadline_ms = 2250`;
+  - outer `max_attempts = 2` (unchanged);
+  - full-jitter backoff `random(0..=100 ms)` (unchanged).
+- Retry-start rule: after a typed `Busy`/`BusySnapshot`, compute `backoff = jitter(0..=cap)` and `remaining = contention_deadline - (now - operation_start)`. Launch the next attempt only if attempts remain and `remaining >= backoff + busy_timeout`; otherwise fail. With the current defaults, a second attempt is possible only if the first one returned within about 1150–1250 ms (650–750 ms under the initial 500 / 1250 defaults).
 - Upper bounds: `busy_timeout_ms <= 10_000` and `contention_deadline_ms <= 30_000`.
 - Config contract (decided): `busy_timeout_ms` and `contention_deadline_ms` are Agent Trace DB contention settings, supported only as `policies.database_retry.agent_trace_db.{busy_timeout_ms,contention_deadline_ms}`, beside that object's existing `connection_open`/`query` keys:
 
@@ -183,8 +189,8 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
     "policies": {
       "database_retry": {
         "agent_trace_db": {
-          "busy_timeout_ms": 500,
-          "contention_deadline_ms": 1250
+          "busy_timeout_ms": 1000,
+          "contention_deadline_ms": 2250
         }
       }
     }
@@ -594,62 +600,72 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
       - The stale `T05` prefix is dropped from the hook-process report title.
     - `initialized_hook_open_succeeds_while_write_lock_is_held` now uses a 2000 ms hold through the renamed constant (previously 4000 ms).
     - No strict assertion was weakened, skipped or deleted.
-    - Defaults are not tuned (`busy_timeout_ms = 500`, `contention_deadline_ms = 1250`, 2 attempts, 100 ms backoff cap). The evidence below does not justify raising them; see the deviation.
-    - Deviation, strict-run flake under host stalls: the first strict AC8 distinct-event run failed. It had 1 contention exhaustion at N=2×1000 and 3 at N=4×500, with the failing rounds showing max latencies of 1752 ms and 1683 ms.
-      - A probe run (temporary, removed) showed intermittent stalls of about 1.1–1.4 s with both writers stalled together on attempt 1 (`attempts = 1`, no Busy wait). They did not line up with WAL checkpoint resets.
-      - Concurrent `vmstat` showed host-wide load bursts from other processes (run queue up to 16, steady ~8% iowait).
-      - When a lock holder stalls for more than about 1.1 s, the 500/1250 contract is exhausted by design: a bounded wait and no indefinite hook waits. T01's baseline also shows a 2303 ms stall (duplicate N=3).
-      - A full strict rerun of the AC8 matrix passed every assertion; those results are recorded below. The question of tolerating host stalls is added to Open questions rather than resolved by raising budgets.
-  - After-fix measurements (2026-10-05, release build, HEAD `c513278d` + T07 test changes):
-    - Lock-budget boundary (debug build; three runs, consistent; one shown). Baseline is T01 (holds of 300 ms or more failed after about 280 ms with 5 attempts).
-
-      | hold ms | outcome | elapsed ms | attempts | outer retries | exhaustions | rows (msg/part) |
-      | --- | --- | --- | --- | --- | --- | --- |
-      | 100 | Ok(true) | 121 | 1 | 0 | 0 | 1/1 |
-      | 250 | Ok(true) | 345 | 1 | 0 | 0 | 1/1 |
-      | 500 | Ok(true) | 519 | 1 | 0 | 0 | 1/1 |
-      | 750 | Ok(true) | 772 | 2 | 1 | 0 | 1/1 |
-      | 1000 | Ok(true) | 1033 | 2 | 1 | 0 | 1/1 |
-      | 1500 | contention exhausted (`database is locked`) | 1076 | 2 | 1 | 1 | 0/0 |
-      | 2000 | contention exhausted (`database is locked`) | 1101 | 2 | 1 | 1 | 0/0 |
-
-    - Rust production API, strict (AC8 passing run), with the T01 baseline p50/p95/p99/max for comparison:
-
-      | mode | N | rounds | lost | lock errors | orphans | duplicates | attempts | outer retries | exhaustions | p50 | p95 | p99 | max ms | T01 p50/p95/p99/max |
-      | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-      | distinct | 2 | 1000 | 0 | 0 | 0 | 0 | 2000 | 0 | 0 | 25 | 55 | 85 | 1982 | 37/107/138/228 |
-      | distinct | 3 | 1000 | 0 | 0 | 0 | 0 | 3000 | 0 | 0 | 40 | 103 | 152 | 273 | 68/207/231/372 |
-      | distinct | 4 | 500 | 0 | 0 | 0 | 0 | 2001 | 1 | 0 | 44 | 127 | 234 | 886 | 87/212/318/384 |
-      | duplicate | 2 | 500 | 0 | 0 | 0 | 0 | 1000 | 0 | 0 | 18 | 26 | 26 | 33 | 20/33/34/39 |
-      | duplicate | 3 | 500 | 0 | 0 | 0 | 0 | 1500 | 0 | 0 | 26 | 101 | 143 | 847 | 44/135/207/2303 |
-      | duplicate | 4 | 500 | 0 | 0 | 0 | 0 | 2000 | 0 | 0 | 41 | 106 | 167 | 237 | 83/190/286/347 |
-      | distinct (stress, non-strict) | 8 | 500 | 0 | 0 | 0 | 0 | 4018 | 18 | 0 | 90 | 352 | 524 | 958 | 275/288/298/410, 1525 lost |
-      | duplicate (stress, non-strict) | 8 | 500 | 0 | 0 | 0 | 0 | 4000 | 0 | 0 | 86 | 218 | 436 | 546 | 275/284/296/351, 1545 lock errors |
-
-      The failed first strict run (host stall) was: distinct N=2×1000 with 1 lost / 1 exhaustion (p50/p95/p99/max 29/99/138/1752), N=3×1000 clean (46/111/167/262), and N=4×500 with 3 lost / 3 exhaustions (45/175/269/1683). Duplicate N=2–4 passed strict in both runs. N=8 is now reliable in these runs (0 lost of 4000, 0 exhaustions) with p99 of about 0.5 s. This is reported as stress characterization only, not a supported requirement.
-    - Real release `sce hooks codex` processes, strict (AC9; in-process counters are unavailable across processes):
-
-      | N | rounds | expected | persisted | lost | orphans | non-zero exits | stderr lines | p50 | p95 | p99 | max ms | T01 p50/p95/p99/max |
-      | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-      | 2 | 500 | 1000 | 1000 | 0 | 0 | 0 | 0 | 28 | 38 | 41 | 44 | 35/45/49/51 |
-      | 3 | 500 | 1500 | 1500 | 0 | 0 | 0 | 0 | 53 | 137 | 199 | 1458 | 45/105/212/245 |
-      | 4 | 200 | 800 | 800 | 0 | 0 | 0 | 0 | 41 | 73 | 73 | 79 | 50/196/197/231 |
-
+    - Defaults are not tuned in T07: `busy_timeout_ms = 500`, `contention_deadline_ms = 1250`, max attempts = 2, backoff cap = 100 ms. The T07 measurement campaign below did not justify a policy change. **Superseded by T08:** final validation then failed AC8 under these defaults, and T08 tuned them to 1000 / 2250.
+  - After-fix measurement campaign (authoritative T07 evidence):
+    - Detailed environment, methodology, raw run tables, aggregate statistics, retry timelines, host correlation and policy conclusions are recorded in `context/sce/agent-trace-db-write-contention-evidence.md`. That doc is the canonical measurement source; this record only summarizes it.
+    - Method: frozen release artifacts plus test-only retry-timeline instrumentation (`record_write_contention_timeline`) and scheduler-gap monitors.
+    - Contract (asserted by tests):
+      - lock-budget boundary: holds `<= 250 ms` succeed; holds `>= 2000 ms` exhaust cleanly with 0/0 partial rows; no writer exceeds 2 attempts. Holds of 500–1500 ms are characterization only;
+      - strict N=2–4 in-process and real-hook gates (AC8/AC9): 0 lock errors, 0 exhaustions, 0 lost distinct events, no orphan or duplicate rows, 0 non-zero hook exits.
+    - Observed on reference host (not guarantees):
+      - 10 full held-lock boundary runs passed the contract (70/70 samples).
+      - 5/5 complete supported N=2–4 strict in-process matrices passed: 57,500 writes, 0 lock errors, 0 contention exhaustions, 0 lost distinct events.
+      - Real release hooks, N=2–4: 16,500 events, 0 lost events, 0 fail-open persistence losses, 0 non-zero exits.
+      - N=8 remains stress characterization only, not a supported requirement:
+        - distinct: 20,000 writes, 0 exhaustions, 0 loss;
+        - duplicate: 20,000 writes, 16 contention exhaustions in one of five runs, 0 logical-event loss because another concurrent writer persisted each affected duplicate.
+      - Retry timelines show those N=8 failures were genuine bounded DB-policy exhaustion while another transaction held the writer lock for more than about 1 s. No scheduler stall was observed during the failure. It correlated with a device-level IO burst; the source of that burst was not proven.
+    - Conclusion at T07: no policy change was recommended from this dataset; the policy looked adequate for supported N=2–4 and borderline only at unsupported N=8 stress. A later validation run contradicted the supported-load part of that conclusion (see T08).
+  - Preliminary / superseded measurement: an earlier single-run campaign on the same day (HEAD `c513278d` + T07 test changes) recorded a strict distinct-event failure that it attributed to host-wide stalls, and reported N=8 as clean. It is not the final T07 evidence. Its host-stall attribution is withdrawn because the full campaign above observed no scheduler stall and no strict N=2–4 failure.
   - Verify:
-    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml lock_budget_boundary -- --nocapture`: passed in 3 consecutive runs, each printing per-hold outcome, latency, attempts, outer retries and exhaustions.
-    - AC8 strict:
-      - `concurrent_distinct_events` with `WRITERS=2,3 ROUNDS=1000` and with `WRITERS=4 ROUNDS=500`: the first run failed (host-stall deviation above); the full rerun passed.
-      - `concurrent_duplicate_delivery` with `WRITERS=2,3,4 ROUNDS=500`: passed in both runs.
-      - A non-strict `WRITERS=4 ROUNDS=1000` + `WRITERS=2 ROUNDS=1000` rerun was also clean.
-    - AC8 N=8 non-strict stress (distinct and duplicate, 500 rounds each): passed, with the results above.
-    - AC9: `nix build .#default` passed; strict `concurrent_real_codex_hook_processes` with `WRITERS=2,3 ROUNDS=500` and with `WRITERS=4 ROUNDS=200` passed.
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml lock_budget_boundary -- --nocapture`: passed in every run, printing per-hold outcome, latency, attempts, outer retries and exhaustions.
+    - AC8 strict `concurrent_distinct_events` (`WRITERS=2,3 ROUNDS=1000`, `WRITERS=4 ROUNDS=500`) and `concurrent_duplicate_delivery` (`WRITERS=2,3,4 ROUNDS=500`): 5/5 complete matrices passed in the measurement campaign.
+    - AC8 N=8 stress (distinct and duplicate, 500 rounds each, 5 runs each): results above; reported as characterization only.
+    - AC9: `nix build .#default` passed; strict `concurrent_real_codex_hook_processes` with `WRITERS=2,3 ROUNDS=500` and `WRITERS=4 ROUNDS=200` passed in every campaign run.
     - Additional: `... lock_contention` passed (7 passed, 3 ignored); `nix build .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt` passed.
-  - Context impact: none to code contracts or durable architecture; this is a test-only change plus plan evidence. The measured before-vs-after evidence and the host-stall exhaustion characterization feed the planned `context/sce/agent-trace-db.md` measured-contention-evidence summary.
+  - Context impact: none to code contracts or durable architecture; this is a test-only change plus plan evidence. The measured evidence lives in `context/sce/agent-trace-db-write-contention-evidence.md`.
+  - Context synchronization: synced
+
+- [x] T08: `Tune Agent Trace contention defaults after the supported-load validation failure` (status:done)
+  - Task ID: T08
+  - Trigger: final validation run 1 (500 / 1250 defaults) failed AC8. Strict distinct N=4×500 lost 1 event, and strict duplicate N=3×500 recorded 2 lock exhaustions. In both failing rounds a writer held the writer lock for 1616–1667 ms, and waiters exhausted after 1006–1090 ms.
+  - Scope: In:
+    - test the larger bounded two-attempt policy `busy_timeout_ms = 1000`, `contention_deadline_ms = 2250`, max attempts 2, backoff cap 100 ms;
+    - extend the held-lock experiment to 100–3000 ms and set the AC7 thresholds from a 10-run dataset;
+    - rerun the full strict AC8/AC9 campaign (5 matrices each) and N=8 stress (5 runs each) on frozen release artifacts with host evidence;
+    - update config defaults, schema, tests and durable context.
+    Out — weakening AC8; a third attempt; a queue, spool or daemon; any change to retry classification, retry units, attempt cap, jitter, admission re-check, deterministic-error handling, hook fail-open, the metadata fast path or exhaustion observability.
+  - Dependencies: T07, validation run 1
+  - Done when: the candidate is either adopted with all supported strict matrices passing, or rejected with the architectural conclusion recorded.
+  - Completed: 2026-10-05
+  - Files changed:
+    - `cli/src/services/db/mod.rs`: `AGENT_TRACE_DB_BUSY_TIMEOUT_MS` 500 → 1_000; `AGENT_TRACE_DB_CONTENTION_DEADLINE_MS` 1_250 → 2_250; the default-pinning test assertion.
+    - `config/pkl/base/sce-config-schema.pkl`: `busy_timeout_ms` default 500 → 1000; `contention_deadline_ms` default 1250 → 2250.
+    - `cli/src/services/config/schema.rs`: generated-schema default assertions.
+    - `cli/src/services/agent_trace_db/lock_contention_tests.rs`: `LOCK_HOLD_DURATIONS_MS` = 100/250/500/750/1000/1500/1750/2000/2250/2500/3000; `RELIABLY_WITHIN_CONTENTION_BUDGET_MS` 250 → 1_000; `RELIABLY_BEYOND_CONTENTION_BUDGET_MS` 2_000 → 3_000 (also lengthens the `initialized_hook_open_succeeds_while_write_lock_is_held` hold to 3000 ms).
+    - `context/sce/agent-trace-db-write-contention-evidence.md`, `context/sce/shared-turso-db.md`, `context/cli/config-precedence-contract.md`, `context/glossary.md`, `context/context-map.md`, this plan.
+  - Result (decision A, candidate passes; detailed tables, timelines and host evidence in `context/sce/agent-trace-db-write-contention-evidence.md`):
+    - Contract (asserted): holds ≤ 1000 ms succeed, holds ≥ 3000 ms exhaust cleanly; failure leaves 0/0 rows; ≤ 2 attempts; `outer_retries + 1 == attempts`; 1500–2500 ms is characterization only.
+    - Observed on reference host (65 runs on frozen release artifacts, all exit 0, nothing rerun or dropped):
+      - Held lock, 10 runs × 11 holds: 110/110 samples met the contract with 0 invariant violations. Holds of 100–1000 ms succeeded on attempt 1 and 1500–2000 ms on attempt 2; 2250–3000 ms exhausted at 2001–2094 ms. The transition lies between a holder release of 2013 ms (succeeded) and 2254 ms (exhausted).
+      - Strict N=2–4 in-process: 5/5 matrices passed; 57,500 writes, 0 lock errors, 0 exhaustions, 0 outer retries, 0 lost of 35,000 distinct events, 0 orphan or duplicate rows, 0 operations ≥ 500 ms.
+      - Strict real hooks: 5/5 matrices passed; 16,500 events, 0 lost, 0 fail-open losses, 0 non-zero exits, 0 stderr records.
+      - N=8 stress (characterization only): distinct 20,000 writes and duplicate 20,000 writes, 0 exhaustions, 0 loss; worst max 859 ms (1834 ms under 500 / 1250).
+      - Host: 0 external sleep gaps ≥ 50 ms in 50.6 minutes; no post-failure snapshot was needed.
+    - Latency cost: an exhausting write now blocks its hook for about 2.0–2.1 s instead of 1.0–1.1 s (about +1 s). Supported-load percentiles did not get worse (distinct p99 ranges 102–135 / 134–202 / 99–167 ms for N=2 / 3 / 4).
+    - Caveat: the T08 campaign never produced a supported-load holder of 1.6–1.7 s. Coverage of that holder rests on the held-lock experiment (1500–2000 ms holds succeeded 30/30), with about 300 ms of slack.
+    - The 500 / 1250 T07 campaign and validation run 1 remain in the evidence doc and this plan as historical evidence.
+  - Verify:
+    - `nix run .#pkl-check-generated`: passed.
+    - `... test --manifest-path cli/Cargo.toml` with `database_retry` (14), `busy_timeout` (7), `agent_trace_db_write_contention_retry` (12), `agent_trace_db` (75, 3 ignored), `agent_trace_storage` (14), `resilience` (6): passed.
+    - `... lock_budget_boundary -- --nocapture` with the final thresholds: passed; `initialized_hook_open` passed under the 3000 ms hold.
+    - Campaign A–D on frozen release artifacts: every run exit 0 (results above).
+  - Context impact: changes the default Agent Trace contention budget. Durable context (`shared-turso-db.md`, `config-precedence-contract.md`, `glossary.md`, the evidence doc) now states 1000 / 2250. `agent-trace-db.md` does not mention the defaults and needed no change.
   - Context synchronization: synced
 
 ## Open questions
 
-- Strict AC8 runs can intermittently record a contention exhaustion when a host-wide stall keeps a lock holder busy for more than about 1.1 s (T07 deviation: 1 of 2000 and 3 of 2000 distinct events in the first strict run on a loaded host). This is the bounded 500/1250 contract working as designed. Should the strict gates run only on a quiet reference host? Or should `contention_deadline_ms` be revisited with production hook-latency data? This plan does not raise budgets on this evidence alone.
+- The current 1000 / 2250 / 2 policy exhausts when a transaction holds the writer lock for more than about 2 s. Neither the T08 campaign (supported N=2–4 and N=8 stress) nor the held-lock experiment showed such a holder at supported load. If one is observed, do not tune timeouts further: bounded synchronous hook latency, no durable queue or spool, and unbounded writer-lock duration together mean zero-loss ingestion cannot be guaranteed. That needs a product/architecture decision between accepting occasional fail-open ingestion loss and introducing eventual persistence (spool or queue). Why the 1.6–1.7 s holders occurred in the failed validation run is also still unexplained (no host evidence was captured).
 
 - PR #297's branch carries test-only stabilizers for this same contention (`c6cbc94a` retries locked SQLite writes in concurrent repository tests; `94dd0937` stabilizes convergence checks). Once this fix lands, those test-side retries may be redundant and could mask a regression. Should they be revisited in a follow-up after both PRs merge? This plan leaves them alone.
 - Follow-up, not in this plan: proper CLI telemetry / OTEL integration, as a separate future telemetry effort. It would:
@@ -660,3 +676,118 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
   - avoid `Logger` → tracing → `Logger` feedback or duplicate events;
   - keep the existing file/stderr `Logger` behavior during migration.
 - Follow-up, not in this plan: generic `RetryPolicy.timeout_ms` is still documented and rendered as a per-attempt timeout for every database, even though `run_with_retry_sync` only checks elapsed time after a synchronous call returns. Should the generic cleanup become its own plan?
+
+## Validation history
+
+Earlier `/validate` runs, kept as evidence. The next `/validate` writes a fresh `## Validation Report` below.
+
+### Validation run 1 (2026-10-05, 500 / 1250 defaults): failed
+
+**Status:** failed  
+**Date:** 2026-10-05
+
+#### Commands run
+
+- `nix flake check` -> exit 0 (all checks passed)
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral Pkl generation passed: 142 files)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db` -> exit 0 (75 passed, 3 ignored)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` -> exit 0 (389 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml resilience` -> exit 0 (6 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml database_retry` -> exit 0 (14 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml busy_timeout` -> exit 0 (7 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db_write_contention_retry` -> exit 0 (12 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks` -> exit 0 (806 passed, 1 ignored)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml contention_exhausted` -> exit 0 (3 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml repository_metadata` -> exit 0 (5 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml initialized_hook_open` -> exit 0 (1 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml lock_budget_boundary -- --nocapture` -> exit 0 (100/250/500 ms attempt 1; 750/1000 ms attempt 2; 1500/2000 ms exhausted after 2 attempts at about 1.0 s with 0/0 rows)
+- AC8 strict `concurrent_distinct_events`, `WRITERS=2,3 ROUNDS=1000` -> exit 0 (0 lost, 0 exhaustions; p50/p95/p99/max N=2 30/93/135/1138 ms, N=3 45/105/151/236 ms)
+- AC8 strict `concurrent_distinct_events`, `WRITERS=4 ROUNDS=500` -> exit 101 (1 lock error, 1 exhaustion, 1 lost distinct event in round 384; p50/p95/p99/max 45/173/254/1666 ms)
+- AC8 strict `concurrent_duplicate_delivery`, `WRITERS=2,3,4 ROUNDS=500` -> exit 101 (N=3: 2 lock errors, 2 exhaustions in round 338, 0 lost logical events; N=2 and N=4 clean)
+- AC8 non-strict `concurrent_distinct_events`, `WRITERS=8 ROUNDS=500` -> exit 0 (stress: 2 exhaustions, 2 lost of 4000, max 2134 ms)
+- AC8 non-strict `concurrent_duplicate_delivery`, `WRITERS=8 ROUNDS=500` -> exit 0 (stress: 0 exhaustions, 0 lost)
+- `nix build .#default` -> exit 0
+- AC9 strict `concurrent_real_codex_hook_processes`, `WRITERS=2,3 ROUNDS=500` -> exit 0 (2500/2500 persisted, 0 non-zero exits; p99 43/166 ms)
+- AC9 strict `concurrent_real_codex_hook_processes`, `WRITERS=4 ROUNDS=200` -> exit 0 (800/800 persisted, 0 non-zero exits; p99 73 ms)
+
+#### Success-criteria verification
+
+- [x] AC1: busy handler on every Agent Trace DB connection, multiprocess WAL kept -> `busy_timeout` tests passed; inspection of `cli/src/services/db/mod.rs`: the single `TursoDb::open` local path calls `.experimental_multiprocess_wal(true)` then `apply_busy_timeout`; the other `new_local` call is `EncryptedTursoDb` (auth DB), outside AC1
+- [x] AC2: busy handler covers `BEGIN IMMEDIATE` -> T02 direct busy-handler tests passed within the `busy_timeout` filter
+- [x] AC3: bounded write-contention retry -> `agent_trace_db_write_contention_retry` 12 passed
+- [x] AC4: exhausted contention is observable -> `contention_exhausted` 3 passed; `hooks` 806 passed; inspection of `git diff main...HEAD -- cli/src` found no new stdout writes (only `eprintln!` in the test-only `lock_contention_tests.rs`)
+- [x] AC5: initialized hook open issues zero writes -> `initialized_repository_metadata_hook_runtime_open_issues_no_writes`, `initialized_hook_open_succeeds_while_write_lock_is_held` and metadata tests passed
+- [x] AC6: whole-transaction semantics -> `agent_trace_db` and `mutation_trace` passed
+- [x] AC7: lock-budget boundary -> `lock_budget_boundary` passed, printing per-hold outcome, latency and attempts
+- [ ] AC8: strict N=2–4 production-API levels -> failed: strict distinct N=4×500 lost 1 event to contention exhaustion, and strict duplicate N=3×500 recorded 2 lock errors
+- [x] AC9: strict real-hook levels -> 2×500, 3×500 and 4×200 passed with 0 lost and 0 non-zero exits
+- [x] AC10: Agent Trace-only config keys -> `database_retry` 14 passed; `pkl-check-generated` passed
+
+#### Failed checks and follow-ups
+
+- AC8 strict distinct `WRITERS=4 ROUNDS=500`: 1 lost distinct event; evidence: round 384, one writer's single attempt held the writer lock for 1666 ms (`Ok(true)`), and a waiter exhausted after 2 attempts at 1006 ms (`database is locked`, `busy_timeout_ms=500`, `contention_deadline_ms=1250`); required: decide whether the 500/1250/2-attempt policy must cover a lock holder of about 1.6 s at supported N=4, or whether AC8's strict gate needs a different acceptance basis, then fix in a normal work session.
+- AC8 strict duplicate `WRITERS=2,3,4 ROUNDS=500`: 2 lock errors at N=3 (0 logical events lost); evidence: round 338, one holder's attempt took 1616 ms, and two waiters exhausted at 1064 and 1089 ms; required: same decision as above.
+- The failure shape matches the documented N=8 exhaustion mode in `context/sce/agent-trace-db-write-contention-evidence.md` (holder transaction above about 1.05 s), but here it occurred at supported N=3 and N=4. The evidence doc's claim of 0 strict N=2–4 failures holds only for its recorded campaign.
+
+#### Residual risks
+
+- Supported N=2–4 writes can lose a distinct event when one transaction holds the writer lock for more than about 1.05 s. Host IO state during this validation run was not captured.
+- Real hook processes passed, but they ran at lower round counts than the in-process suite.
+
+#### Retry
+
+After repairs, rerun:
+
+`/validate context/plans/agent-trace-db-write-contention.md`
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-10-05
+
+### Commands run
+
+- `nix flake check` -> exit 0 (all checks passed)
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral Pkl generation passed: 142 files)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db` -> exit 0 (75 passed, 3 ignored)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml mutation_trace` -> exit 0 (389 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml resilience` -> exit 0 (6 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml database_retry` -> exit 0 (14 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml busy_timeout` -> exit 0 (7 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db_write_contention_retry` -> exit 0 (12 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks` -> exit 0 (806 passed, 1 ignored)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml contention_exhausted` -> exit 0 (3 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml repository_metadata` -> exit 0 (5 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml initialized_hook_open` -> exit 0 (1 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml lock_budget_boundary -- --nocapture` -> exit 0 (100–1000 ms holds succeeded on attempt 1; 1500/1750/2000 ms succeeded on attempt 2; 2250/2500/3000 ms exhausted after 2 attempts at 2047–2063 ms with 0/0 rows)
+- AC8 strict `concurrent_distinct_events`, `WRITERS=2,3 ROUNDS=1000` -> exit 0 (0 lock errors, 0 lost, 0 exhaustions, 0 outer retries; p50/p95/p99/max N=2 31/95/134/806 ms, N=3 52/119/175/285 ms)
+- AC8 strict `concurrent_distinct_events`, `WRITERS=4 ROUNDS=500` -> exit 0 (0 lock errors, 0 lost, 0 exhaustions, 1 outer retry; p50/p95/p99/max 45/157/232/1246 ms)
+- AC8 strict `concurrent_duplicate_delivery`, `WRITERS=2,3,4 ROUNDS=500` -> exit 0 (0 lock errors, 0 exhaustions, exactly 500 inserts per level; p99/max N=2 28/38, N=3 154/1412, N=4 191/299 ms)
+- AC8 non-strict `concurrent_distinct_events`, `WRITERS=8 ROUNDS=500` -> exit 0 (stress: 0 lost of 4000, 0 exhaustions, 2 outer retries; p99/max 505/1067 ms)
+- AC8 non-strict `concurrent_duplicate_delivery`, `WRITERS=8 ROUNDS=500` -> exit 0 (stress: 0 exhaustions, 500 inserts; p99/max 345/844 ms)
+- `nix build .#default` -> exit 0
+- AC9 strict `concurrent_real_codex_hook_processes`, `WRITERS=2,3 ROUNDS=500` -> exit 0 (1000/1000 and 1500/1500 persisted, 0 non-zero exits, 0 stderr lines; p50/p95/p99/max N=2 26/38/40/46 ms, N=3 46/108/155/629 ms)
+- AC9 strict `concurrent_real_codex_hook_processes`, `WRITERS=4 ROUNDS=200` -> exit 0 (800/800 persisted, 0 non-zero exits, 0 stderr lines; p50/p95/p99/max 44/74/77/81 ms)
+
+### Success-criteria verification
+
+- [x] AC1: busy handler on every Agent Trace DB connection, multiprocess WAL kept -> `busy_timeout` 7 passed; inspection of `cli/src/services/db/mod.rs`: the single `TursoDb` local open path calls `.experimental_multiprocess_wal(true)` and then `apply_busy_timeout`; the only other `new_local` call is `EncryptedTursoDb` (auth DB), outside AC1
+- [x] AC2: busy handler covers `BEGIN IMMEDIATE` -> T02 direct busy-handler tests passed within the `busy_timeout` filter
+- [x] AC3: bounded write-contention retry -> `agent_trace_db_write_contention_retry` 12 passed; the boundary run showed the 100 ms hold at `attempts = 1`, `outer_retries = 0`
+- [x] AC4: exhausted contention is observable -> `contention_exhausted` 3 passed; `hooks` 806 passed; inspection of `git diff main...HEAD -- cli/src` found no new stdout writes (new `eprintln!` lines appear only in the test-only `lock_contention_tests.rs`)
+- [x] AC5: initialized hook open issues zero writes -> `repository_metadata` 5 passed and `initialized_hook_open` passed under the 3000 ms held write lock
+- [x] AC6: whole-transaction semantics -> `agent_trace_db` 75 passed and `mutation_trace` 389 passed; strict runs showed no orphan or duplicate rows
+- [x] AC7: lock-budget boundary -> `lock_budget_boundary` passed: ≤ 1000 ms succeeded, ≥ 3000 ms exhausted cleanly, every sample ≤ 2 attempts with `outer_retries + 1 == attempts` and 0/0 rows on failure
+- [x] AC8: strict N=2–4 production-API levels -> distinct 2×1000, 3×1000, 4×500 and duplicate 2×500, 3×500, 4×500 passed with 0 lock errors, 0 other errors and 0 lost events; N=8 stress reported with 0 loss
+- [x] AC9: strict real-hook levels -> 2×500, 3×500 and 4×200 passed with 0 lost and 0 non-zero exits
+- [x] AC10: Agent Trace-only config keys -> `database_retry` 14 passed; `pkl-check-generated` passed
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- Writer-lock holders longer than about 2 s still exhaust the 1000 / 2250 / 2-attempt policy and lose the event through hook fail-open; no such holder occurred at supported load in this run. The open question on accepting occasional loss vs. eventual persistence still applies.
+- The unexplained 1.6–1.7 s holders from validation run 1 did not recur here, but this run captured no host IO evidence. Coverage of such holders rests on the held-lock boundary results (1500–2000 ms holds succeeded on attempt 2).
+- Strict contention gates are timing-sensitive and were measured on one reference host.
