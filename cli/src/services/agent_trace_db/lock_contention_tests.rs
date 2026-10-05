@@ -8,15 +8,17 @@ use std::{
 
 use anyhow::Result;
 
-use crate::services::db::{count_write_contention, count_write_statements};
+use crate::services::db::{count_write_contention, count_write_statements, WriteContentionCounts};
 
 use super::repository::RepositoryAgentTraceDb;
 use super::{InsertMessageInsert, InsertPartInsert, MessageRole, PartType};
 
 const DATABASE_LOCKED_ERROR: &str = "database is locked";
-const LOCK_HOLD_DURATIONS_MS: &[u64] = &[50, 100, 200, 300, 500, 1_000, 4_000];
-const RELIABLY_WITHIN_RETRY_BUDGET_MS: u64 = 100;
-const RELIABLY_BEYOND_RETRY_BUDGET_MS: u64 = 4_000;
+const WRITE_CONTENTION_ERROR: &str = "under write contention";
+const LOCK_HOLD_DURATIONS_MS: &[u64] = &[100, 250, 500, 750, 1_000, 1_500, 2_000];
+const RELIABLY_WITHIN_CONTENTION_BUDGET_MS: u64 = 250;
+const RELIABLY_BEYOND_CONTENTION_BUDGET_MS: u64 = 2_000;
+const WRITE_CONTENTION_MAX_ATTEMPTS: u32 = 2;
 const BUSY_TIMEOUT_PRODUCTION_HOLD_MS: u64 = 100;
 const ROUNDS_ENV: &str = "SCE_LOCK_CONTENTION_ROUNDS";
 const WRITERS_ENV: &str = "SCE_LOCK_CONTENTION_WRITERS";
@@ -151,6 +153,7 @@ struct LockBoundarySample {
     holder_released_after: Duration,
     messages: i64,
     parts: i64,
+    contention: WriteContentionCounts,
 }
 
 fn insert_while_write_lock_is_held(hold: Duration) -> LockBoundarySample {
@@ -181,7 +184,9 @@ fn insert_while_write_lock_is_held(hold: Duration) -> LockBoundarySample {
     lock_acquired.wait();
     let started_at = Instant::now();
     let (message, part) = conversation_text_event(session_id, "cx:turn-1:user");
-    let outcome = WriteOutcome::from_result(writer.insert_conversation_text_event(message, part));
+    let (result, contention) =
+        count_write_contention(|| writer.insert_conversation_text_event(message, part));
+    let outcome = WriteOutcome::from_result(result);
     let elapsed = started_at.elapsed();
 
     let holder_released_after = holder.join().expect("holder thread should not panic");
@@ -199,6 +204,7 @@ fn insert_while_write_lock_is_held(hold: Duration) -> LockBoundarySample {
         holder_released_after,
         messages,
         parts,
+        contention,
     }
 }
 
@@ -209,15 +215,22 @@ fn lock_budget_boundary_characterizes_single_writer_blocked_by_begin_immediate_h
         .map(|hold_ms| insert_while_write_lock_is_held(Duration::from_millis(*hold_ms)))
         .collect();
 
-    eprintln!("\nlock-budget boundary (production QUERY_RETRY_POLICY, Agent Trace busy_timeout)");
-    eprintln!("hold_ms | outcome            | elapsed_ms | holder_released_ms | messages | parts");
+    eprintln!(
+        "\nlock-budget boundary (Agent Trace busy_timeout + write-contention retry + contention deadline)"
+    );
+    eprintln!(
+        "hold_ms | outcome            | elapsed_ms | holder_released_ms | attempts | outer_retries | exhaustions | messages | parts"
+    );
     for sample in &samples {
         eprintln!(
-            "{:>7} | {:<18} | {:>10} | {:>18} | {:>8} | {:>5}",
+            "{:>7} | {:<18} | {:>10} | {:>18} | {:>8} | {:>13} | {:>11} | {:>8} | {:>5}",
             sample.hold.as_millis(),
             sample.outcome.label(),
             sample.elapsed.as_millis(),
             sample.holder_released_after.as_millis(),
+            sample.contention.attempts,
+            sample.contention.outer_retries,
+            sample.contention.exhaustions,
             sample.messages,
             sample.parts,
         );
@@ -237,22 +250,40 @@ fn lock_budget_boundary_characterizes_single_writer_blocked_by_begin_immediate_h
             WriteOutcome::Locked(_) | WriteOutcome::Other(_) => assert_eq!(sample.messages, 0),
             WriteOutcome::AlreadyPresent => panic!("hold {hold_ms}ms reported a phantom replay"),
         }
-        if hold_ms <= RELIABLY_WITHIN_RETRY_BUDGET_MS {
+        assert!(
+            (1..=WRITE_CONTENTION_MAX_ATTEMPTS).contains(&sample.contention.attempts),
+            "hold {hold_ms}ms made {} attempt(s), outside the contention policy",
+            sample.contention.attempts
+        );
+        assert_eq!(
+            sample.contention.outer_retries + 1,
+            sample.contention.attempts,
+            "hold {hold_ms}ms: every attempt after the first must be an admitted outer retry"
+        );
+        if hold_ms <= RELIABLY_WITHIN_CONTENTION_BUDGET_MS {
             assert_eq!(
                 sample.outcome,
                 WriteOutcome::Inserted,
-                "a {hold_ms}ms lock is well inside the retry budget"
+                "a {hold_ms}ms lock is well inside the contention budget"
+            );
+            assert_eq!(
+                sample.contention.exhaustions, 0,
+                "a {hold_ms}ms lock must not exhaust the contention policy"
             );
         }
-        if hold_ms >= RELIABLY_BEYOND_RETRY_BUDGET_MS {
-            assert!(
-                matches!(sample.outcome, WriteOutcome::Locked(_)),
-                "a {hold_ms}ms lock is expected to exhaust the current retry budget, got {:?}",
-                sample.outcome
-            );
-            assert!(
-                sample.elapsed < sample.hold,
-                "the writer should give up before a {hold_ms}ms lock is released"
+        if hold_ms >= RELIABLY_BEYOND_CONTENTION_BUDGET_MS {
+            match &sample.outcome {
+                WriteOutcome::Locked(message) => assert!(
+                    message.contains(WRITE_CONTENTION_ERROR),
+                    "a {hold_ms}ms lock should fail with a contention-exhaustion error, got {message}"
+                ),
+                outcome => panic!(
+                    "a {hold_ms}ms lock is expected to exhaust the contention policy, got {outcome:?}"
+                ),
+            }
+            assert_eq!(
+                sample.contention.exhaustions, 1,
+                "a {hold_ms}ms lock should exhaust the contention policy exactly once"
             );
         }
     }
@@ -345,6 +376,7 @@ fn lock_contention_latency_percentiles_use_nearest_rank() {
 struct RoundResult {
     outcomes: Vec<WriteOutcome>,
     latencies: Vec<Duration>,
+    contention: Vec<WriteContentionCounts>,
     max_elapsed: Duration,
     messages: i64,
     parts: i64,
@@ -372,19 +404,26 @@ fn run_concurrent_round(
                 let (message, part) = conversation_text_event(&session_id, &message_id);
                 start_together.wait();
                 let started_at = Instant::now();
-                let result = db.insert_conversation_text_event(message, part);
-                (WriteOutcome::from_result(result), started_at.elapsed())
+                let (result, contention) =
+                    count_write_contention(|| db.insert_conversation_text_event(message, part));
+                (
+                    WriteOutcome::from_result(result),
+                    started_at.elapsed(),
+                    contention,
+                )
             })
         })
         .collect();
 
     let mut outcomes = Vec::with_capacity(writers);
     let mut latencies = Vec::with_capacity(writers);
+    let mut contention = Vec::with_capacity(writers);
     let mut max_elapsed = Duration::ZERO;
     for handle in handles {
-        let (outcome, elapsed) = handle.join().expect("writer thread should not panic");
+        let (outcome, elapsed, counts) = handle.join().expect("writer thread should not panic");
         outcomes.push(outcome);
         latencies.push(elapsed);
+        contention.push(counts);
         max_elapsed = max_elapsed.max(elapsed);
     }
 
@@ -392,6 +431,7 @@ fn run_concurrent_round(
     RoundResult {
         outcomes,
         latencies,
+        contention,
         max_elapsed,
         messages: session_row_count(&verifier, "messages", session_id),
         parts: session_row_count(&verifier, "parts", session_id),
@@ -409,6 +449,9 @@ struct LevelSummary {
     lock_errors: usize,
     other_errors: usize,
     lost_events: i64,
+    attempts: u64,
+    outer_retries: u64,
+    exhaustions: u64,
     max_elapsed: Duration,
     latencies: Vec<Duration>,
     first_lock_error: Option<String>,
@@ -511,6 +554,16 @@ fn run_contention_level(writers: usize, rounds: usize, distinct_events: bool) ->
         summary.already_present += already_present;
         summary.lock_errors += round_lock_errors;
         summary.other_errors += round_other_errors;
+        for counts in &result.contention {
+            assert!(
+                counts.attempts <= WRITE_CONTENTION_MAX_ATTEMPTS,
+                "{mode} round {round}: a writer made {} attempt(s), beyond the contention policy",
+                counts.attempts
+            );
+            summary.attempts += u64::from(counts.attempts);
+            summary.outer_retries += u64::from(counts.outer_retries);
+            summary.exhaustions += u64::from(counts.exhaustions);
+        }
         summary.max_elapsed = summary.max_elapsed.max(result.max_elapsed);
         summary.latencies.extend(result.latencies);
     }
@@ -522,12 +575,12 @@ fn run_contention_level(writers: usize, rounds: usize, distinct_events: bool) ->
 fn report_levels(title: &str, summaries: &[LevelSummary]) {
     eprintln!("\n{title}");
     eprintln!(
-        "writers | rounds | clean rounds | rounds w/ lock exhaustion | lock errors | other errors | Ok(true) | Ok(false) | lost events | max elapsed ms | p50 ms | p95 ms | p99 ms | max ms"
+        "writers | rounds | clean rounds | rounds w/ lock exhaustion | lock errors | other errors | Ok(true) | Ok(false) | lost events | attempts | outer retries | exhaustions | max elapsed ms | p50 ms | p95 ms | p99 ms | max ms"
     );
     for summary in summaries {
         let latency = latency_percentiles(&summary.latencies);
         eprintln!(
-            "{:>7} | {:>6} | {:>12} | {:>25} | {:>11} | {:>12} | {:>8} | {:>9} | {:>11} | {:>14} | {:>6} | {:>6} | {:>6} | {:>6}",
+            "{:>7} | {:>6} | {:>12} | {:>25} | {:>11} | {:>12} | {:>8} | {:>9} | {:>11} | {:>8} | {:>13} | {:>11} | {:>14} | {:>6} | {:>6} | {:>6} | {:>6}",
             summary.writers,
             summary.rounds,
             summary.clean_rounds,
@@ -537,6 +590,9 @@ fn report_levels(title: &str, summaries: &[LevelSummary]) {
             summary.inserted,
             summary.already_present,
             summary.lost_events,
+            summary.attempts,
+            summary.outer_retries,
+            summary.exhaustions,
             summary.max_elapsed.as_millis(),
             latency.p50.as_millis(),
             latency.p95.as_millis(),
@@ -572,12 +628,17 @@ fn assert_strict_if_requested(summaries: &[LevelSummary]) {
             "{} concurrent writers lost {} distinct event(s)",
             summary.writers, summary.lost_events
         );
+        assert_eq!(
+            summary.exhaustions, 0,
+            "{} concurrent writers exhausted the contention policy {} time(s)",
+            summary.writers, summary.exhaustions
+        );
     }
 }
 
 #[test]
 #[ignore = "lock-contention characterization; run with --ignored --nocapture"]
-fn concurrent_duplicate_delivery_without_outer_retry_characterizes_lock_exhaustion() {
+fn concurrent_duplicate_delivery_persists_each_event_once_under_write_contention() {
     let rounds = env_usize(ROUNDS_ENV, DEFAULT_ROUNDS);
     let summaries: Vec<LevelSummary> = env_writer_counts(DEFAULT_DUPLICATE_WRITER_COUNTS)
         .into_iter()
@@ -585,7 +646,7 @@ fn concurrent_duplicate_delivery_without_outer_retry_characterizes_lock_exhausti
         .collect();
 
     report_levels(
-        "T02 concurrent duplicate delivery (same logical event, no outer retry)",
+        "concurrent duplicate delivery (same logical event, Agent Trace write-contention policy)",
         &summaries,
     );
     assert_strict_if_requested(&summaries);
@@ -593,7 +654,7 @@ fn concurrent_duplicate_delivery_without_outer_retry_characterizes_lock_exhausti
 
 #[test]
 #[ignore = "lock-contention characterization; run with --ignored --nocapture"]
-fn concurrent_distinct_events_without_outer_retry_characterizes_ingestion_loss() {
+fn concurrent_distinct_events_persist_every_event_under_write_contention() {
     let rounds = env_usize(ROUNDS_ENV, DEFAULT_ROUNDS);
     let summaries: Vec<LevelSummary> = env_writer_counts(DEFAULT_DISTINCT_WRITER_COUNTS)
         .into_iter()
@@ -601,7 +662,7 @@ fn concurrent_distinct_events_without_outer_retry_characterizes_ingestion_loss()
         .collect();
 
     report_levels(
-        "T03 concurrent distinct events (one unique event per writer, no outer retry)",
+        "concurrent distinct events (one unique event per writer, Agent Trace write-contention policy)",
         &summaries,
     );
     assert_strict_if_requested(&summaries);
@@ -878,7 +939,7 @@ fn concurrent_real_codex_hook_processes_persist_every_distinct_event() {
     };
     let rounds = env_usize(ROUNDS_ENV, DEFAULT_PROCESS_ROUNDS);
 
-    eprintln!("\nT05 real `sce hooks codex` UserPromptSubmit processes (distinct events)");
+    eprintln!("\nreal `sce hooks codex` UserPromptSubmit processes (distinct events)");
     eprintln!(
         "writers | rounds | expected | persisted msgs | persisted parts | lost | rounds w/ loss | non-zero exits | stderr lines | p50 ms | p95 ms | p99 ms | max ms"
     );
@@ -956,7 +1017,7 @@ fn initialized_hook_open_succeeds_while_write_lock_is_held() {
         .verify_or_initialize_repository_metadata(repository_id)
         .expect("metadata should initialize before contention");
 
-    let hold = Duration::from_millis(RELIABLY_BEYOND_RETRY_BUDGET_MS);
+    let hold = Duration::from_millis(RELIABLY_BEYOND_CONTENTION_BUDGET_MS);
     let lock_acquired = Arc::new(Barrier::new(2));
     let holder = {
         let db_path = db_path.clone();

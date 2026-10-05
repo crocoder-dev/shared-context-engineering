@@ -561,7 +561,7 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
   - Context impact: localized behavior change. Opening an already-initialized repository Agent Trace DB is now read-only, so it no longer contends for the write lock; this affects `context/sce/agent-trace-db.md` (hook-runtime read-only metadata fast path). There is no config, schema or public CLI contract change.
   - Context synchronization: synced
 
-- [ ] T07: `Recalibrate the lock-budget boundary test to the new contention contract` (status:todo)
+- [x] T07: `Recalibrate the lock-budget boundary test to the new contention contract` (status:done)
   - Task ID: T07
   - Scope: In:
     - Deterministic contention contract (primary proof): set `LOCK_HOLD_DURATIONS_MS` to 100/250/500/750/1000/1500/2000 and align the budget constants with the T03/T04 contract. Assert by outcome and retry policy with wide margins: holds ≤ 250 ms succeed, holds ≥ 2000 ms exhaust the contention policy and fail cleanly, and every failure leaves zero message/part rows. Middle holds are characterization only.
@@ -573,9 +573,83 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
   - Dependencies: T03, T04, T05, T06
   - Done when: AC7 holds deterministically; the strict N=2–4 matrix passes every AC8/AC9 strict assertion; before-vs-after measurements (p50, p95, p99, max, outer retries and exhaustions where measurable, plus the 8-writer stress run) are recorded.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml lock_budget_boundary -- --nocapture`; the AC8 and AC9 strict commands.
-  - Context synchronization: pending
+  - Completed: 2026-10-05
+  - Files changed:
+    - `cli/src/services/agent_trace_db/lock_contention_tests.rs`
+    - `context/plans/agent-trace-db-write-contention.md` (this record)
+  - Result:
+    - Lock-budget boundary:
+      - `LOCK_HOLD_DURATIONS_MS` is now 100/250/500/750/1000/1500/2000. The budget constants are `RELIABLY_WITHIN_CONTENTION_BUDGET_MS = 250` and `RELIABLY_BEYOND_CONTENTION_BUDGET_MS = 2_000`, and `WRITE_CONTENTION_MAX_ATTEMPTS = 2` mirrors the T04 cap.
+      - Each sample wraps the production insert in `count_write_contention`. It reports and asserts attempts, outer retries and exhaustions.
+      - For every hold: messages equal parts; a failure leaves 0/0 rows; `1 <= attempts <= 2`; `outer_retries + 1 == attempts`.
+      - Holds of 250 ms or less: `Ok(true)` with 0 exhaustions.
+      - Holds of 2000 ms or more: a `database is locked` contention-exhaustion error (text contains `under write contention`) with exactly 1 exhaustion.
+      - The previous `elapsed < hold` wall-clock assertion is removed.
+      - Middle holds are reported only.
+    - Concurrent in-process suites:
+      - Each writer's insert is wrapped in `count_write_contention`. The level report adds attempts, outer-retry and exhaustion columns next to the latency percentiles.
+      - Every round asserts that no writer exceeds the attempt cap.
+      - Strict mode additionally asserts 0 exhaustions per level.
+      - The stale "no outer retry" titles are replaced, and the test functions are renamed to `concurrent_distinct_events_persist_every_event_under_write_contention`, `concurrent_duplicate_delivery_persists_each_event_once_under_write_contention`. The AC8 filters still match.
+      - The stale `T05` prefix is dropped from the hook-process report title.
+    - `initialized_hook_open_succeeds_while_write_lock_is_held` now uses a 2000 ms hold through the renamed constant (previously 4000 ms).
+    - No strict assertion was weakened, skipped or deleted.
+    - Defaults are not tuned (`busy_timeout_ms = 500`, `contention_deadline_ms = 1250`, 2 attempts, 100 ms backoff cap). The evidence below does not justify raising them; see the deviation.
+    - Deviation, strict-run flake under host stalls: the first strict AC8 distinct-event run failed. It had 1 contention exhaustion at N=2×1000 and 3 at N=4×500, with the failing rounds showing max latencies of 1752 ms and 1683 ms.
+      - A probe run (temporary, removed) showed intermittent stalls of about 1.1–1.4 s with both writers stalled together on attempt 1 (`attempts = 1`, no Busy wait). They did not line up with WAL checkpoint resets.
+      - Concurrent `vmstat` showed host-wide load bursts from other processes (run queue up to 16, steady ~8% iowait).
+      - When a lock holder stalls for more than about 1.1 s, the 500/1250 contract is exhausted by design: a bounded wait and no indefinite hook waits. T01's baseline also shows a 2303 ms stall (duplicate N=3).
+      - A full strict rerun of the AC8 matrix passed every assertion; those results are recorded below. The question of tolerating host stalls is added to Open questions rather than resolved by raising budgets.
+  - After-fix measurements (2026-10-05, release build, HEAD `c513278d` + T07 test changes):
+    - Lock-budget boundary (debug build; three runs, consistent; one shown). Baseline is T01 (holds of 300 ms or more failed after about 280 ms with 5 attempts).
+
+      | hold ms | outcome | elapsed ms | attempts | outer retries | exhaustions | rows (msg/part) |
+      | --- | --- | --- | --- | --- | --- | --- |
+      | 100 | Ok(true) | 121 | 1 | 0 | 0 | 1/1 |
+      | 250 | Ok(true) | 345 | 1 | 0 | 0 | 1/1 |
+      | 500 | Ok(true) | 519 | 1 | 0 | 0 | 1/1 |
+      | 750 | Ok(true) | 772 | 2 | 1 | 0 | 1/1 |
+      | 1000 | Ok(true) | 1033 | 2 | 1 | 0 | 1/1 |
+      | 1500 | contention exhausted (`database is locked`) | 1076 | 2 | 1 | 1 | 0/0 |
+      | 2000 | contention exhausted (`database is locked`) | 1101 | 2 | 1 | 1 | 0/0 |
+
+    - Rust production API, strict (AC8 passing run), with the T01 baseline p50/p95/p99/max for comparison:
+
+      | mode | N | rounds | lost | lock errors | orphans | duplicates | attempts | outer retries | exhaustions | p50 | p95 | p99 | max ms | T01 p50/p95/p99/max |
+      | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+      | distinct | 2 | 1000 | 0 | 0 | 0 | 0 | 2000 | 0 | 0 | 25 | 55 | 85 | 1982 | 37/107/138/228 |
+      | distinct | 3 | 1000 | 0 | 0 | 0 | 0 | 3000 | 0 | 0 | 40 | 103 | 152 | 273 | 68/207/231/372 |
+      | distinct | 4 | 500 | 0 | 0 | 0 | 0 | 2001 | 1 | 0 | 44 | 127 | 234 | 886 | 87/212/318/384 |
+      | duplicate | 2 | 500 | 0 | 0 | 0 | 0 | 1000 | 0 | 0 | 18 | 26 | 26 | 33 | 20/33/34/39 |
+      | duplicate | 3 | 500 | 0 | 0 | 0 | 0 | 1500 | 0 | 0 | 26 | 101 | 143 | 847 | 44/135/207/2303 |
+      | duplicate | 4 | 500 | 0 | 0 | 0 | 0 | 2000 | 0 | 0 | 41 | 106 | 167 | 237 | 83/190/286/347 |
+      | distinct (stress, non-strict) | 8 | 500 | 0 | 0 | 0 | 0 | 4018 | 18 | 0 | 90 | 352 | 524 | 958 | 275/288/298/410, 1525 lost |
+      | duplicate (stress, non-strict) | 8 | 500 | 0 | 0 | 0 | 0 | 4000 | 0 | 0 | 86 | 218 | 436 | 546 | 275/284/296/351, 1545 lock errors |
+
+      The failed first strict run (host stall) was: distinct N=2×1000 with 1 lost / 1 exhaustion (p50/p95/p99/max 29/99/138/1752), N=3×1000 clean (46/111/167/262), and N=4×500 with 3 lost / 3 exhaustions (45/175/269/1683). Duplicate N=2–4 passed strict in both runs. N=8 is now reliable in these runs (0 lost of 4000, 0 exhaustions) with p99 of about 0.5 s. This is reported as stress characterization only, not a supported requirement.
+    - Real release `sce hooks codex` processes, strict (AC9; in-process counters are unavailable across processes):
+
+      | N | rounds | expected | persisted | lost | orphans | non-zero exits | stderr lines | p50 | p95 | p99 | max ms | T01 p50/p95/p99/max |
+      | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+      | 2 | 500 | 1000 | 1000 | 0 | 0 | 0 | 0 | 28 | 38 | 41 | 44 | 35/45/49/51 |
+      | 3 | 500 | 1500 | 1500 | 0 | 0 | 0 | 0 | 53 | 137 | 199 | 1458 | 45/105/212/245 |
+      | 4 | 200 | 800 | 800 | 0 | 0 | 0 | 0 | 41 | 73 | 73 | 79 | 50/196/197/231 |
+
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml lock_budget_boundary -- --nocapture`: passed in 3 consecutive runs, each printing per-hold outcome, latency, attempts, outer retries and exhaustions.
+    - AC8 strict:
+      - `concurrent_distinct_events` with `WRITERS=2,3 ROUNDS=1000` and with `WRITERS=4 ROUNDS=500`: the first run failed (host-stall deviation above); the full rerun passed.
+      - `concurrent_duplicate_delivery` with `WRITERS=2,3,4 ROUNDS=500`: passed in both runs.
+      - A non-strict `WRITERS=4 ROUNDS=1000` + `WRITERS=2 ROUNDS=1000` rerun was also clean.
+    - AC8 N=8 non-strict stress (distinct and duplicate, 500 rounds each): passed, with the results above.
+    - AC9: `nix build .#default` passed; strict `concurrent_real_codex_hook_processes` with `WRITERS=2,3 ROUNDS=500` and with `WRITERS=4 ROUNDS=200` passed.
+    - Additional: `... lock_contention` passed (7 passed, 3 ignored); `nix build .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt` passed.
+  - Context impact: none to code contracts or durable architecture; this is a test-only change plus plan evidence. The measured before-vs-after evidence and the host-stall exhaustion characterization feed the planned `context/sce/agent-trace-db.md` measured-contention-evidence summary.
+  - Context synchronization: synced
 
 ## Open questions
+
+- Strict AC8 runs can intermittently record a contention exhaustion when a host-wide stall keeps a lock holder busy for more than about 1.1 s (T07 deviation: 1 of 2000 and 3 of 2000 distinct events in the first strict run on a loaded host). This is the bounded 500/1250 contract working as designed. Should the strict gates run only on a quiet reference host? Or should `contention_deadline_ms` be revisited with production hook-latency data? This plan does not raise budgets on this evidence alone.
 
 - PR #297's branch carries test-only stabilizers for this same contention (`c6cbc94a` retries locked SQLite writes in concurrent repository tests; `94dd0937` stabilizes convergence checks). Once this fix lands, those test-side retries may be redundant and could mask a regression. Should they be revisited in a follow-up after both PRs merge? This plan leaves them alone.
 - Follow-up, not in this plan: proper CLI telemetry / OTEL integration, as a separate future telemetry effort. It would:
