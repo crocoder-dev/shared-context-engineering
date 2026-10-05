@@ -107,8 +107,8 @@ When a default-discovered global or repo-local config file exists but fails JSON
 
 - `policies` must be an object when present and currently allows `attribution_hooks`, `database_retry`, and `bash`.
 - `policies.database_retry` must be an object when present and allows `local_db`, `agent_trace_db`, and `auth_db`. `local_db` and `auth_db` allow only `connection_open` and `query`; `agent_trace_db` additionally allows the Agent Trace-only `busy_timeout_ms` and `contention_deadline_ms` keys.
-- `policies.database_retry.agent_trace_db.busy_timeout_ms` must be an integer in `0..=10000`; omitted values resolve to `500`, and `0` disables the Turso busy handler on Agent Trace DB connections.
-- `policies.database_retry.agent_trace_db.contention_deadline_ms` must be an integer in `0..=30000`; omitted values resolve to `1250`, and `0` means no outer write-contention retry is started. It bounds when another retry may start, not how long a running operation takes.
+- `policies.database_retry.agent_trace_db.busy_timeout_ms` must be an integer in `0..=10000`; omitted values resolve to `1000`, and `0` disables the Turso busy handler on Agent Trace DB connections.
+- `policies.database_retry.agent_trace_db.contention_deadline_ms` must be an integer in `0..=30000`; omitted values resolve to `2250`, and `0` means no outer write-contention retry is started. It bounds when another retry may start, not how long a running operation takes.
 - `busy_timeout_ms` or `contention_deadline_ms` under `local_db`/`auth_db` fails generated-schema validation (`Config file '<path>' failed schema validation against generated schema '<schema>': …`, naming the key); the Rust per-DB key check (`contains unknown key`, allowed keys `connection_open, query`) remains as a backstop. `query.timeout_ms` keeps its existing meaning for every database.
 - `policies.attribution_hooks` must be an object when present and currently allows `enabled`; explicit `enabled: false` remains a valid opt-out alongside the runtime `SCE_ATTRIBUTION_HOOKS_DISABLED` environment opt-out.
 - `policies.bash` must be an object when present and currently allows only `presets` and `custom`.

@@ -41,8 +41,8 @@ const QUERY_RETRY_POLICY: RetryPolicy = RetryPolicy {
 };
 const QUERY_RETRY_HINT: &str = "retry after the database lock clears; if the issue persists, stop other SCE processes using this database and rerun the command";
 const AGENT_TRACE_DB_CONFIG_KEY: &str = "agent_trace_db";
-const AGENT_TRACE_DB_BUSY_TIMEOUT_MS: u64 = 500;
-const AGENT_TRACE_DB_CONTENTION_DEADLINE_MS: u64 = 1_250;
+const AGENT_TRACE_DB_BUSY_TIMEOUT_MS: u64 = 1_000;
+const AGENT_TRACE_DB_CONTENTION_DEADLINE_MS: u64 = 2_250;
 const AGENT_TRACE_DB_WRITE_CONTENTION_MAX_ATTEMPTS: u32 = 2;
 const AGENT_TRACE_DB_WRITE_CONTENTION_BACKOFF_CAP_MS: u64 = 100;
 
@@ -1808,7 +1808,7 @@ mod tests {
             Duration::from_millis(AGENT_TRACE_DB_CONTENTION_DEADLINE_MS)
         );
         assert_eq!(
-            AGENT_TRACE_DB_CONTENTION_DEADLINE_MS, 1_250,
+            AGENT_TRACE_DB_CONTENTION_DEADLINE_MS, 2_250,
             "contention deadline default"
         );
         assert_eq!(resolve_contention_deadline::<TestDbSpec>(), Duration::ZERO);

@@ -76,14 +76,14 @@ local agentTraceDbRetrySchema = new JsonSchema {
       description = "Turso busy timeout in milliseconds applied to every Agent Trace database connection. 0 disables the busy handler."
       minimum = 0
       maximum = 10000
-      default = 500
+      default = 1000
     }
     ["contention_deadline_ms"] = new JsonSchema {
       type = "integer"
       description = "Deadline in milliseconds after which no further Agent Trace write-contention retry is started. It schedules retries and does not interrupt a running operation. 0 starts no outer retry."
       minimum = 0
       maximum = 30000
-      default = 1250
+      default = 2250
     }
   }
 }
