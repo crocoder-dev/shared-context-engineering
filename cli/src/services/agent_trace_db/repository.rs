@@ -76,6 +76,16 @@ pub fn is_valid_source_instance_id(value: &str) -> bool {
     !value.trim().is_empty()
 }
 
+fn ensure_repository_id_matches(stored_repository_id: &str, repository_id: &str) -> Result<()> {
+    if stored_repository_id != repository_id {
+        anyhow::bail!(
+            "repository Agent Trace DB metadata mismatch: stored repository ID \
+             {stored_repository_id} does not match resolved repository ID {repository_id}"
+        );
+    }
+    Ok(())
+}
+
 /// Repository-scoped Agent Trace database configuration.
 pub struct RepositoryAgentTraceDbSpec;
 
@@ -157,6 +167,18 @@ impl RepositoryAgentTraceDb {
         &self,
         repository_id: &str,
     ) -> Result<RepositoryMetadata> {
+        if let Some((stored_repository_id, source_instance_id)) =
+            self.select_repository_metadata_row()?
+        {
+            ensure_repository_id_matches(&stored_repository_id, repository_id)?;
+            if is_valid_source_instance_id(&source_instance_id) {
+                return Ok(RepositoryMetadata {
+                    repository_id: stored_repository_id,
+                    source_instance_id,
+                });
+            }
+        }
+
         self.execute_idempotent_write(INSERT_REPOSITORY_METADATA_SQL, (repository_id,))?;
 
         let Some((stored_repository_id, source_instance_id)) =
@@ -168,12 +190,7 @@ impl RepositoryAgentTraceDb {
             );
         };
 
-        if stored_repository_id != repository_id {
-            anyhow::bail!(
-                "repository Agent Trace DB metadata mismatch: stored repository ID \
-                 {stored_repository_id} does not match resolved repository ID {repository_id}"
-            );
-        }
+        ensure_repository_id_matches(&stored_repository_id, repository_id)?;
 
         if is_valid_source_instance_id(&source_instance_id) {
             return Ok(RepositoryMetadata {
@@ -902,6 +919,95 @@ mod tests {
                  source-instance ID"
             );
         }
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn initialized_repository_metadata_hook_runtime_open_issues_no_writes() {
+        let db_path = unique_test_db_path("metadata-hook-open-no-writes");
+        let repository_id = "a".repeat(64);
+
+        let setup = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let (first, first_writes) = crate::services::db::count_write_statements(|| {
+            setup.verify_or_initialize_repository_metadata(&repository_id)
+        });
+        let first = first.expect("first metadata initialization should succeed");
+        assert!(
+            first_writes > 0,
+            "first initialization must seed and claim metadata"
+        );
+        drop(setup);
+
+        let (reopened, writes) = crate::services::db::count_write_statements(|| {
+            let hook = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)?;
+            hook.ensure_schema_ready_for_hooks()?;
+            hook.verify_or_initialize_repository_metadata(&repository_id)
+        });
+        let reopened = reopened.expect("initialized hook-runtime open should succeed");
+        assert_eq!(
+            writes, 0,
+            "initialized hook-runtime open must issue no writes"
+        );
+        assert_eq!(reopened, first);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn mismatched_repository_metadata_errors_without_writes() {
+        let db_path = unique_test_db_path("metadata-mismatch-no-writes");
+        let stored_repository_id = "a".repeat(64);
+        let other_repository_id = "b".repeat(64);
+
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        db.verify_or_initialize_repository_metadata(&stored_repository_id)
+            .expect("first metadata initialization should succeed");
+
+        let (result, writes) = crate::services::db::count_write_statements(|| {
+            db.verify_or_initialize_repository_metadata(&other_repository_id)
+        });
+        let message = result
+            .expect_err("mismatched repository ID should fail validation")
+            .to_string();
+        assert!(
+            message.contains("metadata mismatch"),
+            "unexpected error: {message}"
+        );
+        assert_eq!(writes, 0, "a rejected mismatch must issue no writes");
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn repository_metadata_with_empty_source_instance_id_is_claimed_once() {
+        let db_path = unique_test_db_path("metadata-empty-source-instance");
+        let repository_id = "a".repeat(64);
+
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        db.verify_or_initialize_repository_metadata(&repository_id)
+            .expect("first metadata initialization should succeed");
+        db.execute(
+            "UPDATE repository_metadata SET source_instance_id = '' WHERE id = 1",
+            (),
+        )
+        .expect("source-instance ID should reset to the empty placeholder");
+
+        let claimed = db
+            .verify_or_initialize_repository_metadata(&repository_id)
+            .expect("an empty source-instance ID should be claimed");
+        assert_eq!(claimed.repository_id, repository_id);
+        assert!(is_valid_source_instance_id(&claimed.source_instance_id));
+
+        let (reopened, writes) = crate::services::db::count_write_statements(|| {
+            db.verify_or_initialize_repository_metadata(&repository_id)
+        });
+        assert_eq!(
+            reopened.expect("claimed metadata should validate"),
+            claimed,
+            "a claimed source-instance ID must not be overwritten"
+        );
+        assert_eq!(writes, 0);
 
         remove_test_db(&db_path);
     }

@@ -516,7 +516,7 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
   - Context impact: localized observability change. The exhaustion error shape and the `sce.agent_trace_db.contention_exhausted` event affect `context/sce/shared-turso-db.md` and `context/sce/agent-trace-db.md` (the contention contract: what gets reported on exhaustion and where it is visible).
   - Context synchronization: synced
 
-- [ ] T06: `Make hook-runtime repository metadata open read-only when initialized` (status:todo)
+- [x] T06: `Make hook-runtime repository metadata open read-only when initialized` (status:done)
   - Task ID: T06
   - Scope: In:
     - restructure `verify_or_initialize_repository_metadata` to `SELECT` first: when the row exists with a matching `repository_id` and a valid `source_instance_id`, return with no write; a repository-ID mismatch stays an error;
@@ -532,7 +532,34 @@ The investigation suite `cli/src/services/agent_trace_db/lock_contention_tests.r
   - Dependencies: T01
   - Done when: AC5 holds; all existing metadata tests pass.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml repository_metadata`; `... agent_trace_db`; `... agent_trace_storage`.
-  - Context synchronization: pending
+  - Completed: 2026-10-05
+  - Files changed:
+    - `cli/src/services/agent_trace_db/repository.rs`
+    - `cli/src/services/agent_trace_db/lock_contention_tests.rs`
+    - `cli/src/services/db/mod.rs`
+    - `context/plans/agent-trace-db-write-contention.md` (this record)
+  - Result:
+    - `verify_or_initialize_repository_metadata` now reads the metadata row first. If the row exists, a `repository_id` mismatch errors with no write. If the `source_instance_id` is valid, the method returns with no write.
+    - Only a missing row or an empty/invalid `source_instance_id` falls through to the unchanged path: `INSERT … ON CONFLICT DO NOTHING` → re-read → mismatch check → atomic claim → re-read.
+    - The mismatch check moved into a private `ensure_repository_id_matches` helper. The error text is unchanged.
+    - `db/mod.rs` gains a `#[cfg(test)]` `count_write_statements` seam that mirrors `count_read_statements`. It counts once per logical call, before any retry wrapper, in `TursoDb::execute`, `execute_idempotent_write`, `execute_transactional_insert_pair_if_absent` and `execute_transactional_cas_batch`. When `execute_idempotent_write` falls back to `execute`, the call is still counted once. `EncryptedTursoDb` is not instrumented.
+    - New tests in `repository.rs`:
+      - `initialized_repository_metadata_hook_runtime_open_issues_no_writes`: a hook-runtime open (`open_for_hooks_without_migrations_at` → `ensure_schema_ready_for_hooks` → verify) issues 0 writes and returns the original metadata; the first initialization issues more than 0 writes.
+      - `mismatched_repository_metadata_errors_without_writes`
+      - `repository_metadata_with_empty_source_instance_id_is_claimed_once`: an empty placeholder is claimed, and the claimed ID is not overwritten afterwards (0 writes on the next open).
+    - The existing tests still pass: stable ID across reopen, mismatch, concurrent convergence, and baseline-only migration.
+    - `hook_open_metadata_write_exhausts_retry_budget_while_write_lock_is_held` became `initialized_hook_open_succeeds_while_write_lock_is_held`. With another connection holding `BEGIN IMMEDIATE` for 4000 ms, the schema check and the metadata open both succeed, return the initialized metadata, issue 0 writes, and finish before the lock is released (observed: 1 ms).
+    - Per user instruction, the generated code carries no new comments.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml repository_metadata`: passed (5 passed).
+    - `... agent_trace_db`: passed (75 passed, 3 ignored).
+    - `... agent_trace_storage`: passed (14 passed).
+    - Additional:
+      - `... initialized_hook_open_succeeds -- --nocapture`: passed (`writes=0 after 1ms` under a 4000 ms lock).
+      - `... concurrent_initialization_converges`: passed.
+      - `nix build .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt`: passed.
+  - Context impact: localized behavior change. Opening an already-initialized repository Agent Trace DB is now read-only, so it no longer contends for the write lock; this affects `context/sce/agent-trace-db.md` (hook-runtime read-only metadata fast path). There is no config, schema or public CLI contract change.
+  - Context synchronization: synced
 
 - [ ] T07: `Recalibrate the lock-budget boundary test to the new contention contract` (status:todo)
   - Task ID: T07

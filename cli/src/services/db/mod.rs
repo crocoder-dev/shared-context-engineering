@@ -768,6 +768,24 @@ pub(crate) fn count_read_statements<T>(body: impl FnOnce() -> T) -> (T, usize) {
 }
 
 #[cfg(test)]
+thread_local! {
+    static WRITE_STATEMENTS_ISSUED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn note_write_statement_issued() {
+    WRITE_STATEMENTS_ISSUED.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(test)]
+pub(crate) fn count_write_statements<T>(body: impl FnOnce() -> T) -> (T, usize) {
+    WRITE_STATEMENTS_ISSUED.with(|count| count.set(0));
+    let result = body();
+    let issued = WRITE_STATEMENTS_ISSUED.with(std::cell::Cell::get);
+    (result, issued)
+}
+
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct WriteContentionCounts {
     pub(crate) attempts: u32,
@@ -929,6 +947,9 @@ impl<M: DbSpec> TursoDb<M> {
         })?;
         let operation_name = format!("execute {} database query", M::db_name());
 
+        #[cfg(test)]
+        note_write_statement_issued();
+
         run_with_retry_sync(
             resolve_query_retry_policy::<M>(),
             &operation_name,
@@ -957,6 +978,9 @@ impl<M: DbSpec> TursoDb<M> {
         let params = turso::params::IntoParams::into_params(params)
             .map_err(|e| anyhow::anyhow!("{db_name} parameter conversion failed: {sql}: {e}"))?;
         let operation_name = format!("execute {db_name} database query");
+
+        #[cfg(test)]
+        note_write_statement_issued();
 
         run_with_write_contention_retry(policy, &operation_name, QUERY_RETRY_HINT, |_| {
             block_on_isolated(&self.core.runtime, async {
@@ -1099,6 +1123,9 @@ impl<M: DbSpec> TursoDb<M> {
             anyhow::anyhow!("{db_name} parameter conversion failed: {second_sql}: {e}")
         })?;
 
+        #[cfg(test)]
+        note_write_statement_issued();
+
         let run_attempt = || {
             block_on_isolated(&self.core.runtime, async {
                 let tx = turso::transaction::Transaction::new_unchecked(
@@ -1216,6 +1243,9 @@ impl<M: DbSpec> TursoDb<M> {
         statements: &[TransactionStatement<'_>],
     ) -> Result<bool> {
         let db_name = M::db_name();
+
+        #[cfg(test)]
+        note_write_statement_issued();
 
         let run_attempt = || {
             block_on_isolated(&self.core.runtime, async {

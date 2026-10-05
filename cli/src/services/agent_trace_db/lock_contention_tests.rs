@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::Result;
 
-use crate::services::db::count_write_contention;
+use crate::services::db::{count_write_contention, count_write_statements};
 
 use super::repository::RepositoryAgentTraceDb;
 use super::{InsertMessageInsert, InsertPartInsert, MessageRole, PartType};
@@ -948,11 +948,11 @@ fn concurrent_real_codex_hook_processes_persist_every_distinct_event() {
 }
 
 #[test]
-fn hook_open_metadata_write_exhausts_retry_budget_while_write_lock_is_held() {
+fn initialized_hook_open_succeeds_while_write_lock_is_held() {
     let db_path = unique_test_db_path("hook-open-metadata");
     create_repository_db(&db_path);
     let repository_id = "lock-contention-repository";
-    open_production_connection(&db_path)
+    let initialized = open_production_connection(&db_path)
         .verify_or_initialize_repository_metadata(repository_id)
         .expect("metadata should initialize before contention");
 
@@ -976,14 +976,18 @@ fn hook_open_metadata_write_exhausts_retry_budget_while_write_lock_is_held() {
 
     let hook = open_production_connection(&db_path);
     lock_acquired.wait();
-    let schema_ready = hook.ensure_schema_ready_for_hooks();
     let started_at = Instant::now();
-    let metadata = hook.verify_or_initialize_repository_metadata(repository_id);
+    let ((schema_ready, metadata), writes) = count_write_statements(|| {
+        (
+            hook.ensure_schema_ready_for_hooks(),
+            hook.verify_or_initialize_repository_metadata(repository_id),
+        )
+    });
     let elapsed = started_at.elapsed();
     holder.join().expect("holder thread should not panic");
 
     eprintln!(
-        "\nhook-open under a {}ms write lock: schema_ready={:?} metadata={} after {}ms",
+        "\nhook-open under a {}ms write lock: schema_ready={:?} metadata={} writes={writes} after {}ms",
         hold.as_millis(),
         schema_ready.as_ref().map_err(|error| format!("{error:#}")),
         match &metadata {
@@ -997,8 +1001,13 @@ fn hook_open_metadata_write_exhausts_retry_budget_while_write_lock_is_held() {
         schema_ready.is_ok(),
         "the read-only schema check should not need the write lock"
     );
-    let error = metadata.expect_err("the no-op metadata upsert still needs the write lock");
-    assert!(format!("{error:#}").contains(DATABASE_LOCKED_ERROR));
+    let metadata = metadata.expect("an initialized hook open should not need the write lock");
+    assert_eq!(metadata, initialized);
+    assert_eq!(writes, 0, "an initialized hook open must issue no writes");
+    assert!(
+        elapsed < hold,
+        "the initialized hook open must not wait for the held write lock"
+    );
     drop(hook);
     remove_test_db(&db_path);
 }
