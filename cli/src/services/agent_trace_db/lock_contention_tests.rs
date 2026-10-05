@@ -1,14 +1,20 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Barrier},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Barrier,
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Result;
 
-use crate::services::db::{count_write_contention, count_write_statements, WriteContentionCounts};
+use crate::services::db::{
+    count_write_contention, count_write_statements, record_write_contention_timeline,
+    WriteContentionCounts, WriteContentionTimelineEvent,
+};
 
 use super::repository::RepositoryAgentTraceDb;
 use super::{InsertMessageInsert, InsertPartInsert, MessageRole, PartType};
@@ -26,6 +32,98 @@ const STRICT_ENV: &str = "SCE_LOCK_CONTENTION_STRICT";
 const DEFAULT_ROUNDS: usize = 200;
 const DEFAULT_DUPLICATE_WRITER_COUNTS: &[usize] = &[2, 3, 4, 8];
 const DEFAULT_DISTINCT_WRITER_COUNTS: &[usize] = &[2, 3, 4, 8];
+const MEASUREMENT_PREFIX: &str = "SCE_MEAS";
+const SLOW_OPERATION_MS: f64 = 500.0;
+const STALL_MONITOR_TICK: Duration = Duration::from_millis(5);
+const STALL_MONITOR_REPORT_MS: f64 = 50.0;
+
+fn unix_ms_now() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be after Unix epoch")
+        .as_secs_f64()
+        * 1_000.0
+}
+
+fn millis(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1_000.0
+}
+
+fn emit_measurement(record: &serde_json::Value) {
+    eprintln!("{MEASUREMENT_PREFIX} {record}");
+}
+
+fn timeline_json(
+    started_at: Instant,
+    timeline: &[(Instant, WriteContentionTimelineEvent)],
+) -> serde_json::Value {
+    serde_json::Value::Array(
+        timeline
+            .iter()
+            .map(|(at, event)| {
+                let at_ms = millis(at.saturating_duration_since(started_at));
+                match event {
+                    WriteContentionTimelineEvent::AttemptStart => {
+                        serde_json::json!({"event": "attempt_start", "at_ms": at_ms})
+                    }
+                    WriteContentionTimelineEvent::AttemptEnd => {
+                        serde_json::json!({"event": "attempt_end", "at_ms": at_ms})
+                    }
+                    WriteContentionTimelineEvent::BackoffRequested(backoff) => serde_json::json!({
+                        "event": "backoff_requested",
+                        "at_ms": at_ms,
+                        "backoff_ms": millis(*backoff),
+                    }),
+                    WriteContentionTimelineEvent::BackoffSlept => {
+                        serde_json::json!({"event": "backoff_slept", "at_ms": at_ms})
+                    }
+                }
+            })
+            .collect(),
+    )
+}
+
+struct StallMonitor {
+    stop: Arc<AtomicBool>,
+    handle: thread::JoinHandle<Vec<(f64, f64)>>,
+}
+
+impl StallMonitor {
+    fn start() -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = {
+            let stop = Arc::clone(&stop);
+            thread::spawn(move || {
+                let mut gaps = Vec::new();
+                while !stop.load(Ordering::Relaxed) {
+                    let before = Instant::now();
+                    thread::sleep(STALL_MONITOR_TICK);
+                    let late_ms = millis(before.elapsed()) - millis(STALL_MONITOR_TICK);
+                    if late_ms >= STALL_MONITOR_REPORT_MS {
+                        gaps.push((unix_ms_now(), late_ms));
+                    }
+                }
+                gaps
+            })
+        };
+        Self { stop, handle }
+    }
+
+    fn finish(self) -> Vec<(f64, f64)> {
+        self.stop.store(true, Ordering::Relaxed);
+        self.handle.join().expect("stall monitor should not panic")
+    }
+}
+
+fn stall_gaps_json(gaps: &[(f64, f64)]) -> serde_json::Value {
+    serde_json::Value::Array(
+        gaps.iter()
+            .map(|(ended_unix_ms, late_ms)| {
+                serde_json::json!({"ended_unix_ms": ended_unix_ms, "late_ms": late_ms})
+            })
+            .collect(),
+    )
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum WriteOutcome {
@@ -154,6 +252,7 @@ struct LockBoundarySample {
     messages: i64,
     parts: i64,
     contention: WriteContentionCounts,
+    timeline: serde_json::Value,
 }
 
 fn insert_while_write_lock_is_held(hold: Duration) -> LockBoundarySample {
@@ -182,12 +281,14 @@ fn insert_while_write_lock_is_held(hold: Duration) -> LockBoundarySample {
 
     let writer = open_production_connection(&db_path);
     lock_acquired.wait();
-    let started_at = Instant::now();
     let (message, part) = conversation_text_event(session_id, "cx:turn-1:user");
-    let (result, contention) =
-        count_write_contention(|| writer.insert_conversation_text_event(message, part));
-    let outcome = WriteOutcome::from_result(result);
+    let started_at = Instant::now();
+    let ((result, contention), timeline) = record_write_contention_timeline(|| {
+        count_write_contention(|| writer.insert_conversation_text_event(message, part))
+    });
     let elapsed = started_at.elapsed();
+    let outcome = WriteOutcome::from_result(result);
+    let timeline = timeline_json(started_at, &timeline);
 
     let holder_released_after = holder.join().expect("holder thread should not panic");
 
@@ -205,6 +306,7 @@ fn insert_while_write_lock_is_held(hold: Duration) -> LockBoundarySample {
         messages,
         parts,
         contention,
+        timeline,
     }
 }
 
@@ -237,6 +339,23 @@ fn lock_budget_boundary_characterizes_single_writer_blocked_by_begin_immediate_h
         if let WriteOutcome::Locked(message) | WriteOutcome::Other(message) = &sample.outcome {
             eprintln!("        error: {message}");
         }
+        emit_measurement(&serde_json::json!({
+            "kind": "boundary_sample",
+            "hold_ms": sample.hold.as_millis(),
+            "outcome": sample.outcome.label(),
+            "error": match &sample.outcome {
+                WriteOutcome::Locked(message) | WriteOutcome::Other(message) => Some(message),
+                WriteOutcome::Inserted | WriteOutcome::AlreadyPresent => None,
+            },
+            "elapsed_ms": millis(sample.elapsed),
+            "holder_released_ms": millis(sample.holder_released_after),
+            "attempts": sample.contention.attempts,
+            "outer_retries": sample.contention.outer_retries,
+            "exhaustions": sample.contention.exhaustions,
+            "messages": sample.messages,
+            "parts": sample.parts,
+            "timeline": sample.timeline,
+        }));
     }
 
     for sample in &samples {
@@ -373,7 +492,17 @@ fn lock_contention_latency_percentiles_use_nearest_rank() {
     assert_eq!(empty.max, Duration::ZERO);
 }
 
+struct SlowOperation {
+    writer_index: usize,
+    started_unix_ms: f64,
+    elapsed: Duration,
+    outcome: WriteOutcome,
+    contention: WriteContentionCounts,
+    timeline: serde_json::Value,
+}
+
 struct RoundResult {
+    slow_operations: Vec<SlowOperation>,
     outcomes: Vec<WriteOutcome>,
     latencies: Vec<Duration>,
     contention: Vec<WriteContentionCounts>,
@@ -403,24 +532,35 @@ fn run_concurrent_round(
                 };
                 let (message, part) = conversation_text_event(&session_id, &message_id);
                 start_together.wait();
+                let started_unix_ms = unix_ms_now();
                 let started_at = Instant::now();
-                let (result, contention) =
-                    count_write_contention(|| db.insert_conversation_text_event(message, part));
-                (
-                    WriteOutcome::from_result(result),
-                    started_at.elapsed(),
+                let ((result, contention), timeline) = record_write_contention_timeline(|| {
+                    count_write_contention(|| db.insert_conversation_text_event(message, part))
+                });
+                let elapsed = started_at.elapsed();
+                let outcome = WriteOutcome::from_result(result);
+                let slow = (millis(elapsed) >= SLOW_OPERATION_MS).then(|| SlowOperation {
+                    writer_index,
+                    started_unix_ms,
+                    elapsed,
+                    outcome: outcome.clone(),
                     contention,
-                )
+                    timeline: timeline_json(started_at, &timeline),
+                });
+                (outcome, elapsed, contention, slow)
             })
         })
         .collect();
 
+    let mut slow_operations = Vec::new();
     let mut outcomes = Vec::with_capacity(writers);
     let mut latencies = Vec::with_capacity(writers);
     let mut contention = Vec::with_capacity(writers);
     let mut max_elapsed = Duration::ZERO;
     for handle in handles {
-        let (outcome, elapsed, counts) = handle.join().expect("writer thread should not panic");
+        let (outcome, elapsed, counts, slow) =
+            handle.join().expect("writer thread should not panic");
+        slow_operations.extend(slow);
         outcomes.push(outcome);
         latencies.push(elapsed);
         contention.push(counts);
@@ -429,6 +569,7 @@ fn run_concurrent_round(
 
     let verifier = open_production_connection(db_path);
     RoundResult {
+        slow_operations,
         outcomes,
         latencies,
         contention,
@@ -449,6 +590,9 @@ struct LevelSummary {
     lock_errors: usize,
     other_errors: usize,
     lost_events: i64,
+    orphan_rows: i64,
+    duplicate_rows: i64,
+    persisted_rows: i64,
     attempts: u64,
     outer_retries: u64,
     exhaustions: u64,
@@ -464,6 +608,7 @@ impl LevelSummary {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_contention_level(writers: usize, rounds: usize, distinct_events: bool) -> LevelSummary {
     let mode = if distinct_events {
         "distinct"
@@ -479,9 +624,33 @@ fn run_contention_level(writers: usize, rounds: usize, distinct_events: bool) ->
         ..LevelSummary::default()
     };
 
+    let monitor = StallMonitor::start();
+    let level_started_unix_ms = unix_ms_now();
     for round in 0..rounds {
         let session_id = format!("cx_{mode}-{writers}w-round-{round}");
         let result = run_concurrent_round(&db_path, writers, &session_id, distinct_events);
+
+        for slow in &result.slow_operations {
+            emit_measurement(&serde_json::json!({
+                "kind": "slow_operation",
+                "mode": mode,
+                "writers": writers,
+                "round": round,
+                "writer_index": slow.writer_index,
+                "started_unix_ms": slow.started_unix_ms,
+                "elapsed_ms": millis(slow.elapsed),
+                "outcome": slow.outcome.label(),
+                "attempts": slow.contention.attempts,
+                "outer_retries": slow.contention.outer_retries,
+                "exhaustions": slow.contention.exhaustions,
+                "timeline": slow.timeline,
+            }));
+        }
+        summary.orphan_rows += (result.messages - result.parts).abs();
+        let expected_max_rows = if distinct_events { writers } else { 1 };
+        summary.duplicate_rows +=
+            (result.messages - i64::try_from(expected_max_rows).expect("count fits i64")).max(0);
+        summary.persisted_rows += result.messages;
 
         assert_eq!(
             result.messages, result.parts,
@@ -567,6 +736,37 @@ fn run_contention_level(writers: usize, rounds: usize, distinct_events: bool) ->
         summary.max_elapsed = summary.max_elapsed.max(result.max_elapsed);
         summary.latencies.extend(result.latencies);
     }
+
+    let stall_gaps = monitor.finish();
+    let latency = latency_percentiles(&summary.latencies);
+    emit_measurement(&serde_json::json!({
+        "kind": "concurrent_level",
+        "mode": mode,
+        "writers": writers,
+        "rounds": rounds,
+        "started_unix_ms": level_started_unix_ms,
+        "ended_unix_ms": unix_ms_now(),
+        "total_writes": writers * rounds,
+        "expected_rows": if distinct_events { writers * rounds } else { rounds },
+        "persisted_rows": summary.persisted_rows,
+        "lost_events": summary.lost_events,
+        "lock_errors": summary.lock_errors,
+        "other_errors": summary.other_errors,
+        "orphan_rows": summary.orphan_rows,
+        "duplicate_rows": summary.duplicate_rows,
+        "inserted": summary.inserted,
+        "already_present": summary.already_present,
+        "attempts": summary.attempts,
+        "outer_retries": summary.outer_retries,
+        "exhaustions": summary.exhaustions,
+        "p50_ms": millis(latency.p50),
+        "p95_ms": millis(latency.p95),
+        "p99_ms": millis(latency.p99),
+        "max_ms": millis(latency.max),
+        "first_lock_error": summary.first_lock_error,
+        "first_other_error": summary.first_other_error,
+        "stall_gaps": stall_gaps_json(&stall_gaps),
+    }));
 
     remove_test_db(&db_path);
     summary
@@ -777,6 +977,13 @@ fn lock_contention_hook_level_assertions_enforce_strict_loss_and_exit_status() {
 const DEFAULT_PROCESS_ROUNDS: usize = 50;
 const DEFAULT_PROCESS_WRITER_COUNTS: &[usize] = &[2, 3, 4];
 
+struct HookRound {
+    nonzero_exits: usize,
+    stderr_lines: Vec<String>,
+    latencies: Vec<Duration>,
+    slow_processes: Vec<(usize, f64, Duration)>,
+}
+
 struct HookProcessHarness {
     sce: PathBuf,
     work: PathBuf,
@@ -867,7 +1074,7 @@ impl HookProcessHarness {
         harness
     }
 
-    fn run_round(&self, writers: usize, session_id: &str) -> (usize, Vec<String>, Vec<Duration>) {
+    fn run_round(&self, writers: usize, session_id: &str) -> HookRound {
         use std::io::Write;
         use std::process::Stdio;
 
@@ -899,6 +1106,7 @@ impl HookProcessHarness {
                 .to_string();
                 thread::spawn(move || {
                     release.wait();
+                    let started_unix_ms = unix_ms_now();
                     let started_at = Instant::now();
                     stdin
                         .write_all(payload.as_bytes())
@@ -907,7 +1115,7 @@ impl HookProcessHarness {
                     let output = child
                         .wait_with_output()
                         .expect("hook process should finish");
-                    (output, started_at.elapsed())
+                    (output, started_unix_ms, started_at.elapsed())
                 })
             })
             .collect();
@@ -915,9 +1123,14 @@ impl HookProcessHarness {
         let mut nonzero_exits = 0;
         let mut stderr_lines = Vec::new();
         let mut latencies = Vec::with_capacity(writers);
-        for feeder in feeders {
-            let (output, elapsed) = feeder.join().expect("feeder thread should not panic");
+        let mut slow_processes = Vec::new();
+        for (writer_index, feeder) in feeders.into_iter().enumerate() {
+            let (output, started_unix_ms, elapsed) =
+                feeder.join().expect("feeder thread should not panic");
             latencies.push(elapsed);
+            if millis(elapsed) >= SLOW_OPERATION_MS {
+                slow_processes.push((writer_index, started_unix_ms, elapsed));
+            }
             if !output.status.success() {
                 nonzero_exits += 1;
             }
@@ -926,12 +1139,18 @@ impl HookProcessHarness {
                 stderr_lines.push(stderr);
             }
         }
-        (nonzero_exits, stderr_lines, latencies)
+        HookRound {
+            nonzero_exits,
+            stderr_lines,
+            latencies,
+            slow_processes,
+        }
     }
 }
 
 #[test]
 #[ignore = "end-to-end hook-process lock contention; set SCE_BIN and run with --ignored --nocapture"]
+#[allow(clippy::too_many_lines)]
 fn concurrent_real_codex_hook_processes_persist_every_distinct_event() {
     let Some(sce) = std::env::var_os(SCE_BIN_ENV).map(PathBuf::from) else {
         eprintln!("{SCE_BIN_ENV} is not set; skipping end-to-end hook-process reproduction");
@@ -952,11 +1171,36 @@ fn concurrent_real_codex_hook_processes_persist_every_distinct_event() {
         let mut nonzero_exits = 0;
         let mut stderr_samples = Vec::new();
         let mut latencies = Vec::with_capacity(writers * rounds);
+        let mut fail_open_lost = 0;
+        let monitor = StallMonitor::start();
+        let level_started_unix_ms = unix_ms_now();
 
         for round in 0..rounds {
             let session_id = format!("lock-contention-{writers}w-r{round}");
-            let (round_nonzero, round_stderr, round_latencies) =
-                harness.run_round(writers, &session_id);
+            let HookRound {
+                nonzero_exits: round_nonzero,
+                stderr_lines: round_stderr,
+                latencies: round_latencies,
+                slow_processes,
+            } = harness.run_round(writers, &session_id);
+            for (writer_index, started_unix_ms, elapsed) in slow_processes {
+                emit_measurement(&serde_json::json!({
+                    "kind": "slow_hook_process",
+                    "writers": writers,
+                    "round": round,
+                    "writer_index": writer_index,
+                    "started_unix_ms": started_unix_ms,
+                    "elapsed_ms": millis(elapsed),
+                }));
+            }
+            for stderr in &round_stderr {
+                emit_measurement(&serde_json::json!({
+                    "kind": "hook_stderr",
+                    "writers": writers,
+                    "round": round,
+                    "stderr": stderr,
+                }));
+            }
             nonzero_exits += round_nonzero;
             stderr_samples.extend(round_stderr);
             latencies.extend(round_latencies);
@@ -968,6 +1212,19 @@ fn concurrent_real_codex_hook_processes_persist_every_distinct_event() {
             assert_eq!(messages, parts, "hook round left orphaned rows");
             if usize::try_from(messages).expect("count fits usize") != writers {
                 rounds_with_loss += 1;
+                let round_lost = i64::try_from(writers).expect("count fits i64") - messages;
+                let round_fail_open =
+                    (round_lost - i64::try_from(round_nonzero).expect("count fits i64")).max(0);
+                fail_open_lost += round_fail_open;
+                emit_measurement(&serde_json::json!({
+                    "kind": "hook_round_loss",
+                    "writers": writers,
+                    "round": round,
+                    "lost": round_lost,
+                    "nonzero_exits": round_nonzero,
+                    "fail_open_lost": round_fail_open,
+                    "ended_unix_ms": unix_ms_now(),
+                }));
             }
             persisted_messages += messages;
             persisted_parts += parts;
@@ -995,6 +1252,28 @@ fn concurrent_real_codex_hook_processes_persist_every_distinct_event() {
         if let Some(sample) = stderr_samples.first() {
             eprintln!("        first stderr: {sample}");
         }
+        let stall_gaps = monitor.finish();
+        emit_measurement(&serde_json::json!({
+            "kind": "hook_level",
+            "writers": writers,
+            "rounds": rounds,
+            "started_unix_ms": level_started_unix_ms,
+            "ended_unix_ms": unix_ms_now(),
+            "expected": expected,
+            "persisted_messages": persisted_messages,
+            "persisted_parts": persisted_parts,
+            "lost": lost,
+            "fail_open_lost": fail_open_lost,
+            "rounds_with_loss": rounds_with_loss,
+            "nonzero_exits": nonzero_exits,
+            "stderr_outputs": stderr_samples.len(),
+            "stderr_lines": stderr_samples.iter().map(|sample| sample.lines().count()).sum::<usize>(),
+            "p50_ms": millis(latency.p50),
+            "p95_ms": millis(latency.p95),
+            "p99_ms": millis(latency.p99),
+            "max_ms": millis(latency.max),
+            "stall_gaps": stall_gaps_json(&stall_gaps),
+        }));
         fs::remove_dir_all(&harness.work).expect("hook harness dir should be removed");
         levels.push(HookLevelSummary {
             writers,
