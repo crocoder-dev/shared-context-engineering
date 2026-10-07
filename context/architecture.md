@@ -170,15 +170,12 @@ The repository includes a new placeholder Rust binary crate at `cli/`.
 
 ## Application execution runtime
 
-PR1 directly awaits static command execution under one application-level
-multi-thread Tokio runtime. Parsing, rendering and lifecycle providers remain
-synchronous; auth/sync own no command runtime. This boundary does not promise
-one runtime object process-wide. See the [runtime ownership decision](decisions/2026-10-07-application-owned-async-command-runtime.md).
+PR1 directly awaits static command execution under one application-level multi-thread Tokio runtime. Parsing, rendering and lifecycle providers remain synchronous; auth/sync own no command runtime. This boundary does not promise one runtime object process-wide. See the [runtime ownership decision](decisions/2026-10-07-application-owned-async-command-runtime.md) and the [command blocking-scope inventory](cli/cli-command-surface.md#application-runtime-dispatch).
 
 ```mermaid
 flowchart TD
     A[Application Tokio multi-thread runtime] --> B[Awaited static command dispatch]
-    B --> C[Async auth and sync HTTP]
+    B --> C[Awaited auth, sync and control-plane HTTP]
     C --> D[Awaited credential spawn_blocking]
     B --> E[Direct synchronous commands]
     B --> F[DB-capable Setup, Doctor and Hooks blocking scopes]
@@ -188,10 +185,14 @@ flowchart TD
     G --> H
 ```
 
-Sync retains borrowed storage across HTTP awaits and drops its owning guard
-before returning; guard Drop also handles error, cancellation and unwind.
-PR2 is future work: async Turso removes DB-owned runtimes, `build_current_thread_runtime`,
-`block_on_isolated` and the DB-related blocking scopes together.
+Sync retains borrowed storage across HTTP awaits and drops its owning guard before returning; guard Drop also handles error, cancellation and unwind. PR2 is future work: async Turso removes DB-owned runtimes, `build_current_thread_runtime`, `block_on_isolated` and the DB-related `block_in_place` scopes together.
+
+```mermaid
+flowchart TD
+    A[PR2 future application Tokio runtime] --> B[Awaited static command dispatch]
+    B --> C[Async auth, sync and HTTP]
+    B --> D[Async Turso without DB-owned runtime or bridge]
+```
 
 ## Build / devShell / CI performance (flake-speedup)
 

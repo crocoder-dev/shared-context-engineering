@@ -14,6 +14,22 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 - Service domains: `cli/src/services/{agent_trace,agent_trace_db,auth,auth_command,auth_db,completion,config,db,default_paths,hooks,local_db,observability,output_format,resilience,security,setup,style,sync,token_storage,version}` plus the split doctor module at `cli/src/services/doctor/{mod,command,inspect,render,fixes,types}.rs`; service-owned `command.rs` files own command payload structs for help/version/completion/auth/config/setup/doctor/hooks/policy/sync, and `cli/src/services/command_registry.rs` owns the static `RuntimeCommand` enum that dispatches them
 - Service lifecycle: `cli/src/services/lifecycle.rs` defines lifecycle-owned health/setup result types, the `ServiceLifecycle` trait with `diagnose`, `fix`, and `setup` methods for concrete providers, and the static `LifecycleProvider` enum used by `doctor`/`setup` to dispatch across `config`, `local_db`, `auth_db`, `agent_trace_db`, and `hooks` without boxed provider aggregation
 
+## Application runtime dispatch
+
+`RuntimeCommand::execute_with_stderr` directly awaits Auth and Sync. The temporary `block_in_place` scopes protect construction and destruction of legacy DB-owned runtimes; ordinary filesystem, Git, parsing and rendering work alone does not require a scope. Lifecycle providers and synchronous command APIs remain synchronous.
+
+| Path | Execution and lifetime reason |
+| --- | --- |
+| Help, HelpText, Version, Completion, Policy, Config Show/Validate | Direct synchronous execution; no runtime-owning DB resources. |
+| Setup | Context-only requests execute directly. Other requests execute inside one blocking scope because LocalDb/AuthDb/AgentTraceDb lifecycle setup constructs and destroys DB adapters. |
+| Doctor Diagnose/Fix | One blocking scope around execution; AgentTraceDb diagnosis opens a local DB even without repair. |
+| Hooks PreCommit/PostRewrite | Direct synchronous execution; these paths do not own DB resources. |
+| Hooks CommitMsg, PostCommit, DiffTrace, ConversationTrace, Codex, ClaudeModelState, MutationScope, ClaudeMutationScope, CodexMutationScope, OpenCodeMutationScope, PiMutationScope, ExternalMutationGuard | One blocking scope around each invocation, including its error cleanup; these paths can open or persist through runtime-backed DB adapters. |
+| Sync storage construction | One blocking scope around `resolve_agent_trace_storage`, including partially constructed resources on failure. |
+| Sync storage destruction | A concrete `SyncStorageGuard` owns storage across HTTP awaits. Its Drop takes and destroys storage inside one blocking scope on completion, error, cancellation or unwind; normal execution explicitly drops the guard before returning. |
+
+Auth's direct credential load/save/delete and control-plane credential load/save use awaited owned `spawn_blocking` closures. Refresh and HTTP stay async. Hooks finish foreground persistence before returning; the existing post-commit auto-sync child remains detached. See [application execution runtime](../architecture.md#application-execution-runtime), [capability borrowing](capability-traits.md), and [sync](sync-command.md).
+
 ## Onboarding documentation
 
 - `sce --help` includes a slim top-level command list and quick-start examples for `setup`, `doctor`, and `version`; `auth` is visible while `hooks` remains implemented in code but hidden from `sce`, `sce help`, and `sce --help` for this phase.
@@ -21,7 +37,7 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 - `cli/src/app.rs` now owns an explicit startup lifecycle (`perform_dependency_check` -> `build_startup_context` -> `initialize_runtime` -> `run_command_lifecycle` -> `render_run_outcome`) with command execution directly awaited under the application-level multi-thread Tokio runtime before final stream rendering. See [application execution runtime](../architecture.md#application-execution-runtime) for runtime ownership and temporary DB lifetime scopes.
 - `cli/src/app.rs` also routes clap output through an internal static `RuntimeCommand` enum defined in `cli/src/services/command_registry.rs`, so parse-time conversion and run-time command execution stay separated while avoiding boxed command trait objects.
 - Command-local help is available for implemented commands including bare `sce auth`, `sce auth --help`, `sce auth login --help`, `sce setup --help`, `sce doctor --help`, and `sce completion --help`; when stdout color is enabled those help payloads now reuse the shared heading/command/placeholder styling pass while non-TTY and `NO_COLOR` flows stay plain text. Human-readable stderr diagnostics and interactive setup prompt text now follow the same shared styling policy on their respective terminal streams.
-- Current repository verification guidance for this CLI slice prefers the root Nix entrypoints: `nix flake check` for routine validation, `nix build .#sce` / `nix run .#sce -- --help` for native packaged installability, and targeted `nix develop -c sh -c 'cd cli && <cargo command>'` only when a narrower Rust-only check is explicitly needed.
+- Current repository verification guidance for this CLI slice uses `nix flake check` for normal repository checks and the separate `nix build .#ci-checks` for the release build (static musl on Linux, native on Darwin) plus Linux portability validation of the real release binary. Both tiers verify changes to the execution/build model. Native packaged installability uses `nix build .#sce` / `nix run .#sce -- --help`; targeted Cargo checks use `nix develop -c ./scripts/run-cli-cargo.sh ...` so generated payload preparation remains intact.
 
 ## Setup behavior selections
 
