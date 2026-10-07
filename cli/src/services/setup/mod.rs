@@ -1016,6 +1016,3 @@ where
 pub fn setup_cancelled_text() -> String {
     value("Setup cancelled. No files were changed.")
 }
-
-#[cfg(any())]
-mod tests;

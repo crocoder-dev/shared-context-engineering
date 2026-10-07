@@ -43,34 +43,6 @@ pub(crate) async fn run_opencode_mutation_scope_from_payload<
     .await
 }
 
-#[cfg(any())]
-pub(crate) async fn run_opencode_mutation_scope_from_payload_at_state_root<
-    L: crate::services::observability::traits::Logger,
->(
-    state_root: &Path,
-    stdin_payload: &str,
-    logger: Option<&L>,
-) -> Result<String> {
-    let resolve_git_dir_fn = |cwd: &str| resolve_git_dir(Path::new(cwd));
-    let seam_fn = async |repository_root: &Path, payload: &str, logger: Option<&L>| {
-        hooks::mutation_scope::run_mutation_scope_from_payload_at_state_root(
-            repository_root,
-            state_root,
-            payload,
-            logger,
-        )
-        .await
-    };
-
-    run_opencode_mutation_scope_from_payload_with_seams(
-        stdin_payload,
-        logger,
-        &resolve_git_dir_fn,
-        &seam_fn,
-    )
-    .await
-}
-
 pub(super) const FAIL_CLOSED_MESSAGE: &str =
     "SCE could not establish OpenCode mutation attribution for this tool execution.";
 
