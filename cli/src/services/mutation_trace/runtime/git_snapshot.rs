@@ -1,8 +1,9 @@
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use anyhow::{anyhow, bail, Context, Result};
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
 use uuid::Uuid;
 
 use crate::services::mutation_trace::types::{TreeId, WorktreeId};
@@ -25,16 +26,16 @@ pub struct GitSnapshotService {
 }
 
 impl GitSnapshotService {
-    pub fn new(repository_root: &Path) -> Result<GitSnapshotService> {
-        let repository_root = resolve_worktree_root(repository_root)?;
-        let git_dir = resolve_git_dir(&repository_root)?;
+    pub async fn new(repository_root: &Path) -> Result<GitSnapshotService> {
+        let repository_root = resolve_worktree_root(repository_root).await?;
+        let git_dir = resolve_git_dir(&repository_root).await?;
         Ok(GitSnapshotService {
             git_dir,
             repository_root,
         })
     }
 
-    pub fn capture_tree(&self) -> Result<TreeId> {
+    pub async fn capture_tree(&self) -> Result<TreeId> {
         let tmp_dir = self.git_dir.join(SCE_RUNTIME_DIR).join(TMP_INDEX_DIR);
         std::fs::create_dir_all(&tmp_dir).with_context(|| {
             format!(
@@ -44,25 +45,31 @@ impl GitSnapshotService {
         })?;
         let index_guard = TempIndexGuard::reserve(&tmp_dir);
 
-        if self.head_exists()? {
-            self.run_git(&["read-tree", "HEAD"], Some(&index_guard.path))?;
+        if self.head_exists().await? {
+            self.run_git(&["read-tree", "HEAD"], Some(&index_guard.path))
+                .await?;
         } else {
-            self.run_git(&["read-tree", "--empty"], Some(&index_guard.path))?;
+            self.run_git(&["read-tree", "--empty"], Some(&index_guard.path))
+                .await?;
         }
 
-        self.run_git(&["add", "-A", "--", "."], Some(&index_guard.path))?;
+        self.run_git(&["add", "-A", "--", "."], Some(&index_guard.path))
+            .await?;
 
-        let tree_sha = self.run_git(&["write-tree"], Some(&index_guard.path))?;
+        let tree_sha = self
+            .run_git(&["write-tree"], Some(&index_guard.path))
+            .await?;
         Ok(TreeId(tree_sha.trim().to_string()))
     }
 
-    pub fn pin_tree(&self, worktree_id: &WorktreeId, tree: &TreeId) -> Result<()> {
+    pub async fn pin_tree(&self, worktree_id: &WorktreeId, tree: &TreeId) -> Result<()> {
         let ref_name = pin_ref_name(worktree_id, tree);
-        self.run_git(&["update-ref", &ref_name, &tree.0], None)?;
+        self.run_git(&["update-ref", &ref_name, &tree.0], None)
+            .await?;
         Ok(())
     }
 
-    pub fn diff_trees(&self, before: &TreeId, after: &TreeId) -> Result<String> {
+    pub async fn diff_trees(&self, before: &TreeId, after: &TreeId) -> Result<String> {
         self.run_git(
             &[
                 "diff",
@@ -75,20 +82,20 @@ impl GitSnapshotService {
             ],
             None,
         )
+        .await
     }
 
-    pub fn head_tree(&self) -> Result<TreeId> {
-        let tree = self.run_git(&["rev-parse", "HEAD^{tree}"], None)?;
+    pub async fn head_tree(&self) -> Result<TreeId> {
+        let tree = self.run_git(&["rev-parse", "HEAD^{tree}"], None).await?;
         Ok(TreeId(tree.trim().to_string()))
     }
 
-    pub fn file_at_tree(&self, tree: &TreeId, path: &str) -> Result<Option<String>> {
+    pub async fn file_at_tree(&self, tree: &TreeId, path: &str) -> Result<Option<String>> {
         let spec = format!("{}:{}", tree.0, path);
-        let output = Command::new("git")
-            .args(["cat-file", "blob", &spec])
-            .current_dir(&self.repository_root)
-            .env("GIT_DIR", &self.git_dir)
+        let output = self
+            .git_command(&["cat-file", "blob", &spec], None)
             .output()
+            .await
             .with_context(|| {
                 format!(
                     "Failed to run git cat-file blob '{spec}' in '{}'",
@@ -115,13 +122,14 @@ impl GitSnapshotService {
     /// `git for-each-ref` execution or exit failure is
     /// [`PinInventoryError::Git`]; anything malformed inside the namespace is
     /// [`PinInventoryError::MalformedRef`], matchable separately.
-    pub fn list_pins(
+    pub async fn list_pins(
         &self,
         worktree_id: &WorktreeId,
     ) -> std::result::Result<Vec<PinnedRef>, PinInventoryError> {
         let prefix = pin_ref_prefix(worktree_id);
         let raw = self
             .run_git(&["for-each-ref", FOR_EACH_REF_PIN_FORMAT, &prefix], None)
+            .await
             .map_err(PinInventoryError::Git)?;
 
         raw.lines()
@@ -153,8 +161,8 @@ impl GitSnapshotService {
     /// into a symbolic ref — this returns `Err` and deletes nothing, preferring
     /// failure over acting on unexpected namespace state. An empty slice is a
     /// successful no-op.
-    pub fn delete_pins(&self, pins: &[PinnedRef]) -> Result<()> {
-        self.delete_pins_inner(pins, || {})
+    pub async fn delete_pins(&self, pins: &[PinnedRef]) -> Result<()> {
+        self.delete_pins_inner(pins, || {}).await
     }
 
     /// Body of [`delete_pins`] with a deterministic test seam that fires
@@ -166,12 +174,16 @@ impl GitSnapshotService {
     /// preflight — is what aborts the batch. This is the only proof that the
     /// Git transaction itself is atomic; the preflight proves a different
     /// property (unexpected ref state before the transaction is even attempted).
-    fn delete_pins_inner(&self, pins: &[PinnedRef], after_preflight: impl FnOnce()) -> Result<()> {
+    async fn delete_pins_inner(
+        &self,
+        pins: &[PinnedRef],
+        after_preflight: impl FnOnce(),
+    ) -> Result<()> {
         if pins.is_empty() {
             return Ok(());
         }
 
-        self.assert_pins_are_unchanged_direct_refs(pins)?;
+        self.assert_pins_are_unchanged_direct_refs(pins).await?;
 
         after_preflight();
 
@@ -184,10 +196,8 @@ impl GitSnapshotService {
             stdin_payload.push('\n');
         }
 
-        let mut child = Command::new("git")
-            .args(["update-ref", "--no-deref", "--stdin"])
-            .current_dir(&self.repository_root)
-            .env("GIT_DIR", &self.git_dir)
+        let mut child = self
+            .git_command(&["update-ref", "--no-deref", "--stdin"], None)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -199,17 +209,21 @@ impl GitSnapshotService {
                 )
             })?;
 
-        child
+        let mut stdin = child
             .stdin
             .take()
-            .ok_or_else(|| anyhow!("Failed to open stdin for git update-ref --no-deref --stdin"))?
+            .ok_or_else(|| anyhow!("Failed to open stdin for git update-ref --no-deref --stdin"))?;
+        stdin
             .write_all(stdin_payload.as_bytes())
+            .await
             .with_context(|| {
                 "Failed to write the delete transaction to git update-ref --no-deref --stdin"
             })?;
+        drop(stdin);
 
         let output = child
             .wait_with_output()
+            .await
             .with_context(|| "Failed to wait for git update-ref --no-deref --stdin")?;
 
         if !output.status.success() {
@@ -232,10 +246,10 @@ impl GitSnapshotService {
     /// residual sub-transaction race is still contained by `--no-deref` plus
     /// the per-`delete` old-value condition, which together cannot follow a
     /// symbolic ref or mutate a ref the caller did not name.
-    fn assert_pins_are_unchanged_direct_refs(&self, pins: &[PinnedRef]) -> Result<()> {
+    async fn assert_pins_are_unchanged_direct_refs(&self, pins: &[PinnedRef]) -> Result<()> {
         let mut args: Vec<&str> = vec!["for-each-ref", FOR_EACH_REF_PIN_FORMAT];
         args.extend(pins.iter().map(|pin| pin.ref_name.as_str()));
-        let raw = self.run_git(&args, None)?;
+        let raw = self.run_git(&args, None).await?;
 
         let current: Vec<[&str; 4]> = raw
             .lines()
@@ -284,12 +298,11 @@ impl GitSnapshotService {
         Ok(())
     }
 
-    fn head_exists(&self) -> Result<bool> {
-        let output = Command::new("git")
-            .args(["rev-parse", "--verify", "--quiet", "HEAD"])
-            .current_dir(&self.repository_root)
-            .env("GIT_DIR", &self.git_dir)
+    async fn head_exists(&self) -> Result<bool> {
+        let output = self
+            .git_command(&["rev-parse", "--verify", "--quiet", "HEAD"], None)
             .output()
+            .await
             .with_context(|| {
                 format!(
                     "Failed to run git rev-parse --verify --quiet HEAD in '{}'",
@@ -312,23 +325,31 @@ impl GitSnapshotService {
         }
     }
 
-    fn run_git(&self, args: &[&str], index_file: Option<&Path>) -> Result<String> {
+    fn git_command(&self, args: &[&str], index_file: Option<&Path>) -> Command {
         let mut command = Command::new("git");
         command
             .args(args)
             .current_dir(&self.repository_root)
-            .env("GIT_DIR", &self.git_dir);
+            .env("GIT_DIR", &self.git_dir)
+            .kill_on_drop(true);
         if let Some(index_file) = index_file {
             command.env("GIT_INDEX_FILE", index_file);
         }
+        command
+    }
 
-        let output = command.output().with_context(|| {
-            format!(
-                "Failed to run git command {:?} in '{}'",
-                args,
-                self.repository_root.display()
-            )
-        })?;
+    async fn run_git(&self, args: &[&str], index_file: Option<&Path>) -> Result<String> {
+        let output = self
+            .git_command(args, index_file)
+            .output()
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to run git command {:?} in '{}'",
+                    args,
+                    self.repository_root.display()
+                )
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -446,11 +467,9 @@ fn pin_ref_name(worktree_id: &WorktreeId, tree: &TreeId) -> String {
     format!("{REF_NAMESPACE}/{}/{}", worktree_id.0, tree.0)
 }
 
-pub(crate) fn resolve_git_dir(repository_root: &Path) -> Result<PathBuf> {
-    let git_dir = PathBuf::from(run_rev_parse(
-        repository_root,
-        &["rev-parse", "--absolute-git-dir"],
-    )?);
+pub(crate) async fn resolve_git_dir(repository_root: &Path) -> Result<PathBuf> {
+    let git_dir =
+        PathBuf::from(run_rev_parse(repository_root, &["rev-parse", "--absolute-git-dir"]).await?);
 
     debug_assert!(
         git_dir.is_absolute(),
@@ -461,11 +480,14 @@ pub(crate) fn resolve_git_dir(repository_root: &Path) -> Result<PathBuf> {
     Ok(git_dir)
 }
 
-fn resolve_git_common_dir(repository_root: &Path) -> Result<PathBuf> {
-    let git_common_dir = PathBuf::from(run_rev_parse(
-        repository_root,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )?);
+async fn resolve_git_common_dir(repository_root: &Path) -> Result<PathBuf> {
+    let git_common_dir = PathBuf::from(
+        run_rev_parse(
+            repository_root,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )
+        .await?,
+    );
 
     debug_assert!(
         git_common_dir.is_absolute(),
@@ -476,11 +498,12 @@ fn resolve_git_common_dir(repository_root: &Path) -> Result<PathBuf> {
     Ok(git_common_dir)
 }
 
-pub(crate) fn resolve_worktree_root(repository_root: &Path) -> Result<PathBuf> {
+pub(crate) async fn resolve_worktree_root(repository_root: &Path) -> Result<PathBuf> {
     let reported_root = run_rev_parse(
         repository_root,
         &["rev-parse", "--path-format=absolute", "--show-toplevel"],
-    )?;
+    )
+    .await?;
 
     let root_path = PathBuf::from(reported_root);
     debug_assert!(
@@ -505,9 +528,9 @@ pub(crate) fn resolve_worktree_root(repository_root: &Path) -> Result<PathBuf> {
     Ok(canonical_root)
 }
 
-pub(crate) fn resolve_worktree_id(repository_root: &Path) -> Result<WorktreeId> {
-    let git_dir = resolve_git_dir(repository_root)?;
-    let git_common_dir = resolve_git_common_dir(repository_root)?;
+pub(crate) async fn resolve_worktree_id(repository_root: &Path) -> Result<WorktreeId> {
+    let git_dir = resolve_git_dir(repository_root).await?;
+    let git_common_dir = resolve_git_common_dir(repository_root).await?;
 
     if git_dir == git_common_dir {
         return Ok(WorktreeId("main".to_string()));
@@ -538,11 +561,13 @@ fn sanitize_ref_component(raw: &str) -> String {
         .collect()
 }
 
-fn run_rev_parse(repository_root: &Path, args: &[&str]) -> Result<String> {
+async fn run_rev_parse(repository_root: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
         .args(args)
         .current_dir(repository_root)
+        .kill_on_drop(true)
         .output()
+        .await
         .with_context(|| {
             format!(
                 "Failed to run git {args:?} in '{}'",
@@ -579,5 +604,113 @@ impl TempIndexGuard {
 impl Drop for TempIndexGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::process::Command;
+
+    use super::{resolve_git_dir, resolve_worktree_id, GitSnapshotService, PinnedRef};
+    use crate::services::mutation_trace::types::WorktreeId;
+
+    fn git(cwd: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_committed_repository(root: &Path) {
+        std::fs::create_dir_all(root).expect("repo dir");
+        git(root, &["init", "-q"]);
+        git(root, &["config", "user.email", "snapshot@example.invalid"]);
+        git(root, &["config", "user.name", "Snapshot Test"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("tracked.txt"), "tracked\n").expect("write tracked file");
+        git(root, &["add", "tracked.txt"]);
+        git(root, &["commit", "-q", "-m", "initial"]);
+    }
+
+    #[tokio::test]
+    async fn async_snapshot_service_captures_pins_inventories_and_deletes_tree() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repo_root = dir.path().join("repo");
+        init_committed_repository(&repo_root);
+        std::fs::write(repo_root.join("untracked.txt"), "untracked\n").expect("write file");
+
+        let snapshot = GitSnapshotService::new(&repo_root)
+            .await
+            .expect("snapshot service");
+        let worktree_id = WorktreeId("main".to_string());
+
+        let tree = snapshot.capture_tree().await.expect("capture tree");
+        assert_eq!(
+            snapshot
+                .file_at_tree(&tree, "untracked.txt")
+                .await
+                .expect("read captured file"),
+            Some("untracked\n".to_string())
+        );
+
+        snapshot
+            .pin_tree(&worktree_id, &tree)
+            .await
+            .expect("pin tree");
+        let pins = snapshot.list_pins(&worktree_id).await.expect("list pins");
+        assert_eq!(
+            pins,
+            vec![PinnedRef {
+                ref_name: format!("refs/sce/mutation-cursor/main/{}", tree.0),
+                tree: tree.clone(),
+            }]
+        );
+
+        snapshot.delete_pins(&pins).await.expect("delete pins");
+        assert!(snapshot
+            .list_pins(&worktree_id)
+            .await
+            .expect("list pins after delete")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn async_identity_resolution_distinguishes_main_and_linked_worktrees() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let main_root = dir.path().join("main");
+        let linked_root = dir.path().join("linked");
+        init_committed_repository(&main_root);
+        git(
+            &main_root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "linked-branch",
+                linked_root.to_str().expect("utf-8 path"),
+            ],
+        );
+
+        let main_git_dir = resolve_git_dir(&main_root).await.expect("main git dir");
+        let linked_git_dir = resolve_git_dir(&linked_root).await.expect("linked git dir");
+        assert_ne!(main_git_dir, linked_git_dir);
+
+        assert_eq!(
+            resolve_worktree_id(&main_root).await.expect("main id"),
+            WorktreeId("main".to_string())
+        );
+        let linked_id = resolve_worktree_id(&linked_root).await.expect("linked id");
+        assert!(
+            linked_id.0.starts_with("worktrees/"),
+            "unexpected linked worktree id {linked_id:?}"
+        );
     }
 }

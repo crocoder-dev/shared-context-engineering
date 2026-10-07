@@ -56,7 +56,7 @@ pub(crate) async fn run_claude_mutation_scope_from_payload<
     stdin_payload: &str,
     logger: Option<&L>,
 ) -> Result<String> {
-    let resolve_git_dir_fn = |cwd: &str| resolve_git_dir(Path::new(cwd));
+    let resolve_git_dir_fn = async |cwd: &str| resolve_git_dir(Path::new(cwd)).await;
     let model_state_resolver = async |repository_root: &Path, session_id: &str, agent_id: &str| {
         let db = hooks::open_agent_trace_db_for_hook_runtime(
             repository_root,
@@ -88,7 +88,7 @@ pub(super) async fn run_claude_mutation_scope_from_payload_with_resolver<
 >(
     stdin_payload: &str,
     logger: Option<&L>,
-    resolve_git_dir: &impl Fn(&str) -> Result<PathBuf>,
+    resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
     model_state_resolver: &impl std::ops::AsyncFn(&Path, &str, &str) -> Result<Option<String>>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<String> {
@@ -101,7 +101,7 @@ pub(super) async fn dispatch_claude_hook_event<
 >(
     event: ClaudeHookEvent,
     logger: Option<&L>,
-    resolve_git_dir: &impl Fn(&str) -> Result<PathBuf>,
+    resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
     model_state_resolver: &impl std::ops::AsyncFn(&Path, &str, &str) -> Result<Option<String>>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<String> {
@@ -115,7 +115,7 @@ pub(super) async fn dispatch_claude_hook_event<
         )
         .await),
         ClaudeHookEvent::PostToolUse(identity) | ClaudeHookEvent::PostToolUseFailure(identity) => {
-            let git_dir = resolve_git_dir(&identity.cwd)?;
+            let git_dir = resolve_git_dir(&identity.cwd).await?;
             let repository_root = Path::new(&identity.cwd);
             handle_close(
                 &git_dir,
@@ -127,7 +127,7 @@ pub(super) async fn dispatch_claude_hook_event<
             .await
         }
         ClaudeHookEvent::PermissionDenied(identity) => {
-            let git_dir = resolve_git_dir(&identity.cwd)?;
+            let git_dir = resolve_git_dir(&identity.cwd).await?;
             let repository_root = Path::new(&identity.cwd);
             handle_permission_denied(
                 &git_dir,
@@ -139,7 +139,7 @@ pub(super) async fn dispatch_claude_hook_event<
             .await
         }
         ClaudeHookEvent::Stop(session) | ClaudeHookEvent::StopFailure(session) => {
-            let git_dir = resolve_git_dir(&session.cwd)?;
+            let git_dir = resolve_git_dir(&session.cwd).await?;
             let repository_root = Path::new(&session.cwd);
             let session_id = session.session_id.clone();
             cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |attempt| {
@@ -148,7 +148,7 @@ pub(super) async fn dispatch_claude_hook_event<
             .await
         }
         ClaudeHookEvent::UserPromptSubmit(session) => {
-            let git_dir = resolve_git_dir(&session.cwd)?;
+            let git_dir = resolve_git_dir(&session.cwd).await?;
             let repository_root = Path::new(&session.cwd);
             let session_id = session.session_id.clone();
             cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |attempt| {
@@ -157,7 +157,7 @@ pub(super) async fn dispatch_claude_hook_event<
             .await
         }
         ClaudeHookEvent::SubagentStop(agent) => {
-            let git_dir = resolve_git_dir(&agent.cwd)?;
+            let git_dir = resolve_git_dir(&agent.cwd).await?;
             let repository_root = Path::new(&agent.cwd);
             let session_id = agent.session_id.clone();
             let agent_id = agent.agent_id.clone();
@@ -167,7 +167,7 @@ pub(super) async fn dispatch_claude_hook_event<
             .await
         }
         ClaudeHookEvent::SessionEnd(session) => {
-            let git_dir = resolve_git_dir(&session.cwd)?;
+            let git_dir = resolve_git_dir(&session.cwd).await?;
             let repository_root = Path::new(&session.cwd);
             let session_id = session.session_id.clone();
             cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |attempt| {
@@ -176,7 +176,7 @@ pub(super) async fn dispatch_claude_hook_event<
             .await
         }
         ClaudeHookEvent::WorktreeRemove(worktree_remove) => {
-            let git_dir = resolve_git_dir(&worktree_remove.worktree_path)?;
+            let git_dir = resolve_git_dir(&worktree_remove.worktree_path).await?;
             let repository_root = Path::new(&worktree_remove.worktree_path);
             cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |_attempt| true)
                 .await
@@ -188,7 +188,7 @@ pub(super) async fn dispatch_claude_hook_event<
 pub(super) async fn handle_pre_tool_use<L: crate::services::observability::traits::Logger>(
     execution: &ClaudeToolExecution,
     logger: Option<&L>,
-    resolve_git_dir: &impl Fn(&str) -> Result<PathBuf>,
+    resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
     model_state_resolver: &impl std::ops::AsyncFn(&Path, &str, &str) -> Result<Option<String>>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> String {
@@ -210,7 +210,7 @@ pub(super) async fn handle_pre_tool_use<L: crate::services::observability::trait
     }
 
     let repository_root = Path::new(&identity.cwd);
-    let git_dir = match resolve_git_dir(&identity.cwd) {
+    let git_dir = match resolve_git_dir(&identity.cwd).await {
         Ok(git_dir) => git_dir,
         Err(error) => {
             log_pre_tool_use_fail_closed(logger, "resolve_git_dir", &error);

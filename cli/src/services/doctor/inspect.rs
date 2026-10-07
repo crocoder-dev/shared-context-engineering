@@ -161,7 +161,8 @@ async fn build_report_without_service_owned_problem_checks(
         bare_repository,
         detected_repository_root.as_deref(),
         &mut problems,
-    );
+    )
+    .await;
 
     HookDoctorReport {
         mode,
@@ -214,7 +215,7 @@ fn detect_hook_path_source(
     }
 }
 
-fn inspect_mutation_scope_health(
+async fn inspect_mutation_scope_health(
     git_available: bool,
     bare_repository: bool,
     detected_repository_root: Option<&Path>,
@@ -230,7 +231,7 @@ fn inspect_mutation_scope_health(
     if targets.is_empty() {
         return Vec::new();
     }
-    let Ok(git_dir) = resolve_git_dir(resolved_root) else {
+    let Ok(git_dir) = resolve_git_dir(resolved_root).await else {
         return Vec::new();
     };
 
@@ -279,7 +280,7 @@ pub(super) async fn repair_blocked_mutation_scope_targets_with_seam(
     let Some(repository_root) = initial_report.repository_root.as_deref() else {
         return Vec::new();
     };
-    let Ok(git_dir) = resolve_git_dir(repository_root) else {
+    let Ok(git_dir) = resolve_git_dir(repository_root).await else {
         return Vec::new();
     };
 

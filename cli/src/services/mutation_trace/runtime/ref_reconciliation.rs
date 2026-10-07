@@ -141,26 +141,31 @@ where
     P: std::ops::AsyncFnOnce() -> Result<RepositoryAgentTraceDb>,
     F: FnOnce() + Send + 'static,
 {
-    let git_dir = resolve_git_dir(repository_root).map_err(ReconcileError::GitDir)?;
+    let git_dir = resolve_git_dir(repository_root)
+        .await
+        .map_err(ReconcileError::GitDir)?;
 
     let _lock = acquire_inner_async(&git_dir, RECONCILIATION_LOCK_TIMEOUT, on_lock_contention)
         .await
         .map_err(ReconcileError::Lock)?;
 
-    let worktree_id =
-        resolve_worktree_id(repository_root).map_err(ReconcileError::CheckoutIdentity)?;
+    let worktree_id = resolve_worktree_id(repository_root)
+        .await
+        .map_err(ReconcileError::CheckoutIdentity)?;
 
     let db = open_db()
         .await
         .map_err(ReconcileError::AgentTraceDbUnavailable)?;
 
-    let snapshot =
-        GitSnapshotService::new(repository_root).map_err(ReconcileError::SnapshotService)?;
+    let snapshot = GitSnapshotService::new(repository_root)
+        .await
+        .map_err(ReconcileError::SnapshotService)?;
 
     // Inventory the worktree's pins first, so every durable-root read that
     // follows is compared against a fixed observation of the namespace.
     let actual = snapshot
         .list_pins(&worktree_id)
+        .await
         .map_err(|error| match error {
             PinInventoryError::Git(source) => ReconcileError::PinInventory(source),
             PinInventoryError::MalformedRef { ref_name, reason } => {
@@ -202,6 +207,7 @@ where
     if !stale.is_empty() {
         snapshot
             .delete_pins(&stale)
+            .await
             .map_err(ReconcileError::DeleteTransaction)?;
     }
 

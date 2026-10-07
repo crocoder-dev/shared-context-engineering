@@ -27,7 +27,7 @@ pub(crate) async fn run_pi_mutation_scope_from_payload<
     stdin_payload: &str,
     logger: Option<&L>,
 ) -> Result<String> {
-    let resolve_git_dir_fn = |cwd: &str| resolve_git_dir(Path::new(cwd));
+    let resolve_git_dir_fn = async |cwd: &str| resolve_git_dir(Path::new(cwd)).await;
     let seam_fn = async |repository_root: &Path, payload: &str, logger: Option<&L>| {
         hooks::mutation_scope::run_mutation_scope_from_payload(repository_root, payload, logger)
             .await
@@ -67,7 +67,7 @@ pub(super) async fn run_pi_mutation_scope_from_payload_with_seams<
 >(
     stdin_payload: &str,
     logger: Option<&L>,
-    resolve_git_dir: &impl Fn(&str) -> Result<PathBuf>,
+    resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<String> {
     let event = parse_pi_hook_event(stdin_payload)?;
@@ -77,7 +77,7 @@ pub(super) async fn run_pi_mutation_scope_from_payload_with_seams<
 pub(super) async fn dispatch_pi_hook_event<L: crate::services::observability::traits::Logger>(
     event: PiHookEvent,
     logger: Option<&L>,
-    resolve_git_dir: &impl Fn(&str) -> Result<PathBuf>,
+    resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<String> {
     match event {
@@ -106,7 +106,7 @@ pub(super) async fn dispatch_pi_hook_event<L: crate::services::observability::tr
             ) {
                 return Ok(String::new());
             }
-            let git_dir = resolve_git_dir(&identity.cwd)?;
+            let git_dir = resolve_git_dir(&identity.cwd).await?;
             state::mark_executed(&git_dir, &identity.attempt_key()).await?;
             Ok(String::new())
         }
@@ -117,7 +117,7 @@ pub(super) async fn dispatch_pi_hook_event<L: crate::services::observability::tr
             ) {
                 return Ok(String::new());
             }
-            let git_dir = resolve_git_dir(&identity.cwd)?;
+            let git_dir = resolve_git_dir(&identity.cwd).await?;
             let repository_root = Path::new(&identity.cwd);
             let key = identity.attempt_key();
             with_boundary_lock(&git_dir, async || {
@@ -133,7 +133,7 @@ pub(super) async fn dispatch_pi_hook_event<L: crate::services::observability::tr
             ) {
                 return Ok(String::new());
             }
-            let git_dir = resolve_git_dir(&identity.cwd)?;
+            let git_dir = resolve_git_dir(&identity.cwd).await?;
             let repository_root = Path::new(&identity.cwd);
             let key = identity.attempt_key();
             with_boundary_lock(&git_dir, async || {
@@ -171,10 +171,10 @@ pub(super) async fn establish_tracked_start<L: crate::services::observability::t
     tool_name: &str,
     provenance: &PiScopeProvenance,
     logger: Option<&L>,
-    resolve_git_dir: &impl Fn(&str) -> Result<PathBuf>,
+    resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<String> {
-    let git_dir = match resolve_git_dir(cwd) {
+    let git_dir = match resolve_git_dir(cwd).await {
         Ok(git_dir) => git_dir,
         Err(error) => {
             log_fail_closed(logger, "resolve_git_dir", &error);

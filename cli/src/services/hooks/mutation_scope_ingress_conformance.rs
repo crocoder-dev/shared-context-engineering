@@ -24,7 +24,7 @@ pub(crate) trait IngressConformance {
 
     async fn run_with_seams<L: Logger>(
         payload: &str,
-        resolve_git_dir: &impl Fn(&str) -> Result<PathBuf>,
+        resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
         seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
     ) -> Result<String>;
 }
@@ -220,7 +220,7 @@ async fn assert_fails_closed_before_dispatch<A: IngressConformance>(rejections: 
         let git_dir = unresolved_git_dir::<A>("fails-closed");
         let resolver_calls = Cell::new(0_usize);
         let seam_calls = Cell::new(0_usize);
-        let resolver = |_cwd: &str| {
+        let resolver = async |_cwd: &str| {
             resolver_calls.set(resolver_calls.get() + 1);
             Ok(git_dir.clone())
         };
@@ -341,7 +341,7 @@ pub(crate) async fn tracked_start_fails_closed_when_its_checkout_cannot_be_resol
 
     let resolver_calls = Cell::new(0_usize);
     let seam_calls = Cell::new(0_usize);
-    let resolver = |_cwd: &str| {
+    let resolver = async |_cwd: &str| {
         resolver_calls.set(resolver_calls.get() + 1);
         Err(anyhow!("checkout resolution failure injected by test"))
     };

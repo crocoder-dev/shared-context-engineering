@@ -61,17 +61,17 @@ impl MutationEventPageSource for MutationTraceStore<'_> {
 }
 
 pub trait TreeReadSource {
-    fn diff_trees(&self, before: &TreeId, after: &TreeId) -> Result<String>;
-    fn file_at_tree(&self, tree: &TreeId, path: &str) -> Result<Option<String>>;
+    async fn diff_trees(&self, before: &TreeId, after: &TreeId) -> Result<String>;
+    async fn file_at_tree(&self, tree: &TreeId, path: &str) -> Result<Option<String>>;
 }
 
 impl TreeReadSource for GitSnapshotService {
-    fn diff_trees(&self, before: &TreeId, after: &TreeId) -> Result<String> {
-        GitSnapshotService::diff_trees(self, before, after)
+    async fn diff_trees(&self, before: &TreeId, after: &TreeId) -> Result<String> {
+        GitSnapshotService::diff_trees(self, before, after).await
     }
 
-    fn file_at_tree(&self, tree: &TreeId, path: &str) -> Result<Option<String>> {
-        GitSnapshotService::file_at_tree(self, tree, path)
+    async fn file_at_tree(&self, tree: &TreeId, path: &str) -> Result<Option<String>> {
+        GitSnapshotService::file_at_tree(self, tree, path).await
     }
 }
 
@@ -127,7 +127,7 @@ pub async fn resolve_bounded_mutation_attribution<P, R>(
 ) -> BoundedMutationAttribution
 where
     P: MutationEventPageSource + ?Sized,
-    R: TreeReadSource + ?Sized,
+    R: TreeReadSource,
 {
     let target = exclude_direct_coverage(committed_patch, direct_coverage);
     let target_paths = target_logical_paths(&target);
@@ -148,13 +148,7 @@ where
     let lineage = if events.is_empty() {
         None
     } else {
-        Some(replay(
-            &events,
-            &target_paths,
-            commit_tree,
-            tree_source,
-            &mut state,
-        ))
+        Some(replay(&events, &target_paths, commit_tree, tree_source, &mut state).await)
     };
     finish(&target, lineage.as_ref(), &state, page_source).await
 }
@@ -250,7 +244,7 @@ where
     rows
 }
 
-fn replay<R>(
+async fn replay<R>(
     events: &[MutationEventPageRow],
     target_paths: &BTreeSet<String>,
     commit_tree: &TreeId,
@@ -258,25 +252,24 @@ fn replay<R>(
     state: &mut ReplayState,
 ) -> MutationLineage
 where
-    R: TreeReadSource + ?Sized,
+    R: TreeReadSource,
 {
-    let mut lineage = MutationLineage::from_baseline(&load_baseline(
-        tree_source,
-        &events[0].before_tree,
-        target_paths,
-    ));
+    let mut lineage = MutationLineage::from_baseline(
+        &load_baseline(tree_source, &events[0].before_tree, target_paths).await,
+    );
     let mut prev_after = events[0].before_tree.clone();
 
     for row in events {
         state.inspected_events += 1;
 
         if row.before_tree != prev_after {
-            lineage.reset_all(&load_baseline(tree_source, &row.before_tree, target_paths));
+            lineage.reset_all(&load_baseline(tree_source, &row.before_tree, target_paths).await);
             state.gap_resets += 1;
         }
 
         let reconstructed = tree_source
             .diff_trees(&row.before_tree, &row.after_tree)
+            .await
             .ok()
             .and_then(|text| parse_patch(&text, None).ok());
         if reconstructed.is_some() {
@@ -291,7 +284,9 @@ where
             &row.after_tree,
             target_paths,
             tree_source,
-        ) {
+        )
+        .await
+        {
             state.barrier = Some(MutationAttributionBarrier::EventReconstruction);
             state.gap_resets += 1;
         }
@@ -302,6 +297,7 @@ where
     if prev_after != *commit_tree {
         let tail = tree_source
             .diff_trees(&prev_after, commit_tree)
+            .await
             .ok()
             .and_then(|text| parse_patch(&text, None).ok());
         if apply_or_reset(
@@ -311,7 +307,9 @@ where
             commit_tree,
             target_paths,
             tree_source,
-        ) {
+        )
+        .await
+        {
             state.barrier = Some(MutationAttributionBarrier::Tail);
             state.gap_resets += 1;
         }
@@ -320,7 +318,7 @@ where
     lineage
 }
 
-fn apply_or_reset<R>(
+async fn apply_or_reset<R>(
     lineage: &mut MutationLineage,
     patch: Option<&ParsedPatch>,
     origin: &TransitionOrigin,
@@ -329,30 +327,29 @@ fn apply_or_reset<R>(
     tree_source: &R,
 ) -> bool
 where
-    R: TreeReadSource + ?Sized,
+    R: TreeReadSource,
 {
     let applied = patch.is_some_and(|patch| lineage.apply(patch, origin).is_ok());
     if !applied {
-        lineage.reset_all(&load_baseline(tree_source, fallback_tree, target_paths));
+        lineage.reset_all(&load_baseline(tree_source, fallback_tree, target_paths).await);
     }
     !applied
 }
 
-fn load_baseline<R>(
+async fn load_baseline<R>(
     tree_source: &R,
     tree: &TreeId,
     target_paths: &BTreeSet<String>,
 ) -> std::collections::BTreeMap<String, Option<String>>
 where
-    R: TreeReadSource + ?Sized,
+    R: TreeReadSource,
 {
-    target_paths
-        .iter()
-        .map(|path| {
-            let content = tree_source.file_at_tree(tree, path).unwrap_or(None);
-            (path.clone(), content)
-        })
-        .collect()
+    let mut baseline = std::collections::BTreeMap::new();
+    for path in target_paths {
+        let content = tree_source.file_at_tree(tree, path).await.unwrap_or(None);
+        baseline.insert(path.clone(), content);
+    }
+    baseline
 }
 
 fn transition_origin(row: &MutationEventPageRow) -> TransitionOrigin {
@@ -441,16 +438,16 @@ pub(crate) async fn resolve_post_commit_mutation_ai_patch(
     direct_coverage: &ParsedPatch,
     committed_patch: &ParsedPatch,
 ) -> ParsedPatch {
-    let Ok(git_dir) = resolve_git_dir(repository_root) else {
+    let Ok(git_dir) = resolve_git_dir(repository_root).await else {
         return empty_patch();
     };
-    let Ok(worktree) = resolve_worktree_id(repository_root) else {
+    let Ok(worktree) = resolve_worktree_id(repository_root).await else {
         return empty_patch();
     };
-    let Ok(snapshot) = GitSnapshotService::new(repository_root) else {
+    let Ok(snapshot) = GitSnapshotService::new(repository_root).await else {
         return empty_patch();
     };
-    let Ok(commit_tree) = snapshot.head_tree() else {
+    let Ok(commit_tree) = snapshot.head_tree().await else {
         return empty_patch();
     };
     let store = MutationTraceStore::new(db);

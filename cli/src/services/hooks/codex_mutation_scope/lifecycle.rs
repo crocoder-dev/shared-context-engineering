@@ -73,7 +73,7 @@ pub(crate) async fn run_codex_mutation_scope_from_payload<
     stdin_payload: &str,
     logger: Option<&L>,
 ) -> Result<String> {
-    let resolve_git_dir_fn = |cwd: &str| resolve_git_dir(Path::new(cwd));
+    let resolve_git_dir_fn = async |cwd: &str| resolve_git_dir(Path::new(cwd)).await;
     let seam_fn = async |repository_root: &Path, payload: &str, logger: Option<&L>| {
         hooks::mutation_scope::run_mutation_scope_from_payload(repository_root, payload, logger)
             .await
@@ -97,7 +97,7 @@ pub(super) async fn run_codex_mutation_scope_from_payload_with_seams<
 >(
     stdin_payload: &str,
     logger: Option<&L>,
-    resolve_git_dir: &impl Fn(&str) -> Result<PathBuf>,
+    resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
     evaluate_bash_policy: &impl Fn(&Path, &str) -> Result<CodexBashPolicyDecision>,
 ) -> Result<String> {
@@ -108,7 +108,7 @@ pub(super) async fn run_codex_mutation_scope_from_payload_with_seams<
 pub(super) async fn dispatch_codex_hook_event<L: crate::services::observability::traits::Logger>(
     event: CodexHookEvent,
     logger: Option<&L>,
-    resolve_git_dir: &impl Fn(&str) -> Result<PathBuf>,
+    resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
     evaluate_bash_policy: &impl Fn(&Path, &str) -> Result<CodexBashPolicyDecision>,
 ) -> Result<String> {
@@ -129,7 +129,7 @@ pub(super) async fn dispatch_codex_hook_event<L: crate::services::observability:
                 return Ok(String::new());
             }
 
-            let git_dir = resolve_git_dir(&identity.cwd)?;
+            let git_dir = resolve_git_dir(&identity.cwd).await?;
             let repository_root = Path::new(&identity.cwd);
             with_boundary_lock(&git_dir, async || {
                 handle_close(
@@ -144,7 +144,7 @@ pub(super) async fn dispatch_codex_hook_event<L: crate::services::observability:
             .await
         }
         CodexHookEvent::Stop(turn) => {
-            let git_dir = resolve_git_dir(&turn.cwd)?;
+            let git_dir = resolve_git_dir(&turn.cwd).await?;
             let repository_root = Path::new(&turn.cwd);
             let session_id = turn.session_id.clone();
             with_boundary_lock(&git_dir, async || {
@@ -156,7 +156,7 @@ pub(super) async fn dispatch_codex_hook_event<L: crate::services::observability:
             .await
         }
         CodexHookEvent::Interrupt(turn) => {
-            let git_dir = resolve_git_dir(&turn.cwd)?;
+            let git_dir = resolve_git_dir(&turn.cwd).await?;
             let repository_root = Path::new(&turn.cwd);
             let session_id = turn.session_id.clone();
             with_boundary_lock(&git_dir, async || {
@@ -168,7 +168,7 @@ pub(super) async fn dispatch_codex_hook_event<L: crate::services::observability:
             .await
         }
         CodexHookEvent::SubagentStop(agent) => {
-            let git_dir = resolve_git_dir(&agent.cwd)?;
+            let git_dir = resolve_git_dir(&agent.cwd).await?;
             let repository_root = Path::new(&agent.cwd);
             let session_id = agent.session_id.clone();
             let agent_id = agent.agent_id.clone();
@@ -182,7 +182,7 @@ pub(super) async fn dispatch_codex_hook_event<L: crate::services::observability:
             .await
         }
         CodexHookEvent::SessionEnd(session) => {
-            let git_dir = resolve_git_dir(&session.cwd)?;
+            let git_dir = resolve_git_dir(&session.cwd).await?;
             let repository_root = Path::new(&session.cwd);
             let session_id = session.session_id.clone();
             with_boundary_lock(&git_dir, async || {
@@ -209,7 +209,7 @@ pub(super) async fn with_boundary_lock<T>(
 pub(super) async fn handle_pre_tool_use<L: crate::services::observability::traits::Logger>(
     execution: &CodexToolExecution,
     logger: Option<&L>,
-    resolve_git_dir: &impl Fn(&str) -> Result<PathBuf>,
+    resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
     evaluate_bash_policy: &impl Fn(&Path, &str) -> Result<CodexBashPolicyDecision>,
 ) -> String {
@@ -235,7 +235,7 @@ pub(super) async fn handle_pre_tool_use<L: crate::services::observability::trait
         }
     }
 
-    let git_dir = match resolve_git_dir(&identity.cwd) {
+    let git_dir = match resolve_git_dir(&identity.cwd).await {
         Ok(git_dir) => git_dir,
         Err(error) => {
             log_pre_tool_use_fail_closed(logger, "resolve_git_dir", &error);
