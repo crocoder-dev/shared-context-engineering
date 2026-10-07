@@ -39,6 +39,7 @@ pub(crate) enum GuardError {
     ArmedDelivery(std::io::Error),
     Wait(std::io::Error),
     Finish(CoordinateError),
+    SupervisorWorker(tokio::task::JoinError),
     UnsupportedPlatform,
 }
 
@@ -59,6 +60,10 @@ impl std::fmt::Display for GuardError {
                 write!(f, "failed to wait for the guarded shell: {source}")
             }
             GuardError::Finish(source) => write!(f, "{source}"),
+            GuardError::SupervisorWorker(source) => write!(
+                f,
+                "the guarded-shell supervisor worker did not complete: {source}"
+            ),
             GuardError::UnsupportedPlatform => {
                 write!(f, "the external-mutation guard is Unix-only")
             }
@@ -138,6 +143,7 @@ mod unix_impl {
     const POLL_INTERVAL: Duration = Duration::from_millis(20);
     const STDIO_IDLE_GRACE: Duration = Duration::from_millis(100);
     const STDIO_FINALIZATION_LIMIT: Duration = Duration::from_secs(1);
+    const GUARD_EVENT_CHANNEL_CAPACITY: usize = 16;
     const SIGTERM: i32 = 15;
 
     const F_GETFD: i32 = 1;
@@ -535,20 +541,152 @@ mod unix_impl {
         hooks: GuardTestHooks,
     }
 
+    struct SupervisionOutcome {
+        ownership: GuardOwnership,
+        status: ExitStatus,
+    }
+
+    struct EventForwarder {
+        event_tx: tokio::sync::mpsc::Sender<GuardEvent>,
+        consumer_gone: bool,
+    }
+
+    impl EventForwarder {
+        fn forward(&mut self, event: GuardEvent) {
+            if self.consumer_gone {
+                return;
+            }
+            if self.event_tx.blocking_send(event).is_err() {
+                self.consumer_gone = true;
+            }
+        }
+
+        fn consumer_gone(&mut self) -> bool {
+            if !self.consumer_gone && self.event_tx.is_closed() {
+                self.consumer_gone = true;
+            }
+            self.consumer_gone
+        }
+    }
+
+    fn signal_process_group(pid: u32) {
+        #[allow(clippy::cast_possible_wrap)]
+        let group = -(pid as i32);
+        unsafe {
+            raw::kill(group, SIGTERM);
+        }
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    fn supervise_guarded_shell(
+        execution_cwd: PathBuf,
+        request: GuardRequest,
+        mut ownership: GuardOwnership,
+        mut lifetime: LifetimeToken,
+        cancel_rx: mpsc::Receiver<()>,
+        event_tx: tokio::sync::mpsc::Sender<GuardEvent>,
+        hooks: GuardTestHooks,
+    ) -> Result<SupervisionOutcome, GuardError> {
+        let lock_fd = ownership.protected().lock_raw_fd();
+        let mut child =
+            match spawn_guarded_shell(&execution_cwd, &request, lock_fd, lifetime.writer_fd()) {
+                Ok(child) => child,
+                Err(source) => return Err(GuardError::Spawn(source)),
+            };
+        ownership.mark_spawned();
+        lifetime.close_writer();
+
+        let mut forwarder = EventForwarder {
+            event_tx,
+            consumer_gone: false,
+        };
+        let mut stdout = child.stdout.take();
+        let mut stderr = child.stderr.take();
+        let pid = child.id();
+        let mut status: Option<ExitStatus> = None;
+        let mut lifetime_complete = false;
+        let mut cancel_signaled = false;
+        let mut finalization_started = None;
+        let mut last_stream_activity = Instant::now();
+        loop {
+            if status.is_none() {
+                status = match child.try_wait() {
+                    Ok(status) => status,
+                    Err(source) => {
+                        ownership.abandon_after_spawn_without_unlock();
+                        return Err(GuardError::Wait(source));
+                    }
+                };
+            }
+
+            if should_finish_finalization(
+                status.as_ref(),
+                lifetime_complete,
+                stdout.as_ref(),
+                stderr.as_ref(),
+                &mut finalization_started,
+                &mut last_stream_activity,
+            ) {
+                break;
+            }
+
+            if !cancel_signaled && (cancel_rx.try_recv().is_ok() || forwarder.consumer_gone()) {
+                cancel_signaled = true;
+                signal_process_group(pid);
+            }
+
+            let poll_timeout = supervision_poll_timeout(finalization_started, last_stream_activity);
+            let stream_activity_before_poll = last_stream_activity;
+            if let Err(source) = poll_and_consume_streams(
+                &mut lifetime,
+                &mut stdout,
+                &mut stderr,
+                &mut |event| forwarder.forward(event),
+                poll_timeout,
+                &mut lifetime_complete,
+                &mut last_stream_activity,
+            ) {
+                ownership.abandon_after_spawn_without_unlock();
+                return Err(GuardError::Wait(source));
+            }
+            if lifetime_complete {
+                ownership.mark_lifetime_complete();
+            }
+            if hooks.fail_after_first_output && last_stream_activity != stream_activity_before_poll
+            {
+                ownership.abandon_after_spawn_without_unlock();
+                return Err(GuardError::Wait(io::Error::other(
+                    "injected post-spawn supervision failure",
+                )));
+            }
+        }
+
+        ownership.mark_lifetime_complete();
+        let status = status.expect("the guard loop only finishes after shell exit");
+        Ok(SupervisionOutcome { ownership, status })
+    }
+
     impl<P> ArmedExternalMutationGuard<P>
     where
         P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
     {
-        #[allow(clippy::too_many_lines)]
         pub(crate) async fn exec<E>(
-            mut self,
+            self,
             request: &GuardRequest,
             mut on_event: E,
         ) -> Result<GuardOutcome, GuardError>
         where
             E: FnMut(GuardEvent),
         {
-            if self.cancel_rx.try_recv().is_ok() {
+            let ArmedExternalMutationGuard {
+                repository_root,
+                ownership,
+                lifetime,
+                open_db,
+                cancel_rx,
+                hooks,
+            } = self;
+            if cancel_rx.try_recv().is_ok() {
                 return Err(GuardError::CancelledBeforeExec);
             }
             if request.command.trim().is_empty() {
@@ -556,98 +694,44 @@ mod unix_impl {
                     "external-mutation guard exec command must not be blank"
                 )));
             }
-            let execution_cwd =
-                resolve_execution_cwd(&self.repository_root, request.cwd.as_deref())?;
-            let lock_fd = self.ownership.protected().lock_raw_fd();
-            let mut child = match spawn_guarded_shell(
-                &execution_cwd,
-                request,
-                lock_fd,
-                self.lifetime.writer_fd(),
-            ) {
-                Ok(child) => child,
-                Err(source) => return Err(GuardError::Spawn(source)),
+            let execution_cwd = resolve_execution_cwd(&repository_root, request.cwd.as_deref())?;
+
+            let (event_tx, mut event_rx) =
+                tokio::sync::mpsc::channel::<GuardEvent>(GUARD_EVENT_CHANNEL_CAPACITY);
+            let supervision_request = request.clone();
+            let mut supervisor = tokio::task::spawn_blocking(move || {
+                supervise_guarded_shell(
+                    execution_cwd,
+                    supervision_request,
+                    ownership,
+                    lifetime,
+                    cancel_rx,
+                    event_tx,
+                    hooks,
+                )
+            });
+
+            let joined = loop {
+                tokio::select! {
+                    biased;
+                    Some(event) = event_rx.recv() => on_event(event),
+                    joined = &mut supervisor => break joined,
+                }
             };
-            self.ownership.mark_spawned();
-            self.lifetime.close_writer();
-
-            let mut stdout = child.stdout.take();
-            let mut stderr = child.stderr.take();
-            let pid = child.id();
-            let mut status: Option<ExitStatus> = None;
-            let mut lifetime_complete = false;
-            let mut cancel_signaled = false;
-            let mut finalization_started = None;
-            let mut last_stream_activity = Instant::now();
-            loop {
-                if status.is_none() {
-                    status = match child.try_wait() {
-                        Ok(status) => status,
-                        Err(source) => {
-                            self.ownership.abandon_after_spawn_without_unlock();
-                            return Err(GuardError::Wait(source));
-                        }
-                    };
-                }
-
-                if should_finish_finalization(
-                    status.as_ref(),
-                    lifetime_complete,
-                    stdout.as_ref(),
-                    stderr.as_ref(),
-                    &mut finalization_started,
-                    &mut last_stream_activity,
-                ) {
-                    break;
-                }
-
-                if !cancel_signaled && self.cancel_rx.try_recv().is_ok() {
-                    cancel_signaled = true;
-                    #[allow(clippy::cast_possible_wrap)]
-                    let group = -(pid as i32);
-                    unsafe {
-                        raw::kill(group, SIGTERM);
-                    }
-                }
-
-                let poll_timeout =
-                    supervision_poll_timeout(finalization_started, last_stream_activity);
-                let stream_activity_before_poll = last_stream_activity;
-                if let Err(source) = poll_and_consume_streams(
-                    &mut self.lifetime,
-                    &mut stdout,
-                    &mut stderr,
-                    &mut on_event,
-                    poll_timeout,
-                    &mut lifetime_complete,
-                    &mut last_stream_activity,
-                ) {
-                    self.ownership.abandon_after_spawn_without_unlock();
-                    return Err(GuardError::Wait(source));
-                }
-                if lifetime_complete {
-                    self.ownership.mark_lifetime_complete();
-                }
-                if self.hooks.fail_after_first_output
-                    && last_stream_activity != stream_activity_before_poll
-                {
-                    self.ownership.abandon_after_spawn_without_unlock();
-                    return Err(GuardError::Wait(io::Error::other(
-                        "injected post-spawn supervision failure",
-                    )));
-                }
+            while let Some(event) = event_rx.recv().await {
+                on_event(event);
             }
+            let SupervisionOutcome {
+                mut ownership,
+                status,
+            } = joined.map_err(GuardError::SupervisorWorker)??;
 
-            self.ownership.mark_lifetime_complete();
-            let status = status.expect("the guard loop only finishes after shell exit");
-            let worktree_id = self.ownership.protected().worktree_id().clone();
+            let worktree_id = ownership.protected().worktree_id().clone();
             if let Err(source) = coordinate_on_held_worktree(
-                &self.repository_root,
+                &repository_root,
                 &worktree_id,
                 &RuntimeBoundary::Flush,
-                self.open_db
-                    .take()
-                    .expect("the guard database opener must be available before exec"),
+                open_db.expect("the guard database opener must be available before exec"),
                 true,
             )
             .await
@@ -655,7 +739,7 @@ mod unix_impl {
                 return Err(GuardError::Finish(source));
             }
 
-            let protected = self.ownership.take_protected();
+            let protected = ownership.take_protected();
             let marker_clear_failed = protected.complete().is_err();
 
             Ok(GuardOutcome {
@@ -742,6 +826,134 @@ mod unix_impl {
         )
         .await?;
         guard.exec(request, on_event).await
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::path::{Path, PathBuf};
+        use std::process::Command;
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
+
+        use super::{run_external_mutation_guard, GuardEvent, GuardRequest};
+
+        const WORKER_PROGRESS_LIMIT: Duration = Duration::from_millis(500);
+        const READY_TIMEOUT: Duration = Duration::from_secs(30);
+
+        fn git(repo_root: &Path, args: &[&str]) {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repo_root)
+                .output()
+                .expect("git command should run");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        fn init_repository() -> (tempfile::TempDir, PathBuf, PathBuf) {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let repo_root = dir.path().join("repo");
+            std::fs::create_dir_all(&repo_root).expect("repo dir");
+            git(&repo_root, &["init", "-q"]);
+            git(
+                &repo_root,
+                &["config", "user.email", "guard@example.invalid"],
+            );
+            git(&repo_root, &["config", "user.name", "Guard Test"]);
+            std::fs::write(repo_root.join("README.md"), "guard\n").expect("seed file");
+            git(&repo_root, &["add", "README.md"]);
+            git(&repo_root, &["commit", "-q", "-m", "seed"]);
+            let db_path = dir.path().join("agent-trace.db");
+            (dir, repo_root, db_path)
+        }
+
+        fn guard_request(command: &str) -> GuardRequest {
+            GuardRequest {
+                command: command.to_string(),
+                cwd: None,
+                env: Vec::new(),
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+        async fn guarded_shell_supervision_leaves_the_runtime_worker_responsive() {
+            let (_dir, repo_root, db_path) = init_repository();
+            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Instant>();
+            let (_cancel_tx, cancel_rx) = mpsc::channel();
+
+            let guard_task = tokio::spawn(async move {
+                let mut ready_tx = Some(ready_tx);
+                run_external_mutation_guard(
+                    &repo_root,
+                    &guard_request("printf ready; sleep 2"),
+                    async || RepositoryAgentTraceDb::new_at(&db_path).await,
+                    |event| {
+                        if matches!(event, GuardEvent::Stdout(_)) {
+                            if let Some(ready_tx) = ready_tx.take() {
+                                let _ = ready_tx.send(Instant::now());
+                            }
+                        }
+                    },
+                    cancel_rx,
+                )
+                .await
+            });
+
+            let ready_at = tokio::time::timeout(READY_TIMEOUT, ready_rx)
+                .await
+                .expect("guarded shell should report readiness")
+                .expect("readiness sender should stay alive");
+            let progressed_at = tokio::spawn(async {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                Instant::now()
+            })
+            .await
+            .expect("unrelated task should complete");
+
+            assert!(
+                progressed_at.duration_since(ready_at) < WORKER_PROGRESS_LIMIT,
+                "unrelated Tokio task waited {:?} while the guarded shell was running",
+                progressed_at.duration_since(ready_at)
+            );
+
+            let outcome = guard_task
+                .await
+                .expect("guard task should join")
+                .expect("guard should succeed");
+            assert_eq!(outcome.exit_code, Some(0));
+        }
+
+        #[tokio::test]
+        async fn guarded_shell_streams_output_and_finishes_with_exit_code() {
+            let (_dir, repo_root, db_path) = init_repository();
+            let (_cancel_tx, cancel_rx) = mpsc::channel();
+            let mut events = Vec::new();
+
+            let outcome = run_external_mutation_guard(
+                &repo_root,
+                &guard_request("printf out; printf err >&2; exit 7"),
+                async || RepositoryAgentTraceDb::new_at(&db_path).await,
+                |event| events.push(event),
+                cancel_rx,
+            )
+            .await
+            .expect("guard should finish");
+
+            assert_eq!(outcome.exit_code, Some(7));
+            assert!(!outcome.marker_clear_failed);
+            assert_eq!(events.first(), Some(&GuardEvent::Armed));
+            assert!(events.contains(&GuardEvent::Stdout(b"out".to_vec())));
+            assert!(events.contains(&GuardEvent::Stderr(b"err".to_vec())));
+            assert!(
+                !repo_root.join(".git/sce/mutation-cursor-tainted").exists(),
+                "a durable Flush finish should clear the external-taint marker"
+            );
+        }
     }
 }
 
