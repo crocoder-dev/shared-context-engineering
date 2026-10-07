@@ -762,6 +762,3 @@ pub fn build_agent_trace_from_evidence(
         files,
     })
 }
-
-#[cfg(any())]
-mod tests;

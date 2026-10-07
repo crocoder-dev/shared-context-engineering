@@ -8,9 +8,6 @@ mod ref_reconciliation;
 mod scope_runtime;
 mod worktree_lock;
 
-#[cfg(any())]
-mod tests;
-
 #[allow(unused_imports)]
 pub(crate) use coordinator::{
     coordinate, CoordinateError, CoordinateOutcome, ExternalTaintOperation, RuntimeBoundary,

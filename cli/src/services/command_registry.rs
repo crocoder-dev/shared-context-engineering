@@ -100,13 +100,6 @@ impl CommandRegistry {
     pub fn contains(&self, name: &str) -> bool {
         self.names.contains(&name)
     }
-
-    #[cfg(any())]
-    pub fn command_names(&self) -> Vec<&'static str> {
-        let mut names = self.names.to_vec();
-        names.sort_unstable();
-        names
-    }
 }
 
 impl Default for CommandRegistry {
@@ -197,50 +190,5 @@ pub fn default_runtime_command(name: &str) -> Option<RuntimeCommand> {
             },
         })),
         _ => None,
-    }
-}
-
-#[cfg(any())]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_registry_lists_all_commands_deterministically() {
-        let registry = CommandRegistry::default();
-
-        assert_eq!(
-            registry.command_names(),
-            vec![
-                "auth",
-                "completion",
-                "config",
-                "doctor",
-                "help",
-                "hooks",
-                "policy",
-                "setup",
-                "sync",
-                "version"
-            ]
-        );
-    }
-
-    #[test]
-    fn default_registry_reports_known_command_names() {
-        let registry = CommandRegistry::default();
-
-        for name in DEFAULT_COMMAND_NAMES {
-            assert!(registry.contains(name));
-        }
-        assert!(registry.contains("sync"));
-    }
-
-    #[test]
-    fn default_runtime_commands_have_expected_names() {
-        for name in DEFAULT_COMMAND_NAMES {
-            let command = default_runtime_command(name).expect("command should exist");
-            assert_eq!(command.name(), *name);
-        }
-        assert!(default_runtime_command("sync").is_some());
     }
 }

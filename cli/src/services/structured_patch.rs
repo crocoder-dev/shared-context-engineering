@@ -507,7 +507,3 @@ fn skipped(reason: ClaudeStructuredPatchSkipReason) -> ClaudeStructuredPatchDeri
 fn skipped_build(reason: ClaudeStructuredPatchSkipReason) -> PatchBuildResult {
     PatchBuildResult::Skipped(reason)
 }
-
-#[cfg(any())]
-#[path = "structured_patch/tests.rs"]
-mod tests;

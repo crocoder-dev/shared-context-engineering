@@ -42,34 +42,6 @@ pub(crate) async fn run_pi_mutation_scope_from_payload<
     .await
 }
 
-#[cfg(any())]
-pub(crate) async fn run_pi_mutation_scope_from_payload_at_state_root<
-    L: crate::services::observability::traits::Logger,
->(
-    state_root: &Path,
-    stdin_payload: &str,
-    logger: Option<&L>,
-) -> Result<String> {
-    let resolve_git_dir_fn = |cwd: &str| resolve_git_dir(Path::new(cwd));
-    let seam_fn = async |repository_root: &Path, payload: &str, logger: Option<&L>| {
-        hooks::mutation_scope::run_mutation_scope_from_payload_at_state_root(
-            repository_root,
-            state_root,
-            payload,
-            logger,
-        )
-        .await
-    };
-
-    run_pi_mutation_scope_from_payload_with_seams(
-        stdin_payload,
-        logger,
-        &resolve_git_dir_fn,
-        &seam_fn,
-    )
-    .await
-}
-
 pub(super) const FAIL_CLOSED_MESSAGE: &str =
     "SCE could not establish Pi mutation attribution for this tool execution.";
 
@@ -460,21 +432,4 @@ pub(super) async fn resolve_recovery<L: crate::services::observability::traits::
         RecoveryFlushCompletion::Cleared => Ok(RecoveryResolution::Cleared),
         RecoveryFlushCompletion::Superseded => Ok(RecoveryResolution::Unresolved),
     }
-}
-
-#[cfg(any())]
-pub(crate) fn force_attempt_owner_dead_for_tests(git_dir: &Path, scope_id: &str) {
-    let mut dead_child = std::process::Command::new("true")
-        .spawn()
-        .expect("spawning 'true' should succeed");
-    let dead_pid = i32::try_from(dead_child.id()).expect("pid fits in i32");
-    dead_child.wait().expect("child should exit and be reaped");
-    state::set_attempt_owner_for_tests(
-        git_dir,
-        scope_id,
-        crate::services::hooks::mutation_scope_owner::ProcessOwner {
-            pid: dead_pid,
-            instance_token: None,
-        },
-    );
 }
