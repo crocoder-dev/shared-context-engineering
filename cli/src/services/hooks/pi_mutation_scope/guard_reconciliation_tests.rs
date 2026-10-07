@@ -35,7 +35,7 @@ struct GuardRepo {
 }
 
 impl GuardRepo {
-    fn new(label: &str) -> Self {
+    async fn new(label: &str) -> Self {
         let temp = tempfile::Builder::new()
             .prefix(&format!("sce-pi-guard-reconciliation-{label}-"))
             .tempdir()
@@ -63,6 +63,7 @@ impl GuardRepo {
             },
             &state_root,
         )
+        .await
         .expect("state-root storage should initialize the repository DB");
 
         Self {
@@ -72,24 +73,26 @@ impl GuardRepo {
         }
     }
 
-    fn drive(&self, payload: &str) -> Result<String> {
-        run_pi_mutation_scope_from_payload_at_state_root(&self.state_root, payload, None)
+    async fn drive(&self, payload: &str) -> Result<String> {
+        run_pi_mutation_scope_from_payload_at_state_root(&self.state_root, payload, None).await
     }
 
-    fn open_db(&self) -> anyhow::Result<RepositoryAgentTraceDb> {
+    async fn open_db(&self) -> anyhow::Result<RepositoryAgentTraceDb> {
         crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
             &self.root,
             &self.state_root,
             "Pi guard-reconciliation test assertions",
         )
+        .await
     }
 
-    fn db(&self) -> RepositoryAgentTraceDb {
-        self.open_db().expect("assertion DB should open")
+    async fn db(&self) -> RepositoryAgentTraceDb {
+        self.open_db().await.expect("assertion DB should open")
     }
 
-    fn scope_status(&self, scope_id: &str) -> Option<(String, String)> {
+    async fn scope_status(&self, scope_id: &str) -> Option<(String, String)> {
         self.db()
+            .await
             .query_map(
                 "SELECT actor_kind, status FROM mutation_trace_scopes WHERE scope_id = ?1",
                 (scope_id,),
@@ -99,6 +102,7 @@ impl GuardRepo {
                     Ok((actor_kind, status))
                 },
             )
+            .await
             .expect("scope query should succeed")
             .into_iter()
             .next()
@@ -108,8 +112,9 @@ impl GuardRepo {
         fs::write(self.root.join(name), contents).expect("write should succeed");
     }
 
-    fn mutation_events(&self) -> Vec<(String, Option<String>)> {
+    async fn mutation_events(&self) -> Vec<(String, Option<String>)> {
         self.db()
+            .await
             .query_map(
                 "SELECT attribution_kind, attribution_scope_id \
                      FROM mutation_trace_events ORDER BY revision",
@@ -121,6 +126,7 @@ impl GuardRepo {
                     Ok((attribution_kind, attribution_scope_id))
                 },
             )
+            .await
             .expect("mutation-events query should succeed")
     }
 }
@@ -159,8 +165,8 @@ fn tool_result(repo: &GuardRepo, tool_call_id: &str, session_id: &str) -> String
     .to_string()
 }
 
-#[test]
-fn a_guard_triggered_worktree_abandonment_reconciles_with_the_pi_adapters_own_state() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_guard_triggered_worktree_abandonment_reconciles_with_the_pi_adapters_own_state() {
     let repo = GuardRepo::new("reconcile");
     let session = "01a091f4-guard-session";
     let key_a = AttemptKey {
@@ -175,8 +181,10 @@ fn a_guard_triggered_worktree_abandonment_reconciles_with_the_pi_adapters_own_st
     let scope_b = format_pi_scope_id(&key_b, 2);
 
     repo.drive(&tool_call(&repo, "call_a", session))
+        .await
         .expect("A's Start should reach the real runtime");
     repo.drive(&tool_call(&repo, "call_b", session))
+        .await
         .expect("B's Start should reach the real runtime");
     assert_eq!(
         repo.scope_status(&scope_a),
@@ -196,10 +204,11 @@ fn a_guard_triggered_worktree_abandonment_reconciles_with_the_pi_adapters_own_st
             cwd: None,
             env: Vec::new(),
         },
-        || repo.open_db(),
+        async || repo.open_db().await,
         |_event| {},
         cancel_rx,
     )
+    .await
     .expect("the guard should finish successfully");
     assert_eq!(outcome.exit_code, Some(0));
     assert!(!outcome.marker_clear_failed);
@@ -217,12 +226,14 @@ fn a_guard_triggered_worktree_abandonment_reconciles_with_the_pi_adapters_own_st
     );
 
     repo.drive(&tool_execution_end(&repo, "call_a", session))
+        .await
         .expect(
             "the adapter's next interaction for an already-abandoned scope must reconcile \
              safely (falling back through the existing Close-failure-to-abandon path) rather \
              than erroring or resurrecting the scope",
         );
     repo.drive(&tool_execution_end(&repo, "call_b", session))
+        .await
         .expect("the same reconciliation must hold for every sibling abandoned by the guard");
 
     assert!(
@@ -236,8 +247,8 @@ fn a_guard_triggered_worktree_abandonment_reconciles_with_the_pi_adapters_own_st
     );
 }
 
-#[test]
-fn a_guard_abandons_a_live_pi_scope_alongside_a_live_scope_from_another_harness() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_guard_abandons_a_live_pi_scope_alongside_a_live_scope_from_another_harness() {
     let repo = GuardRepo::new("cross-harness");
     let key = AttemptKey {
         session_id: "01a091f4-guard-cross-session".to_string(),
@@ -247,6 +258,7 @@ fn a_guard_abandons_a_live_pi_scope_alongside_a_live_scope_from_another_harness(
     let claude_scope = ScopeId("claude-scope-under-guard".to_string());
 
     repo.drive(&tool_call(&repo, "call_pi", "01a091f4-guard-cross-session"))
+        .await
         .expect("Pi's Start should reach the real runtime");
     coordinate(
         &repo.root,
@@ -256,8 +268,9 @@ fn a_guard_abandons_a_live_pi_scope_alongside_a_live_scope_from_another_harness(
             actor_kind: ActorKind::ClaudeCode,
             provenance: None,
         },
-        || repo.open_db(),
+        async || repo.open_db().await,
     )
+    .await
     .expect("Claude's Start should reach the real runtime");
 
     assert_eq!(
@@ -278,10 +291,11 @@ fn a_guard_abandons_a_live_pi_scope_alongside_a_live_scope_from_another_harness(
             cwd: None,
             env: Vec::new(),
         },
-        || repo.open_db(),
+        async || repo.open_db().await,
         |_event| {},
         cancel_rx,
     )
+    .await
     .expect("the guard should finish successfully");
 
     assert_eq!(
@@ -302,6 +316,7 @@ fn a_guard_abandons_a_live_pi_scope_alongside_a_live_scope_from_another_harness(
         "call_pi",
         "01a091f4-guard-cross-session",
     ))
+    .await
     .expect(
         "the Pi adapter must still reconcile cleanly with its own scope even when a \
                  sibling scope belonging to a different harness was abandoned by the same guard",
@@ -314,9 +329,9 @@ fn a_guard_abandons_a_live_pi_scope_alongside_a_live_scope_from_another_harness(
     );
 }
 
-#[test]
-fn a_foreign_pi_start_racing_an_active_guard_fails_closed_touching_no_state_then_succeeds_on_retry()
-{
+#[tokio::test(flavor = "multi_thread")]
+async fn a_foreign_pi_start_racing_an_active_guard_fails_closed_touching_no_state_then_succeeds_on_retry(
+) {
     let repo = GuardRepo::new("race");
     let ready = repo.root.join("ready");
     let release = repo.root.join("release");
@@ -337,12 +352,13 @@ fn a_foreign_pi_start_racing_an_active_guard_fails_closed_touching_no_state_then
                 cwd: None,
                 env: Vec::new(),
             },
-            || {
+            async || {
                 crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
                     &root,
                     &state_root,
                     "guard race test",
                 )
+                .await
             },
             |_event| {},
             cancel_rx,
@@ -370,6 +386,7 @@ fn a_foreign_pi_start_racing_an_active_guard_fails_closed_touching_no_state_then
             "call_race",
             "01a091f4-guard-race-session",
         ))
+        .await
         .expect_err(
             "a Pi Start racing an active external-mutation guard must block then fail \
                  closed with CoordinateError::LockAcquisition, never proceed",
@@ -384,6 +401,7 @@ fn a_foreign_pi_start_racing_an_active_guard_fails_closed_touching_no_state_then
     let outcome = guard_thread
         .join()
         .expect("guard thread should not panic")
+        .await
         .expect("the guard should finish successfully once released");
     assert_eq!(outcome.exit_code, Some(0));
 
@@ -392,6 +410,7 @@ fn a_foreign_pi_start_racing_an_active_guard_fails_closed_touching_no_state_then
         "call_race",
         "01a091f4-guard-race-session",
     ))
+    .await
     .expect("retrying the same Start after the guard finishes must succeed normally");
     assert_eq!(
         repo.scope_status(&scope_id),
@@ -399,9 +418,10 @@ fn a_foreign_pi_start_racing_an_active_guard_fails_closed_touching_no_state_then
     );
 }
 
-#[test]
+#[tokio::test(flavor = "multi_thread")]
 #[allow(clippy::too_many_lines)]
-fn a_foreign_harnesss_boundary_racing_the_guard_fails_closed_then_succeeds_normally_on_retry() {
+async fn a_foreign_harnesss_boundary_racing_the_guard_fails_closed_then_succeeds_normally_on_retry()
+{
     let repo = GuardRepo::new("cross-harness-race");
     let claude_scope = ScopeId("claude-scope-racing-guard".to_string());
     let key = AttemptKey {
@@ -415,6 +435,7 @@ fn a_foreign_harnesss_boundary_racing_the_guard_fails_closed_then_succeeds_norma
         "call_pi_race",
         "01a091f4-guard-cross-race-session",
     ))
+    .await
     .expect("Pi's Start should reach the real runtime");
     coordinate(
         &repo.root,
@@ -424,8 +445,9 @@ fn a_foreign_harnesss_boundary_racing_the_guard_fails_closed_then_succeeds_norma
             actor_kind: ActorKind::ClaudeCode,
             provenance: None,
         },
-        || repo.open_db(),
+        async || repo.open_db().await,
     )
+    .await
     .expect("Claude's Start should reach the real runtime");
 
     let ready = repo.root.join("ready");
@@ -447,12 +469,13 @@ fn a_foreign_harnesss_boundary_racing_the_guard_fails_closed_then_succeeds_norma
                 cwd: None,
                 env: Vec::new(),
             },
-            || {
+            async || {
                 crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
                     &root,
                     &state_root,
                     "guard cross-harness race test",
                 )
+                .await
             },
             |_event| {},
             cancel_rx,
@@ -475,8 +498,9 @@ fn a_foreign_harnesss_boundary_racing_the_guard_fails_closed_then_succeeds_norma
             event: EventId("claude-evt-race-close".to_string()),
             actor_kind: ActorKind::ClaudeCode,
         },
-        || repo.open_db(),
-    );
+        async || repo.open_db().await,
+    )
+    .await;
     assert!(
         matches!(
             close_while_active,
@@ -495,6 +519,7 @@ fn a_foreign_harnesss_boundary_racing_the_guard_fails_closed_then_succeeds_norma
     let outcome = guard_thread
         .join()
         .expect("guard thread should not panic")
+        .await
         .expect("the guard should finish successfully once released");
     assert_eq!(outcome.exit_code, Some(0));
 
@@ -514,8 +539,9 @@ fn a_foreign_harnesss_boundary_racing_the_guard_fails_closed_then_succeeds_norma
             event: EventId("claude-evt-race-close-retry".to_string()),
             actor_kind: ActorKind::ClaudeCode,
         },
-        || repo.open_db(),
+        async || repo.open_db().await,
     )
+    .await
     .expect(
         "Claude's deferred boundary must succeed normally once retried against the \
              recovered worktree, rather than continuing to fail closed",
@@ -525,6 +551,7 @@ fn a_foreign_harnesss_boundary_racing_the_guard_fails_closed_then_succeeds_norma
         "call_pi_race",
         "01a091f4-guard-cross-race-session",
     ))
+    .await
     .expect("the Pi adapter must reconcile its own already-abandoned scope cleanly too");
 
     assert!(
@@ -534,8 +561,8 @@ fn a_foreign_harnesss_boundary_racing_the_guard_fails_closed_then_succeeds_norma
     );
 }
 
-#[test]
-fn a_guard_triggered_abandonment_does_not_poison_the_checkout_for_a_fresh_pi_scope() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_guard_triggered_abandonment_does_not_poison_the_checkout_for_a_fresh_pi_scope() {
     let repo = GuardRepo::new("post-recovery-fresh-start");
     let session = "01a091f4-guard-fresh-session";
     let key_a = AttemptKey {
@@ -545,6 +572,7 @@ fn a_guard_triggered_abandonment_does_not_poison_the_checkout_for_a_fresh_pi_sco
     let scope_a = format_pi_scope_id(&key_a, 1);
 
     repo.drive(&tool_call(&repo, "call_doomed", session))
+        .await
         .expect("A's Start should reach the real runtime");
     assert_eq!(
         repo.scope_status(&scope_a),
@@ -560,10 +588,11 @@ fn a_guard_triggered_abandonment_does_not_poison_the_checkout_for_a_fresh_pi_sco
             cwd: None,
             env: Vec::new(),
         },
-        || repo.open_db(),
+        async || repo.open_db().await,
         |_event| {},
         cancel_rx,
     )
+    .await
     .expect("the guard should finish successfully");
     assert_eq!(outcome.exit_code, Some(0));
 
@@ -572,6 +601,7 @@ fn a_guard_triggered_abandonment_does_not_poison_the_checkout_for_a_fresh_pi_sco
         Some(("pi".to_string(), "abandoned".to_string()))
     );
     repo.drive(&tool_execution_end(&repo, "call_doomed", session))
+        .await
         .expect("the adapter must reconcile the guard-abandoned scope cleanly");
 
     let key_c = AttemptKey {
@@ -581,6 +611,7 @@ fn a_guard_triggered_abandonment_does_not_poison_the_checkout_for_a_fresh_pi_sco
     let scope_c = format_pi_scope_id(&key_c, 2);
 
     repo.drive(&tool_call(&repo, "call_clean", session))
+        .await
         .expect("a fresh Start on the same worktree after recovery must succeed normally");
     assert_eq!(
         repo.scope_status(&scope_c),
@@ -589,8 +620,10 @@ fn a_guard_triggered_abandonment_does_not_poison_the_checkout_for_a_fresh_pi_sco
 
     repo.write("file.txt", "one\nchanged\nclean\n");
     repo.drive(&tool_result(&repo, "call_clean", session))
+        .await
         .expect("tool_result should mark Executed");
     repo.drive(&tool_execution_end(&repo, "call_clean", session))
+        .await
         .expect("Close should reach the real runtime");
 
     assert_eq!(

@@ -132,7 +132,7 @@ impl ProtectedWorktree {
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::path::PathBuf;
     use std::process::Command;

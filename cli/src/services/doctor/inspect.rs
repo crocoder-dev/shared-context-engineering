@@ -1,3 +1,4 @@
+use crate::services::capabilities::GitOps;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -21,7 +22,6 @@ use crate::services::hooks::{
     pi_mutation_scope,
 };
 use crate::services::mutation_trace::runtime::resolve_git_dir;
-use crate::services::observability::traits::Logger;
 use crate::services::repository_identity::resolve::{
     resolve_repository_identity, RepositoryIdentitySource,
 };
@@ -42,10 +42,17 @@ use super::types::{
 };
 use super::{is_executable, DoctorDependencies, DoctorMode, REQUIRED_HOOKS};
 
-pub(super) fn build_report_with_lifecycle_problems(
+pub(super) async fn build_report_with_lifecycle_problems(
     mode: DoctorMode,
     repository_root: &Path,
-    dependencies: &DoctorDependencies<'_>,
+    dependencies: &DoctorDependencies<
+        '_,
+        impl crate::services::capabilities::GitOps,
+        impl Fn() -> anyhow::Result<PathBuf>,
+        impl Fn() -> anyhow::Result<PathBuf>,
+        impl Fn(&Path) -> anyhow::Result<()>,
+        impl Fn() -> crate::services::codex_hook_policy::CodexHookPolicyReadiness,
+    >,
     lifecycle_problems: Vec<DoctorProblem>,
     codex_policy_readiness: &CodexHookPolicyReadiness,
 ) -> HookDoctorReport {
@@ -55,39 +62,57 @@ pub(super) fn build_report_with_lifecycle_problems(
         dependencies,
         lifecycle_problems,
         codex_policy_readiness,
-    );
-    report.agent_trace_db = collect_agent_trace_db_health(repository_root, &mut report.problems);
+    )
+    .await;
+    report.agent_trace_db =
+        collect_agent_trace_db_health(repository_root, &mut report.problems).await;
     report.readiness = compute_readiness(&report.problems);
     report
 }
 
-fn build_report_without_service_owned_problem_checks(
+async fn build_report_without_service_owned_problem_checks(
     mode: DoctorMode,
     repository_root: &Path,
-    dependencies: &DoctorDependencies<'_>,
+    dependencies: &DoctorDependencies<
+        '_,
+        impl crate::services::capabilities::GitOps,
+        impl Fn() -> anyhow::Result<PathBuf>,
+        impl Fn() -> anyhow::Result<PathBuf>,
+        impl Fn(&Path) -> anyhow::Result<()>,
+        impl Fn() -> crate::services::codex_hook_policy::CodexHookPolicyReadiness,
+    >,
     mut problems: Vec<DoctorProblem>,
     codex_policy_readiness: &CodexHookPolicyReadiness,
 ) -> HookDoctorReport {
     let global_state = collect_global_state_locations(repository_root, dependencies);
-    let agent_trace_db = collect_agent_trace_db_health(repository_root, &mut problems);
-    let git_available = (dependencies.check_git_available)();
+    let agent_trace_db = collect_agent_trace_db_health(repository_root, &mut problems).await;
+    let git_available = dependencies.git.is_available();
 
     let detected_repository_root = if git_available {
-        (dependencies.run_git_command)(repository_root, &["rev-parse", "--show-toplevel"])
-            .map(PathBuf::from)
+        doctor_git_output(
+            dependencies.git,
+            repository_root,
+            &["rev-parse", "--show-toplevel"],
+        )
+        .map(PathBuf::from)
     } else {
         None
     };
 
     let bare_repository = if git_available {
-        (dependencies.run_git_command)(repository_root, &["rev-parse", "--is-bare-repository"])
-            .is_some_and(|value| value == "true")
+        doctor_git_output(
+            dependencies.git,
+            repository_root,
+            &["rev-parse", "--is-bare-repository"],
+        )
+        .is_some_and(|value| value == "true")
     } else {
         false
     };
 
     let local_hooks_path = if git_available {
-        (dependencies.run_git_command)(
+        doctor_git_output(
+            dependencies.git,
             repository_root,
             &["config", "--local", "--get", "core.hooksPath"],
         )
@@ -95,7 +120,8 @@ fn build_report_without_service_owned_problem_checks(
         None
     };
     let global_hooks_path = if git_available {
-        (dependencies.run_git_command)(
+        doctor_git_output(
+            dependencies.git,
             repository_root,
             &["config", "--global", "--get", "core.hooksPath"],
         )
@@ -112,16 +138,19 @@ fn build_report_without_service_owned_problem_checks(
     };
 
     let hooks_directory = detected_repository_root.as_ref().and_then(|resolved_root| {
-        (dependencies.run_git_command)(resolved_root, &["rev-parse", "--git-path", "hooks"]).map(
-            |value| {
-                let path = PathBuf::from(value);
-                if path.is_absolute() {
-                    path
-                } else {
-                    resolved_root.join(path)
-                }
-            },
+        doctor_git_output(
+            dependencies.git,
+            resolved_root,
+            &["rev-parse", "--git-path", "hooks"],
         )
+        .map(|value| {
+            let path = PathBuf::from(value);
+            if path.is_absolute() {
+                path
+            } else {
+                resolved_root.join(path)
+            }
+        })
     });
 
     let hooks = if git_available && !bare_repository && detected_repository_root.is_some() {
@@ -230,12 +259,13 @@ fn inspect_mutation_scope_health(
         .collect()
 }
 
-pub(super) type MutationScopeRepairSeam<'a> =
-    &'a dyn Fn(&Path, &str, Option<&dyn Logger>) -> anyhow::Result<String>;
-
-pub(super) fn repair_blocked_mutation_scope_targets_with_seam(
+pub(super) async fn repair_blocked_mutation_scope_targets_with_seam(
     initial_report: &HookDoctorReport,
-    seam: MutationScopeRepairSeam<'_>,
+    seam: &impl std::ops::AsyncFn(
+        &std::path::Path,
+        &str,
+        Option<&crate::services::observability::traits::NoopLogger>,
+    ) -> anyhow::Result<String>,
 ) -> Vec<IntegrationTarget> {
     let Some(repository_root) = initial_report.repository_root.as_deref() else {
         return Vec::new();
@@ -244,43 +274,55 @@ pub(super) fn repair_blocked_mutation_scope_targets_with_seam(
         return Vec::new();
     };
 
-    initial_report
-        .mutation_scope_health
-        .iter()
-        .filter(|row| row.status == MutationScopeHealthStatus::Blocked)
-        .filter_map(|row| {
-            repair_blocked_mutation_scope_target(row.target, &git_dir, repository_root, seam)
-        })
-        .collect()
+    let mut repaired = Vec::new();
+    for row in &initial_report.mutation_scope_health {
+        if row.status == MutationScopeHealthStatus::Blocked {
+            if let Some(target) =
+                repair_blocked_mutation_scope_target(row.target, &git_dir, repository_root, seam)
+                    .await
+            {
+                repaired.push(target);
+            }
+        }
+    }
+    repaired
 }
 
-pub(super) fn mutation_scope_repair_seam(
+pub(super) async fn mutation_scope_repair_seam<
+    L: crate::services::observability::traits::Logger,
+>(
     repository_root: &Path,
     payload: &str,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> anyhow::Result<String> {
-    mutation_scope::run_mutation_scope_from_payload(repository_root, payload, logger)
+    mutation_scope::run_mutation_scope_from_payload(repository_root, payload, logger).await
 }
 
-fn repair_blocked_mutation_scope_target(
+async fn repair_blocked_mutation_scope_target(
     target: IntegrationTarget,
     git_dir: &Path,
     repository_root: &Path,
-    seam: MutationScopeRepairSeam<'_>,
+    seam: &impl std::ops::AsyncFn(
+        &std::path::Path,
+        &str,
+        Option<&crate::services::observability::traits::NoopLogger>,
+    ) -> anyhow::Result<String>,
 ) -> Option<IntegrationTarget> {
     match target {
         IntegrationTarget::ClaudeCode => {
             if claude_repairability(git_dir) != Repairability::AutoFixable {
                 return None;
             }
-            let _ = claude_mutation_scope::repair_blocked(git_dir, repository_root, None, seam);
+            let _ =
+                claude_mutation_scope::repair_blocked(git_dir, repository_root, None, seam).await;
             Some(target)
         }
         IntegrationTarget::OpenCode => {
             if opencode_repairability(git_dir) != Repairability::AutoFixable {
                 return None;
             }
-            let _ = opencode_mutation_scope::repair_blocked(git_dir, repository_root, None, seam);
+            let _ =
+                opencode_mutation_scope::repair_blocked(git_dir, repository_root, None, seam).await;
             Some(target)
         }
         IntegrationTarget::Pi | IntegrationTarget::Codex => None,
@@ -508,7 +550,14 @@ fn post_commit_auto_sync_state(
 
 fn collect_global_state_locations(
     repository_root: &Path,
-    dependencies: &DoctorDependencies<'_>,
+    dependencies: &DoctorDependencies<
+        '_,
+        impl crate::services::capabilities::GitOps,
+        impl Fn() -> anyhow::Result<PathBuf>,
+        impl Fn() -> anyhow::Result<PathBuf>,
+        impl Fn(&Path) -> anyhow::Result<()>,
+        impl Fn() -> crate::services::codex_hook_policy::CodexHookPolicyReadiness,
+    >,
 ) -> GlobalStateHealth {
     let state_root =
         (dependencies.resolve_state_root)()
@@ -553,11 +602,11 @@ fn collect_global_state_locations(
     }
 }
 
-fn collect_agent_trace_db_health(
+async fn collect_agent_trace_db_health(
     repository_root: &Path,
     problems: &mut Vec<DoctorProblem>,
 ) -> Option<AgentTraceDbHealth> {
-    let agent_trace_problems = diagnose_agent_trace_db_health(Some(repository_root));
+    let agent_trace_problems = diagnose_agent_trace_db_health(Some(repository_root)).await;
     let mut agent_trace_db = None;
 
     for problem in &agent_trace_problems {
@@ -1053,7 +1102,14 @@ fn repair_merge_target_if_mismatched(
 fn collect_global_state_health(
     repository_root: &Path,
     problems: &mut Vec<DoctorProblem>,
-    dependencies: &DoctorDependencies<'_>,
+    dependencies: &DoctorDependencies<
+        '_,
+        impl crate::services::capabilities::GitOps,
+        impl Fn() -> anyhow::Result<PathBuf>,
+        impl Fn() -> anyhow::Result<PathBuf>,
+        impl Fn(&Path) -> anyhow::Result<()>,
+        impl Fn() -> crate::services::codex_hook_policy::CodexHookPolicyReadiness,
+    >,
 ) -> GlobalStateHealth {
     let mut state_root_health = None;
     let mut config_locations = Vec::new();
@@ -2684,7 +2740,7 @@ fn inspect_hook_content_state(
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::path::PathBuf;
 
@@ -4669,7 +4725,7 @@ mod tests {
         result
     }
 
-    fn init_git_repo_with_healthy_targets(label: &str, targets: &[SetupTarget]) -> PathBuf {
+    async fn init_git_repo_with_healthy_targets(label: &str, targets: &[SetupTarget]) -> PathBuf {
         let repo = init_git_repo(label);
         let remote_output = std::process::Command::new("git")
             .args([
@@ -4698,7 +4754,7 @@ mod tests {
             )
             .expect("install canonical integration assets");
         }
-        run_full_doctor_report(&repo, super::DoctorMode::Fix);
+        run_full_doctor_report(&repo, super::DoctorMode::Fix).await;
         repo
     }
 
@@ -4712,17 +4768,31 @@ mod tests {
         }
     }
 
-    fn run_full_doctor_report(
+    impl crate::app::HasGit for FullReportRepoContext {
+        type Git = crate::services::capabilities::ProcessGitOps;
+
+        fn git(&self) -> &Self::Git {
+            static GIT: crate::services::capabilities::ProcessGitOps =
+                crate::services::capabilities::ProcessGitOps;
+            &GIT
+        }
+    }
+
+    async fn run_full_doctor_report(
         repo: &std::path::Path,
         mode: super::DoctorMode,
     ) -> super::super::DoctorExecution {
-        run_full_doctor_report_with_seam(repo, mode, &super::mutation_scope_repair_seam)
+        run_full_doctor_report_with_seam(repo, mode, &super::mutation_scope_repair_seam).await
     }
 
-    fn run_full_doctor_report_with_seam(
+    async fn run_full_doctor_report_with_seam(
         repo: &std::path::Path,
         mode: super::DoctorMode,
-        mutation_scope_seam: super::MutationScopeRepairSeam<'_>,
+        mutation_scope_seam: &impl std::ops::AsyncFn(
+            &std::path::Path,
+            &str,
+            Option<&crate::services::observability::traits::NoopLogger>,
+        ) -> anyhow::Result<String>,
     ) -> super::super::DoctorExecution {
         let context = FullReportRepoContext {
             repo_root: repo.to_path_buf(),
@@ -4736,6 +4806,7 @@ mod tests {
             &context,
             mutation_scope_seam,
         )
+        .await
     }
 
     fn render_text(execution: &super::super::DoctorExecution) -> String {
@@ -4771,19 +4842,33 @@ mod tests {
             .collect()
     }
 
-    fn no_op_repair_seam() -> super::MutationScopeRepairSeam<'static> {
-        &|_root, _payload, _logger| Ok(String::new())
+    fn no_op_repair_seam() -> impl std::ops::AsyncFn(
+        &std::path::Path,
+        &str,
+        Option<&crate::services::observability::traits::NoopLogger>,
+    ) -> anyhow::Result<String>
+           + 'static {
+        async |_root, _payload, _logger| Ok(String::new())
     }
 
-    fn failing_repair_seam() -> super::MutationScopeRepairSeam<'static> {
-        &|_root, _payload, _logger| Err(anyhow::anyhow!("simulated seam failure"))
+    fn failing_repair_seam() -> impl std::ops::AsyncFn(
+        &std::path::Path,
+        &str,
+        Option<&crate::services::observability::traits::NoopLogger>,
+    ) -> anyhow::Result<String>
+           + 'static {
+        async |_root, _payload, _logger| Err(anyhow::anyhow!("simulated seam failure"))
     }
 
     fn counting_repair_seam(
         calls: &std::cell::Cell<usize>,
-    ) -> impl Fn(&std::path::Path, &str, Option<&dyn super::Logger>) -> anyhow::Result<String> + '_
-    {
-        move |_root, _payload, _logger| {
+    ) -> impl std::ops::AsyncFn(
+        &std::path::Path,
+        &str,
+        Option<&crate::services::observability::traits::NoopLogger>,
+    ) -> anyhow::Result<String>
+           + '_ {
+        async move |_root, _payload, _logger| {
             calls.set(calls.get() + 1);
             Ok(String::new())
         }
@@ -4835,7 +4920,7 @@ mod tests {
 
     #[test]
     fn full_report_diagnose_is_consistent_across_surfaces_and_never_mutates_state() {
-        with_isolated_global_state(|| {
+        with_isolated_global_state(async || {
             let repo =
                 init_git_repo_with_healthy_targets("full-report-diagnose", &[SetupTarget::Claude]);
             let state_path = claude_state_path(&repo);
@@ -4845,7 +4930,7 @@ mod tests {
                 seed_claude_state(&repo, case.fixture);
                 let seeded_bytes = std::fs::read(&state_path).expect("read seeded state");
 
-                let execution = run_full_doctor_report(&repo, super::DoctorMode::Diagnose);
+                let execution = run_full_doctor_report(&repo, super::DoctorMode::Diagnose).await;
 
                 assert!(execution.fix_results.is_empty(), "{context}");
                 assert_eq!(
@@ -4916,7 +5001,7 @@ mod tests {
         });
     }
 
-    fn assert_doctor_repairs_autofixable_target(
+    async fn assert_doctor_repairs_autofixable_target(
         repo: &std::path::Path,
         target: IntegrationTarget,
         state_path: &std::path::Path,
@@ -4939,8 +5024,9 @@ mod tests {
             target,
             &git_dir,
             repo,
-            no_op_repair_seam(),
-        );
+            &no_op_repair_seam(),
+        )
+        .await;
         assert_eq!(
             attempted,
             Some(target),
@@ -4977,8 +5063,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn repair_blocked_mutation_scope_target_repairs_an_autofixable_claude_state() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn repair_blocked_mutation_scope_target_repairs_an_autofixable_claude_state() {
         let repo = init_git_repo_with_claude_target("repair-target-claude-auto");
         seed_claude_state(&repo, ClaudeStateFixture::BlockedAutoFixable);
 
@@ -4987,7 +5073,8 @@ mod tests {
             IntegrationTarget::ClaudeCode,
             &claude_state_path(&repo),
             "Recovered Claude Code Agent tracing (",
-        );
+        )
+        .await;
 
         std::fs::remove_dir_all(&repo).ok();
     }
@@ -5024,8 +5111,8 @@ mod tests {
         )
     }
 
-    #[test]
-    fn repair_blocked_mutation_scope_target_repairs_an_autofixable_opencode_state() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn repair_blocked_mutation_scope_target_repairs_an_autofixable_opencode_state() {
         let repo = init_git_repo_with_opencode_target("repair-target-opencode-auto");
         let git_dir = super::resolve_git_dir(&repo).expect("resolve git dir");
         let attempt = seed_opencode_manual_only_blocked_state(&git_dir);
@@ -5040,13 +5127,14 @@ mod tests {
             IntegrationTarget::OpenCode,
             &super::opencode_mutation_scope::state::state_path(&git_dir),
             "Recovered OpenCode Agent tracing (",
-        );
+        )
+        .await;
 
         std::fs::remove_dir_all(&repo).ok();
     }
 
-    #[test]
-    fn repair_blocked_mutation_scope_target_never_attempts_or_mutates_a_manual_only_state() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn repair_blocked_mutation_scope_target_never_attempts_or_mutates_a_manual_only_state() {
         let repo = init_git_repo("repair-target-manual-only");
         for dir in [".claude", ".opencode"] {
             std::fs::create_dir_all(repo.join(dir)).expect("create integration directory");
@@ -5071,7 +5159,7 @@ mod tests {
             let blocked_bytes = std::fs::read(&state_path).expect("read blocked state");
 
             let attempted =
-                super::repair_blocked_mutation_scope_target(target, &git_dir, &repo, &seam);
+                super::repair_blocked_mutation_scope_target(target, &git_dir, &repo, &seam).await;
 
             assert_eq!(
                 attempted, None,
@@ -5215,8 +5303,8 @@ mod tests {
         },
     ];
 
-    #[test]
-    fn mutation_scope_fix_result_is_decided_only_by_the_final_inspection() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mutation_scope_fix_result_is_decided_only_by_the_final_inspection() {
         for (index, case) in FINALIZATION_CASES.iter().enumerate() {
             let label = case.label;
             let repo = init_git_repo_with_claude_target(&format!("finalization-case-{index}"));
@@ -5233,6 +5321,7 @@ mod tests {
                     RepairSeamBehavior::Fails => failing_repair_seam(),
                 },
             )
+            .await
             .into_iter()
             .collect::<Vec<_>>();
             assert_eq!(
@@ -5300,7 +5389,7 @@ mod tests {
 
     #[test]
     fn full_report_fix_mode_leaves_a_manual_only_claude_blocked_state_untouched() {
-        with_isolated_global_state(|| {
+        with_isolated_global_state(async || {
             let repo = init_git_repo_with_healthy_targets(
                 "full-report-fix-claude-manual",
                 &[SetupTarget::Claude],
@@ -5314,7 +5403,8 @@ mod tests {
                 &repo,
                 super::DoctorMode::Fix,
                 &counting_repair_seam(&seam_calls),
-            );
+            )
+            .await;
 
             assert_eq!(
                 seam_calls.get(),
@@ -5346,7 +5436,7 @@ mod tests {
 
     #[test]
     fn full_report_fix_mode_has_no_mutation_scope_effect_when_nothing_is_blocked() {
-        with_isolated_global_state(|| {
+        with_isolated_global_state(async || {
             let repo = init_git_repo_with_healthy_targets(
                 "full-report-fix-nothing-blocked",
                 &[SetupTarget::Claude],
@@ -5362,7 +5452,8 @@ mod tests {
                     &repo,
                     super::DoctorMode::Fix,
                     &counting_repair_seam(&seam_calls),
-                );
+                )
+                .await;
 
                 assert_eq!(
                     seam_calls.get(),
@@ -5392,7 +5483,7 @@ mod tests {
     #[test]
     fn full_report_multi_adapter_diagnose_names_doctor_fix_for_one_target_and_the_real_path_for_the_other(
     ) {
-        with_isolated_global_state(|| {
+        with_isolated_global_state(async || {
             let repo = init_git_repo_with_healthy_targets(
                 "full-report-multi-adapter-diagnose",
                 &[SetupTarget::Claude, SetupTarget::OpenCode],
@@ -5401,7 +5492,7 @@ mod tests {
             let git_dir = super::resolve_git_dir(&repo).expect("resolve git dir");
             seed_opencode_manual_only_blocked_state(&git_dir);
 
-            let execution = run_full_doctor_report(&repo, super::DoctorMode::Diagnose);
+            let execution = run_full_doctor_report(&repo, super::DoctorMode::Diagnose).await;
             assert_eq!(execution.report.readiness, Readiness::NotReady);
             let mutation_scope_problems: Vec<_> = execution
                 .report
@@ -5490,7 +5581,7 @@ mod tests {
 
     #[test]
     fn full_report_multi_adapter_fix_mode_resolves_one_target_and_leaves_the_other_manual() {
-        with_isolated_global_state(|| {
+        with_isolated_global_state(async || {
             let repo = init_git_repo_with_healthy_targets(
                 "full-report-multi-adapter-fix",
                 &[SetupTarget::Claude, SetupTarget::OpenCode],
@@ -5506,7 +5597,8 @@ mod tests {
                 &repo,
                 super::DoctorMode::Fix,
                 no_op_repair_seam(),
-            );
+            )
+            .await;
 
             let results = mutation_scope_fix_results(&execution);
             assert_eq!(results.len(), 2, "{results:?}");
@@ -5593,4 +5685,10 @@ mod tests {
             std::fs::remove_dir_all(&repo).ok();
         });
     }
+}
+
+fn doctor_git_output(git: &impl GitOps, repository_root: &Path, args: &[&str]) -> Option<String> {
+    let output = git.run_command(repository_root, args).ok()?;
+    let trimmed = output.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }

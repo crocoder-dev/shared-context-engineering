@@ -1,6 +1,6 @@
 use std::fmt;
-use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::OnceCell;
 
 use serde::{Deserialize, Serialize};
 
@@ -13,10 +13,12 @@ const DEFAULT_TOKEN_ROW_ID: i64 = 1;
 /// Lazy singleton for the encrypted auth database.
 ///
 /// Stores `Result` so initialization failures are preserved across calls.
-static AUTH_DB: OnceLock<Result<AuthDb, String>> = OnceLock::new();
+static AUTH_DB: OnceCell<Result<AuthDb, String>> = OnceCell::const_new();
 
-fn get_auth_db() -> Result<&'static AuthDb, TokenStorageError> {
-    let result = AUTH_DB.get_or_init(|| AuthDb::new().map_err(|e| e.to_string()));
+async fn get_auth_db() -> Result<&'static AuthDb, TokenStorageError> {
+    let result = AUTH_DB
+        .get_or_init(async || AuthDb::new().await.map_err(|e| e.to_string()))
+        .await;
     match result {
         Ok(db) => Ok(db),
         Err(msg) => Err(TokenStorageError::Database(msg.clone())),
@@ -70,8 +72,8 @@ impl fmt::Display for TokenStorageError {
 
 impl std::error::Error for TokenStorageError {}
 
-pub fn save_tokens(token: &TokenResponse) -> Result<StoredTokens, TokenStorageError> {
-    let db = get_auth_db()?;
+pub async fn save_tokens(token: &TokenResponse) -> Result<StoredTokens, TokenStorageError> {
+    let db = get_auth_db().await?;
     let stored = StoredTokens::from_token_response(token)?;
 
     let expires_in = i64::try_from(stored.expires_in).map_err(|error| {
@@ -101,13 +103,14 @@ pub fn save_tokens(token: &TokenResponse) -> Result<StoredTokens, TokenStorageEr
             stored_at_unix_seconds,
         ),
     )
+    .await
     .map_err(|e| TokenStorageError::Database(e.to_string()))?;
 
     Ok(stored)
 }
 
-pub fn load_tokens() -> Result<Option<StoredTokens>, TokenStorageError> {
-    let db = get_auth_db()?;
+pub async fn load_tokens() -> Result<Option<StoredTokens>, TokenStorageError> {
+    let db = get_auth_db().await?;
 
     let sql = "SELECT access_token, token_type, expires_in, refresh_token, scope, \
         stored_at_unix_seconds FROM auth_credentials WHERE id = ?1";
@@ -140,19 +143,21 @@ pub fn load_tokens() -> Result<Option<StoredTokens>, TokenStorageError> {
                 stored_at_unix_seconds,
             })
         })
+        .await
         .map_err(|e| TokenStorageError::Database(e.to_string()))?;
 
     Ok(rows.into_iter().next())
 }
 
-pub fn delete_tokens() -> Result<bool, TokenStorageError> {
-    let db = get_auth_db()?;
+pub async fn delete_tokens() -> Result<bool, TokenStorageError> {
+    let db = get_auth_db().await?;
 
     let affected = db
         .execute(
             "DELETE FROM auth_credentials WHERE id = ?1",
             (DEFAULT_TOKEN_ROW_ID,),
         )
+        .await
         .map_err(|e| TokenStorageError::Database(e.to_string()))?;
 
     Ok(affected > 0)

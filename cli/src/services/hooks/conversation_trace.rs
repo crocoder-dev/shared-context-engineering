@@ -6,7 +6,6 @@ use serde_json::{to_string as serialize_to_json, Value};
 use crate::services::agent_trace_db::{
     InsertMessageInsert, InsertPartInsert, MessageRole, PartType,
 };
-use crate::services::observability::traits::Logger;
 use crate::services::patch::{load_patch_from_json, parse_patch as parse_patch_from_text};
 
 use super::claude_transforms::{
@@ -65,9 +64,11 @@ impl ConversationTracePersistenceSummary {
         )
     }
 }
-pub(crate) fn run_conversation_trace_subcommand(
+pub(crate) async fn run_conversation_trace_subcommand<
+    L: crate::services::observability::traits::Logger,
+>(
     repository_root: &Path,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> String {
     let stdin_payload = match read_hook_stdin() {
         Ok(payload) => payload,
@@ -80,16 +81,20 @@ pub(crate) fn run_conversation_trace_subcommand(
         &stdin_payload,
         logger,
         session_id.as_deref(),
-    ) {
+    )
+    .await
+    {
         Ok(output) => output,
         Err(error) => log_conversation_trace_fail_open(&error, logger, session_id.as_deref()),
     }
 }
 
-pub(crate) fn run_conversation_trace_subcommand_from_payload(
+pub(crate) async fn run_conversation_trace_subcommand_from_payload<
+    L: crate::services::observability::traits::Logger,
+>(
     repository_root: &Path,
     stdin_payload: &str,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
     session_id: Option<&str>,
 ) -> Result<String> {
     let payload = parse_conversation_trace_payload(stdin_payload)?;
@@ -98,12 +103,15 @@ pub(crate) fn run_conversation_trace_subcommand_from_payload(
         payload,
         logger,
         session_id,
-    ))
+    )
+    .await)
 }
 
-pub(crate) fn log_conversation_trace_fail_open(
+pub(crate) fn log_conversation_trace_fail_open<
+    L: crate::services::observability::traits::Logger,
+>(
     error: &anyhow::Error,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
     session_id: Option<&str>,
 ) -> String {
     if let Some(log) = logger {
@@ -118,16 +126,20 @@ pub(crate) fn log_conversation_trace_fail_open(
     String::from("conversation-trace hook intake failed open; error logged.")
 }
 
-pub(crate) fn persist_conversation_trace_payload_to_agent_trace_db(
+pub(crate) async fn persist_conversation_trace_payload_to_agent_trace_db<
+    L: crate::services::observability::traits::Logger,
+>(
     repository_root: &Path,
     payload: ConversationTracePayload,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
     session_id: Option<&str>,
 ) -> String {
     let db = match open_agent_trace_db_for_hook_runtime(
         repository_root,
         "Failed to open Agent Trace DB for conversation-trace persistence.",
-    ) {
+    )
+    .await
+    {
         Ok(db) => db,
         Err(error) => {
             if let Some(log) = logger {
@@ -146,21 +158,26 @@ pub(crate) fn persist_conversation_trace_payload_to_agent_trace_db(
     let summary = persist_conversation_trace_payload_to_agent_trace_db_with(
         payload,
         logger,
-        |inserts| db.insert_messages(inserts),
-        |inserts| db.insert_parts(inserts),
-    );
+        async |inserts| db.insert_messages(inserts).await,
+        async |inserts| db.insert_parts(inserts).await,
+    )
+    .await;
 
     summary.render()
 }
-pub(crate) fn persist_conversation_trace_payload_to_agent_trace_db_with<IM, IP>(
+pub(crate) async fn persist_conversation_trace_payload_to_agent_trace_db_with<
+    L: crate::services::observability::traits::Logger,
+    IM,
+    IP,
+>(
     payload: ConversationTracePayload,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
     insert_messages: IM,
     insert_parts: IP,
 ) -> ConversationTracePersistenceSummary
 where
-    IM: FnOnce(Vec<InsertMessageInsert>) -> Result<u64>,
-    IP: FnOnce(Vec<InsertPartInsert>) -> Result<u64>,
+    IM: std::ops::AsyncFnOnce(Vec<InsertMessageInsert>) -> Result<u64>,
+    IP: std::ops::AsyncFnOnce(Vec<InsertPartInsert>) -> Result<u64>,
 {
     log_skipped_conversation_trace_payloads(logger, "unsupported", &payload.skipped);
 
@@ -168,12 +185,14 @@ where
         payload.message_updated,
         logger,
         insert_messages,
-    );
+    )
+    .await;
     let part_summary = persist_message_part_updated_batch_to_agent_trace_db_with(
         payload.message_part_updated,
         logger,
         insert_parts,
-    );
+    )
+    .await;
 
     ConversationTracePersistenceSummary {
         attempted: payload.attempted_count,
@@ -188,13 +207,16 @@ pub(crate) struct ConversationTraceEventPersistenceSummary {
     skipped: usize,
 }
 
-pub(crate) fn persist_message_updated_batch_to_agent_trace_db_with<I>(
+pub(crate) async fn persist_message_updated_batch_to_agent_trace_db_with<
+    L: crate::services::observability::traits::Logger,
+    I,
+>(
     batch: ConversationTraceMessageBatch,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
     insert_messages: I,
 ) -> ConversationTraceEventPersistenceSummary
 where
-    I: FnOnce(Vec<InsertMessageInsert>) -> Result<u64>,
+    I: std::ops::AsyncFnOnce(Vec<InsertMessageInsert>) -> Result<u64>,
 {
     const EVENT_TYPE: &str = "message";
 
@@ -207,7 +229,7 @@ where
     let persisted = if valid_count == 0 {
         0
     } else {
-        match insert_messages(batch.inserts) {
+        match insert_messages(batch.inserts).await {
             Ok(affected_rows) => usize::try_from(affected_rows)
                 .unwrap_or(usize::MAX)
                 .min(valid_count),
@@ -228,13 +250,16 @@ where
     ConversationTraceEventPersistenceSummary { persisted, skipped }
 }
 
-pub(crate) fn persist_message_part_updated_batch_to_agent_trace_db_with<I>(
+pub(crate) async fn persist_message_part_updated_batch_to_agent_trace_db_with<
+    L: crate::services::observability::traits::Logger,
+    I,
+>(
     batch: ConversationTracePartBatch,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
     insert_parts: I,
 ) -> ConversationTraceEventPersistenceSummary
 where
-    I: FnOnce(Vec<InsertPartInsert>) -> Result<u64>,
+    I: std::ops::AsyncFnOnce(Vec<InsertPartInsert>) -> Result<u64>,
 {
     const EVENT_TYPE: &str = "message.part";
 
@@ -247,7 +272,7 @@ where
     let persisted = if valid_count == 0 {
         0
     } else {
-        match insert_parts(batch.inserts) {
+        match insert_parts(batch.inserts).await {
             Ok(affected_rows) => usize::try_from(affected_rows)
                 .unwrap_or(usize::MAX)
                 .min(valid_count),
@@ -268,8 +293,10 @@ where
     ConversationTraceEventPersistenceSummary { persisted, skipped }
 }
 
-pub(crate) fn log_skipped_conversation_trace_payloads(
-    logger: Option<&dyn Logger>,
+pub(crate) fn log_skipped_conversation_trace_payloads<
+    L: crate::services::observability::traits::Logger,
+>(
+    logger: Option<&L>,
     event_type: &str,
     skipped_payloads: &[SkippedConversationTracePayload],
 ) {
@@ -291,8 +318,10 @@ pub(crate) fn log_skipped_conversation_trace_payloads(
     }
 }
 
-pub(crate) fn log_conversation_trace_batch_insert_failure(
-    logger: Option<&dyn Logger>,
+pub(crate) fn log_conversation_trace_batch_insert_failure<
+    L: crate::services::observability::traits::Logger,
+>(
+    logger: Option<&L>,
     event_type: &str,
     valid_count: usize,
     error: &anyhow::Error,

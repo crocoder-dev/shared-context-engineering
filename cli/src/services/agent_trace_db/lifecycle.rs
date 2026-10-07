@@ -24,11 +24,15 @@ impl ServiceLifecycle for AgentTraceDbLifecycle {
         LifecycleProviderId::AgentTraceDb
     }
 
-    fn diagnose<C: HasRepoRoot>(&self, ctx: &C) -> Vec<HealthProblem> {
-        diagnose_agent_trace_db_health(ctx.repo_root())
+    async fn diagnose<C: HasRepoRoot>(&self, ctx: &C) -> Vec<HealthProblem> {
+        diagnose_agent_trace_db_health(ctx.repo_root()).await
     }
 
-    fn fix<C: HasRepoRoot>(&self, ctx: &C, problems: &[HealthProblem]) -> Vec<FixResultRecord> {
+    async fn fix<C: HasRepoRoot>(
+        &self,
+        ctx: &C,
+        problems: &[HealthProblem],
+    ) -> Vec<FixResultRecord> {
         let should_bootstrap_parent = problems.iter().any(|problem| {
             problem.category == HealthCategory::GlobalState
                 && problem.fixability == HealthFixability::AutoFixable
@@ -56,11 +60,15 @@ impl ServiceLifecycle for AgentTraceDbLifecycle {
         }
     }
 
-    fn setup<C: HasRepoRoot>(&self, ctx: &C) -> Result<SetupOutcome> {
+    async fn setup<C: HasRepoRoot>(&self, ctx: &C) -> Result<SetupOutcome> {
         let repository_setup = match ctx.repo_root() {
-            Some(repo_root) => Some(initialize_repository_agent_trace_db(repo_root).context(
-                "Agent trace DB lifecycle setup failed while initializing repository database",
-            )?),
+            Some(repo_root) => Some(
+                initialize_repository_agent_trace_db(repo_root)
+                    .await
+                    .context(
+                    "Agent trace DB lifecycle setup failed while initializing repository database",
+                )?,
+            ),
             None => None,
         };
 
@@ -84,7 +92,7 @@ struct RepositoryDatabaseSetup {
     database_path: PathBuf,
 }
 
-fn initialize_repository_agent_trace_db(repo_root: &Path) -> Result<RepositoryDatabaseSetup> {
+async fn initialize_repository_agent_trace_db(repo_root: &Path) -> Result<RepositoryDatabaseSetup> {
     let storage_config = config::resolve_agent_trace_storage_runtime_config(repo_root)
         .context("failed to resolve Agent Trace repository storage config")?;
     let storage_context = AgentTraceStorageContext {
@@ -92,7 +100,7 @@ fn initialize_repository_agent_trace_db(repo_root: &Path) -> Result<RepositoryDa
         explicit_repository_id: storage_config.repository_id.as_deref(),
         repository_remote: &storage_config.repository_remote,
     };
-    let storage = resolve_agent_trace_storage(&storage_context)?;
+    let storage = resolve_agent_trace_storage(&storage_context).await?;
 
     let (identity_source, configured_remote) = match storage.repository_identity.source {
         RepositoryIdentitySource::ExplicitConfig => (String::from("explicit_config"), None),
@@ -128,7 +136,7 @@ fn format_repository_storage_setup_message(setup: &RepositoryDatabaseSetup) -> S
     )
 }
 
-pub fn diagnose_agent_trace_db_health(repo_root: Option<&Path>) -> Vec<HealthProblem> {
+pub async fn diagnose_agent_trace_db_health(repo_root: Option<&Path>) -> Vec<HealthProblem> {
     let mut problems = Vec::new();
 
     let db_path = match resolve_lifecycle_agent_trace_db_path(repo_root) {
@@ -154,9 +162,9 @@ pub fn diagnose_agent_trace_db_health(repo_root: Option<&Path>) -> Vec<HealthPro
     );
 
     if db_path.exists() && db_path.is_file() {
-        match RepositoryAgentTraceDb::open_without_migrations_at(&db_path) {
+        match RepositoryAgentTraceDb::open_without_migrations_at(&db_path).await {
             Ok(db) => {
-                if let Err(error) = db.ensure_schema_ready_for_hooks() {
+                if let Err(error) = db.ensure_schema_ready_for_hooks().await {
                     problems.push(HealthProblem {
                         kind: HealthProblemKind::AgentTraceDbSchemaNotReady,
                         category: HealthCategory::GlobalState,
@@ -224,11 +232,11 @@ fn resolve_lifecycle_agent_trace_db_path(repo_root: Option<&Path>) -> Result<Pat
     )
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 
-    fn setup(configured_remote: Option<&str>) -> RepositoryDatabaseSetup {
+    async fn setup(configured_remote: Option<&str>) -> RepositoryDatabaseSetup {
         RepositoryDatabaseSetup {
             repository_id: String::from("repo-123"),
             canonical_identity: String::from("github.com/example/repo"),

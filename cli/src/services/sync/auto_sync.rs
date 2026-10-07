@@ -71,7 +71,7 @@ fn spawn_command(spec: AutoSyncCommand) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::cell::RefCell;
     use std::io;

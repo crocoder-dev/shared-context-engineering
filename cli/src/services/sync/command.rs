@@ -102,7 +102,7 @@ impl SyncCommand {
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::classify_sync_error;
     use crate::services::agent_trace_sync::control_plane::ControlPlaneError;

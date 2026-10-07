@@ -211,7 +211,7 @@ fn render_file_section(old_path: &str, new_path: &str, body: &str) -> String {
     format!("Index: {new_path}\n{PATCH_INDEX_SEPARATOR}\n--- {old_path}\n+++ {new_path}\n{body}")
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::super::parser::parse_codex_apply_patch;
     use super::*;

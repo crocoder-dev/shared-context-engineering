@@ -272,7 +272,7 @@ fn path_to_utf8_slash_path(path: &Path) -> Result<String> {
     Ok(components.join("/"))
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::{
         fs,
@@ -453,8 +453,8 @@ mod tests {
         let _ = fs::remove_dir_all(outside);
     }
 
-    #[test]
-    fn clamps_excessive_parent_traversal_at_filesystem_root() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn clamps_excessive_parent_traversal_at_filesystem_root() {
         let root = temp_repo("root-clamp");
         let cwd = root.join("src");
         fs::create_dir(&cwd).expect("src directory should be created");

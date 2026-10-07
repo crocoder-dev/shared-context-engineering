@@ -292,7 +292,7 @@ fn hex_encode(bytes: &[u8]) -> String {
     hex
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 

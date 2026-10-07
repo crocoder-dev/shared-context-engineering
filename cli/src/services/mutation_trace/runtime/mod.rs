@@ -8,7 +8,7 @@ mod ref_reconciliation;
 mod scope_runtime;
 mod worktree_lock;
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests;
 
 #[allow(unused_imports)]

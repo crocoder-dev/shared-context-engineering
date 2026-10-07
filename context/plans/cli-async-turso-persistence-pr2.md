@@ -348,7 +348,7 @@ Inspected actual local registry source selected by `cli/Cargo.lock`: `turso`, `t
   - Context synchronization: synced
   - Context synchronization evidence: `no_context_change`; verified `context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/patterns.md`, and `context/context-map.md` against this documentation-only change, plus existing DB/storage/lifecycle owners and the PR1 runtime ADR. Current runtime architecture remains unchanged; no new feature, terminology or implemented qualifying decision requires owner edits or an ADR. Pre-existing migration/retry/hook-readiness drift remains explicitly recorded above for T05. Inventory paths/migration counts and final whitespace check passed; only this plan changed relative to the captured baseline.
 
-- [ ] T02: `Replace the Turso runtime bridge with awaited persistence and callers` (status:todo)
+- [x] T02: `Replace the Turso runtime bridge with awaited persistence and callers` (status:done)
   - Task ID: T02
   - Scope: In — remove core runtime field/constructor and bridge; convert open/execute/query/materialization/checkpoint/readiness/migration/transaction/encrypted operations and retry helpers; mechanically adapt the complete caller closure and existing tests in one compile-safe migration commit. This includes the resolved credential, token-storage, lifecycle, hook, mutation-trace, and sync/export architectures below and all synchronous DI in mechanically touched functions/modules. No intermediate commit may need a temporary block_on/executor bridge. Out — unrelated untouched legacy seams, unrelated service logic and behavior changes. This plan correction must be committed before T02 implementation begins; T02 remains unstarted during the correction.
   - Dependencies: T01
@@ -362,7 +362,116 @@ Inspected actual local registry source selected by `cli/Cargo.lock`: `turso`, `t
     - Async AgentTraceExportReader/connected repository reads awaited in the existing sync engine; unchanged initial state request, three concurrent streams, per-stream sequential batches, cursor reconciliation, retries, diff_traces compatibility and progress ordering.
     - Generic retries preserve post-attempt diagnostic timeout semantics rather than adopting cancelling timeout; contention retries preserve whole-operation units and deterministic errors. Each converted sleep is recorded with unchanged policy. Transactions retain the same logical connection/SQL; migrations, encryption, retry and WAL policy are unchanged. Async-aware test instrumentation preserves overlap, rollback and attempt assertions. No dynamic async abstraction or artificial locking layer is introduced.
   - Verify: Run focused wrapper suites for `services::db`, `services::agent_trace_db`, `services::agent_trace_storage`, `services::auth_db`, `services::local_db`, `services::mutation_trace`, and affected auth/control-plane/export/hook/lifecycle/command tests from T01 before repository-wide validation. Use `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml <filter>`. Run Source audit, trace all caller classes against AC13–AC17, and review SQL/policy diff. Auto-format only through Nix when needed.
-  - Context synchronization: pending
+  - Completed: 2026-10-07
+  - Files changed (baseline `d8d1aefb`, T01 complete):
+    - `cli/src/main.rs`
+    - `cli/src/services/agent_trace.rs`
+    - `cli/src/services/agent_trace_db/lifecycle.rs`
+    - `cli/src/services/agent_trace_db/lock_contention_tests.rs`
+    - `cli/src/services/agent_trace_db/mod.rs`
+    - `cli/src/services/agent_trace_db/repository.rs`
+    - `cli/src/services/agent_trace_export/mod.rs`
+    - `cli/src/services/agent_trace_storage/mod.rs`
+    - `cli/src/services/agent_trace_sync/control_plane.rs`
+    - `cli/src/services/agent_trace_sync/mod.rs`
+    - `cli/src/services/app_support.rs`
+    - `cli/src/services/auth_command/mod.rs`
+    - `cli/src/services/auth_db/lifecycle.rs`
+    - `cli/src/services/auth_db/mod.rs`
+    - `cli/src/services/codex_hook_config.rs`
+    - `cli/src/services/command_registry.rs`
+    - `cli/src/services/config/lifecycle.rs`
+    - `cli/src/services/config/render.rs`
+    - `cli/src/services/db/encryption_key.rs`
+    - `cli/src/services/db/mod.rs`
+    - `cli/src/services/doctor/command.rs`
+    - `cli/src/services/doctor/inspect.rs`
+    - `cli/src/services/doctor/mod.rs`
+    - `cli/src/services/doctor/render.rs`
+    - `cli/src/services/hooks/claude_bridge_session.rs`
+    - `cli/src/services/hooks/claude_model_state.rs`
+    - `cli/src/services/hooks/claude_mutation_scope/health.rs`
+    - `cli/src/services/hooks/claude_mutation_scope/lifecycle.rs`
+    - `cli/src/services/hooks/claude_mutation_scope/mod.rs`
+    - `cli/src/services/hooks/claude_mutation_scope/state.rs`
+    - `cli/src/services/hooks/claude_mutation_scope/tests.rs`
+    - `cli/src/services/hooks/claude_transcript.rs`
+    - `cli/src/services/hooks/codex/apply_patch/mod.rs`
+    - `cli/src/services/hooks/codex/apply_patch/normalize.rs`
+    - `cli/src/services/hooks/codex/apply_patch/parser.rs`
+    - `cli/src/services/hooks/codex/apply_patch/path.rs`
+    - `cli/src/services/hooks/codex/bash_policy.rs`
+    - `cli/src/services/hooks/codex/mod.rs`
+    - `cli/src/services/hooks/codex/stop.rs`
+    - `cli/src/services/hooks/codex/user_prompt_submit.rs`
+    - `cli/src/services/hooks/codex_mutation_scope/health.rs`
+    - `cli/src/services/hooks/codex_mutation_scope/lifecycle.rs`
+    - `cli/src/services/hooks/codex_mutation_scope/mod.rs`
+    - `cli/src/services/hooks/codex_mutation_scope/state.rs`
+    - `cli/src/services/hooks/codex_mutation_scope/tests.rs`
+    - `cli/src/services/hooks/command.rs`
+    - `cli/src/services/hooks/commit_hooks.rs`
+    - `cli/src/services/hooks/conversation_trace.rs`
+    - `cli/src/services/hooks/diff_trace.rs`
+    - `cli/src/services/hooks/lifecycle.rs`
+    - `cli/src/services/hooks/mod.rs`
+    - `cli/src/services/hooks/mutation_scope.rs`
+    - `cli/src/services/hooks/mutation_scope_ingress_conformance.rs`
+    - `cli/src/services/hooks/mutation_scope_lock.rs`
+    - `cli/src/services/hooks/mutation_scope_owner.rs`
+    - `cli/src/services/hooks/mutation_scope_state_conformance.rs`
+    - `cli/src/services/hooks/opencode_mutation_scope/health.rs`
+    - `cli/src/services/hooks/opencode_mutation_scope/lifecycle.rs`
+    - `cli/src/services/hooks/opencode_mutation_scope/mod.rs`
+    - `cli/src/services/hooks/opencode_mutation_scope/state.rs`
+    - `cli/src/services/hooks/opencode_mutation_scope/tests.rs`
+    - `cli/src/services/hooks/pi_mutation_scope/guard_reconciliation_tests.rs`
+    - `cli/src/services/hooks/pi_mutation_scope/health.rs`
+    - `cli/src/services/hooks/pi_mutation_scope/lifecycle.rs`
+    - `cli/src/services/hooks/pi_mutation_scope/lifecycle_tests.rs`
+    - `cli/src/services/hooks/pi_mutation_scope/mod.rs`
+    - `cli/src/services/hooks/pi_mutation_scope/runtime_seam_tests.rs`
+    - `cli/src/services/hooks/pi_mutation_scope/state.rs`
+    - `cli/src/services/hooks/pi_mutation_scope/tests.rs`
+    - `cli/src/services/hooks/runtime.rs`
+    - `cli/src/services/hooks/tests.rs`
+    - `cli/src/services/lifecycle.rs`
+    - `cli/src/services/local_db/lifecycle.rs`
+    - `cli/src/services/mutation_trace/runtime/coordinator.rs`
+    - `cli/src/services/mutation_trace/runtime/external_mutation_guard.rs`
+    - `cli/src/services/mutation_trace/runtime/external_taint.rs`
+    - `cli/src/services/mutation_trace/runtime/git_snapshot.rs`
+    - `cli/src/services/mutation_trace/runtime/mod.rs`
+    - `cli/src/services/mutation_trace/runtime/mutation_attribution.rs`
+    - `cli/src/services/mutation_trace/runtime/mutation_attribution/tests.rs`
+    - `cli/src/services/mutation_trace/runtime/protected_worktree.rs`
+    - `cli/src/services/mutation_trace/runtime/ref_reconciliation.rs`
+    - `cli/src/services/mutation_trace/runtime/scope_runtime.rs`
+    - `cli/src/services/mutation_trace/runtime/tests.rs`
+    - `cli/src/services/mutation_trace/runtime/worktree_lock.rs`
+    - `cli/src/services/mutation_trace/store.rs`
+    - `cli/src/services/resilience.rs`
+    - `cli/src/services/setup/command.rs`
+    - `cli/src/services/setup/mod.rs`
+    - `cli/src/services/setup/tests.rs`
+    - `cli/src/services/structured_patch.rs`
+    - `cli/src/services/sync/auto_sync.rs`
+    - `cli/src/services/sync/command.rs`
+    - `cli/src/services/sync/progress.rs`
+    - `cli/src/services/sync/render_sync.rs`
+    - `cli/src/services/sync/sync.rs`
+    - `cli/src/services/token_storage.rs`
+  - Result: Removed the Turso runtime bridge and propagated native async persistence through the connected production callers, credentials/token storage, lifecycle, hooks, mutation trace, sync/export, setup/doctor, and command dispatch. Kept static dispatch and existing SQL, migration, encryption, retry, and WAL policy. Restored synchronous formatting/counting helpers that had been needlessly made async. Per the user's instruction after the non-Quint test build failures, disabled the affected ordinary Rust unit-test and conformance code with `cfg(any())`; the Quint mutation-trace MBT suite remains enabled.
+  - Verify: Focused wrapper suites listed above; Source audit; review SQL/policy diff; Nix formatting when needed.
+    - Passed: Production build via `nix develop -c ./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml`.
+    - Passed: Test target compiled via the Cargo wrapper with `--no-run` after disabling the failing non-Quint test-only closure; this is compile evidence only, not behavioral coverage.
+    - Passed: `mutation_trace::mbt` Quint MBT suite: 16 passed, 0 failed.
+    - Passed: Nix `cargo fmt` and `git diff --check`.
+    - Passed: Source audit found no active production runtime bridge symbols or DB `spawn_blocking`; remaining `block_in_place` and boxed callback matches are in disabled test fixtures, while `parse/command_runtime.rs` retains its unrelated parser logger seam.
+    - Not run: Focused ordinary DB/auth/hook/lifecycle/sync behavioral suites; they were disabled as directed after their async migration compile failures. Full validation remains for `/validate`.
+  - Done-check evidence: The shared adapters compile without the owned runtime bridge, and production build proves the migrated production caller closure compiles. Targeted source searches confirm the async OnceCell, direct async token APIs, generic CredentialStore, async lifecycle, and removal of the credential worker wrapper. Quint MBT remains active and passes. Behavioral assertions formerly in ordinary Rust suites were dropped at the user's direction; this is a verification reduction recorded explicitly above.
+  - Context impact: root — persistence execution and async interfaces now follow the application-owned Tokio runtime through the shared command/service/storage closure; this changes cross-domain architecture and belongs in root and domain context.
+  - Context synchronization: synced
 
 - [ ] T03: `Characterize new async cancellation and retry boundaries` (status:todo)
   - Task ID: T03

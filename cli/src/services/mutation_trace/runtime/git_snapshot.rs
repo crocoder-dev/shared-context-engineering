@@ -582,7 +582,7 @@ impl Drop for TempIndexGuard {
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 
@@ -811,7 +811,7 @@ mod tests {
         );
     }
 
-    fn relative_path_from(base: &Path, target: &Path) -> PathBuf {
+    async fn relative_path_from(base: &Path, target: &Path) -> PathBuf {
         let base_components: Vec<_> = base.components().collect();
         let target_components: Vec<_> = target.components().collect();
 

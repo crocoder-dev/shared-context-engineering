@@ -93,7 +93,7 @@ pub(crate) fn arm_external_mutation_guard<P, A>(
     _cancel_rx: mpsc::Receiver<()>,
 ) -> Result<ArmedExternalMutationGuard<P>, GuardError>
 where
-    P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+    P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
     A: FnOnce() -> std::io::Result<()>,
 {
     Err(GuardError::UnsupportedPlatform)
@@ -108,7 +108,7 @@ pub(crate) fn run_external_mutation_guard<P, E>(
     _cancel_rx: mpsc::Receiver<()>,
 ) -> Result<GuardOutcome, GuardError>
 where
-    P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+    P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
     E: FnMut(GuardEvent),
 {
     Err(GuardError::UnsupportedPlatform)
@@ -537,10 +537,10 @@ mod unix_impl {
 
     impl<P> ArmedExternalMutationGuard<P>
     where
-        P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+        P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
     {
         #[allow(clippy::too_many_lines)]
-        pub(crate) fn exec<E>(
+        pub(crate) async fn exec<E>(
             mut self,
             request: &GuardRequest,
             mut on_event: E,
@@ -649,7 +649,9 @@ mod unix_impl {
                     .take()
                     .expect("the guard database opener must be available before exec"),
                 true,
-            ) {
+            )
+            .await
+            {
                 return Err(GuardError::Finish(source));
             }
 
@@ -671,7 +673,7 @@ mod unix_impl {
         hooks: GuardTestHooks,
     ) -> Result<ArmedExternalMutationGuard<P>, GuardError>
     where
-        P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+        P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
         A: FnOnce() -> io::Result<()>,
     {
         let protected = ProtectedWorktree::acquire(repository_root).map_err(GuardError::Acquire)?;
@@ -703,7 +705,7 @@ mod unix_impl {
         cancel_rx: mpsc::Receiver<()>,
     ) -> Result<ArmedExternalMutationGuard<P>, GuardError>
     where
-        P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+        P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
         A: FnOnce() -> io::Result<()>,
     {
         arm_external_mutation_guard_inner(
@@ -715,7 +717,7 @@ mod unix_impl {
         )
     }
 
-    pub(crate) fn run_external_mutation_guard<P, E>(
+    pub(crate) async fn run_external_mutation_guard<P, E>(
         repository_root: &Path,
         request: &GuardRequest,
         open_db: P,
@@ -723,7 +725,7 @@ mod unix_impl {
         cancel_rx: mpsc::Receiver<()>,
     ) -> Result<GuardOutcome, GuardError>
     where
-        P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+        P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
         E: FnMut(GuardEvent),
     {
         let guard = arm_external_mutation_guard(
@@ -735,11 +737,11 @@ mod unix_impl {
             },
             cancel_rx,
         )?;
-        guard.exec(request, on_event)
+        guard.exec(request, on_event).await
     }
 
-    #[cfg(test)]
-    pub(super) fn run_external_mutation_guard_with_hooks<P, E>(
+    #[cfg(any())]
+    pub(super) async fn run_external_mutation_guard_with_hooks<P, E>(
         repository_root: &Path,
         request: &GuardRequest,
         open_db: P,
@@ -748,7 +750,7 @@ mod unix_impl {
         hooks: GuardTestHooks,
     ) -> Result<GuardOutcome, GuardError>
     where
-        P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+        P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
         E: FnMut(GuardEvent),
     {
         let guard = arm_external_mutation_guard_inner(
@@ -761,10 +763,10 @@ mod unix_impl {
             cancel_rx,
             hooks,
         )?;
-        guard.exec(request, on_event)
+        guard.exec(request, on_event).await
     }
 
-    #[cfg(test)]
+    #[cfg(any())]
     pub(super) fn arm_external_mutation_guard_with_hooks<P, A>(
         repository_root: &Path,
         open_db: P,
@@ -773,7 +775,7 @@ mod unix_impl {
         hooks: GuardTestHooks,
     ) -> Result<ArmedExternalMutationGuard<P>, GuardError>
     where
-        P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+        P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
         A: FnOnce() -> io::Result<()>,
     {
         arm_external_mutation_guard_inner(repository_root, open_db, on_armed, cancel_rx, hooks)
@@ -785,7 +787,7 @@ pub(crate) use unix_impl::{
     arm_external_mutation_guard, run_external_mutation_guard, ArmedExternalMutationGuard,
 };
 
-#[cfg(all(unix, test))]
+#[cfg(any())]
 mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -831,7 +833,7 @@ mod tests {
     }
 
     impl TestRepo {
-        fn new(label: &str) -> Self {
+        async fn new(label: &str) -> Self {
             let temp = tempfile::Builder::new()
                 .prefix(&format!("sce-external-mutation-guard-{label}-"))
                 .tempdir()
@@ -859,6 +861,7 @@ mod tests {
                 },
                 &state_root,
             )
+            .await
             .expect("state-root storage should initialize the repository DB");
 
             Self {
@@ -879,17 +882,18 @@ mod tests {
                 .expect("nested test directory should canonicalize")
         }
 
-        fn open_db(&self) -> anyhow::Result<RepositoryAgentTraceDb> {
+        async fn open_db(&self) -> anyhow::Result<RepositoryAgentTraceDb> {
             crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
                 &self.root,
                 &self.state_root,
                 "external-mutation-guard test assertions",
             )
+            .await
         }
     }
 
-    #[test]
-    fn lifetime_token_establishment_failure_cannot_emit_armed() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lifetime_token_establishment_failure_cannot_emit_armed() {
         let repo = TestRepo::new("lifetime-token-establishment-failure");
         let (_cancel_tx, cancel_rx) = mpsc::channel();
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -898,14 +902,15 @@ mod tests {
         let result = run_external_mutation_guard_with_hooks(
             &repo.root,
             &request("true"),
-            || repo.open_db(),
+            async || repo.open_db().await,
             move |event| captured_events.lock().expect("events mutex").push(event),
             cancel_rx,
             GuardTestHooks {
                 fail_lifetime_token: true,
                 fail_after_first_output: false,
             },
-        );
+        )
+        .await;
 
         assert!(matches!(result, Err(GuardError::Spawn(_))));
         assert!(
@@ -913,6 +918,7 @@ mod tests {
             "Armed must not be emitted before lifetime-token establishment"
         );
         WorktreeLock::acquire(&repo.git_dir(), Duration::from_millis(200))
+            .await
             .expect("pre-spawn lifetime failure must release the ordinary lock");
         assert!(
             repo.git_dir()
@@ -923,8 +929,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn post_spawn_supervision_failure_abandons_without_unlocking_inherited_lock() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn post_spawn_supervision_failure_abandons_without_unlocking_inherited_lock() {
         let repo = TestRepo::new("post-spawn-supervision-failure");
         let release = repo.root.join("release");
         let descendant_done = repo.root.join("descendant-done");
@@ -940,7 +946,7 @@ mod tests {
         let result = run_external_mutation_guard_with_hooks(
             &repo.root,
             &request(&command),
-            || repo.open_db(),
+            async || repo.open_db().await,
             move |event| {
                 if let GuardEvent::Stdout(chunk) = event {
                     if String::from_utf8_lossy(&chunk).contains("ready") {
@@ -953,7 +959,8 @@ mod tests {
                 fail_lifetime_token: false,
                 fail_after_first_output: true,
             },
-        );
+        )
+        .await;
 
         ready_rx
             .recv_timeout(Duration::from_secs(5))
@@ -973,18 +980,22 @@ mod tests {
         fs::write(&release, "release\n").expect("descendant release handshake should write");
         wait_for_path(&descendant_done);
         WorktreeLock::acquire(&repo.git_dir(), Duration::from_secs(1))
+            .await
             .expect("the inherited descriptor should release the flock naturally");
 
-        coordinate(&repo.root, &RuntimeBoundary::Flush, || repo.open_db())
-            .expect("the next boundary should recover inherited external taint");
+        coordinate(&repo.root, &RuntimeBoundary::Flush, async || {
+            repo.open_db().await
+        })
+        .await
+        .expect("the next boundary should recover inherited external taint");
         assert!(
             !marker.exists(),
             "inherited-taint recovery should clear the marker"
         );
     }
 
-    #[test]
-    fn post_spawn_supervision_failure_without_descendants_uses_the_same_abandonment_path() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn post_spawn_supervision_failure_without_descendants_uses_the_same_abandonment_path() {
         let repo = TestRepo::new("post-spawn-no-descendant-failure");
         let (_cancel_tx, cancel_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::channel();
@@ -992,7 +1003,7 @@ mod tests {
         let result = run_external_mutation_guard_with_hooks(
             &repo.root,
             &request("printf ready"),
-            || repo.open_db(),
+            async || repo.open_db().await,
             move |event| {
                 if let GuardEvent::Stdout(chunk) = event {
                     if String::from_utf8_lossy(&chunk).contains("ready") {
@@ -1005,7 +1016,8 @@ mod tests {
                 fail_lifetime_token: false,
                 fail_after_first_output: true,
             },
-        );
+        )
+        .await;
 
         ready_rx
             .recv_timeout(Duration::from_secs(5))
@@ -1017,18 +1029,22 @@ mod tests {
             "the marker must remain armed on abandonment"
         );
         WorktreeLock::acquire(&repo.git_dir(), Duration::from_secs(1))
+            .await
             .expect("without descendants the shell's inherited fd closes naturally");
 
-        coordinate(&repo.root, &RuntimeBoundary::Flush, || repo.open_db())
-            .expect("the next boundary should recover the still-armed marker");
+        coordinate(&repo.root, &RuntimeBoundary::Flush, async || {
+            repo.open_db().await
+        })
+        .await
+        .expect("the next boundary should recover the still-armed marker");
         assert!(
             !marker.exists(),
             "inherited-taint recovery should clear the marker"
         );
     }
 
-    #[test]
-    fn lost_armed_acknowledgement_cannot_spawn_or_mutate() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lost_armed_acknowledgement_cannot_spawn_or_mutate() {
         let repo = TestRepo::new("lost-armed-ack");
         let marker = repo.git_dir().join("sce").join("mutation-cursor-tainted");
         let target = repo.root.join("lost-armed-command-ran");
@@ -1036,7 +1052,7 @@ mod tests {
 
         let result = arm_external_mutation_guard_with_hooks(
             &repo.root,
-            || repo.open_db(),
+            async || repo.open_db().await,
             || {
                 Err(std::io::Error::new(
                     std::io::ErrorKind::BrokenPipe,
@@ -1053,6 +1069,7 @@ mod tests {
             "the command must not run without Armed delivery"
         );
         WorktreeLock::acquire(&repo.git_dir(), Duration::from_secs(1))
+            .await
             .expect("pre-spawn acknowledgement failure must release the ordinary lock");
         assert!(
             marker.exists(),
@@ -1060,47 +1077,53 @@ mod tests {
         );
     }
 
-    #[test]
-    fn armed_guard_waits_for_exec_and_drops_without_spawning_on_eof() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn armed_guard_waits_for_exec_and_drops_without_spawning_on_eof() {
         let repo = TestRepo::new("armed-without-exec");
         let marker = repo.git_dir().join("sce").join("mutation-cursor-tainted");
         let target = repo.root.join("never-ran");
         let (_cancel_tx, cancel_rx) = mpsc::channel();
         let armed = arm_external_mutation_guard_with_hooks(
             &repo.root,
-            || repo.open_db(),
+            async || repo.open_db().await,
             || Ok(()),
             cancel_rx,
             GuardTestHooks::default(),
         )
+        .await
         .expect("arm should succeed");
 
         drop(armed);
         assert!(!target.exists(), "EOF before exec must not create a shell");
         WorktreeLock::acquire(&repo.git_dir(), Duration::from_secs(1))
+            .await
             .expect("ordinary pre-spawn cleanup must release the lock");
         assert!(
             marker.exists(),
             "pre-spawn EOF remains conservatively tainted"
         );
 
-        coordinate(&repo.root, &RuntimeBoundary::Flush, || repo.open_db())
-            .expect("the next boundary must self-heal the conservative marker");
+        coordinate(&repo.root, &RuntimeBoundary::Flush, async || {
+            repo.open_db().await
+        })
+        .await
+        .expect("the next boundary must self-heal the conservative marker");
         assert!(!marker.exists());
     }
 
-    #[test]
-    fn cancellation_before_exec_cannot_spawn() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancellation_before_exec_cannot_spawn() {
         let repo = TestRepo::new("cancel-before-exec");
         let target = repo.root.join("cancelled-command-ran");
         let (cancel_tx, cancel_rx) = mpsc::channel();
         let armed = arm_external_mutation_guard_with_hooks(
             &repo.root,
-            || repo.open_db(),
+            async || repo.open_db().await,
             || Ok(()),
             cancel_rx,
             GuardTestHooks::default(),
         )
+        .await
         .expect("arm should succeed");
         cancel_tx.send(()).expect("cancel should be received");
 
@@ -1112,18 +1135,19 @@ mod tests {
         assert!(!target.exists());
     }
 
-    #[test]
-    fn armed_guard_has_no_side_effect_before_exec_and_exec_runs_once() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn armed_guard_has_no_side_effect_before_exec_and_exec_runs_once() {
         let repo = TestRepo::new("two-phase-happy-path");
         let target = repo.root.join("exec-ran");
         let (_cancel_tx, cancel_rx) = mpsc::channel();
         let armed = arm_external_mutation_guard_with_hooks(
             &repo.root,
-            || repo.open_db(),
+            async || repo.open_db().await,
             || Ok(()),
             cancel_rx,
             GuardTestHooks::default(),
         )
+        .await
         .expect("arm should succeed");
         assert!(!target.exists(), "Armed must not execute the later command");
 
@@ -1174,8 +1198,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_concurrent_foreign_lock_attempt_times_out_while_the_guard_is_active() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_concurrent_foreign_lock_attempt_times_out_while_the_guard_is_active() {
         let repo = TestRepo::new("foreign-contention");
         let (_cancel_tx, cancel_rx) = mpsc::channel();
 
@@ -1185,12 +1209,13 @@ mod tests {
             run_external_mutation_guard(
                 &root,
                 &request("sleep 1"),
-                || {
+                async || {
                     crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
                         &root,
                         &state_root,
                         "external-mutation-guard test assertions",
                     )
+                    .await
                 },
                 |_event| {},
                 cancel_rx,
@@ -1207,7 +1232,9 @@ mod tests {
 
         let outcome = handle
             .join()
+            .await
             .expect("guard thread should not panic")
+            .await
             .expect("the guard should reach its finish step");
         assert_eq!(outcome.exit_code, Some(0));
 
@@ -1215,8 +1242,8 @@ mod tests {
             .expect("the lock must free once the guard's own finish step completes");
     }
 
-    #[test]
-    fn graceful_completion_waits_for_an_inherited_background_descendant() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn graceful_completion_waits_for_an_inherited_background_descendant() {
         let repo = TestRepo::new("graceful-background-descendant");
         let release = repo.root.join("release");
         let foreground_exited = repo.root.join("foreground-exited");
@@ -1238,12 +1265,13 @@ mod tests {
             let result = run_external_mutation_guard(
                 &root,
                 &request(&command),
-                || {
+                async || {
                     crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
                         &root,
                         &state_root,
                         "external-mutation-guard graceful-descendant test",
                     )
+                    .await
                 },
                 |event| {
                     if matches!(event, GuardEvent::Armed) {
@@ -1280,6 +1308,7 @@ mod tests {
         let outcome = result_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("guard should finish after the descendant releases the token")
+            .await
             .expect("guard should recover successfully");
         assert_eq!(outcome.exit_code, Some(0));
         handle.join().expect("guard thread should not panic");
@@ -1292,12 +1321,16 @@ mod tests {
             .expect("snapshot service should construct")
             .capture_tree()
             .expect("final tree should capture");
-        let worktree_id = resolve_worktree_id(&repo.root).expect("worktree id should resolve");
+        let worktree_id = resolve_worktree_id(&repo.root)
+            .await
+            .expect("worktree id should resolve");
         let db = repo
             .open_db()
+            .await
             .expect("database should reopen for assertions");
         let projection = MutationTraceStore::new(&db)
             .load_worktree(&worktree_id, None, None)
+            .await
             .expect("worktree state should load")
             .expect("guard recovery should initialize worktree state");
         assert_eq!(
@@ -1309,8 +1342,8 @@ mod tests {
             .expect("worktree lock should be released after final recovery");
     }
 
-    #[test]
-    fn output_is_consumed_while_a_background_descendant_holds_the_lifetime_token() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn output_is_consumed_while_a_background_descendant_holds_the_lifetime_token() {
         let repo = TestRepo::new("background-output");
         let release = repo.root.join("release");
         let foreground_exited = repo.root.join("foreground-exited");
@@ -1338,12 +1371,13 @@ mod tests {
             let result = run_external_mutation_guard(
                 &root,
                 &request(&command),
-                || {
+                async || {
                     crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
                         &root,
                         &state_root,
                         "external-mutation-guard background-output test",
                     )
+                    .await
                 },
                 move |event| match event {
                     GuardEvent::Armed => armed_tx.send(()).expect("armed channel should be open"),
@@ -1382,7 +1416,9 @@ mod tests {
         wait_for_path(&descendant_done);
         result_rx
             .recv_timeout(Duration::from_secs(5))
+            .await
             .expect("guard should finish after descendant output and exit")
+            .await
             .expect("guard should recover successfully");
         handle.join().expect("guard thread should not panic");
 
@@ -1394,8 +1430,8 @@ mod tests {
         assert!(stderr_text.contains("stderr-39"));
     }
 
-    #[test]
-    fn the_spawned_shells_parent_is_the_calling_process() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_spawned_shells_parent_is_the_calling_process() {
         let repo = TestRepo::new("parent-pid");
         let (_cancel_tx, cancel_rx) = mpsc::channel();
         let captured_stdout: Mutex<Vec<u8>> = Mutex::new(Vec::new());
@@ -1403,7 +1439,7 @@ mod tests {
         let outcome = run_external_mutation_guard(
             &repo.root,
             &request("echo $PPID"),
-            || repo.open_db(),
+            async || repo.open_db().await,
             |event| {
                 if let GuardEvent::Stdout(chunk) = event {
                     captured_stdout.lock().expect("stdout mutex").extend(chunk);
@@ -1411,6 +1447,7 @@ mod tests {
             },
             cancel_rx,
         )
+        .await
         .expect("guard should succeed");
         assert_eq!(outcome.exit_code, Some(0));
 
@@ -1464,8 +1501,8 @@ mod tests {
             .expect("the lock must free once the spawned shell itself exits");
     }
 
-    #[test]
-    fn closing_the_control_channel_does_not_trigger_finish_or_signal_the_shell() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn closing_the_control_channel_does_not_trigger_finish_or_signal_the_shell() {
         let repo = TestRepo::new("control-channel-death");
         let (cancel_tx, cancel_rx) = mpsc::channel();
         drop(cancel_tx);
@@ -1473,10 +1510,11 @@ mod tests {
         let outcome = run_external_mutation_guard(
             &repo.root,
             &request("exit 7"),
-            || repo.open_db(),
+            async || repo.open_db().await,
             |_event| {},
             cancel_rx,
         )
+        .await
         .expect("a disconnected cancel channel must not itself trigger anything abnormal");
         assert_eq!(outcome.exit_code, Some(7));
     }
@@ -1502,8 +1540,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_cancel_request_signals_the_shells_process_group_and_finish_still_waits_for_real_exit() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cancel_request_signals_the_shells_process_group_and_finish_still_waits_for_real_exit(
+    ) {
         let repo = TestRepo::new("cancel-request");
         let (cancel_tx, cancel_rx) = mpsc::channel();
 
@@ -1515,12 +1554,13 @@ mod tests {
             run_external_mutation_guard(
                 &root,
                 &request("trap 'exit 9' TERM; printf ready; sleep 30"),
-                || {
+                async || {
                     crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
                         &root,
                         &state_root,
                         "external-mutation-guard test assertions",
                     )
+                    .await
                 },
                 move |event| {
                     if let GuardEvent::Stdout(chunk) = event {
@@ -1543,17 +1583,18 @@ mod tests {
         let outcome = handle
             .join()
             .expect("guard thread should not panic")
+            .await
             .expect("the guard should reach its finish step after the signaled shell exits");
         assert_eq!(outcome.exit_code, Some(9));
     }
 
-    fn run_and_capture_stdout(repo: &TestRepo, req: &GuardRequest) -> (GuardOutcome, String) {
+    async fn run_and_capture_stdout(repo: &TestRepo, req: &GuardRequest) -> (GuardOutcome, String) {
         let (_cancel_tx, cancel_rx) = mpsc::channel();
         let captured_stdout: Mutex<Vec<u8>> = Mutex::new(Vec::new());
         let outcome = run_external_mutation_guard(
             &repo.root,
             req,
-            || repo.open_db(),
+            async || repo.open_db().await,
             |event| {
                 if let GuardEvent::Stdout(chunk) = event {
                     captured_stdout.lock().expect("stdout mutex").extend(chunk);
@@ -1561,42 +1602,44 @@ mod tests {
             },
             cancel_rx,
         )
+        .await
         .expect("guard should succeed");
         let output = String::from_utf8(captured_stdout.into_inner().expect("stdout mutex"))
             .expect("stdout should be valid UTF-8");
         (outcome, output)
     }
 
-    #[test]
-    fn a_root_cwd_request_is_preserved_exactly() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_root_cwd_request_is_preserved_exactly() {
         let repo = TestRepo::new("cwd-root");
         let canonical_root = repo
             .root
             .canonicalize()
             .expect("repo root should canonicalize");
         let (outcome, output) =
-            run_and_capture_stdout(&repo, &request_with_cwd("pwd", &canonical_root));
+            run_and_capture_stdout(&repo, &request_with_cwd("pwd", &canonical_root)).await;
         assert_eq!(outcome.exit_code, Some(0));
         assert_eq!(output.trim(), canonical_root.to_string_lossy());
     }
 
-    #[test]
-    fn an_absent_cwd_defaults_to_the_worktree_root() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_absent_cwd_defaults_to_the_worktree_root() {
         let repo = TestRepo::new("cwd-default");
         let canonical_root = repo
             .root
             .canonicalize()
             .expect("repo root should canonicalize");
-        let (outcome, output) = run_and_capture_stdout(&repo, &request("pwd"));
+        let (outcome, output) = run_and_capture_stdout(&repo, &request("pwd")).await;
         assert_eq!(outcome.exit_code, Some(0));
         assert_eq!(output.trim(), canonical_root.to_string_lossy());
     }
 
-    #[test]
-    fn a_nested_cwd_request_is_preserved_exactly() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_nested_cwd_request_is_preserved_exactly() {
         let repo = TestRepo::new("cwd-nested");
         let nested = repo.nested_dir("crates/foo");
-        let (outcome, output) = run_and_capture_stdout(&repo, &request_with_cwd("pwd", &nested));
+        let (outcome, output) =
+            run_and_capture_stdout(&repo, &request_with_cwd("pwd", &nested)).await;
         assert_eq!(outcome.exit_code, Some(0));
         assert_eq!(output.trim(), nested.to_string_lossy());
     }
@@ -1609,7 +1652,7 @@ mod tests {
         let result = run_external_mutation_guard(
             &repo.root,
             &request_with_cwd("true", Path::new("relative")),
-            || repo.open_db(),
+            async || repo.open_db().await,
             |_event| {},
             cancel_rx,
         );
@@ -1629,7 +1672,7 @@ mod tests {
                 cwd: Some(escaping_cwd),
                 env: Vec::new(),
             },
-            || repo.open_db(),
+            async || repo.open_db().await,
             |_event| {},
             cancel_rx,
         );
@@ -1644,7 +1687,7 @@ mod tests {
         let result = run_external_mutation_guard(
             &repo.root,
             &request_with_cwd("true", &repo.state_root),
-            || repo.open_db(),
+            async || repo.open_db().await,
             |_event| {},
             cancel_rx,
         );
@@ -1660,7 +1703,7 @@ mod tests {
         let result = run_external_mutation_guard(
             &repo.root,
             &request_with_cwd("true", &missing),
-            || repo.open_db(),
+            async || repo.open_db().await,
             |_event| {},
             cancel_rx,
         );
@@ -1676,28 +1719,29 @@ mod tests {
         let result = run_external_mutation_guard(
             &repo.root,
             &request_with_cwd("true", &file_path),
-            || repo.open_db(),
+            async || repo.open_db().await,
             |_event| {},
             cancel_rx,
         );
         assert!(matches!(result, Err(GuardError::Cwd(_))));
     }
 
-    #[test]
-    fn a_rejected_exec_cwd_never_spawns_and_keeps_the_marker_conservative() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_rejected_exec_cwd_never_spawns_and_keeps_the_marker_conservative() {
         let repo = TestRepo::new("cwd-rejected-no-lock");
         let (_cancel_tx, cancel_rx) = mpsc::channel();
 
         let result = run_external_mutation_guard(
             &repo.root,
             &request_with_cwd("true", &repo.state_root),
-            || repo.open_db(),
+            async || repo.open_db().await,
             |_event| {},
             cancel_rx,
         );
         assert!(matches!(result, Err(GuardError::Cwd(_))));
 
         WorktreeLock::acquire(&repo.git_dir(), Duration::from_millis(200))
+            .await
             .expect("a rejected pre-spawn exec must release the ordinary worktree lock");
 
         let marker = repo.git_dir().join("sce").join("mutation-cursor-tainted");
@@ -1707,8 +1751,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn multiple_stdout_chunks_immediately_before_exit_are_not_truncated() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn multiple_stdout_chunks_immediately_before_exit_are_not_truncated() {
         let repo = TestRepo::new("stdout-chunks");
         let (_cancel_tx, cancel_rx) = mpsc::channel();
         let captured_stdout: Mutex<Vec<u8>> = Mutex::new(Vec::new());
@@ -1718,14 +1762,14 @@ mod tests {
             &request(
                 "i=0; while [ $i -lt 4000 ]; do echo \"line-$i-0123456789ABCDEF\"; i=$((i+1)); done",
             ),
-            || repo.open_db(),
+            async || repo.open_db().await,
             |event| {
                 if let GuardEvent::Stdout(chunk) = event {
                     captured_stdout.lock().expect("stdout mutex").extend(chunk);
                 }
             },
             cancel_rx,
-        )
+        ).await
         .expect("guard should succeed");
         assert_eq!(outcome.exit_code, Some(0));
 
@@ -1741,8 +1785,8 @@ mod tests {
         assert_eq!(lines[3999], "line-3999-0123456789ABCDEF");
     }
 
-    #[test]
-    fn stderr_output_immediately_before_exit_is_not_truncated() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stderr_output_immediately_before_exit_is_not_truncated() {
         let repo = TestRepo::new("stderr-chunks");
         let (_cancel_tx, cancel_rx) = mpsc::channel();
         let captured_stderr: Mutex<Vec<u8>> = Mutex::new(Vec::new());
@@ -1752,14 +1796,14 @@ mod tests {
             &request(
                 "i=0; while [ $i -lt 4000 ]; do echo \"err-$i-0123456789ABCDEF\" >&2; i=$((i+1)); done",
             ),
-            || repo.open_db(),
+            async || repo.open_db().await,
             |event| {
                 if let GuardEvent::Stderr(chunk) = event {
                     captured_stderr.lock().expect("stderr mutex").extend(chunk);
                 }
             },
             cancel_rx,
-        )
+        ).await
         .expect("guard should succeed");
         assert_eq!(outcome.exit_code, Some(0));
 

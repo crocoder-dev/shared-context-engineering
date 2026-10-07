@@ -61,7 +61,9 @@ pub async fn run_login(format: AuthFormat) -> Result<String, CliError> {
     let client = reqwest::Client::new();
 
     let client_id = resolve_login_client_id().map_err(unexpected_auth_command_error)?;
-    let stored_tokens = run_credential_operation(token_storage::load_tokens).await?;
+    let stored_tokens = token_storage::load_tokens()
+        .await
+        .map_err(auth_storage_error)?;
 
     let client = &client;
     let client_id = client_id.as_str();
@@ -82,13 +84,16 @@ pub async fn run_login(format: AuthFormat) -> Result<String, CliError> {
 }
 
 pub async fn run_logout(format: AuthFormat) -> Result<String, CliError> {
-    let deleted = run_credential_operation(token_storage::delete_tokens).await?;
+    let deleted = token_storage::delete_tokens()
+        .await
+        .map_err(auth_storage_error)?;
     render_logout_result(deleted, format).map_err(unexpected_auth_command_error)
 }
 
 pub async fn run_whoami(format: AuthFormat) -> Result<String, CliError> {
-    if run_credential_operation(token_storage::load_tokens)
-        .await?
+    if token_storage::load_tokens()
+        .await
+        .map_err(auth_storage_error)?
         .is_none()
     {
         return render_unauthenticated_whoami(format).map_err(unexpected_auth_command_error);
@@ -126,8 +131,9 @@ async fn maybe_renew_stored_credentials(
     )
     .await
     {
-        Ok(token) => run_credential_operation(move || token_storage::save_tokens(&token))
+        Ok(token) => token_storage::save_tokens(&token)
             .await
+            .map_err(auth_storage_error)
             .map(Some),
         Err(_) => Ok(None),
     }
@@ -172,8 +178,9 @@ async fn run_text_login(client: &reqwest::Client, client_id: &str) -> Result<Str
     .await
     .map_err(map_login_error)?;
 
-    let stored_tokens =
-        run_credential_operation(move || token_storage::save_tokens(&token)).await?;
+    let stored_tokens = token_storage::save_tokens(&token)
+        .await
+        .map_err(auth_storage_error)?;
 
     render_login_result(
         &DeviceAuthFlowResult {
@@ -204,8 +211,9 @@ async fn run_login_json(
     .await
     .map_err(map_login_error)?;
 
-    let stored_tokens =
-        run_credential_operation(move || token_storage::save_tokens(&token)).await?;
+    let stored_tokens = token_storage::save_tokens(&token)
+        .await
+        .map_err(auth_storage_error)?;
 
     render_login_result(
         &DeviceAuthFlowResult {
@@ -435,17 +443,6 @@ fn map_whoami_control_plane_error(error: &ControlPlaneError) -> CliError {
     )
 }
 
-async fn run_credential_operation<T, F>(operation: F) -> Result<T, CliError>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T, token_storage::TokenStorageError> + Send + 'static,
-{
-    tokio::task::spawn_blocking(operation)
-        .await
-        .map_err(|error| unexpected_auth_command_error(error.into()))?
-        .map_err(auth_storage_error)
-}
-
 fn auth_storage_error(error: crate::services::token_storage::TokenStorageError) -> CliError {
     CliError::user_with_source(UserError::AuthStorageUnavailable, error)
 }
@@ -454,7 +451,7 @@ fn unexpected_auth_command_error(error: anyhow::Error) -> CliError {
     CliError::user_with_source(UserError::UnexpectedFailure, error)
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 
@@ -531,7 +528,7 @@ mod tests {
                 completed_action(AuthFormat::Json, "renew").await?;
                 Ok(Some(tokens))
             },
-            |_| async { panic!("renewed credentials must skip device login") },
+            async |_| panic!("renewed credentials must skip device login"),
         )
         .await
         .expect("renewal should complete");
@@ -550,7 +547,7 @@ mod tests {
         let result = run_login_with_stored_credentials(
             AuthFormat::Json,
             Some(stored_tokens()),
-            |_| async {
+            async |_| {
                 completed_action(AuthFormat::Json, "renew").await?;
                 renewed.set(true);
                 Ok(None)
@@ -570,73 +567,6 @@ mod tests {
             .build()
             .expect("build credential fixture runtime");
         runtime.block_on(async {});
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn auth_credential_load_save_delete_are_isolated_and_awaited() {
-        let credentials = std::sync::Arc::new(std::sync::Mutex::new(Some(stored_tokens())));
-        let load_store = credentials.clone();
-        let loaded = run_credential_operation(move || {
-            check_blocking_credential_context();
-            Ok(load_store.lock().unwrap().clone())
-        })
-        .await
-        .expect("load should complete")
-        .unwrap();
-        let save_store = credentials.clone();
-        let saved = run_credential_operation(move || {
-            check_blocking_credential_context();
-            let mut tokens = loaded;
-            tokens.access_token = "saved-access".into();
-            *save_store.lock().unwrap() = Some(tokens.clone());
-            Ok(tokens)
-        })
-        .await
-        .expect("save should complete");
-        assert_eq!(saved.access_token, "saved-access");
-        assert_eq!(
-            credentials.lock().unwrap().as_ref().unwrap().access_token,
-            "saved-access"
-        );
-        let delete_store = credentials.clone();
-        let deleted = run_credential_operation(move || {
-            check_blocking_credential_context();
-            Ok(delete_store.lock().unwrap().take().is_some())
-        })
-        .await
-        .expect("delete should complete");
-        assert!(deleted);
-        assert!(credentials.lock().unwrap().is_none());
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn auth_credential_storage_and_join_failures_keep_typed_sources() {
-        let storage_error = run_credential_operation::<(), _>(|| {
-            Err(token_storage::TokenStorageError::Database(
-                "fixture failure".into(),
-            ))
-        })
-        .await
-        .unwrap_err();
-        let join_error =
-            run_credential_operation::<(), _>(|| panic!("credential worker fixture failure"))
-                .await
-                .unwrap_err();
-        for (mapped, expected) in [
-            (storage_error, UserError::AuthStorageUnavailable),
-            (join_error, UserError::UnexpectedFailure),
-        ] {
-            match mapped {
-                CliError::User {
-                    error,
-                    source: Some(source),
-                } => {
-                    assert_eq!(error, expected);
-                    assert!(source.to_string().contains("fixture failure"));
-                }
-                _ => panic!("credential failure lost its typed source"),
-            }
-        }
     }
 
     #[test]

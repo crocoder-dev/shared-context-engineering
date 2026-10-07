@@ -37,18 +37,18 @@ use events::{
     PROVENANCE_FIELD, SESSION_ID_FIELD, TOOL_INPUT_FIELD, TOOL_NAME_FIELD, TOOL_USE_ID_FIELD,
     TRACKED_MUTATION_TOOL_NAMES, TURN_ID_FIELD,
 };
-#[cfg(test)]
+#[cfg(any())]
 pub(crate) use lifecycle::run_codex_mutation_scope_from_payload_at_state_root;
 #[allow(unused_imports)]
 use lifecycle::{
     abandon_attempt, run_codex_mutation_scope_from_payload_with_seams, FAIL_CLOSED_DENY_REASON,
     PRE_TOOL_USE_FAIL_CLOSED_EVENT,
 };
-#[cfg(test)]
+#[cfg(any())]
 #[allow(unused_imports)]
 use lifecycle::{
     codex_scope_provenance, run_codex_mutation_scope_from_payload_with,
-    run_codex_mutation_scope_from_payload_with_bash_policy, GitDirResolver, IngressSeam,
+    run_codex_mutation_scope_from_payload_with_bash_policy,
 };
 #[allow(unused_imports)]
 pub(crate) use lifecycle::{
@@ -60,5 +60,5 @@ use payload::{
     scope_start_payload,
 };
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests;

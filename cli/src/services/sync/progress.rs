@@ -186,7 +186,7 @@ fn uploaded_message(uploaded: usize) -> String {
     format!("{uploaded} {row_label} uploaded")
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 

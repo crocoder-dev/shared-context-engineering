@@ -3,13 +3,14 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Barrier,
+        Arc,
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Result;
+use tokio::sync::Barrier;
 
 use crate::services::db::{
     count_write_contention, count_write_statements, record_write_contention_timeline,
@@ -180,12 +181,15 @@ fn remove_test_db(db_path: &Path) {
     }
 }
 
-fn create_repository_db(db_path: &Path) {
-    RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should be created up front");
+async fn create_repository_db(db_path: &Path) {
+    RepositoryAgentTraceDb::new_at(db_path)
+        .await
+        .expect("repository DB should be created up front");
 }
 
-fn open_production_connection(db_path: &Path) -> RepositoryAgentTraceDb {
+async fn open_production_connection(db_path: &Path) -> RepositoryAgentTraceDb {
     RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(db_path)
+        .await
         .expect("production hook connection should open")
 }
 
@@ -210,12 +214,13 @@ fn conversation_text_event(
     )
 }
 
-fn session_row_count(db: &RepositoryAgentTraceDb, table: &str, session_id: &str) -> i64 {
+async fn session_row_count(db: &RepositoryAgentTraceDb, table: &str, session_id: &str) -> i64 {
     db.query_map(
         &format!("SELECT COUNT(*) FROM {table} WHERE session_id = ?1"),
         (session_id,),
         |row| row.get::<i64>(0).map_err(Into::into),
     )
+    .await
     .expect("count query should succeed")
     .into_iter()
     .next()
@@ -257,46 +262,50 @@ struct LockBoundarySample {
     timeline: serde_json::Value,
 }
 
-fn insert_while_write_lock_is_held(hold: Duration) -> LockBoundarySample {
+async fn insert_while_write_lock_is_held(hold: Duration) -> LockBoundarySample {
     let db_path = unique_test_db_path(&format!("boundary-{}ms", hold.as_millis()));
-    create_repository_db(&db_path);
+    create_repository_db(&db_path).await;
     let session_id = "cx_lock-boundary";
 
     let lock_acquired = Arc::new(Barrier::new(2));
     let holder = {
         let db_path = db_path.clone();
         let lock_acquired = Arc::clone(&lock_acquired);
-        thread::spawn(move || {
-            let holder = open_production_connection(&db_path);
+        tokio::spawn(async move {
+            let holder = open_production_connection(&db_path).await;
             holder
                 .execute("BEGIN IMMEDIATE", ())
+                .await
                 .expect("holder should acquire the write lock");
-            lock_acquired.wait();
+            lock_acquired.wait().await;
             let held_since = Instant::now();
-            thread::sleep(hold);
+            tokio::time::sleep(hold).await;
             holder
                 .execute("COMMIT", ())
+                .await
                 .expect("holder should release the write lock");
             held_since.elapsed()
         })
     };
 
-    let writer = open_production_connection(&db_path);
-    lock_acquired.wait();
+    let writer = open_production_connection(&db_path).await;
+    lock_acquired.wait().await;
     let (message, part) = conversation_text_event(session_id, "cx:turn-1:user");
     let started_at = Instant::now();
-    let ((result, contention), timeline) = record_write_contention_timeline(|| {
-        count_write_contention(|| writer.insert_conversation_text_event(message, part))
-    });
+    let ((result, contention), timeline) = record_write_contention_timeline(async || {
+        count_write_contention(async || writer.insert_conversation_text_event(message, part).await)
+            .await
+    })
+    .await;
     let elapsed = started_at.elapsed();
     let outcome = WriteOutcome::from_result(result);
     let timeline = timeline_json(started_at, &timeline);
 
-    let holder_released_after = holder.join().expect("holder thread should not panic");
+    let holder_released_after = holder.await.expect("holder task should not panic");
 
-    let verifier = open_production_connection(&db_path);
-    let messages = session_row_count(&verifier, "messages", session_id);
-    let parts = session_row_count(&verifier, "parts", session_id);
+    let verifier = open_production_connection(&db_path).await;
+    let messages = session_row_count(&verifier, "messages", session_id).await;
+    let parts = session_row_count(&verifier, "parts", session_id).await;
     drop((writer, verifier));
     remove_test_db(&db_path);
 
@@ -316,7 +325,7 @@ fn insert_while_write_lock_is_held(hold: Duration) -> LockBoundarySample {
 fn lock_budget_boundary_characterizes_single_writer_blocked_by_begin_immediate_holder() {
     let samples: Vec<LockBoundarySample> = LOCK_HOLD_DURATIONS_MS
         .iter()
-        .map(|hold_ms| insert_while_write_lock_is_held(Duration::from_millis(*hold_ms)))
+        .map(async |hold_ms| insert_while_write_lock_is_held(Duration::from_millis(*hold_ms)).await)
         .collect();
 
     eprintln!(
@@ -410,11 +419,11 @@ fn lock_budget_boundary_characterizes_single_writer_blocked_by_begin_immediate_h
     }
 }
 
-#[test]
-fn busy_timeout_production_insert_waits_for_begin_immediate_holder() {
+#[tokio::test(flavor = "multi_thread")]
+async fn busy_timeout_production_insert_waits_for_begin_immediate_holder() {
     let hold = Duration::from_millis(BUSY_TIMEOUT_PRODUCTION_HOLD_MS);
 
-    let sample = insert_while_write_lock_is_held(hold);
+    let sample = insert_while_write_lock_is_held(hold).await;
 
     assert_eq!(
         sample.outcome,
@@ -430,11 +439,12 @@ fn busy_timeout_production_insert_waits_for_begin_immediate_holder() {
     );
 }
 
-#[test]
-fn agent_trace_db_write_contention_retry_hundred_ms_hold_succeeds_on_the_first_attempt() {
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_trace_db_write_contention_retry_hundred_ms_hold_succeeds_on_the_first_attempt() {
     let hold = Duration::from_millis(BUSY_TIMEOUT_PRODUCTION_HOLD_MS);
 
-    let (sample, counts) = count_write_contention(|| insert_while_write_lock_is_held(hold));
+    let (sample, counts) =
+        count_write_contention(async || insert_while_write_lock_is_held(hold).await).await;
 
     assert_eq!(sample.outcome, WriteOutcome::Inserted);
     assert_eq!((sample.messages, sample.parts), (1, 1));
@@ -513,7 +523,7 @@ struct RoundResult {
     parts: i64,
 }
 
-fn run_concurrent_round(
+async fn run_concurrent_round(
     db_path: &Path,
     writers: usize,
     session_id: &str,
@@ -525,20 +535,25 @@ fn run_concurrent_round(
             let db_path = db_path.to_path_buf();
             let start_together = Arc::clone(&start_together);
             let session_id = session_id.to_string();
-            thread::spawn(move || {
-                let db = open_production_connection(&db_path);
+            tokio::spawn(async move {
+                let db = open_production_connection(&db_path).await;
                 let message_id = if distinct_events {
                     format!("cx:turn-{writer_index}:user")
                 } else {
                     String::from("cx:turn-shared:user")
                 };
                 let (message, part) = conversation_text_event(&session_id, &message_id);
-                start_together.wait();
+                start_together.wait().await;
                 let started_unix_ms = unix_ms_now();
                 let started_at = Instant::now();
-                let ((result, contention), timeline) = record_write_contention_timeline(|| {
-                    count_write_contention(|| db.insert_conversation_text_event(message, part))
-                });
+                let ((result, contention), timeline) =
+                    record_write_contention_timeline(async || {
+                        count_write_contention(async || {
+                            db.insert_conversation_text_event(message, part).await
+                        })
+                        .await
+                    })
+                    .await;
                 let elapsed = started_at.elapsed();
                 let outcome = WriteOutcome::from_result(result);
                 let slow = (millis(elapsed) >= SLOW_OPERATION_MS).then(|| SlowOperation {
@@ -560,8 +575,7 @@ fn run_concurrent_round(
     let mut contention = Vec::with_capacity(writers);
     let mut max_elapsed = Duration::ZERO;
     for handle in handles {
-        let (outcome, elapsed, counts, slow) =
-            handle.join().expect("writer thread should not panic");
+        let (outcome, elapsed, counts, slow) = handle.await.expect("writer task should not panic");
         slow_operations.extend(slow);
         outcomes.push(outcome);
         latencies.push(elapsed);
@@ -569,15 +583,15 @@ fn run_concurrent_round(
         max_elapsed = max_elapsed.max(elapsed);
     }
 
-    let verifier = open_production_connection(db_path);
+    let verifier = open_production_connection(db_path).await;
     RoundResult {
         slow_operations,
         outcomes,
         latencies,
         contention,
         max_elapsed,
-        messages: session_row_count(&verifier, "messages", session_id),
-        parts: session_row_count(&verifier, "parts", session_id),
+        messages: session_row_count(&verifier, "messages", session_id).await,
+        parts: session_row_count(&verifier, "parts", session_id).await,
     }
 }
 
@@ -611,14 +625,18 @@ impl LevelSummary {
 }
 
 #[allow(clippy::too_many_lines)]
-fn run_contention_level(writers: usize, rounds: usize, distinct_events: bool) -> LevelSummary {
+async fn run_contention_level(
+    writers: usize,
+    rounds: usize,
+    distinct_events: bool,
+) -> LevelSummary {
     let mode = if distinct_events {
         "distinct"
     } else {
         "duplicate"
     };
     let db_path = unique_test_db_path(&format!("{mode}-{writers}w"));
-    create_repository_db(&db_path);
+    create_repository_db(&db_path).await;
 
     let mut summary = LevelSummary {
         writers,
@@ -630,7 +648,7 @@ fn run_contention_level(writers: usize, rounds: usize, distinct_events: bool) ->
     let level_started_unix_ms = unix_ms_now();
     for round in 0..rounds {
         let session_id = format!("cx_{mode}-{writers}w-round-{round}");
-        let result = run_concurrent_round(&db_path, writers, &session_id, distinct_events);
+        let result = run_concurrent_round(&db_path, writers, &session_id, distinct_events).await;
 
         for slow in &result.slow_operations {
             emit_measurement(&serde_json::json!({
@@ -844,7 +862,7 @@ fn concurrent_duplicate_delivery_persists_each_event_once_under_write_contention
     let rounds = env_usize(ROUNDS_ENV, DEFAULT_ROUNDS);
     let summaries: Vec<LevelSummary> = env_writer_counts(DEFAULT_DUPLICATE_WRITER_COUNTS)
         .into_iter()
-        .map(|writers| run_contention_level(writers, rounds, false))
+        .map(async |writers| run_contention_level(writers, rounds, false).await)
         .collect();
 
     report_levels(
@@ -860,7 +878,7 @@ fn concurrent_distinct_events_persist_every_event_under_write_contention() {
     let rounds = env_usize(ROUNDS_ENV, DEFAULT_ROUNDS);
     let summaries: Vec<LevelSummary> = env_writer_counts(DEFAULT_DISTINCT_WRITER_COUNTS)
         .into_iter()
-        .map(|writers| run_contention_level(writers, rounds, true))
+        .map(async |writers| run_contention_level(writers, rounds, true).await)
         .collect();
 
     report_levels(
@@ -1150,10 +1168,10 @@ impl HookProcessHarness {
     }
 }
 
-#[test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "end-to-end hook-process lock contention; set SCE_BIN and run with --ignored --nocapture"]
 #[allow(clippy::too_many_lines)]
-fn concurrent_real_codex_hook_processes_persist_every_distinct_event() {
+async fn concurrent_real_codex_hook_processes_persist_every_distinct_event() {
     let Some(sce) = std::env::var_os(SCE_BIN_ENV).map(PathBuf::from) else {
         eprintln!("{SCE_BIN_ENV} is not set; skipping end-to-end hook-process reproduction");
         return;
@@ -1207,10 +1225,10 @@ fn concurrent_real_codex_hook_processes_persist_every_distinct_event() {
             stderr_samples.extend(round_stderr);
             latencies.extend(round_latencies);
 
-            let verifier = open_production_connection(&harness.db_path);
+            let verifier = open_production_connection(&harness.db_path).await;
             let prefixed = format!("cx_{session_id}");
-            let messages = session_row_count(&verifier, "messages", &prefixed);
-            let parts = session_row_count(&verifier, "parts", &prefixed);
+            let messages = session_row_count(&verifier, "messages", &prefixed).await;
+            let parts = session_row_count(&verifier, "parts", &prefixed).await;
             assert_eq!(messages, parts, "hook round left orphaned rows");
             if usize::try_from(messages).expect("count fits usize") != writers {
                 rounds_with_loss += 1;
@@ -1289,13 +1307,15 @@ fn concurrent_real_codex_hook_processes_persist_every_distinct_event() {
     assert_hook_levels(&levels, strict_mode());
 }
 
-#[test]
-fn initialized_hook_open_succeeds_while_write_lock_is_held() {
+#[tokio::test(flavor = "multi_thread")]
+async fn initialized_hook_open_succeeds_while_write_lock_is_held() {
     let db_path = unique_test_db_path("hook-open-metadata");
-    create_repository_db(&db_path);
+    create_repository_db(&db_path).await;
     let repository_id = "lock-contention-repository";
     let initialized = open_production_connection(&db_path)
+        .await
         .verify_or_initialize_repository_metadata(repository_id)
+        .await
         .expect("metadata should initialize before contention");
 
     let hold = Duration::from_millis(RELIABLY_BEYOND_CONTENTION_BUDGET_MS);
@@ -1303,26 +1323,29 @@ fn initialized_hook_open_succeeds_while_write_lock_is_held() {
     let holder = {
         let db_path = db_path.clone();
         let lock_acquired = Arc::clone(&lock_acquired);
-        thread::spawn(move || {
-            let holder = open_production_connection(&db_path);
+        thread::spawn(async move || {
+            let holder = open_production_connection(&db_path).await;
             holder
                 .execute("BEGIN IMMEDIATE", ())
+                .await
                 .expect("holder should acquire the write lock");
             lock_acquired.wait();
             thread::sleep(hold);
             holder
                 .execute("COMMIT", ())
+                .await
                 .expect("holder should release the write lock");
         })
     };
 
-    let hook = open_production_connection(&db_path);
+    let hook = open_production_connection(&db_path).await;
     lock_acquired.wait();
     let started_at = Instant::now();
-    let ((schema_ready, metadata), writes) = count_write_statements(|| {
+    let ((schema_ready, metadata), writes) = count_write_statements(async || {
         (
-            hook.ensure_schema_ready_for_hooks(),
-            hook.verify_or_initialize_repository_metadata(repository_id),
+            hook.ensure_schema_ready_for_hooks().await,
+            hook.verify_or_initialize_repository_metadata(repository_id)
+                .await,
         )
     });
     let elapsed = started_at.elapsed();

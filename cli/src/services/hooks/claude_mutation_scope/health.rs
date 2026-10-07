@@ -83,7 +83,7 @@ pub(crate) fn classify_health(git_dir: &Path) -> MutationScopeAdapterHealth {
     )
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -95,7 +95,6 @@ mod tests {
         AttemptKey, BarrierOutcome, RepairOutcome,
     };
     use super::*;
-    use crate::services::observability::traits::Logger;
 
     static NEXT_TEST_GIT_DIR_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -119,18 +118,18 @@ mod tests {
         }
     }
 
-    fn failing_seam(
+    fn failing_seam<L: crate::services::observability::traits::Logger>(
         _root: &Path,
         _payload: &str,
-        _logger: Option<&dyn Logger>,
+        _logger: Option<&L>,
     ) -> anyhow::Result<String> {
         Err(anyhow!("seam failure injected by test"))
     }
 
-    fn unreachable_seam(
+    fn unreachable_seam<L: crate::services::observability::traits::Logger>(
         _root: &Path,
         payload: &str,
-        _logger: Option<&dyn Logger>,
+        _logger: Option<&L>,
     ) -> anyhow::Result<String> {
         panic!(
             "the ingress seam must not be called while the recovery barrier is armed with non-empty attempts: {payload}"
@@ -173,8 +172,8 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn stale_non_empty_attempts_after_a_failed_abandon_stays_blocked_across_repeated_pre_tool_use_ac3(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stale_non_empty_attempts_after_a_failed_abandon_stays_blocked_across_repeated_pre_tool_use_ac3(
     ) {
         let git_dir = unique_test_git_dir("blocked-regression");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
@@ -190,6 +189,7 @@ mod tests {
             None,
             &failing_seam,
         )
+        .await
         .expect_err("the injected abandon seam failure must propagate");
         assert!(error.to_string().contains("seam failure"));
 
@@ -216,7 +216,7 @@ mod tests {
 
         for attempt_number in 1..=2 {
             let outcome =
-                apply_recovery_barrier(&git_dir, repository_root, None, &unreachable_seam);
+                apply_recovery_barrier(&git_dir, repository_root, None, &unreachable_seam).await;
             assert!(
                 matches!(outcome, BarrierOutcome::Deny),
                 "PreToolUse call #{attempt_number} must be denied without self-clearing"
@@ -235,9 +235,13 @@ mod tests {
             "a PendingAbandon attempt is an already-established abandon decision, safe to retry"
         );
 
-        let healthy =
-            |_root: &Path, _payload: &str, _logger: Option<&dyn Logger>| Ok(String::new());
+        let healthy = async |_root: &Path,
+                             _payload: &str,
+                             _logger: Option<
+            &crate::services::observability::traits::NoopLogger,
+        >| Ok(String::new());
         let outcome = repair_blocked(&git_dir, repository_root, None, &healthy)
+            .await
             .expect("repair should not error");
         assert_eq!(outcome, RepairOutcome::Repaired);
 
@@ -257,8 +261,8 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn mark_active_losing_the_race_against_an_established_pending_abandon_leaves_repairable_terminal_evidence(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mark_active_losing_the_race_against_an_established_pending_abandon_leaves_repairable_terminal_evidence(
     ) {
         let git_dir = unique_test_git_dir("mark-active-race");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
@@ -299,9 +303,13 @@ mod tests {
              not fall back to ManualOnly"
         );
 
-        let healthy =
-            |_root: &Path, _payload: &str, _logger: Option<&dyn Logger>| Ok(String::new());
+        let healthy = async |_root: &Path,
+                             _payload: &str,
+                             _logger: Option<
+            &crate::services::observability::traits::NoopLogger,
+        >| Ok(String::new());
         let outcome = repair_blocked(&git_dir, repository_root, None, &healthy)
+            .await
             .expect("repair should not error");
         assert_eq!(outcome, RepairOutcome::Repaired);
 
@@ -316,8 +324,8 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn repair_blocked_removes_only_successfully_abandoned_attempts_and_keeps_recovery_pending_when_one_fails(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn repair_blocked_removes_only_successfully_abandoned_attempts_and_keeps_recovery_pending_when_one_fails(
     ) {
         let git_dir = unique_test_git_dir("repair-partial-batch");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
@@ -338,7 +346,10 @@ mod tests {
         .expect("atomic establishment should succeed");
 
         let fail_first =
-            |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| -> anyhow::Result<String> {
+            async |_root: &Path,
+                   payload: &str,
+                   _logger: Option<&crate::services::observability::traits::NoopLogger>|
+                   -> anyhow::Result<String> {
                 if payload.contains(&first.attempt.scope_id) {
                     return Err(anyhow!(
                         "seam failure injected by test for the first attempt"
@@ -348,6 +359,7 @@ mod tests {
             };
 
         let outcome = repair_blocked(&git_dir, repository_root, None, &fail_first)
+            .await
             .expect("repair should not error even though one seam call fails");
         assert_eq!(outcome, RepairOutcome::NoOp);
 
@@ -399,8 +411,8 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn assess_repairability_is_manual_only_when_one_of_several_attempts_has_no_established_abandon_intent(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn assess_repairability_is_manual_only_when_one_of_several_attempts_has_no_established_abandon_intent(
     ) {
         let git_dir = unique_test_git_dir("assess-mixed-phase");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
@@ -415,6 +427,7 @@ mod tests {
             None,
             &failing_seam,
         )
+        .await
         .expect_err("the injected abandon seam failure must propagate");
 
         state::allocate_attempt(&git_dir, &key("toolu-live"), "Write")
@@ -432,6 +445,7 @@ mod tests {
         );
 
         let outcome = repair_blocked(&git_dir, repository_root, None, &unreachable_seam)
+            .await
             .expect("repair should not error");
         assert_eq!(
             outcome,
@@ -448,8 +462,8 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn repair_blocked_is_a_safe_no_op_when_an_attempt_is_no_longer_pending_abandon_by_the_time_the_lock_is_acquired(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn repair_blocked_is_a_safe_no_op_when_an_attempt_is_no_longer_pending_abandon_by_the_time_the_lock_is_acquired(
     ) {
         let git_dir = unique_test_git_dir("repair-concurrent-race");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
@@ -464,6 +478,7 @@ mod tests {
             None,
             &failing_seam,
         )
+        .await
         .expect_err("the injected abandon seam failure must propagate");
 
         assert_eq!(assess_repairability(&git_dir), Repairability::AutoFixable);
@@ -475,6 +490,7 @@ mod tests {
         );
 
         let outcome = repair_blocked(&git_dir, repository_root, None, &unreachable_seam)
+            .await
             .expect("repair should not error");
 
         assert_eq!(
@@ -489,8 +505,8 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn repair_blocked_interrupted_by_a_failing_seam_leaves_state_a_later_repair_completes_without_duplication(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn repair_blocked_interrupted_by_a_failing_seam_leaves_state_a_later_repair_completes_without_duplication(
     ) {
         let git_dir = unique_test_git_dir("repair-interrupted-resume");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
@@ -505,9 +521,11 @@ mod tests {
             None,
             &failing_seam,
         )
+        .await
         .expect_err("the injected abandon seam failure must propagate");
 
         let outcome = repair_blocked(&git_dir, repository_root, None, &failing_seam)
+            .await
             .expect("repair should not error even though the seam abandon call fails again");
         assert_eq!(outcome, RepairOutcome::NoOp);
 
@@ -523,9 +541,13 @@ mod tests {
             "an interrupted repair must remain retryable, not resurrect or duplicate the attempt"
         );
 
-        let healthy =
-            |_root: &Path, _payload: &str, _logger: Option<&dyn Logger>| Ok(String::new());
+        let healthy = async |_root: &Path,
+                             _payload: &str,
+                             _logger: Option<
+            &crate::services::observability::traits::NoopLogger,
+        >| Ok(String::new());
         let outcome = repair_blocked(&git_dir, repository_root, None, &healthy)
+            .await
             .expect("the later repair should complete without error");
         assert_eq!(outcome, RepairOutcome::Repaired);
 
@@ -540,8 +562,8 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn cleanup_attempts_matching_durably_marks_every_matched_attempt_pending_abandon_before_any_seam_call_even_when_the_first_fails(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cleanup_attempts_matching_durably_marks_every_matched_attempt_pending_abandon_before_any_seam_call_even_when_the_first_fails(
     ) {
         let git_dir = unique_test_git_dir("cleanup-batch-mark");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
@@ -553,7 +575,10 @@ mod tests {
             .expect("second allocation should succeed");
 
         let failing_on_first =
-            |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| -> anyhow::Result<String> {
+            async |_root: &Path,
+                   payload: &str,
+                   _logger: Option<&crate::services::observability::traits::NoopLogger>|
+                   -> anyhow::Result<String> {
                 if payload.contains(&first.attempt.scope_id) {
                     return Err(anyhow!(
                         "seam failure injected by test for the first attempt"
@@ -569,6 +594,7 @@ mod tests {
             &failing_on_first,
             |_attempt| true,
         )
+        .await
         .expect_err("a failure abandoning one attempt must still surface an error");
         assert!(error.to_string().contains("seam failure"));
 
@@ -601,8 +627,8 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn apply_recovery_barrier_fails_closed_when_a_new_obligation_is_established_while_the_flush_seam_is_in_flight(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_recovery_barrier_fails_closed_when_a_new_obligation_is_established_while_the_flush_seam_is_in_flight(
     ) {
         let git_dir = unique_test_git_dir("barrier-race-new-obligation");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
@@ -610,21 +636,22 @@ mod tests {
 
         state::mark_recovery_pending(&git_dir).expect("arming the barrier should succeed");
 
-        let racing_seam = |_root: &Path,
-                           _payload: &str,
-                           _logger: Option<&dyn Logger>|
-         -> anyhow::Result<String> {
-            let raced = state::allocate_attempt(&git_dir, &key("toolu-raced-in"), "Write")
-                .expect("the racing allocation should succeed");
-            state::mark_recovery_pending_and_pending_abandon(
-                &git_dir,
-                std::slice::from_ref(&raced.attempt.scope_id),
-            )
-            .expect("the racing establishment should succeed");
-            Ok(String::new())
-        };
+        let racing_seam =
+            async |_root: &Path,
+                   _payload: &str,
+                   _logger: Option<&crate::services::observability::traits::NoopLogger>|
+                   -> anyhow::Result<String> {
+                let raced = state::allocate_attempt(&git_dir, &key("toolu-raced-in"), "Write")
+                    .expect("the racing allocation should succeed");
+                state::mark_recovery_pending_and_pending_abandon(
+                    &git_dir,
+                    std::slice::from_ref(&raced.attempt.scope_id),
+                )
+                .expect("the racing establishment should succeed");
+                Ok(String::new())
+            };
 
-        let outcome = apply_recovery_barrier(&git_dir, repository_root, None, &racing_seam);
+        let outcome = apply_recovery_barrier(&git_dir, repository_root, None, &racing_seam).await;
         assert!(
             matches!(outcome, BarrierOutcome::Deny),
             "a fresh obligation established during the flush must fail the barrier closed, \
@@ -642,8 +669,9 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn repair_blocked_fails_closed_when_a_new_obligation_is_established_while_abandoning_another() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn repair_blocked_fails_closed_when_a_new_obligation_is_established_while_abandoning_another(
+    ) {
         let git_dir = unique_test_git_dir("repair-race-new-obligation");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
         let repository_root = git_dir.as_path();
@@ -656,21 +684,23 @@ mod tests {
         )
         .expect("atomic establishment should succeed");
 
-        let racing_seam = |_root: &Path,
-                           _payload: &str,
-                           _logger: Option<&dyn Logger>|
-         -> anyhow::Result<String> {
-            let raced = state::allocate_attempt(&git_dir, &key("toolu-raced-in"), "Write")
-                .expect("the racing allocation should succeed");
-            state::mark_recovery_pending_and_pending_abandon(
-                &git_dir,
-                std::slice::from_ref(&raced.attempt.scope_id),
-            )
-            .expect("the racing establishment should succeed");
-            Ok(String::new())
-        };
+        let racing_seam =
+            async |_root: &Path,
+                   _payload: &str,
+                   _logger: Option<&crate::services::observability::traits::NoopLogger>|
+                   -> anyhow::Result<String> {
+                let raced = state::allocate_attempt(&git_dir, &key("toolu-raced-in"), "Write")
+                    .expect("the racing allocation should succeed");
+                state::mark_recovery_pending_and_pending_abandon(
+                    &git_dir,
+                    std::slice::from_ref(&raced.attempt.scope_id),
+                )
+                .expect("the racing establishment should succeed");
+                Ok(String::new())
+            };
 
         let outcome = repair_blocked(&git_dir, repository_root, None, &racing_seam)
+            .await
             .expect("repair should not error");
         assert_eq!(
             outcome,
