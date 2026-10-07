@@ -29,9 +29,6 @@ struct AppRuntime {
 /// Lightweight borrowed view of the CLI runtime dependencies.
 ///
 /// `AppContext` does **not** own its dependencies; it borrows them from `AppRuntime`.
-/// It is intended for short-lived, command-scoped use and should not be stored
-/// long-term (e.g., in structs or across await points) because its lifetime is
-/// tied to the owning `AppRuntime`.
 pub struct AppContext<
     'a,
     L: LoggerTrait = services::observability::Logger,
@@ -239,24 +236,24 @@ impl AppRuntime {
     }
 }
 
-pub fn run<I>(args: I) -> ExitCode
+pub async fn run<I>(args: I) -> ExitCode
 where
     I: IntoIterator<Item = String>,
 {
-    run_with_dependency_check(args, || Ok(()))
+    run_with_dependency_check(args, || Ok(())).await
 }
 
-fn run_with_dependency_check<I, F>(args: I, dependency_check: F) -> ExitCode
+async fn run_with_dependency_check<I, F>(args: I, dependency_check: F) -> ExitCode
 where
     I: IntoIterator<Item = String>,
     F: FnOnce() -> anyhow::Result<()>,
 {
     let mut stdout = io::stdout();
     let mut stderr = io::stderr();
-    run_with_dependency_check_and_streams(args, dependency_check, &mut stdout, &mut stderr)
+    run_with_dependency_check_and_streams(args, dependency_check, &mut stdout, &mut stderr).await
 }
 
-fn run_with_dependency_check_and_streams<I, F, StdoutW, StderrW>(
+async fn run_with_dependency_check_and_streams<I, F, StdoutW, StderrW>(
     args: I,
     dependency_check: F,
     stdout: &mut StdoutW,
@@ -269,13 +266,13 @@ where
     StderrW: Write,
 {
     app_support::render_run_outcome(
-        try_run_with_dependency_check(args, dependency_check, stderr),
+        try_run_with_dependency_check(args, dependency_check, stderr).await,
         stdout,
         stderr,
     )
 }
 
-fn try_run_with_dependency_check<I, F, StderrW>(
+async fn try_run_with_dependency_check<I, F, StderrW>(
     args: I,
     dependency_check: F,
     stderr: &mut StderrW,
@@ -287,19 +284,18 @@ where
 {
     let result = perform_dependency_check(dependency_check)
         .and_then(|()| build_startup_context())
-        .and_then(initialize_runtime)
-        .map(|runtime| {
+        .and_then(initialize_runtime);
+
+    match result {
+        Ok(runtime) => {
             let startup_diagnostic = runtime.startup_diagnostic.clone();
-            let result = run_command_lifecycle(args, &runtime, stderr);
+            let result = run_command_lifecycle(args, &runtime, stderr).await;
             RunOutcome {
                 logger: Some(runtime.logger),
                 startup_diagnostic,
                 result,
             }
-        });
-
-    match result {
-        Ok(outcome) => outcome,
+        }
         Err(error) => RunOutcome {
             result: Err(error),
             logger: None,
@@ -349,7 +345,7 @@ fn initialize_runtime(startup: StartupContext) -> Result<AppRuntime, CliError> {
     })
 }
 
-fn run_command_lifecycle<I, StderrW>(
+async fn run_command_lifecycle<I, StderrW>(
     args: I,
     runtime: &AppRuntime,
     stderr: &mut StderrW,
@@ -360,21 +356,29 @@ where
 {
     let context = runtime.context();
     let mut args = Some(args.into_iter().collect::<Vec<_>>());
-    context.telemetry().with_default_subscriber(&mut || {
-        context.logger().info(
-            "sce.app.start",
-            "Starting command dispatch",
-            &[("component", services::observability::NAME)],
-            None,
-        );
-        let Some(command_args) = args.take() else {
-            return Err(CliError::runtime(anyhow::Error::msg(
-                REPEATED_COMMAND_DISPATCH_ERROR,
-            )));
-        };
-        let command = parse_command_phase(command_args, &runtime.registry, &context)?;
-        app_support::execute_command_phase(&command, &context, stderr)
-    })
+    let mut stderr = Some(stderr);
+    let context = &context;
+    context
+        .telemetry()
+        .with_default_subscriber(&mut || {
+            let command_inputs = args.take().zip(stderr.take());
+            async move {
+                context.logger().info(
+                    "sce.app.start",
+                    "Starting command dispatch",
+                    &[("component", services::observability::NAME)],
+                    None,
+                );
+                let Some((command_args, stderr)) = command_inputs else {
+                    return Err(CliError::runtime(anyhow::Error::msg(
+                        REPEATED_COMMAND_DISPATCH_ERROR,
+                    )));
+                };
+                let command = parse_command_phase(command_args, &runtime.registry, context)?;
+                app_support::execute_command_phase(&command, context, stderr).await
+            }
+        })
+        .await
 }
 
 fn parse_command_phase<I>(

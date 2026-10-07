@@ -1,7 +1,7 @@
 pub mod command;
 
+use std::future::Future;
 use std::io::Write;
-use std::sync::OnceLock;
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::json;
@@ -20,8 +20,6 @@ pub const NAME: &str = "auth";
 
 pub type AuthFormat = OutputFormat;
 
-static AUTH_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthSubcommand {
     Login { format: AuthFormat },
@@ -34,53 +32,70 @@ pub struct AuthRequest {
     pub subcommand: AuthSubcommand,
 }
 
-pub fn run_auth_subcommand(request: AuthRequest) -> Result<String, CliError> {
-    run_auth_subcommand_with(request, run_login, run_logout, run_whoami)
+pub async fn run_auth_subcommand(request: AuthRequest) -> Result<String, CliError> {
+    run_auth_subcommand_with(request, run_login, run_logout, run_whoami).await
 }
 
-fn run_auth_subcommand_with<L, O, S>(
+async fn run_auth_subcommand_with<L, O, S, LF, OF, SF>(
     request: AuthRequest,
     login: L,
     logout: O,
     whoami: S,
 ) -> Result<String, CliError>
 where
-    L: FnOnce(AuthFormat) -> Result<String, CliError>,
-    O: FnOnce(AuthFormat) -> Result<String, CliError>,
-    S: FnOnce(AuthFormat) -> Result<String, CliError>,
+    L: FnOnce(AuthFormat) -> LF,
+    LF: Future<Output = Result<String, CliError>>,
+    O: FnOnce(AuthFormat) -> OF,
+    OF: Future<Output = Result<String, CliError>>,
+    S: FnOnce(AuthFormat) -> SF,
+    SF: Future<Output = Result<String, CliError>>,
 {
     match request.subcommand {
-        AuthSubcommand::Login { format } => login(format),
-        AuthSubcommand::Logout { format } => logout(format),
-        AuthSubcommand::Whoami { format } => whoami(format),
+        AuthSubcommand::Login { format } => login(format).await,
+        AuthSubcommand::Logout { format } => logout(format).await,
+        AuthSubcommand::Whoami { format } => whoami(format).await,
     }
 }
 
-pub fn run_login(format: AuthFormat) -> Result<String, CliError> {
+pub async fn run_login(format: AuthFormat) -> Result<String, CliError> {
     let client = reqwest::Client::new();
-    let runtime = shared_runtime().map_err(unexpected_auth_command_error)?;
 
     let client_id = resolve_login_client_id().map_err(unexpected_auth_command_error)?;
-    let stored_tokens = token_storage::load_tokens().map_err(auth_storage_error)?;
+    let stored_tokens = tokio::task::spawn_blocking(token_storage::load_tokens)
+        .await
+        .map_err(|error| unexpected_auth_command_error(error.into()))?
+        .map_err(auth_storage_error)?;
 
+    let client = &client;
+    let client_id = client_id.as_str();
     run_login_with_stored_credentials(
         format,
         stored_tokens,
-        |stored_tokens| maybe_renew_stored_credentials(runtime, &client, &client_id, stored_tokens),
-        |format| match format {
-            AuthFormat::Text => run_text_login_with_runtime(runtime, &client, &client_id),
-            AuthFormat::Json => run_login_json(runtime, &client, &client_id, format),
+        |stored_tokens| async move {
+            maybe_renew_stored_credentials(client, client_id, stored_tokens).await
+        },
+        |format| async move {
+            match format {
+                AuthFormat::Text => run_text_login(client, client_id).await,
+                AuthFormat::Json => run_login_json(client, client_id, format).await,
+            }
         },
     )
+    .await
 }
 
-pub fn run_logout(format: AuthFormat) -> Result<String, CliError> {
-    let deleted = token_storage::delete_tokens().map_err(auth_storage_error)?;
+pub async fn run_logout(format: AuthFormat) -> Result<String, CliError> {
+    let deleted = tokio::task::spawn_blocking(token_storage::delete_tokens)
+        .await
+        .map_err(|error| unexpected_auth_command_error(error.into()))?
+        .map_err(auth_storage_error)?;
     render_logout_result(deleted, format).map_err(unexpected_auth_command_error)
 }
 
-pub fn run_whoami(format: AuthFormat) -> Result<String, CliError> {
-    if token_storage::load_tokens()
+pub async fn run_whoami(format: AuthFormat) -> Result<String, CliError> {
+    if tokio::task::spawn_blocking(token_storage::load_tokens)
+        .await
+        .map_err(|error| unexpected_auth_command_error(error.into()))?
         .map_err(auth_storage_error)?
         .is_none()
     {
@@ -98,92 +113,79 @@ pub fn run_whoami(format: AuthFormat) -> Result<String, CliError> {
         auth::WORKOS_DEFAULT_BASE_URL,
         auth_config.workos_client_id.value.unwrap_or_default(),
     );
-    let profile = shared_runtime()
-        .map_err(unexpected_auth_command_error)?
-        .block_on(client.me())
+    let profile = client
+        .me()
+        .await
         .map_err(|error| map_whoami_control_plane_error(&error))?;
 
     render_whoami_result(&profile, format).map_err(unexpected_auth_command_error)
 }
 
-fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
-    if let Some(runtime) = AUTH_RUNTIME.get() {
-        return Ok(runtime);
-    }
-
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .enable_time()
-        .build()
-        .context("failed to create auth command runtime. Try: rerun the command; if the issue persists, verify the local Tokio runtime environment.")?;
-
-    Ok(AUTH_RUNTIME.get_or_init(|| runtime))
-}
-
-fn maybe_renew_stored_credentials(
-    runtime: &tokio::runtime::Runtime,
+async fn maybe_renew_stored_credentials(
     client: &reqwest::Client,
     client_id: &str,
-    stored_tokens: &StoredTokens,
+    stored_tokens: StoredTokens,
 ) -> Result<Option<StoredTokens>, CliError> {
-    match runtime.block_on(auth::ensure_valid_token_returning_token(
+    match auth::ensure_valid_token_returning_token(
         client,
         auth::WORKOS_DEFAULT_BASE_URL,
         client_id,
-        stored_tokens,
-    )) {
-        Ok(token) => token_storage::save_tokens(&token)
+        &stored_tokens,
+    )
+    .await
+    {
+        Ok(token) => tokio::task::spawn_blocking(move || token_storage::save_tokens(&token))
+            .await
+            .map_err(|error| unexpected_auth_command_error(error.into()))?
             .map(Some)
             .map_err(auth_storage_error),
         Err(_) => Ok(None),
     }
 }
 
-fn run_login_with_stored_credentials<R, D>(
+async fn run_login_with_stored_credentials<R, D, RF, DF>(
     format: AuthFormat,
     stored_tokens: Option<StoredTokens>,
     renew: R,
     device_login: D,
 ) -> Result<String, CliError>
 where
-    R: FnOnce(&StoredTokens) -> Result<Option<StoredTokens>, CliError>,
-    D: FnOnce(AuthFormat) -> Result<String, CliError>,
+    R: FnOnce(StoredTokens) -> RF,
+    RF: Future<Output = Result<Option<StoredTokens>, CliError>>,
+    D: FnOnce(AuthFormat) -> DF,
+    DF: Future<Output = Result<String, CliError>>,
 {
     if let Some(stored_tokens) = stored_tokens {
-        if let Some(renewed_tokens) = renew(&stored_tokens)? {
+        if let Some(renewed_tokens) = renew(stored_tokens).await? {
             return render_login_refresh_result(&renewed_tokens, format)
                 .map_err(unexpected_auth_command_error);
         }
     }
 
-    device_login(format)
+    device_login(format).await
 }
 
-fn run_text_login_with_runtime(
-    runtime: &tokio::runtime::Runtime,
-    client: &reqwest::Client,
-    client_id: &str,
-) -> Result<String, CliError> {
-    let authorization = runtime
-        .block_on(auth::request_device_authorization(
-            client,
-            auth::WORKOS_DEFAULT_BASE_URL,
-            client_id,
-        ))
-        .map_err(map_login_error)?;
+async fn run_text_login(client: &reqwest::Client, client_id: &str) -> Result<String, CliError> {
+    let authorization =
+        auth::request_device_authorization(client, auth::WORKOS_DEFAULT_BASE_URL, client_id)
+            .await
+            .map_err(map_login_error)?;
 
     write_login_prompt(&authorization).map_err(unexpected_auth_command_error)?;
 
-    let token = runtime
-        .block_on(auth::complete_device_auth_flow_returning_token(
-            client,
-            auth::WORKOS_DEFAULT_BASE_URL,
-            client_id,
-            &authorization,
-        ))
-        .map_err(map_login_error)?;
+    let token = auth::complete_device_auth_flow_returning_token(
+        client,
+        auth::WORKOS_DEFAULT_BASE_URL,
+        client_id,
+        &authorization,
+    )
+    .await
+    .map_err(map_login_error)?;
 
-    let stored_tokens = token_storage::save_tokens(&token).map_err(auth_storage_error)?;
+    let stored_tokens = tokio::task::spawn_blocking(move || token_storage::save_tokens(&token))
+        .await
+        .map_err(|error| unexpected_auth_command_error(error.into()))?
+        .map_err(auth_storage_error)?;
 
     render_login_result(
         &DeviceAuthFlowResult {
@@ -195,30 +197,29 @@ fn run_text_login_with_runtime(
     .map_err(unexpected_auth_command_error)
 }
 
-fn run_login_json(
-    runtime: &tokio::runtime::Runtime,
+async fn run_login_json(
     client: &reqwest::Client,
     client_id: &str,
     format: AuthFormat,
 ) -> Result<String, CliError> {
-    let authorization = runtime
-        .block_on(auth::request_device_authorization(
-            client,
-            auth::WORKOS_DEFAULT_BASE_URL,
-            client_id,
-        ))
-        .map_err(map_login_error)?;
+    let authorization =
+        auth::request_device_authorization(client, auth::WORKOS_DEFAULT_BASE_URL, client_id)
+            .await
+            .map_err(map_login_error)?;
 
-    let token = runtime
-        .block_on(auth::complete_device_auth_flow_returning_token(
-            client,
-            auth::WORKOS_DEFAULT_BASE_URL,
-            client_id,
-            &authorization,
-        ))
-        .map_err(map_login_error)?;
+    let token = auth::complete_device_auth_flow_returning_token(
+        client,
+        auth::WORKOS_DEFAULT_BASE_URL,
+        client_id,
+        &authorization,
+    )
+    .await
+    .map_err(map_login_error)?;
 
-    let stored_tokens = token_storage::save_tokens(&token).map_err(auth_storage_error)?;
+    let stored_tokens = tokio::task::spawn_blocking(move || token_storage::save_tokens(&token))
+        .await
+        .map_err(|error| unexpected_auth_command_error(error.into()))?
+        .map_err(auth_storage_error)?;
 
     render_login_result(
         &DeviceAuthFlowResult {

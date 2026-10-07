@@ -6,6 +6,8 @@ control-plane ingestion API. The former `sce trace` command group and its
 database discovery, shell, list, status, and nested sync invocations are no
 longer available; no compatibility alias is retained.
 
+Sync is directly awaited on the application-level multi-thread Tokio runtime. Its storage constructor uses a blocking scope; a concrete guard keeps the synchronous DB alive across HTTP awaits and destroys it in a blocking scope before return, including error, cancellation and unwind cleanup. Progress remains alive through the await and presentation finalization occurs only on success. See [application execution runtime](../architecture.md#application-execution-runtime).
+
 The Clap surface is defined in `cli/src/cli_schema.rs` and dispatched through
 the static `RuntimeCommand::Sync` variant. The sync-owned command boundary lives
 under `cli/src/services/sync/`; shared storage, export, authentication, and
