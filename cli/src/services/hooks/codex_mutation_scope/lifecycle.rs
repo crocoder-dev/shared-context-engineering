@@ -334,7 +334,7 @@ pub(super) async fn sweep_stale_lane_predecessors<
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<()> {
     loop {
-        let current = state::read_state(git_dir)?;
+        let current = state::read_state(git_dir).await?;
         let Some(stale) = current
             .attempts
             .iter()
@@ -429,7 +429,7 @@ pub(super) async fn handle_close<L: crate::services::observability::traits::Logg
     logger: Option<&L>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<String> {
-    let current = state::read_state(git_dir)?;
+    let current = state::read_state(git_dir).await?;
     let Some(attempt) = current
         .attempts
         .iter()
@@ -465,7 +465,7 @@ pub(super) async fn cleanup_attempts_matching<L: crate::services::observability:
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
     predicate: impl Fn(&state::AdapterAttempt) -> bool,
 ) -> Result<String> {
-    let current = state::read_state(git_dir)?;
+    let current = state::read_state(git_dir).await?;
     let stale: Vec<state::AdapterAttempt> = current
         .attempts
         .into_iter()

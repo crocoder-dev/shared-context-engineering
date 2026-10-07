@@ -7,8 +7,8 @@ use crate::services::mutation_trace::types::ActorKind;
 
 use super::state::{self, RecoveryState};
 
-pub(crate) fn classify_health(git_dir: &Path) -> MutationScopeAdapterHealth {
-    let state = match state::read_state(git_dir) {
+pub(crate) async fn classify_health(git_dir: &Path) -> MutationScopeAdapterHealth {
+    let state = match state::read_state(git_dir).await {
         Ok(state) => state,
         Err(error) => {
             return MutationScopeAdapterHealth::new(

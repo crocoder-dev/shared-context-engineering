@@ -329,7 +329,7 @@ pub(super) async fn handle_close<L: crate::services::observability::traits::Logg
     logger: Option<&L>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<String> {
-    let current = state::read_state(git_dir)?;
+    let current = state::read_state(git_dir).await?;
     let Some(attempt) = current
         .attempts
         .iter()
@@ -380,7 +380,8 @@ pub(super) async fn abandon_and_consume<L: crate::services::observability::trait
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
     doomed: impl Fn(&state::AdapterAttempt) -> bool,
 ) -> Result<String> {
-    let doomed_scope_ids: Vec<String> = state::read_state(git_dir)?
+    let doomed_scope_ids: Vec<String> = state::read_state(git_dir)
+        .await?
         .attempts
         .into_iter()
         .filter(|attempt| doomed(attempt))
@@ -402,7 +403,8 @@ pub(super) async fn resolve_recovery<L: crate::services::observability::traits::
     logger: Option<&L>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<RecoveryResolution> {
-    let pending_abandon: Vec<state::AdapterAttempt> = state::read_state(git_dir)?
+    let pending_abandon: Vec<state::AdapterAttempt> = state::read_state(git_dir)
+        .await?
         .attempts
         .into_iter()
         .filter(|attempt| attempt.phase == state::AttemptPhase::PendingAbandon)

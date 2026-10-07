@@ -14,6 +14,7 @@ const BOUNDARY_LOCK_WHAT: &str = "adapter-boundary";
 
 const STATE_LOCK_FAILURE_CONTEXT: &str = "Failed to acquire adapter-state lock";
 const BOUNDARY_LOCK_FAILURE_CONTEXT: &str = "Failed to acquire adapter boundary lock";
+const LOCKED_OPERATION_WORKER_FAILURE_CONTEXT: &str = "The locked operation worker failed";
 
 #[derive(Debug)]
 pub(crate) enum AdvisoryLockError {
@@ -139,6 +140,32 @@ impl AdapterLockSpec {
 
     pub(crate) fn path(&self, adapter_state_dir: &Path) -> PathBuf {
         adapter_state_dir.join(self.file_name)
+    }
+
+    pub(crate) async fn run_locked_blocking<T, F>(
+        &self,
+        adapter_state_dir: &Path,
+        operation: F,
+    ) -> anyhow::Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+    {
+        let spec = *self;
+        let adapter_state_dir = adapter_state_dir.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let _lock = spec
+                .acquire_with_timeout(&adapter_state_dir, spec.default_timeout)
+                .map_err(|error| anyhow!("{}: {error}", spec.failure_context))?;
+            operation()
+        })
+        .await
+        .map_err(|source| {
+            anyhow!(
+                "{LOCKED_OPERATION_WORKER_FAILURE_CONTEXT} for the {} lock: {source}",
+                spec.what
+            )
+        })?
     }
 
     pub(crate) async fn acquire_async(

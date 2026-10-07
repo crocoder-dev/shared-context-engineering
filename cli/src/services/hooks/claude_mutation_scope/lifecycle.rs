@@ -258,7 +258,7 @@ pub(super) async fn apply_recovery_barrier<L: crate::services::observability::tr
     logger: Option<&L>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> BarrierOutcome {
-    let state = match state::read_state(git_dir) {
+    let state = match state::read_state(git_dir).await {
         Ok(state) => state,
         Err(error) => {
             log_pre_tool_use_fail_closed(logger, "recovery_barrier.read_state", &error);
@@ -342,7 +342,7 @@ pub(super) async fn handle_close<L: crate::services::observability::traits::Logg
     logger: Option<&L>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<String> {
-    let current = state::read_state(git_dir)?;
+    let current = state::read_state(git_dir).await?;
     let Some(attempt) = current
         .attempts
         .iter()
@@ -378,7 +378,7 @@ pub(super) async fn handle_permission_denied<L: crate::services::observability::
     logger: Option<&L>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<String> {
-    let current = state::read_state(git_dir)?;
+    let current = state::read_state(git_dir).await?;
     let Some(attempt) = current
         .attempts
         .iter()
@@ -399,7 +399,7 @@ pub(super) async fn cleanup_attempts_matching<L: crate::services::observability:
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
     predicate: impl Fn(&state::AdapterAttempt) -> bool,
 ) -> Result<String> {
-    let current = state::read_state(git_dir)?;
+    let current = state::read_state(git_dir).await?;
     let stale: Vec<state::AdapterAttempt> = current
         .attempts
         .into_iter()
