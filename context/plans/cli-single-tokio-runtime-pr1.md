@@ -80,7 +80,7 @@ Atomic migration requirement: the first commit that enables the top-level runtim
 
 Every task carries `pending | synced | blocked`. A completed task must be `synced` before another task starts or the plan finishes. Record transitions in this file. For `blocked`, persist **Blocker**, **Required action**, and **Retry condition** next to the status; never infer synchronization from chat history. Task-local verification is part of each change; final full validation is specified under section 7 rather than a separate task.
 
-- [ ] T01: `Prepare minimal Tokio features and packaging parity` (status:todo)
+- [x] T01: `Prepare minimal Tokio features and packaging parity` (status:done)
   - Task ID: T01
   - Goal: Make the existing build support one macro-based application-level multi-thread runtime.
   - Files likely affected: `cli/Cargo.toml`, `cli/Cargo.lock`, `packaging/flatpak/cargo-sources.json`, `nix/flatpak/cargo-sources.nix`.
@@ -90,7 +90,13 @@ Every task carries `pending | synced | blocked`. A completed task must be `synce
   - Done when: The macro/multi-thread features and minimal lock changes are available, and Flatpak metadata matches the lockfile.
   - Verification: `nix develop -c ./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml`; inspect dependency diff for only required additions; build `.#checks.x86_64-linux.cargo-sources-parity` on the repository's Linux validation platform.
   - Dependencies: none.
-  - Context synchronization: pending
+  - Completed: 2026-10-07
+  - Files changed: `cli/Cargo.toml`, `cli/Cargo.lock`, `packaging/flatpak/cargo-sources.json`, `nix/flatpak/cargo-sources.nix`, `context/plans/cli-single-tokio-runtime-pr1.md`.
+  - Result: Added only Tokio `macros` and `rt-multi-thread`, retaining disabled defaults and existing features. Cargo added `tokio-macros 2.7.2` and its `syn 3.0.6` dependency; existing versions/checksums remain unchanged, with required `syn 2.0.118` disambiguation. Regenerated Flatpak sources through the existing app and refreshed its reported fixed-output hash to `sha256-ZLcI8Basvo3MrOan7XnIUqq8UUFQkijzLGw/So3RFi0=`. Entrypoint remains synchronous.
+  - Verify: Passed — `nix develop -c ./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml` (dev build completed); baseline/current lockfile comparison using Nix Python confirmed only the two required additions and no existing package upgrades/checksum changes; `nix build .#checks.x86_64-linux.cargo-sources-parity` succeeded; `git diff --check` passed.
+  - Context impact: Build/dependency documentation only: explicit Tokio features now include macro and multi-thread support, without activating the application runtime. No execution, persistence, or CLI contract changes.
+  - Context synchronization: synced
+  - Context synchronization evidence: Updated `context/architecture.md` to describe the explicit feature set and unchanged synchronous entrypoint/runtime ownership; verified `context/overview.md`, `context/glossary.md`, `context/patterns.md`, and `context/context-map.md` against the dependency-only change. Existing Flatpak generation guidance remains accurate. No architecture decision qualified; enabling features is reversible build preparation. Architecture remains 220 lines; `git diff --check` passed.
 
 - [ ] T02: `Migrate the complete app, dispatch, auth and sync execution boundary atomically` (status:todo)
   - Task ID: T02
