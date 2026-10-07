@@ -145,10 +145,10 @@ An interactive `setup` run instead resolves the selection through an `inquire` m
 - `doctor` command aggregates `diagnose`/`fix` across all registered lifecycle providers.
 - `setup` command aggregates `setup` across all registered lifecycle providers in order (config → local_db → auth_db → agent_trace_db → hooks).
 
-## Parser-focused tests
+## Execution and parser tests
 
-- `cli/src/app.rs` unit tests cover default-help behavior, auth/config/setup/hooks routing, auth bare/help/nested-help routing, command-local `--help` routing for `doctor`/`hooks`, and failure paths for unknown commands/options and extra arguments.
-- `cli/src/app.rs` additionally validates setup contract routing for interactive default, explicit target flags, and mutually-exclusive setup flag failures.
+- `cli/src/app.rs` tests cover captured help/version/unknown-command output and dependency/command-error exit behavior under multi-thread Tokio, with process-isolated configuration/state. Recording telemetry checks awaited polling, lifecycle event order, failure paths and repeat protection through the private static lifecycle seam.
+- `cli/src/services/parse/command_runtime.rs` tests cover sync/hook request conversion, hidden hook help entries, auth help, nearest-parent help for unknown commands and unknown-option classification.
 - `cli/src/services/local_db/mod.rs` tests cover in-memory and file-backed local Turso initialization plus execute/query smoke checks.
 - `cli/src/services/resilience.rs` tests lock deterministic sync retry behavior for transient failures, timeout classification, capped backoff, and actionable terminal error messaging.
 - `cli/src/services/setup/mod.rs` and `cli/src/services/hooks/mod.rs` include contract-focused tests for setup flag parsing/validation, interactive selection/cancellation dispatch, setup run messaging, and hook runtime argument/IO/finalization behavior.
@@ -156,7 +156,7 @@ An interactive `setup` run instead resolves the selection through an `inquire` m
 - `cli/src/services/auth.rs` tests cover WorkOS device/token payload shape parsing, RFC 8628 device and refresh grant constant wiring, terminal OAuth error mapping with `Try:` guidance, polling decision handling for `authorization_pending`/`slow_down`/terminal outcomes, token-expiry evaluation, and refresh-token re-login guidance for terminal refresh errors.
 - `cli/src/services/auth_command/mod.rs` retains renderer/classification coverage for logout, unauthenticated whoami, and typed authenticated whoami failures. Multi-thread async regressions cover awaited selected dispatch, owned renewal with secret redaction, device fallback, and blocking credential load/save/delete with preserved storage and worker-failure classification.
 - `cli/src/services/setup/mod.rs` tests also verify embedded-manifest completeness against runtime `config/` trees, deterministic sorted path normalization, and target-scoped iterator behavior (`OpenCode`, `Claude`, `Both`); sandbox-sensitive filesystem install coverage has been removed from the unit-test slice for later integration-test coverage.
-- `cli/src/services/doctor/` unit coverage is intentionally limited to flake-safe output-shape assertions; filesystem, git, and real repair-flow coverage is deferred to future integration tests so `nix flake check` stays sandbox-safe.
+- The isolated repository fixture in `cli/src/services/hooks/tests.rs` awaits Doctor Diagnose and DiffTrace through the real enum dispatcher, exercises command-local DB cleanup, and reads the persisted hook row after completion. Sync storage-guard tests cover cleanup on early error and abandonment of a polled future; existing sync overlap, sequential-batch, progress and cursor assertions remain authoritative.
 
 ## Dependency baseline
 

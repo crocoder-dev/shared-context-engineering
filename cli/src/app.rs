@@ -355,9 +355,23 @@ where
     StderrW: Write,
 {
     let context = runtime.context();
+    run_command_lifecycle_with_context(args, &runtime.registry, &context, stderr).await
+}
+
+async fn run_command_lifecycle_with_context<I, L, T, StderrW>(
+    args: I,
+    registry: &services::command_registry::CommandRegistry,
+    context: &AppContext<'_, L, T>,
+    stderr: &mut StderrW,
+) -> Result<String, CliError>
+where
+    I: IntoIterator<Item = String>,
+    L: LoggerTrait,
+    T: TelemetryTrait,
+    StderrW: Write,
+{
     let mut args = Some(args.into_iter().collect::<Vec<_>>());
     let mut stderr = Some(stderr);
-    let context = &context;
     context
         .telemetry()
         .with_default_subscriber(&mut || {
@@ -374,7 +388,7 @@ where
                         REPEATED_COMMAND_DISPATCH_ERROR,
                     )));
                 };
-                let command = parse_command_phase(command_args, &runtime.registry, context)?;
+                let command = parse_command_phase(command_args, registry, context)?;
                 app_support::execute_command_phase(&command, context, stderr).await
             }
         })
@@ -399,4 +413,307 @@ where
         None,
     );
     Ok(command)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::{poll_fn, Future};
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    #[derive(Default)]
+    struct RecordingScope {
+        active: bool,
+        polls: usize,
+        events: Vec<String>,
+    }
+
+    struct RecordingLogger(Arc<Mutex<RecordingScope>>);
+
+    impl LoggerTrait for RecordingLogger {
+        fn info(&self, event: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {
+            let mut scope = self.0.lock().unwrap();
+            assert!(
+                scope.active,
+                "dispatch logging must occur inside a telemetry poll"
+            );
+            scope.events.push(event.to_string());
+        }
+        fn debug(
+            &self,
+            event: &str,
+            message: &str,
+            fields: &[(&str, &str)],
+            session: Option<&str>,
+        ) {
+            self.info(event, message, fields, session);
+        }
+        fn warn(&self, _: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {}
+        fn error(&self, _: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {}
+        fn log_cli_error(&self, _: &CliError, _: Option<&str>) {}
+    }
+
+    struct RecordingTelemetry {
+        scope: Arc<Mutex<RecordingScope>>,
+        repeat: bool,
+    }
+
+    impl RecordingTelemetry {
+        async fn poll_scoped<F: Future>(&self, future: F) -> F::Output {
+            let mut future = std::pin::pin!(future);
+            poll_fn(|cx| {
+                {
+                    let mut scope = self.scope.lock().unwrap();
+                    assert!(!scope.active);
+                    scope.active = true;
+                    scope.polls += 1;
+                    scope.events.push("telemetry.poll.start".into());
+                }
+                let result = future.as_mut().poll(cx);
+                let mut scope = self.scope.lock().unwrap();
+                scope.events.push("telemetry.poll.end".into());
+                scope.active = false;
+                result
+            })
+            .await
+        }
+    }
+
+    impl TelemetryTrait for RecordingTelemetry {
+        async fn with_default_subscriber<F, Fut>(&self, action: &mut F) -> Result<String, CliError>
+        where
+            F: FnMut() -> Fut,
+            Fut: Future<Output = Result<String, CliError>>,
+        {
+            let result = self.poll_scoped(action()).await;
+            if self.repeat {
+                assert!(result.is_ok());
+                self.poll_scoped(action()).await
+            } else {
+                result
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn telemetry_scopes_every_poll_of_yielding_work() {
+        let scope = Arc::new(Mutex::new(RecordingScope::default()));
+        let telemetry = RecordingTelemetry {
+            scope: scope.clone(),
+            repeat: false,
+        };
+        let result = telemetry
+            .with_default_subscriber(&mut || async {
+                NoopTelemetry
+                    .with_default_subscriber(&mut || async {
+                        assert!(scope.lock().unwrap().active);
+                        tokio::task::yield_now().await;
+                        assert!(scope.lock().unwrap().active);
+                        assert_eq!(
+                            tokio::runtime::Handle::current().runtime_flavor(),
+                            tokio::runtime::RuntimeFlavor::MultiThread
+                        );
+                        Ok("finished".into())
+                    })
+                    .await
+            })
+            .await
+            .unwrap();
+        assert_eq!(result, "finished");
+        let scope = scope.lock().unwrap();
+        assert!(scope.polls >= 2);
+        assert!(!scope.active);
+        assert_eq!(scope.events.len(), scope.polls * 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lifecycle_telemetry_preserves_events_errors_and_repeat_guard() {
+        for (args, repeat, expected_events, expected_error) in [
+            (
+                vec!["sce", "help"],
+                false,
+                vec![
+                    "sce.app.start",
+                    "sce.command.raw_args",
+                    "sce.command.parsed",
+                    "sce.command.dispatch_start",
+                    "sce.command.dispatch_end",
+                    "sce.command.completed",
+                ],
+                None,
+            ),
+            (
+                vec!["sce", "--invalid-boundary-option"],
+                false,
+                vec!["sce.app.start", "sce.command.raw_args"],
+                Some(services::error::FailureClass::Parse),
+            ),
+            (
+                vec![
+                    "sce",
+                    "config",
+                    "validate",
+                    "--config",
+                    "/nonexistent-sce-boundary-config.json",
+                ],
+                false,
+                vec![
+                    "sce.app.start",
+                    "sce.command.raw_args",
+                    "sce.command.parsed",
+                    "sce.command.dispatch_start",
+                ],
+                Some(services::error::FailureClass::Runtime),
+            ),
+            (
+                vec!["sce", "help"],
+                true,
+                vec![
+                    "sce.app.start",
+                    "sce.command.raw_args",
+                    "sce.command.parsed",
+                    "sce.command.dispatch_start",
+                    "sce.command.dispatch_end",
+                    "sce.command.completed",
+                    "sce.app.start",
+                ],
+                Some(services::error::FailureClass::Runtime),
+            ),
+        ] {
+            let scope = Arc::new(Mutex::new(RecordingScope::default()));
+            let logger = RecordingLogger(scope.clone());
+            let telemetry = RecordingTelemetry {
+                scope: scope.clone(),
+                repeat,
+            };
+            let fs = services::capabilities::StdFsOps;
+            let git = services::capabilities::ProcessGitOps;
+            let context = AppContext::new(&logger, &telemetry, &fs, &git, None);
+            let result = run_command_lifecycle_with_context(
+                args.into_iter().map(String::from),
+                &services::command_registry::CommandRegistry::default(),
+                &context,
+                &mut Vec::new(),
+            )
+            .await;
+            if let Some(class) = expected_error {
+                let error = result.unwrap_err();
+                assert_eq!(error.class(), class);
+                if repeat {
+                    assert_eq!(error.to_string(), REPEATED_COMMAND_DISPATCH_ERROR);
+                }
+            } else {
+                assert_eq!(result.unwrap(), services::help::help_text());
+            }
+            let scope = scope.lock().unwrap();
+            assert!(!scope.active);
+            let events = scope
+                .events
+                .iter()
+                .filter(|event| event.starts_with("sce."))
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            assert_eq!(events, expected_events);
+        }
+    }
+
+    #[test]
+    fn app_output_boundary_uses_isolated_process() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app::tests::isolated_app_output_boundary",
+                "--nocapture",
+            ])
+            .current_dir(sandbox.path())
+            .env("SCE_APP_BOUNDARY_CHILD", "1")
+            .env("HOME", sandbox.path())
+            .env("XDG_CONFIG_HOME", sandbox.path().join("config"))
+            .env("XDG_STATE_HOME", sandbox.path().join("state"))
+            .env("XDG_CACHE_HOME", sandbox.path().join("cache"))
+            .env("NO_COLOR", "1")
+            .env_remove("SCE_CONFIG_FILE")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn isolated_app_output_boundary() {
+        if std::env::var_os("SCE_APP_BOUNDARY_CHILD").is_none() {
+            return;
+        }
+        for command in ["help", "unknown-boundary-command", "version"] {
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            let code = run_with_dependency_check_and_streams(
+                ["sce", command].map(String::from),
+                || {
+                    assert_eq!(
+                        tokio::runtime::Handle::current().runtime_flavor(),
+                        tokio::runtime::RuntimeFlavor::MultiThread
+                    );
+                    Ok(())
+                },
+                &mut stdout,
+                &mut stderr,
+            )
+            .await;
+            assert_eq!(code, ExitCode::SUCCESS);
+            let expected = if command == "version" {
+                format!(
+                    "shared-context-engineering {} ({})\n",
+                    services::version::PACKAGE_VERSION,
+                    option_env!("SCE_GIT_COMMIT").unwrap_or("unknown")
+                )
+            } else {
+                format!("{}\n", services::help::help_text())
+            };
+            assert_eq!(stdout, expected.as_bytes());
+            assert_eq!(stderr, b"");
+        }
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run_with_dependency_check_and_streams(
+            ["sce", "help"].map(String::from),
+            || anyhow::bail!("boundary dependency unavailable"),
+            &mut stdout,
+            &mut stderr,
+        )
+        .await;
+        assert_eq!(code, ExitCode::from(5));
+        assert_eq!(stdout, b"");
+        assert_eq!(stderr, b"Error [SCE-ERR-DEPENDENCY]: Failed to initialize dependency checks: boundary dependency unavailable Try: verify required runtime dependencies and environment setup, then retry.\n");
+
+        stdout.clear();
+        stderr.clear();
+        let missing_config = std::env::current_dir().unwrap().join("missing-config.json");
+        let code = run_with_dependency_check_and_streams(
+            [
+                "sce",
+                "config",
+                "validate",
+                "--config",
+                missing_config.to_str().unwrap(),
+            ]
+            .map(String::from),
+            || Ok(()),
+            &mut stdout,
+            &mut stderr,
+        )
+        .await;
+        assert_eq!(code, ExitCode::from(4));
+        assert_eq!(stdout, b"");
+        assert_eq!(
+            stderr,
+            b"An unexpected error occurred. Check the log files for more details.\n"
+        );
+    }
 }
