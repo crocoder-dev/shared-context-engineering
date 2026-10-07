@@ -307,7 +307,7 @@ pub struct TransactionStatement<'a> {
 
 impl<'a> TransactionStatement<'a> {
     #[allow(dead_code)]
-    pub async fn new(sql: &'a str, params: impl turso::params::IntoParams) -> Result<Self> {
+    pub fn new(sql: &'a str, params: impl turso::params::IntoParams) -> Result<Self> {
         let params = turso::params::IntoParams::into_params(params)
             .map_err(|e| anyhow::anyhow!("parameter conversion failed: {sql}: {e}"))?;
 
@@ -1335,7 +1335,13 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
     pub async fn new() -> Result<Self> {
         let db_name = M::db_name();
         let db_path = M::db_path().with_context(|| format!("failed to resolve {db_name} path"))?;
-        let encryption_key = encryption_key::get_or_create_encryption_key(&db_path, db_name)?;
+        let key_path = db_path.clone();
+        let key_name = db_name.to_owned();
+        let encryption_key = tokio::task::spawn_blocking(move || {
+            encryption_key::get_or_create_encryption_key(&key_path, &key_name)
+        })
+        .await
+        .context("encryption-key resolution worker failed")??;
 
         ensure_db_parent_dir(db_name, &db_path)?;
 
@@ -1346,8 +1352,7 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
             retry_policy,
             &operation_name,
             CONNECTION_OPEN_RETRY_HINT,
-            async |_| {
-                async {
+            |_| async {
                     let path_str = db_path.to_str().ok_or_else(|| {
                         anyhow::anyhow!("invalid UTF-8 in database path: {}", db_path.display())
                     })?;
@@ -1372,7 +1377,6 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
                     db.connect().map_err(|e| {
                         anyhow::anyhow!("failed to connect to encrypted {db_name} database: {e}")
                     })
-                }.await
             },
         ).await?;
 
