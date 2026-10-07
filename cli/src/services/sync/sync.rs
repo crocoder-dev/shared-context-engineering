@@ -6,8 +6,9 @@ use std::cell::RefCell;
 use std::fmt;
 use std::future::{poll_fn, Future};
 use std::path::Path;
+use std::pin::Pin;
 use std::rc::Rc;
-use std::task::Poll;
+use std::task::{Context, Poll};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 
@@ -270,7 +271,7 @@ where
         batches: 0,
     };
 
-    let (messages, parts, agent_traces) = try_join_three(
+    let (messages, parts, agent_traces) = join_three_to_completion(
         sync_one_stream(
             client,
             repository_id,
@@ -319,7 +320,11 @@ where
     })
 }
 
-async fn try_join_three<A, B, C, OA, OB, OC, E>(a: A, b: B, c: C) -> Result<(OA, OB, OC), E>
+async fn join_three_to_completion<A, B, C, OA, OB, OC, E>(
+    a: A,
+    b: B,
+    c: C,
+) -> Result<(OA, OB, OC), E>
 where
     A: Future<Output = Result<OA, E>>,
     B: Future<Output = Result<OB, E>>,
@@ -328,38 +333,72 @@ where
     let mut a = Box::pin(a);
     let mut b = Box::pin(b);
     let mut c = Box::pin(c);
-    let mut a_output = None;
-    let mut b_output = None;
-    let mut c_output = None;
+    let mut a_state = JoinSlot::Running;
+    let mut b_state = JoinSlot::Running;
+    let mut c_state = JoinSlot::Running;
+    let mut first_error = None;
 
     poll_fn(|context| {
-        if a_output.is_none() {
-            if let Poll::Ready(result) = a.as_mut().poll(context) {
-                a_output = Some(result?);
-            }
-        }
-        if b_output.is_none() {
-            if let Poll::Ready(result) = b.as_mut().poll(context) {
-                b_output = Some(result?);
-            }
-        }
-        if c_output.is_none() {
-            if let Poll::Ready(result) = c.as_mut().poll(context) {
-                c_output = Some(result?);
-            }
-        }
+        a_state.poll(a.as_mut(), context, &mut first_error);
+        b_state.poll(b.as_mut(), context, &mut first_error);
+        c_state.poll(c.as_mut(), context, &mut first_error);
 
-        match (a_output.take(), b_output.take(), c_output.take()) {
-            (Some(a), Some(b), Some(c)) => Poll::Ready(Ok((a, b, c))),
-            (a, b, c) => {
-                a_output = a;
-                b_output = b;
-                c_output = c;
-                Poll::Pending
-            }
+        if !(a_state.is_done() && b_state.is_done() && c_state.is_done()) {
+            return Poll::Pending;
         }
+        if let Some(error) = first_error.take() {
+            return Poll::Ready(Err(error));
+        }
+        Poll::Ready(Ok((
+            a_state.take_output(),
+            b_state.take_output(),
+            c_state.take_output(),
+        )))
     })
     .await
+}
+
+enum JoinSlot<O> {
+    Running,
+    Succeeded(O),
+    Failed,
+    Taken,
+}
+
+impl<O> JoinSlot<O> {
+    fn poll<F, E>(
+        &mut self,
+        future: Pin<&mut F>,
+        context: &mut Context<'_>,
+        first_error: &mut Option<E>,
+    ) where
+        F: Future<Output = Result<O, E>>,
+    {
+        if !matches!(self, Self::Running) {
+            return;
+        }
+        match future.poll(context) {
+            Poll::Pending => {}
+            Poll::Ready(Ok(output)) => *self = Self::Succeeded(output),
+            Poll::Ready(Err(error)) => {
+                if first_error.is_none() {
+                    *first_error = Some(error);
+                }
+                *self = Self::Failed;
+            }
+        }
+    }
+
+    fn is_done(&self) -> bool {
+        !matches!(self, Self::Running)
+    }
+
+    fn take_output(&mut self) -> O {
+        match std::mem::replace(self, Self::Taken) {
+            Self::Succeeded(output) => output,
+            _ => unreachable!("join output is taken only after every future succeeded"),
+        }
+    }
 }
 
 /// Synchronizes one stream via the T04 engine. Genuine `409`/`5xx`/transport
@@ -504,5 +543,69 @@ fn cursor_for_stream(cursors: &AgentTraceCursors, stream: IngestionStream) -> i6
         IngestionStream::Parts => cursors.parts,
         IngestionStream::DiffTraces => cursors.diff_traces,
         IngestionStream::AgentTraces => cursors.agent_traces,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    use tokio::sync::oneshot;
+
+    use super::join_three_to_completion;
+
+    const NOT_COMPLETED_PROBE: Duration = Duration::from_millis(50);
+
+    #[tokio::test]
+    async fn sibling_failure_does_not_cancel_in_flight_credential_save() {
+        let (save_started_tx, save_started_rx) = oneshot::channel::<()>();
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+        let failing_finished = Rc::new(Cell::new(false));
+        let save_completed = Rc::new(Cell::new(false));
+        let succeeding_finished = Rc::new(Cell::new(false));
+
+        let failing = {
+            let failing_finished = Rc::clone(&failing_finished);
+            async move {
+                save_started_rx.await.expect("save start signal");
+                failing_finished.set(true);
+                Err::<(), _>("parts stream failed")
+            }
+        };
+        let saving = {
+            let save_completed = Rc::clone(&save_completed);
+            async move {
+                save_started_tx.send(()).expect("signal save start");
+                release_rx.await.expect("save release signal");
+                save_completed.set(true);
+                Ok("messages report")
+            }
+        };
+        let succeeding = {
+            let succeeding_finished = Rc::clone(&succeeding_finished);
+            async move {
+                succeeding_finished.set(true);
+                Ok("agent_traces report")
+            }
+        };
+
+        let mut join = std::pin::pin!(join_three_to_completion(failing, saving, succeeding));
+
+        let probe = tokio::time::timeout(NOT_COMPLETED_PROBE, join.as_mut()).await;
+        assert!(
+            probe.is_err(),
+            "join completed before the in-flight save finished"
+        );
+        assert!(failing_finished.get());
+        assert!(!save_completed.get());
+
+        release_tx.send(()).expect("release save");
+        let result = join.await;
+
+        assert_eq!(result, Err("parts stream failed"));
+        assert!(save_completed.get());
+        assert!(succeeding_finished.get());
     }
 }
