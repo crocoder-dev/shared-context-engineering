@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use crate::services::error::CliError;
 
 pub trait Logger: Send + Sync {
@@ -37,10 +39,10 @@ pub trait Logger: Send + Sync {
 }
 
 pub trait Telemetry: Send + Sync {
-    fn with_default_subscriber(
-        &self,
-        action: &mut dyn FnMut() -> Result<String, CliError>,
-    ) -> Result<String, CliError>;
+    async fn with_default_subscriber<F, Fut>(&self, action: &mut F) -> Result<String, CliError>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<String, CliError>>;
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -137,10 +139,11 @@ impl Logger for super::Logger {
 pub struct NoopTelemetry;
 
 impl Telemetry for NoopTelemetry {
-    fn with_default_subscriber(
-        &self,
-        action: &mut dyn FnMut() -> Result<String, CliError>,
-    ) -> Result<String, CliError> {
-        action()
+    async fn with_default_subscriber<F, Fut>(&self, action: &mut F) -> Result<String, CliError>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<String, CliError>>,
+    {
+        action().await
     }
 }

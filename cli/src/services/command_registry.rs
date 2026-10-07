@@ -55,15 +55,19 @@ impl RuntimeCommand {
     }
 
     #[allow(dead_code)]
-    pub fn execute<C>(&self, context: &C) -> Result<String, CliError>
+    pub async fn execute<C>(&self, context: &C) -> Result<String, CliError>
     where
         C: HasLogger + ContextWithRepoRoot,
     {
         let mut stderr = std::io::sink();
-        self.execute_with_stderr(context, &mut stderr)
+        self.execute_with_stderr(context, &mut stderr).await
     }
 
-    pub fn execute_with_stderr<C, W>(&self, context: &C, stderr: &mut W) -> Result<String, CliError>
+    pub async fn execute_with_stderr<C, W>(
+        &self,
+        context: &C,
+        stderr: &mut W,
+    ) -> Result<String, CliError>
     where
         C: HasLogger + ContextWithRepoRoot,
         W: Write,
@@ -71,15 +75,38 @@ impl RuntimeCommand {
         match self {
             Self::Help(_) => Ok(services::help::help_text()),
             Self::HelpText(command) => Ok(command.execute(context)),
-            Self::Auth(command) => command.execute(context),
+            Self::Auth(command) => command.execute(context).await,
             Self::Config(command) => command.execute(context),
-            Self::Setup(command) => command.execute(context),
-            Self::Doctor(command) => command.execute(context),
-            Self::Hooks(command) => command.execute(context),
+            Self::Setup(command) => {
+                if command.request.context_only {
+                    command.execute(context)
+                } else {
+                    tokio::task::block_in_place(|| command.execute(context))
+                }
+            }
+            Self::Doctor(command) => tokio::task::block_in_place(|| command.execute(context)),
+            Self::Hooks(command) => match &command.subcommand {
+                services::hooks::HookSubcommand::PreCommit
+                | services::hooks::HookSubcommand::PostRewrite { .. } => command.execute(context),
+                services::hooks::HookSubcommand::CommitMsg { .. }
+                | services::hooks::HookSubcommand::PostCommit { .. }
+                | services::hooks::HookSubcommand::DiffTrace
+                | services::hooks::HookSubcommand::ConversationTrace
+                | services::hooks::HookSubcommand::Codex
+                | services::hooks::HookSubcommand::ClaudeModelState
+                | services::hooks::HookSubcommand::MutationScope
+                | services::hooks::HookSubcommand::ClaudeMutationScope
+                | services::hooks::HookSubcommand::CodexMutationScope
+                | services::hooks::HookSubcommand::OpenCodeMutationScope
+                | services::hooks::HookSubcommand::PiMutationScope
+                | services::hooks::HookSubcommand::ExternalMutationGuard => {
+                    tokio::task::block_in_place(|| command.execute(context))
+                }
+            },
             Self::Policy(command) => command.execute(),
             Self::Version(command) => command.execute(context),
             Self::Completion(command) => Ok(command.execute(context)),
-            Self::Sync(command) => command.execute_with_stderr(context, stderr),
+            Self::Sync(command) => command.execute_with_stderr(context, stderr).await,
         }
     }
 }

@@ -7,16 +7,15 @@ use std::fmt;
 use std::future::{poll_fn, Future};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::OnceLock;
 use std::task::Poll;
 
-use anyhow::Context;
 use chrono::{DateTime, SecondsFormat, Utc};
-use tokio::runtime::Runtime;
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::agent_trace_export::{AgentTraceExportReader, AGENT_TRACE_EXPORT_BATCH_SIZE};
-use crate::services::agent_trace_storage::{resolve_agent_trace_storage, AgentTraceStorageContext};
+use crate::services::agent_trace_storage::{
+    resolve_agent_trace_storage, AgentTraceStorageContext, ResolvedAgentTraceStorage,
+};
 use crate::services::agent_trace_sync::control_plane::{
     AgentTraceCursors, AgentTraceIngestionBatchRequest, AgentTraceIngestionBatchResponse,
     AgentTraceIngestionStateRequest, AuthenticatedControlPlaneClient, ControlPlaneError,
@@ -28,8 +27,6 @@ use crate::services::agent_trace_sync::{
 use crate::services::auth;
 use crate::services::config;
 use crate::services::sync::progress::{NoopProgressReporter, ProgressReporter};
-
-static SYNC_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentTraceSyncReport {
@@ -152,14 +149,30 @@ impl TraceSyncError {
     }
 }
 
+struct SyncStorageGuard(Option<ResolvedAgentTraceStorage>);
+
+impl SyncStorageGuard {
+    fn storage(&self) -> &ResolvedAgentTraceStorage {
+        self.0
+            .as_ref()
+            .expect("sync storage remains owned until cleanup")
+    }
+}
+
+impl Drop for SyncStorageGuard {
+    fn drop(&mut self) {
+        tokio::task::block_in_place(|| drop(self.0.take()));
+    }
+}
+
 #[allow(dead_code)]
-pub fn run_current_sync(repo_root: &Path) -> Result<AgentTraceSyncReport, TraceSyncError> {
+pub async fn run_current_sync(repo_root: &Path) -> Result<AgentTraceSyncReport, TraceSyncError> {
     let mut progress = NoopProgressReporter;
-    run_current_sync_with_progress(repo_root, &mut progress)
+    run_current_sync_with_progress(repo_root, &mut progress).await
 }
 
 /// Production entry point with an injectable progress sink.
-pub fn run_current_sync_with_progress<S>(
+pub async fn run_current_sync_with_progress<S>(
     repo_root: &Path,
     progress: &mut S,
 ) -> Result<AgentTraceSyncReport, TraceSyncError>
@@ -167,11 +180,11 @@ where
     S: ProgressReporter<SyncProgressEvent>,
 {
     let clock = SystemSyncProgressClock;
-    run_current_sync_with_progress_and_clock(repo_root, progress, &clock)
+    run_current_sync_with_progress_and_clock(repo_root, progress, &clock).await
 }
 
 /// Production sync entry point with injectable progress sink and clock.
-pub fn run_current_sync_with_progress_and_clock<S, C>(
+pub async fn run_current_sync_with_progress_and_clock<S, C>(
     repo_root: &Path,
     progress: &mut S,
     clock: &C,
@@ -183,14 +196,14 @@ where
     progress.report(SyncProgressEvent::Started {
         timestamp: timestamp(clock),
     });
-    let result = run_current_sync_without_progress(repo_root, progress);
+    let result = run_current_sync_without_progress(repo_root, progress).await;
     progress.report(SyncProgressEvent::Finished {
         timestamp: timestamp(clock),
     });
     result
 }
 
-fn run_current_sync_without_progress<S>(
+async fn run_current_sync_without_progress<S>(
     repo_root: &Path,
     progress: &mut S,
 ) -> Result<AgentTraceSyncReport, TraceSyncError>
@@ -204,29 +217,37 @@ where
         explicit_repository_id: storage_config.repository_id.as_deref(),
         repository_remote: &storage_config.repository_remote,
     };
-    let storage = resolve_agent_trace_storage(&context)
+    let storage = tokio::task::block_in_place(|| resolve_agent_trace_storage(&context))
         .map_err(|error| TraceSyncError::Runtime(format!("{error:#}")))?;
+    let storage_guard = SyncStorageGuard(Some(storage));
+    let result = async {
+        let storage = storage_guard.storage();
 
-    let auth_config = config::resolve_auth_runtime_config(repo_root)
-        .map_err(|error| TraceSyncError::Runtime(format!("{error:#}")))?;
-    let client = AuthenticatedControlPlaneClient::new(
-        reqwest::Client::new(),
-        auth_config.control_plane_base_url.value.unwrap_or_default(),
-        auth::WORKOS_DEFAULT_BASE_URL,
-        auth_config.workos_client_id.value.unwrap_or_default(),
-    );
+        let auth_config = config::resolve_auth_runtime_config(repo_root)
+            .map_err(|error| TraceSyncError::Runtime(format!("{error:#}")))?;
+        let client = AuthenticatedControlPlaneClient::new(
+            reqwest::Client::new(),
+            auth_config.control_plane_base_url.value.unwrap_or_default(),
+            auth::WORKOS_DEFAULT_BASE_URL,
+            auth_config.workos_client_id.value.unwrap_or_default(),
+        );
 
-    run_sync_against_without_progress(
-        &storage.metadata.repository_id,
-        &storage.metadata.source_instance_id,
-        &storage.db,
-        &client,
-        progress,
-    )
+        run_sync_against_without_progress(
+            &storage.metadata.repository_id,
+            &storage.metadata.source_instance_id,
+            &storage.db,
+            &client,
+            progress,
+        )
+        .await
+    }
+    .await;
+    drop(storage_guard);
+    result
 }
 
 #[cfg(test)]
-pub(crate) fn run_sync_against(
+pub(crate) async fn run_sync_against(
     repository_id: &str,
     source_instance_id: &str,
     db: &RepositoryAgentTraceDb,
@@ -234,10 +255,11 @@ pub(crate) fn run_sync_against(
 ) -> Result<AgentTraceSyncReport, TraceSyncError> {
     let mut progress = NoopProgressReporter;
     run_sync_against_with_progress(repository_id, source_instance_id, db, client, &mut progress)
+        .await
 }
 
 #[cfg(test)]
-pub(crate) fn run_sync_against_with_progress<S>(
+pub(crate) async fn run_sync_against_with_progress<S>(
     repository_id: &str,
     source_instance_id: &str,
     db: &RepositoryAgentTraceDb,
@@ -256,10 +278,11 @@ where
         progress,
         &clock,
     )
+    .await
 }
 
 #[cfg(test)]
-pub(crate) fn run_sync_against_with_progress_and_clock<S, C>(
+pub(crate) async fn run_sync_against_with_progress_and_clock<S, C>(
     repository_id: &str,
     source_instance_id: &str,
     db: &RepositoryAgentTraceDb,
@@ -275,14 +298,15 @@ where
         timestamp: timestamp(clock),
     });
     let result =
-        run_sync_against_without_progress(repository_id, source_instance_id, db, client, progress);
+        run_sync_against_without_progress(repository_id, source_instance_id, db, client, progress)
+            .await;
     progress.report(SyncProgressEvent::Finished {
         timestamp: timestamp(clock),
     });
     result
 }
 
-fn run_sync_against_without_progress<S>(
+async fn run_sync_against_without_progress<S>(
     repository_id: &str,
     source_instance_id: &str,
     db: &RepositoryAgentTraceDb,
@@ -292,16 +316,9 @@ fn run_sync_against_without_progress<S>(
 where
     S: ProgressReporter<SyncProgressEvent>,
 {
-    let runtime = shared_runtime()?;
     let reader = AgentTraceExportReader::new(db);
 
-    runtime.block_on(run_sync_async(
-        repository_id,
-        source_instance_id,
-        &reader,
-        client,
-        progress,
-    ))
+    run_sync_async(repository_id, source_instance_id, &reader, client, progress).await
 }
 
 async fn run_sync_async<'a, S>(
@@ -567,21 +584,6 @@ fn cursor_for_stream(cursors: &AgentTraceCursors, stream: IngestionStream) -> i6
     }
 }
 
-fn shared_runtime() -> Result<&'static Runtime, TraceSyncError> {
-    if let Some(runtime) = SYNC_RUNTIME.get() {
-        return Ok(runtime);
-    }
-
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .enable_time()
-        .build()
-        .context("failed to create sync command runtime")
-        .map_err(|error| TraceSyncError::Runtime(format!("{error:#}")))?;
-
-    Ok(SYNC_RUNTIME.get_or_init(|| runtime))
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -603,6 +605,106 @@ mod tests {
     };
     use crate::services::auth::TokenResponse;
     use crate::services::token_storage::StoredTokens;
+
+    struct TestDb(Option<RepositoryAgentTraceDb>);
+
+    fn storage_guard_fixture(sandbox: &Path) -> SyncStorageGuard {
+        let repo = sandbox.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        let output = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let context = AgentTraceStorageContext {
+            repository_root: &repo,
+            explicit_repository_id: Some("sync-cleanup-boundary"),
+            repository_remote: "origin",
+        };
+        let storage = tokio::task::block_in_place(|| {
+            crate::services::agent_trace_storage::resolve_agent_trace_storage_at_state_root(
+                &context,
+                &sandbox.join("state"),
+            )
+            .unwrap()
+        });
+        SyncStorageGuard(Some(storage))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn storage_guard_cleans_up_on_error_before_returning() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut db_path = PathBuf::new();
+        let result: Result<(), TraceSyncError> = async {
+            let guard = storage_guard_fixture(sandbox.path());
+            db_path = guard.storage().db_path.clone();
+            seed_one_row_per_stream(&guard.storage().db);
+            tokio::task::yield_now().await;
+            Err(TraceSyncError::Runtime(
+                "fixture failure after storage opened".into(),
+            ))?
+        }
+        .await;
+        assert!(
+            matches!(result, Err(TraceSyncError::Runtime(reason)) if reason == "fixture failure after storage opened")
+        );
+        tokio::task::block_in_place(|| {
+            let db = RepositoryAgentTraceDb::open_without_migrations_at(&db_path).unwrap();
+            assert_eq!(diff_trace_rows(&db).len(), 1);
+        });
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn storage_guard_cleans_up_when_polled_future_is_abandoned() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let db_path = RefCell::new(None);
+        let mut future = Box::pin(async {
+            let guard = storage_guard_fixture(sandbox.path());
+            seed_one_row_per_stream(&guard.storage().db);
+            *db_path.borrow_mut() = Some(guard.storage().db_path.clone());
+            std::future::pending::<()>().await;
+            drop(guard);
+        });
+        poll_fn(|cx| {
+            assert!(future.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        assert!(db_path.borrow().is_some());
+        drop(future);
+        tokio::task::block_in_place(|| {
+            let db = RepositoryAgentTraceDb::open_without_migrations_at(
+                db_path.borrow().as_ref().unwrap(),
+            )
+            .unwrap();
+            assert_eq!(diff_trace_rows(&db).len(), 1);
+        });
+    }
+
+    impl TestDb {
+        fn new(path: &Path) -> Self {
+            Self(Some(tokio::task::block_in_place(|| {
+                RepositoryAgentTraceDb::new_at(path).expect("test DB should open")
+            })))
+        }
+    }
+
+    impl std::ops::Deref for TestDb {
+        type Target = RepositoryAgentTraceDb;
+
+        fn deref(&self) -> &Self::Target {
+            self.0
+                .as_ref()
+                .expect("test DB remains owned until cleanup")
+        }
+    }
+
+    impl Drop for TestDb {
+        fn drop(&mut self) {
+            tokio::task::block_in_place(|| drop(self.0.take()));
+        }
+    }
 
     fn unique_test_db_path(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -860,10 +962,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn progress_events_cover_batches_empty_streams_and_fixed_order() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn progress_events_cover_batches_empty_streams_and_fixed_order() {
         let db_path = unique_test_db_path("progress-events");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = TestDb::new(&db_path);
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-progress-events")
             .expect("metadata should initialize");
@@ -904,6 +1006,7 @@ mod tests {
             &mut |event| events.borrow_mut().push(event),
             &clock,
         )
+        .await
         .expect("sync should succeed");
 
         assert_eq!(report.streams.messages.uploaded, 201);
@@ -959,10 +1062,10 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn full_sync_uploads_three_remote_streams_and_second_run_is_naturally_incremental() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn full_sync_uploads_three_remote_streams_and_second_run_is_naturally_incremental() {
         let db_path = unique_test_db_path("full-sync");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = TestDb::new(&db_path);
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-full-sync")
             .expect("metadata should initialize");
@@ -984,6 +1087,7 @@ mod tests {
             &db,
             &client,
         )
+        .await
         .expect("first sync should succeed");
 
         let first_run_requests = server.captured_requests();
@@ -1019,6 +1123,7 @@ mod tests {
             &db,
             &client,
         )
+        .await
         .expect("second sync should succeed");
 
         let all_requests = server.captured_requests();
@@ -1071,10 +1176,10 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn sync_succeeds_when_local_diff_trace_row_is_rejected_by_export_reader() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sync_succeeds_when_local_diff_trace_row_is_rejected_by_export_reader() {
         let db_path = unique_test_db_path("rejected-diff-trace");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = TestDb::new(&db_path);
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-rejected-diff-trace")
             .expect("metadata should initialize");
@@ -1093,6 +1198,7 @@ mod tests {
             &db,
             &client,
         )
+        .await
         .expect("sync should not read local diff_traces rows");
 
         let requests = server.captured_requests();
@@ -1108,10 +1214,10 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn diff_traces_report_echoes_server_cursor_without_uploading_newer_local_rows() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn diff_traces_report_echoes_server_cursor_without_uploading_newer_local_rows() {
         let db_path = unique_test_db_path("diff-traces-compat");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = TestDb::new(&db_path);
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-diff-traces-compat")
             .expect("metadata should initialize");
@@ -1130,6 +1236,7 @@ mod tests {
             &db,
             &client,
         )
+        .await
         .expect("sync should succeed");
 
         let requests = server.captured_requests();
@@ -1145,10 +1252,10 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn concurrent_sync_overlaps_all_three_stream_batches_after_one_state_request() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_sync_overlaps_all_three_stream_batches_after_one_state_request() {
         let db_path = unique_test_db_path("concurrent-overlap");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = TestDb::new(&db_path);
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-concurrent-overlap")
             .expect("metadata should initialize");
@@ -1167,6 +1274,7 @@ mod tests {
             &db,
             &client,
         )
+        .await
         .expect("concurrent sync should succeed");
 
         assert_eq!(server.state_request_count(), 1);
@@ -1191,10 +1299,10 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn concurrent_sync_keeps_batches_sequential_within_one_stream() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_sync_keeps_batches_sequential_within_one_stream() {
         let db_path = unique_test_db_path("concurrent-ordering");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = TestDb::new(&db_path);
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-concurrent-ordering")
             .expect("metadata should initialize");
@@ -1243,6 +1351,7 @@ mod tests {
             &db,
             &client,
         )
+        .await
         .expect("ordered multi-batch sync should succeed");
 
         assert_eq!(server.state_request_count(), 1);
@@ -1256,10 +1365,10 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn invalid_state_cursor_fails_before_any_batch_request() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn invalid_state_cursor_fails_before_any_batch_request() {
         let db_path = unique_test_db_path("invalid-cursor");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = TestDb::new(&db_path);
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-invalid-cursor")
             .expect("metadata should initialize");
@@ -1280,6 +1389,7 @@ mod tests {
             &db,
             &client,
         )
+        .await
         .expect_err("out-of-range /state cursor should fail sync");
 
         assert!(matches!(
@@ -1295,10 +1405,10 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn terminal_batch_status_fails_without_state_reconciliation() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn terminal_batch_status_fails_without_state_reconciliation() {
         let db_path = unique_test_db_path("terminal-batch");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = TestDb::new(&db_path);
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-terminal-batch")
             .expect("metadata should initialize");
@@ -1318,6 +1428,7 @@ mod tests {
             &db,
             &client,
         )
+        .await
         .expect_err("a terminal 404 /batch response should fail the sync");
 
         assert!(
@@ -1351,10 +1462,10 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn progress_events_end_after_terminal_failure() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn progress_events_end_after_terminal_failure() {
         let db_path = unique_test_db_path("progress-failure");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = TestDb::new(&db_path);
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-progress-failure")
             .expect("metadata should initialize");
@@ -1380,6 +1491,7 @@ mod tests {
             &mut |event| events.borrow_mut().push(event),
             &clock,
         )
+        .await
         .expect_err("terminal batch failure should be reported");
 
         assert!(matches!(error, TraceSyncError::Stream { .. }));
@@ -1397,10 +1509,10 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn malformed_2xx_batch_response_still_reconciles_via_state() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn malformed_2xx_batch_response_still_reconciles_via_state() {
         let db_path = unique_test_db_path("malformed-batch");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = TestDb::new(&db_path);
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-malformed-batch")
             .expect("metadata should initialize");
@@ -1423,6 +1535,7 @@ mod tests {
             &db,
             &client,
         )
+        .await
         .expect("an undecodable 2xx /batch body should still reconcile via /state and succeed");
 
         assert_eq!(server.call_count(), 4);
@@ -1449,10 +1562,10 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn forbidden_state_response_fails_without_mutating_local_metadata() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn forbidden_state_response_fails_without_mutating_local_metadata() {
         let db_path = unique_test_db_path("forbidden");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = TestDb::new(&db_path);
         let metadata_before = db
             .verify_or_initialize_repository_metadata("repo-forbidden")
             .expect("metadata should initialize");
@@ -1470,6 +1583,7 @@ mod tests {
             &db,
             &client,
         )
+        .await
         .expect_err("403 should fail the sync");
 
         assert!(matches!(

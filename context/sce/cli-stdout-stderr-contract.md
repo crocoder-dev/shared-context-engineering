@@ -14,11 +14,10 @@ This document defines the implemented stream contract for CLI command payload an
 
 ## Implementation surface
 
-- `run_with_dependency_check_and_streams(...)` is the app-level stream boundary for production and tests.
-- `try_run_with_dependency_check(...)` performs parse + dispatch and returns payload text or classified errors.
-- `dispatch(...)` returns payload text for each command path rather than writing directly to process streams.
-- `write_stdout_payload(...)` handles success payload writes.
-- `write_error_diagnostic(...)` handles redacted error writes.
+- Async `app::run_with_dependency_check_and_streams(...)` borrows the output writers until execution and rendering finish.
+- `app::try_run_with_dependency_check(...)` completes synchronous startup and directly awaits `run_command_lifecycle`, returning a `RunOutcome<L>` containing payload text or a classified error, logger and optional startup diagnostic.
+- `app_support::execute_command_phase(...)` awaits static `RuntimeCommand::execute_with_stderr(...)`, which returns the completed payload. Sync borrows the app's stderr writer for format-gated progress through its await.
+- Synchronous `app_support::render_run_outcome(...)` owns final emission after execution completes; `write_stdout_payload(...)` handles success payload writes and `write_error_diagnostic(...)` handles redacted error writes in the same module.
 
 See also: `context/sce/cli-error-code-taxonomy.md` for the canonical error-code classes and `Try:` remediation injection rules.
 
