@@ -44,24 +44,29 @@ fn classify_sync_error(err: TraceSyncError) -> CliError {
 
 impl SyncCommand {
     #[allow(dead_code)]
-    pub fn execute<C>(&self, context: &C) -> Result<String, CliError>
+    pub async fn execute<C>(&self, context: &C) -> Result<String, CliError>
     where
         C: ContextWithRepoRoot,
     {
         let mut stderr = std::io::sink();
-        self.execute_with_stderr(context, &mut stderr)
+        self.execute_with_stderr(context, &mut stderr).await
     }
 
-    pub fn execute_with_stderr<C, W>(&self, context: &C, stderr: &mut W) -> Result<String, CliError>
+    pub async fn execute_with_stderr<C, W>(
+        &self,
+        context: &C,
+        stderr: &mut W,
+    ) -> Result<String, CliError>
     where
         C: ContextWithRepoRoot,
         W: Write,
     {
         let clock = SystemSyncProgressClock;
         self.execute_with_stderr_and_clock(context, stderr, &clock)
+            .await
     }
 
-    fn execute_with_stderr_and_clock<C, W, Clock>(
+    async fn execute_with_stderr_and_clock<C, W, Clock>(
         &self,
         context: &C,
         stderr: &mut W,
@@ -78,7 +83,8 @@ impl SyncCommand {
             crate::services::output_format::OutputFormat::Text => {
                 let mut progress = IndicatifProgressReporter::new(stderr);
                 let result =
-                    run_current_sync_with_progress_and_clock(&repo_root, &mut progress, clock);
+                    run_current_sync_with_progress_and_clock(&repo_root, &mut progress, clock)
+                        .await;
                 if result.is_ok() {
                     progress.finish_successfully();
                 }
@@ -86,7 +92,7 @@ impl SyncCommand {
             }
             crate::services::output_format::OutputFormat::Json => {
                 let mut progress = NoopProgressReporter;
-                run_current_sync_with_progress_and_clock(&repo_root, &mut progress, clock)
+                run_current_sync_with_progress_and_clock(&repo_root, &mut progress, clock).await
             }
         }
         .map_err(classify_sync_error)?;

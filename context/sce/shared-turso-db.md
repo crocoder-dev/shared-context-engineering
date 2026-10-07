@@ -36,6 +36,10 @@
   - `collect_db_path_health()` emits common parent/path health problems for DB-backed services.
   - `bootstrap_db_parent()` creates the resolved DB parent directory for repair/setup flows.
 
+## Application runtime compatibility
+
+The adapter remains synchronous and owns a current-thread Tokio runtime. `block_on_isolated` protects reentry from the application runtime, but owning runtime destruction must occur in a blocking region. DB-capable dispatch and sync storage guards establish that caller boundary without changing DB APIs, retry/WAL/migration policies or credential storage. See [application execution runtime](../architecture.md#application-execution-runtime). PR2 is future work removing DB-owned runtimes and the DB-related compatibility scopes together.
+
 ## Transactional primitives
 
 `TursoDb<M>` offers two generic multi-statement transaction primitives beyond

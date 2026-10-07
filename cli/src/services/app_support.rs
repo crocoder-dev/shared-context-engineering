@@ -101,7 +101,7 @@ pub(crate) fn log_startup_configuration(
     }
 }
 
-pub(crate) fn execute_command_phase<C, W>(
+pub(crate) async fn execute_command_phase<C, W>(
     command: &RuntimeCommand,
     context: &C,
     stderr: &mut W,
@@ -118,7 +118,7 @@ where
         &[("command", command_name.as_ref())],
         None,
     );
-    let dispatch_result = command.execute_with_stderr(context, stderr);
+    let dispatch_result = command.execute_with_stderr(context, stderr).await;
     if dispatch_result.is_ok() {
         logger.debug(
             "sce.command.dispatch_end",

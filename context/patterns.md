@@ -1,5 +1,9 @@
 # Patterns
 
+## Awaited command execution
+
+- Keep borrowed context and writers alive through directly awaited static dispatch. Scope blocking only around documented DB construction/destruction lifetimes; isolate credential operations with awaited owned `spawn_blocking` closures. See [application execution runtime](architecture.md#application-execution-runtime).
+
 ## Config generation tooling
 
 - Use the Nix dev shell as the canonical toolchain entrypoint for generation work.
