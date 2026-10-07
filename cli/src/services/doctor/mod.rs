@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result};
 
@@ -25,7 +24,7 @@ use fixes::build_manual_fix_results;
 use inspect::{
     build_report_with_lifecycle_problems, finalize_mutation_scope_repair_results,
     mutation_scope_repair_seam, repair_blocked_mutation_scope_targets_with_seam,
-    repair_merge_target_configs, MutationScopeRepairSeam,
+    repair_merge_target_configs,
 };
 use render::render_report;
 use types::{
@@ -51,19 +50,12 @@ pub struct DoctorRequest {
     pub format: DoctorFormat,
 }
 
-struct DoctorDependencies<'a> {
-    run_git_command: &'a dyn Fn(&Path, &[&str]) -> Option<String>,
-    check_git_available: &'a dyn Fn() -> bool,
-    resolve_state_root: &'a dyn Fn() -> Result<PathBuf>,
-    resolve_global_config_path: &'a dyn Fn() -> Result<PathBuf>,
-    validate_config_file: &'a dyn Fn(&Path) -> Result<()>,
-    /// Probes Codex's effective hook-discovery policy
-    /// (`allow_managed_hooks_only`). Invoked exactly once per doctor
-    /// invocation (see `execute_doctor_with_lifecycle_providers`) and reused
-    /// for every Codex integration inspection within that invocation —
-    /// initial report, `--fix`, and final report alike — never once per
-    /// registration.
-    probe_codex_hook_policy: &'a dyn Fn() -> codex_hook_policy::CodexHookPolicyReadiness,
+struct DoctorDependencies<'a, G, S, C, V, P> {
+    git: &'a G,
+    resolve_state_root: &'a S,
+    resolve_global_config_path: &'a C,
+    validate_config_file: &'a V,
+    probe_codex_hook_policy: &'a P,
 }
 
 struct DoctorExecution {
@@ -77,9 +69,9 @@ struct ProviderDoctorProblem {
     problem: DoctorProblem,
 }
 
-pub fn run_doctor_with_context<C>(request: DoctorRequest, context: &C) -> Result<String>
+pub async fn run_doctor_with_context<C>(request: DoctorRequest, context: &C) -> Result<String>
 where
-    C: ContextWithRepoRoot,
+    C: ContextWithRepoRoot + crate::app::HasGit,
 {
     let repository_root = if let Some(path) = context.repo_root() {
         path.to_path_buf()
@@ -93,24 +85,28 @@ where
         request,
         &repository_root,
         &scoped_context,
-        &mutation_scope_repair_seam,
-    );
+        &mutation_scope_repair_seam::<crate::services::observability::traits::NoopLogger>,
+    )
+    .await;
     render_report(request, &execution)
 }
 
-fn execute_doctor_with_context(
+async fn execute_doctor_with_context(
     request: DoctorRequest,
     repository_root: &Path,
-    context: &impl HasRepoRoot,
-    mutation_scope_seam: MutationScopeRepairSeam<'_>,
+    context: &(impl HasRepoRoot + crate::app::HasGit),
+    mutation_scope_seam: &impl std::ops::AsyncFn(
+        &Path,
+        &str,
+        Option<&crate::services::observability::traits::NoopLogger>,
+    ) -> anyhow::Result<String>,
 ) -> DoctorExecution {
     execute_doctor_with_lifecycle_providers(
         request,
         repository_root,
         context,
         &DoctorDependencies {
-            run_git_command: &run_git_command,
-            check_git_available: &is_git_available,
+            git: context.git(),
             resolve_state_root: &resolve_state_data_root,
             resolve_global_config_path: &|| {
                 Ok(resolve_sce_default_locations()?.global_config_file())
@@ -120,14 +116,26 @@ fn execute_doctor_with_context(
         },
         mutation_scope_seam,
     )
+    .await
 }
 
-fn execute_doctor_with_lifecycle_providers(
+async fn execute_doctor_with_lifecycle_providers(
     request: DoctorRequest,
     repository_root: &Path,
     context: &impl HasRepoRoot,
-    dependencies: &DoctorDependencies<'_>,
-    mutation_scope_seam: MutationScopeRepairSeam<'_>,
+    dependencies: &DoctorDependencies<
+        '_,
+        impl crate::services::capabilities::GitOps,
+        impl Fn() -> Result<PathBuf>,
+        impl Fn() -> Result<PathBuf>,
+        impl Fn(&Path) -> Result<()>,
+        impl Fn() -> crate::services::codex_hook_policy::CodexHookPolicyReadiness,
+    >,
+    mutation_scope_seam: &impl std::ops::AsyncFn(
+        &Path,
+        &str,
+        Option<&crate::services::observability::traits::NoopLogger>,
+    ) -> anyhow::Result<String>,
 ) -> DoctorExecution {
     // Probed exactly once per doctor invocation, then reused for every
     // Codex integration inspection below (initial report, `--fix`, and final
@@ -135,7 +143,7 @@ fn execute_doctor_with_lifecycle_providers(
     let policy_readiness = (dependencies.probe_codex_hook_policy)();
 
     let providers = lifecycle_providers(true);
-    let initial_problems = diagnose_lifecycle_providers(context, &providers);
+    let initial_problems = diagnose_lifecycle_providers(context, &providers).await;
     let initial_doctor_problems = initial_problems
         .iter()
         .map(|problem| problem.problem.clone())
@@ -146,7 +154,8 @@ fn execute_doctor_with_lifecycle_providers(
         dependencies,
         initial_doctor_problems,
         &policy_readiness,
-    );
+    )
+    .await;
 
     if request.mode != DoctorMode::Fix {
         return DoctorExecution {
@@ -155,14 +164,14 @@ fn execute_doctor_with_lifecycle_providers(
         };
     }
 
-    let mut fix_results = fix_lifecycle_providers(context, &providers, &initial_problems);
+    let mut fix_results = fix_lifecycle_providers(context, &providers, &initial_problems).await;
     fix_results.extend(repair_merge_target_configs(
         repository_root,
         &policy_readiness,
     ));
     let mutation_scope_repairs =
-        repair_blocked_mutation_scope_targets_with_seam(&initial_report, mutation_scope_seam);
-    let final_problems = diagnose_lifecycle_providers(context, &providers);
+        repair_blocked_mutation_scope_targets_with_seam(&initial_report, mutation_scope_seam).await;
+    let final_problems = diagnose_lifecycle_providers(context, &providers).await;
     let final_doctor_problems = final_problems
         .into_iter()
         .map(|problem| problem.problem)
@@ -173,7 +182,8 @@ fn execute_doctor_with_lifecycle_providers(
         dependencies,
         final_doctor_problems,
         &policy_readiness,
-    );
+    )
+    .await;
     fix_results.extend(finalize_mutation_scope_repair_results(
         &mutation_scope_repairs,
         &final_report.mutation_scope_health,
@@ -189,42 +199,44 @@ fn execute_doctor_with_lifecycle_providers(
     }
 }
 
-fn diagnose_lifecycle_providers(
+async fn diagnose_lifecycle_providers(
     context: &impl HasRepoRoot,
     providers: &[LifecycleProvider],
 ) -> Vec<ProviderDoctorProblem> {
-    providers
-        .iter()
-        .flat_map(|provider| {
-            let provider_id = provider.id();
-            provider
-                .diagnose(context)
-                .into_iter()
-                .map(move |problem| ProviderDoctorProblem {
-                    provider_id,
-                    problem: doctor_problem_from_health(problem),
-                })
-        })
-        .collect()
+    let mut problems = Vec::new();
+    for provider in providers {
+        let provider_id = provider.id();
+        problems.extend(provider.diagnose(context).await.into_iter().map(|problem| {
+            ProviderDoctorProblem {
+                provider_id,
+                problem: doctor_problem_from_health(problem),
+            }
+        }));
+    }
+    problems
 }
 
-fn fix_lifecycle_providers(
+async fn fix_lifecycle_providers(
     context: &impl HasRepoRoot,
     providers: &[LifecycleProvider],
     problems: &[ProviderDoctorProblem],
 ) -> Vec<DoctorFixResultRecord> {
-    providers
-        .iter()
-        .flat_map(|provider| {
-            let health_problems = problems
-                .iter()
-                .filter(|problem| problem.provider_id == provider.id())
-                .map(|problem| health_problem_from_doctor(problem.problem.clone()))
-                .collect::<Vec<_>>();
-            provider.fix(context, &health_problems)
-        })
-        .map(doctor_fix_result_from_lifecycle)
-        .collect()
+    let mut results = Vec::new();
+    for provider in providers {
+        let health_problems = problems
+            .iter()
+            .filter(|problem| problem.provider_id == provider.id())
+            .map(|problem| health_problem_from_doctor(problem.problem.clone()))
+            .collect::<Vec<_>>();
+        results.extend(
+            provider
+                .fix(context, &health_problems)
+                .await
+                .into_iter()
+                .map(doctor_fix_result_from_lifecycle),
+        );
+    }
+    results
 }
 
 fn doctor_problem_from_health(problem: HealthProblem) -> DoctorProblem {
@@ -477,13 +489,6 @@ fn health_problem_kind(kind: ProblemKind) -> HealthProblemKind {
     }
 }
 
-fn is_git_available() -> bool {
-    Command::new("git")
-        .arg("--version")
-        .output()
-        .is_ok_and(|output| output.status.success())
-}
-
 #[cfg(unix)]
 fn is_executable(metadata: &fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
@@ -494,23 +499,4 @@ fn is_executable(metadata: &fs::Metadata) -> bool {
 #[cfg(not(unix))]
 fn is_executable(metadata: &fs::Metadata) -> bool {
     metadata.is_file()
-}
-
-fn run_git_command(repository_root: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(repository_root)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8(output.stdout).ok()?;
-    let trimmed = stdout.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
 }

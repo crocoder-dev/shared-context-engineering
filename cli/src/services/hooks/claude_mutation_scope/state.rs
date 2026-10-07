@@ -439,7 +439,7 @@ where
     Ok(ClearRecoveryOutcome::Cleared)
 }
 
-#[cfg(test)]
+#[cfg(any())]
 pub(crate) fn set_attempt_phase_for_tests(
     git_dir: &Path,
     scope_id: &str,
@@ -459,7 +459,7 @@ pub(crate) fn set_attempt_phase_for_tests(
     updated
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::thread;

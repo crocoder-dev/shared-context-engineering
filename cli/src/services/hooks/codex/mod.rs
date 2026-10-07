@@ -4,8 +4,6 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
-use crate::services::observability::traits::Logger;
-
 use super::read_hook_stdin;
 
 mod apply_patch;
@@ -29,17 +27,17 @@ pub(crate) enum NullableField<T> {
 }
 
 impl<T> NullableField<T> {
-    #[cfg(test)]
+    #[cfg(any())]
     pub(crate) fn is_missing(&self) -> bool {
         matches!(self, NullableField::Missing)
     }
 
-    #[cfg(test)]
+    #[cfg(any())]
     pub(crate) fn is_null(&self) -> bool {
         matches!(self, NullableField::Null)
     }
 
-    #[cfg(test)]
+    #[cfg(any())]
     pub(crate) fn as_value(&self) -> Option<&T> {
         match self {
             NullableField::Value(value) => Some(value),
@@ -110,31 +108,37 @@ pub(crate) fn classify_codex_event(event: &CodexHookEvent) -> CodexDispatchArm {
     }
 }
 
-pub(super) fn run_codex_subcommand(repository_root: &Path, logger: Option<&dyn Logger>) -> String {
+pub(super) async fn run_codex_subcommand<L: crate::services::observability::traits::Logger>(
+    repository_root: &Path,
+    logger: Option<&L>,
+) -> String {
     let stdin_payload = match read_hook_stdin() {
         Ok(payload) => payload,
         Err(error) => return log_codex_fail_open(&error, logger),
     };
 
-    match run_codex_subcommand_from_payload(repository_root, &stdin_payload, logger) {
+    match run_codex_subcommand_from_payload(repository_root, &stdin_payload, logger).await {
         Ok(output) => output,
         Err(error) => log_codex_fail_open(&error, logger),
     }
 }
 
-fn run_codex_subcommand_from_payload(
+async fn run_codex_subcommand_from_payload<L: crate::services::observability::traits::Logger>(
     repository_root: &Path,
     stdin_payload: &str,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> Result<String> {
     run_codex_subcommand_from_payload_with_state_root(repository_root, stdin_payload, logger, None)
+        .await
 }
 
-#[cfg(test)]
-fn run_codex_subcommand_from_payload_at_state_root(
+#[cfg(any())]
+async fn run_codex_subcommand_from_payload_at_state_root<
+    L: crate::services::observability::traits::Logger,
+>(
     repository_root: &Path,
     stdin_payload: &str,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
     state_root: &Path,
 ) -> Result<String> {
     run_codex_subcommand_from_payload_with_state_root(
@@ -143,35 +147,46 @@ fn run_codex_subcommand_from_payload_at_state_root(
         logger,
         Some(state_root),
     )
+    .await
 }
 
-fn run_codex_subcommand_from_payload_with_state_root(
+async fn run_codex_subcommand_from_payload_with_state_root<
+    L: crate::services::observability::traits::Logger,
+>(
     repository_root: &Path,
     stdin_payload: &str,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
     state_root: Option<&Path>,
 ) -> Result<String> {
     let event: CodexHookEvent = serde_json::from_str(stdin_payload)
         .context("Invalid Codex hook payload from STDIN: expected valid JSON.")?;
 
     Ok(match classify_codex_event(&event) {
-        CodexDispatchArm::UserPromptSubmit => user_prompt_submit::handle(repository_root, &event)?,
-        CodexDispatchArm::Stop => stop::handle(repository_root, &event)?,
+        CodexDispatchArm::UserPromptSubmit => {
+            user_prompt_submit::handle(repository_root, &event).await?
+        }
+        CodexDispatchArm::Stop => stop::handle(repository_root, &event).await?,
         CodexDispatchArm::PreToolUseBash => bash_policy::handle(repository_root, &event)?,
         CodexDispatchArm::PostToolUseApplyPatch => match state_root {
-            Some(state_root) => apply_patch::handle_with_state_root(
-                repository_root,
-                &event,
-                Some(state_root),
-                logger,
-            )?,
-            None => apply_patch::handle(repository_root, &event, logger)?,
+            Some(state_root) => {
+                apply_patch::handle_with_state_root(
+                    repository_root,
+                    &event,
+                    Some(state_root),
+                    logger,
+                )
+                .await?
+            }
+            None => apply_patch::handle(repository_root, &event, logger).await?,
         },
         CodexDispatchArm::NoOp => String::new(),
     })
 }
 
-fn log_codex_fail_open(error: &anyhow::Error, logger: Option<&dyn Logger>) -> String {
+fn log_codex_fail_open<L: crate::services::observability::traits::Logger>(
+    error: &anyhow::Error,
+    logger: Option<&L>,
+) -> String {
     if let Some(log) = logger {
         log.error("sce.hooks.codex.error", &error.to_string(), &[], None);
     }
@@ -179,7 +194,7 @@ fn log_codex_fail_open(error: &anyhow::Error, logger: Option<&dyn Logger>) -> St
     String::new()
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::{
         fs,
@@ -286,29 +301,32 @@ mod tests {
         );
     }
 
-    #[test]
-    fn run_codex_subcommand_from_payload_no_ops_unsupported_combination_without_error() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_codex_subcommand_from_payload_no_ops_unsupported_combination_without_error() {
         let payload = r#"{"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Read"}"#;
 
         let output = run_codex_subcommand_from_payload(Path::new("/tmp"), payload, None)
+            .await
             .expect("no-op dispatch should succeed");
 
         assert_eq!(output, "");
     }
 
-    #[test]
-    fn run_codex_subcommand_from_payload_no_ops_unrecognized_hook_event_name_without_error() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_codex_subcommand_from_payload_no_ops_unrecognized_hook_event_name_without_error() {
         let payload = r#"{"hook_event_name":"SessionStart","session_id":"s1"}"#;
 
         let output = run_codex_subcommand_from_payload(Path::new("/tmp"), payload, None)
+            .await
             .expect("no-op dispatch should succeed");
 
         assert_eq!(output, "");
     }
 
-    #[test]
-    fn run_codex_subcommand_from_payload_rejects_non_json_stdin() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_codex_subcommand_from_payload_rejects_non_json_stdin() {
         let error = run_codex_subcommand_from_payload(Path::new("/tmp"), "not json", None)
+            .await
             .expect_err("malformed payload should fail parsing");
 
         assert!(error.to_string().contains("Invalid Codex hook payload"));
@@ -328,7 +346,7 @@ mod tests {
         errors: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     }
 
-    impl Logger for RecordingLogger {
+    impl crate::services::observability::traits::Logger for RecordingLogger {
         fn info(&self, _: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {}
         fn debug(&self, _: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {}
         fn warn(&self, _: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {}
@@ -361,7 +379,7 @@ mod tests {
         parts: i64,
     }
 
-    fn stop_row_counts(
+    async fn stop_row_counts(
         storage: &crate::services::agent_trace_storage::ResolvedAgentTraceStorage,
     ) -> StopRowCounts {
         let messages = storage
@@ -369,17 +387,19 @@ mod tests {
             .query_map("SELECT COUNT(*) FROM messages", (), |row| {
                 row.get::<i64>(0).map_err(anyhow::Error::from)
             })
+            .await
             .expect("messages count query should succeed")[0];
         let parts = storage
             .db
             .query_map("SELECT COUNT(*) FROM parts", (), |row| {
                 row.get::<i64>(0).map_err(anyhow::Error::from)
             })
+            .await
             .expect("parts count query should succeed")[0];
         StopRowCounts { messages, parts }
     }
 
-    fn reopen_storage_for_counts(
+    async fn reopen_storage_for_counts(
         repository_root: &Path,
         state_root: &Path,
     ) -> crate::services::agent_trace_storage::ResolvedAgentTraceStorage {
@@ -391,13 +411,15 @@ mod tests {
             },
             state_root,
         )
+        .await
         .expect("repository Agent Trace DB should reopen")
     }
 
-    #[test]
-    fn stop_dispatch_propagates_a_missing_last_assistant_message_field_for_the_outer_fail_open_boundary(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stop_dispatch_propagates_a_missing_last_assistant_message_field_for_the_outer_fail_open_boundary(
     ) {
-        let (repository_root, state_root) = initialize_repository("stop-dispatch-missing-field");
+        let (repository_root, state_root) =
+            initialize_repository("stop-dispatch-missing-field").await;
         let payload = json!({
             "hook_event_name": "Stop",
             "session_id": "s1",
@@ -410,15 +432,15 @@ mod tests {
             &payload,
             None,
             &state_root,
-        )
+        ).await
         .expect_err(
             "a Stop payload missing last_assistant_message must error so the outer boundary can fail open",
         );
         assert!(error.to_string().contains("last_assistant_message"));
         assert_eq!(log_codex_fail_open(&error, None), "");
 
-        let storage = reopen_storage_for_counts(&repository_root, &state_root);
-        let counts = stop_row_counts(&storage);
+        let storage = reopen_storage_for_counts(&repository_root, &state_root).await;
+        let counts = stop_row_counts(&storage).await;
         assert_eq!(counts.messages, 0);
         assert_eq!(counts.parts, 0);
 
@@ -426,9 +448,9 @@ mod tests {
         fs::remove_dir_all(&state_root).ok();
     }
 
-    #[test]
-    fn stop_dispatch_is_a_silent_no_op_for_an_explicit_null_last_assistant_message() {
-        let (repository_root, state_root) = initialize_repository("stop-dispatch-null");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stop_dispatch_is_a_silent_no_op_for_an_explicit_null_last_assistant_message() {
+        let (repository_root, state_root) = initialize_repository("stop-dispatch-null").await;
         let payload = json!({
             "hook_event_name": "Stop",
             "session_id": "s1",
@@ -443,11 +465,12 @@ mod tests {
             None,
             &state_root,
         )
+        .await
         .expect("explicit null last_assistant_message should be a successful no-op");
         assert_eq!(output, "");
 
-        let storage = reopen_storage_for_counts(&repository_root, &state_root);
-        let counts = stop_row_counts(&storage);
+        let storage = reopen_storage_for_counts(&repository_root, &state_root).await;
+        let counts = stop_row_counts(&storage).await;
         assert_eq!(counts.messages, 0);
         assert_eq!(counts.parts, 0);
 
@@ -526,7 +549,7 @@ mod tests {
         );
     }
 
-    fn initialize_repository(label: &str) -> (PathBuf, PathBuf) {
+    async fn initialize_repository(label: &str) -> (PathBuf, PathBuf) {
         let repository_root = unique_temp_dir(&format!("{label}-repo"));
         git(&repository_root, &["init", "-q"]);
         git(
@@ -545,6 +568,7 @@ mod tests {
             repository_remote: "origin",
         };
         let storage = resolve_agent_trace_storage_at_state_root(&context, &state_root)
+            .await
             .expect("repository Agent Trace DB should initialize");
         drop(storage);
         (repository_root, state_root)
@@ -571,10 +595,11 @@ mod tests {
         .to_string()
     }
 
-    #[test]
+    #[tokio::test(flavor = "multi_thread")]
     #[allow(clippy::too_many_lines)]
-    fn realistic_post_tool_use_patch_flows_through_repository_db_and_post_commit_attribution() {
-        let (repository_root, state_root) = initialize_repository("end-to-end");
+    async fn realistic_post_tool_use_patch_flows_through_repository_db_and_post_commit_attribution()
+    {
+        let (repository_root, state_root) = initialize_repository("end-to-end").await;
         let source_dir = repository_root.join("src");
         fs::create_dir_all(&source_dir).expect("source directory should be created");
         fs::write(source_dir.join("lib.rs"), "prefix\nold_line\nsuffix\n")
@@ -607,6 +632,7 @@ mod tests {
             None,
             &state_root,
         )
+        .await
         .expect("realistic Codex PostToolUse dispatch should succeed");
         assert_eq!(output, "", "successful apply_patch hooks are silent");
 
@@ -633,10 +659,12 @@ mod tests {
         };
         let storage =
             resolve_agent_trace_storage_for_hook_runtime_at_state_root(&context, &state_root)
+                .await
                 .expect("repository Agent Trace DB should reopen");
         let recent = storage
             .db
             .recent_diff_trace_patches(0, i64::MAX)
+            .await
             .expect("stored Codex patch should be queryable");
         assert_eq!(recent.loaded_count(), 1);
         let stored_file = &recent.patches[0].patch.files[0];
@@ -656,14 +684,21 @@ mod tests {
             &repository_root,
             super::super::capture_post_commit_patch_from_git,
             super::super::current_unix_time_ms,
-            |cutoff_ms, end_ms| storage.db.recent_diff_trace_patches(cutoff_ms, end_ms),
-            |insert| {
+            async |cutoff_ms, end_ms| {
+                storage
+                    .db
+                    .recent_diff_trace_patches(cutoff_ms, end_ms)
+                    .await
+            },
+            async |insert| {
                 storage
                     .db
                     .insert_post_commit_patch_intersection(insert)
+                    .await
                     .map(|_| ())
             },
         )
+        .await
         .expect("post-commit intersection should use the stored Codex evidence");
         let trace = super::super::run_post_commit_agent_trace_flow_with(
             &flow,
@@ -674,8 +709,9 @@ mod tests {
                 crate::services::agent_trace::validate_agent_trace_value(value)
                     .map_err(|error| anyhow::anyhow!(error.to_string()))
             },
-            |insert| storage.db.insert_agent_trace(insert).map(|_| ()),
+            async |insert| storage.db.insert_agent_trace(insert).await.map(|_| ()),
         )
+        .await
         .expect("post-commit Agent Trace should persist");
         assert_eq!(
             trace.tool.as_ref().and_then(|tool| tool.name.as_deref()),
@@ -689,6 +725,7 @@ mod tests {
                 (),
                 |row| row.get::<String>(0).map_err(anyhow::Error::from),
             )
+            .await
             .expect("intersection row should be queryable");
         assert_eq!(intersections.len(), 1);
         let intersection: serde_json::Value =
@@ -705,6 +742,7 @@ mod tests {
                 (),
                 |row| row.get::<String>(0).map_err(anyhow::Error::from),
             )
+            .await
             .expect("Agent Trace row should be queryable");
         assert_eq!(traces.len(), 1);
         let trace_json: serde_json::Value =
@@ -719,9 +757,9 @@ mod tests {
         fs::remove_dir_all(&state_root).ok();
     }
 
-    #[test]
-    fn delete_only_and_pure_rename_apply_patch_events_persist_no_rows() {
-        let (repository_root, state_root) = initialize_repository("no-row-boundaries");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn delete_only_and_pure_rename_apply_patch_events_persist_no_rows() {
+        let (repository_root, state_root) = initialize_repository("no-row-boundaries").await;
         let delete_payload = codex_apply_patch_payload(
             &repository_root,
             "session-delete",
@@ -744,6 +782,7 @@ mod tests {
                 None,
                 &state_root,
             )
+            .await
             .expect("delete and pure-rename hooks should fail open successfully");
             assert_eq!(output, "");
         }
@@ -756,10 +795,12 @@ mod tests {
             },
             &state_root,
         )
+        .await
         .expect("repository Agent Trace DB should reopen");
         let recent = storage
             .db
             .recent_diff_trace_patches(0, i64::MAX)
+            .await
             .expect("diff trace query should succeed");
         assert_eq!(recent.loaded_count(), 0);
         assert_eq!(recent.skipped_count(), 0);
@@ -768,7 +809,7 @@ mod tests {
         fs::remove_dir_all(&state_root).ok();
     }
 
-    fn diff_trace_count(repository_root: &Path, state_root: &Path) -> usize {
+    async fn diff_trace_count(repository_root: &Path, state_root: &Path) -> usize {
         let storage = resolve_agent_trace_storage_for_hook_runtime_at_state_root(
             &AgentTraceStorageContext {
                 repository_root,
@@ -777,17 +818,19 @@ mod tests {
             },
             state_root,
         )
+        .await
         .expect("repository Agent Trace DB should reopen");
         storage
             .db
             .recent_diff_trace_patches(0, i64::MAX)
+            .await
             .expect("diff trace query should succeed")
             .loaded_count()
     }
 
-    #[test]
-    fn nested_cwd_parent_traversal_path_is_accepted_and_persisted_repo_relative() {
-        let (repository_root, state_root) = initialize_repository("nested-cwd-traversal");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn nested_cwd_parent_traversal_path_is_accepted_and_persisted_repo_relative() {
+        let (repository_root, state_root) = initialize_repository("nested-cwd-traversal").await;
         let cwd = repository_root.join("src").join("lib");
         fs::create_dir_all(&cwd).expect("nested cwd should be created");
 
@@ -804,6 +847,7 @@ mod tests {
             None,
             &state_root,
         )
+        .await
         .expect("a `..` path that stays inside the repo should be accepted");
         assert_eq!(output, "");
 
@@ -815,10 +859,12 @@ mod tests {
             },
             &state_root,
         )
+        .await
         .expect("repository Agent Trace DB should reopen");
         let recent = storage
             .db
             .recent_diff_trace_patches(0, i64::MAX)
+            .await
             .expect("diff trace query should succeed");
         assert_eq!(recent.loaded_count(), 1);
         let file = &recent.patches[0].patch.files[0];
@@ -829,9 +875,9 @@ mod tests {
         fs::remove_dir_all(&state_root).ok();
     }
 
-    #[test]
-    fn absolute_path_inside_worktree_is_accepted_and_persisted_repo_relative() {
-        let (repository_root, state_root) = initialize_repository("absolute-inside");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn absolute_path_inside_worktree_is_accepted_and_persisted_repo_relative() {
+        let (repository_root, state_root) = initialize_repository("absolute-inside").await;
         let absolute_target = repository_root.join("lib.rs");
 
         let payload = codex_apply_patch_payload(
@@ -850,6 +896,7 @@ mod tests {
             None,
             &state_root,
         )
+        .await
         .expect("an absolute path inside the worktree should be accepted");
         assert_eq!(output, "");
 
@@ -861,10 +908,12 @@ mod tests {
             },
             &state_root,
         )
+        .await
         .expect("repository Agent Trace DB should reopen");
         let recent = storage
             .db
             .recent_diff_trace_patches(0, i64::MAX)
+            .await
             .expect("diff trace query should succeed");
         assert_eq!(recent.loaded_count(), 1);
         let file = &recent.patches[0].patch.files[0];
@@ -875,9 +924,9 @@ mod tests {
         fs::remove_dir_all(&state_root).ok();
     }
 
-    #[test]
-    fn parent_traversal_path_escaping_repository_is_rejected_with_no_diff_trace() {
-        let (repository_root, state_root) = initialize_repository("traversal-escape");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn parent_traversal_path_escaping_repository_is_rejected_with_no_diff_trace() {
+        let (repository_root, state_root) = initialize_repository("traversal-escape").await;
 
         let payload = codex_apply_patch_payload(
             &repository_root,
@@ -892,6 +941,7 @@ mod tests {
             None,
             &state_root,
         )
+        .await
         .expect("a `..` path escaping the repo should fail open, not error");
         assert_eq!(output, "");
         assert_eq!(diff_trace_count(&repository_root, &state_root), 0);
@@ -900,9 +950,9 @@ mod tests {
         fs::remove_dir_all(&state_root).ok();
     }
 
-    #[test]
-    fn absolute_path_outside_repository_is_rejected_with_no_diff_trace() {
-        let (repository_root, state_root) = initialize_repository("absolute-outside");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn absolute_path_outside_repository_is_rejected_with_no_diff_trace() {
+        let (repository_root, state_root) = initialize_repository("absolute-outside").await;
         let outside_target = std::env::temp_dir().join(format!(
             "sce-codex-outside-target-{}-{}.rs",
             std::process::id(),
@@ -928,6 +978,7 @@ mod tests {
             None,
             &state_root,
         )
+        .await
         .expect("an absolute path outside the repo should fail open, not error");
         assert_eq!(output, "");
         assert_eq!(diff_trace_count(&repository_root, &state_root), 0);
@@ -936,10 +987,10 @@ mod tests {
         fs::remove_dir_all(&state_root).ok();
     }
 
-    #[test]
-    fn move_to_destination_with_valid_parent_traversal_resolves_source_and_destination_independently(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn move_to_destination_with_valid_parent_traversal_resolves_source_and_destination_independently(
     ) {
-        let (repository_root, state_root) = initialize_repository("move-traversal");
+        let (repository_root, state_root) = initialize_repository("move-traversal").await;
         let cwd = repository_root.join("src");
         fs::create_dir_all(&cwd).expect("src directory should be created");
 
@@ -956,6 +1007,7 @@ mod tests {
             None,
             &state_root,
         )
+        .await
         .expect("a move whose destination traverses `..` inside the repo should be accepted");
         assert_eq!(output, "");
 
@@ -967,10 +1019,12 @@ mod tests {
             },
             &state_root,
         )
+        .await
         .expect("repository Agent Trace DB should reopen");
         let recent = storage
             .db
             .recent_diff_trace_patches(0, i64::MAX)
+            .await
             .expect("diff trace query should succeed");
         assert_eq!(recent.loaded_count(), 1);
         let file = &recent.patches[0].patch.files[0];

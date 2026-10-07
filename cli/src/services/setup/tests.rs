@@ -302,16 +302,17 @@ fn every_optional_workflow() -> Vec<&'static str> {
         .collect()
 }
 
-#[test]
-fn iter_embedded_assets_for_all_covers_each_concrete_target() {
+#[tokio::test(flavor = "multi_thread")]
+async fn iter_embedded_assets_for_all_covers_each_concrete_target() {
     let selection = every_optional_workflow();
-    let count =
-        |target| iter_embedded_assets_for_setup_target_with_selection(target, &selection).count();
+    let count = async |target| {
+        iter_embedded_assets_for_setup_target_with_selection(target, &selection).count()
+    };
 
-    let concrete_sum = count(SetupTarget::OpenCode)
-        + count(SetupTarget::Claude)
-        + count(SetupTarget::Pi)
-        + count(SetupTarget::Codex);
+    let concrete_sum = count(SetupTarget::OpenCode).await
+        + count(SetupTarget::Claude).await
+        + count(SetupTarget::Pi).await
+        + count(SetupTarget::Codex).await;
 
     assert!(count(SetupTarget::Pi) > 0);
     assert!(count(SetupTarget::Codex) > 0);

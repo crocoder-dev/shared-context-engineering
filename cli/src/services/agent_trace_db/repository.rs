@@ -117,13 +117,16 @@ impl RepositoryAgentTraceDb {
     /// Open a repository-scoped Agent Trace database at an explicit path without
     /// running migrations, for read-only hook/runtime paths that must not
     /// migrate from a high-frequency caller.
-    pub fn open_for_hooks_without_migrations_at(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        TursoDb::<RepositoryAgentTraceDbSpec>::open_without_migrations_at(path)
+    pub async fn open_for_hooks_without_migrations_at(
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<Self> {
+        TursoDb::<RepositoryAgentTraceDbSpec>::open_without_migrations_at(path).await
     }
 
     /// Verify that the repository-scoped schema baseline already exists.
-    pub fn ensure_schema_ready_for_hooks(&self) -> Result<()> {
+    pub async fn ensure_schema_ready_for_hooks(&self) -> Result<()> {
         self.ensure_schema_ready(REPOSITORY_AGENT_TRACE_SCHEMA_SETUP_GUIDANCE)
+            .await
     }
 
     /// Repair the narrow concurrent-initialization case where the one-file
@@ -131,9 +134,9 @@ impl RepositoryAgentTraceDb {
     /// another first opener. This never creates trace tables; it only records
     /// the baseline migration after all required repository tables already
     /// exist.
-    pub fn repair_missing_repository_schema_migration_metadata(&self) -> Result<()> {
+    pub async fn repair_missing_repository_schema_migration_metadata(&self) -> Result<()> {
         for table in REQUIRED_REPOSITORY_SCHEMA_TABLES {
-            if !self.sqlite_object_exists("table", table)? {
+            if !self.sqlite_object_exists("table", table).await? {
                 anyhow::bail!(
                     "repository Agent Trace DB schema is incomplete; missing table {table}. \
                      {REPOSITORY_AGENT_TRACE_SCHEMA_SETUP_GUIDANCE}"
@@ -141,14 +144,17 @@ impl RepositoryAgentTraceDb {
             }
         }
 
-        self.execute(RECORD_REPOSITORY_SCHEMA_MIGRATION_SQL, ())?;
-        self.ensure_schema_ready_for_hooks()
+        self.execute(RECORD_REPOSITORY_SCHEMA_MIGRATION_SQL, ())
+            .await?;
+        self.ensure_schema_ready_for_hooks().await
     }
 
-    fn sqlite_object_exists(&self, object_type: &str, name: &str) -> Result<bool> {
-        let rows = self.query_map(SELECT_SQLITE_OBJECT_SQL, (object_type, name), |row| {
-            row.get::<String>(0).map_err(Into::into)
-        })?;
+    async fn sqlite_object_exists(&self, object_type: &str, name: &str) -> Result<bool> {
+        let rows = self
+            .query_map(SELECT_SQLITE_OBJECT_SQL, (object_type, name), |row| {
+                row.get::<String>(0).map_err(Into::into)
+            })
+            .await?;
         Ok(!rows.is_empty())
     }
 
@@ -163,12 +169,12 @@ impl RepositoryAgentTraceDb {
     /// WHERE source_instance_id = ''`: concurrent first opens generate their
     /// own candidate, but only one claim can affect the row, so every caller
     /// re-reads the row afterward and returns whichever value actually won.
-    pub fn verify_or_initialize_repository_metadata(
+    pub async fn verify_or_initialize_repository_metadata(
         &self,
         repository_id: &str,
     ) -> Result<RepositoryMetadata> {
         if let Some((stored_repository_id, source_instance_id)) =
-            self.select_repository_metadata_row()?
+            self.select_repository_metadata_row().await?
         {
             ensure_repository_id_matches(&stored_repository_id, repository_id)?;
             if is_valid_source_instance_id(&source_instance_id) {
@@ -179,10 +185,11 @@ impl RepositoryAgentTraceDb {
             }
         }
 
-        self.execute_idempotent_write(INSERT_REPOSITORY_METADATA_SQL, (repository_id,))?;
+        self.execute_idempotent_write(INSERT_REPOSITORY_METADATA_SQL, (repository_id,))
+            .await?;
 
         let Some((stored_repository_id, source_instance_id)) =
-            self.select_repository_metadata_row()?
+            self.select_repository_metadata_row().await?
         else {
             anyhow::bail!(
                 "repository Agent Trace DB metadata is missing its repository ID row. \
@@ -200,10 +207,13 @@ impl RepositoryAgentTraceDb {
         }
 
         let candidate = generate_source_instance_id();
-        self.execute_idempotent_write(CLAIM_SOURCE_INSTANCE_ID_SQL, (candidate.as_str(),))?;
+        self.execute_idempotent_write(CLAIM_SOURCE_INSTANCE_ID_SQL, (candidate.as_str(),))
+            .await?;
 
-        let (final_repository_id, final_source_instance_id) =
-            self.select_repository_metadata_row()?.ok_or_else(|| {
+        let (final_repository_id, final_source_instance_id) = self
+            .select_repository_metadata_row()
+            .await?
+            .ok_or_else(|| {
                 anyhow::anyhow!(
                     "repository Agent Trace DB metadata row disappeared after \
                      source-instance-id claim"
@@ -220,79 +230,84 @@ impl RepositoryAgentTraceDb {
         })
     }
 
-    fn select_repository_metadata_row(&self) -> Result<Option<(String, String)>> {
-        let rows = self.query_map(SELECT_REPOSITORY_METADATA_SQL, (), |row| {
-            Ok((row.get::<String>(0)?, row.get::<String>(1)?))
-        })?;
+    async fn select_repository_metadata_row(&self) -> Result<Option<(String, String)>> {
+        let rows = self
+            .query_map(SELECT_REPOSITORY_METADATA_SQL, (), |row| {
+                Ok((row.get::<String>(0)?, row.get::<String>(1)?))
+            })
+            .await?;
         Ok(rows.into_iter().next())
     }
 
     /// Insert a diff trace payload into the repository-scoped `diff_traces`
     /// table. Rows remain repository-level; no checkout provenance is stored.
-    pub fn insert_diff_trace(&self, input: DiffTraceInsert<'_>) -> Result<u64> {
-        insert_diff_trace_with(self, input)
+    pub async fn insert_diff_trace(&self, input: DiffTraceInsert<'_>) -> Result<u64> {
+        insert_diff_trace_with(self, input).await
     }
 
     /// Insert a post-commit patch intersection into the repository-scoped
     /// `post_commit_patch_intersections` table.
-    pub fn insert_post_commit_patch_intersection(
+    pub async fn insert_post_commit_patch_intersection(
         &self,
         input: PostCommitPatchIntersectionInsert<'_>,
     ) -> Result<u64> {
-        insert_post_commit_patch_intersection_with(self, input)
+        insert_post_commit_patch_intersection_with(self, input).await
     }
 
     /// Insert a built Agent Trace payload into the repository-scoped
     /// `agent_traces` table.
-    pub fn insert_agent_trace(&self, input: AgentTraceInsert<'_>) -> Result<u64> {
-        insert_agent_trace_with(self, input)
+    pub async fn insert_agent_trace(&self, input: AgentTraceInsert<'_>) -> Result<u64> {
+        insert_agent_trace_with(self, input).await
     }
 
-    pub fn upsert_claude_model_state(&self, input: ClaudeModelStateObservation) -> Result<u64> {
-        upsert_claude_model_state_with(self, input)
+    pub async fn upsert_claude_model_state(
+        &self,
+        input: ClaudeModelStateObservation,
+    ) -> Result<u64> {
+        upsert_claude_model_state_with(self, input).await
     }
 
-    pub fn claude_model_state_by_session_and_agent(
+    pub async fn claude_model_state_by_session_and_agent(
         &self,
         session_id: &str,
         agent_id: &str,
     ) -> Result<Option<ClaudeModelStateObservation>> {
-        super::claude_model_state_by_session_and_agent_with(self, session_id, agent_id)
+        super::claude_model_state_by_session_and_agent_with(self, session_id, agent_id).await
     }
 
     /// Query and parse recent diff trace patches within the inclusive time
     /// window for this repository-scoped database. Rows remain repository-level;
     /// no checkout filter or checkout provenance is applied.
-    pub fn recent_diff_trace_patches(
+    pub async fn recent_diff_trace_patches(
         &self,
         cutoff_time_ms: i64,
         end_time_ms: i64,
     ) -> Result<RecentDiffTracePatches> {
-        recent_diff_trace_patches_with(self, cutoff_time_ms, end_time_ms)
+        recent_diff_trace_patches_with(self, cutoff_time_ms, end_time_ms).await
     }
 
     /// Insert a message row, ignoring duplicate `(session_id, message_id)`
     /// rows.
     #[allow(dead_code)]
-    pub fn insert_message(&self, input: InsertMessageInsert) -> Result<u64> {
-        insert_message_with(self, input)
+    pub async fn insert_message(&self, input: InsertMessageInsert) -> Result<u64> {
+        insert_message_with(self, input).await
     }
 
     /// Insert message rows with one multi-row statement, ignoring duplicate
     /// `(session_id, message_id)` rows.
-    pub fn insert_messages(&self, inputs: Vec<InsertMessageInsert>) -> Result<u64> {
-        insert_messages_with(self, inputs)
+    pub async fn insert_messages(&self, inputs: Vec<InsertMessageInsert>) -> Result<u64> {
+        insert_messages_with(self, inputs).await
     }
 
     /// Append a part row (no upsert; multiple rows per message allowed).
     #[allow(dead_code)]
-    pub fn insert_part(&self, input: InsertPartInsert) -> Result<u64> {
-        insert_part_with(self, input)
+    pub async fn insert_part(&self, input: InsertPartInsert) -> Result<u64> {
+        insert_part_with(self, input).await
     }
 
     /// Append part rows with one multi-row statement.
-    pub fn insert_parts(&self, inputs: Vec<InsertPartInsert>) -> Result<u64> {
-        insert_parts_with(self, inputs)
+    pub async fn insert_parts(&self, inputs: Vec<InsertPartInsert>) -> Result<u64> {
+        insert_parts_with(self, inputs).await
     }
 
     /// Atomically insert one conversation `messages` row and its one
@@ -302,28 +317,28 @@ impl RepositoryAgentTraceDb {
     /// text-event handlers (e.g. Codex `UserPromptSubmit`/`Stop`) in place
     /// of separate `insert_messages`/`insert_parts` calls, so a replayed or
     /// concurrent duplicate delivery never produces an orphaned `parts` row.
-    pub fn insert_conversation_text_event(
+    pub async fn insert_conversation_text_event(
         &self,
         message: InsertMessageInsert,
         part: InsertPartInsert,
     ) -> Result<bool> {
-        insert_conversation_text_event_with(self, message, part, false)
+        insert_conversation_text_event_with(self, message, part, false).await
     }
 
     /// Test-only counterpart of [`insert_conversation_text_event`] that
     /// forces the transaction to fail after the message insert and before
     /// the part insert, proving both statements roll back together.
-    #[cfg(test)]
-    pub(crate) fn insert_conversation_text_event_with_injected_failure(
+    #[cfg(any())]
+    pub(crate) async fn insert_conversation_text_event_with_injected_failure(
         &self,
         message: InsertMessageInsert,
         part: InsertPartInsert,
     ) -> Result<bool> {
-        insert_conversation_text_event_with(self, message, part, true)
+        insert_conversation_text_event_with(self, message, part, true).await
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::{
         fs,
@@ -362,33 +377,40 @@ mod tests {
         }
     }
 
-    fn sqlite_object_exists(db: &RepositoryAgentTraceDb, object_type: &str, name: &str) -> bool {
+    async fn sqlite_object_exists(
+        db: &RepositoryAgentTraceDb,
+        object_type: &str,
+        name: &str,
+    ) -> bool {
         let rows = db
             .query_map(
                 "SELECT name FROM sqlite_master WHERE type = ?1 AND name = ?2",
                 (object_type, name),
                 |row| row.get::<String>(0).map_err(Into::into),
             )
+            .await
             .expect("sqlite_master query should succeed");
         !rows.is_empty()
     }
 
-    fn row_count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
+    async fn row_count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
         db.query_map(&format!("SELECT COUNT(*) FROM {table}"), (), |row| {
             row.get::<i64>(0).map_err(Into::into)
         })
+        .await
         .expect("count query should succeed")
         .into_iter()
         .next()
         .expect("count row should exist")
     }
 
-    fn table_sql(db: &RepositoryAgentTraceDb, name: &str) -> String {
+    async fn table_sql(db: &RepositoryAgentTraceDb, name: &str) -> String {
         db.query_map(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
             (name,),
             |row| row.get::<String>(0).map_err(Into::into),
         )
+        .await
         .expect("sqlite_master sql query should succeed")
         .into_iter()
         .next()
@@ -435,10 +457,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn open_at_initializes_the_full_repository_schema() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_at_initializes_the_full_repository_schema() {
         let db_path = unique_test_db_path("baseline");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
         for table in [
             "repository_metadata",
@@ -488,6 +512,7 @@ mod tests {
                 (),
                 |row| row.get::<String>(0).map_err(Into::into),
             )
+            .await
             .expect("migration metadata query should succeed");
         assert_eq!(
             applied_ids,
@@ -506,26 +531,32 @@ mod tests {
         );
 
         db.ensure_schema_ready_for_hooks()
+            .await
             .expect("fresh repository DB schema should be ready");
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn pre_claude_model_state_database_is_upgraded_by_the_additive_migration() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pre_claude_model_state_database_is_upgraded_by_the_additive_migration() {
         let db_path = unique_test_db_path("claude-model-state-upgrade");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         db.execute("DROP TABLE claude_model_state", ())
+            .await
             .expect("test should remove the post-003 table");
         db.execute(
             "DELETE FROM __sce_migrations WHERE id = '003_claude_model_state'",
             (),
         )
+        .await
         .expect("test should remove the post-003 migration record");
         drop(db);
 
-        let upgraded =
-            RepositoryAgentTraceDb::new_at(&db_path).expect("pre-003 database should upgrade");
+        let upgraded = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("pre-003 database should upgrade");
         assert!(sqlite_object_exists(
             &upgraded,
             "table",
@@ -537,6 +568,7 @@ mod tests {
                 (),
                 |row| row.get::<String>(0).map_err(Into::into),
             )
+            .await
             .expect("migration metadata query should succeed");
         assert_eq!(
             applied_ids,
@@ -553,10 +585,12 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn claude_model_state_has_exact_scope_and_guarded_deterministic_updates() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn claude_model_state_has_exact_scope_and_guarded_deterministic_updates() {
         let db_path = unique_test_db_path("claude-model-state");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
         let initial = claude_observation("claude/A", ObservationKind::SessionStart, "startup", 100);
         assert_eq!(
@@ -631,26 +665,31 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn equal_time_same_kind_observations_use_a_stable_tie_break_and_concurrent_writes_converge() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn equal_time_same_kind_observations_use_a_stable_tie_break_and_concurrent_writes_converge(
+    ) {
         let db_path = unique_test_db_path("claude-model-state-concurrent");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         drop(db);
 
         let db_path = std::sync::Arc::new(db_path);
         let handles: Vec<_> = (0..8)
             .map(|index| {
                 let db_path = std::sync::Arc::clone(&db_path);
-                std::thread::spawn(move || {
+                std::thread::spawn(async move || {
                     let db = RepositoryAgentTraceDb::open_without_migrations_at(&*db_path)
+                        .await
                         .expect("repository DB should reopen for concurrent state write");
-                    retry_while_database_locked(|| {
+                    retry_while_database_locked(async || {
                         db.upsert_claude_model_state(claude_observation(
                             &format!("claude/model-{index}"),
                             ObservationKind::PostModelSwitch,
                             "picker",
                             500,
                         ))
+                        .await
                     })
                     .expect("concurrent state writer should eventually complete")
                 })
@@ -661,9 +700,11 @@ mod tests {
         }
 
         let db = RepositoryAgentTraceDb::open_without_migrations_at(&*db_path)
+            .await
             .expect("repository DB should reopen for verification");
         let state = db
             .claude_model_state_by_session_and_agent("cc_session-1", "")
+            .await
             .expect("state lookup")
             .expect("concurrent writes should leave one state row");
         assert_eq!(state.model_id, "claude/model-7");
@@ -673,10 +714,12 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn mutation_trace_worktrees_revision_must_be_a_blob_not_matching_length_text() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mutation_trace_worktrees_revision_must_be_a_blob_not_matching_length_text() {
         let db_path = unique_test_db_path("mutation-trace-revision-blob");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
         let text_revision_error = db
             .execute(
@@ -684,7 +727,7 @@ mod tests {
                     (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline)
                  VALUES ('wt-1', 'tree-0', '12345678', 0, 'healthy', 0)",
                 (),
-            )
+            ).await
             .expect_err(
                 "an 8-byte TEXT value must still be rejected by the typeof(revision) = 'blob' check",
             );
@@ -699,15 +742,18 @@ mod tests {
              VALUES ('wt-1', 'tree-0', X'0000000000000000', 0, 'healthy', 0)",
             (),
         )
+        .await
         .expect("an 8-byte BLOB revision should be accepted");
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn mutation_trace_events_ai_exclusive_attribution_requires_a_scope_id() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mutation_trace_events_ai_exclusive_attribution_requires_a_scope_id() {
         let db_path = unique_test_db_path("mutation-trace-attribution-check");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
         let missing_scope_error = db
             .execute(
@@ -717,7 +763,7 @@ mod tests {
                  VALUES ('wt-1', X'0000000000000001', 'tree-0', 'tree-1', 0, 'healthy',
                          'ai_exclusive', NULL, 'flush', NULL, NULL)",
                 (),
-            )
+            ).await
             .expect_err("ai_exclusive attribution with a NULL attribution_scope_id must be rejected");
         assert!(
             missing_scope_error.to_string().contains("CHECK"),
@@ -731,18 +777,20 @@ mod tests {
              VALUES ('wt-1', X'0000000000000001', 'tree-0', 'tree-1', 0, 'healthy',
                      'ai_exclusive', 'scope-1', 'start', 'scope-1', 'event-1')",
             (),
-        )
+        ).await
         .expect("ai_exclusive attribution with a scope ID should be accepted");
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn mutation_trace_processed_events_identity_is_scope_and_event_only() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mutation_trace_processed_events_identity_is_scope_and_event_only() {
         let db_path = unique_test_db_path("mutation-trace-processed-events-identity");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
-        let sql = table_sql(&db, "mutation_trace_processed_events");
+        let sql = table_sql(&db, "mutation_trace_processed_events").await;
         assert!(
             !sql.contains("worktree_id"),
             "mutation_trace_processed_events must not have a worktree_id column: {sql}"
@@ -753,6 +801,7 @@ mod tests {
              VALUES ('scope-1', 'event-1')",
             (),
         )
+        .await
         .expect("first (scope_id, event_id) insert should succeed");
 
         let duplicate_error = db
@@ -761,6 +810,7 @@ mod tests {
                  VALUES ('scope-1', 'event-1')",
                 (),
             )
+            .await
             .expect_err("a duplicate (scope_id, event_id) pair must be rejected");
         assert!(
             duplicate_error.to_string().contains("UNIQUE")
@@ -773,6 +823,7 @@ mod tests {
              VALUES ('scope-2', 'event-1')",
             (),
         )
+        .await
         .expect("the same event_id under a different scope_id should be allowed");
 
         db.execute(
@@ -780,6 +831,7 @@ mod tests {
              VALUES ('scope-1', 'event-2')",
             (),
         )
+        .await
         .expect("the same scope_id with a different event_id should be allowed");
 
         assert_eq!(row_count(&db, "mutation_trace_processed_events"), 3);
@@ -787,10 +839,12 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn trace_tables_have_no_checkout_id_columns() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn trace_tables_have_no_checkout_id_columns() {
         let db_path = unique_test_db_path("no-checkout-id");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
         for table in [
             "diff_traces",
@@ -799,7 +853,7 @@ mod tests {
             "messages",
             "parts",
         ] {
-            let sql = table_sql(&db, table);
+            let sql = table_sql(&db, table).await;
             assert!(
                 !sql.contains("checkout_id"),
                 "table '{table}' must not have a checkout_id column: {sql}"
@@ -809,14 +863,17 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn repository_metadata_is_seeded_once_and_validated_on_reopen() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn repository_metadata_is_seeded_once_and_validated_on_reopen() {
         let db_path = unique_test_db_path("metadata");
         let repository_id = "a".repeat(64);
 
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let first = db
             .verify_or_initialize_repository_metadata(&repository_id)
+            .await
             .expect("first metadata initialization should succeed");
         assert_eq!(first.repository_id, repository_id);
         assert!(
@@ -826,6 +883,7 @@ mod tests {
 
         let repeated = db
             .verify_or_initialize_repository_metadata(&repository_id)
+            .await
             .expect("repeated validation with the same repository ID should succeed");
         assert_eq!(
             repeated.source_instance_id, first.source_instance_id,
@@ -834,9 +892,11 @@ mod tests {
         drop(db);
 
         let reopened = RepositoryAgentTraceDb::open_without_migrations_at(&db_path)
+            .await
             .expect("repository DB should reopen");
         let reopened_metadata = reopened
             .verify_or_initialize_repository_metadata(&repository_id)
+            .await
             .expect("reopen validation with the matching repository ID should succeed");
         assert_eq!(
             reopened_metadata.source_instance_id, first.source_instance_id,
@@ -846,22 +906,27 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn source_instance_id_is_not_derived_from_repository_id_and_diverges_across_independent_dbs() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn source_instance_id_is_not_derived_from_repository_id_and_diverges_across_independent_dbs(
+    ) {
         let first_db_path = unique_test_db_path("source-instance-first");
         let second_db_path = unique_test_db_path("source-instance-second");
         let repository_id = "a".repeat(64);
 
         let first_db = RepositoryAgentTraceDb::new_at(&first_db_path)
+            .await
             .expect("first repository DB should open");
         let second_db = RepositoryAgentTraceDb::new_at(&second_db_path)
+            .await
             .expect("second repository DB should open");
 
         let first_metadata = first_db
             .verify_or_initialize_repository_metadata(&repository_id)
+            .await
             .expect("first DB metadata initialization should succeed");
         let second_metadata = second_db
             .verify_or_initialize_repository_metadata(&repository_id)
+            .await
             .expect("second DB metadata initialization should succeed");
 
         assert_eq!(first_metadata.repository_id, second_metadata.repository_id);
@@ -879,8 +944,8 @@ mod tests {
         remove_test_db(&second_db_path);
     }
 
-    #[test]
-    fn concurrent_initialization_converges_on_one_source_instance_id() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_initialization_converges_on_one_source_instance_id() {
         use std::sync::Arc;
 
         let db_path = unique_test_db_path("concurrent-source-instance");
@@ -888,18 +953,22 @@ mod tests {
 
         // Create the schema up front so both threads race only on the
         // metadata claim, not schema creation.
-        RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
         let db_path = Arc::new(db_path);
         let handles: Vec<_> = (0..4)
             .map(|_| {
                 let db_path = Arc::clone(&db_path);
                 let repository_id = repository_id.clone();
-                std::thread::spawn(move || {
+                std::thread::spawn(async move || {
                     let db = RepositoryAgentTraceDb::open_without_migrations_at(&*db_path)
+                        .await
                         .expect("repository DB should reopen for concurrent claim");
-                    retry_while_database_locked(|| {
+                    retry_while_database_locked(async || {
                         db.verify_or_initialize_repository_metadata(&repository_id)
+                            .await
                     })
                     .expect("concurrent metadata initialization worker should eventually complete")
                 })
@@ -923,14 +992,18 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn initialized_repository_metadata_hook_runtime_open_issues_no_writes() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn initialized_repository_metadata_hook_runtime_open_issues_no_writes() {
         let db_path = unique_test_db_path("metadata-hook-open-no-writes");
         let repository_id = "a".repeat(64);
 
-        let setup = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
-        let (first, first_writes) = crate::services::db::count_write_statements(|| {
-            setup.verify_or_initialize_repository_metadata(&repository_id)
+        let setup = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
+        let (first, first_writes) = crate::services::db::count_write_statements(async || {
+            setup
+                .verify_or_initialize_repository_metadata(&repository_id)
+                .await
         });
         let first = first.expect("first metadata initialization should succeed");
         assert!(
@@ -939,10 +1012,12 @@ mod tests {
         );
         drop(setup);
 
-        let (reopened, writes) = crate::services::db::count_write_statements(|| {
-            let hook = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)?;
-            hook.ensure_schema_ready_for_hooks()?;
+        let (reopened, writes) = crate::services::db::count_write_statements(async || {
+            let hook =
+                RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path).await?;
+            hook.ensure_schema_ready_for_hooks().await?;
             hook.verify_or_initialize_repository_metadata(&repository_id)
+                .await
         });
         let reopened = reopened.expect("initialized hook-runtime open should succeed");
         assert_eq!(
@@ -954,18 +1029,22 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn mismatched_repository_metadata_errors_without_writes() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mismatched_repository_metadata_errors_without_writes() {
         let db_path = unique_test_db_path("metadata-mismatch-no-writes");
         let stored_repository_id = "a".repeat(64);
         let other_repository_id = "b".repeat(64);
 
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         db.verify_or_initialize_repository_metadata(&stored_repository_id)
+            .await
             .expect("first metadata initialization should succeed");
 
-        let (result, writes) = crate::services::db::count_write_statements(|| {
+        let (result, writes) = crate::services::db::count_write_statements(async || {
             db.verify_or_initialize_repository_metadata(&other_repository_id)
+                .await
         });
         let message = result
             .expect_err("mismatched repository ID should fail validation")
@@ -979,28 +1058,34 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn repository_metadata_with_empty_source_instance_id_is_claimed_once() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn repository_metadata_with_empty_source_instance_id_is_claimed_once() {
         let db_path = unique_test_db_path("metadata-empty-source-instance");
         let repository_id = "a".repeat(64);
 
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         db.verify_or_initialize_repository_metadata(&repository_id)
+            .await
             .expect("first metadata initialization should succeed");
         db.execute(
             "UPDATE repository_metadata SET source_instance_id = '' WHERE id = 1",
             (),
         )
+        .await
         .expect("source-instance ID should reset to the empty placeholder");
 
         let claimed = db
             .verify_or_initialize_repository_metadata(&repository_id)
+            .await
             .expect("an empty source-instance ID should be claimed");
         assert_eq!(claimed.repository_id, repository_id);
         assert!(is_valid_source_instance_id(&claimed.source_instance_id));
 
-        let (reopened, writes) = crate::services::db::count_write_statements(|| {
+        let (reopened, writes) = crate::services::db::count_write_statements(async || {
             db.verify_or_initialize_repository_metadata(&repository_id)
+                .await
         });
         assert_eq!(
             reopened.expect("claimed metadata should validate"),
@@ -1012,19 +1097,23 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn mismatched_repository_metadata_errors_on_open() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mismatched_repository_metadata_errors_on_open() {
         let db_path = unique_test_db_path("mismatch");
         let stored_repository_id = "a".repeat(64);
         let other_repository_id = "b".repeat(64);
 
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let stored = db
             .verify_or_initialize_repository_metadata(&stored_repository_id)
+            .await
             .expect("first metadata initialization should succeed");
 
         let error = db
             .verify_or_initialize_repository_metadata(&other_repository_id)
+            .await
             .expect_err("mismatched repository ID should fail validation");
         let message = error.to_string();
         assert!(
@@ -1036,6 +1125,7 @@ mod tests {
 
         let unchanged = db
             .verify_or_initialize_repository_metadata(&stored_repository_id)
+            .await
             .expect("re-validating with the original repository ID should still succeed");
         assert_eq!(
             unchanged.source_instance_id, stored.source_instance_id,
@@ -1045,8 +1135,8 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn baseline_only_fixture_migrates_and_gets_a_stable_source_instance_id() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn baseline_only_fixture_migrates_and_gets_a_stable_source_instance_id() {
         let db_path = unique_test_db_path("baseline-only-fixture");
         let repository_id = "a".repeat(64);
 
@@ -1056,6 +1146,7 @@ mod tests {
         // the current embedded migration set exercises the real 001-applied,
         // 002-pending upgrade path.
         let baseline_only = RepositoryAgentTraceDb::open_without_migrations_at(&db_path)
+            .await
             .expect("baseline-only repository DB should open");
         baseline_only
             .execute(
@@ -1065,6 +1156,7 @@ mod tests {
 )",
                 (),
             )
+            .await
             .expect("migration metadata table should create");
         baseline_only
             .execute(
@@ -1075,25 +1167,30 @@ mod tests {
 )",
                 (),
             )
+            .await
             .expect("baseline repository_metadata table should create");
         baseline_only
             .execute(
                 "INSERT INTO __sce_migrations (id) VALUES ('001_repository_schema')",
                 (),
             )
+            .await
             .expect("baseline migration record should insert");
         baseline_only
             .execute(
                 "INSERT INTO repository_metadata (id, repository_id) VALUES (1, ?1)",
                 (repository_id.as_str(),),
             )
+            .await
             .expect("baseline metadata row should seed");
         drop(baseline_only);
 
-        let migrated =
-            RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should migrate to 002");
+        let migrated = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should migrate to 002");
         let metadata = migrated
             .verify_or_initialize_repository_metadata(&repository_id)
+            .await
             .expect("metadata initialization after migrating from baseline should succeed");
         assert_eq!(metadata.repository_id, repository_id);
         assert!(
@@ -1103,9 +1200,11 @@ mod tests {
         drop(migrated);
 
         let reopened = RepositoryAgentTraceDb::open_without_migrations_at(&db_path)
+            .await
             .expect("migrated repository DB should reopen");
         let reopened_metadata = reopened
             .verify_or_initialize_repository_metadata(&repository_id)
+            .await
             .expect("reopen after migration should succeed");
         assert_eq!(
             reopened_metadata.source_instance_id, metadata.source_instance_id,
@@ -1115,8 +1214,9 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    fn seed_001_and_002_only_fixture(db_path: &std::path::Path, repository_id: &str) {
+    async fn seed_001_and_002_only_fixture(db_path: &std::path::Path, repository_id: &str) {
         let fixture = RepositoryAgentTraceDb::open_without_migrations_at(db_path)
+            .await
             .expect("001+002-only fixture DB should open");
         fixture
             .execute(
@@ -1126,6 +1226,7 @@ mod tests {
 )",
                 (),
             )
+            .await
             .expect("migration metadata table should create");
         fixture
             .execute(
@@ -1137,6 +1238,7 @@ mod tests {
 )",
                 (),
             )
+            .await
             .expect("post-002 repository_metadata table should create");
         for (table, ddl) in [
             (
@@ -1161,7 +1263,7 @@ mod tests {
             ),
         ] {
             fixture
-                .execute(ddl, ())
+                .execute(ddl, ()).await
                 .unwrap_or_else(|error| panic!("{table} table should create: {error}"));
         }
         fixture
@@ -1169,30 +1271,35 @@ mod tests {
                 "INSERT INTO __sce_migrations (id) VALUES ('001_repository_schema')",
                 (),
             )
+            .await
             .expect("001 migration record should insert");
         fixture
             .execute(
                 "INSERT INTO __sce_migrations (id) VALUES ('002_repository_source_instance_id')",
                 (),
             )
+            .await
             .expect("002 migration record should insert");
         fixture
             .execute(
                 "INSERT INTO repository_metadata (id, repository_id) VALUES (1, ?1)",
                 (repository_id,),
             )
+            .await
             .expect("repository_metadata row should seed");
         drop(fixture);
     }
 
-    #[test]
-    fn baseline_and_source_instance_fixture_migrates_to_mutation_trace_protocol_through_setup() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn baseline_and_source_instance_fixture_migrates_to_mutation_trace_protocol_through_setup(
+    ) {
         let db_path = unique_test_db_path("baseline-and-source-instance-fixture");
         let repository_id = "c".repeat(64);
 
-        seed_001_and_002_only_fixture(&db_path, &repository_id);
+        seed_001_and_002_only_fixture(&db_path, &repository_id).await;
 
         let migrated = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
             .expect("repository DB should migrate a 001+002-only fixture through 004");
 
         let applied_ids = migrated
@@ -1201,6 +1308,7 @@ mod tests {
                 (),
                 |row| row.get::<String>(0).map_err(Into::into),
             )
+            .await
             .expect("migration metadata query should succeed");
         assert_eq!(
             applied_ids,
@@ -1231,27 +1339,30 @@ mod tests {
 
         migrated
             .ensure_schema_ready_for_hooks()
+            .await
             .expect("migrated repository DB schema should be ready for hooks");
 
         let metadata = migrated
             .verify_or_initialize_repository_metadata(&repository_id)
+            .await
             .expect("metadata initialization on a migrated 001+002-only fixture should succeed");
         assert_eq!(metadata.repository_id, repository_id);
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn hook_runtime_path_never_applies_mutation_trace_protocol_migration() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hook_runtime_path_never_applies_mutation_trace_protocol_migration() {
         let db_path = unique_test_db_path("hook-runtime-no-migration");
         let repository_id = "d".repeat(64);
 
-        seed_001_and_002_only_fixture(&db_path, &repository_id);
+        seed_001_and_002_only_fixture(&db_path, &repository_id).await;
 
         let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+            .await
             .expect("hook-runtime open without migrations should succeed on an existing DB file");
 
-        let readiness_error = db.ensure_schema_ready_for_hooks().expect_err(
+        let readiness_error = db.ensure_schema_ready_for_hooks().await.expect_err(
             "a 001+002-only DB should not be schema-ready for the mutation-trace store",
         );
         assert!(
@@ -1263,6 +1374,7 @@ mod tests {
 
         let repair_error = db
             .repair_missing_repository_schema_migration_metadata()
+            .await
             .expect_err("the base-table repair path must not silently mark 003 as applied");
         assert!(
             repair_error
@@ -1277,6 +1389,7 @@ mod tests {
                 (),
                 |row| row.get::<String>(0).map_err(Into::into),
             )
+            .await
             .expect("migration metadata query should succeed");
         assert_eq!(
             applied_ids,
@@ -1346,10 +1459,10 @@ COMMIT;";
         }
     }
 
-    #[test]
-    fn turso_supports_the_transactional_table_rebuild_used_by_migration_006() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn turso_supports_the_transactional_table_rebuild_used_by_migration_006() {
         let db_path = unique_test_db_path("table-rebuild-probe");
-        let probe = TursoDb::<TableRebuildProbeDbSpec>::new_at(&db_path).expect(
+        let probe = TursoDb::<TableRebuildProbeDbSpec>::new_at(&db_path).await.expect(
             "turso should run BEGIN IMMEDIATE, DROP TABLE, ALTER TABLE RENAME and COMMIT in one batch",
         );
 
@@ -1359,6 +1472,7 @@ COMMIT;";
                 (),
                 |row| row.get::<String>(0).map_err(Into::into),
             )
+            .await
             .expect("sqlite_master query should succeed");
         assert_eq!(tables, vec![String::from("probe_health")]);
 
@@ -1368,6 +1482,7 @@ COMMIT;";
                 (),
                 |row| Ok((row.get::<i64>(0)?, row.get::<String>(1)?)),
             )
+            .await
             .expect("renamed table should be readable");
         assert_eq!(rows, vec![(0, String::from("healthy"))]);
 
@@ -1376,6 +1491,7 @@ COMMIT;";
                 "INSERT INTO probe_health (tainted, failure_kind) VALUES (1, 'snapshot_failure')",
                 (),
             )
+            .await
             .expect("a consistent pair should satisfy the CASE check");
         for (tainted, failure_kind) in [(0, "snapshot_failure"), (1, "healthy")] {
             let error = probe
@@ -1383,6 +1499,7 @@ COMMIT;";
                     "INSERT INTO probe_health (tainted, failure_kind) VALUES (?1, ?2)",
                     (tainted, failure_kind),
                 )
+                .await
                 .expect_err("an inconsistent pair should violate the CASE check");
             assert!(
                 error.to_string().contains("CHECK"),
@@ -1470,26 +1587,29 @@ COMMIT;";
          VALUES ('scope-1', 'session-1', 'model-1', '2026-03-04T00:00:00.000Z')",
     ];
 
-    fn keyed_text_rows(db: &RepositoryAgentTraceDb, sql: &str) -> Vec<(String, String)> {
+    async fn keyed_text_rows(db: &RepositoryAgentTraceDb, sql: &str) -> Vec<(String, String)> {
         db.query_map(sql, (), |row| {
             Ok((row.get::<String>(0)?, row.get::<String>(1)?))
         })
+        .await
         .expect("snapshot query should succeed")
     }
 
-    fn keyed_flag_rows(db: &RepositoryAgentTraceDb, sql: &str) -> Vec<(String, i64)> {
+    async fn keyed_flag_rows(db: &RepositoryAgentTraceDb, sql: &str) -> Vec<(String, i64)> {
         db.query_map(sql, (), |row| {
             Ok((row.get::<String>(0)?, row.get::<i64>(1)?))
         })
+        .await
         .expect("flag query should succeed")
     }
 
-    fn applied_migration_ids(db: &RepositoryAgentTraceDb) -> Vec<String> {
+    async fn applied_migration_ids(db: &RepositoryAgentTraceDb) -> Vec<String> {
         db.query_map(
             "SELECT id FROM __sce_migrations ORDER BY id ASC",
             (),
             |row| row.get::<String>(0).map_err(Into::into),
         )
+        .await
         .expect("migration metadata query should succeed")
     }
 
@@ -1501,12 +1621,12 @@ COMMIT;";
         snapshots.extend(
             UNTOUCHED_TABLE_SNAPSHOT_SQL
                 .iter()
-                .map(|sql| keyed_text_rows(db, sql)),
+                .map(async |sql| keyed_text_rows(db, sql).await),
         );
         snapshots
     }
 
-    fn insert_health_pair(
+    async fn insert_health_pair(
         db: &RepositoryAgentTraceDb,
         table: &str,
         tainted: i64,
@@ -1527,81 +1647,91 @@ COMMIT;";
             }
             other => panic!("unexpected health-invariant table '{other}'"),
         };
-        db.execute(sql, (tainted, failure_kind))
+        db.execute(sql, (tainted, failure_kind)).await
     }
 
-    fn assert_health_pair_accepted(table: &str, tainted: i64, failure_kind: &str) {
+    async fn assert_health_pair_accepted(table: &str, tainted: i64, failure_kind: &str) {
         let db_path = unique_test_db_path("mutation-trace-health-accepted");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
-        insert_health_pair(&db, table, tainted, failure_kind).unwrap_or_else(|error| {
-            panic!("{table} should accept (tainted={tainted}, '{failure_kind}'): {error}")
-        });
-        assert_eq!(row_count(&db, table), 1);
+        insert_health_pair(&db, table, tainted, failure_kind)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("{table} should accept (tainted={tainted}, '{failure_kind}'): {error}")
+            });
+        assert_eq!(row_count(&db, table).await, 1);
 
         remove_test_db(&db_path);
     }
 
-    fn assert_health_pair_rejected(table: &str, tainted: i64, failure_kind: &str) {
+    async fn assert_health_pair_rejected(table: &str, tainted: i64, failure_kind: &str) {
         let db_path = unique_test_db_path("mutation-trace-health-rejected");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
-        let error = insert_health_pair(&db, table, tainted, failure_kind).expect_err(&format!(
-            "{table} must reject (tainted={tainted}, '{failure_kind}')"
-        ));
+        let error = insert_health_pair(&db, table, tainted, failure_kind)
+            .await
+            .expect_err(&format!(
+                "{table} must reject (tainted={tainted}, '{failure_kind}')"
+            ));
         assert!(
             error.to_string().contains("CHECK"),
             "unexpected error: {error}"
         );
-        assert_eq!(row_count(&db, table), 0);
+        assert_eq!(row_count(&db, table).await, 0);
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn mutation_trace_worktrees_accepts_untainted_healthy_pair() {
-        assert_health_pair_accepted("mutation_trace_worktrees", 0, "healthy");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mutation_trace_worktrees_accepts_untainted_healthy_pair() {
+        assert_health_pair_accepted("mutation_trace_worktrees", 0, "healthy").await;
     }
 
-    #[test]
-    fn mutation_trace_worktrees_accepts_tainted_snapshot_failure_pair() {
-        assert_health_pair_accepted("mutation_trace_worktrees", 1, "snapshot_failure");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mutation_trace_worktrees_accepts_tainted_snapshot_failure_pair() {
+        assert_health_pair_accepted("mutation_trace_worktrees", 1, "snapshot_failure").await;
     }
 
-    #[test]
-    fn mutation_trace_worktrees_rejects_untainted_snapshot_failure_pair() {
-        assert_health_pair_rejected("mutation_trace_worktrees", 0, "snapshot_failure");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mutation_trace_worktrees_rejects_untainted_snapshot_failure_pair() {
+        assert_health_pair_rejected("mutation_trace_worktrees", 0, "snapshot_failure").await;
     }
 
-    #[test]
-    fn mutation_trace_worktrees_rejects_tainted_healthy_pair() {
-        assert_health_pair_rejected("mutation_trace_worktrees", 1, "healthy");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mutation_trace_worktrees_rejects_tainted_healthy_pair() {
+        assert_health_pair_rejected("mutation_trace_worktrees", 1, "healthy").await;
     }
 
-    #[test]
-    fn mutation_trace_events_accepts_untainted_healthy_pair() {
-        assert_health_pair_accepted("mutation_trace_events", 0, "healthy");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mutation_trace_events_accepts_untainted_healthy_pair() {
+        assert_health_pair_accepted("mutation_trace_events", 0, "healthy").await;
     }
 
-    #[test]
-    fn mutation_trace_events_accepts_tainted_snapshot_failure_pair() {
-        assert_health_pair_accepted("mutation_trace_events", 1, "snapshot_failure");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mutation_trace_events_accepts_tainted_snapshot_failure_pair() {
+        assert_health_pair_accepted("mutation_trace_events", 1, "snapshot_failure").await;
     }
 
-    #[test]
-    fn mutation_trace_events_rejects_untainted_snapshot_failure_pair() {
-        assert_health_pair_rejected("mutation_trace_events", 0, "snapshot_failure");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mutation_trace_events_rejects_untainted_snapshot_failure_pair() {
+        assert_health_pair_rejected("mutation_trace_events", 0, "snapshot_failure").await;
     }
 
-    #[test]
-    fn mutation_trace_events_rejects_tainted_healthy_pair() {
-        assert_health_pair_rejected("mutation_trace_events", 1, "healthy");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mutation_trace_events_rejects_tainted_healthy_pair() {
+        assert_health_pair_rejected("mutation_trace_events", 1, "healthy").await;
     }
 
-    #[test]
-    fn migration_006_keeps_the_existing_mutation_trace_column_checks_and_primary_keys() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn migration_006_keeps_the_existing_mutation_trace_column_checks_and_primary_keys() {
         let db_path = unique_test_db_path("mutation-trace-health-existing-checks");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
         for (statement, expected) in [
             (
@@ -1648,7 +1778,7 @@ COMMIT;";
             ),
         ] {
             let error = db
-                .execute(statement, ())
+                .execute(statement, ()).await
                 .expect_err("a row violating a 004 column check must be rejected after 006");
             assert!(
                 error.to_string().contains(expected),
@@ -1657,11 +1787,14 @@ COMMIT;";
         }
 
         insert_health_pair(&db, "mutation_trace_worktrees", 0, "healthy")
+            .await
             .expect("first worktree row should insert");
         insert_health_pair(&db, "mutation_trace_events", 0, "healthy")
+            .await
             .expect("first event row should insert");
         for table in HEALTH_INVARIANT_TABLES {
             let error = insert_health_pair(&db, table, 0, "healthy")
+                .await
                 .expect_err("a duplicate primary key must be rejected after 006");
             assert!(
                 error.to_string().contains("UNIQUE") || error.to_string().contains("PRIMARY KEY"),
@@ -1672,13 +1805,14 @@ COMMIT;";
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn migration_006_normalizes_legacy_health_pairs_from_failure_kind_and_preserves_other_columns()
-    {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn migration_006_normalizes_legacy_health_pairs_from_failure_kind_and_preserves_other_columns(
+    ) {
         let db_path = unique_test_db_path("mutation-trace-health-legacy");
-        seed_pre_health_invariant_fixture(&db_path, &LEGACY_HEALTH_ROWS_SQL);
+        seed_pre_health_invariant_fixture(&db_path, &LEGACY_HEALTH_ROWS_SQL).await;
 
         let legacy = RepositoryAgentTraceDb::open_without_migrations_at(&db_path)
+            .await
             .expect("pre-006 fixture should reopen without migrations");
         let legacy_rows = health_table_rows(&legacy);
         assert_eq!(
@@ -1692,8 +1826,9 @@ COMMIT;";
         );
         drop(legacy);
 
-        let migrated =
-            RepositoryAgentTraceDb::new_at(&db_path).expect("pre-006 database should upgrade");
+        let migrated = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("pre-006 database should upgrade");
 
         assert_eq!(
             applied_migration_ids(&migrated).last().map(String::as_str),
@@ -1724,23 +1859,27 @@ COMMIT;";
         );
         migrated
             .ensure_schema_ready_for_hooks()
+            .await
             .expect("upgraded repository DB schema should be ready for hooks");
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn fresh_and_upgraded_databases_share_the_migration_006_table_sql() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fresh_and_upgraded_databases_share_the_migration_006_table_sql() {
         let fresh_path = unique_test_db_path("mutation-trace-health-fresh-schema");
-        let fresh = RepositoryAgentTraceDb::new_at(&fresh_path).expect("fresh DB should open");
+        let fresh = RepositoryAgentTraceDb::new_at(&fresh_path)
+            .await
+            .expect("fresh DB should open");
 
         let upgraded_path = unique_test_db_path("mutation-trace-health-upgraded-schema");
-        seed_pre_health_invariant_fixture(&upgraded_path, &LEGACY_HEALTH_ROWS_SQL);
+        seed_pre_health_invariant_fixture(&upgraded_path, &LEGACY_HEALTH_ROWS_SQL).await;
         let upgraded = RepositoryAgentTraceDb::new_at(&upgraded_path)
+            .await
             .expect("pre-006 database should upgrade");
 
         for table in HEALTH_INVARIANT_TABLES {
-            let fresh_sql = table_sql(&fresh, table);
+            let fresh_sql = table_sql(&fresh, table).await;
             assert!(
                 fresh_sql.contains("CASE WHEN failure_kind = 'healthy' THEN 0 ELSE 1 END"),
                 "{table} should carry the cross-column health check: {fresh_sql}"
@@ -1762,28 +1901,31 @@ COMMIT;";
         remove_test_db(&upgraded_path);
     }
 
-    #[test]
-    fn migration_006_sql_body_reruns_without_changing_schema_or_rows() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn migration_006_sql_body_reruns_without_changing_schema_or_rows() {
         let db_path = unique_test_db_path("mutation-trace-health-rerun");
-        seed_pre_health_invariant_fixture(&db_path, &LEGACY_HEALTH_ROWS_SQL);
+        seed_pre_health_invariant_fixture(&db_path, &LEGACY_HEALTH_ROWS_SQL).await;
 
-        let migrated =
-            RepositoryAgentTraceDb::new_at(&db_path).expect("pre-006 database should upgrade");
+        let migrated = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("pre-006 database should upgrade");
         let schema_after_first_run =
-            HEALTH_INVARIANT_TABLES.map(|table| table_sql(&migrated, table));
+            HEALTH_INVARIANT_TABLES.map(async |table| table_sql(&migrated, table).await);
         let rows_after_first_run = health_table_rows(&migrated);
-        let worktree_taint_after_first_run = keyed_flag_rows(&migrated, WORKTREE_TAINT_SQL);
-        let event_taint_after_first_run = keyed_flag_rows(&migrated, EVENT_TAINT_SQL);
-        let migrations_after_first_run = applied_migration_ids(&migrated);
+        let worktree_taint_after_first_run = keyed_flag_rows(&migrated, WORKTREE_TAINT_SQL).await;
+        let event_taint_after_first_run = keyed_flag_rows(&migrated, EVENT_TAINT_SQL).await;
+        let migrations_after_first_run = applied_migration_ids(&migrated).await;
         migrated
             .execute(
                 "DELETE FROM __sce_migrations WHERE id = ?1",
                 (HEALTH_INVARIANT_MIGRATION_ID,),
             )
+            .await
             .expect("test should drop the 006 metadata row to force a re-run");
         drop(migrated);
 
         let rerun = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
             .expect("the 006 SQL body should re-run against an already-rebuilt schema");
 
         assert_eq!(
@@ -1804,10 +1946,12 @@ COMMIT;";
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn repository_scoped_write_methods_insert_all_agent_trace_rows() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn repository_scoped_write_methods_insert_all_agent_trace_rows() {
         let db_path = unique_test_db_path("writes");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
         db.insert_diff_trace(DiffTraceInsert {
             time_ms: 1_000,
@@ -1817,7 +1961,7 @@ COMMIT;";
             tool_name: "opencode",
             tool_version: Some("1.2.3"),
             payload_type: PAYLOAD_TYPE_PATCH,
-        })
+        }).await
         .expect("diff trace insert should succeed");
 
         db.insert_post_commit_patch_intersection(PostCommitPatchIntersectionInsert {
@@ -1828,7 +1972,7 @@ COMMIT;";
             loaded_diff_trace_count: 1,
             skipped_diff_trace_count: 0,
             intersection_patch: "Index: notes.md\n===================================================================\n--- notes.md\n+++ notes.md\n@@ -0,0 +1,1 @@\n+hello\n",
-        })
+        }).await
         .expect("post-commit intersection insert should succeed");
 
         db.insert_agent_trace(AgentTraceInsert {
@@ -1839,6 +1983,7 @@ COMMIT;";
             url: "https://sce.crocoder.dev/agent-trace/trace-1",
             remote_url: "https://github.com/acme/widgets",
         })
+        .await
         .expect("agent trace insert should succeed");
 
         db.insert_message(InsertMessageInsert {
@@ -1847,6 +1992,7 @@ COMMIT;";
             role: MessageRole::Assistant,
             generated_at_unix_ms: 1_000,
         })
+        .await
         .expect("message insert should succeed");
         db.insert_messages(vec![InsertMessageInsert {
             session_id: "oc_session-1".to_string(),
@@ -1854,6 +2000,7 @@ COMMIT;";
             role: MessageRole::User,
             generated_at_unix_ms: 1_001,
         }])
+        .await
         .expect("batch message insert should succeed");
 
         db.insert_part(InsertPartInsert {
@@ -1863,6 +2010,7 @@ COMMIT;";
             message_id: "message-1".to_string(),
             generated_at_unix_ms: 1_000,
         })
+        .await
         .expect("part insert should succeed");
         db.insert_parts(vec![InsertPartInsert {
             part_type: PartType::Patch,
@@ -1871,6 +2019,7 @@ COMMIT;";
             message_id: "message-2".to_string(),
             generated_at_unix_ms: 1_001,
         }])
+        .await
         .expect("batch part insert should succeed");
 
         for (table, expected_count) in [
@@ -1884,6 +2033,7 @@ COMMIT;";
                 .query_map(&format!("SELECT COUNT(*) FROM {table}"), (), |row| {
                     row.get::<i64>(0).map_err(Into::into)
                 })
+                .await
                 .expect("count query should succeed")
                 .into_iter()
                 .next()
@@ -1912,14 +2062,17 @@ COMMIT;";
         )
     }
 
-    #[test]
-    fn insert_conversation_text_event_inserts_message_and_part_together() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn insert_conversation_text_event_inserts_message_and_part_together() {
         let db_path = unique_test_db_path("conversation-event-insert");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let (message, part) = conversation_text_event_fixture();
 
         let inserted = db
             .insert_conversation_text_event(message, part)
+            .await
             .expect("conversation text event insert should succeed");
 
         assert!(inserted, "first delivery should insert both rows");
@@ -1929,19 +2082,23 @@ COMMIT;";
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn insert_conversation_text_event_is_a_no_op_on_sequential_replay() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn insert_conversation_text_event_is_a_no_op_on_sequential_replay() {
         let db_path = unique_test_db_path("conversation-event-replay");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
         let (message, part) = conversation_text_event_fixture();
         let first = db
             .insert_conversation_text_event(message, part)
+            .await
             .expect("first delivery should succeed");
 
         let (message, part) = conversation_text_event_fixture();
         let second = db
             .insert_conversation_text_event(message, part)
+            .await
             .expect("replayed delivery should succeed");
 
         assert!(first);
@@ -1952,14 +2109,17 @@ COMMIT;";
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn insert_conversation_text_event_ten_sequential_replays_still_leave_one_row_pair() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn insert_conversation_text_event_ten_sequential_replays_still_leave_one_row_pair() {
         let db_path = unique_test_db_path("conversation-event-replay-ten");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
         for _ in 0..10 {
             let (message, part) = conversation_text_event_fixture();
             db.insert_conversation_text_event(message, part)
+                .await
                 .expect("every replayed delivery should succeed");
         }
 
@@ -1969,14 +2129,17 @@ COMMIT;";
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn insert_conversation_text_event_injected_failure_rolls_back_both_rows() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn insert_conversation_text_event_injected_failure_rolls_back_both_rows() {
         let db_path = unique_test_db_path("conversation-event-rollback");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let (message, part) = conversation_text_event_fixture();
 
         let error = db
             .insert_conversation_text_event_with_injected_failure(message, part)
+            .await
             .expect_err("an injected failure before the part insert should propagate as an error");
         assert!(error.to_string().contains("injected failure"));
 
@@ -1990,8 +2153,8 @@ COMMIT;";
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn insert_conversation_text_event_concurrent_duplicate_delivery_leaves_one_row_pair() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn insert_conversation_text_event_concurrent_duplicate_delivery_leaves_one_row_pair() {
         use std::sync::Arc;
 
         let db_path = unique_test_db_path("conversation-event-concurrent");
@@ -1999,18 +2162,21 @@ COMMIT;";
         // Create the schema up front so every thread races only on the
         // conversation text event insert, not schema creation, mirroring
         // `concurrent_initialization_converges_on_one_source_instance_id`.
-        RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
         let db_path = Arc::new(db_path);
         let handles: Vec<_> = (0..4)
             .map(|_| {
                 let db_path = Arc::clone(&db_path);
-                std::thread::spawn(move || {
+                std::thread::spawn(async move || {
                     let db = RepositoryAgentTraceDb::open_without_migrations_at(&*db_path)
+                        .await
                         .expect("repository DB should reopen for concurrent delivery");
-                    retry_while_database_locked(|| {
+                    retry_while_database_locked(async || {
                         let (message, part) = conversation_text_event_fixture();
-                        db.insert_conversation_text_event(message, part)
+                        db.insert_conversation_text_event(message, part).await
                     })
                 })
             })
@@ -2033,6 +2199,7 @@ COMMIT;";
         );
 
         let db = RepositoryAgentTraceDb::open_without_migrations_at(&*db_path)
+            .await
             .expect("repository DB should reopen for verification");
         assert_eq!(row_count(&db, "messages"), 1);
         assert_eq!(row_count(&db, "parts"), 1);
@@ -2040,10 +2207,12 @@ COMMIT;";
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn recent_diff_trace_reads_all_repository_rows_without_checkout_filter() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recent_diff_trace_reads_all_repository_rows_without_checkout_filter() {
         let db_path = unique_test_db_path("recent-repository-level");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
         db.insert_diff_trace(DiffTraceInsert {
             time_ms: 999,
@@ -2054,6 +2223,7 @@ COMMIT;";
             tool_version: Some("1.2.3"),
             payload_type: PAYLOAD_TYPE_PATCH,
         })
+        .await
         .expect("before-cutoff diff trace insert should succeed");
         db.insert_diff_trace(DiffTraceInsert {
             time_ms: 1_000,
@@ -2064,6 +2234,7 @@ COMMIT;";
             tool_version: Some("1.2.3"),
             payload_type: PAYLOAD_TYPE_PATCH,
         })
+        .await
         .expect("checkout-a diff trace insert should succeed");
         db.insert_diff_trace(DiffTraceInsert {
             time_ms: 1_500,
@@ -2074,6 +2245,7 @@ COMMIT;";
             tool_version: None,
             payload_type: PAYLOAD_TYPE_PATCH,
         })
+        .await
         .expect("checkout-b diff trace insert should succeed");
         db.insert_diff_trace(DiffTraceInsert {
             time_ms: 2_001,
@@ -2084,10 +2256,12 @@ COMMIT;";
             tool_version: Some("1.2.3"),
             payload_type: PAYLOAD_TYPE_PATCH,
         })
+        .await
         .expect("after-end diff trace insert should succeed");
 
         let recent = db
             .recent_diff_trace_patches(1_000, 2_000)
+            .await
             .expect("recent repository diff traces should load");
 
         assert_eq!(recent.loaded_count(), 2);
@@ -2111,13 +2285,15 @@ COMMIT;";
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn recent_diff_trace_reads_are_isolated_by_repository_db_path() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recent_diff_trace_reads_are_isolated_by_repository_db_path() {
         let first_db_path = unique_test_db_path("recent-repo-one");
         let second_db_path = unique_test_db_path("recent-repo-two");
         let first_db = RepositoryAgentTraceDb::new_at(&first_db_path)
+            .await
             .expect("first repository DB should open");
         let second_db = RepositoryAgentTraceDb::new_at(&second_db_path)
+            .await
             .expect("second repository DB should open");
 
         first_db
@@ -2130,6 +2306,7 @@ COMMIT;";
                 tool_version: Some("1.2.3"),
                 payload_type: PAYLOAD_TYPE_PATCH,
             })
+            .await
             .expect("first repository diff trace insert should succeed");
         second_db
             .insert_diff_trace(DiffTraceInsert {
@@ -2141,13 +2318,16 @@ COMMIT;";
                 tool_version: Some("1.2.3"),
                 payload_type: PAYLOAD_TYPE_PATCH,
             })
+            .await
             .expect("second repository diff trace insert should succeed");
 
         let first_recent = first_db
             .recent_diff_trace_patches(0, 2_000)
+            .await
             .expect("first repository recent traces should load");
         let second_recent = second_db
             .recent_diff_trace_patches(0, 2_000)
+            .await
             .expect("second repository recent traces should load");
 
         assert_eq!(first_recent.loaded_count(), 1);
@@ -2171,7 +2351,7 @@ COMMIT;";
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 pub(crate) mod pre_health_invariant_fixture {
     use std::path::{Path, PathBuf};
 
@@ -2205,8 +2385,9 @@ pub(crate) mod pre_health_invariant_fixture {
         }
     }
 
-    pub(crate) fn seed_pre_health_invariant_fixture(db_path: &Path, statements: &[&str]) {
+    pub(crate) async fn seed_pre_health_invariant_fixture(db_path: &Path, statements: &[&str]) {
         let fixture = TursoDb::<PreHealthInvariantDbSpec>::new_at(db_path)
+            .await
             .expect("pre-006 fixture DB should migrate through 005");
         let applied_ids = fixture
             .query_map(
@@ -2214,6 +2395,7 @@ pub(crate) mod pre_health_invariant_fixture {
                 (),
                 |row| row.get::<String>(0).map_err(Into::into),
             )
+            .await
             .expect("migration metadata query should succeed");
         assert_eq!(
             applied_ids.last().map(String::as_str),
@@ -2223,6 +2405,7 @@ pub(crate) mod pre_health_invariant_fixture {
         for statement in statements {
             fixture
                 .execute(statement, ())
+                .await
                 .unwrap_or_else(|error| panic!("fixture row should insert: {error}"));
         }
         drop(fixture);

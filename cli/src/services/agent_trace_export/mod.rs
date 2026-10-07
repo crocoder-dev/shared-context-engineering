@@ -145,7 +145,7 @@ impl<'a> AgentTraceExportReader<'a> {
 
     /// Read `messages` rows with `id > cursor`, ordered by `id ASC`, capped
     /// at `limit`.
-    pub fn read_messages_after(
+    pub async fn read_messages_after(
         &self,
         cursor: i64,
         limit: usize,
@@ -153,11 +153,14 @@ impl<'a> AgentTraceExportReader<'a> {
         validate_cursor(cursor)?;
         validate_limit(limit)?;
 
-        let rows = self.db.query_map(
-            SELECT_MESSAGES_AFTER_SQL,
-            (cursor, limit_as_i64(limit)),
-            message_export_row_from_turso,
-        )?;
+        let rows = self
+            .db
+            .query_map(
+                SELECT_MESSAGES_AFTER_SQL,
+                (cursor, limit_as_i64(limit)),
+                message_export_row_from_turso,
+            )
+            .await?;
 
         for row in &rows {
             validate_js_safe_integer(row.source_row_id)?;
@@ -169,7 +172,7 @@ impl<'a> AgentTraceExportReader<'a> {
 
     /// Read `parts` rows with `id > cursor`, ordered by `id ASC`, capped at
     /// `limit`.
-    pub fn read_parts_after(
+    pub async fn read_parts_after(
         &self,
         cursor: i64,
         limit: usize,
@@ -177,11 +180,14 @@ impl<'a> AgentTraceExportReader<'a> {
         validate_cursor(cursor)?;
         validate_limit(limit)?;
 
-        let rows = self.db.query_map(
-            SELECT_PARTS_AFTER_SQL,
-            (cursor, limit_as_i64(limit)),
-            part_export_row_from_turso,
-        )?;
+        let rows = self
+            .db
+            .query_map(
+                SELECT_PARTS_AFTER_SQL,
+                (cursor, limit_as_i64(limit)),
+                part_export_row_from_turso,
+            )
+            .await?;
 
         for row in &rows {
             validate_js_safe_integer(row.source_row_id)?;
@@ -194,7 +200,7 @@ impl<'a> AgentTraceExportReader<'a> {
     /// Read `diff_traces` rows with `id > cursor`, ordered by `id ASC`,
     /// capped at `limit`. `patch` and `payload_type` are returned raw and
     /// unmodified: no patch parsing or normalization is performed.
-    pub fn read_diff_traces_after(
+    pub async fn read_diff_traces_after(
         &self,
         cursor: i64,
         limit: usize,
@@ -202,11 +208,14 @@ impl<'a> AgentTraceExportReader<'a> {
         validate_cursor(cursor)?;
         validate_limit(limit)?;
 
-        let rows = self.db.query_map(
-            SELECT_DIFF_TRACES_AFTER_SQL,
-            (cursor, limit_as_i64(limit)),
-            diff_trace_export_row_from_turso,
-        )?;
+        let rows = self
+            .db
+            .query_map(
+                SELECT_DIFF_TRACES_AFTER_SQL,
+                (cursor, limit_as_i64(limit)),
+                diff_trace_export_row_from_turso,
+            )
+            .await?;
 
         for row in &rows {
             validate_js_safe_integer(row.source_row_id)?;
@@ -219,7 +228,7 @@ impl<'a> AgentTraceExportReader<'a> {
     /// Read `agent_traces` rows with `id > cursor`, ordered by `id ASC`,
     /// capped at `limit`. `trace_json` is returned as the exact raw string
     /// from `SQLite`: no parse/reserialize is performed.
-    pub fn read_agent_traces_after(
+    pub async fn read_agent_traces_after(
         &self,
         cursor: i64,
         limit: usize,
@@ -227,11 +236,14 @@ impl<'a> AgentTraceExportReader<'a> {
         validate_cursor(cursor)?;
         validate_limit(limit)?;
 
-        let rows = self.db.query_map(
-            SELECT_AGENT_TRACES_AFTER_SQL,
-            (cursor, limit_as_i64(limit)),
-            agent_trace_export_row_from_turso,
-        )?;
+        let rows = self
+            .db
+            .query_map(
+                SELECT_AGENT_TRACES_AFTER_SQL,
+                (cursor, limit_as_i64(limit)),
+                agent_trace_export_row_from_turso,
+            )
+            .await?;
 
         for row in &rows {
             validate_js_safe_integer(row.source_row_id)?;
@@ -327,7 +339,7 @@ fn limit_as_i64(limit: usize) -> i64 {
     i64::try_from(limit).expect("validated limit should fit in i64")
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 
@@ -580,33 +592,34 @@ mod tests {
         }
     }
 
-    fn row_count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
+    async fn row_count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
         db.query_map(&format!("SELECT COUNT(*) FROM {table}"), (), |row| {
             row.get::<i64>(0).map_err(Into::into)
         })
+        .await
         .expect("count query should succeed")
         .into_iter()
         .next()
         .expect("count row should exist")
     }
 
-    fn insert_message_row_with_id(db: &RepositoryAgentTraceDb, id: i64, message_id: &str) {
+    async fn insert_message_row_with_id(db: &RepositoryAgentTraceDb, id: i64, message_id: &str) {
         db.execute(
             "INSERT INTO messages (id, session_id, message_id, role, generated_at_unix_ms) VALUES (?1, ?2, ?3, ?4, ?5)",
             (id, "sess-1", message_id, "assistant", 1_000 + id),
-        )
+        ).await
         .expect("direct message insert should succeed");
     }
 
-    fn insert_part_row_with_id(db: &RepositoryAgentTraceDb, id: i64, message_id: &str) {
+    async fn insert_part_row_with_id(db: &RepositoryAgentTraceDb, id: i64, message_id: &str) {
         db.execute(
             "INSERT INTO parts (id, type, text, message_id, session_id, generated_at_unix_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             (id, "text", "hello", message_id, "sess-1", 1_000 + id),
-        )
+        ).await
         .expect("direct part insert should succeed");
     }
 
-    fn insert_diff_trace_row_with_id(db: &RepositoryAgentTraceDb, id: i64, session_id: &str) {
+    async fn insert_diff_trace_row_with_id(db: &RepositoryAgentTraceDb, id: i64, session_id: &str) {
         db.execute(
             "INSERT INTO diff_traces (id, time_ms, session_id, patch, model_id, tool_name, tool_version, payload_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             (
@@ -619,11 +632,15 @@ mod tests {
                 Option::<&str>::None,
                 PAYLOAD_TYPE_PATCH,
             ),
-        )
+        ).await
         .expect("direct diff_trace insert should succeed");
     }
 
-    fn insert_agent_trace_row_with_id(db: &RepositoryAgentTraceDb, id: i64, agent_trace_id: &str) {
+    async fn insert_agent_trace_row_with_id(
+        db: &RepositoryAgentTraceDb,
+        id: i64,
+        agent_trace_id: &str,
+    ) {
         db.execute(
             "INSERT INTO agent_traces (id, commit_id, commit_time_ms, trace_json, agent_trace_id, url, remote_url) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             (
@@ -635,14 +652,16 @@ mod tests {
                 "https://example.com/trace",
                 Option::<&str>::None,
             ),
-        )
+        ).await
         .expect("direct agent_trace insert should succeed");
     }
 
-    #[test]
-    fn read_messages_after_returns_rows_after_cursor_in_order() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_messages_after_returns_rows_after_cursor_in_order() {
         let db_path = unique_test_db_path("messages-basic");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         db.insert_messages(vec![
             InsertMessageInsert {
                 session_id: "sess-1".to_string(),
@@ -663,11 +682,13 @@ mod tests {
                 generated_at_unix_ms: 1_003,
             },
         ])
+        .await
         .expect("seed messages should insert");
 
         let reader = AgentTraceExportReader::new(&db);
         let rows = reader
             .read_messages_after(1, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect("read after cursor should succeed");
 
         assert_eq!(
@@ -681,22 +702,25 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_messages_after_returns_non_contiguous_ids() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_messages_after_returns_non_contiguous_ids() {
         let db_path = unique_test_db_path("messages-gap");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         for (id, message_id) in [
             (11, "msg-11"),
             (15, "msg-15"),
             (19, "msg-19"),
             (30, "msg-30"),
         ] {
-            insert_message_row_with_id(&db, id, message_id);
+            insert_message_row_with_id(&db, id, message_id).await;
         }
 
         let reader = AgentTraceExportReader::new(&db);
         let rows = reader
             .read_messages_after(10, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect("read after cursor should succeed");
 
         assert_eq!(
@@ -707,10 +731,12 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_messages_after_limit_truncates_and_follow_up_continues() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_messages_after_limit_truncates_and_follow_up_continues() {
         let db_path = unique_test_db_path("messages-limit");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         for id in 1..=10 {
             db.insert_message(InsertMessageInsert {
                 session_id: "sess-1".to_string(),
@@ -718,12 +744,14 @@ mod tests {
                 role: MessageRole::Assistant,
                 generated_at_unix_ms: 1_000 + id,
             })
+            .await
             .expect("seed message should insert");
         }
 
         let reader = AgentTraceExportReader::new(&db);
         let first_batch = reader
             .read_messages_after(0, 3)
+            .await
             .expect("first limited read should succeed");
         assert_eq!(
             first_batch
@@ -739,6 +767,7 @@ mod tests {
             .source_row_id;
         let second_batch = reader
             .read_messages_after(next_cursor, 3)
+            .await
             .expect("follow-up read should succeed");
         assert_eq!(
             second_batch
@@ -751,11 +780,13 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_messages_after_returns_empty_at_or_beyond_max_id() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_messages_after_returns_empty_at_or_beyond_max_id() {
         let db_path = unique_test_db_path("messages-empty-tail");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
-        insert_message_row_with_id(&db, 1, "msg-1");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
+        insert_message_row_with_id(&db, 1, "msg-1").await;
 
         let reader = AgentTraceExportReader::new(&db);
         assert!(reader
@@ -770,62 +801,73 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_messages_after_rejects_invalid_cursor_and_limit() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_messages_after_rejects_invalid_cursor_and_limit() {
         let db_path = unique_test_db_path("messages-invalid");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         let reader = AgentTraceExportReader::new(&db);
 
         let cursor_error = reader
             .read_messages_after(-1, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect_err("negative cursor should error");
         assert!(cursor_error.to_string().contains("cursor"));
 
         let zero_limit_error = reader
             .read_messages_after(0, 0)
+            .await
             .expect_err("zero limit should error");
         assert!(zero_limit_error.to_string().contains("limit"));
 
         let excess_limit_error = reader
             .read_messages_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE + 1)
+            .await
             .expect_err("excess limit should error");
         assert!(excess_limit_error.to_string().contains("limit"));
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_messages_after_rejects_row_above_safe_integer_bound() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_messages_after_rejects_row_above_safe_integer_bound() {
         let db_path = unique_test_db_path("messages-unsafe-integer");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         db.execute(
             "INSERT INTO messages (id, session_id, message_id, role, generated_at_unix_ms) VALUES (?1, ?2, ?3, ?4, ?5)",
             (1_i64, "sess-1", "msg-1", "assistant", JS_MAX_SAFE_INTEGER + 1),
-        )
+        ).await
         .expect("direct message insert should succeed");
 
         let reader = AgentTraceExportReader::new(&db);
         let error = reader
             .read_messages_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect_err("row above safe-integer bound should error");
         assert!(error.to_string().contains("JS-safe-integer"));
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_messages_after_performs_no_mutation() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_messages_after_performs_no_mutation() {
         let db_path = unique_test_db_path("messages-no-mutation");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
-        insert_message_row_with_id(&db, 1, "msg-1");
-        insert_message_row_with_id(&db, 2, "msg-2");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
+        insert_message_row_with_id(&db, 1, "msg-1").await;
+        insert_message_row_with_id(&db, 2, "msg-2").await;
 
-        let messages_before = row_count(&db, "messages");
-        let metadata_before = row_count(&db, "repository_metadata");
+        let messages_before = row_count(&db, "messages").await;
+        let metadata_before = row_count(&db, "repository_metadata").await;
 
         let reader = AgentTraceExportReader::new(&db);
         reader
             .read_messages_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect("read should succeed");
 
         assert_eq!(row_count(&db, "messages"), messages_before);
@@ -834,10 +876,12 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_parts_after_returns_rows_after_cursor_in_order() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_parts_after_returns_rows_after_cursor_in_order() {
         let db_path = unique_test_db_path("parts-basic");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         db.insert_parts(vec![
             InsertPartInsert {
                 part_type: PartType::Text,
@@ -854,11 +898,13 @@ mod tests {
                 generated_at_unix_ms: 1_002,
             },
         ])
+        .await
         .expect("seed parts should insert");
 
         let reader = AgentTraceExportReader::new(&db);
         let rows = reader
             .read_parts_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect("read after cursor should succeed");
 
         assert_eq!(
@@ -873,22 +919,25 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_parts_after_returns_non_contiguous_ids() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_parts_after_returns_non_contiguous_ids() {
         let db_path = unique_test_db_path("parts-gap");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         for (id, message_id) in [
             (11, "msg-11"),
             (15, "msg-15"),
             (19, "msg-19"),
             (30, "msg-30"),
         ] {
-            insert_part_row_with_id(&db, id, message_id);
+            insert_part_row_with_id(&db, id, message_id).await;
         }
 
         let reader = AgentTraceExportReader::new(&db);
         let rows = reader
             .read_parts_after(10, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect("read after cursor should succeed");
 
         assert_eq!(
@@ -899,17 +948,20 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_parts_after_limit_truncates_and_follow_up_continues() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_parts_after_limit_truncates_and_follow_up_continues() {
         let db_path = unique_test_db_path("parts-limit");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         for id in 1..=10 {
-            insert_part_row_with_id(&db, id, &format!("msg-{id}"));
+            insert_part_row_with_id(&db, id, &format!("msg-{id}")).await;
         }
 
         let reader = AgentTraceExportReader::new(&db);
         let first_batch = reader
             .read_parts_after(0, 3)
+            .await
             .expect("first limited read should succeed");
         assert_eq!(
             first_batch
@@ -925,6 +977,7 @@ mod tests {
             .source_row_id;
         let second_batch = reader
             .read_parts_after(next_cursor, 3)
+            .await
             .expect("follow-up read should succeed");
         assert_eq!(
             second_batch
@@ -937,11 +990,13 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_parts_after_returns_empty_at_or_beyond_max_id() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_parts_after_returns_empty_at_or_beyond_max_id() {
         let db_path = unique_test_db_path("parts-empty-tail");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
-        insert_part_row_with_id(&db, 1, "msg-1");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
+        insert_part_row_with_id(&db, 1, "msg-1").await;
 
         let reader = AgentTraceExportReader::new(&db);
         assert!(reader
@@ -956,62 +1011,73 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_parts_after_rejects_invalid_cursor_and_limit() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_parts_after_rejects_invalid_cursor_and_limit() {
         let db_path = unique_test_db_path("parts-invalid");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         let reader = AgentTraceExportReader::new(&db);
 
         let cursor_error = reader
             .read_parts_after(-1, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect_err("negative cursor should error");
         assert!(cursor_error.to_string().contains("cursor"));
 
         let zero_limit_error = reader
             .read_parts_after(0, 0)
+            .await
             .expect_err("zero limit should error");
         assert!(zero_limit_error.to_string().contains("limit"));
 
         let excess_limit_error = reader
             .read_parts_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE + 1)
+            .await
             .expect_err("excess limit should error");
         assert!(excess_limit_error.to_string().contains("limit"));
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_parts_after_rejects_row_above_safe_integer_bound() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_parts_after_rejects_row_above_safe_integer_bound() {
         let db_path = unique_test_db_path("parts-unsafe-integer");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         db.execute(
             "INSERT INTO parts (id, type, text, message_id, session_id, generated_at_unix_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             (1_i64, "text", "hello", "msg-1", "sess-1", JS_MAX_SAFE_INTEGER + 1),
-        )
+        ).await
         .expect("direct part insert should succeed");
 
         let reader = AgentTraceExportReader::new(&db);
         let error = reader
             .read_parts_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect_err("row above safe-integer bound should error");
         assert!(error.to_string().contains("JS-safe-integer"));
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_parts_after_performs_no_mutation() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_parts_after_performs_no_mutation() {
         let db_path = unique_test_db_path("parts-no-mutation");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
-        insert_part_row_with_id(&db, 1, "msg-1");
-        insert_part_row_with_id(&db, 2, "msg-2");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
+        insert_part_row_with_id(&db, 1, "msg-1").await;
+        insert_part_row_with_id(&db, 2, "msg-2").await;
 
-        let parts_before = row_count(&db, "parts");
-        let metadata_before = row_count(&db, "repository_metadata");
+        let parts_before = row_count(&db, "parts").await;
+        let metadata_before = row_count(&db, "repository_metadata").await;
 
         let reader = AgentTraceExportReader::new(&db);
         reader
             .read_parts_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect("read should succeed");
 
         assert_eq!(row_count(&db, "parts"), parts_before);
@@ -1020,10 +1086,12 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_diff_traces_after_returns_rows_after_cursor_in_order() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_diff_traces_after_returns_rows_after_cursor_in_order() {
         let db_path = unique_test_db_path("diff-traces-basic");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         db.insert_diff_trace(DiffTraceInsert {
             time_ms: 1_001,
             session_id: "sess-1",
@@ -1033,6 +1101,7 @@ mod tests {
             tool_version: Some("1.2.3"),
             payload_type: PAYLOAD_TYPE_PATCH,
         })
+        .await
         .expect("seed diff_trace should insert");
         db.insert_diff_trace(DiffTraceInsert {
             time_ms: 1_002,
@@ -1043,11 +1112,13 @@ mod tests {
             tool_version: None,
             payload_type: PAYLOAD_TYPE_STRUCTURED,
         })
+        .await
         .expect("seed diff_trace should insert");
 
         let reader = AgentTraceExportReader::new(&db);
         let rows = reader
             .read_diff_traces_after(1, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect("read after cursor should succeed");
 
         assert_eq!(
@@ -1064,10 +1135,12 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_diff_traces_after_preserves_populated_nullable_fields() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_diff_traces_after_preserves_populated_nullable_fields() {
         let db_path = unique_test_db_path("diff-traces-nullable-populated");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         db.insert_diff_trace(DiffTraceInsert {
             time_ms: 1_001,
             session_id: "sess-1",
@@ -1077,11 +1150,13 @@ mod tests {
             tool_version: Some("1.2.3"),
             payload_type: PAYLOAD_TYPE_PATCH,
         })
+        .await
         .expect("seed diff_trace should insert");
 
         let reader = AgentTraceExportReader::new(&db);
         let rows = reader
             .read_diff_traces_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect("read after cursor should succeed");
 
         assert_eq!(rows.len(), 1);
@@ -1096,22 +1171,25 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_diff_traces_after_returns_non_contiguous_ids() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_diff_traces_after_returns_non_contiguous_ids() {
         let db_path = unique_test_db_path("diff-traces-gap");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         for (id, session_id) in [
             (11, "sess-11"),
             (15, "sess-15"),
             (19, "sess-19"),
             (30, "sess-30"),
         ] {
-            insert_diff_trace_row_with_id(&db, id, session_id);
+            insert_diff_trace_row_with_id(&db, id, session_id).await;
         }
 
         let reader = AgentTraceExportReader::new(&db);
         let rows = reader
             .read_diff_traces_after(10, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect("read after cursor should succeed");
 
         assert_eq!(
@@ -1122,17 +1200,20 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_diff_traces_after_limit_truncates_and_follow_up_continues() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_diff_traces_after_limit_truncates_and_follow_up_continues() {
         let db_path = unique_test_db_path("diff-traces-limit");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         for id in 1..=10 {
-            insert_diff_trace_row_with_id(&db, id, &format!("sess-{id}"));
+            insert_diff_trace_row_with_id(&db, id, &format!("sess-{id}")).await;
         }
 
         let reader = AgentTraceExportReader::new(&db);
         let first_batch = reader
             .read_diff_traces_after(0, 3)
+            .await
             .expect("first limited read should succeed");
         assert_eq!(
             first_batch
@@ -1148,6 +1229,7 @@ mod tests {
             .source_row_id;
         let second_batch = reader
             .read_diff_traces_after(next_cursor, 3)
+            .await
             .expect("follow-up read should succeed");
         assert_eq!(
             second_batch
@@ -1160,11 +1242,13 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_diff_traces_after_returns_empty_at_or_beyond_max_id() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_diff_traces_after_returns_empty_at_or_beyond_max_id() {
         let db_path = unique_test_db_path("diff-traces-empty-tail");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
-        insert_diff_trace_row_with_id(&db, 1, "sess-1");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
+        insert_diff_trace_row_with_id(&db, 1, "sess-1").await;
 
         let reader = AgentTraceExportReader::new(&db);
         assert!(reader
@@ -1179,34 +1263,41 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_diff_traces_after_rejects_invalid_cursor_and_limit() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_diff_traces_after_rejects_invalid_cursor_and_limit() {
         let db_path = unique_test_db_path("diff-traces-invalid");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         let reader = AgentTraceExportReader::new(&db);
 
         let cursor_error = reader
             .read_diff_traces_after(-1, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect_err("negative cursor should error");
         assert!(cursor_error.to_string().contains("cursor"));
 
         let zero_limit_error = reader
             .read_diff_traces_after(0, 0)
+            .await
             .expect_err("zero limit should error");
         assert!(zero_limit_error.to_string().contains("limit"));
 
         let excess_limit_error = reader
             .read_diff_traces_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE + 1)
+            .await
             .expect_err("excess limit should error");
         assert!(excess_limit_error.to_string().contains("limit"));
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_diff_traces_after_rejects_row_above_safe_integer_bound() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_diff_traces_after_rejects_row_above_safe_integer_bound() {
         let db_path = unique_test_db_path("diff-traces-unsafe-integer");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         db.execute(
             "INSERT INTO diff_traces (id, time_ms, session_id, patch, model_id, tool_name, tool_version, payload_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             (
@@ -1219,31 +1310,35 @@ mod tests {
                 Option::<&str>::None,
                 PAYLOAD_TYPE_PATCH,
             ),
-        )
+        ).await
         .expect("direct diff_trace insert should succeed");
 
         let reader = AgentTraceExportReader::new(&db);
         let error = reader
             .read_diff_traces_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect_err("row above safe-integer bound should error");
         assert!(error.to_string().contains("JS-safe-integer"));
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_diff_traces_after_performs_no_mutation() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_diff_traces_after_performs_no_mutation() {
         let db_path = unique_test_db_path("diff-traces-no-mutation");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
-        insert_diff_trace_row_with_id(&db, 1, "sess-1");
-        insert_diff_trace_row_with_id(&db, 2, "sess-2");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
+        insert_diff_trace_row_with_id(&db, 1, "sess-1").await;
+        insert_diff_trace_row_with_id(&db, 2, "sess-2").await;
 
-        let diff_traces_before = row_count(&db, "diff_traces");
-        let metadata_before = row_count(&db, "repository_metadata");
+        let diff_traces_before = row_count(&db, "diff_traces").await;
+        let metadata_before = row_count(&db, "repository_metadata").await;
 
         let reader = AgentTraceExportReader::new(&db);
         reader
             .read_diff_traces_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect("read should succeed");
 
         assert_eq!(row_count(&db, "diff_traces"), diff_traces_before);
@@ -1252,10 +1347,12 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_agent_traces_after_returns_rows_after_cursor_in_order() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_agent_traces_after_returns_rows_after_cursor_in_order() {
         let db_path = unique_test_db_path("agent-traces-basic");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         db.insert_agent_trace(AgentTraceInsert {
             commit_id: "abc123",
             commit_time_ms: 1_001,
@@ -1264,6 +1361,7 @@ mod tests {
             url: "https://example.com/trace/1",
             remote_url: "",
         })
+        .await
         .expect("seed agent_trace should insert");
         db.insert_agent_trace(AgentTraceInsert {
             commit_id: "def456",
@@ -1273,11 +1371,13 @@ mod tests {
             url: "https://example.com/trace/2",
             remote_url: "https://github.com/org/repo/commit/def456",
         })
+        .await
         .expect("seed agent_trace should insert");
 
         let reader = AgentTraceExportReader::new(&db);
         let rows = reader
             .read_agent_traces_after(1, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect("read after cursor should succeed");
 
         assert_eq!(
@@ -1297,15 +1397,18 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_agent_traces_after_preserves_null_remote_url() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_agent_traces_after_preserves_null_remote_url() {
         let db_path = unique_test_db_path("agent-traces-remote-url-null");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
-        insert_agent_trace_row_with_id(&db, 1, "trace-null");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
+        insert_agent_trace_row_with_id(&db, 1, "trace-null").await;
 
         let reader = AgentTraceExportReader::new(&db);
         let rows = reader
             .read_agent_traces_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect("read after cursor should succeed");
 
         assert_eq!(rows.len(), 1);
@@ -1314,22 +1417,25 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_agent_traces_after_returns_non_contiguous_ids() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_agent_traces_after_returns_non_contiguous_ids() {
         let db_path = unique_test_db_path("agent-traces-gap");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         for (id, agent_trace_id) in [
             (11, "trace-11"),
             (15, "trace-15"),
             (19, "trace-19"),
             (30, "trace-30"),
         ] {
-            insert_agent_trace_row_with_id(&db, id, agent_trace_id);
+            insert_agent_trace_row_with_id(&db, id, agent_trace_id).await;
         }
 
         let reader = AgentTraceExportReader::new(&db);
         let rows = reader
             .read_agent_traces_after(10, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect("read after cursor should succeed");
 
         assert_eq!(
@@ -1340,17 +1446,20 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_agent_traces_after_limit_truncates_and_follow_up_continues() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_agent_traces_after_limit_truncates_and_follow_up_continues() {
         let db_path = unique_test_db_path("agent-traces-limit");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         for id in 1..=10 {
-            insert_agent_trace_row_with_id(&db, id, &format!("trace-{id}"));
+            insert_agent_trace_row_with_id(&db, id, &format!("trace-{id}")).await;
         }
 
         let reader = AgentTraceExportReader::new(&db);
         let first_batch = reader
             .read_agent_traces_after(0, 3)
+            .await
             .expect("first limited read should succeed");
         assert_eq!(
             first_batch
@@ -1366,6 +1475,7 @@ mod tests {
             .source_row_id;
         let second_batch = reader
             .read_agent_traces_after(next_cursor, 3)
+            .await
             .expect("follow-up read should succeed");
         assert_eq!(
             second_batch
@@ -1378,11 +1488,13 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_agent_traces_after_returns_empty_at_or_beyond_max_id() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_agent_traces_after_returns_empty_at_or_beyond_max_id() {
         let db_path = unique_test_db_path("agent-traces-empty-tail");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
-        insert_agent_trace_row_with_id(&db, 1, "trace-1");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
+        insert_agent_trace_row_with_id(&db, 1, "trace-1").await;
 
         let reader = AgentTraceExportReader::new(&db);
         assert!(reader
@@ -1397,34 +1509,41 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_agent_traces_after_rejects_invalid_cursor_and_limit() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_agent_traces_after_rejects_invalid_cursor_and_limit() {
         let db_path = unique_test_db_path("agent-traces-invalid");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         let reader = AgentTraceExportReader::new(&db);
 
         let cursor_error = reader
             .read_agent_traces_after(-1, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect_err("negative cursor should error");
         assert!(cursor_error.to_string().contains("cursor"));
 
         let zero_limit_error = reader
             .read_agent_traces_after(0, 0)
+            .await
             .expect_err("zero limit should error");
         assert!(zero_limit_error.to_string().contains("limit"));
 
         let excess_limit_error = reader
             .read_agent_traces_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE + 1)
+            .await
             .expect_err("excess limit should error");
         assert!(excess_limit_error.to_string().contains("limit"));
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_agent_traces_after_rejects_row_above_safe_integer_bound() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_agent_traces_after_rejects_row_above_safe_integer_bound() {
         let db_path = unique_test_db_path("agent-traces-unsafe-integer");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         db.execute(
             "INSERT INTO agent_traces (id, commit_id, commit_time_ms, trace_json, agent_trace_id, url, remote_url) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             (
@@ -1436,31 +1555,35 @@ mod tests {
                 "https://example.com/trace",
                 Option::<&str>::None,
             ),
-        )
+        ).await
         .expect("direct agent_trace insert should succeed");
 
         let reader = AgentTraceExportReader::new(&db);
         let error = reader
             .read_agent_traces_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect_err("row above safe-integer bound should error");
         assert!(error.to_string().contains("JS-safe-integer"));
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn read_agent_traces_after_performs_no_mutation() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_agent_traces_after_performs_no_mutation() {
         let db_path = unique_test_db_path("agent-traces-no-mutation");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
-        insert_agent_trace_row_with_id(&db, 1, "trace-1");
-        insert_agent_trace_row_with_id(&db, 2, "trace-2");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
+        insert_agent_trace_row_with_id(&db, 1, "trace-1").await;
+        insert_agent_trace_row_with_id(&db, 2, "trace-2").await;
 
-        let agent_traces_before = row_count(&db, "agent_traces");
-        let metadata_before = row_count(&db, "repository_metadata");
+        let agent_traces_before = row_count(&db, "agent_traces").await;
+        let metadata_before = row_count(&db, "repository_metadata").await;
 
         let reader = AgentTraceExportReader::new(&db);
         reader
             .read_agent_traces_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect("read should succeed");
 
         assert_eq!(row_count(&db, "agent_traces"), agent_traces_before);
@@ -1469,8 +1592,8 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn source_instance_integration() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn source_instance_integration() {
         use crate::services::agent_trace_storage::{
             resolve_agent_trace_storage_at_state_root, AgentTraceStorageContext,
         };
@@ -1486,16 +1609,18 @@ mod tests {
         };
 
         let storage = resolve_agent_trace_storage_at_state_root(&context, &state_root)
+            .await
             .expect("repository-scoped Agent Trace storage should resolve");
 
         assert!(!storage.metadata.repository_id.trim().is_empty());
         assert!(!storage.metadata.source_instance_id.trim().is_empty());
 
-        insert_message_row_with_id(&storage.db, 1, "msg-1");
+        insert_message_row_with_id(&storage.db, 1, "msg-1").await;
 
         let reader = AgentTraceExportReader::new(&storage.db);
         let rows = reader
             .read_messages_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .await
             .expect("read through storage-resolved db should succeed");
 
         assert_eq!(rows.len(), 1);

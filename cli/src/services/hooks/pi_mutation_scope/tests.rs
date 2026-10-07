@@ -45,8 +45,7 @@ fn tool_call(payload: &str) -> PiToolCall {
 mod ingress_conformance {
     use super::*;
     use crate::services::hooks::mutation_scope_ingress_conformance::{
-        self as conformance, mutation_scope_ingress_conformance_tests,
-        CheckoutResolutionConformance, IngressConformance,
+        mutation_scope_ingress_conformance_tests, CheckoutResolutionConformance, IngressConformance,
     };
 
     struct PiIngressConformance;
@@ -74,16 +73,18 @@ mod ingress_conformance {
             parse_pi_hook_event(payload).map(|_| ())
         }
 
-        fn run(payload: &str) -> Result<String> {
-            run_pi_mutation_scope_from_payload(payload, None)
+        async fn run(payload: &str) -> Result<String> {
+            run_pi_mutation_scope_from_payload(payload, None).await
         }
 
-        fn run_with_seams(
+        async fn run_with_seams<L: crate::services::observability::traits::Logger>(
             payload: &str,
-            resolve_git_dir: conformance::GitDirResolver,
-            seam: conformance::IngressSeam,
+            resolve_git_dir: &impl Fn(&str) -> Result<PathBuf>,
+            seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
         ) -> Result<String> {
             run_pi_mutation_scope_from_payload_with_seams(payload, None, resolve_git_dir, seam)
+                .await
+                .await
         }
     }
 

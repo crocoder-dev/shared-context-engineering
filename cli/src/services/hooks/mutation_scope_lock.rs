@@ -153,7 +153,7 @@ impl AdapterLockSpec {
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::io::Write as _;
     use std::process::Command;

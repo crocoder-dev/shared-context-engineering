@@ -468,12 +468,13 @@ fn model_less_claude_diff_event(
     event
 }
 
-fn persisted_model_ids(db: &RepositoryAgentTraceDb) -> Vec<Option<String>> {
+async fn persisted_model_ids(db: &RepositoryAgentTraceDb) -> Vec<Option<String>> {
     db.query_map(
         "SELECT model_id FROM diff_traces ORDER BY id ASC",
         (),
         |row| row.get::<Option<String>>(0).map_err(Into::into),
     )
+    .await
     .expect("persisted model IDs should be readable")
 }
 
@@ -596,9 +597,9 @@ fn claude_diff_trace_normalized_opencode_payload_carries_no_transcript_path() {
     assert_eq!(payload.transcript_path, None);
 }
 
-#[test]
+#[tokio::test(flavor = "multi_thread")]
 #[allow(clippy::too_many_lines)]
-fn claude_model_attribution_end_to_end_persists_lifecycle_fallback_precedence_and_scope() {
+async fn claude_model_attribution_end_to_end_persists_lifecycle_fallback_precedence_and_scope() {
     let repo_root = init_attribution_git_repo("end-to-end");
     let state_root = unique_attribution_db_path("end-to-end-state")
         .parent()
@@ -612,6 +613,7 @@ fn claude_model_attribution_end_to_end_persists_lifecycle_fallback_precedence_an
         },
         &state_root,
     )
+    .await
     .expect("setup path should initialize the test repository DB");
     drop(storage);
 
@@ -637,6 +639,7 @@ fn claude_model_attribution_end_to_end_persists_lifecycle_fallback_precedence_an
         &state_root,
         "test DB should open after SessionStart",
     )
+    .await
     .expect("test DB should open after SessionStart");
     assert_eq!(
         db.claude_model_state_by_session_and_agent("cc_session-123", "")
@@ -650,6 +653,7 @@ fn claude_model_attribution_end_to_end_persists_lifecycle_fallback_precedence_an
         &db,
         &parsed_claude_diff_trace(&session_start_event),
     )
+    .await
     .expect("SessionStart state should attribute the next diff trace");
     drop(db);
 
@@ -676,6 +680,7 @@ fn claude_model_attribution_end_to_end_persists_lifecycle_fallback_precedence_an
         &state_root,
         "test DB should open after PostModelSwitch",
     )
+    .await
     .expect("test DB should open after PostModelSwitch");
     assert_eq!(
         db.claude_model_state_by_session_and_agent("cc_session-123", "")
@@ -689,6 +694,7 @@ fn claude_model_attribution_end_to_end_persists_lifecycle_fallback_precedence_an
         &db,
         &parsed_claude_diff_trace(&switched_event),
     )
+    .await
     .expect("PostModelSwitch state should attribute the next diff trace");
 
     let mut direct_event = model_less_claude_diff_event("session-123", "tool-direct", None);
@@ -700,6 +706,7 @@ fn claude_model_attribution_end_to_end_persists_lifecycle_fallback_precedence_an
         &db,
         &parsed_claude_diff_trace(&direct_event),
     )
+    .await
     .expect("direct model attribution should persist");
 
     let transcript_path = state_root.join("transcript.jsonl");
@@ -716,6 +723,7 @@ fn claude_model_attribution_end_to_end_persists_lifecycle_fallback_precedence_an
         &db,
         &parsed_claude_diff_trace(&transcript_event),
     )
+    .await
     .expect("transcript model attribution should persist");
 
     let no_state_event = model_less_claude_diff_event("session-without-state", "tool-none", None);
@@ -723,6 +731,7 @@ fn claude_model_attribution_end_to_end_persists_lifecycle_fallback_precedence_an
         &db,
         &parsed_claude_diff_trace(&no_state_event),
     )
+    .await
     .expect("an attribution-less diff trace should still persist");
 
     let subagent_event =
@@ -731,6 +740,7 @@ fn claude_model_attribution_end_to_end_persists_lifecycle_fallback_precedence_an
         &db,
         &parsed_claude_diff_trace(&subagent_event),
     )
+    .await
     .expect("a subagent diff trace should persist");
 
     assert_eq!(
@@ -751,8 +761,8 @@ fn claude_model_attribution_end_to_end_persists_lifecycle_fallback_precedence_an
     fs::remove_dir_all(state_root).expect("test state should be removed");
 }
 
-#[test]
-fn claude_model_attribution_bridge_inheritance_seeds_state_and_diff_trace() {
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_model_attribution_bridge_inheritance_seeds_state_and_diff_trace() {
     let repo_root = init_attribution_git_repo("bridge-inheritance");
     let state_root = unique_attribution_db_path("bridge-inheritance-state")
         .parent()
@@ -766,6 +776,7 @@ fn claude_model_attribution_bridge_inheritance_seeds_state_and_diff_trace() {
         },
         &state_root,
     )
+    .await
     .expect("setup path should initialize the test repository DB");
     drop(storage);
 
@@ -797,6 +808,7 @@ fn claude_model_attribution_bridge_inheritance_seeds_state_and_diff_trace() {
         &state_root,
         "test DB should open before bridge inheritance",
     )
+    .await
     .expect("test DB should open before bridge inheritance");
     db.upsert_claude_model_state(ClaudeModelStateObservation {
         session_id: String::from("cc_session-old"),
@@ -806,6 +818,7 @@ fn claude_model_attribution_bridge_inheritance_seeds_state_and_diff_trace() {
         source: String::from("startup"),
         observed_at_ms: 5,
     })
+    .await
     .expect("sibling state should be seeded");
     drop(db);
 
@@ -831,9 +844,11 @@ fn claude_model_attribution_bridge_inheritance_seeds_state_and_diff_trace() {
         &state_root,
         "test DB should open after bridge inheritance",
     )
+    .await
     .expect("test DB should open after bridge inheritance");
     let inherited = db
         .claude_model_state_by_session_and_agent("cc_session-current", "")
+        .await
         .expect("inherited state lookup should succeed")
         .expect("current session should inherit sibling state");
     assert_eq!(inherited.model_id, "claude/inherited-model");
@@ -846,6 +861,7 @@ fn claude_model_attribution_bridge_inheritance_seeds_state_and_diff_trace() {
         &db,
         &parsed_claude_diff_trace(&diff_event),
     )
+    .await
     .expect("inherited state should attribute the diff trace");
     assert_eq!(
         persisted_model_ids(&db),
@@ -859,10 +875,12 @@ fn claude_model_attribution_bridge_inheritance_seeds_state_and_diff_trace() {
     fs::remove_dir_all(state_root).expect("test state should be removed");
 }
 
-#[test]
-fn claude_diff_trace_persistence_uses_state_only_after_direct_and_transcript() {
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_diff_trace_persistence_uses_state_only_after_direct_and_transcript() {
     let db_path = unique_attribution_db_path("precedence");
-    let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+    let db = RepositoryAgentTraceDb::new_at(&db_path)
+        .await
+        .expect("test DB should open");
     db.upsert_claude_model_state(ClaudeModelStateObservation {
         session_id: String::from("cc_session-123"),
         agent_id: String::new(),
@@ -871,6 +889,7 @@ fn claude_diff_trace_persistence_uses_state_only_after_direct_and_transcript() {
         source: String::from("startup"),
         observed_at_ms: 1,
     })
+    .await
     .expect("state should be seeded");
 
     let mut state_event = claude_model_test_event(Path::new("/virtual/missing.jsonl"), "state");
@@ -881,6 +900,7 @@ fn claude_diff_trace_persistence_uses_state_only_after_direct_and_transcript() {
     state_object.remove("tool_use_id");
     let state_payload = parsed_claude_diff_trace(&state_event);
     persist_diff_trace_payload_to_agent_trace_db_with_db(&db, &state_payload)
+        .await
         .expect("state fallback should persist");
 
     let mut direct_event = state_event.clone();
@@ -890,6 +910,7 @@ fn claude_diff_trace_persistence_uses_state_only_after_direct_and_transcript() {
         .insert("model".to_string(), json!("direct-model"));
     let direct_payload = parsed_claude_diff_trace(&direct_event);
     persist_diff_trace_payload_to_agent_trace_db_with_db(&db, &direct_payload)
+        .await
         .expect("direct attribution should persist");
 
     let transcript_path = db_path.with_extension("jsonl");
@@ -904,6 +925,7 @@ fn claude_diff_trace_persistence_uses_state_only_after_direct_and_transcript() {
     let transcript_event = claude_model_test_event(&transcript_path, "transcript");
     let transcript_payload = parsed_claude_diff_trace(&transcript_event);
     persist_diff_trace_payload_to_agent_trace_db_with_db(&db, &transcript_payload)
+        .await
         .expect("transcript attribution should persist");
 
     let models = db
@@ -912,6 +934,7 @@ fn claude_diff_trace_persistence_uses_state_only_after_direct_and_transcript() {
             (),
             |row| row.get::<Option<String>>(0).map_err(Into::into),
         )
+        .await
         .expect("persisted models should be readable");
     assert_eq!(
         models,
@@ -928,10 +951,12 @@ fn claude_diff_trace_persistence_uses_state_only_after_direct_and_transcript() {
         .expect("test DB directory should be removed");
 }
 
-#[test]
-fn normalized_claude_tool_name_does_not_use_claude_state_fallback() {
+#[tokio::test(flavor = "multi_thread")]
+async fn normalized_claude_tool_name_does_not_use_claude_state_fallback() {
     let db_path = unique_attribution_db_path("normalized-claude");
-    let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+    let db = RepositoryAgentTraceDb::new_at(&db_path)
+        .await
+        .expect("test DB should open");
     db.upsert_claude_model_state(ClaudeModelStateObservation {
         session_id: String::from("cc_session-123"),
         agent_id: String::new(),
@@ -940,6 +965,7 @@ fn normalized_claude_tool_name_does_not_use_claude_state_fallback() {
         source: String::from("startup"),
         observed_at_ms: 1,
     })
+    .await
     .expect("parent state should be seeded");
 
     let payload = diff_trace_payload_with(
@@ -950,12 +976,14 @@ fn normalized_claude_tool_name_does_not_use_claude_state_fallback() {
         None,
     );
     persist_diff_trace_payload_to_agent_trace_db_with_db(&db, &payload)
+        .await
         .expect("normalized Claude payload should persist");
 
     let model = db
         .query_map("SELECT model_id FROM diff_traces LIMIT 1", (), |row| {
             row.get::<Option<String>>(0).map_err(Into::into)
         })
+        .await
         .expect("persisted model should be readable")
         .into_iter()
         .next()
@@ -967,10 +995,12 @@ fn normalized_claude_tool_name_does_not_use_claude_state_fallback() {
         .expect("test DB directory should be removed");
 }
 
-#[test]
-fn claude_diff_trace_state_lookup_isolated_to_exact_subagent_scope() {
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_diff_trace_state_lookup_isolated_to_exact_subagent_scope() {
     let db_path = unique_attribution_db_path("subagent");
-    let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+    let db = RepositoryAgentTraceDb::new_at(&db_path)
+        .await
+        .expect("test DB should open");
     db.upsert_claude_model_state(ClaudeModelStateObservation {
         session_id: String::from("cc_session-123"),
         agent_id: String::new(),
@@ -979,6 +1009,7 @@ fn claude_diff_trace_state_lookup_isolated_to_exact_subagent_scope() {
         source: String::from("startup"),
         observed_at_ms: 1,
     })
+    .await
     .expect("parent state should be seeded");
 
     let mut event = claude_model_test_event(Path::new("/virtual/missing.jsonl"), "subagent");
@@ -990,12 +1021,14 @@ fn claude_diff_trace_state_lookup_isolated_to_exact_subagent_scope() {
     event_object.insert("agent_id".to_string(), json!("subagent-1"));
     let payload = parsed_claude_diff_trace(&event);
     persist_diff_trace_payload_to_agent_trace_db_with_db(&db, &payload)
+        .await
         .expect("subagent diff trace should persist");
 
     let model = db
         .query_map("SELECT model_id FROM diff_traces LIMIT 1", (), |row| {
             row.get::<Option<String>>(0).map_err(Into::into)
         })
+        .await
         .expect("persisted model should be readable")
         .into_iter()
         .next()
@@ -1022,15 +1055,17 @@ fn write_bridge_transcript(path: &Path, bridge_session_id: &str) {
     .expect("bridge transcript fixture should be written");
 }
 
-#[test]
-fn claude_diff_trace_seeds_bridge_chain_state_on_state_miss_and_reuses_it() {
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_diff_trace_seeds_bridge_chain_state_on_state_miss_and_reuses_it() {
     let db_path = unique_attribution_db_path("bridge-chain-seed");
     let dir = db_path
         .parent()
         .expect("test DB should have a parent")
         .to_path_buf();
     fs::create_dir_all(&dir).expect("test DB directory should be created");
-    let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+    let db = RepositoryAgentTraceDb::new_at(&db_path)
+        .await
+        .expect("test DB should open");
 
     db.upsert_claude_model_state(ClaudeModelStateObservation {
         session_id: String::from("cc_session-member"),
@@ -1040,6 +1075,7 @@ fn claude_diff_trace_seeds_bridge_chain_state_on_state_miss_and_reuses_it() {
         source: String::from("startup"),
         observed_at_ms: 100,
     })
+    .await
     .expect("chain member state should seed");
 
     let current_transcript = dir.join("session-current.jsonl");
@@ -1049,6 +1085,7 @@ fn claude_diff_trace_seeds_bridge_chain_state_on_state_miss_and_reuses_it() {
 
     let payload = parsed_claude_diff_trace(&claude_model_test_event(&current_transcript, "a"));
     persist_diff_trace_payload_to_agent_trace_db_with_db(&db, &payload)
+        .await
         .expect("bridge chain seeding should persist");
 
     assert_eq!(
@@ -1057,6 +1094,7 @@ fn claude_diff_trace_seeds_bridge_chain_state_on_state_miss_and_reuses_it() {
     );
     let seeded = db
         .claude_model_state_by_session_and_agent("cc_session-123", "")
+        .await
         .expect("seeded lookup should succeed")
         .expect("current session should be seeded");
     assert_eq!(seeded.model_id, "claude/chain-model");
@@ -1065,6 +1103,7 @@ fn claude_diff_trace_seeds_bridge_chain_state_on_state_miss_and_reuses_it() {
     fs::remove_file(&member_transcript).expect("member transcript should be removed");
     let payload_two = parsed_claude_diff_trace(&claude_model_test_event(&current_transcript, "b"));
     persist_diff_trace_payload_to_agent_trace_db_with_db(&db, &payload_two)
+        .await
         .expect("second diff trace should persist");
     assert_eq!(
         persisted_model_ids(&db),
@@ -1075,6 +1114,7 @@ fn claude_diff_trace_seeds_bridge_chain_state_on_state_miss_and_reuses_it() {
     );
     let after = db
         .claude_model_state_by_session_and_agent("cc_session-123", "")
+        .await
         .expect("lookup should succeed")
         .expect("row should still exist");
     assert_eq!(after.observed_at_ms, seeded.observed_at_ms);
@@ -1083,15 +1123,17 @@ fn claude_diff_trace_seeds_bridge_chain_state_on_state_miss_and_reuses_it() {
     fs::remove_dir_all(&dir).expect("test DB directory should be removed");
 }
 
-#[test]
-fn claude_diff_trace_bridge_chain_selects_newest_observation_across_members() {
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_diff_trace_bridge_chain_selects_newest_observation_across_members() {
     let db_path = unique_attribution_db_path("bridge-chain-newest");
     let dir = db_path
         .parent()
         .expect("test DB should have a parent")
         .to_path_buf();
     fs::create_dir_all(&dir).expect("test DB directory should be created");
-    let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+    let db = RepositoryAgentTraceDb::new_at(&db_path)
+        .await
+        .expect("test DB should open");
 
     db.upsert_claude_model_state(ClaudeModelStateObservation {
         session_id: String::from("cc_session-root"),
@@ -1101,6 +1143,7 @@ fn claude_diff_trace_bridge_chain_selects_newest_observation_across_members() {
         source: String::from("startup"),
         observed_at_ms: 10,
     })
+    .await
     .expect("root state should seed");
     db.upsert_claude_model_state(ClaudeModelStateObservation {
         session_id: String::from("cc_session-mid"),
@@ -1110,6 +1153,7 @@ fn claude_diff_trace_bridge_chain_selects_newest_observation_across_members() {
         source: String::from("picker"),
         observed_at_ms: 20,
     })
+    .await
     .expect("mid state should seed");
 
     let current_transcript = dir.join("session-current.jsonl");
@@ -1122,6 +1166,7 @@ fn claude_diff_trace_bridge_chain_selects_newest_observation_across_members() {
 
     let payload = parsed_claude_diff_trace(&claude_model_test_event(&current_transcript, "x"));
     persist_diff_trace_payload_to_agent_trace_db_with_db(&db, &payload)
+        .await
         .expect("newest-observation resolution should persist");
 
     assert_eq!(
@@ -1133,15 +1178,17 @@ fn claude_diff_trace_bridge_chain_selects_newest_observation_across_members() {
     fs::remove_dir_all(&dir).expect("test DB directory should be removed");
 }
 
-#[test]
-fn claude_diff_trace_bridge_chain_fails_open_without_write_or_attribution() {
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_diff_trace_bridge_chain_fails_open_without_write_or_attribution() {
     let db_path = unique_attribution_db_path("bridge-chain-fail-open");
     let dir = db_path
         .parent()
         .expect("test DB should have a parent")
         .to_path_buf();
     fs::create_dir_all(&dir).expect("test DB directory should be created");
-    let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+    let db = RepositoryAgentTraceDb::new_at(&db_path)
+        .await
+        .expect("test DB should open");
 
     let mut event = claude_model_test_event(Path::new("/virtual/missing.jsonl"), "no-transcript");
     event
@@ -1149,6 +1196,7 @@ fn claude_diff_trace_bridge_chain_fails_open_without_write_or_attribution() {
         .expect("event should be an object")
         .remove("transcript_path");
     persist_diff_trace_payload_to_agent_trace_db_with_db(&db, &parsed_claude_diff_trace(&event))
+        .await
         .expect("missing transcript should fail open");
 
     let current_transcript = dir.join("session-current.jsonl");
@@ -1159,6 +1207,7 @@ fn claude_diff_trace_bridge_chain_fails_open_without_write_or_attribution() {
         &db,
         &parsed_claude_diff_trace(&claude_model_test_event(&current_transcript, "no-state")),
     )
+    .await
     .expect("stateless chain should fail open");
 
     assert_eq!(persisted_model_ids(&db), vec![None, None]);
@@ -1173,15 +1222,17 @@ fn claude_diff_trace_bridge_chain_fails_open_without_write_or_attribution() {
     fs::remove_dir_all(&dir).expect("test DB directory should be removed");
 }
 
-#[test]
-fn claude_diff_trace_bridge_chain_does_not_seed_subagent_scope() {
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_diff_trace_bridge_chain_does_not_seed_subagent_scope() {
     let db_path = unique_attribution_db_path("bridge-chain-subagent");
     let dir = db_path
         .parent()
         .expect("test DB should have a parent")
         .to_path_buf();
     fs::create_dir_all(&dir).expect("test DB directory should be created");
-    let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+    let db = RepositoryAgentTraceDb::new_at(&db_path)
+        .await
+        .expect("test DB should open");
 
     db.upsert_claude_model_state(ClaudeModelStateObservation {
         session_id: String::from("cc_session-member"),
@@ -1191,6 +1242,7 @@ fn claude_diff_trace_bridge_chain_does_not_seed_subagent_scope() {
         source: String::from("startup"),
         observed_at_ms: 100,
     })
+    .await
     .expect("chain member state should seed");
 
     let current_transcript = dir.join("session-current.jsonl");
@@ -1204,6 +1256,7 @@ fn claude_diff_trace_bridge_chain_does_not_seed_subagent_scope() {
         .expect("event should be an object")
         .insert("agent_id".to_string(), json!("subagent-1"));
     persist_diff_trace_payload_to_agent_trace_db_with_db(&db, &parsed_claude_diff_trace(&event))
+        .await
         .expect("subagent diff trace should persist");
 
     assert_eq!(persisted_model_ids(&db), vec![None]);
@@ -1358,8 +1411,8 @@ fn pi_normalized_diff_trace_payload_persists_with_pi_prefixed_session_id() {
     .expect("Pi diff-trace payload should be persisted");
 }
 
-#[test]
-fn post_commit_intersection_flow_preserves_pi_provenance() {
+#[tokio::test(flavor = "multi_thread")]
+async fn post_commit_intersection_flow_preserves_pi_provenance() {
     let now_ms = 1_800_000_000_000_i64;
     let commit_time_ms = now_ms - 1_000;
 
@@ -1389,6 +1442,7 @@ fn post_commit_intersection_flow_preserves_pi_provenance() {
         },
         |_| Ok(()),
     )
+    .await
     .expect("post-commit intersection flow should succeed");
 
     assert_eq!(output.combined_recent_patch.files.len(), 1);
@@ -1418,8 +1472,8 @@ fn diff_trace_db_persistence_uses_direct_payload_model_and_tool_version() {
     .expect("direct diff-trace attribution should be persisted");
 }
 
-#[test]
-fn post_commit_intersection_flow_uses_same_window_end_for_query_and_persistence() {
+#[tokio::test(flavor = "multi_thread")]
+async fn post_commit_intersection_flow_uses_same_window_end_for_query_and_persistence() {
     let now_ms = 1_800_000_000_000_i64;
     let commit_time_ms = now_ms - 1_000;
     let expected_cutoff_ms = now_ms - RECENT_DAYS_MILLIS;
@@ -1471,6 +1525,7 @@ fn post_commit_intersection_flow_uses_same_window_end_for_query_and_persistence(
             Ok(())
         },
     )
+    .await
     .expect("post-commit intersection flow should succeed");
 
     assert_eq!(
@@ -1523,8 +1578,8 @@ fn minimal_agent_trace() -> AgentTrace {
     serde_json::from_value(json!({ "files": [] })).expect("minimal Agent Trace should deserialize")
 }
 
-#[test]
-fn post_commit_auto_sync_launches_after_successful_persistence_when_enabled() {
+#[tokio::test(flavor = "multi_thread")]
+async fn post_commit_auto_sync_launches_after_successful_persistence_when_enabled() {
     let events = RefCell::new(Vec::new());
 
     let output = run_post_commit_subcommand_with(
@@ -1553,6 +1608,7 @@ fn post_commit_auto_sync_launches_after_successful_persistence_when_enabled() {
         },
         None,
     )
+    .await
     .expect("successful post-commit should remain successful");
 
     assert!(output.contains("post-commit hook processed intersection"));
@@ -1568,8 +1624,8 @@ fn post_commit_auto_sync_launches_after_successful_persistence_when_enabled() {
     );
 }
 
-#[test]
-fn post_commit_validation_failure_does_not_resolve_or_launch_auto_sync() {
+#[tokio::test(flavor = "multi_thread")]
+async fn post_commit_validation_failure_does_not_resolve_or_launch_auto_sync() {
     let validation_called = RefCell::new(false);
     let config_called = RefCell::new(false);
     let launch_called = RefCell::new(false);
@@ -1579,7 +1635,7 @@ fn post_commit_validation_failure_does_not_resolve_or_launch_auto_sync() {
         None,
         "",
         |_| Ok(post_commit_flow_result()),
-        |_, flow_result, vcs_type, remote_url| {
+        async |_, flow_result, vcs_type, remote_url| {
             run_post_commit_agent_trace_flow_with(
                 flow_result,
                 vcs_type,
@@ -1591,6 +1647,7 @@ fn post_commit_validation_failure_does_not_resolve_or_launch_auto_sync() {
                 },
                 |_| panic!("Agent Trace persistence must not run after validation failure"),
             )
+            .await
         },
         |_| {
             *config_called.borrow_mut() = true;
@@ -1603,6 +1660,7 @@ fn post_commit_validation_failure_does_not_resolve_or_launch_auto_sync() {
         |_| panic!("checkpoint must not run after persistence failure"),
         None,
     )
+    .await
     .expect_err("validation failure should be returned");
 
     assert!(*validation_called.borrow());
@@ -1627,7 +1685,7 @@ fn post_commit_flow_result_for(
     }
 }
 
-fn persisted_post_commit_trace(
+async fn persisted_post_commit_trace(
     flow_result: &PostCommitIntersectionFlowResult,
     mutation_ai_patch: &ParsedPatch,
 ) -> Value {
@@ -1644,6 +1702,7 @@ fn persisted_post_commit_trace(
             Ok(())
         },
     )
+    .await
     .expect("post-commit Agent Trace flow should build and persist");
 
     serde_json::from_str(
@@ -1655,15 +1714,15 @@ fn persisted_post_commit_trace(
     .expect("persisted trace JSON should parse")
 }
 
-#[test]
-fn post_commit_agent_trace_flow_attributes_mutation_only_lines_as_ai_without_provenance() {
+#[tokio::test(flavor = "multi_thread")]
+async fn post_commit_agent_trace_flow_attributes_mutation_only_lines_as_ai_without_provenance() {
     let flow_result = post_commit_flow_result_for(
         ParsedPatch { files: Vec::new() },
         valid_patch("src/lib.rs", "mutated line"),
     );
     let mutation_ai_patch = valid_patch("src/lib.rs", "mutated line");
 
-    let trace = persisted_post_commit_trace(&flow_result, &mutation_ai_patch);
+    let trace = persisted_post_commit_trace(&flow_result, &mutation_ai_patch).await;
 
     assert_eq!(
         trace["metadata"]["sce"]["line_changes"]["ai"]["added"],
@@ -1691,14 +1750,14 @@ fn post_commit_agent_trace_flow_attributes_mutation_only_lines_as_ai_without_pro
     );
 }
 
-#[test]
-fn post_commit_agent_trace_flow_keeps_direct_provenance_when_direct_covers_the_line() {
+#[tokio::test(flavor = "multi_thread")]
+async fn post_commit_agent_trace_flow_keeps_direct_provenance_when_direct_covers_the_line() {
     let flow_result = post_commit_flow_result_for(
         valid_patch("src/lib.rs", "shared line"),
         valid_patch("src/lib.rs", "shared line"),
     );
 
-    let trace = persisted_post_commit_trace(&flow_result, &ParsedPatch { files: Vec::new() });
+    let trace = persisted_post_commit_trace(&flow_result, &ParsedPatch { files: Vec::new() }).await;
 
     assert_eq!(
         trace["metadata"]["sce"]["line_changes"]["ai"]["added"],
@@ -1714,14 +1773,14 @@ fn post_commit_agent_trace_flow_keeps_direct_provenance_when_direct_covers_the_l
     );
 }
 
-#[test]
-fn post_commit_agent_trace_flow_with_empty_mutation_patch_leaves_uncovered_lines_unknown() {
+#[tokio::test(flavor = "multi_thread")]
+async fn post_commit_agent_trace_flow_with_empty_mutation_patch_leaves_uncovered_lines_unknown() {
     let flow_result = post_commit_flow_result_for(
         ParsedPatch { files: Vec::new() },
         valid_patch("src/lib.rs", "human line"),
     );
 
-    let trace = persisted_post_commit_trace(&flow_result, &ParsedPatch { files: Vec::new() });
+    let trace = persisted_post_commit_trace(&flow_result, &ParsedPatch { files: Vec::new() }).await;
 
     assert_eq!(
         trace["metadata"]["sce"]["line_changes"]["unknown"]["added"],
@@ -1781,7 +1840,7 @@ mod mutation_attribution_e2e {
     }
 
     impl E2eRepo {
-        fn new(label: &str) -> Self {
+        async fn new(label: &str) -> Self {
             let temp = tempfile::Builder::new()
                 .prefix(&format!("sce-mutation-attr-e2e-{label}-"))
                 .tempdir()
@@ -1797,6 +1856,7 @@ mod mutation_attribution_e2e {
             commit_all(&root, "base");
             let db_path = temp.path().join("agent-trace.db");
             RepositoryAgentTraceDb::new_at(&db_path)
+                .await
                 .expect("repository DB should open with schema");
             Self {
                 _temp: temp,
@@ -1805,8 +1865,9 @@ mod mutation_attribution_e2e {
             }
         }
 
-        fn db(&self) -> RepositoryAgentTraceDb {
+        async fn db(&self) -> RepositoryAgentTraceDb {
             RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&self.db_path)
+                .await
                 .expect("repository DB should reopen")
         }
 
@@ -1829,7 +1890,7 @@ mod mutation_attribution_e2e {
         }
     }
 
-    fn seed_event(
+    async fn seed_event(
         db: &RepositoryAgentTraceDb,
         worktree_id: &str,
         revision: u64,
@@ -1853,13 +1914,15 @@ mod mutation_attribution_e2e {
                 attribution_scope_id,
             ),
         )
+        .await
         .expect("mutation event insert should succeed");
     }
 
-    fn row_count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
+    async fn row_count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
         db.query_map(&format!("SELECT COUNT(*) FROM {table}"), (), |row| {
             row.get::<i64>(0).map_err(anyhow::Error::from)
         })
+        .await
         .expect("count query should succeed")
         .into_iter()
         .next()
@@ -1886,7 +1949,7 @@ mod mutation_attribution_e2e {
         }
     }
 
-    fn resolve_mutation_ai(
+    async fn resolve_mutation_ai(
         repo: &E2eRepo,
         db: &RepositoryAgentTraceDb,
         flow_result: &PostCommitIntersectionFlowResult,
@@ -1901,9 +1964,10 @@ mod mutation_attribution_e2e {
             &direct_intersection,
             &flow_result.post_commit_data.parsed_patch,
         )
+        .await
     }
 
-    fn persist_trace(
+    async fn persist_trace(
         flow_result: &PostCommitIntersectionFlowResult,
         db: &RepositoryAgentTraceDb,
         mutation_ai_patch: &ParsedPatch,
@@ -1915,11 +1979,12 @@ mod mutation_attribution_e2e {
             "git@github.com:acme/widgets.git",
             mutation_ai_patch,
             |value| validate_agent_trace_value(value).map_err(|error| anyhow!(error.to_string())),
-            |insert| {
+            async |insert| {
                 *persisted.borrow_mut() = Some(insert.trace_json.to_string());
-                db.insert_agent_trace(insert).map(|_| ())
+                db.insert_agent_trace(insert).await.map(|_| ())
             },
         )
+        .await
         .expect("the post-commit Agent Trace flow should build, validate, and persist");
 
         serde_json::from_str(
@@ -1931,13 +1996,13 @@ mod mutation_attribution_e2e {
         .expect("the persisted trace JSON should parse")
     }
 
-    #[test]
-    fn a_mutation_only_line_persists_as_ai_without_fabricated_provenance() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_mutation_only_line_persists_as_ai_without_fabricated_provenance() {
         let repo = E2eRepo::new("mutation-only");
         fs::write(repo.root.join("file.rs"), "one\ntwo\n").expect("the edit should write");
         commit_all(&repo.root, "add two");
 
-        let db = repo.db();
+        let db = repo.db().await;
         seed_event(
             &db,
             &repo.checkout_id(),
@@ -1946,17 +2011,18 @@ mod mutation_attribution_e2e {
             &repo.head_tree(),
             "ai_exclusive",
             Some("scope-x"),
-        );
+        )
+        .await;
 
         let flow_result = flow_result_for(&repo, ParsedPatch { files: Vec::new() });
-        let mutation_ai_patch = resolve_mutation_ai(&repo, &db, &flow_result);
+        let mutation_ai_patch = resolve_mutation_ai(&repo, &db, &flow_result).await;
         assert_eq!(
             touched_line_count(&mutation_ai_patch),
             1,
             "a healthy untainted exclusive event covers the committed line"
         );
 
-        let trace = persist_trace(&flow_result, &db, &mutation_ai_patch);
+        let trace = persist_trace(&flow_result, &db, &mutation_ai_patch).await;
         assert_eq!(
             trace["metadata"]["sce"]["line_changes"]["ai"]["added"],
             json!(1)
@@ -1989,13 +2055,13 @@ mod mutation_attribution_e2e {
         assert_eq!(row_count(&db, "agent_traces"), 1);
     }
 
-    #[test]
-    fn direct_plus_mutation_evidence_completes_hunk_coverage_and_keeps_direct_provenance() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn direct_plus_mutation_evidence_completes_hunk_coverage_and_keeps_direct_provenance() {
         let repo = E2eRepo::new("direct-plus-mutation");
         fs::write(repo.root.join("file.rs"), "one\ntwo\nthree\n").expect("the edit should write");
         commit_all(&repo.root, "add two and three");
 
-        let db = repo.db();
+        let db = repo.db().await;
         seed_event(
             &db,
             &repo.checkout_id(),
@@ -2004,7 +2070,8 @@ mod mutation_attribution_e2e {
             &repo.head_tree(),
             "ai_exclusive",
             Some("scope-x"),
-        );
+        )
+        .await;
 
         let direct = parse_patch_from_text(
                 "diff --git a/file.rs b/file.rs\n--- a/file.rs\n+++ b/file.rs\n@@ -1,1 +1,2 @@\n one\n+two\n",
@@ -2015,14 +2082,14 @@ mod mutation_attribution_e2e {
         flow_result.tool_name = Some(String::from("claude"));
         flow_result.tool_version = Some(String::from("9.9.9"));
 
-        let mutation_ai_patch = resolve_mutation_ai(&repo, &db, &flow_result);
+        let mutation_ai_patch = resolve_mutation_ai(&repo, &db, &flow_result).await;
         assert_eq!(
             touched_line_count(&mutation_ai_patch),
             1,
             "only the line direct evidence did not cover is resolved from mutation history"
         );
 
-        let trace = persist_trace(&flow_result, &db, &mutation_ai_patch);
+        let trace = persist_trace(&flow_result, &db, &mutation_ai_patch).await;
         assert_eq!(
             trace["metadata"]["sce"]["line_changes"]["ai"]["added"],
             json!(2),
@@ -2038,13 +2105,13 @@ mod mutation_attribution_e2e {
         );
     }
 
-    #[test]
-    fn a_newer_nonexclusive_event_keeps_the_line_non_ai() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_newer_nonexclusive_event_keeps_the_line_non_ai() {
         let repo = E2eRepo::new("newer-nonexclusive");
         fs::write(repo.root.join("file.rs"), "one\ntwo\n").expect("the edit should write");
         commit_all(&repo.root, "add two");
 
-        let db = repo.db();
+        let db = repo.db().await;
         let worktree = repo.checkout_id();
         seed_event(
             &db,
@@ -2054,7 +2121,8 @@ mod mutation_attribution_e2e {
             &repo.head_tree(),
             "ai_exclusive",
             Some("scope-old"),
-        );
+        )
+        .await;
         seed_event(
             &db,
             &worktree,
@@ -2063,17 +2131,18 @@ mod mutation_attribution_e2e {
             &repo.head_tree(),
             "ai_contended",
             None,
-        );
+        )
+        .await;
 
         let flow_result = flow_result_for(&repo, ParsedPatch { files: Vec::new() });
-        let mutation_ai_patch = resolve_mutation_ai(&repo, &db, &flow_result);
+        let mutation_ai_patch = resolve_mutation_ai(&repo, &db, &flow_result).await;
         assert_eq!(
             touched_line_count(&mutation_ai_patch),
             0,
             "the newer contended match resolves the line and blocks the older exclusive event"
         );
 
-        let trace = persist_trace(&flow_result, &db, &mutation_ai_patch);
+        let trace = persist_trace(&flow_result, &db, &mutation_ai_patch).await;
         assert_eq!(
             trace["metadata"]["sce"]["line_changes"]["unknown"]["added"],
             json!(1)
@@ -2088,8 +2157,9 @@ mod mutation_attribution_e2e {
         );
     }
 
-    #[test]
-    fn an_adversarial_foreign_worktree_event_cannot_block_the_current_worktrees_exclusive_event() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_adversarial_foreign_worktree_event_cannot_block_the_current_worktrees_exclusive_event(
+    ) {
         let repo = E2eRepo::new("adversarial-linked");
 
         let linked_root = repo
@@ -2110,7 +2180,7 @@ mod mutation_attribution_e2e {
         fs::write(repo.root.join("file.rs"), "one\ntwo\n").expect("the edit should write");
         commit_all(&repo.root, "add two");
 
-        let db = repo.db();
+        let db = repo.db().await;
         let current_worktree = repo.checkout_id();
         let foreign_worktree = resolve_worktree_id(&linked_root)
             .expect("the linked worktree's identity should resolve")
@@ -2128,7 +2198,8 @@ mod mutation_attribution_e2e {
             &repo.head_tree(),
             "ai_exclusive",
             Some("scope-current"),
-        );
+        )
+        .await;
         seed_event(
             &db,
             &foreign_worktree,
@@ -2137,17 +2208,18 @@ mod mutation_attribution_e2e {
             &repo.head_tree(),
             "ai_contended",
             None,
-        );
+        )
+        .await;
 
         let flow_result = flow_result_for(&repo, ParsedPatch { files: Vec::new() });
-        let mutation_ai_patch = resolve_mutation_ai(&repo, &db, &flow_result);
+        let mutation_ai_patch = resolve_mutation_ai(&repo, &db, &flow_result).await;
         assert_eq!(
                 touched_line_count(&mutation_ai_patch),
                 1,
                 "only the current worktree's history is eligible, so the older exclusive event contributes"
             );
 
-        let trace = persist_trace(&flow_result, &db, &mutation_ai_patch);
+        let trace = persist_trace(&flow_result, &db, &mutation_ai_patch).await;
         assert_eq!(
             trace["metadata"]["sce"]["line_changes"]["ai"]["added"],
             json!(1),
@@ -2170,9 +2242,10 @@ mod mutation_attribution_e2e {
             .collect()
     }
 
-    #[test]
+    #[tokio::test(flavor = "multi_thread")]
     #[allow(clippy::too_many_lines)]
-    fn persistence_boundaries_stay_separated_across_diff_traces_intersection_and_agent_trace() {
+    async fn persistence_boundaries_stay_separated_across_diff_traces_intersection_and_agent_trace()
+    {
         let repo = E2eRepo::new("persistence-boundary");
 
         fs::write(repo.root.join("file.rs"), "one\ntwo\n").expect("the direct edit should write");
@@ -2194,7 +2267,7 @@ mod mutation_attribution_e2e {
             "the mutation edit must move the tree again"
         );
 
-        let db = repo.db();
+        let db = repo.db().await;
 
         let now_ms = current_unix_time_ms().expect("the clock should resolve");
         db.insert_diff_trace(DiffTraceInsert {
@@ -2205,7 +2278,7 @@ mod mutation_attribution_e2e {
                 tool_name: "claude",
                 tool_version: Some("9.9.9"),
                 payload_type: PAYLOAD_TYPE_PATCH,
-            })
+            }).await
             .expect("the direct diff_traces row should insert");
 
         seed_event(
@@ -2216,15 +2289,21 @@ mod mutation_attribution_e2e {
             &final_tree,
             "ai_exclusive",
             Some("scope-mutation"),
-        );
+        )
+        .await;
 
         let flow_result = run_post_commit_intersection_flow_with(
             &repo.root,
             capture_post_commit_patch_from_git,
             current_unix_time_ms,
-            |cutoff_ms, end_ms| db.recent_diff_trace_patches(cutoff_ms, end_ms),
-            |insert| db.insert_post_commit_patch_intersection(insert).map(|_| ()),
+            async |cutoff_ms, end_ms| db.recent_diff_trace_patches(cutoff_ms, end_ms).await,
+            async |insert| {
+                db.insert_post_commit_patch_intersection(insert)
+                    .await
+                    .map(|_| ())
+            },
         )
+        .await
         .expect("the real post-commit intersection flow should run");
         assert_eq!(
                 touched_contents(&flow_result.combined_recent_patch),
@@ -2232,14 +2311,14 @@ mod mutation_attribution_e2e {
                 "the combined recent patch comes from the real diff_traces query, not an in-memory patch"
             );
 
-        let mutation_ai_patch = resolve_mutation_ai(&repo, &db, &flow_result);
+        let mutation_ai_patch = resolve_mutation_ai(&repo, &db, &flow_result).await;
         assert_eq!(
             touched_contents(&mutation_ai_patch),
             vec!["three".to_owned()],
             "mutation history resolves only the committed line direct evidence missed"
         );
 
-        persist_trace(&flow_result, &db, &mutation_ai_patch);
+        persist_trace(&flow_result, &db, &mutation_ai_patch).await;
 
         assert_eq!(
             row_count(&db, "diff_traces"),
@@ -2354,10 +2433,11 @@ mod mutation_provenance_e2e {
         String::from_utf8(output.stdout).expect("git output should be UTF-8")
     }
 
-    fn row_count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
+    async fn row_count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
         db.query_map(&format!("SELECT COUNT(*) FROM {table}"), (), |row| {
             row.get::<i64>(0).map_err(anyhow::Error::from)
         })
+        .await
         .expect("count query should succeed")
         .into_iter()
         .next()
@@ -2372,7 +2452,7 @@ mod mutation_provenance_e2e {
     }
 
     impl ProvenanceE2eRepo {
-        fn new(label: &str) -> Self {
+        async fn new(label: &str) -> Self {
             let temp = tempfile::Builder::new()
                 .prefix(&format!("sce-mutation-provenance-e2e-{label}-"))
                 .tempdir()
@@ -2400,6 +2480,7 @@ mod mutation_provenance_e2e {
                 },
                 &state_root,
             )
+            .await
             .expect("state-root storage should initialize the repository DB");
 
             Self {
@@ -2410,8 +2491,9 @@ mod mutation_provenance_e2e {
             }
         }
 
-        fn db(&self) -> RepositoryAgentTraceDb {
+        async fn db(&self) -> RepositoryAgentTraceDb {
             RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&self.db_path)
+                .await
                 .expect("repository DB should reopen")
         }
 
@@ -2428,8 +2510,9 @@ mod mutation_provenance_e2e {
             git(&self.root, &["commit", "-qm", "AI mutation"]);
         }
 
-        fn mutation_events(&self) -> Vec<(String, Option<String>)> {
+        async fn mutation_events(&self) -> Vec<(String, Option<String>)> {
             self.db()
+                .await
                 .query_map(
                     "SELECT attribution_kind, attribution_scope_id \
                          FROM mutation_trace_events ORDER BY revision",
@@ -2441,25 +2524,33 @@ mod mutation_provenance_e2e {
                         Ok((attribution_kind, attribution_scope_id))
                     },
                 )
+                .await
                 .expect("mutation-events query should succeed")
         }
 
-        fn run_post_commit(&self) -> Value {
-            let db = self.db();
+        async fn run_post_commit(&self) -> Value {
+            let db = self.db().await;
             run_post_commit_subcommand_with(
                 &self.root,
                 Some(AgentTraceVcsType::Git),
                 "git@github.com:acme/widgets.git",
-                |root| {
+                async |root| {
                     run_post_commit_intersection_flow_with(
                         root,
                         capture_post_commit_patch_from_git,
                         current_unix_time_ms,
-                        |cutoff_ms, end_ms| db.recent_diff_trace_patches(cutoff_ms, end_ms),
-                        |insert| db.insert_post_commit_patch_intersection(insert).map(|_| ()),
+                        async |cutoff_ms, end_ms| {
+                            db.recent_diff_trace_patches(cutoff_ms, end_ms).await
+                        },
+                        async |insert| {
+                            db.insert_post_commit_patch_intersection(insert)
+                                .await
+                                .map(|_| ())
+                        },
                     )
+                    .await
                 },
-                |root, flow_result, vcs_type, remote_url| {
+                async |root, flow_result, vcs_type, remote_url| {
                     let direct_intersection = intersect_patches_fn(
                         &flow_result.combined_recent_patch,
                         &flow_result.post_commit_data.parsed_patch,
@@ -2469,7 +2560,8 @@ mod mutation_provenance_e2e {
                         &db,
                         &direct_intersection,
                         &flow_result.post_commit_data.parsed_patch,
-                    );
+                    )
+                    .await;
 
                     run_post_commit_agent_trace_flow_with(
                         flow_result,
@@ -2480,19 +2572,22 @@ mod mutation_provenance_e2e {
                             validate_agent_trace_value(value)
                                 .map_err(|error| anyhow!(error.to_string()))
                         },
-                        |insert| db.insert_agent_trace(insert).map(|_| ()),
+                        async |insert| db.insert_agent_trace(insert).await.map(|_| ()),
                     )
+                    .await
                 },
                 |_| Ok(false),
                 |_| Ok(()),
-                |_| db.passive_checkpoint(),
+                async |_| db.passive_checkpoint().await,
                 None,
             )
+            .await
             .expect("the real post-commit hook flow should persist Agent Trace");
 
             db.query_map("SELECT trace_json FROM agent_traces", (), |row| {
                 row.get::<String>(0).map_err(anyhow::Error::from)
             })
+            .await
             .expect("persisted Agent Trace should be readable")
             .into_iter()
             .next()
@@ -2584,16 +2679,17 @@ mod mutation_provenance_e2e {
         .to_string()
     }
 
-    fn drive_opencode(repo: &ProvenanceE2eRepo, payload: &str) -> Result<String> {
+    async fn drive_opencode(repo: &ProvenanceE2eRepo, payload: &str) -> Result<String> {
         opencode_mutation_scope::run_opencode_mutation_scope_from_payload_at_state_root(
             &repo.state_root,
             payload,
             None,
         )
+        .await
     }
 
-    #[test]
-    fn opencode_bash_mutation_persists_model_and_session_in_agent_trace() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn opencode_bash_mutation_persists_model_and_session_in_agent_trace() {
         let repo = ProvenanceE2eRepo::new("opencode-bash");
         let session_id = "ses_opencode_bash";
         let cwd = repo.cwd();
@@ -2602,6 +2698,7 @@ mod mutation_provenance_e2e {
             &repo,
             &opencode_shell_env(&cwd, session_id, "call_bash", Some("opencode/big-pickle")),
         )
+        .await
         .expect("OpenCode shell.env should establish the bash scope");
 
         repo.write_change("one\nopencode bash mutation\n");
@@ -2610,10 +2707,11 @@ mod mutation_provenance_e2e {
             &repo,
             &opencode_after(&cwd, session_id, "call_bash", "bash"),
         )
+        .await
         .expect("OpenCode ToolExecuteAfter should close the bash scope");
         repo.commit_change();
 
-        let trace = repo.run_post_commit();
+        let trace = repo.run_post_commit().await;
         assert_mutation_trace_provenance(&trace, "opencode/big-pickle", "oc_ses_opencode_bash");
         assert_eq!(row_count(&repo.db(), "diff_traces"), 0);
         assert_eq!(row_count(&repo.db(), "post_commit_patch_intersections"), 1);
@@ -2621,8 +2719,8 @@ mod mutation_provenance_e2e {
         assert_eq!(row_count(&repo.db(), "agent_traces"), 1);
     }
 
-    #[test]
-    fn opencode_apply_patch_mutation_with_missing_model_persists_no_model_in_agent_trace() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn opencode_apply_patch_mutation_with_missing_model_persists_no_model_in_agent_trace() {
         let repo = ProvenanceE2eRepo::new("opencode-apply-patch");
         let session_id = "ses_opencode_no_model";
         let cwd = repo.cwd();
@@ -2631,6 +2729,7 @@ mod mutation_provenance_e2e {
             &repo,
             &opencode_before(&cwd, session_id, "call_patch", "apply_patch", None),
         )
+        .await
         .expect("OpenCode ToolExecuteBefore should establish the apply_patch scope");
 
         repo.write_change("one\npatched without model evidence\n");
@@ -2639,10 +2738,11 @@ mod mutation_provenance_e2e {
             &repo,
             &opencode_after(&cwd, session_id, "call_patch", "apply_patch"),
         )
+        .await
         .expect("OpenCode ToolExecuteAfter should close the apply_patch scope");
         repo.commit_change();
 
-        let trace = repo.run_post_commit();
+        let trace = repo.run_post_commit().await;
         assert_eq!(trace["files"][0]["path"], json!("file.txt"));
         let contributor = &trace["files"][0]["conversations"][0]["contributor"];
         assert_eq!(contributor["type"], json!("ai"));
@@ -2659,8 +2759,8 @@ mod mutation_provenance_e2e {
         );
     }
 
-    #[test]
-    fn opencode_write_mutation_persists_model_while_task_delegation_stays_zero_footprint() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn opencode_write_mutation_persists_model_while_task_delegation_stays_zero_footprint() {
         let repo = ProvenanceE2eRepo::new("opencode-write-task");
         let session_id = "ses_opencode_write";
         let cwd = repo.cwd();
@@ -2669,11 +2769,13 @@ mod mutation_provenance_e2e {
             &repo,
             &opencode_before(&cwd, session_id, "call_task", "task", None),
         )
+        .await
         .expect("task delegation ToolExecuteBefore is neutral");
         drive_opencode(
             &repo,
             &opencode_after(&cwd, session_id, "call_task", "task"),
         )
+        .await
         .expect("task delegation ToolExecuteAfter is neutral");
 
         assert_eq!(
@@ -2692,16 +2794,18 @@ mod mutation_provenance_e2e {
                 Some("opencode/big-pickle"),
             ),
         )
+        .await
         .expect("OpenCode write ToolExecuteBefore should establish the scope");
         repo.write_change("one\nwrite mutation\n");
         drive_opencode(
             &repo,
             &opencode_after(&cwd, session_id, "call_write", "write"),
         )
+        .await
         .expect("OpenCode write ToolExecuteAfter should close the scope");
         repo.commit_change();
 
-        let trace = repo.run_post_commit();
+        let trace = repo.run_post_commit().await;
         assert_mutation_trace_provenance(&trace, "opencode/big-pickle", "oc_ses_opencode_write");
         assert_eq!(
             row_count(&repo.db(), "mutation_trace_scopes"),
@@ -2710,8 +2814,8 @@ mod mutation_provenance_e2e {
         );
     }
 
-    #[test]
-    fn opencode_unknown_tool_events_create_no_scope_or_mutation_state() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn opencode_unknown_tool_events_create_no_scope_or_mutation_state() {
         let repo = ProvenanceE2eRepo::new("opencode-untracked");
         let session_id = "ses_opencode_untracked";
         let cwd = repo.cwd();
@@ -2722,16 +2826,19 @@ mod mutation_provenance_e2e {
                 &repo,
                 &opencode_before(&cwd, session_id, &call_id, tool_name, None),
             )
+            .await
             .unwrap_or_else(|_| panic!("{tool_name} ToolExecuteBefore should be neutral"));
             drive_opencode(
                 &repo,
                 &opencode_after(&cwd, session_id, &call_id, tool_name),
             )
+            .await
             .unwrap_or_else(|_| panic!("{tool_name} ToolExecuteAfter should be neutral"));
             drive_opencode(
                 &repo,
                 &opencode_tool_error(&cwd, session_id, &call_id, tool_name),
             )
+            .await
             .unwrap_or_else(|_| panic!("{tool_name} ToolError should be neutral"));
         }
 
@@ -2739,8 +2846,8 @@ mod mutation_provenance_e2e {
         assert_eq!(row_count(&repo.db(), "mutation_trace_events"), 0);
     }
 
-    #[test]
-    fn opencode_child_task_session_gets_its_own_independent_scope_and_provenance() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn opencode_child_task_session_gets_its_own_independent_scope_and_provenance() {
         let repo = ProvenanceE2eRepo::new("opencode-child-session");
         let parent_session = "ses_opencode_parent";
         let child_session = "ses_opencode_child";
@@ -2750,6 +2857,7 @@ mod mutation_provenance_e2e {
             &repo,
             &opencode_before(&cwd, parent_session, "call_task", "task", None),
         )
+        .await
         .expect("the parent's task delegation is neutral");
 
         drive_opencode(
@@ -2762,16 +2870,18 @@ mod mutation_provenance_e2e {
                 Some("opencode/child-model"),
             ),
         )
+        .await
         .expect("the child session's write ToolExecuteBefore should establish its own scope");
         repo.write_change("one\nchild session mutation\n");
         drive_opencode(
             &repo,
             &opencode_after(&cwd, child_session, "call_child_write", "write"),
         )
+        .await
         .expect("the child session's write ToolExecuteAfter should close its own scope");
         repo.commit_change();
 
-        let trace = repo.run_post_commit();
+        let trace = repo.run_post_commit().await;
         assert_mutation_trace_provenance(&trace, "opencode/child-model", "oc_ses_opencode_child");
         assert_eq!(
             row_count(&repo.db(), "mutation_trace_scopes"),
@@ -2780,8 +2890,8 @@ mod mutation_provenance_e2e {
         );
     }
 
-    #[test]
-    fn opencode_concurrent_reject_and_confirm_keeps_only_the_confirmed_mutation_ai() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn opencode_concurrent_reject_and_confirm_keeps_only_the_confirmed_mutation_ai() {
         let repo = ProvenanceE2eRepo::new("opencode-concurrent-reject");
         let session_id = "ses_opencode_concurrent";
         let cwd = repo.cwd();
@@ -2796,6 +2906,7 @@ mod mutation_provenance_e2e {
                 Some("opencode/big-pickle"),
             ),
         )
+        .await
         .expect("A's edit ToolExecuteBefore should establish a scope");
         drive_opencode(
             &repo,
@@ -2807,6 +2918,7 @@ mod mutation_provenance_e2e {
                 Some("opencode/big-pickle"),
             ),
         )
+        .await
         .expect("B's write ToolExecuteBefore should establish a distinct concurrent scope");
 
         fs::write(repo.root.join("rejected.txt"), "rejected mutation\n")
@@ -2815,29 +2927,33 @@ mod mutation_provenance_e2e {
             repo.root.join("ambiguous.txt"),
             "B's mutation before recovery\n",
         )
+        .await
         .expect("B's pre-recovery mutation should write");
 
         drive_opencode(
             &repo,
             &opencode_tool_error(&cwd, session_id, "call_a_edit", "edit"),
         )
+        .await
         .expect("A's ToolError should abandon A's scope and consume the shared ambiguous interval");
 
         fs::write(
             repo.root.join("confirmed.txt"),
             "B's mutation after recovery\n",
         )
+        .await
         .expect("B's post-recovery mutation should write");
         drive_opencode(
             &repo,
             &opencode_after(&cwd, session_id, "call_b_write", "write"),
         )
+        .await
         .expect("B's ToolExecuteAfter should confirm exactly B's own surviving scope");
 
         git(&repo.root, &["add", "-A"]);
         git(&repo.root, &["commit", "-qm", "concurrent mutation"]);
 
-        let db = repo.db();
+        let db = repo.db().await;
         let post_commit_data = capture_post_commit_patch_from_git(&repo.root)
             .expect("capturing the post-commit patch should succeed");
         let mutation_ai_patch = resolve_post_commit_mutation_ai_patch(
@@ -2845,7 +2961,8 @@ mod mutation_provenance_e2e {
             &db,
             &ParsedPatch { files: Vec::new() },
             &post_commit_data.parsed_patch,
-        );
+        )
+        .await;
 
         let ai_paths: Vec<&str> = mutation_ai_patch
             .files
@@ -2868,8 +2985,8 @@ mod mutation_provenance_e2e {
         );
     }
 
-    #[test]
-    fn opencode_and_codex_unconfirmed_overlap_stays_ineligible_until_codex_confirms() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn opencode_and_codex_unconfirmed_overlap_stays_ineligible_until_codex_confirms() {
         let repo = ProvenanceE2eRepo::new("opencode-codex-overlap");
         let oc_session = "ses_opencode_overlap";
         let codex_session = "codex-overlap-session";
@@ -2885,6 +3002,7 @@ mod mutation_provenance_e2e {
                 Some("opencode/big-pickle"),
             ),
         )
+        .await
         .expect("OpenCode write should establish a scope");
 
         let codex_pre = json!({
@@ -2902,14 +3020,16 @@ mod mutation_provenance_e2e {
             &codex_pre.to_string(),
             None,
         )
+        .await
         .expect("Codex Bash PreToolUse should establish a concurrent scope");
 
         repo.write_change("one\nopencode overlap mutation\n");
 
         drive_opencode(&repo, &opencode_after(&cwd, oc_session, "call_oc", "write"))
+            .await
             .expect("OpenCode ToolExecuteAfter should close its own scope");
 
-        let attribution_after_first_close = repo.mutation_events();
+        let attribution_after_first_close = repo.mutation_events().await;
         assert_eq!(
             attribution_after_first_close
                 .last()
@@ -2931,6 +3051,7 @@ mod mutation_provenance_e2e {
             &codex_post.to_string(),
             None,
         )
+        .await
         .expect("Codex PostToolUse should close its own scope");
 
         drive_opencode(
@@ -2943,15 +3064,17 @@ mod mutation_provenance_e2e {
                 Some("opencode/big-pickle"),
             ),
         )
+        .await
         .expect("a fresh OpenCode write should establish a new scope");
         repo.write_change("one\nopencode overlap mutation\nsecond change\n");
         drive_opencode(
             &repo,
             &opencode_after(&cwd, oc_session, "call_oc_2", "write"),
         )
+        .await
         .expect("the fresh OpenCode scope should close cleanly once Codex is confirmed");
 
-        let attribution_after_second_close = repo.mutation_events();
+        let attribution_after_second_close = repo.mutation_events().await;
         assert_eq!(
                 attribution_after_second_close
                     .last()
@@ -2961,8 +3084,8 @@ mod mutation_provenance_e2e {
             );
     }
 
-    #[test]
-    fn opencode_and_claude_overlap_produces_ai_contended() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn opencode_and_claude_overlap_produces_ai_contended() {
         let repo = ProvenanceE2eRepo::new("opencode-claude-overlap");
         let oc_session = "ses_opencode_contended";
         let claude_session = "claude-overlap-session";
@@ -2978,6 +3101,7 @@ mod mutation_provenance_e2e {
                 Some("opencode/big-pickle"),
             ),
         )
+        .await
         .expect("OpenCode write should establish a scope");
 
         let claude_pre = json!({
@@ -2993,6 +3117,7 @@ mod mutation_provenance_e2e {
             &claude_pre.to_string(),
             None,
         )
+        .await
         .expect(
             "Claude Bash PreToolUse should establish a concurrent, non-confirmation-required scope",
         );
@@ -3003,9 +3128,10 @@ mod mutation_provenance_e2e {
             &repo,
             &opencode_after(&cwd, oc_session, "call_oc_contended", "write"),
         )
+        .await
         .expect("OpenCode ToolExecuteAfter should confirm its own scope");
 
-        let attribution = repo.mutation_events();
+        let attribution = repo.mutation_events().await;
         assert_eq!(
                 attribution.last().map(|(kind, _)| kind.as_str()),
                 Some("ai_contended"),
@@ -3024,14 +3150,15 @@ mod mutation_provenance_e2e {
             &claude_post.to_string(),
             None,
         )
+        .await
         .expect("Claude PostToolUse should close its own scope");
     }
 
-    #[test]
-    fn claude_bash_mutation_persists_model_and_session_in_agent_trace() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn claude_bash_mutation_persists_model_and_session_in_agent_trace() {
         let repo = ProvenanceE2eRepo::new("claude");
         let session_id = "claude-session-e2e";
-        let db = repo.db();
+        let db = repo.db().await;
         db.upsert_claude_model_state(ClaudeModelStateObservation {
             session_id: format!("cc_{session_id}"),
             agent_id: String::new(),
@@ -3040,6 +3167,7 @@ mod mutation_provenance_e2e {
             source: String::from("test"),
             observed_at_ms: 1,
         })
+        .await
         .expect("Claude model state should be persisted");
 
         let cwd = repo.cwd();
@@ -3056,6 +3184,7 @@ mod mutation_provenance_e2e {
             &pre.to_string(),
             None,
         )
+        .await
         .expect("Claude Bash PreToolUse should establish a scope");
 
         let post = json!({
@@ -3071,10 +3200,11 @@ mod mutation_provenance_e2e {
             &post.to_string(),
             None,
         )
+        .await
         .expect("Claude Bash PostToolUse should close the scope");
         repo.commit_change();
 
-        let trace = repo.run_post_commit();
+        let trace = repo.run_post_commit().await;
         assert_mutation_trace_provenance(&trace, "claude/opus-4-1", "cc_claude-session-e2e");
         assert_eq!(row_count(&repo.db(), "diff_traces"), 0);
         assert_eq!(row_count(&repo.db(), "post_commit_patch_intersections"), 1);
@@ -3082,8 +3212,8 @@ mod mutation_provenance_e2e {
         assert_eq!(row_count(&repo.db(), "agent_traces"), 1);
     }
 
-    #[test]
-    fn codex_bash_mutation_persists_model_and_session_in_agent_trace() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn codex_bash_mutation_persists_model_and_session_in_agent_trace() {
         let repo = ProvenanceE2eRepo::new("codex");
         let session_id = "codex-session-e2e";
         let cwd = repo.cwd();
@@ -3102,6 +3232,7 @@ mod mutation_provenance_e2e {
             &pre.to_string(),
             None,
         )
+        .await
         .expect("Codex Bash PreToolUse should establish a scope");
 
         let post = json!({
@@ -3118,10 +3249,11 @@ mod mutation_provenance_e2e {
             &post.to_string(),
             None,
         )
+        .await
         .expect("Codex Bash PostToolUse should close the scope");
         repo.commit_change();
 
-        let trace = repo.run_post_commit();
+        let trace = repo.run_post_commit().await;
         assert_mutation_trace_provenance(&trace, "gpt-5.6-sol", "cx_codex-session-e2e");
         assert_eq!(row_count(&repo.db(), "diff_traces"), 0);
         assert_eq!(row_count(&repo.db(), "post_commit_patch_intersections"), 1);
@@ -3176,15 +3308,16 @@ mod mutation_provenance_e2e {
         .to_string()
     }
 
-    fn drive_pi(repo: &ProvenanceE2eRepo, payload: &str) -> Result<String> {
+    async fn drive_pi(repo: &ProvenanceE2eRepo, payload: &str) -> Result<String> {
         pi_mutation_scope::run_pi_mutation_scope_from_payload_at_state_root(
             &repo.state_root,
             payload,
             None,
         )
+        .await
     }
 
-    fn pi_confirmed_tool_case(tool_name: &str, label: &str) {
+    async fn pi_confirmed_tool_case(tool_name: &str, label: &str) {
         let repo = ProvenanceE2eRepo::new(label);
         let session_id = format!("ses-{label}");
         let call_id = format!("call-{label}");
@@ -3200,6 +3333,7 @@ mod mutation_provenance_e2e {
                 Some("anthropic/opus-5"),
             ),
         )
+        .await
         .expect("Pi ToolCall should establish the tracked scope before execution");
 
         repo.write_change(&format!("one\npi {tool_name} mutation\n"));
@@ -3208,15 +3342,17 @@ mod mutation_provenance_e2e {
             &repo,
             &pi_tool_result(&cwd, &session_id, &call_id, tool_name),
         )
+        .await
         .expect("Pi ToolResult should mark the attempt executed");
         drive_pi(
             &repo,
             &pi_tool_execution_end(&cwd, &session_id, &call_id, tool_name),
         )
+        .await
         .expect("Pi ToolExecutionEnd paired with an observed ToolResult should Close");
         repo.commit_change();
 
-        let trace = repo.run_post_commit();
+        let trace = repo.run_post_commit().await;
         assert_mutation_trace_provenance(&trace, "anthropic/opus-5", &format!("pi_{session_id}"));
         assert_eq!(row_count(&repo.db(), "diff_traces"), 0);
         assert_eq!(row_count(&repo.db(), "post_commit_patch_intersections"), 1);
@@ -3224,23 +3360,23 @@ mod mutation_provenance_e2e {
         assert_eq!(row_count(&repo.db(), "agent_traces"), 1);
     }
 
-    #[test]
-    fn pi_bash_mutation_persists_model_and_session_in_agent_trace() {
-        pi_confirmed_tool_case("bash", "pi-bash");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pi_bash_mutation_persists_model_and_session_in_agent_trace() {
+        pi_confirmed_tool_case("bash", "pi-bash").await;
     }
 
-    #[test]
-    fn pi_write_mutation_persists_model_and_session_in_agent_trace() {
-        pi_confirmed_tool_case("write", "pi-write");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pi_write_mutation_persists_model_and_session_in_agent_trace() {
+        pi_confirmed_tool_case("write", "pi-write").await;
     }
 
-    #[test]
-    fn pi_edit_mutation_persists_model_and_session_in_agent_trace() {
-        pi_confirmed_tool_case("edit", "pi-edit");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pi_edit_mutation_persists_model_and_session_in_agent_trace() {
+        pi_confirmed_tool_case("edit", "pi-edit").await;
     }
 
-    #[test]
-    fn pi_missing_model_preserves_session_with_null_model_in_agent_trace() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pi_missing_model_preserves_session_with_null_model_in_agent_trace() {
         let repo = ProvenanceE2eRepo::new("pi-no-model");
         let session_id = "ses-pi-no-model";
         let cwd = repo.cwd();
@@ -3249,20 +3385,23 @@ mod mutation_provenance_e2e {
             &repo,
             &pi_tool_call(&cwd, session_id, "call-1", "bash", None),
         )
+        .await
         .expect("Pi ToolCall should establish the scope without model evidence");
 
         repo.write_change("one\npi mutation without model\n");
 
         drive_pi(&repo, &pi_tool_result(&cwd, session_id, "call-1", "bash"))
+            .await
             .expect("Pi ToolResult should mark the attempt executed");
         drive_pi(
             &repo,
             &pi_tool_execution_end(&cwd, session_id, "call-1", "bash"),
         )
+        .await
         .expect("Pi ToolExecutionEnd should close the scope");
         repo.commit_change();
 
-        let trace = repo.run_post_commit();
+        let trace = repo.run_post_commit().await;
         assert_eq!(trace["files"][0]["path"], json!("file.txt"));
         let contributor = &trace["files"][0]["conversations"][0]["contributor"];
         assert_eq!(contributor["type"], json!("ai"));
@@ -3279,8 +3418,8 @@ mod mutation_provenance_e2e {
         );
     }
 
-    #[test]
-    fn pi_read_only_and_unknown_tools_create_no_scope_or_mutation_state() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pi_read_only_and_unknown_tools_create_no_scope_or_mutation_state() {
         let repo = ProvenanceE2eRepo::new("pi-untracked");
         let session_id = "ses-pi-untracked";
         let cwd = repo.cwd();
@@ -3299,16 +3438,19 @@ mod mutation_provenance_e2e {
                 &repo,
                 &pi_tool_call(&cwd, session_id, &call_id, tool_name, None),
             )
+            .await
             .unwrap_or_else(|_| panic!("{tool_name} ToolCall should be neutral"));
             drive_pi(
                 &repo,
                 &pi_tool_result(&cwd, session_id, &call_id, tool_name),
             )
+            .await
             .unwrap_or_else(|_| panic!("{tool_name} ToolResult should be neutral"));
             drive_pi(
                 &repo,
                 &pi_tool_execution_end(&cwd, session_id, &call_id, tool_name),
             )
+            .await
             .unwrap_or_else(|_| panic!("{tool_name} ToolExecutionEnd should be neutral"));
         }
 
@@ -3316,8 +3458,8 @@ mod mutation_provenance_e2e {
         assert_eq!(row_count(&repo.db(), "mutation_trace_events"), 0);
     }
 
-    #[test]
-    fn pi_later_extension_rejection_after_start_produces_no_mutation_ai_patch() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pi_later_extension_rejection_after_start_produces_no_mutation_ai_patch() {
         let repo = ProvenanceE2eRepo::new("pi-later-rejection");
         let session_id = "ses-pi-rejected";
         let cwd = repo.cwd();
@@ -3326,6 +3468,7 @@ mod mutation_provenance_e2e {
             &repo,
             &pi_tool_call(&cwd, session_id, "call-1", "bash", Some("anthropic/opus-5")),
         )
+        .await
         .expect("Pi ToolCall should establish the scope before a later extension can reject it");
 
         fs::write(
@@ -3338,13 +3481,16 @@ mod mutation_provenance_e2e {
             &repo,
             &pi_tool_execution_end(&cwd, session_id, "call-1", "bash"),
         )
+        .await
         .expect("ToolExecutionEnd with no preceding ToolResult must abandon, not error");
 
         let scope_status = repo
             .db()
+            .await
             .query_map("SELECT status FROM mutation_trace_scopes", (), |row| {
                 row.get::<String>(0).map_err(anyhow::Error::from)
             })
+            .await
             .expect("scope-status query should succeed");
         assert_eq!(
             scope_status,
@@ -3355,7 +3501,7 @@ mod mutation_provenance_e2e {
         git(&repo.root, &["add", "-A"]);
         git(&repo.root, &["commit", "-qm", "rejected mutation"]);
 
-        let db = repo.db();
+        let db = repo.db().await;
         let post_commit_data = capture_post_commit_patch_from_git(&repo.root)
             .expect("capturing the post-commit patch should succeed");
         let mutation_ai_patch = resolve_post_commit_mutation_ai_patch(
@@ -3363,7 +3509,8 @@ mod mutation_provenance_e2e {
             &db,
             &ParsedPatch { files: Vec::new() },
             &post_commit_data.parsed_patch,
-        );
+        )
+        .await;
 
         assert!(
                 mutation_ai_patch.files.is_empty(),
@@ -3371,8 +3518,8 @@ mod mutation_provenance_e2e {
             );
     }
 
-    #[test]
-    fn pi_mutate_then_error_still_persists_confirmed_mutation_through_close() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pi_mutate_then_error_still_persists_confirmed_mutation_through_close() {
         let repo = ProvenanceE2eRepo::new("pi-error-executed");
         let session_id = "ses-pi-error";
         let cwd = repo.cwd();
@@ -3381,30 +3528,34 @@ mod mutation_provenance_e2e {
             &repo,
             &pi_tool_call(&cwd, session_id, "call-1", "bash", Some("anthropic/opus-5")),
         )
+        .await
         .expect("Pi ToolCall should establish the scope");
 
         repo.write_change("one\npartial mutation before failure\n");
 
         let mut result_payload: Value =
             serde_json::from_str(&pi_tool_result(&cwd, session_id, "call-1", "bash"))
+                .await
                 .expect("tool_result payload should parse as JSON");
         result_payload["isError"] = json!(true);
         drive_pi(&repo, &result_payload.to_string())
+            .await
             .expect("a failed-but-executed ToolResult is still positive execution evidence");
 
         drive_pi(
             &repo,
             &pi_tool_execution_end(&cwd, session_id, "call-1", "bash"),
         )
+        .await
         .expect("ToolExecutionEnd paired with an observed ToolResult must Close, not abandon");
         repo.commit_change();
 
-        let trace = repo.run_post_commit();
+        let trace = repo.run_post_commit().await;
         assert_mutation_trace_provenance(&trace, "anthropic/opus-5", "pi_ses-pi-error");
     }
 
-    #[test]
-    fn pi_concurrent_reject_and_confirm_keeps_only_the_confirmed_mutation_ai() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pi_concurrent_reject_and_confirm_keeps_only_the_confirmed_mutation_ai() {
         let repo = ProvenanceE2eRepo::new("pi-concurrent-reject");
         let session_id = "ses-pi-concurrent";
         let cwd = repo.cwd();
@@ -3419,6 +3570,7 @@ mod mutation_provenance_e2e {
                 Some("anthropic/opus-5"),
             ),
         )
+        .await
         .expect("A's edit ToolCall should establish a scope");
         drive_pi(
             &repo,
@@ -3430,6 +3582,7 @@ mod mutation_provenance_e2e {
                 Some("anthropic/opus-5"),
             ),
         )
+        .await
         .expect("B's write ToolCall should establish a distinct concurrent scope");
 
         fs::write(repo.root.join("rejected.txt"), "rejected mutation\n")
@@ -3444,6 +3597,7 @@ mod mutation_provenance_e2e {
             &repo,
             &pi_tool_execution_end(&cwd, session_id, "call-a-edit", "edit"),
         )
+        .await
         .expect(
             "A's ToolExecutionEnd with no ToolResult should abandon A's scope and consume \
                  the shared ambiguous interval",
@@ -3459,17 +3613,19 @@ mod mutation_provenance_e2e {
             &repo,
             &pi_tool_result(&cwd, session_id, "call-b-write", "write"),
         )
+        .await
         .expect("B's ToolResult should mark it executed");
         drive_pi(
             &repo,
             &pi_tool_execution_end(&cwd, session_id, "call-b-write", "write"),
         )
+        .await
         .expect("B's ToolExecutionEnd should confirm exactly B's own surviving scope");
 
         git(&repo.root, &["add", "-A"]);
         git(&repo.root, &["commit", "-qm", "concurrent mutation"]);
 
-        let db = repo.db();
+        let db = repo.db().await;
         let post_commit_data = capture_post_commit_patch_from_git(&repo.root)
             .expect("capturing the post-commit patch should succeed");
         let mutation_ai_patch = resolve_post_commit_mutation_ai_patch(
@@ -3477,7 +3633,8 @@ mod mutation_provenance_e2e {
             &db,
             &ParsedPatch { files: Vec::new() },
             &post_commit_data.parsed_patch,
-        );
+        )
+        .await;
 
         let ai_paths: Vec<&str> = mutation_ai_patch
             .files
@@ -3500,8 +3657,8 @@ mod mutation_provenance_e2e {
         );
     }
 
-    #[test]
-    fn pi_and_claude_overlap_produces_ai_contended() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pi_and_claude_overlap_produces_ai_contended() {
         let repo = ProvenanceE2eRepo::new("pi-claude-overlap");
         let pi_session = "ses-pi-contended";
         let claude_session = "claude-pi-overlap-session";
@@ -3517,6 +3674,7 @@ mod mutation_provenance_e2e {
                 Some("anthropic/opus-5"),
             ),
         )
+        .await
         .expect("Pi write should establish a scope");
 
         let claude_pre = json!({
@@ -3532,6 +3690,7 @@ mod mutation_provenance_e2e {
             &claude_pre.to_string(),
             None,
         )
+        .await
         .expect(
             "Claude Bash PreToolUse should establish a concurrent, non-confirmation-required scope",
         );
@@ -3542,14 +3701,16 @@ mod mutation_provenance_e2e {
             &repo,
             &pi_tool_result(&cwd, pi_session, "call-pi-contended", "write"),
         )
+        .await
         .expect("Pi ToolResult should mark the attempt executed");
         drive_pi(
             &repo,
             &pi_tool_execution_end(&cwd, pi_session, "call-pi-contended", "write"),
         )
+        .await
         .expect("Pi ToolExecutionEnd should confirm its own scope");
 
-        let attribution = repo.mutation_events();
+        let attribution = repo.mutation_events().await;
         assert_eq!(
                 attribution.last().map(|(kind, _)| kind.as_str()),
                 Some("ai_contended"),
@@ -3568,11 +3729,12 @@ mod mutation_provenance_e2e {
             &claude_post.to_string(),
             None,
         )
+        .await
         .expect("Claude PostToolUse should close its own scope");
     }
 
-    #[test]
-    fn pi_and_codex_overlap_stays_ineligible_until_codex_confirms() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pi_and_codex_overlap_stays_ineligible_until_codex_confirms() {
         let repo = ProvenanceE2eRepo::new("pi-codex-overlap");
         let pi_session = "ses-pi-overlap";
         let codex_session = "codex-pi-overlap-session";
@@ -3588,6 +3750,7 @@ mod mutation_provenance_e2e {
                 Some("anthropic/opus-5"),
             ),
         )
+        .await
         .expect("Pi write should establish a scope");
 
         let codex_pre = json!({
@@ -3605,19 +3768,22 @@ mod mutation_provenance_e2e {
             &codex_pre.to_string(),
             None,
         )
+        .await
         .expect("Codex Bash PreToolUse should establish a concurrent scope");
 
         repo.write_change("one\npi codex overlap mutation\n");
 
         drive_pi(&repo, &pi_tool_result(&cwd, pi_session, "call-pi", "write"))
+            .await
             .expect("Pi ToolResult should mark the attempt executed");
         drive_pi(
             &repo,
             &pi_tool_execution_end(&cwd, pi_session, "call-pi", "write"),
         )
+        .await
         .expect("Pi ToolExecutionEnd should attempt to confirm its own scope");
 
-        let attribution_after_first_close = repo.mutation_events();
+        let attribution_after_first_close = repo.mutation_events().await;
         assert_eq!(
             attribution_after_first_close
                 .last()
@@ -3639,6 +3805,7 @@ mod mutation_provenance_e2e {
             &codex_post.to_string(),
             None,
         )
+        .await
         .expect("Codex PostToolUse should close its own scope");
 
         drive_pi(
@@ -3651,20 +3818,23 @@ mod mutation_provenance_e2e {
                 Some("anthropic/opus-5"),
             ),
         )
+        .await
         .expect("a fresh Pi write should establish a new scope");
         repo.write_change("one\npi codex overlap mutation\nsecond change\n");
         drive_pi(
             &repo,
             &pi_tool_result(&cwd, pi_session, "call-pi-2", "write"),
         )
+        .await
         .expect("Pi ToolResult should mark the fresh attempt executed");
         drive_pi(
             &repo,
             &pi_tool_execution_end(&cwd, pi_session, "call-pi-2", "write"),
         )
+        .await
         .expect("the fresh Pi scope should close cleanly once Codex is confirmed");
 
-        let attribution_after_second_close = repo.mutation_events();
+        let attribution_after_second_close = repo.mutation_events().await;
         assert_eq!(
                 attribution_after_second_close
                     .last()
@@ -3674,8 +3844,8 @@ mod mutation_provenance_e2e {
             );
     }
 
-    #[test]
-    fn pi_and_opencode_overlap_stays_ineligible_until_opencode_confirms() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pi_and_opencode_overlap_stays_ineligible_until_opencode_confirms() {
         let repo = ProvenanceE2eRepo::new("pi-opencode-overlap");
         let pi_session = "ses-pi-oc-overlap";
         let oc_session = "ses_opencode_pi_overlap";
@@ -3691,6 +3861,7 @@ mod mutation_provenance_e2e {
                 Some("anthropic/opus-5"),
             ),
         )
+        .await
         .expect("Pi write should establish a scope");
 
         drive_opencode(
@@ -3703,19 +3874,22 @@ mod mutation_provenance_e2e {
                 Some("opencode/big-pickle"),
             ),
         )
+        .await
         .expect("OpenCode write ToolExecuteBefore should establish a concurrent scope");
 
         repo.write_change("one\npi opencode overlap mutation\n");
 
         drive_pi(&repo, &pi_tool_result(&cwd, pi_session, "call-pi", "write"))
+            .await
             .expect("Pi ToolResult should mark the attempt executed");
         drive_pi(
             &repo,
             &pi_tool_execution_end(&cwd, pi_session, "call-pi", "write"),
         )
+        .await
         .expect("Pi ToolExecutionEnd should attempt to confirm its own scope");
 
-        let attribution_after_first_close = repo.mutation_events();
+        let attribution_after_first_close = repo.mutation_events().await;
         assert_eq!(
             attribution_after_first_close
                 .last()
@@ -3725,6 +3899,7 @@ mod mutation_provenance_e2e {
         );
 
         drive_opencode(&repo, &opencode_after(&cwd, oc_session, "call_oc", "write"))
+            .await
             .expect("OpenCode ToolExecuteAfter should close its own scope");
 
         drive_pi(
@@ -3737,20 +3912,23 @@ mod mutation_provenance_e2e {
                 Some("anthropic/opus-5"),
             ),
         )
+        .await
         .expect("a fresh Pi write should establish a new scope");
         repo.write_change("one\npi opencode overlap mutation\nsecond change\n");
         drive_pi(
             &repo,
             &pi_tool_result(&cwd, pi_session, "call-pi-2", "write"),
         )
+        .await
         .expect("Pi ToolResult should mark the fresh attempt executed");
         drive_pi(
             &repo,
             &pi_tool_execution_end(&cwd, pi_session, "call-pi-2", "write"),
         )
+        .await
         .expect("the fresh Pi scope should close cleanly once OpenCode is confirmed");
 
-        let attribution_after_second_close = repo.mutation_events();
+        let attribution_after_second_close = repo.mutation_events().await;
         assert_eq!(
                 attribution_after_second_close
                     .last()
@@ -3760,8 +3938,9 @@ mod mutation_provenance_e2e {
             );
     }
 
-    #[test]
-    fn pi_stale_process_recovery_discards_ambiguous_interval_while_fresh_pi_work_remains_usable() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pi_stale_process_recovery_discards_ambiguous_interval_while_fresh_pi_work_remains_usable(
+    ) {
         let repo = ProvenanceE2eRepo::new("pi-stale-recovery");
         let stale_session = "ses-pi-stale";
         let fresh_session = "ses-pi-fresh";
@@ -3777,6 +3956,7 @@ mod mutation_provenance_e2e {
                 Some("anthropic/opus-5"),
             ),
         )
+        .await
         .expect("the stale attempt's Pi ToolCall should establish a scope");
 
         let git_dir = resolve_git_dir(&repo.root).expect("git dir should resolve");
@@ -3785,6 +3965,7 @@ mod mutation_provenance_e2e {
             .attempts
             .iter()
             .find(|attempt| attempt.session_id == stale_session)
+            .await
             .expect("the stale attempt should exist")
             .scope_id
             .clone();
@@ -3805,7 +3986,7 @@ mod mutation_provenance_e2e {
                     "write",
                     Some("anthropic/opus-5"),
                 ),
-            )
+            ).await
             .expect("a fresh Pi ToolCall should trigger dead-owner recovery and then establish its own scope");
 
         fs::write(repo.root.join("confirmed.txt"), "the fresh Pi work\n")
@@ -3815,17 +3996,19 @@ mod mutation_provenance_e2e {
             &repo,
             &pi_tool_result(&cwd, fresh_session, "call-fresh", "write"),
         )
+        .await
         .expect("the fresh attempt's ToolResult should mark it executed");
         drive_pi(
             &repo,
             &pi_tool_execution_end(&cwd, fresh_session, "call-fresh", "write"),
         )
+        .await
         .expect("the fresh attempt should close and reach AiExclusive");
 
         git(&repo.root, &["add", "-A"]);
         git(&repo.root, &["commit", "-qm", "stale recovery"]);
 
-        let db = repo.db();
+        let db = repo.db().await;
         let post_commit_data = capture_post_commit_patch_from_git(&repo.root)
             .expect("capturing the post-commit patch should succeed");
         let mutation_ai_patch = resolve_post_commit_mutation_ai_patch(
@@ -3833,7 +4016,8 @@ mod mutation_provenance_e2e {
             &db,
             &ParsedPatch { files: Vec::new() },
             &post_commit_data.parsed_patch,
-        );
+        )
+        .await;
 
         let ai_paths: Vec<&str> = mutation_ai_patch
             .files
@@ -3849,7 +4033,7 @@ mod mutation_provenance_e2e {
             "later fresh Pi work must remain usable and reach AiExclusive"
         );
 
-        let attribution = repo.mutation_events();
+        let attribution = repo.mutation_events().await;
         assert_eq!(
                 attribution.last().map(|(kind, _)| kind.as_str()),
                 Some("ai_exclusive"),
@@ -3858,8 +4042,8 @@ mod mutation_provenance_e2e {
     }
 }
 
-#[test]
-fn post_commit_auto_sync_does_not_launch_when_disabled() {
+#[tokio::test(flavor = "multi_thread")]
+async fn post_commit_auto_sync_does_not_launch_when_disabled() {
     let launch_called = RefCell::new(false);
 
     run_post_commit_subcommand_with(
@@ -3876,13 +4060,14 @@ fn post_commit_auto_sync_does_not_launch_when_disabled() {
         |_| Ok(()),
         None,
     )
+    .await
     .expect("disabled auto-sync should not affect post-commit success");
 
     assert!(!*launch_called.borrow());
 }
 
-#[test]
-fn post_commit_persistence_failure_does_not_launch_auto_sync() {
+#[tokio::test(flavor = "multi_thread")]
+async fn post_commit_persistence_failure_does_not_launch_auto_sync() {
     let launch_called = RefCell::new(false);
 
     let error = run_post_commit_subcommand_with(
@@ -3899,14 +4084,15 @@ fn post_commit_persistence_failure_does_not_launch_auto_sync() {
         |_| panic!("checkpoint must not run after persistence failure"),
         None,
     )
+    .await
     .expect_err("persistence failure should be returned");
 
     assert!(error.to_string().contains("persistence failed"));
     assert!(!*launch_called.borrow());
 }
 
-#[test]
-fn post_commit_auto_sync_launcher_failure_is_fail_open() {
+#[tokio::test(flavor = "multi_thread")]
+async fn post_commit_auto_sync_launcher_failure_is_fail_open() {
     let output = run_post_commit_subcommand_with(
         Path::new("/repo"),
         None,
@@ -3918,6 +4104,7 @@ fn post_commit_auto_sync_launcher_failure_is_fail_open() {
         |_| Ok(()),
         None,
     )
+    .await
     .expect("launcher failure must not affect post-commit success");
 
     assert!(output.contains("post-commit hook processed intersection"));
@@ -3972,8 +4159,8 @@ impl Logger for RecordingLogger {
     fn log_cli_error(&self, _error: &crate::services::error::CliError, _session_id: Option<&str>) {}
 }
 
-#[test]
-fn post_commit_checkpoint_runs_once_after_successful_persistence() {
+#[tokio::test(flavor = "multi_thread")]
+async fn post_commit_checkpoint_runs_once_after_successful_persistence() {
     let events = RefCell::new(Vec::new());
 
     let output = run_post_commit_subcommand_with(
@@ -3993,14 +4180,15 @@ fn post_commit_checkpoint_runs_once_after_successful_persistence() {
         },
         None,
     )
+    .await
     .expect("successful checkpoint should not affect post-commit success");
 
     assert!(output.contains("post-commit hook processed intersection"));
     assert_eq!(events.into_inner(), vec!["persistence", "checkpoint"]);
 }
 
-#[test]
-fn post_commit_checkpoint_failure_is_fail_open_and_logs_warning() {
+#[tokio::test(flavor = "multi_thread")]
+async fn post_commit_checkpoint_failure_is_fail_open_and_logs_warning() {
     let logger = RecordingLogger::default();
     let persisted = RefCell::new(false);
 
@@ -4018,6 +4206,7 @@ fn post_commit_checkpoint_failure_is_fail_open_and_logs_warning() {
         |_| Err(anyhow!("checkpoint failed")),
         Some(&logger),
     )
+    .await
     .expect("checkpoint failure must not affect post-commit success");
 
     assert!(output.contains("post-commit hook processed intersection"));
@@ -4108,9 +4297,10 @@ async fn isolated_async_dispatch_boundary() {
         repository_remote: "origin",
     };
     let state_root = crate::services::default_paths::resolve_state_data_root().unwrap();
-    let db_path = tokio::task::block_in_place(|| {
-        let storage =
-            resolve_agent_trace_storage_at_state_root(&storage_context, &state_root).unwrap();
+    let db_path = tokio::task::block_in_place(async || {
+        let storage = resolve_agent_trace_storage_at_state_root(&storage_context, &state_root)
+            .await
+            .unwrap();
         storage.db_path.clone()
     });
     let context = AppContext::new(
@@ -4134,8 +4324,10 @@ async fn isolated_async_dispatch_boundary() {
         hook.execute(&context).await.unwrap(),
         "diff-trace hook intake persisted payload to AgentTraceDb."
     );
-    tokio::task::block_in_place(|| {
-        let db = RepositoryAgentTraceDb::open_without_migrations_at(&db_path).unwrap();
+    tokio::task::block_in_place(async || {
+        let db = RepositoryAgentTraceDb::open_without_migrations_at(&db_path)
+            .await
+            .unwrap();
         let rows = db
             .query_map(
                 "SELECT session_id, model_id, tool_name FROM diff_traces ORDER BY id",
@@ -4148,6 +4340,7 @@ async fn isolated_async_dispatch_boundary() {
                     ))
                 },
             )
+            .await
             .unwrap();
         assert_eq!(
             rows,
