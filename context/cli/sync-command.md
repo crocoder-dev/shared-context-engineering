@@ -60,7 +60,10 @@ resolved `control_plane_base_url`, then performs one authoritative `/state`
 request before starting the three concurrent remote stream state machines:
 `messages`, `parts`, and `agent_traces`. Batches and cursor refreshes remain
 sequential within each stream, and final reporting retains the fixed stream
-order.
+order. The three remote streams execute concurrently and are all driven to
+terminal completion once started. The first observed stream error is returned
+after the remaining started streams finish, preventing sibling cancellation from
+interrupting credential persistence or other in-flight stream cleanup.
 
 The local database has four capture streams (`messages`, `parts`,
 `diff_traces`, `agent_traces`); `sce sync` remotely synchronizes three of them. `diff_traces`
