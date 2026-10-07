@@ -590,12 +590,12 @@ mod tests {
             let fs = services::capabilities::StdFsOps;
             let git = services::capabilities::ProcessGitOps;
             let context = AppContext::new(&logger, &telemetry, &fs, &git, None);
-            let result = run_command_lifecycle_with_context(
+            let result = Box::pin(run_command_lifecycle_with_context(
                 args.into_iter().map(String::from),
                 &services::command_registry::CommandRegistry::default(),
                 &context,
                 &mut Vec::new(),
-            )
+            ))
             .await;
             if let Some(class) = expected_error {
                 let error = result.unwrap_err();

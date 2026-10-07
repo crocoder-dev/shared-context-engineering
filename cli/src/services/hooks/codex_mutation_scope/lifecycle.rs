@@ -200,7 +200,9 @@ pub(super) async fn with_boundary_lock<T>(
     git_dir: &Path,
     operation: impl std::ops::AsyncFnOnce() -> Result<T>,
 ) -> Result<T> {
-    let _boundary = state::BOUNDARY_LOCK.acquire(&state::adapter_state_dir(git_dir))?;
+    let _boundary = state::BOUNDARY_LOCK
+        .acquire_async(&state::adapter_state_dir(git_dir))
+        .await?;
     operation().await
 }
 
@@ -245,7 +247,7 @@ pub(super) async fn handle_pre_tool_use<L: crate::services::observability::trait
     let turn_id = identity.turn_id.as_str();
     let provenance = codex_scope_provenance(execution);
     let outcome = with_boundary_lock(&git_dir, async || {
-        state::normalize_recovery_after_boundary_lock_acquired(&git_dir)?;
+        state::normalize_recovery_after_boundary_lock_acquired(&git_dir).await?;
 
         sweep_stale_lane_predecessors(&git_dir, repository_root, &key, turn_id, logger, seam)
             .await?;
@@ -357,22 +359,22 @@ pub(super) async fn admit_or_recover<L: crate::services::observability::traits::
     logger: Option<&L>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<Admission> {
-    match state::admit_tracked_attempt(git_dir, key, turn_id, tool_name)? {
+    match state::admit_tracked_attempt(git_dir, key, turn_id, tool_name).await? {
         state::AdmitDecision::Admitted(allocated) => Ok(Admission::Admitted(allocated)),
         state::AdmitDecision::RecoveryBlocked
         | state::AdmitDecision::UncertainAttemptBlocked
         | state::AdmitDecision::StalePredecessorBlocked => Ok(Admission::Denied),
         state::AdmitDecision::FlushClaimed { generation } => {
             match seam(repository_root, &flush_payload(), logger).await {
-                Ok(_) => match state::complete_recovery_flush(git_dir, generation)? {
+                Ok(_) => match state::complete_recovery_flush(git_dir, generation).await? {
                     state::RecoveryFlushCompletion::Cleared => {
-                        readmit_after_flush(git_dir, key, turn_id, tool_name)
+                        readmit_after_flush(git_dir, key, turn_id, tool_name).await
                     }
                     state::RecoveryFlushCompletion::Superseded => Ok(Admission::Denied),
                 },
                 Err(error) => {
                     log_pre_tool_use_fail_closed(logger, "recovery_flush", &error);
-                    state::relinquish_recovery_flush(git_dir, generation)?;
+                    state::relinquish_recovery_flush(git_dir, generation).await?;
                     Ok(Admission::Denied)
                 }
             }
@@ -380,16 +382,16 @@ pub(super) async fn admit_or_recover<L: crate::services::observability::traits::
     }
 }
 
-pub(super) fn readmit_after_flush(
+pub(super) async fn readmit_after_flush(
     git_dir: &Path,
     key: &AttemptKey,
     turn_id: &str,
     tool_name: &str,
 ) -> Result<Admission> {
-    match state::admit_tracked_attempt(git_dir, key, turn_id, tool_name)? {
+    match state::admit_tracked_attempt(git_dir, key, turn_id, tool_name).await? {
         state::AdmitDecision::Admitted(allocated) => Ok(Admission::Admitted(allocated)),
         state::AdmitDecision::FlushClaimed { generation } => {
-            state::relinquish_recovery_flush(git_dir, generation)?;
+            state::relinquish_recovery_flush(git_dir, generation).await?;
             Ok(Admission::Denied)
         }
         state::AdmitDecision::RecoveryBlocked
@@ -416,7 +418,7 @@ pub(super) async fn establish_start<L: crate::services::observability::traits::L
         scope_start_payload(scope_id, &codex_scope_start_event_id(scope_id), provenance);
 
     seam(repository_root, &start_payload, logger).await?;
-    state::mark_active(git_dir, scope_id)?;
+    state::mark_active(git_dir, scope_id).await?;
     Ok(())
 }
 
@@ -449,7 +451,7 @@ pub(super) async fn handle_close<L: crate::services::observability::traits::Logg
     );
 
     if seam(repository_root, &close_payload, logger).await.is_ok() {
-        state::remove_attempt(git_dir, &attempt.scope_id)?;
+        state::remove_attempt(git_dir, &attempt.scope_id).await?;
     } else {
         abandon_attempt(git_dir, repository_root, &attempt, logger, seam).await?;
     }
@@ -490,9 +492,9 @@ pub(super) async fn abandon_attempt<L: crate::services::observability::traits::L
     logger: Option<&L>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<()> {
-    state::arm_recovery(git_dir)?;
+    state::arm_recovery(git_dir).await?;
 
     seam(repository_root, &abandon_payload(&attempt.scope_id), logger).await?;
-    state::remove_attempt(git_dir, &attempt.scope_id)?;
+    state::remove_attempt(git_dir, &attempt.scope_id).await?;
     Ok(())
 }

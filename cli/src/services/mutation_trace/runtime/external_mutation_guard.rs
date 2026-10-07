@@ -86,7 +86,7 @@ impl<P> ArmedExternalMutationGuard<P> {
 }
 
 #[cfg(not(unix))]
-pub(crate) fn arm_external_mutation_guard<P, A>(
+pub(crate) async fn arm_external_mutation_guard<P, A>(
     _repository_root: &Path,
     _open_db: P,
     _on_armed: A,
@@ -665,7 +665,7 @@ mod unix_impl {
         }
     }
 
-    fn arm_external_mutation_guard_inner<P, A>(
+    async fn arm_external_mutation_guard_inner<P, A>(
         repository_root: &Path,
         open_db: P,
         on_armed: A,
@@ -676,7 +676,9 @@ mod unix_impl {
         P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
         A: FnOnce() -> io::Result<()>,
     {
-        let protected = ProtectedWorktree::acquire(repository_root).map_err(GuardError::Acquire)?;
+        let protected = ProtectedWorktree::acquire(repository_root)
+            .await
+            .map_err(GuardError::Acquire)?;
         let ownership = GuardOwnership::new(protected);
         let lifetime = if hooks.fail_lifetime_token {
             Err(io::Error::other(
@@ -698,7 +700,7 @@ mod unix_impl {
         })
     }
 
-    pub(crate) fn arm_external_mutation_guard<P, A>(
+    pub(crate) async fn arm_external_mutation_guard<P, A>(
         repository_root: &Path,
         open_db: P,
         on_armed: A,
@@ -715,6 +717,7 @@ mod unix_impl {
             cancel_rx,
             GuardTestHooks::default(),
         )
+        .await
     }
 
     pub(crate) async fn run_external_mutation_guard<P, E>(
@@ -736,7 +739,8 @@ mod unix_impl {
                 Ok(())
             },
             cancel_rx,
-        )?;
+        )
+        .await?;
         guard.exec(request, on_event).await
     }
 }

@@ -23,6 +23,10 @@ pub(crate) enum AdvisoryLockError {
         what: &'static str,
     },
     Io(anyhow::Error),
+    WorkerFailed {
+        what: &'static str,
+        source: tokio::task::JoinError,
+    },
 }
 
 impl std::fmt::Display for AdvisoryLockError {
@@ -38,6 +42,9 @@ impl std::fmt::Display for AdvisoryLockError {
                 path.display()
             ),
             AdvisoryLockError::Io(source) => write!(f, "{source}"),
+            AdvisoryLockError::WorkerFailed { what, source } => {
+                write!(f, "The {what} lock acquisition worker failed: {source}")
+            }
         }
     }
 }
@@ -134,9 +141,28 @@ impl AdapterLockSpec {
         adapter_state_dir.join(self.file_name)
     }
 
-    pub(crate) fn acquire(&self, adapter_state_dir: &Path) -> anyhow::Result<OsAdvisoryLock> {
-        self.acquire_with_timeout(adapter_state_dir, self.default_timeout)
+    pub(crate) async fn acquire_async(
+        &self,
+        adapter_state_dir: &Path,
+    ) -> anyhow::Result<OsAdvisoryLock> {
+        self.acquire_with_timeout_async(adapter_state_dir, self.default_timeout)
+            .await
             .map_err(|error| anyhow!("{}: {error}", self.failure_context))
+    }
+
+    pub(crate) async fn acquire_with_timeout_async(
+        &self,
+        adapter_state_dir: &Path,
+        timeout: Duration,
+    ) -> Result<OsAdvisoryLock, AdvisoryLockError> {
+        let spec = *self;
+        let adapter_state_dir = adapter_state_dir.to_owned();
+        tokio::task::spawn_blocking(move || spec.acquire_with_timeout(&adapter_state_dir, timeout))
+            .await
+            .map_err(|source| AdvisoryLockError::WorkerFailed {
+                what: spec.what,
+                source,
+            })?
     }
 
     pub(crate) fn acquire_with_timeout(

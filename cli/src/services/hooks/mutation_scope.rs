@@ -568,7 +568,8 @@ where
         async || open_db(&repository_root).await,
         || write_guard_event(&mut writer, &GuardEvent::Armed),
         cancel_rx,
-    )?;
+    )
+    .await?;
 
     let mut exec_line = String::new();
     match std::io::BufRead::read_line(&mut reader, &mut exec_line)

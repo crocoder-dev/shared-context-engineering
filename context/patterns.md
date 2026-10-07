@@ -2,7 +2,7 @@
 
 ## Awaited command execution
 
-- Keep borrowed context and writers alive through directly awaited static dispatch. Turso persistence and credential storage are native async operations on the application runtime; do not add executor bridges or DB `spawn_blocking` wrappers. Keep pure parsing, filesystem, and process work synchronous. See [application execution runtime](architecture.md#application-execution-runtime).
+- Keep borrowed context and writers alive through directly awaited static dispatch. Turso persistence and credential storage are native async operations on the application runtime; do not add executor bridges or DB `spawn_blocking` wrappers. Keep pure parsing, filesystem, and process work synchronous. Use `spawn_blocking` only to wait on a genuinely blocking external API (OS credential store, advisory file-lock polling), and return the owned result or guard to the async caller; never move awaited work into the worker. See [application execution runtime](architecture.md#application-execution-runtime).
 
 ## Config generation tooling
 

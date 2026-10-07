@@ -154,7 +154,6 @@ pub struct StreamSyncOutcome {
 /// already-accepted rows; if unchanged, the same rows are re-read and
 /// resent. Both cases share one bounded reconciliation counter. A `Terminal`
 /// outcome stops immediately without calling `refresh_cursor`.
-
 pub async fn sync_stream<'a, T, ReadFn, IngestFn, RefreshFn>(
     initial_cursor: i64,
     batch_limit: usize,

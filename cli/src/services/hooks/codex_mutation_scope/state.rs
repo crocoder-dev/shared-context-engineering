@@ -221,8 +221,8 @@ where
     Ok(())
 }
 
-fn acquire_lock(git_dir: &Path) -> Result<OsAdvisoryLock> {
-    STATE_LOCK.acquire(&adapter_state_dir(git_dir))
+async fn acquire_lock(git_dir: &Path) -> Result<OsAdvisoryLock> {
+    STATE_LOCK.acquire_async(&adapter_state_dir(git_dir)).await
 }
 
 fn allocate_pending_start(
@@ -247,13 +247,13 @@ fn allocate_pending_start(
     attempt
 }
 
-pub(crate) fn admit_tracked_attempt(
+pub(crate) async fn admit_tracked_attempt(
     git_dir: &Path,
     key: &AttemptKey,
     turn_id: &str,
     tool_name: &str,
 ) -> Result<AdmitDecision> {
-    let _lock = acquire_lock(git_dir)?;
+    let _lock = acquire_lock(git_dir).await?;
     let mut state = read_state(git_dir)?;
 
     match state.recovery {
@@ -302,8 +302,8 @@ pub(crate) fn admit_tracked_attempt(
     }))
 }
 
-pub(crate) fn mark_active(git_dir: &Path, scope_id: &str) -> Result<()> {
-    let _lock = acquire_lock(git_dir)?;
+pub(crate) async fn mark_active(git_dir: &Path, scope_id: &str) -> Result<()> {
+    let _lock = acquire_lock(git_dir).await?;
 
     let mut state = read_state(git_dir)?;
     let attempt = state
@@ -315,8 +315,8 @@ pub(crate) fn mark_active(git_dir: &Path, scope_id: &str) -> Result<()> {
     write_state_durably(git_dir, &state)
 }
 
-pub(crate) fn remove_attempt(git_dir: &Path, scope_id: &str) -> Result<()> {
-    let _lock = acquire_lock(git_dir)?;
+pub(crate) async fn remove_attempt(git_dir: &Path, scope_id: &str) -> Result<()> {
+    let _lock = acquire_lock(git_dir).await?;
 
     let mut state = read_state(git_dir)?;
     let before = state.attempts.len();
@@ -329,8 +329,8 @@ pub(crate) fn remove_attempt(git_dir: &Path, scope_id: &str) -> Result<()> {
     write_state_durably(git_dir, &state)
 }
 
-pub(crate) fn normalize_recovery_after_boundary_lock_acquired(git_dir: &Path) -> Result<()> {
-    let _lock = acquire_lock(git_dir)?;
+pub(crate) async fn normalize_recovery_after_boundary_lock_acquired(git_dir: &Path) -> Result<()> {
+    let _lock = acquire_lock(git_dir).await?;
     let mut state = read_state(git_dir)?;
 
     if let RecoveryState::Flushing { generation } = state.recovery {
@@ -340,8 +340,8 @@ pub(crate) fn normalize_recovery_after_boundary_lock_acquired(git_dir: &Path) ->
     Ok(())
 }
 
-pub(crate) fn arm_recovery(git_dir: &Path) -> Result<u64> {
-    let _lock = acquire_lock(git_dir)?;
+pub(crate) async fn arm_recovery(git_dir: &Path) -> Result<u64> {
+    let _lock = acquire_lock(git_dir).await?;
     let mut state = read_state(git_dir)?;
 
     let generation = match state.recovery {
@@ -357,11 +357,11 @@ pub(crate) fn arm_recovery(git_dir: &Path) -> Result<u64> {
     Ok(generation)
 }
 
-pub(crate) fn complete_recovery_flush(
+pub(crate) async fn complete_recovery_flush(
     git_dir: &Path,
     generation: u64,
 ) -> Result<RecoveryFlushCompletion> {
-    let _lock = acquire_lock(git_dir)?;
+    let _lock = acquire_lock(git_dir).await?;
     let mut state = read_state(git_dir)?;
 
     match state.recovery {
@@ -374,8 +374,8 @@ pub(crate) fn complete_recovery_flush(
     }
 }
 
-pub(crate) fn relinquish_recovery_flush(git_dir: &Path, generation: u64) -> Result<()> {
-    let _lock = acquire_lock(git_dir)?;
+pub(crate) async fn relinquish_recovery_flush(git_dir: &Path, generation: u64) -> Result<()> {
+    let _lock = acquire_lock(git_dir).await?;
     let mut state = read_state(git_dir)?;
 
     if let RecoveryState::Flushing { generation: owned } = state.recovery {

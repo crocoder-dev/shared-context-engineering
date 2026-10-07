@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::mutation_trace::protocol;
 use crate::services::mutation_trace::store::{CasResult, DurableTransition, MutationTraceStore};
-use crate::services::mutation_trace::types::{ScopeId, ScopeStatus, WorktreeId};
+use crate::services::mutation_trace::types::{ProtocolState, ScopeId, ScopeStatus, WorktreeId};
 
 use super::coordinator::MAX_CAS_RETRY_ATTEMPTS;
 use super::protected_worktree::{
@@ -131,8 +131,9 @@ where
     P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
     L: FnMut(u32),
 {
-    let protected =
-        ProtectedWorktree::acquire(repository_root).map_err(protected_worktree_failure)?;
+    let protected = ProtectedWorktree::acquire(repository_root)
+        .await
+        .map_err(protected_worktree_failure)?;
 
     if protected.inherited_external_taint() {
         return Ok(AbandonScopeOutcome::RecoveryRequired {
@@ -155,6 +156,33 @@ where
             completed: Box::new(outcome),
         }),
     }
+}
+
+fn projected_revision_and_status(
+    state: &ProtocolState,
+    worktree_id: &WorktreeId,
+    scope: &ScopeId,
+) -> Result<(u64, ScopeStatus), AbandonScopeError> {
+    let revision = state
+        .worktrees
+        .get(worktree_id)
+        .map(|worktree_state| worktree_state.revision)
+        .ok_or_else(|| {
+            AbandonScopeError::Other(anyhow::anyhow!(
+                "worktree {worktree_id:?} missing from its own loaded projection"
+            ))
+        })?;
+    let status = state
+        .scopes
+        .get(scope)
+        .map(|loaded| loaded.status)
+        .ok_or_else(|| {
+            AbandonScopeError::Other(anyhow::anyhow!(
+                "scope {scope:?} missing from the projection that loaded it as its \
+                 effective referenced scope"
+            ))
+        })?;
+    Ok((revision, status))
 }
 
 async fn abandon_protected<P, L>(
@@ -207,25 +235,7 @@ where
         after_load(attempt_index);
 
         let state = projection.into_protocol_state();
-        let revision = state
-            .worktrees
-            .get(worktree_id)
-            .map(|worktree_state| worktree_state.revision)
-            .ok_or_else(|| {
-                AbandonScopeError::Other(anyhow::anyhow!(
-                    "worktree {worktree_id:?} missing from its own loaded projection"
-                ))
-            })?;
-        let status = state
-            .scopes
-            .get(scope)
-            .map(|loaded| loaded.status)
-            .ok_or_else(|| {
-                AbandonScopeError::Other(anyhow::anyhow!(
-                    "scope {scope:?} missing from the projection that loaded it as its \
-                     effective referenced scope"
-                ))
-            })?;
+        let (revision, status) = projected_revision_and_status(&state, worktree_id, scope)?;
 
         match status {
             ScopeStatus::NeverSeen => {

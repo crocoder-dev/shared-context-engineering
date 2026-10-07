@@ -195,6 +195,28 @@ where they do not await persistence. The adapter layer owns connection and
 migration policy, not an executor; retry classification, transaction SQL,
 encryption, WAL, and migration boundaries remain unchanged by async execution.
 
+No database or Turso future runs inside `spawn_blocking`, and no nested
+executor exists. Production `spawn_blocking` is limited to genuinely
+synchronous external boundaries, each returning an owned result to the awaiting
+caller:
+
+- `EncryptedTursoDb::new` resolves the encryption key through the synchronous OS
+  credential store (`cli/src/services/db/mod.rs`); AuthDb construction and Turso
+  work stay on the async side.
+- `AdapterLockSpec::acquire_async` (`cli/src/services/hooks/mutation_scope_lock.rs`)
+  runs the synchronous adapter boundary/state advisory-lock `try_lock` polling
+  loop for the Claude, Codex, OpenCode, and Pi mutation-scope adapters.
+- `acquire_inner_async` (`cli/src/services/mutation_trace/runtime/worktree_lock.rs`)
+  runs the synchronous mutation-trace `WorktreeLock` polling loop used by
+  `ProtectedWorktree`, coordinate, abandon-scope, ref reconciliation, the
+  revision cut, and the external mutation guard.
+
+Lock workers return the acquired guard. The async caller holds it across its
+protected awaited work and drops it when that work ends. Lock timeouts (10 s)
+and poll intervals are unchanged. A cancelled caller leaves its worker polling
+only until acquisition or timeout; a guard acquired after cancellation drops
+with the abandoned join result and releases the lock.
+
 ## Build / devShell / CI performance (flake-speedup)
 
 The current structure and durable before/after results for the native/release

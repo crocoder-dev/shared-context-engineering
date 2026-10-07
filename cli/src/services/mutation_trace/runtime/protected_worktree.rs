@@ -5,7 +5,7 @@ use crate::services::mutation_trace::types::WorktreeId;
 
 use super::external_taint::ExternalTaintMarker;
 use super::git_snapshot::{resolve_git_dir, resolve_worktree_id};
-use super::worktree_lock::{acquire_inner, WorktreeLock, WorktreeLockError};
+use super::worktree_lock::{acquire_inner_async, WorktreeLock, WorktreeLockError};
 
 pub const WORKTREE_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -52,32 +52,33 @@ pub struct ProtectedWorktree {
 }
 
 impl ProtectedWorktree {
-    pub fn acquire(repository_root: &Path) -> Result<Self, ProtectedWorktreeError> {
-        Self::acquire_inner(repository_root, || {})
+    pub async fn acquire(repository_root: &Path) -> Result<Self, ProtectedWorktreeError> {
+        Self::acquire_inner(repository_root, || {}).await
     }
 
-    pub(super) fn acquire_inner<F>(
+    pub(super) async fn acquire_inner<F>(
         repository_root: &Path,
         on_lock_contention: F,
     ) -> Result<Self, ProtectedWorktreeError>
     where
-        F: FnOnce(),
+        F: FnOnce() + Send + 'static,
     {
-        Self::acquire_with_timeout(repository_root, WORKTREE_LOCK_TIMEOUT, on_lock_contention)
+        Self::acquire_with_timeout(repository_root, WORKTREE_LOCK_TIMEOUT, on_lock_contention).await
     }
 
-    fn acquire_with_timeout<F>(
+    async fn acquire_with_timeout<F>(
         repository_root: &Path,
         lock_timeout: Duration,
         on_lock_contention: F,
     ) -> Result<Self, ProtectedWorktreeError>
     where
-        F: FnOnce(),
+        F: FnOnce() + Send + 'static,
     {
         let git_dir =
             resolve_git_dir(repository_root).map_err(ProtectedWorktreeError::GitDirResolution)?;
 
-        let lock = acquire_inner(&git_dir, lock_timeout, on_lock_contention)
+        let lock = acquire_inner_async(&git_dir, lock_timeout, on_lock_contention)
+            .await
             .map_err(ProtectedWorktreeError::LockAcquisition)?;
 
         let marker = ExternalTaintMarker::new(&git_dir);

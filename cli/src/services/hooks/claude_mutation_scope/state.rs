@@ -1,19 +1,17 @@
-use std::fs::{File, OpenOptions, TryLockError};
+use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::{format_claude_scope_id, AttemptKey};
+use crate::services::hooks::mutation_scope_lock::AdapterLockSpec;
 
 const SCE_STATE_DIR: &str = "sce";
 const ADAPTER_STATE_FILE: &str = "claude-mutation-scope-state.json";
-const ADAPTER_STATE_LOCK_FILE: &str = "claude-mutation-scope-state.lock";
 
-const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(20);
-const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
+const STATE_LOCK: AdapterLockSpec = AdapterLockSpec::state("claude-mutation-scope-state.lock");
 
 const ADAPTER_STATE_VERSION: u32 = 1;
 
@@ -75,94 +73,6 @@ fn state_dir(git_dir: &Path) -> PathBuf {
 
 pub(crate) fn state_path(git_dir: &Path) -> PathBuf {
     state_dir(git_dir).join(ADAPTER_STATE_FILE)
-}
-
-fn lock_path(git_dir: &Path) -> PathBuf {
-    state_dir(git_dir).join(ADAPTER_STATE_LOCK_FILE)
-}
-
-struct AdapterStateLock {
-    file: File,
-}
-
-#[derive(Debug)]
-pub(crate) enum AdapterStateLockError {
-    TimedOut { path: PathBuf, timeout: Duration },
-    Io(anyhow::Error),
-}
-
-impl std::fmt::Display for AdapterStateLockError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AdapterStateLockError::TimedOut { path, timeout } => write!(
-                f,
-                "Timed out after {timeout:?} waiting for adapter-state lock '{}'",
-                path.display()
-            ),
-            AdapterStateLockError::Io(source) => write!(f, "{source}"),
-        }
-    }
-}
-
-impl std::error::Error for AdapterStateLockError {}
-
-impl AdapterStateLock {
-    fn acquire(
-        git_dir: &Path,
-        timeout: Duration,
-    ) -> Result<AdapterStateLock, AdapterStateLockError> {
-        let dir = state_dir(git_dir);
-        std::fs::create_dir_all(&dir)
-            .with_context(|| {
-                format!(
-                    "Failed to create adapter state directory '{}'",
-                    dir.display()
-                )
-            })
-            .map_err(AdapterStateLockError::Io)?;
-
-        let path = lock_path(git_dir);
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .with_context(|| {
-                format!(
-                    "Failed to open adapter-state lock file '{}'",
-                    path.display()
-                )
-            })
-            .map_err(AdapterStateLockError::Io)?;
-
-        let deadline = Instant::now() + timeout;
-        loop {
-            match file.try_lock() {
-                Ok(()) => return Ok(AdapterStateLock { file }),
-                Err(TryLockError::WouldBlock) => {
-                    let now = Instant::now();
-                    if now >= deadline {
-                        return Err(AdapterStateLockError::TimedOut { path, timeout });
-                    }
-                    std::thread::sleep(LOCK_POLL_INTERVAL.min(deadline - now));
-                }
-                Err(TryLockError::Error(source)) => {
-                    return Err(AdapterStateLockError::Io(
-                        anyhow::Error::new(source).context(format!(
-                            "Failed to acquire adapter-state lock '{}'",
-                            path.display()
-                        )),
-                    ));
-                }
-            }
-        }
-    }
-}
-
-impl Drop for AdapterStateLock {
-    fn drop(&mut self) {
-        let _ = self.file.unlock();
-    }
 }
 
 pub(crate) fn read_state(git_dir: &Path) -> Result<AdapterState> {
@@ -261,13 +171,12 @@ where
     Ok(())
 }
 
-pub(crate) fn allocate_attempt(
+pub(crate) async fn allocate_attempt(
     git_dir: &Path,
     key: &AttemptKey,
     tool_name: &str,
 ) -> Result<AllocatedAttempt> {
-    let _lock = AdapterStateLock::acquire(git_dir, DEFAULT_LOCK_TIMEOUT)
-        .map_err(|err| anyhow!("Failed to acquire adapter-state lock: {err}"))?;
+    let _lock = STATE_LOCK.acquire_async(&state_dir(git_dir)).await?;
 
     let mut state = read_state(git_dir)?;
 
@@ -304,9 +213,8 @@ pub(crate) fn allocate_attempt(
     })
 }
 
-pub(crate) fn mark_active(git_dir: &Path, scope_id: &str) -> Result<()> {
-    let _lock = AdapterStateLock::acquire(git_dir, DEFAULT_LOCK_TIMEOUT)
-        .map_err(|err| anyhow!("Failed to acquire adapter-state lock: {err}"))?;
+pub(crate) async fn mark_active(git_dir: &Path, scope_id: &str) -> Result<()> {
+    let _lock = STATE_LOCK.acquire_async(&state_dir(git_dir)).await?;
 
     let mut state = read_state(git_dir)?;
     let attempt = state
@@ -341,7 +249,7 @@ fn transition_to_pending_abandon(state: &mut AdapterState, scope_ids: &[String])
     }
 }
 
-pub(crate) fn mark_recovery_pending_and_pending_abandon(
+pub(crate) async fn mark_recovery_pending_and_pending_abandon(
     git_dir: &Path,
     scope_ids: &[String],
 ) -> Result<()> {
@@ -349,8 +257,7 @@ pub(crate) fn mark_recovery_pending_and_pending_abandon(
         return Ok(());
     }
 
-    let _lock = AdapterStateLock::acquire(git_dir, DEFAULT_LOCK_TIMEOUT)
-        .map_err(|err| anyhow!("Failed to acquire adapter-state lock: {err}"))?;
+    let _lock = STATE_LOCK.acquire_async(&state_dir(git_dir)).await?;
 
     let mut state = read_state(git_dir)?;
     state.recovery_pending = true;
@@ -358,9 +265,8 @@ pub(crate) fn mark_recovery_pending_and_pending_abandon(
     write_state_durably(git_dir, &state)
 }
 
-pub(crate) fn reprove_pending_abandon(git_dir: &Path) -> Result<Option<Vec<AdapterAttempt>>> {
-    let _lock = AdapterStateLock::acquire(git_dir, DEFAULT_LOCK_TIMEOUT)
-        .map_err(|err| anyhow!("Failed to acquire adapter-state lock: {err}"))?;
+pub(crate) async fn reprove_pending_abandon(git_dir: &Path) -> Result<Option<Vec<AdapterAttempt>>> {
+    let _lock = STATE_LOCK.acquire_async(&state_dir(git_dir)).await?;
 
     let state = read_state(git_dir)?;
 
@@ -380,9 +286,8 @@ pub(crate) fn reprove_pending_abandon(git_dir: &Path) -> Result<Option<Vec<Adapt
     Ok(Some(state.attempts))
 }
 
-pub(crate) fn remove_attempt(git_dir: &Path, scope_id: &str) -> Result<()> {
-    let _lock = AdapterStateLock::acquire(git_dir, DEFAULT_LOCK_TIMEOUT)
-        .map_err(|err| anyhow!("Failed to acquire adapter-state lock: {err}"))?;
+pub(crate) async fn remove_attempt(git_dir: &Path, scope_id: &str) -> Result<()> {
+    let _lock = STATE_LOCK.acquire_async(&state_dir(git_dir)).await?;
 
     let mut state = read_state(git_dir)?;
     let before = state.attempts.len();
@@ -395,9 +300,8 @@ pub(crate) fn remove_attempt(git_dir: &Path, scope_id: &str) -> Result<()> {
     write_state_durably(git_dir, &state)
 }
 
-pub(crate) fn mark_recovery_pending(git_dir: &Path) -> Result<()> {
-    let _lock = AdapterStateLock::acquire(git_dir, DEFAULT_LOCK_TIMEOUT)
-        .map_err(|err| anyhow!("Failed to acquire adapter-state lock: {err}"))?;
+pub(crate) async fn mark_recovery_pending(git_dir: &Path) -> Result<()> {
+    let _lock = STATE_LOCK.acquire_async(&state_dir(git_dir)).await?;
 
     let mut state = read_state(git_dir)?;
     state.recovery_pending = true;
@@ -410,19 +314,20 @@ pub(crate) enum ClearRecoveryOutcome {
     StillPending,
 }
 
-pub(crate) fn clear_recovery_pending_if_quiescent(git_dir: &Path) -> Result<ClearRecoveryOutcome> {
-    clear_recovery_pending_if_quiescent_inner(git_dir, |_, _| Ok(()))
+pub(crate) async fn clear_recovery_pending_if_quiescent(
+    git_dir: &Path,
+) -> Result<ClearRecoveryOutcome> {
+    clear_recovery_pending_if_quiescent_inner(git_dir, |_, _| Ok(())).await
 }
 
-fn clear_recovery_pending_if_quiescent_inner<F>(
+async fn clear_recovery_pending_if_quiescent_inner<F>(
     git_dir: &Path,
     before_rename: F,
 ) -> Result<ClearRecoveryOutcome>
 where
     F: FnOnce(&Path, &Path) -> Result<()>,
 {
-    let _lock = AdapterStateLock::acquire(git_dir, DEFAULT_LOCK_TIMEOUT)
-        .map_err(|err| anyhow!("Failed to acquire adapter-state lock: {err}"))?;
+    let _lock = STATE_LOCK.acquire_async(&state_dir(git_dir)).await?;
 
     let mut state = read_state(git_dir)?;
 

@@ -478,7 +478,9 @@ async fn capture_revision_cut(
     store: &MutationTraceStore<'_>,
     worktree: &WorktreeId,
 ) -> Option<u64> {
-    let _lock = WorktreeLock::acquire(git_dir, REVISION_CUT_LOCK_TIMEOUT).ok()?;
+    let _lock = WorktreeLock::acquire_async(git_dir, REVISION_CUT_LOCK_TIMEOUT)
+        .await
+        .ok()?;
     store
         .latest_mutation_event_revision(worktree)
         .await

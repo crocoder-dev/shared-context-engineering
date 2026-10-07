@@ -275,7 +275,7 @@ pub(super) async fn apply_recovery_barrier<L: crate::services::observability::tr
     }
 
     match seam(repository_root, &flush_payload(), logger).await {
-        Ok(_) => match state::clear_recovery_pending_if_quiescent(git_dir) {
+        Ok(_) => match state::clear_recovery_pending_if_quiescent(git_dir).await {
             Ok(state::ClearRecoveryOutcome::Cleared) => BarrierOutcome::Proceed,
             Ok(state::ClearRecoveryOutcome::StillPending) => BarrierOutcome::Deny,
             Err(error) => {
@@ -302,7 +302,8 @@ pub(super) async fn establish_start<L: crate::services::observability::traits::L
     model_state_resolver: &impl std::ops::AsyncFn(&Path, &str, &str) -> Result<Option<String>>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<()> {
-    let allocated = state::allocate_attempt(git_dir, &identity.attempt_key(), &identity.tool_name)?;
+    let allocated =
+        state::allocate_attempt(git_dir, &identity.attempt_key(), &identity.tool_name).await?;
     let scope_id = &allocated.attempt.scope_id;
     let canonical_session_id =
         hooks::prefixed_diff_trace_session_id(hooks::CLAUDE_TOOL_NAME, &identity.session_id);
@@ -330,7 +331,7 @@ pub(super) async fn establish_start<L: crate::services::observability::traits::L
     );
 
     seam(repository_root, &start_payload, logger).await?;
-    state::mark_active(git_dir, scope_id)?;
+    state::mark_active(git_dir, scope_id).await?;
     Ok(())
 }
 
@@ -363,7 +364,7 @@ pub(super) async fn handle_close<L: crate::services::observability::traits::Logg
     );
 
     if seam(repository_root, &close_payload, logger).await.is_ok() {
-        state::remove_attempt(git_dir, &attempt.scope_id)?;
+        state::remove_attempt(git_dir, &attempt.scope_id).await?;
     } else {
         abandon_attempt(git_dir, repository_root, &attempt, logger, seam).await?;
     }
@@ -413,7 +414,7 @@ pub(super) async fn cleanup_attempts_matching<L: crate::services::observability:
         .iter()
         .map(|attempt| attempt.scope_id.clone())
         .collect();
-    state::mark_recovery_pending_and_pending_abandon(git_dir, &stale_scope_ids)?;
+    state::mark_recovery_pending_and_pending_abandon(git_dir, &stale_scope_ids).await?;
 
     let mut first_error: Option<anyhow::Error> = None;
     for attempt in &stale {
@@ -448,7 +449,8 @@ pub(super) async fn abandon_attempt<L: crate::services::observability::traits::L
     state::mark_recovery_pending_and_pending_abandon(
         git_dir,
         std::slice::from_ref(&attempt.scope_id),
-    )?;
+    )
+    .await?;
 
     abandon_marked_attempt(git_dir, repository_root, &attempt.scope_id, logger, seam).await
 }
@@ -461,7 +463,7 @@ async fn abandon_marked_attempt<L: crate::services::observability::traits::Logge
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<()> {
     seam(repository_root, &abandon_payload(scope_id), logger).await?;
-    state::remove_attempt(git_dir, scope_id)?;
+    state::remove_attempt(git_dir, scope_id).await?;
     Ok(())
 }
 
@@ -477,7 +479,7 @@ pub(crate) async fn repair_blocked<L: crate::services::observability::traits::Lo
     logger: Option<&L>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<RepairOutcome> {
-    let Some(attempts) = state::reprove_pending_abandon(git_dir)? else {
+    let Some(attempts) = state::reprove_pending_abandon(git_dir).await? else {
         return Ok(RepairOutcome::NoOp);
     };
 
@@ -492,7 +494,7 @@ pub(crate) async fn repair_blocked<L: crate::services::observability::traits::Lo
     }
 
     let cleared = matches!(
-        state::clear_recovery_pending_if_quiescent(git_dir)?,
+        state::clear_recovery_pending_if_quiescent(git_dir).await?,
         state::ClearRecoveryOutcome::Cleared
     );
 

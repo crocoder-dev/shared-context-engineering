@@ -110,32 +110,8 @@ async fn build_report_without_service_owned_problem_checks(
         false
     };
 
-    let local_hooks_path = if git_available {
-        doctor_git_output(
-            dependencies.git,
-            repository_root,
-            &["config", "--local", "--get", "core.hooksPath"],
-        )
-    } else {
-        None
-    };
-    let global_hooks_path = if git_available {
-        doctor_git_output(
-            dependencies.git,
-            repository_root,
-            &["config", "--global", "--get", "core.hooksPath"],
-        )
-    } else {
-        None
-    };
-
-    let hook_path_source = if local_hooks_path.is_some() {
-        HookPathSource::LocalConfig
-    } else if global_hooks_path.is_some() {
-        HookPathSource::GlobalConfig
-    } else {
-        HookPathSource::Default
-    };
+    let hook_path_source =
+        detect_hook_path_source(dependencies.git, git_available, repository_root);
 
     let hooks_directory = detected_repository_root.as_ref().and_then(|resolved_root| {
         doctor_git_output(
@@ -202,6 +178,39 @@ async fn build_report_without_service_owned_problem_checks(
         integration_targets_absent,
         mutation_scope_health,
         problems,
+    }
+}
+
+fn detect_hook_path_source(
+    git: &impl GitOps,
+    git_available: bool,
+    repository_root: &Path,
+) -> HookPathSource {
+    let local_hooks_path = if git_available {
+        doctor_git_output(
+            git,
+            repository_root,
+            &["config", "--local", "--get", "core.hooksPath"],
+        )
+    } else {
+        None
+    };
+    let global_hooks_path = if git_available {
+        doctor_git_output(
+            git,
+            repository_root,
+            &["config", "--global", "--get", "core.hooksPath"],
+        )
+    } else {
+        None
+    };
+
+    if local_hooks_path.is_some() {
+        HookPathSource::LocalConfig
+    } else if global_hooks_path.is_some() {
+        HookPathSource::GlobalConfig
+    } else {
+        HookPathSource::Default
     }
 }
 

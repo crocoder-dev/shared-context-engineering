@@ -187,11 +187,12 @@ pub(super) async fn coordinate_inner<P, F, L, R>(
 ) -> Result<CoordinateOutcome, CoordinateError>
 where
     P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
-    F: FnOnce(),
+    F: FnOnce() + Send + 'static,
     L: FnMut(u32),
     R: FnMut(u32) -> Result<()>,
 {
     let protected = ProtectedWorktree::acquire_inner(repository_root, on_lock_contention)
+        .await
         .map_err(protected_worktree_failure)?;
 
     let outcome = coordinate_protected(
