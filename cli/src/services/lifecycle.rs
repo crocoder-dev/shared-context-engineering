@@ -131,7 +131,7 @@ pub struct SetupOutcome {
     pub required_hooks_install: Option<RequiredHooksInstallOutcome>,
 }
 
-pub trait ServiceLifecycle: Send + Sync {
+pub(crate) trait ServiceLifecycle: Send + Sync {
     #[allow(dead_code)]
     fn id(&self) -> LifecycleProviderId;
 
