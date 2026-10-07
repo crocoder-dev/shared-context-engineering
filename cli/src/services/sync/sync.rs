@@ -608,6 +608,80 @@ mod tests {
 
     struct TestDb(Option<RepositoryAgentTraceDb>);
 
+    fn storage_guard_fixture(sandbox: &Path) -> SyncStorageGuard {
+        let repo = sandbox.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        let output = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let context = AgentTraceStorageContext {
+            repository_root: &repo,
+            explicit_repository_id: Some("sync-cleanup-boundary"),
+            repository_remote: "origin",
+        };
+        let storage = tokio::task::block_in_place(|| {
+            crate::services::agent_trace_storage::resolve_agent_trace_storage_at_state_root(
+                &context,
+                &sandbox.join("state"),
+            )
+            .unwrap()
+        });
+        SyncStorageGuard(Some(storage))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn storage_guard_cleans_up_on_error_before_returning() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut db_path = PathBuf::new();
+        let result: Result<(), TraceSyncError> = async {
+            let guard = storage_guard_fixture(sandbox.path());
+            db_path = guard.storage().db_path.clone();
+            seed_one_row_per_stream(&guard.storage().db);
+            tokio::task::yield_now().await;
+            Err(TraceSyncError::Runtime(
+                "fixture failure after storage opened".into(),
+            ))?
+        }
+        .await;
+        assert!(
+            matches!(result, Err(TraceSyncError::Runtime(reason)) if reason == "fixture failure after storage opened")
+        );
+        tokio::task::block_in_place(|| {
+            let db = RepositoryAgentTraceDb::open_without_migrations_at(&db_path).unwrap();
+            assert_eq!(diff_trace_rows(&db).len(), 1);
+        });
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn storage_guard_cleans_up_when_polled_future_is_abandoned() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let db_path = RefCell::new(None);
+        let mut future = Box::pin(async {
+            let guard = storage_guard_fixture(sandbox.path());
+            seed_one_row_per_stream(&guard.storage().db);
+            *db_path.borrow_mut() = Some(guard.storage().db_path.clone());
+            std::future::pending::<()>().await;
+            drop(guard);
+        });
+        poll_fn(|cx| {
+            assert!(future.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        assert!(db_path.borrow().is_some());
+        drop(future);
+        tokio::task::block_in_place(|| {
+            let db = RepositoryAgentTraceDb::open_without_migrations_at(
+                db_path.borrow().as_ref().unwrap(),
+            )
+            .unwrap();
+            assert_eq!(diff_trace_rows(&db).len(), 1);
+        });
+    }
+
     impl TestDb {
         fn new(path: &Path) -> Self {
             Self(Some(tokio::task::block_in_place(|| {

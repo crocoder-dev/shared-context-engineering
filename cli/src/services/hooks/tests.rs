@@ -4033,3 +4033,129 @@ fn post_commit_checkpoint_failure_is_fail_open_and_logs_warning() {
         )]
     );
 }
+
+#[test]
+fn async_dispatch_doctor_and_hook_persist_before_completion() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let repo = init_attribution_git_repo("async-dispatch");
+    let sandbox = tempfile::tempdir().unwrap();
+    let payload = json!({
+        "sessionID": "async-boundary-session",
+        "diff": valid_patch_text("src/boundary.rs", "completed"),
+        "time": 1_800_000_000_000_u64,
+        "model_id": "test/model",
+        "tool_name": "opencode",
+        "tool_version": null,
+    });
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "services::hooks::tests::isolated_async_dispatch_boundary",
+            "--nocapture",
+        ])
+        .current_dir(&repo)
+        .env("SCE_HOOK_BOUNDARY_CHILD", "1")
+        .env("HOME", sandbox.path())
+        .env("XDG_CONFIG_HOME", sandbox.path().join("config"))
+        .env("XDG_STATE_HOME", sandbox.path().join("state"))
+        .env("XDG_DATA_HOME", sandbox.path().join("data"))
+        .env("XDG_CACHE_HOME", sandbox.path().join("cache"))
+        .env("NO_COLOR", "1")
+        .env_remove("SCE_DISABLED")
+        .env_remove("SCE_CONFIG_FILE")
+        .env_remove("SCE_ATTRIBUTION_HOOKS_DISABLED")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(payload.to_string().as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    fs::remove_dir_all(&repo).unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn isolated_async_dispatch_boundary() {
+    use crate::app::AppContext;
+    use crate::services::capabilities::{ProcessGitOps, StdFsOps};
+    use crate::services::command_registry::{default_runtime_command, RuntimeCommand};
+    use crate::services::observability::traits::{NoopLogger, NoopTelemetry};
+
+    if std::env::var_os("SCE_HOOK_BOUNDARY_CHILD").is_none() {
+        return;
+    }
+    assert_eq!(
+        tokio::runtime::Handle::current().runtime_flavor(),
+        tokio::runtime::RuntimeFlavor::MultiThread
+    );
+    let repo = std::env::current_dir().unwrap();
+    let storage_context = AgentTraceStorageContext {
+        repository_root: &repo,
+        explicit_repository_id: None,
+        repository_remote: "origin",
+    };
+    let state_root = crate::services::default_paths::resolve_state_data_root().unwrap();
+    let db_path = tokio::task::block_in_place(|| {
+        let storage =
+            resolve_agent_trace_storage_at_state_root(&storage_context, &state_root).unwrap();
+        storage.db_path.clone()
+    });
+    let context = AppContext::new(
+        &NoopLogger,
+        &NoopTelemetry,
+        &StdFsOps,
+        &ProcessGitOps,
+        Some(repo.clone()),
+    );
+    let doctor = default_runtime_command("doctor").unwrap();
+    let doctor_output = doctor.execute(&context).await.unwrap();
+    assert!(doctor_output.contains("Agent Trace"), "{doctor_output}");
+    assert!(
+        !doctor_output.contains("schema is not ready"),
+        "{doctor_output}"
+    );
+    let hook = RuntimeCommand::Hooks(crate::services::hooks::command::HooksCommand {
+        subcommand: HookSubcommand::DiffTrace,
+    });
+    assert_eq!(
+        hook.execute(&context).await.unwrap(),
+        "diff-trace hook intake persisted payload to AgentTraceDb."
+    );
+    tokio::task::block_in_place(|| {
+        let db = RepositoryAgentTraceDb::open_without_migrations_at(&db_path).unwrap();
+        let rows = db
+            .query_map(
+                "SELECT session_id, model_id, tool_name FROM diff_traces ORDER BY id",
+                (),
+                |row| {
+                    Ok((
+                        row.get::<String>(0)?,
+                        row.get::<String>(1)?,
+                        row.get::<String>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![(
+                "oc_async-boundary-session".to_string(),
+                "test/model".to_string(),
+                "opencode".to_string()
+            )]
+        );
+    });
+}
