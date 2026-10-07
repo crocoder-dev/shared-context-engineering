@@ -13,8 +13,8 @@ pub(crate) enum Repairability {
     ManualOnly,
 }
 
-pub(crate) fn assess_repairability(git_dir: &Path) -> Repairability {
-    let Ok(state) = state::read_state(git_dir) else {
+pub(crate) async fn assess_repairability(git_dir: &Path) -> Repairability {
+    let Ok(state) = state::read_state(git_dir).await else {
         return Repairability::ManualOnly;
     };
 
@@ -34,8 +34,8 @@ pub(crate) fn assess_repairability(git_dir: &Path) -> Repairability {
     }
 }
 
-pub(crate) fn classify_health(git_dir: &Path) -> MutationScopeAdapterHealth {
-    let state = match state::read_state(git_dir) {
+pub(crate) async fn classify_health(git_dir: &Path) -> MutationScopeAdapterHealth {
+    let state = match state::read_state(git_dir).await {
         Ok(state) => state,
         Err(error) => {
             return MutationScopeAdapterHealth::new(
