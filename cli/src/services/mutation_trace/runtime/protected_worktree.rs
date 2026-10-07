@@ -74,8 +74,9 @@ impl ProtectedWorktree {
     where
         F: FnOnce() + Send + 'static,
     {
-        let git_dir =
-            resolve_git_dir(repository_root).map_err(ProtectedWorktreeError::GitDirResolution)?;
+        let git_dir = resolve_git_dir(repository_root)
+            .await
+            .map_err(ProtectedWorktreeError::GitDirResolution)?;
 
         let lock = acquire_inner_async(&git_dir, lock_timeout, on_lock_contention)
             .await
@@ -97,6 +98,7 @@ impl ProtectedWorktree {
             })?;
 
         let worktree_id = resolve_worktree_id(repository_root)
+            .await
             .map_err(ProtectedWorktreeError::CheckoutIdentity)?;
 
         Ok(Self {

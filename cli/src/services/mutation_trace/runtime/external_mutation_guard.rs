@@ -186,11 +186,13 @@ mod unix_impl {
         Some(PathBuf::from(first_line))
     }
 
-    fn resolve_execution_cwd(
+    async fn resolve_execution_cwd(
         repository_root: &Path,
         requested_cwd: Option<&str>,
     ) -> Result<PathBuf, GuardError> {
-        let worktree_root = resolve_worktree_root(repository_root).map_err(GuardError::Cwd)?;
+        let worktree_root = resolve_worktree_root(repository_root)
+            .await
+            .map_err(GuardError::Cwd)?;
 
         let Some(raw_cwd) = requested_cwd else {
             return Ok(worktree_root);
@@ -694,7 +696,8 @@ mod unix_impl {
                     "external-mutation guard exec command must not be blank"
                 )));
             }
-            let execution_cwd = resolve_execution_cwd(&repository_root, request.cwd.as_deref())?;
+            let execution_cwd =
+                resolve_execution_cwd(&repository_root, request.cwd.as_deref()).await?;
 
             let (event_tx, mut event_rx) =
                 tokio::sync::mpsc::channel::<GuardEvent>(GUARD_EVENT_CHANNEL_CAPACITY);
