@@ -1057,13 +1057,17 @@ mod tests {
             Ok(Some(valid_stored_tokens("valid-access-token")))
         }
 
-        fn save(&self, _token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
-            panic!("no token refresh expected in this test");
+        fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("build nested test runtime");
+            runtime.block_on(async {});
+            Ok(valid_stored_tokens(&token.access_token))
         }
     }
 
-    #[test]
-    fn credential_store_operations_run_outside_the_async_runtime() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn credential_store_operations_run_outside_the_async_runtime() {
         let client = AuthenticatedControlPlaneClient::with_credential_store(
             test_http_client(),
             "http://127.0.0.1:1",
@@ -1072,9 +1076,19 @@ mod tests {
             Box::new(RuntimeCheckingCredentialStore),
         );
 
-        let access_token = block_on(client.resolve_access_token()).expect("token should load");
+        let access_token = client
+            .resolve_access_token()
+            .await
+            .expect("token should load");
 
         assert_eq!(access_token, "valid-access-token");
+        let token: TokenResponse = serde_json::from_value(token_response_json("saved-token"))
+            .expect("fixture token should deserialize");
+        let saved = client
+            .save_credentials(&token)
+            .await
+            .expect("token should save");
+        assert_eq!(saved.access_token, "saved-token");
     }
 
     /// A plain-`http://` loopback test double never needs TLS root
