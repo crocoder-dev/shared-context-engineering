@@ -583,30 +583,6 @@ pub(crate) async fn seed_diff_trace_model_from_bridge_chain(
     }
 }
 
-#[cfg(any())]
-pub(crate) fn persist_diff_trace_payload_to_agent_trace_db_with<F, T>(
-    payload: &DiffTracePayload,
-    model_id: Option<&str>,
-    tool_version: Option<&str>,
-    insert_fn: F,
-) -> Result<T>
-where
-    F: FnOnce(DiffTraceInsert<'_>) -> Result<T>,
-{
-    let time_ms = diff_trace_db_time_ms(payload.time)?;
-    let session_id = prefixed_diff_trace_session_id(&payload.tool_name, &payload.session_id);
-
-    insert_fn(DiffTraceInsert {
-        time_ms,
-        session_id: &session_id,
-        patch: &payload.diff,
-        model_id,
-        tool_name: &payload.tool_name,
-        tool_version,
-        payload_type: &payload.payload_type,
-    })
-}
-
 pub(crate) fn diff_trace_db_time_ms(time: u64) -> Result<i64> {
     i64::try_from(time).map_err(|_| {
         anyhow!(StdinPayloadKind::DiffTrace.validation_error(

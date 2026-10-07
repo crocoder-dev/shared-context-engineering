@@ -1,39 +1,12 @@
 use anyhow::Context;
 
-#[cfg(any())]
-use crate::services::agent_trace::{validate_agent_trace_value, AgentTrace, AgentTraceVcsType};
-#[cfg(any())]
-use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
-#[cfg(any())]
-use crate::services::agent_trace_db::{
-    DiffTraceInsert, MessageRole, PartType, RecentDiffTracePatches, PAYLOAD_TYPE_PATCH,
-    PAYLOAD_TYPE_STRUCTURED,
-};
-#[cfg(any())]
-use crate::services::agent_trace_storage::{
-    resolve_agent_trace_storage_at_state_root, AgentTraceStorageContext,
-};
-#[cfg(any())]
-use crate::services::observability::traits::Logger;
-#[cfg(any())]
-use crate::services::patch::{
-    intersect_patches as intersect_patches_fn, load_patch_from_json,
-    parse_patch as parse_patch_from_text, ParsedPatch,
-};
-#[cfg(any())]
-use anyhow::{anyhow, Result};
-#[cfg(any())]
-use serde_json::{json, to_string as serialize_to_json, Value};
-
 mod claude_transforms;
 mod commit_hooks;
 mod conversation_trace;
 mod diff_trace;
-#[cfg(any())]
-mod mutation_scope_ingress_conformance;
+
 mod mutation_scope_lock;
-#[cfg(any())]
-mod mutation_scope_state_conformance;
+
 mod runtime;
 
 pub mod claude_bridge_session;
@@ -54,9 +27,6 @@ pub(crate) use commit_hooks::*;
 pub(crate) use conversation_trace::*;
 pub(crate) use diff_trace::*;
 pub(crate) use runtime::*;
-
-#[cfg(any())]
-mod tests;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HookSubcommand {

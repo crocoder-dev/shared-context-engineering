@@ -485,7 +485,3 @@ async fn capture_revision_cut(
         .ok()
         .flatten()
 }
-
-#[cfg(any())]
-#[path = "mutation_attribution/tests.rs"]
-mod tests;
