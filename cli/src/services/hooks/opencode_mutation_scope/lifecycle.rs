@@ -132,7 +132,7 @@ pub(super) async fn dispatch_opencode_hook_event<
             let repository_root = Path::new(&identity.cwd);
             let key = identity.attempt_key();
             with_boundary_lock(&git_dir, async || {
-                state::normalize_recovery_after_boundary_lock_acquired(&git_dir)?;
+                state::normalize_recovery_after_boundary_lock_acquired(&git_dir).await?;
                 handle_close(&git_dir, repository_root, &key, logger, seam).await
             })
             .await
@@ -145,7 +145,7 @@ pub(super) async fn dispatch_opencode_hook_event<
             let repository_root = Path::new(&call.cwd);
             let key = call.attempt_key();
             with_boundary_lock(&git_dir, async || {
-                state::normalize_recovery_after_boundary_lock_acquired(&git_dir)?;
+                state::normalize_recovery_after_boundary_lock_acquired(&git_dir).await?;
                 abandon_and_consume(&git_dir, repository_root, logger, seam, |attempt| {
                     attempt.session_id == key.session_id && attempt.call_id == key.call_id
                 })
@@ -173,9 +173,10 @@ pub(crate) async fn repair_blocked<L: crate::services::observability::traits::Lo
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<RepairOutcome> {
     with_boundary_lock(git_dir, async || {
-        state::normalize_recovery_after_boundary_lock_acquired(git_dir)?;
+        state::normalize_recovery_after_boundary_lock_acquired(git_dir).await?;
 
-        let Some(generation) = state::reprove_dead_owner_pending_start_and_begin_repair(git_dir)?
+        let Some(generation) =
+            state::reprove_dead_owner_pending_start_and_begin_repair(git_dir).await?
         else {
             return Ok(RepairOutcome::NoOp);
         };
@@ -192,7 +193,9 @@ pub(super) async fn with_boundary_lock<T>(
     git_dir: &Path,
     operation: impl std::ops::AsyncFnOnce() -> Result<T>,
 ) -> Result<T> {
-    let _boundary = state::BOUNDARY_LOCK.acquire(&state::adapter_state_dir(git_dir))?;
+    let _boundary = state::BOUNDARY_LOCK
+        .acquire_async(&state::adapter_state_dir(git_dir))
+        .await?;
     operation().await
 }
 
@@ -225,7 +228,7 @@ pub(super) async fn establish_tracked_start<L: crate::services::observability::t
     let repository_root = Path::new(cwd);
 
     let outcome = with_boundary_lock(&git_dir, async || {
-        state::normalize_recovery_after_boundary_lock_acquired(&git_dir)?;
+        state::normalize_recovery_after_boundary_lock_acquired(&git_dir).await?;
 
         match admit_or_recover(&git_dir, repository_root, key, tool_name, logger, seam).await? {
             Admission::Admitted(allocated) => {
@@ -263,29 +266,29 @@ pub(super) async fn admit_or_recover<L: crate::services::observability::traits::
     logger: Option<&L>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<Admission> {
-    match state::admit_tracked_attempt(git_dir, key, tool_name)? {
+    match state::admit_tracked_attempt(git_dir, key, tool_name).await? {
         AdmitDecision::Admitted(allocated) => Ok(Admission::Admitted(allocated)),
         AdmitDecision::RecoveryBlocked
         | AdmitDecision::UncertainAttemptBlocked
         | AdmitDecision::TerminalAttemptBlocked => Ok(Admission::Denied),
         AdmitDecision::FlushClaimed { generation } => {
             match resolve_recovery(git_dir, repository_root, generation, logger, seam).await? {
-                RecoveryResolution::Cleared => readmit_after_flush(git_dir, key, tool_name),
+                RecoveryResolution::Cleared => readmit_after_flush(git_dir, key, tool_name).await,
                 RecoveryResolution::Unresolved => Ok(Admission::Denied),
             }
         }
     }
 }
 
-pub(super) fn readmit_after_flush(
+pub(super) async fn readmit_after_flush(
     git_dir: &Path,
     key: &AttemptKey,
     tool_name: &str,
 ) -> Result<Admission> {
-    match state::admit_tracked_attempt(git_dir, key, tool_name)? {
+    match state::admit_tracked_attempt(git_dir, key, tool_name).await? {
         AdmitDecision::Admitted(allocated) => Ok(Admission::Admitted(allocated)),
         AdmitDecision::FlushClaimed { generation } => {
-            state::relinquish_recovery_flush(git_dir, generation)?;
+            state::relinquish_recovery_flush(git_dir, generation).await?;
             Ok(Admission::Denied)
         }
         AdmitDecision::RecoveryBlocked
@@ -315,7 +318,7 @@ pub(super) async fn establish_start<L: crate::services::observability::traits::L
     );
 
     seam(repository_root, &start_payload, logger).await?;
-    state::mark_active(git_dir, scope_id)?;
+    state::mark_active(git_dir, scope_id).await?;
     Ok(())
 }
 
@@ -355,7 +358,7 @@ pub(super) async fn handle_close<L: crate::services::observability::traits::Logg
     );
 
     if seam(repository_root, &close_payload, logger).await.is_ok() {
-        state::remove_attempt(git_dir, &attempt.scope_id)?;
+        state::remove_attempt(git_dir, &attempt.scope_id).await?;
         Ok(String::new())
     } else {
         abandon_and_consume(git_dir, repository_root, logger, seam, move |candidate| {
@@ -387,7 +390,7 @@ pub(super) async fn abandon_and_consume<L: crate::services::observability::trait
         return Ok(String::new());
     }
 
-    let generation = state::begin_terminal_cleanup(git_dir, &doomed_scope_ids)?;
+    let generation = state::begin_terminal_cleanup(git_dir, &doomed_scope_ids).await?;
     resolve_recovery(git_dir, repository_root, generation, logger, seam).await?;
     Ok(String::new())
 }
@@ -407,7 +410,7 @@ pub(super) async fn resolve_recovery<L: crate::services::observability::traits::
 
     if let Err(error) = seam(repository_root, &flush_payload(), logger).await {
         log_fail_closed(logger, "recovery_ambiguity_flush", &error);
-        state::relinquish_recovery_flush(git_dir, generation)?;
+        state::relinquish_recovery_flush(git_dir, generation).await?;
         return Ok(RecoveryResolution::Unresolved);
     }
 
@@ -415,19 +418,19 @@ pub(super) async fn resolve_recovery<L: crate::services::observability::traits::
         if let Err(error) = seam(repository_root, &abandon_payload(&attempt.scope_id), logger).await
         {
             log_fail_closed(logger, "recovery_abandon", &error);
-            state::relinquish_recovery_flush(git_dir, generation)?;
+            state::relinquish_recovery_flush(git_dir, generation).await?;
             return Ok(RecoveryResolution::Unresolved);
         }
-        state::remove_attempt(git_dir, &attempt.scope_id)?;
+        state::remove_attempt(git_dir, &attempt.scope_id).await?;
     }
 
     if let Err(error) = seam(repository_root, &flush_payload(), logger).await {
         log_fail_closed(logger, "recovery_rebaseline_flush", &error);
-        state::relinquish_recovery_flush(git_dir, generation)?;
+        state::relinquish_recovery_flush(git_dir, generation).await?;
         return Ok(RecoveryResolution::Unresolved);
     }
 
-    match state::complete_recovery_flush(git_dir, generation)? {
+    match state::complete_recovery_flush(git_dir, generation).await? {
         RecoveryFlushCompletion::Cleared => Ok(RecoveryResolution::Cleared),
         RecoveryFlushCompletion::Superseded => Ok(RecoveryResolution::Unresolved),
     }

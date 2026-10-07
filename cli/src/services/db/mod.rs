@@ -698,26 +698,6 @@ fn apply_busy_timeout(
         .map_err(|e| anyhow::anyhow!("failed to set {db_name} database busy timeout: {e}"))
 }
 
-/// Record that one [`TursoDb`] read statement was issued on this thread.
-
-/// Run `body`, returning its result together with the number of [`TursoDb`]
-/// read statements ([`TursoDb::query`], [`TursoDb::query_values`],
-/// [`TursoDb::query_map`]) it issued on the current thread.
-///
-/// Each read method bumps the counter once in its synchronous prelude, before
-/// the retry wrapper, so a transient retry never inflates the count and the
-/// number reflects *logical* read statements, not connection round-trips.
-/// Lets a deterministic single-threaded test assert that an operation which
-/// must observe one coherent database snapshot — for example
-/// `MutationTraceStore::load_all_tree_roots`, a single `UNION` statement —
-/// issues exactly one, and fail if it is ever reimplemented as several
-/// independent `SELECT`s unioned in Rust. Not shared across threads.
-
-/// Generic Turso database adapter.
-///
-/// Wraps a Turso connection with a tokio current-thread runtime so callers can
-/// use synchronous `execute`/`query` methods while the underlying Turso API
-/// remains async.
 pub struct TursoDb<M: DbSpec> {
     core: TursoConnectionCore<M>,
 }
