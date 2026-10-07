@@ -1,5 +1,5 @@
 {
-  "$schema": "https://sce.crocoder.dev/v0.4.0-pre-alpha-v8/config.json",
+  "$schema": "https://sce.crocoder.dev/v0.4.0-pre-alpha-v9/config.json",
   "agent_trace": {
     "auto_sync": true
   },
