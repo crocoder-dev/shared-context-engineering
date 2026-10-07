@@ -1017,8 +1017,7 @@ impl<'a> MutationTraceStore<'a> {
                 transition.worktree.0.as_str(),
                 expected_revision_blob.as_slice(),
             ),
-        )
-        .await?;
+        )?;
 
         let mut statements = Vec::new();
 
@@ -1027,8 +1026,7 @@ impl<'a> MutationTraceStore<'a> {
                 TransactionStatement::new(
                     UPDATE_SCOPE_STATUS_SQL,
                     (encode_scope_status(*status), scope_id.0.as_str()),
-                )
-                .await?
+                )?
                 .expect_rows_affected(1),
             );
         }
@@ -1038,8 +1036,7 @@ impl<'a> MutationTraceStore<'a> {
                 TransactionStatement::new(
                     INSERT_PROCESSED_EVENT_SQL,
                     (event_key.scope_id.0.as_str(), event_key.event_id.0.as_str()),
-                )
-                .await?
+                )?
                 .expect_rows_affected(1),
             );
         }
@@ -1065,8 +1062,7 @@ impl<'a> MutationTraceStore<'a> {
                         boundary_scope_id,
                         boundary_event_id,
                     ),
-                )
-                .await?
+                )?
                 .expect_rows_affected(1),
             );
 
@@ -1079,8 +1075,7 @@ impl<'a> MutationTraceStore<'a> {
                             event_revision_blob.as_slice(),
                             scope_id.0.as_str(),
                         ),
-                    )
-                    .await?
+                    )?
                     .expect_rows_affected(1),
                 );
             }
