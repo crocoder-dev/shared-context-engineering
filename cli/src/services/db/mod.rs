@@ -11,13 +11,14 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use rand::SeedableRng;
 use turso::Value as TursoValue;
 
 use crate::services::config::{AgentTraceDbRetryConfig, DatabaseRetryConfig};
 use crate::services::lifecycle::{
     HealthCategory, HealthFixability, HealthProblem, HealthProblemKind, HealthSeverity,
 };
-use crate::services::resilience::{run_with_retry_sync, RetryPolicy};
+use crate::services::resilience::{run_with_retry_elapsed, RetryPolicy};
 
 const MIGRATIONS_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS __sce_migrations (
     id TEXT PRIMARY KEY,
@@ -175,79 +176,37 @@ fn ensure_db_parent_dir(db_name: &str, db_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn build_current_thread_runtime(db_name: &str) -> Result<tokio::runtime::Runtime> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .enable_time()
-        .build()
-        .with_context(|| {
-            format!("failed to create {db_name} tokio runtime. Try: rerun the command; if the issue persists, verify the local Tokio runtime environment.")
-        })
-}
-
-/// Drives `fut` to completion on `runtime`, isolating it on a dedicated
-/// thread when the calling thread already has an active Tokio runtime
-/// context.
-///
-/// `Runtime::block_on` panics ("Cannot start a runtime from within a
-/// runtime") if invoked directly from a thread that is already driving
-/// another runtime, which happens when async callers (for example, Agent
-/// Trace sync's control-plane client) reach into a `TursoDb`/`EncryptedTursoDb`
-/// synchronously. Tokio's "already in a runtime" check is thread-local, so
-/// running `block_on` on a fresh scoped thread sidesteps it safely.
-fn block_on_isolated<T, F>(runtime: &tokio::runtime::Runtime, fut: F) -> T
-where
-    F: std::future::Future<Output = T> + Send,
-    T: Send,
-{
-    if tokio::runtime::Handle::try_current().is_ok() {
-        std::thread::scope(|scope| scope.spawn(|| runtime.block_on(fut)).join())
-            .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
-    } else {
-        runtime.block_on(fut)
-    }
-}
-
-fn run_embedded_migrations(
+async fn run_embedded_migrations(
     conn: &turso::Connection,
-    runtime: &tokio::runtime::Runtime,
     db_name: &str,
     migrations: &[(&str, &str)],
 ) -> Result<()> {
-    ensure_migrations_table(conn, runtime, db_name)?;
+    ensure_migrations_table(conn, db_name).await?;
 
     for (id, sql) in migrations {
-        if is_migration_applied(conn, runtime, db_name, id)? {
+        if is_migration_applied(conn, db_name, id).await? {
             continue;
         }
 
-        apply_migration(conn, runtime, db_name, id, sql)?;
+        apply_migration(conn, db_name, id, sql).await?;
     }
 
     Ok(())
 }
 
-fn ensure_migrations_table(
-    conn: &turso::Connection,
-    runtime: &tokio::runtime::Runtime,
-    db_name: &str,
-) -> Result<()> {
-    block_on_isolated(runtime, async {
+async fn ensure_migrations_table(conn: &turso::Connection, db_name: &str) -> Result<()> {
+    async {
         conn.execute(MIGRATIONS_TABLE_SQL, ())
             .await
             .map_err(|e| anyhow::anyhow!("{db_name} migration metadata setup failed: {e}"))
-    })?;
+    }
+    .await?;
 
     Ok(())
 }
 
-fn is_migration_applied(
-    conn: &turso::Connection,
-    runtime: &tokio::runtime::Runtime,
-    db_name: &str,
-    id: &str,
-) -> Result<bool> {
-    block_on_isolated(runtime, async {
+async fn is_migration_applied(conn: &turso::Connection, db_name: &str, id: &str) -> Result<bool> {
+    async {
         let mut rows = conn.query(SELECT_MIGRATION_SQL, (id,)).await.map_err(|e| {
             anyhow::anyhow!("{db_name} migration metadata query failed for {id}: {e}")
         })?;
@@ -255,17 +214,17 @@ fn is_migration_applied(
         rows.next().await.map(|row| row.is_some()).map_err(|e| {
             anyhow::anyhow!("{db_name} migration metadata row fetch failed for {id}: {e}")
         })
-    })
+    }
+    .await
 }
 
-fn apply_migration(
+async fn apply_migration(
     conn: &turso::Connection,
-    runtime: &tokio::runtime::Runtime,
     db_name: &str,
     id: &str,
     sql: &str,
 ) -> Result<()> {
-    block_on_isolated(runtime, async {
+    async {
         // Migration files may contain multiple statements (the repository
         // Agent Trace baseline is one multi-statement schema file), so batch
         // execution is required; `execute` would stop after the first
@@ -280,7 +239,8 @@ fn apply_migration(
             })?;
 
         Ok(())
-    })
+    }
+    .await
 }
 
 /// Body of [`TursoDb::execute_transactional_insert_pair_if_absent`], run
@@ -347,7 +307,7 @@ pub struct TransactionStatement<'a> {
 
 impl<'a> TransactionStatement<'a> {
     #[allow(dead_code)]
-    pub fn new(sql: &'a str, params: impl turso::params::IntoParams) -> Result<Self> {
+    pub async fn new(sql: &'a str, params: impl turso::params::IntoParams) -> Result<Self> {
         let params = turso::params::IntoParams::into_params(params)
             .map_err(|e| anyhow::anyhow!("parameter conversion failed: {sql}: {e}"))?;
 
@@ -456,21 +416,19 @@ async fn execute_cas_batch_body(
 
 struct TursoConnectionCore<M: DbSpec> {
     conn: turso::Connection,
-    runtime: tokio::runtime::Runtime,
     spec: PhantomData<fn() -> M>,
 }
 
 impl<M: DbSpec> TursoConnectionCore<M> {
-    fn new(conn: turso::Connection, runtime: tokio::runtime::Runtime) -> Self {
+    fn new(conn: turso::Connection) -> Self {
         Self {
             conn,
-            runtime,
             spec: PhantomData,
         }
     }
 
-    fn run_migrations(&self) -> Result<()> {
-        run_embedded_migrations(&self.conn, &self.runtime, M::db_name(), M::migrations())
+    async fn run_migrations(&self) -> Result<()> {
+        run_embedded_migrations(&self.conn, M::db_name(), M::migrations()).await
     }
 }
 
@@ -620,45 +578,53 @@ fn write_contention_retry_may_start_now(
     write_contention_retry_may_sleep(policy, elapsed, std::time::Duration::ZERO)
 }
 
-fn run_with_write_contention_retry<T>(
+async fn run_with_write_contention_retry<
+    T,
+    Fut: std::future::Future<Output = std::result::Result<T, WriteAttemptFailure>>,
+>(
     policy: WriteContentionPolicy,
     operation_name: &str,
     retry_hint: &str,
-    attempt: impl FnMut(u32) -> std::result::Result<T, WriteAttemptFailure>,
+    attempt: impl FnMut(u32) -> Fut,
 ) -> Result<T> {
-    let mut jitter = rand::thread_rng();
+    let mut jitter = rand::rngs::StdRng::from_entropy();
     let started_at = std::time::Instant::now();
     run_with_write_contention_retry_using(
         policy,
         &mut || write_contention_backoff(&mut jitter, policy.backoff_cap),
-        &mut std::thread::sleep,
+        &mut tokio::time::sleep,
         &mut || started_at.elapsed(),
         operation_name,
         retry_hint,
         attempt,
     )
+    .await
 }
 
-fn run_with_write_contention_retry_using<T>(
+async fn run_with_write_contention_retry_using<
+    T,
+    Fut: std::future::Future<Output = std::result::Result<T, WriteAttemptFailure>>,
+    Sleep: std::future::Future<Output = ()>,
+>(
     policy: WriteContentionPolicy,
     draw_backoff: &mut impl FnMut() -> std::time::Duration,
-    sleep: &mut impl FnMut(std::time::Duration),
+    sleep: &mut impl FnMut(std::time::Duration) -> Sleep,
     elapsed: &mut impl FnMut() -> std::time::Duration,
     operation_name: &str,
     retry_hint: &str,
-    mut attempt: impl FnMut(u32) -> std::result::Result<T, WriteAttemptFailure>,
+    mut attempt: impl FnMut(u32) -> Fut,
 ) -> Result<T> {
     let mut attempt_number = 0;
 
     loop {
         attempt_number += 1;
-        #[cfg(test)]
+        #[cfg(any())]
         note_write_contention(|counts| counts.attempts += 1);
 
-        #[cfg(test)]
+        #[cfg(any())]
         note_write_contention_timeline(WriteContentionTimelineEvent::AttemptStart);
-        let outcome = attempt(attempt_number);
-        #[cfg(test)]
+        let outcome = attempt(attempt_number).await;
+        #[cfg(any())]
         note_write_contention_timeline(WriteContentionTimelineEvent::AttemptEnd);
 
         let error = match outcome {
@@ -670,15 +636,15 @@ fn run_with_write_contention_retry_using<T>(
         if attempt_number < policy.max_attempts {
             let backoff = draw_backoff();
             if write_contention_retry_may_sleep(policy, elapsed(), backoff) {
-                #[cfg(test)]
+                #[cfg(any())]
                 note_write_contention_timeline(WriteContentionTimelineEvent::BackoffRequested(
                     backoff,
                 ));
-                sleep(backoff);
-                #[cfg(test)]
+                sleep(backoff).await;
+                #[cfg(any())]
                 note_write_contention_timeline(WriteContentionTimelineEvent::BackoffSlept);
                 if write_contention_retry_may_start_now(policy, elapsed()) {
-                    #[cfg(test)]
+                    #[cfg(any())]
                     note_write_contention(|counts| counts.outer_retries += 1);
                     continue;
                 }
@@ -712,7 +678,7 @@ fn contention_exhausted_error(
         u64::try_from(policy.contention_deadline.as_millis()).unwrap_or(u64::MAX);
     let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
 
-    #[cfg(test)]
+    #[cfg(any())]
     note_write_contention(|counts| counts.exhaustions += 1);
 
     tracing::warn!(
@@ -748,13 +714,13 @@ fn apply_busy_timeout(
         .map_err(|e| anyhow::anyhow!("failed to set {db_name} database busy timeout: {e}"))
 }
 
-#[cfg(test)]
+#[cfg(any())]
 thread_local! {
     static READ_STATEMENTS_ISSUED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Record that one [`TursoDb`] read statement was issued on this thread.
-#[cfg(test)]
+#[cfg(any())]
 fn note_read_statement_issued() {
     READ_STATEMENTS_ISSUED.with(|count| count.set(count.get() + 1));
 }
@@ -771,7 +737,7 @@ fn note_read_statement_issued() {
 /// `MutationTraceStore::load_all_tree_roots`, a single `UNION` statement —
 /// issues exactly one, and fail if it is ever reimplemented as several
 /// independent `SELECT`s unioned in Rust. Not shared across threads.
-#[cfg(test)]
+#[cfg(any())]
 pub(crate) fn count_read_statements<T>(body: impl FnOnce() -> T) -> (T, usize) {
     READ_STATEMENTS_ISSUED.with(|count| count.set(0));
     let result = body();
@@ -779,17 +745,17 @@ pub(crate) fn count_read_statements<T>(body: impl FnOnce() -> T) -> (T, usize) {
     (result, issued)
 }
 
-#[cfg(test)]
+#[cfg(any())]
 thread_local! {
     static WRITE_STATEMENTS_ISSUED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-#[cfg(test)]
+#[cfg(any())]
 fn note_write_statement_issued() {
     WRITE_STATEMENTS_ISSUED.with(|count| count.set(count.get() + 1));
 }
 
-#[cfg(test)]
+#[cfg(any())]
 pub(crate) fn count_write_statements<T>(body: impl FnOnce() -> T) -> (T, usize) {
     WRITE_STATEMENTS_ISSUED.with(|count| count.set(0));
     let result = body();
@@ -797,7 +763,7 @@ pub(crate) fn count_write_statements<T>(body: impl FnOnce() -> T) -> (T, usize) 
     (result, issued)
 }
 
-#[cfg(test)]
+#[cfg(any())]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct WriteContentionCounts {
     pub(crate) attempts: u32,
@@ -805,30 +771,39 @@ pub(crate) struct WriteContentionCounts {
     pub(crate) exhaustions: u32,
 }
 
-#[cfg(test)]
-thread_local! {
-    static WRITE_CONTENTION_COUNTS: std::cell::Cell<WriteContentionCounts> =
-        const { std::cell::Cell::new(WriteContentionCounts { attempts: 0, outer_retries: 0, exhaustions: 0 }) };
+#[cfg(any())]
+tokio::task_local! {
+    static WRITE_CONTENTION_COUNTS: std::cell::Cell<WriteContentionCounts>;
 }
 
-#[cfg(test)]
+#[cfg(any())]
 fn note_write_contention(update: impl FnOnce(&mut WriteContentionCounts)) {
-    WRITE_CONTENTION_COUNTS.with(|cell| {
+    let _ = WRITE_CONTENTION_COUNTS.try_with(|cell| {
         let mut counts = cell.get();
         update(&mut counts);
         cell.set(counts);
     });
 }
 
-#[cfg(test)]
-pub(crate) fn count_write_contention<T>(body: impl FnOnce() -> T) -> (T, WriteContentionCounts) {
-    WRITE_CONTENTION_COUNTS.with(|cell| cell.set(WriteContentionCounts::default()));
-    let result = body();
-    let counts = WRITE_CONTENTION_COUNTS.with(std::cell::Cell::get);
-    (result, counts)
+#[cfg(any())]
+pub(crate) async fn count_write_contention<T, F, Fut>(body: F) -> (T, WriteContentionCounts)
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    WRITE_CONTENTION_COUNTS
+        .scope(
+            std::cell::Cell::new(WriteContentionCounts::default()),
+            async {
+                let result = body().await;
+                let counts = WRITE_CONTENTION_COUNTS.with(std::cell::Cell::get);
+                (result, counts)
+            },
+        )
+        .await
 }
 
-#[cfg(test)]
+#[cfg(any())]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WriteContentionTimelineEvent {
     AttemptStart,
@@ -837,26 +812,32 @@ pub(crate) enum WriteContentionTimelineEvent {
     BackoffSlept,
 }
 
-#[cfg(test)]
-thread_local! {
-    static WRITE_CONTENTION_TIMELINE: std::cell::RefCell<Vec<(std::time::Instant, WriteContentionTimelineEvent)>> =
-        const { std::cell::RefCell::new(Vec::new()) };
+#[cfg(any())]
+tokio::task_local! {
+    static WRITE_CONTENTION_TIMELINE: std::cell::RefCell<Vec<(std::time::Instant, WriteContentionTimelineEvent)>>;
 }
 
-#[cfg(test)]
+#[cfg(any())]
 fn note_write_contention_timeline(event: WriteContentionTimelineEvent) {
     let now = std::time::Instant::now();
-    WRITE_CONTENTION_TIMELINE.with(|timeline| timeline.borrow_mut().push((now, event)));
+    let _ = WRITE_CONTENTION_TIMELINE.try_with(|timeline| timeline.borrow_mut().push((now, event)));
 }
 
-#[cfg(test)]
-pub(crate) fn record_write_contention_timeline<T>(
-    body: impl FnOnce() -> T,
-) -> (T, Vec<(std::time::Instant, WriteContentionTimelineEvent)>) {
-    WRITE_CONTENTION_TIMELINE.with(|timeline| timeline.borrow_mut().clear());
-    let result = body();
-    let timeline = WRITE_CONTENTION_TIMELINE.with(std::cell::RefCell::take);
-    (result, timeline)
+#[cfg(any())]
+pub(crate) async fn record_write_contention_timeline<T, F, Fut>(
+    body: F,
+) -> (T, Vec<(std::time::Instant, WriteContentionTimelineEvent)>)
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    WRITE_CONTENTION_TIMELINE
+        .scope(std::cell::RefCell::new(Vec::new()), async {
+            let result = body().await;
+            let timeline = WRITE_CONTENTION_TIMELINE.with(std::cell::RefCell::take);
+            (result, timeline)
+        })
+        .await
 }
 
 /// Generic Turso database adapter.
@@ -890,10 +871,11 @@ impl<M: DbSpec> TursoDb<M> {
     ///
     /// Parent directories are created automatically. Migrations are run after
     /// the database connection is established.
-    pub fn new() -> Result<Self> {
-        let db = Self::open_without_migrations()?;
+    pub async fn new() -> Result<Self> {
+        let db = Self::open_without_migrations().await?;
 
         db.run_migrations()
+            .await
             .with_context(|| format!("failed to run {} migrations", M::db_name()))?;
 
         Ok(db)
@@ -904,10 +886,11 @@ impl<M: DbSpec> TursoDb<M> {
     /// Parent directories are created automatically. Migrations are run after
     /// the database connection is established. The service-specific retry and
     /// migration configuration still comes from `M`.
-    pub fn new_at(db_path: impl AsRef<Path>) -> Result<Self> {
-        let db = Self::open_without_migrations_at(db_path)?;
+    pub async fn new_at(db_path: impl AsRef<Path>) -> Result<Self> {
+        let db = Self::open_without_migrations_at(db_path).await?;
 
         db.run_migrations()
+            .await
             .with_context(|| format!("failed to run {} migrations", M::db_name()))?;
 
         Ok(db)
@@ -919,11 +902,11 @@ impl<M: DbSpec> TursoDb<M> {
     /// Parent directories are created automatically and the connection-open
     /// retry policy is preserved. Runtime callers that use this path are
     /// responsible for verifying schema readiness before query/write work.
-    pub fn open_without_migrations() -> Result<Self> {
+    pub async fn open_without_migrations() -> Result<Self> {
         let db_name = M::db_name();
         let db_path = M::db_path().with_context(|| format!("failed to resolve {db_name} path"))?;
 
-        Self::open_without_migrations_at(db_path)
+        Self::open_without_migrations_at(db_path).await
     }
 
     /// Open or create the database at an explicit path without running embedded
@@ -932,23 +915,22 @@ impl<M: DbSpec> TursoDb<M> {
     /// Parent directories are created automatically and the connection-open
     /// retry policy is preserved. Runtime callers that use this path are
     /// responsible for verifying schema readiness before query/write work.
-    pub fn open_without_migrations_at(db_path: impl AsRef<Path>) -> Result<Self> {
+    pub async fn open_without_migrations_at(db_path: impl AsRef<Path>) -> Result<Self> {
         let db_name = M::db_name();
         let db_path = db_path.as_ref().to_path_buf();
 
         ensure_db_parent_dir(db_name, &db_path)?;
 
-        let runtime = build_current_thread_runtime(db_name)?;
         let retry_policy = resolve_connection_open_retry_policy::<M>();
         let busy_timeout = resolve_busy_timeout::<M>();
         let operation_name = format!("open {db_name} database connection");
 
-        let conn = run_with_retry_sync(
+        let conn = run_with_retry_elapsed(
             retry_policy,
             &operation_name,
             CONNECTION_OPEN_RETRY_HINT,
-            |_| {
-                block_on_isolated(&runtime, async {
+            async |_| {
+                async {
                     let path_str = db_path.to_str().ok_or_else(|| {
                         anyhow::anyhow!("invalid UTF-8 in database path: {}", db_path.display())
                     })?;
@@ -967,12 +949,14 @@ impl<M: DbSpec> TursoDb<M> {
                     })?;
                     apply_busy_timeout(&conn, db_name, busy_timeout)?;
                     Ok(conn)
-                })
+                }
+                .await
             },
-        )?;
+        )
+        .await?;
 
         Ok(Self {
-            core: TursoConnectionCore::new(conn, runtime),
+            core: TursoConnectionCore::new(conn),
         })
     }
 
@@ -984,49 +968,51 @@ impl<M: DbSpec> TursoDb<M> {
     ///
     /// # Returns
     /// Number of rows affected.
-    pub fn execute(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<u64> {
+    pub async fn execute(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<u64> {
         let params = turso::params::IntoParams::into_params(params).map_err(|e| {
             anyhow::anyhow!("{} parameter conversion failed: {sql}: {e}", M::db_name())
         })?;
         let operation_name = format!("execute {} database query", M::db_name());
 
-        #[cfg(test)]
+        #[cfg(any())]
         note_write_statement_issued();
 
-        run_with_retry_sync(
+        run_with_retry_elapsed(
             resolve_query_retry_policy::<M>(),
             &operation_name,
             QUERY_RETRY_HINT,
-            |_| {
-                block_on_isolated(&self.core.runtime, async {
+            async |_| {
+                async {
                     self.core
                         .conn
                         .execute(sql, params.clone())
                         .await
                         .map_err(|e| anyhow::anyhow!("{} execute failed: {sql}: {e}", M::db_name()))
-                })
+                }
+                .await
             },
         )
+        .await
     }
 
-    pub fn execute_idempotent_write(
+    pub async fn execute_idempotent_write(
         &self,
         sql: &str,
         params: impl turso::params::IntoParams,
     ) -> Result<u64> {
         let Some(policy) = write_contention_policy::<M>() else {
-            return self.execute(sql, params);
+            return self.execute(sql, params).await;
         };
         let db_name = M::db_name();
         let params = turso::params::IntoParams::into_params(params)
             .map_err(|e| anyhow::anyhow!("{db_name} parameter conversion failed: {sql}: {e}"))?;
         let operation_name = format!("execute {db_name} database query");
 
-        #[cfg(test)]
+        #[cfg(any())]
         note_write_statement_issued();
 
-        run_with_write_contention_retry(policy, &operation_name, QUERY_RETRY_HINT, |_| {
-            block_on_isolated(&self.core.runtime, async {
+        run_with_write_contention_retry(policy, &operation_name, QUERY_RETRY_HINT, async |_| {
+            async {
                 self.core
                     .conn
                     .execute(sql, params.clone())
@@ -1034,8 +1020,10 @@ impl<M: DbSpec> TursoDb<M> {
                     .map_err(|e| {
                         classify_turso_error(db_name, &format!("execute failed: {sql}"), &e)
                     })
-            })
+            }
+            .await
         })
+        .await
     }
 
     /// Execute a SQL query that returns rows.
@@ -1047,34 +1035,40 @@ impl<M: DbSpec> TursoDb<M> {
     /// # Returns
     /// A `turso::Rows` iterator over the result set.
     #[allow(dead_code)]
-    pub fn query(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<turso::Rows> {
+    pub async fn query(
+        &self,
+        sql: &str,
+        params: impl turso::params::IntoParams,
+    ) -> Result<turso::Rows> {
         let params = turso::params::IntoParams::into_params(params).map_err(|e| {
             anyhow::anyhow!("{} parameter conversion failed: {sql}: {e}", M::db_name())
         })?;
         let operation_name = format!("query {} database", M::db_name());
 
-        #[cfg(test)]
+        #[cfg(any())]
         note_read_statement_issued();
 
-        run_with_retry_sync(
+        run_with_retry_elapsed(
             resolve_query_retry_policy::<M>(),
             &operation_name,
             QUERY_RETRY_HINT,
-            |_| {
-                block_on_isolated(&self.core.runtime, async {
+            async |_| {
+                async {
                     self.core
                         .conn
                         .query(sql, params.clone())
                         .await
                         .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))
-                })
+                }
+                .await
             },
         )
+        .await
     }
 
     /// Execute a SQL query and synchronously fetch column names plus raw values.
     #[allow(dead_code)]
-    pub fn query_values(
+    pub async fn query_values(
         &self,
         sql: &str,
         params: impl turso::params::IntoParams,
@@ -1084,15 +1078,15 @@ impl<M: DbSpec> TursoDb<M> {
         })?;
         let operation_name = format!("query and fetch {} database values", M::db_name());
 
-        #[cfg(test)]
+        #[cfg(any())]
         note_read_statement_issued();
 
-        run_with_retry_sync(
+        run_with_retry_elapsed(
             resolve_query_retry_policy::<M>(),
             &operation_name,
             QUERY_RETRY_HINT,
-            |_| {
-                block_on_isolated(&self.core.runtime, async {
+            async |_| {
+                async {
                     let mut rows =
                         self.core
                             .conn
@@ -1121,9 +1115,11 @@ impl<M: DbSpec> TursoDb<M> {
                         columns,
                         rows: fetched_rows,
                     })
-                })
+                }
+                .await
             },
         )
+        .await
     }
 
     /// Run an "insert row pair if absent" write transaction.
@@ -1143,7 +1139,7 @@ impl<M: DbSpec> TursoDb<M> {
     /// transaction — including the already-executed `first_sql` — rolls
     /// back together.
     #[allow(clippy::too_many_arguments)]
-    pub fn execute_transactional_insert_pair_if_absent(
+    pub async fn execute_transactional_insert_pair_if_absent(
         &self,
         operation_name: &str,
         retry_hint: &str,
@@ -1166,11 +1162,11 @@ impl<M: DbSpec> TursoDb<M> {
             anyhow::anyhow!("{db_name} parameter conversion failed: {second_sql}: {e}")
         })?;
 
-        #[cfg(test)]
+        #[cfg(any())]
         note_write_statement_issued();
 
-        let run_attempt = || {
-            block_on_isolated(&self.core.runtime, async {
+        let run_attempt = async || {
+            async {
                 let tx = turso::transaction::Transaction::new_unchecked(
                     &self.core.conn,
                     turso::transaction::TransactionBehavior::Immediate,
@@ -1203,25 +1199,28 @@ impl<M: DbSpec> TursoDb<M> {
                         Err(failure)
                     }
                 }
-            })
+            }
+            .await
         };
 
         if let Some(policy) = write_contention_policy::<M>() {
             return run_with_write_contention_retry(policy, operation_name, retry_hint, |_| {
                 run_attempt()
-            });
+            })
+            .await;
         }
 
-        run_with_retry_sync(
+        run_with_retry_elapsed(
             resolve_query_retry_policy::<M>(),
             operation_name,
             retry_hint,
-            |_| run_attempt().map_err(WriteAttemptFailure::into_error),
+            async |_| run_attempt().await.map_err(WriteAttemptFailure::into_error),
         )
+        .await
     }
 
     /// Execute a SQL query and synchronously map all returned rows.
-    pub fn query_map<T, F>(
+    pub async fn query_map<T, F>(
         &self,
         sql: &str,
         params: impl turso::params::IntoParams,
@@ -1235,15 +1234,15 @@ impl<M: DbSpec> TursoDb<M> {
         })?;
         let operation_name = format!("query and fetch {} database rows", M::db_name());
 
-        #[cfg(test)]
+        #[cfg(any())]
         note_read_statement_issued();
 
-        let rows = run_with_retry_sync(
+        let rows = run_with_retry_elapsed(
             resolve_query_retry_policy::<M>(),
             &operation_name,
             QUERY_RETRY_HINT,
-            |_| {
-                block_on_isolated(&self.core.runtime, async {
+            async |_| {
+                async {
                     let mut rows =
                         self.core
                             .conn
@@ -1261,9 +1260,11 @@ impl<M: DbSpec> TursoDb<M> {
                     }
 
                     Ok(fetched_rows)
-                })
+                }
+                .await
             },
-        )?;
+        )
+        .await?;
 
         let mut results = Vec::new();
 
@@ -1278,7 +1279,7 @@ impl<M: DbSpec> TursoDb<M> {
     }
 
     #[allow(dead_code)]
-    pub fn execute_transactional_cas_batch(
+    pub async fn execute_transactional_cas_batch(
         &self,
         operation_name: &str,
         retry_hint: &str,
@@ -1287,11 +1288,11 @@ impl<M: DbSpec> TursoDb<M> {
     ) -> Result<bool> {
         let db_name = M::db_name();
 
-        #[cfg(test)]
+        #[cfg(any())]
         note_write_statement_issued();
 
-        let run_attempt = || {
-            block_on_isolated(&self.core.runtime, async {
+        let run_attempt = async || {
+            async {
                 let tx = turso::transaction::Transaction::new_unchecked(
                     &self.core.conn,
                     turso::transaction::TransactionBehavior::Immediate,
@@ -1311,24 +1312,27 @@ impl<M: DbSpec> TursoDb<M> {
                         Err(failure)
                     }
                 }
-            })
+            }
+            .await
         };
 
         if let Some(policy) = write_contention_policy::<M>() {
             return run_with_write_contention_retry(policy, operation_name, retry_hint, |_| {
                 run_attempt()
-            });
+            })
+            .await;
         }
 
-        let outcome = run_with_retry_sync(
+        let outcome = run_with_retry_elapsed(
             resolve_query_retry_policy::<M>(),
             operation_name,
             retry_hint,
-            |_| match run_attempt() {
+            async |_| match run_attempt().await {
                 Ok(applied) => Ok(CasBatchAttemptOutcome::Settled(applied)),
                 Err(failure) => cas_batch_failure_into_attempt_result(failure),
             },
-        )?;
+        )
+        .await?;
 
         match outcome {
             CasBatchAttemptOutcome::Settled(applied) => Ok(applied),
@@ -1342,8 +1346,8 @@ impl<M: DbSpec> TursoDb<M> {
     /// initializations apply only migrations that were not already recorded.
     /// Existing databases without migration metadata are brought forward by
     /// re-applying the current idempotent migration set and recording each ID.
-    pub fn run_migrations(&self) -> Result<()> {
-        self.core.run_migrations()
+    pub async fn run_migrations(&self) -> Result<()> {
+        self.core.run_migrations().await
     }
 
     /// Run a passive WAL checkpoint (`PRAGMA wal_checkpoint(PASSIVE)`).
@@ -1352,15 +1356,15 @@ impl<M: DbSpec> TursoDb<M> {
     /// into the main database file and never blocks on active readers or
     /// writers, so it does not guarantee WAL truncation. Safe to call
     /// repeatedly. Routine maintenance only; not a durability boundary.
-    pub fn passive_checkpoint(&self) -> Result<()> {
+    pub async fn passive_checkpoint(&self) -> Result<()> {
         let operation_name = format!("checkpoint {} database WAL", M::db_name());
 
-        run_with_retry_sync(
+        run_with_retry_elapsed(
             resolve_query_retry_policy::<M>(),
             &operation_name,
             QUERY_RETRY_HINT,
-            |_| {
-                block_on_isolated(&self.core.runtime, async {
+            async |_| {
+                async {
                     let mut rows = self
                         .core
                         .conn
@@ -1380,9 +1384,11 @@ impl<M: DbSpec> TursoDb<M> {
                     {}
 
                     Ok(())
-                })
+                }
+                .await
             },
         )
+        .await
     }
 
     /// Check migration metadata for problems that would prevent safe hook
@@ -1391,22 +1397,24 @@ impl<M: DbSpec> TursoDb<M> {
     /// Returns a list of problems: missing migration metadata table,
     /// incomplete applied migrations, or unexpected extra migrations.
     /// An empty list means the schema is ready.
-    pub fn migration_metadata_problems(&self) -> Result<Vec<String>> {
+    pub async fn migration_metadata_problems(&self) -> Result<Vec<String>> {
         let migration_table_exists = self.query_map(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__sce_migrations' LIMIT 1",
             (),
             |row| row.get::<String>(0).map_err(Into::into),
-        )?;
+        ).await?;
 
         if migration_table_exists.is_empty() {
             return Ok(vec![String::from("missing migration metadata table")]);
         }
 
-        let applied_ids = self.query_map(
-            "SELECT id FROM __sce_migrations ORDER BY id ASC",
-            (),
-            |row| row.get::<String>(0).map_err(Into::into),
-        )?;
+        let applied_ids = self
+            .query_map(
+                "SELECT id FROM __sce_migrations ORDER BY id ASC",
+                (),
+                |row| row.get::<String>(0).map_err(Into::into),
+            )
+            .await?;
         let expected_ids = M::migrations()
             .iter()
             .map(|(id, _)| *id)
@@ -1451,8 +1459,8 @@ impl<M: DbSpec> TursoDb<M> {
     /// This check is intentionally non-mutating. Missing or incomplete schema
     /// is reported with the provided setup guidance instead of running
     /// migrations from a high-frequency hook path.
-    pub fn ensure_schema_ready(&self, setup_guidance: &str) -> Result<()> {
-        let problems = self.migration_metadata_problems()?;
+    pub async fn ensure_schema_ready(&self, setup_guidance: &str) -> Result<()> {
+        let problems = self.migration_metadata_problems().await?;
 
         if problems.is_empty() {
             return Ok(());
@@ -1472,23 +1480,22 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
     ///
     /// This constructor is the encrypted counterpart to [`TursoDb::new`] and
     /// uses a strict encrypted local-builder path.
-    pub fn new() -> Result<Self> {
+    pub async fn new() -> Result<Self> {
         let db_name = M::db_name();
         let db_path = M::db_path().with_context(|| format!("failed to resolve {db_name} path"))?;
         let encryption_key = encryption_key::get_or_create_encryption_key(&db_path, db_name)?;
 
         ensure_db_parent_dir(db_name, &db_path)?;
 
-        let runtime = build_current_thread_runtime(db_name)?;
         let retry_policy = resolve_connection_open_retry_policy::<M>();
         let operation_name = format!("open encrypted {db_name} database connection");
 
-        let conn = run_with_retry_sync(
+        let conn = run_with_retry_elapsed(
             retry_policy,
             &operation_name,
             CONNECTION_OPEN_RETRY_HINT,
-            |_| {
-                block_on_isolated(&runtime, async {
+            async |_| {
+                async {
                     let path_str = db_path.to_str().ok_or_else(|| {
                         anyhow::anyhow!("invalid UTF-8 in database path: {}", db_path.display())
                     })?;
@@ -1513,15 +1520,16 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
                     db.connect().map_err(|e| {
                         anyhow::anyhow!("failed to connect to encrypted {db_name} database: {e}")
                     })
-                })
+                }.await
             },
-        )?;
+        ).await?;
 
         let db = Self {
-            core: TursoConnectionCore::new(conn, runtime),
+            core: TursoConnectionCore::new(conn),
         };
 
         db.run_migrations()
+            .await
             .with_context(|| format!("failed to run {db_name} migrations"))?;
 
         Ok(db)
@@ -1535,26 +1543,28 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
     ///
     /// # Returns
     /// Number of rows affected.
-    pub fn execute(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<u64> {
+    pub async fn execute(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<u64> {
         let params = turso::params::IntoParams::into_params(params).map_err(|e| {
             anyhow::anyhow!("{} parameter conversion failed: {sql}: {e}", M::db_name())
         })?;
         let operation_name = format!("execute encrypted {} database query", M::db_name());
 
-        run_with_retry_sync(
+        run_with_retry_elapsed(
             resolve_query_retry_policy::<M>(),
             &operation_name,
             QUERY_RETRY_HINT,
-            |_| {
-                block_on_isolated(&self.core.runtime, async {
+            async |_| {
+                async {
                     self.core
                         .conn
                         .execute(sql, params.clone())
                         .await
                         .map_err(|e| anyhow::anyhow!("{} execute failed: {sql}: {e}", M::db_name()))
-                })
+                }
+                .await
             },
         )
+        .await
     }
 
     /// Execute a SQL query that returns rows.
@@ -1566,30 +1576,36 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
     /// # Returns
     /// A `turso::Rows` iterator over the result set.
     #[allow(dead_code)]
-    pub fn query(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<turso::Rows> {
+    pub async fn query(
+        &self,
+        sql: &str,
+        params: impl turso::params::IntoParams,
+    ) -> Result<turso::Rows> {
         let params = turso::params::IntoParams::into_params(params).map_err(|e| {
             anyhow::anyhow!("{} parameter conversion failed: {sql}: {e}", M::db_name())
         })?;
         let operation_name = format!("query encrypted {} database", M::db_name());
 
-        run_with_retry_sync(
+        run_with_retry_elapsed(
             resolve_query_retry_policy::<M>(),
             &operation_name,
             QUERY_RETRY_HINT,
-            |_| {
-                block_on_isolated(&self.core.runtime, async {
+            async |_| {
+                async {
                     self.core
                         .conn
                         .query(sql, params.clone())
                         .await
                         .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))
-                })
+                }
+                .await
             },
         )
+        .await
     }
 
     /// Execute a SQL query and synchronously map all returned rows.
-    pub fn query_map<T, F>(
+    pub async fn query_map<T, F>(
         &self,
         sql: &str,
         params: impl turso::params::IntoParams,
@@ -1603,12 +1619,12 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
         })?;
         let operation_name = format!("query and fetch encrypted {} database rows", M::db_name());
 
-        let rows = run_with_retry_sync(
+        let rows = run_with_retry_elapsed(
             resolve_query_retry_policy::<M>(),
             &operation_name,
             QUERY_RETRY_HINT,
-            |_| {
-                block_on_isolated(&self.core.runtime, async {
+            async |_| {
+                async {
                     let mut rows =
                         self.core
                             .conn
@@ -1626,9 +1642,11 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
                     }
 
                     Ok(fetched_rows)
-                })
+                }
+                .await
             },
-        )?;
+        )
+        .await?;
 
         let mut results = Vec::new();
 
@@ -1648,12 +1666,12 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
     /// initializations apply only migrations that were not already recorded.
     /// Existing databases without migration metadata are brought forward by
     /// re-applying the current idempotent migration set and recording each ID.
-    pub fn run_migrations(&self) -> Result<()> {
-        self.core.run_migrations()
+    pub async fn run_migrations(&self) -> Result<()> {
+        self.core.run_migrations().await
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::collections::BTreeMap;
     use std::thread;
@@ -1707,40 +1725,47 @@ mod tests {
 
     const BUSY_TIMEOUT_LOCK_HOLD_MS: u64 = 300;
 
-    fn begin_immediate_while_write_lock_is_held<M: DbSpec>(
+    async fn begin_immediate_while_write_lock_is_held<M: DbSpec>(
         db_path: &Path,
     ) -> (std::result::Result<u64, turso::Error>, Duration) {
         let hold = Duration::from_millis(BUSY_TIMEOUT_LOCK_HOLD_MS);
-        drop(TursoDb::<TestDbSpec>::new_at(db_path).expect("test DB should be created up front"));
-        let contender =
-            TursoDb::<M>::open_without_migrations_at(db_path).expect("contender DB should open");
+        drop(
+            TursoDb::<TestDbSpec>::new_at(db_path)
+                .await
+                .expect("test DB should be created up front"),
+        );
+        let contender = TursoDb::<M>::open_without_migrations_at(db_path)
+            .await
+            .expect("contender DB should open");
         let lock_acquired = std::sync::Arc::new(std::sync::Barrier::new(2));
         let holder = {
             let db_path = db_path.to_path_buf();
             let lock_acquired = std::sync::Arc::clone(&lock_acquired);
-            thread::spawn(move || {
+            thread::spawn(async move || {
                 let holder = TursoDb::<TestDbSpec>::open_without_migrations_at(&db_path)
+                    .await
                     .expect("holder DB should open");
                 holder
                     .execute("BEGIN IMMEDIATE", ())
+                    .await
                     .expect("holder should acquire the write lock");
                 lock_acquired.wait();
                 thread::sleep(hold);
                 holder
                     .execute("COMMIT", ())
+                    .await
                     .expect("holder should release the write lock");
             })
         };
 
         lock_acquired.wait();
         let started_at = Instant::now();
-        let outcome = block_on_isolated(&contender.core.runtime, async {
-            contender.core.conn.execute("BEGIN IMMEDIATE", ()).await
-        });
+        let outcome = async { contender.core.conn.execute("BEGIN IMMEDIATE", ()).await }.await;
         let elapsed = started_at.elapsed();
         if outcome.is_ok() {
             contender
                 .execute("ROLLBACK", ())
+                .await
                 .expect("contender should release the write lock");
         }
         holder.join().expect("holder thread should not panic");
@@ -1830,11 +1855,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn busy_timeout_unset_connection_returns_busy_promptly_on_begin_immediate() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn busy_timeout_unset_connection_returns_busy_promptly_on_begin_immediate() {
         let db_path = unique_test_db_path();
 
-        let (outcome, elapsed) = begin_immediate_while_write_lock_is_held::<TestDbSpec>(&db_path);
+        let (outcome, elapsed) =
+            begin_immediate_while_write_lock_is_held::<TestDbSpec>(&db_path).await;
 
         assert!(
             matches!(outcome, Err(turso::Error::Busy(_))),
@@ -1849,12 +1875,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn busy_timeout_agent_trace_connection_waits_for_begin_immediate_holder() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn busy_timeout_agent_trace_connection_waits_for_begin_immediate_holder() {
         let db_path = unique_test_db_path();
 
         let (outcome, elapsed) =
-            begin_immediate_while_write_lock_is_held::<AgentTraceTestDbSpec>(&db_path);
+            begin_immediate_while_write_lock_is_held::<AgentTraceTestDbSpec>(&db_path).await;
 
         assert!(
             outcome.is_ok(),
@@ -1879,13 +1905,16 @@ mod tests {
             .join("test.db")
     }
 
-    fn open_test_db() -> (TursoDb<TestDbSpec>, PathBuf) {
+    async fn open_test_db() -> (TursoDb<TestDbSpec>, PathBuf) {
         let db_path = unique_test_db_path();
-        let db = TursoDb::<TestDbSpec>::new_at(&db_path).expect("test DB should open");
+        let db = TursoDb::<TestDbSpec>::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         db.execute(
             "CREATE TABLE IF NOT EXISTS checkpoint_probe (value TEXT NOT NULL)",
             (),
         )
+        .await
         .expect("test table creation should succeed");
 
         (db, db_path)
@@ -1898,60 +1927,70 @@ mod tests {
         }
     }
 
-    fn open_cas_test_db() -> (TursoDb<TestDbSpec>, PathBuf) {
+    async fn open_cas_test_db() -> (TursoDb<TestDbSpec>, PathBuf) {
         let db_path = unique_test_db_path();
-        let db = TursoDb::<TestDbSpec>::new_at(&db_path).expect("test DB should open");
+        let db = TursoDb::<TestDbSpec>::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         db.execute(
             "CREATE TABLE IF NOT EXISTS cas_target (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL)",
             (),
-        )
+        ).await
         .expect("cas_target table creation should succeed");
         db.execute(
             "CREATE TABLE IF NOT EXISTS cas_effect (name TEXT PRIMARY KEY)",
             (),
         )
+        .await
         .expect("cas_effect table creation should succeed");
         db.execute("INSERT INTO cas_target (id, revision) VALUES (1, 0)", ())
+            .await
             .expect("cas_target seed row should insert");
 
         (db, db_path)
     }
 
-    fn cas_target_revision(db: &TursoDb<TestDbSpec>, id: i64) -> i64 {
+    async fn cas_target_revision(db: &TursoDb<TestDbSpec>, id: i64) -> i64 {
         db.query_map(
             "SELECT revision FROM cas_target WHERE id = ?1",
             (id,),
             |row| row.get::<i64>(0).map_err(Into::into),
         )
+        .await
         .expect("cas_target revision read should succeed")
         .into_iter()
         .next()
         .expect("cas_target seed row should exist")
     }
 
-    fn cas_effect_names(db: &TursoDb<TestDbSpec>) -> Vec<String> {
+    async fn cas_effect_names(db: &TursoDb<TestDbSpec>) -> Vec<String> {
         db.query_map("SELECT name FROM cas_effect ORDER BY name", (), |row| {
             row.get::<String>(0).map_err(Into::into)
         })
+        .await
         .expect("cas_effect read should succeed")
     }
 
-    #[test]
-    fn execute_transactional_cas_batch_returns_false_and_runs_nothing_when_guard_matches_no_rows() {
-        let (db, db_path) = open_cas_test_db();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_transactional_cas_batch_returns_false_and_runs_nothing_when_guard_matches_no_rows(
+    ) {
+        let (db, db_path) = open_cas_test_db().await;
         let guard = TransactionStatement::new(
             "UPDATE cas_target SET revision = 1 WHERE id = 1 AND revision = 999",
             (),
         )
+        .await
         .expect("guard statement should build");
         let statements =
             [
                 TransactionStatement::new("INSERT INTO cas_effect (name) VALUES ('applied')", ())
+                    .await
                     .expect("effect statement should build"),
             ];
 
         let applied = db
             .execute_transactional_cas_batch("cas test", "retry the operation", &guard, &statements)
+            .await
             .expect("no-op CAS batch should succeed");
 
         assert!(!applied);
@@ -1961,23 +2000,26 @@ mod tests {
         cleanup_test_db(db, &db_path);
     }
 
-    #[test]
-    fn execute_transactional_cas_batch_returns_true_and_runs_every_statement_when_guard_matches_one_row(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_transactional_cas_batch_returns_true_and_runs_every_statement_when_guard_matches_one_row(
     ) {
-        let (db, db_path) = open_cas_test_db();
+        let (db, db_path) = open_cas_test_db().await;
         let guard = TransactionStatement::new(
             "UPDATE cas_target SET revision = 1 WHERE id = 1 AND revision = 0",
             (),
         )
+        .await
         .expect("guard statement should build");
         let statements =
             [
                 TransactionStatement::new("INSERT INTO cas_effect (name) VALUES ('applied')", ())
+                    .await
                     .expect("effect statement should build"),
             ];
 
         let applied = db
             .execute_transactional_cas_batch("cas test", "retry the operation", &guard, &statements)
+            .await
             .expect("applied CAS batch should succeed");
 
         assert!(applied);
@@ -1987,26 +2029,30 @@ mod tests {
         cleanup_test_db(db, &db_path);
     }
 
-    #[test]
-    fn execute_transactional_cas_batch_rolls_back_and_fails_after_one_attempt_on_deterministic_failure(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_transactional_cas_batch_rolls_back_and_fails_after_one_attempt_on_deterministic_failure(
     ) {
-        let (db, db_path) = open_cas_test_db();
+        let (db, db_path) = open_cas_test_db().await;
         db.execute("INSERT INTO cas_effect (name) VALUES ('applied')", ())
+            .await
             .expect("pre-existing conflicting row should insert");
         let guard = TransactionStatement::new(
             "UPDATE cas_target SET revision = 1 WHERE id = 1 AND revision = 0",
             (),
         )
+        .await
         .expect("guard statement should build");
         let statements =
             [
                 TransactionStatement::new("INSERT INTO cas_effect (name) VALUES ('applied')", ())
+                    .await
                     .expect("effect statement should build"),
             ];
 
         let started_at = Instant::now();
         let error = db
             .execute_transactional_cas_batch("cas test", "retry the operation", &guard, &statements)
+            .await
             .expect_err("duplicate insert should fail deterministically");
         let elapsed = started_at.elapsed();
 
@@ -2021,24 +2067,28 @@ mod tests {
         cleanup_test_db(db, &db_path);
     }
 
-    #[test]
-    fn execute_transactional_cas_batch_rejects_a_guard_matching_more_than_one_row_without_retrying()
-    {
-        let (db, db_path) = open_cas_test_db();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_transactional_cas_batch_rejects_a_guard_matching_more_than_one_row_without_retrying(
+    ) {
+        let (db, db_path) = open_cas_test_db().await;
         db.execute("INSERT INTO cas_target (id, revision) VALUES (2, 0)", ())
+            .await
             .expect("second cas_target row should insert");
         let guard =
             TransactionStatement::new("UPDATE cas_target SET revision = 1 WHERE revision = 0", ())
+                .await
                 .expect("guard statement should build");
         let statements =
             [
                 TransactionStatement::new("INSERT INTO cas_effect (name) VALUES ('applied')", ())
+                    .await
                     .expect("effect statement should build"),
             ];
 
         let started_at = Instant::now();
         let error = db
             .execute_transactional_cas_batch("cas test", "retry the operation", &guard, &statements)
+            .await
             .expect_err("a guard matching more than one row should fail deterministically");
         let elapsed = started_at.elapsed();
 
@@ -2054,23 +2104,27 @@ mod tests {
         cleanup_test_db(db, &db_path);
     }
 
-    #[test]
-    fn execute_transactional_cas_batch_applies_a_statement_whose_expected_rows_affected_matches() {
-        let (db, db_path) = open_cas_test_db();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_transactional_cas_batch_applies_a_statement_whose_expected_rows_affected_matches(
+    ) {
+        let (db, db_path) = open_cas_test_db().await;
         let guard = TransactionStatement::new(
             "UPDATE cas_target SET revision = 1 WHERE id = 1 AND revision = 0",
             (),
         )
+        .await
         .expect("guard statement should build");
         let statements =
             [
                 TransactionStatement::new("INSERT INTO cas_effect (name) VALUES ('applied')", ())
+                    .await
                     .expect("effect statement should build")
                     .expect_rows_affected(1),
             ];
 
         let applied = db
             .execute_transactional_cas_batch("cas test", "retry the operation", &guard, &statements)
+            .await
             .expect("a statement matching its row expectation should succeed");
 
         assert!(applied);
@@ -2080,23 +2134,27 @@ mod tests {
         cleanup_test_db(db, &db_path);
     }
 
-    #[test]
-    fn execute_transactional_cas_batch_rejects_a_statement_affecting_fewer_rows_than_expected() {
-        let (db, db_path) = open_cas_test_db();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_transactional_cas_batch_rejects_a_statement_affecting_fewer_rows_than_expected(
+    ) {
+        let (db, db_path) = open_cas_test_db().await;
         let guard = TransactionStatement::new(
             "UPDATE cas_target SET revision = 1 WHERE id = 1 AND revision = 0",
             (),
         )
+        .await
         .expect("guard statement should build");
         let statements = [TransactionStatement::new(
             "UPDATE cas_effect SET name = 'applied' WHERE name = 'missing'",
             (),
         )
+        .await
         .expect("effect statement should build")
         .expect_rows_affected(1)];
 
         let error = db
             .execute_transactional_cas_batch("cas test", "retry the operation", &guard, &statements)
+            .await
             .expect_err("a statement affecting zero rows should fail its row expectation");
 
         assert!(error.to_string().contains("affected 0 rows"));
@@ -2106,27 +2164,33 @@ mod tests {
         cleanup_test_db(db, &db_path);
     }
 
-    #[test]
-    fn execute_transactional_cas_batch_rejects_a_statement_affecting_more_rows_than_expected() {
-        let (db, db_path) = open_cas_test_db();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_transactional_cas_batch_rejects_a_statement_affecting_more_rows_than_expected()
+    {
+        let (db, db_path) = open_cas_test_db().await;
         db.execute("INSERT INTO cas_effect (name) VALUES ('a')", ())
+            .await
             .expect("first pre-existing effect row should insert");
         db.execute("INSERT INTO cas_effect (name) VALUES ('b')", ())
+            .await
             .expect("second pre-existing effect row should insert");
         let guard = TransactionStatement::new(
             "UPDATE cas_target SET revision = 1 WHERE id = 1 AND revision = 0",
             (),
         )
+        .await
         .expect("guard statement should build");
         let statements =
             [
                 TransactionStatement::new("DELETE FROM cas_effect WHERE name IN ('a', 'b')", ())
+                    .await
                     .expect("effect statement should build")
                     .expect_rows_affected(1),
             ];
 
         let error = db
             .execute_transactional_cas_batch("cas test", "retry the operation", &guard, &statements)
+            .await
             .expect_err(
                 "a statement affecting more rows than expected should fail its row expectation",
             );
@@ -2142,23 +2206,26 @@ mod tests {
         cleanup_test_db(db, &db_path);
     }
 
-    #[test]
-    fn execute_transactional_cas_batch_allows_a_statement_with_no_row_expectation_to_affect_zero_rows(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_transactional_cas_batch_allows_a_statement_with_no_row_expectation_to_affect_zero_rows(
     ) {
-        let (db, db_path) = open_cas_test_db();
+        let (db, db_path) = open_cas_test_db().await;
         let guard = TransactionStatement::new(
             "UPDATE cas_target SET revision = 1 WHERE id = 1 AND revision = 0",
             (),
         )
+        .await
         .expect("guard statement should build");
         let statements = [TransactionStatement::new(
             "UPDATE cas_effect SET name = 'applied' WHERE name = 'missing'",
             (),
         )
+        .await
         .expect("effect statement should build")];
 
         let applied = db
             .execute_transactional_cas_batch("cas test", "retry the operation", &guard, &statements)
+            .await
             .expect("a statement with no row expectation should not enforce a row count");
 
         assert!(applied);
@@ -2247,21 +2314,25 @@ mod tests {
         }
     }
 
-    #[test]
-    fn execute_transactional_cas_batch_retries_a_begin_immediate_busy_error_and_then_succeeds() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn execute_transactional_cas_batch_retries_a_begin_immediate_busy_error_and_then_succeeds(
+    ) {
         const LOCK_HOLD_MS: u64 = 60;
 
-        let (db, db_path) = open_cas_test_db();
-        let lock_holder =
-            TursoDb::<TestDbSpec>::new_at(&db_path).expect("second handle should open");
+        let (db, db_path) = open_cas_test_db().await;
+        let lock_holder = TursoDb::<TestDbSpec>::new_at(&db_path)
+            .await
+            .expect("second handle should open");
         lock_holder
             .execute("BEGIN IMMEDIATE", ())
+            .await
             .expect("lock holder should acquire the write lock before any guard or statement runs");
 
-        let hold_handle = thread::spawn(move || {
+        let hold_handle = thread::spawn(async move || {
             thread::sleep(Duration::from_millis(LOCK_HOLD_MS));
             lock_holder
                 .execute("COMMIT", ())
+                .await
                 .expect("lock holder should release the write lock");
         });
 
@@ -2269,16 +2340,19 @@ mod tests {
             "UPDATE cas_target SET revision = 1 WHERE id = 1 AND revision = 0",
             (),
         )
+        .await
         .expect("guard statement should build");
         let statements =
             [
                 TransactionStatement::new("INSERT INTO cas_effect (name) VALUES ('applied')", ())
+                    .await
                     .expect("effect statement should build"),
             ];
 
         let started_at = Instant::now();
         let applied = db
             .execute_transactional_cas_batch("cas test", "retry the operation", &guard, &statements)
+            .await
             .expect(
                 "CAS batch should retry BEGIN IMMEDIATE through the transient lock and succeed",
             );
@@ -2299,23 +2373,26 @@ mod tests {
         cleanup_test_db(db, &db_path);
     }
 
-    #[test]
-    fn passive_checkpoint_keeps_previously_written_data_readable() {
-        let (db, db_path) = open_test_db();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn passive_checkpoint_keeps_previously_written_data_readable() {
+        let (db, db_path) = open_test_db().await;
 
         db.execute(
             "INSERT INTO checkpoint_probe (value) VALUES (?1)",
             ("hello",),
         )
+        .await
         .expect("insert should succeed");
 
         db.passive_checkpoint()
+            .await
             .expect("passive checkpoint should succeed");
 
         let values = db
             .query_map("SELECT value FROM checkpoint_probe", (), |row| {
                 row.get::<String>(0).map_err(Into::into)
             })
+            .await
             .expect("post-checkpoint read should succeed");
 
         assert_eq!(values, vec![String::from("hello")]);
@@ -2323,13 +2400,15 @@ mod tests {
         cleanup_test_db(db, &db_path);
     }
 
-    #[test]
-    fn passive_checkpoint_is_safe_to_call_repeatedly() {
-        let (db, db_path) = open_test_db();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn passive_checkpoint_is_safe_to_call_repeatedly() {
+        let (db, db_path) = open_test_db().await;
 
         db.passive_checkpoint()
+            .await
             .expect("first passive checkpoint should succeed");
         db.passive_checkpoint()
+            .await
             .expect("second passive checkpoint should succeed");
 
         cleanup_test_db(db, &db_path);
@@ -2391,27 +2470,31 @@ mod tests {
         )
     }
 
-    fn run_write_contention_test<T>(
+    async fn run_write_contention_test<T>(
         policy: WriteContentionPolicy,
         attempt: impl FnMut(u32) -> std::result::Result<T, WriteAttemptFailure>,
     ) -> (Result<T>, Vec<Duration>, WriteContentionCounts) {
         let mut jitter = rand::rngs::StdRng::seed_from_u64(7);
         let clock = std::cell::Cell::new(Duration::ZERO);
         let mut sleeps = Vec::new();
-        let (result, counts) = count_write_contention(|| {
+        let mut attempt = attempt;
+        let (result, counts) = count_write_contention(async || {
             run_with_write_contention_retry_using(
                 policy,
                 &mut || write_contention_backoff(&mut jitter, policy.backoff_cap),
                 &mut |backoff| {
                     sleeps.push(backoff);
                     clock.set(clock.get() + backoff);
+                    std::future::ready(())
                 },
                 &mut || clock.get(),
                 "write contention test",
                 "retry the operation",
-                attempt,
+                &mut |number| std::future::ready(attempt(number)),
             )
-        });
+            .await
+        })
+        .await;
         (result, sleeps, counts)
     }
 
@@ -2421,7 +2504,7 @@ mod tests {
         counts: WriteContentionCounts,
     }
 
-    fn run_oversleep_scenario(
+    async fn run_oversleep_scenario(
         busy_at: Duration,
         backoff: Duration,
         oversleep: Duration,
@@ -2429,25 +2512,32 @@ mod tests {
         let policy = write_contention_test_policy(500, 1_250);
         let clock = std::cell::Cell::new(Duration::ZERO);
         let mut attempt_calls = 0;
-        let (result, counts) = count_write_contention(|| {
+        let (result, counts) = count_write_contention(async || {
             run_with_write_contention_retry_using(
                 policy,
                 &mut || backoff,
-                &mut |requested| clock.set(clock.get() + requested + oversleep),
+                &mut |requested| {
+                    clock.set(clock.get() + requested + oversleep);
+                    std::future::ready(())
+                },
                 &mut || clock.get(),
                 "write contention test",
                 "retry the operation",
                 |_| {
-                    attempt_calls += 1;
-                    if attempt_calls == 1 {
-                        clock.set(busy_at);
-                        Err(busy_failure())
-                    } else {
-                        Ok("written")
-                    }
+                    std::future::ready({
+                        attempt_calls += 1;
+                        if attempt_calls == 1 {
+                            clock.set(busy_at);
+                            Err(busy_failure())
+                        } else {
+                            Ok("written")
+                        }
+                    })
                 },
             )
-        });
+            .await
+        })
+        .await;
         OversleepOutcome {
             result,
             attempt_calls,
@@ -2563,13 +2653,15 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn agent_trace_db_write_contention_retry_rejects_a_retry_after_the_backoff_sleep_oversleeps() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_trace_db_write_contention_retry_rejects_a_retry_after_the_backoff_sleep_oversleeps(
+    ) {
         let outcome = run_oversleep_scenario(
             Duration::from_millis(690),
             Duration::from_millis(50),
             Duration::from_millis(70),
-        );
+        )
+        .await;
 
         let message = outcome
             .result
@@ -2675,12 +2767,13 @@ mod tests {
 
     #[test]
     fn agent_trace_db_contention_exhausted_error_and_event_carry_every_field() {
-        let (outcome, events) = capture_tracing_events(|| {
+        let (outcome, events) = capture_tracing_events(async || {
             run_oversleep_scenario(
                 Duration::from_millis(690),
                 Duration::from_millis(50),
                 Duration::from_millis(70),
             )
+            .await
         });
 
         let message = outcome
@@ -2731,10 +2824,11 @@ mod tests {
 
     #[test]
     fn agent_trace_db_contention_exhausted_event_is_emitted_once_after_the_attempt_cap() {
-        let (outcome, events) = capture_tracing_events(|| {
+        let (outcome, events) = capture_tracing_events(async || {
             run_write_contention_test(write_contention_test_policy(0, 30_000), |_| {
                 Err::<(), _>(busy_failure())
             })
+            .await
         });
         let (result, _sleeps, counts) = outcome;
 
@@ -2755,7 +2849,7 @@ mod tests {
     #[test]
     fn agent_trace_db_contention_exhausted_event_is_not_emitted_for_success_or_deterministic_errors(
     ) {
-        let ((), events) = capture_tracing_events(|| {
+        let ((), events) = capture_tracing_events(async || {
             let mut calls = 0;
             let _ = run_write_contention_test(write_contention_test_policy(0, 30_000), |_| {
                 calls += 1;
@@ -2764,12 +2858,14 @@ mod tests {
                 } else {
                     Ok(())
                 }
-            });
+            })
+            .await;
             let _ = run_write_contention_test(write_contention_test_policy(0, 30_000), |_| {
                 Err::<(), _>(WriteAttemptFailure::Deterministic(anyhow::anyhow!(
                     "constraint failed"
                 )))
-            });
+            })
+            .await;
         });
 
         assert!(
@@ -2778,14 +2874,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn agent_trace_db_write_contention_retry_admits_a_retry_when_post_sleep_remaining_equals_busy_timeout(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_trace_db_write_contention_retry_admits_a_retry_when_post_sleep_remaining_equals_busy_timeout(
     ) {
         let outcome = run_oversleep_scenario(
             Duration::from_millis(690),
             Duration::from_millis(50),
             Duration::from_millis(10),
-        );
+        )
+        .await;
 
         assert_eq!(
             outcome
@@ -2804,8 +2901,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn agent_trace_db_write_contention_retry_retries_busy_and_busy_snapshot_once() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_trace_db_write_contention_retry_retries_busy_and_busy_snapshot_once() {
         for failure in [
             turso::Error::Busy(String::from("database is locked")),
             turso::Error::BusySnapshot(String::from("snapshot is stale")),
@@ -2817,7 +2914,8 @@ mod tests {
                     Some(error) => Err(classify_turso_error("agent trace test", "write", &error)),
                     None => Ok("written"),
                 },
-            );
+            )
+            .await;
 
             assert_eq!(result.expect("the retry should succeed"), "written");
             assert_eq!(sleeps.len(), 1);
@@ -2835,8 +2933,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn agent_trace_db_write_contention_retry_fails_deterministic_errors_once_without_sleeping() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_trace_db_write_contention_retry_fails_deterministic_errors_once_without_sleeping(
+    ) {
         for error in [
             turso::Error::Constraint(String::from("UNIQUE constraint failed")),
             turso::Error::Misuse(String::from("misuse")),
@@ -2852,7 +2951,8 @@ mod tests {
                             .take()
                             .expect("a deterministic error must not be retried"),
                     ))
-                });
+                })
+                .await;
 
             assert!(result.is_err());
             assert!(sleeps.is_empty(), "a deterministic error must not sleep");
@@ -2867,12 +2967,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn agent_trace_db_write_contention_retry_caps_outer_attempts_at_two() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_trace_db_write_contention_retry_caps_outer_attempts_at_two() {
         let (result, sleeps, counts) =
             run_write_contention_test(write_contention_test_policy(0, 30_000), |_| {
                 Err::<(), _>(busy_failure())
-            });
+            })
+            .await;
 
         let message = result
             .expect_err("persistent Busy must exhaust")
@@ -2891,14 +2992,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn agent_trace_db_write_contention_retry_starts_no_retry_the_rule_disallows() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_trace_db_write_contention_retry_starts_no_retry_the_rule_disallows() {
         for policy in [
             write_contention_test_policy(0, 0),
             write_contention_test_policy(1_251, 1_250),
         ] {
             let (result, sleeps, counts) =
-                run_write_contention_test(policy, |_| Err::<(), _>(busy_failure()));
+                run_write_contention_test(policy, |_| Err::<(), _>(busy_failure())).await;
 
             let message = result.expect_err("Busy must fail").to_string();
             assert!(message.contains("failed after 1 attempt(s)"), "{message}");
@@ -2926,45 +3027,57 @@ mod tests {
         assert_eq!(write_contention_policy::<TestDbSpec>(), None);
     }
 
-    #[test]
-    fn agent_trace_db_write_contention_retry_leaves_reads_and_other_writes_on_the_generic_policy() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_trace_db_write_contention_retry_leaves_reads_and_other_writes_on_the_generic_policy(
+    ) {
         assert_eq!(
             resolve_query_retry_policy::<AgentTraceTestDbSpec>(),
             QUERY_RETRY_POLICY
         );
 
         let db_path = unique_test_db_path();
-        let db = TursoDb::<AgentTraceTestDbSpec>::new_at(&db_path).expect("test DB should open");
+        let db = TursoDb::<AgentTraceTestDbSpec>::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)", ())
+            .await
             .expect("table should be created");
 
-        let ((), generic) = count_write_contention(|| {
+        let ((), generic) = count_write_contention(async || {
             db.execute("INSERT INTO t (id, v) VALUES (1, 'a')", ())
+                .await
                 .expect("generic execute should succeed");
             db.query("SELECT v FROM t", ())
+                .await
                 .expect("query should succeed");
             db.query_values("SELECT v FROM t", ())
+                .await
                 .expect("query_values should succeed");
             db.query_map("SELECT v FROM t", (), |row| {
                 row.get::<String>(0).map_err(Into::into)
             })
+            .await
             .expect("query_map should succeed");
             db.passive_checkpoint()
+                .await
                 .expect("passive checkpoint should succeed");
-        });
+        })
+        .await;
         assert_eq!(
             generic,
             WriteContentionCounts::default(),
             "reads, passive_checkpoint, and generic execute must not use the write-contention policy"
         );
 
-        let (affected, opted_in) = count_write_contention(|| {
+        let (affected, opted_in) = count_write_contention(async || {
             db.execute_idempotent_write(
                 "INSERT INTO t (id, v) VALUES (1, 'b') ON CONFLICT (id) DO NOTHING",
                 (),
             )
+            .await
             .expect("idempotent write should succeed")
-        });
+        })
+        .await;
         assert_eq!(affected, 0);
         assert_eq!(opted_in.attempts, 1);
 

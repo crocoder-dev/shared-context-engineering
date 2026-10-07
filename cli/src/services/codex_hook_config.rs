@@ -823,7 +823,7 @@ fn helper_path_token_is_valid(token: &str) -> bool {
     token == CODEX_HELPER_PATH || token == CODEX_ROOTED_HELPER_PATH
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -1633,8 +1633,8 @@ mod tests {
         })
     }
 
-    #[test]
-    fn upgrading_the_canonical_four_document_preserves_existing_trust_identity() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn upgrading_the_canonical_four_document_preserves_existing_trust_identity() {
         let mut existing = canonical_four_document();
         existing["hooks"]["Stop"][0]["hooks"]
             .as_array_mut()

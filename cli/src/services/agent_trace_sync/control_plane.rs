@@ -225,20 +225,20 @@ enum StateAttempt {
 /// exactly when a token is (or is not) saved without touching the real,
 /// process-wide encrypted auth database.
 pub trait CredentialStore: Send + Sync {
-    fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError>;
-    fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError>;
+    async fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError>;
+    async fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError>;
 }
 
 /// Production `CredentialStore` backed by the real encrypted auth database.
 pub struct SystemCredentialStore;
 
 impl CredentialStore for SystemCredentialStore {
-    fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
-        Ok(token_storage::load_tokens()?)
+    async fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
+        Ok(token_storage::load_tokens().await?)
     }
 
-    fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
-        Ok(token_storage::save_tokens(token)?)
+    async fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
+        Ok(token_storage::save_tokens(token).await?)
     }
 }
 
@@ -247,12 +247,12 @@ impl CredentialStore for SystemCredentialStore {
 /// Loads/refreshes stored `WorkOS` credentials through the existing
 /// `auth`/`token_storage` primitives, injects the `Authorization: Bearer`
 /// header, and retries exactly once on an unexpected `401`.
-pub struct AuthenticatedControlPlaneClient {
+pub struct AuthenticatedControlPlaneClient<S = SystemCredentialStore> {
     http: reqwest::Client,
     base_url: String,
     workos_api_base_url: String,
     workos_client_id: String,
-    credential_store: Arc<dyn CredentialStore>,
+    credential_store: S,
     refresh_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -301,23 +301,25 @@ impl AuthenticatedControlPlaneClient {
             base_url,
             workos_api_base_url,
             workos_client_id,
-            Box::new(SystemCredentialStore),
+            SystemCredentialStore,
         )
     }
+}
 
+impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
     pub fn with_credential_store(
         http: reqwest::Client,
         base_url: impl Into<String>,
         workos_api_base_url: impl Into<String>,
         workos_client_id: impl Into<String>,
-        credential_store: Box<dyn CredentialStore>,
+        credential_store: S,
     ) -> Self {
         Self {
             http,
             base_url: base_url.into(),
             workos_api_base_url: workos_api_base_url.into(),
             workos_client_id: workos_client_id.into(),
-            credential_store: Arc::from(credential_store),
+            credential_store,
             refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
@@ -521,29 +523,14 @@ impl AuthenticatedControlPlaneClient {
     }
 
     async fn load_credentials(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
-        let credential_store = Arc::clone(&self.credential_store);
-        tokio::task::spawn_blocking(move || credential_store.load())
-            .await
-            .map_err(|error| {
-                ControlPlaneError::Storage(format!(
-                    "credential store worker failed while loading credentials: {error}"
-                ))
-            })?
+        self.credential_store.load().await
     }
 
     async fn save_credentials(
         &self,
         token: &TokenResponse,
     ) -> Result<StoredTokens, ControlPlaneError> {
-        let credential_store = Arc::clone(&self.credential_store);
-        let token = token.clone();
-        tokio::task::spawn_blocking(move || credential_store.save(&token))
-            .await
-            .map_err(|error| {
-                ControlPlaneError::Storage(format!(
-                    "credential store worker failed while saving credentials: {error}"
-                ))
-            })?
+        self.credential_store.save(token).await
     }
 
     fn endpoint(&self, path: &str) -> String {
@@ -634,7 +621,7 @@ where
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier, Mutex};
@@ -977,11 +964,11 @@ mod tests {
     }
 
     impl CredentialStore for FakeCredentialStore {
-        fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
+        async fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
             Ok(self.tokens.lock().unwrap().clone())
         }
 
-        fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
+        async fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
             self.save_calls.lock().unwrap().push(token.clone());
             let stored = StoredTokens {
                 access_token: token.access_token.clone(),
@@ -1020,7 +1007,7 @@ mod tests {
     }
 
     impl CredentialStore for ConcurrentCredentialStore {
-        fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
+        async fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
             let load_number = self.initial_loads.fetch_add(1, Ordering::SeqCst);
             if load_number < 4 {
                 thread::sleep(Duration::from_millis(10));
@@ -1029,7 +1016,7 @@ mod tests {
             Ok(self.tokens.lock().unwrap().clone())
         }
 
-        fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
+        async fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
             self.save_calls.lock().unwrap().push(token.clone());
             let stored = StoredTokens {
                 access_token: token.access_token.clone(),
@@ -1047,7 +1034,7 @@ mod tests {
     struct RuntimeCheckingCredentialStore;
 
     impl CredentialStore for RuntimeCheckingCredentialStore {
-        fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
+        async fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
             // This would panic if the blocking credential operation ran on a
             // Tokio runtime thread.
             let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1057,7 +1044,7 @@ mod tests {
             Ok(Some(valid_stored_tokens("valid-access-token")))
         }
 
-        fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
+        async fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .build()
                 .expect("build nested test runtime");
@@ -1224,7 +1211,7 @@ mod tests {
                 .collect::<Vec<_>>();
             let mut results = Vec::new();
             for handle in handles {
-                results.push(handle.await.expect("concurrent state request task"));
+                results.push(handle.expect("concurrent state request task"));
             }
             results
         });

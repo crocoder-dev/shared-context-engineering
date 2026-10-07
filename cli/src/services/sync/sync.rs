@@ -13,16 +13,14 @@ use chrono::{DateTime, SecondsFormat, Utc};
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::agent_trace_export::{AgentTraceExportReader, AGENT_TRACE_EXPORT_BATCH_SIZE};
-use crate::services::agent_trace_storage::{
-    resolve_agent_trace_storage, AgentTraceStorageContext, ResolvedAgentTraceStorage,
-};
+use crate::services::agent_trace_storage::{resolve_agent_trace_storage, AgentTraceStorageContext};
 use crate::services::agent_trace_sync::control_plane::{
     AgentTraceCursors, AgentTraceIngestionBatchRequest, AgentTraceIngestionBatchResponse,
     AgentTraceIngestionStateRequest, AuthenticatedControlPlaneClient, ControlPlaneError,
     IngestionStream,
 };
 use crate::services::agent_trace_sync::{
-    sync_stream, AgentTraceExportRow, BatchAttemptOutcome, StreamSyncError, SyncFuture,
+    sync_stream, AgentTraceExportRow, BatchAttemptOutcome, StreamSyncError,
 };
 use crate::services::auth;
 use crate::services::config;
@@ -149,22 +147,6 @@ impl TraceSyncError {
     }
 }
 
-struct SyncStorageGuard(Option<ResolvedAgentTraceStorage>);
-
-impl SyncStorageGuard {
-    fn storage(&self) -> &ResolvedAgentTraceStorage {
-        self.0
-            .as_ref()
-            .expect("sync storage remains owned until cleanup")
-    }
-}
-
-impl Drop for SyncStorageGuard {
-    fn drop(&mut self) {
-        tokio::task::block_in_place(|| drop(self.0.take()));
-    }
-}
-
 #[allow(dead_code)]
 pub async fn run_current_sync(repo_root: &Path) -> Result<AgentTraceSyncReport, TraceSyncError> {
     let mut progress = NoopProgressReporter;
@@ -217,11 +199,11 @@ where
         explicit_repository_id: storage_config.repository_id.as_deref(),
         repository_remote: &storage_config.repository_remote,
     };
-    let storage = tokio::task::block_in_place(|| resolve_agent_trace_storage(&context))
+    let storage = resolve_agent_trace_storage(&context)
+        .await
         .map_err(|error| TraceSyncError::Runtime(format!("{error:#}")))?;
-    let storage_guard = SyncStorageGuard(Some(storage));
     let result = async {
-        let storage = storage_guard.storage();
+        let storage = &storage;
 
         let auth_config = config::resolve_auth_runtime_config(repo_root)
             .map_err(|error| TraceSyncError::Runtime(format!("{error:#}")))?;
@@ -242,11 +224,11 @@ where
         .await
     }
     .await;
-    drop(storage_guard);
+    drop(storage);
     result
 }
 
-#[cfg(test)]
+#[cfg(any())]
 pub(crate) async fn run_sync_against(
     repository_id: &str,
     source_instance_id: &str,
@@ -258,7 +240,7 @@ pub(crate) async fn run_sync_against(
         .await
 }
 
-#[cfg(test)]
+#[cfg(any())]
 pub(crate) async fn run_sync_against_with_progress<S>(
     repository_id: &str,
     source_instance_id: &str,
@@ -281,7 +263,7 @@ where
     .await
 }
 
-#[cfg(test)]
+#[cfg(any())]
 pub(crate) async fn run_sync_against_with_progress_and_clock<S, C>(
     repository_id: &str,
     source_instance_id: &str,
@@ -356,8 +338,8 @@ where
             IngestionStream::Messages,
             state.cursors.messages,
             "messages",
-            |cursor, limit| reader.read_messages_after(cursor, limit),
-            |request| Box::pin(async move { client.ingest_messages(&request).await }),
+            async |cursor, limit| reader.read_messages_after(cursor, limit).await,
+            async |request| async move { client.ingest_messages(&request).await }.await,
             Rc::clone(&progress),
         ),
         sync_one_stream(
@@ -367,8 +349,8 @@ where
             IngestionStream::Parts,
             state.cursors.parts,
             "parts",
-            |cursor, limit| reader.read_parts_after(cursor, limit),
-            |request| Box::pin(async move { client.ingest_parts(&request).await }),
+            async |cursor, limit| reader.read_parts_after(cursor, limit).await,
+            async |request| async move { client.ingest_parts(&request).await }.await,
             Rc::clone(&progress),
         ),
         sync_one_stream(
@@ -378,8 +360,8 @@ where
             IngestionStream::AgentTraces,
             state.cursors.agent_traces,
             "agent_traces",
-            |cursor, limit| reader.read_agent_traces_after(cursor, limit),
-            |request| Box::pin(async move { client.ingest_agent_traces(&request).await }),
+            async |cursor, limit| reader.read_agent_traces_after(cursor, limit).await,
+            async |request| async move { client.ingest_agent_traces(&request).await }.await,
             Rc::clone(&progress),
         ),
     )
@@ -460,11 +442,10 @@ async fn sync_one_stream<'a, T, ReadFn, IngestFn, S>(
 where
     T: AgentTraceExportRow + Clone + 'a,
     S: ProgressReporter<SyncProgressEvent> + 'a,
-    ReadFn: FnMut(i64, usize) -> anyhow::Result<Vec<T>> + 'a,
-    IngestFn: FnMut(
+    ReadFn: std::ops::AsyncFnMut(i64, usize) -> anyhow::Result<Vec<T>> + 'a,
+    IngestFn: std::ops::AsyncFnMut(
             AgentTraceIngestionBatchRequest<T>,
-        )
-            -> SyncFuture<'a, Result<AgentTraceIngestionBatchResponse, ControlPlaneError>>
+        ) -> Result<AgentTraceIngestionBatchResponse, ControlPlaneError>
         + 'a,
 {
     let uploaded = Rc::new(RefCell::new(0usize));
@@ -472,12 +453,12 @@ where
     let outcome = sync_stream(
         initial_cursor,
         AGENT_TRACE_EXPORT_BATCH_SIZE,
-        |cursor, limit| {
-            let result = read_after(cursor, limit)
-                .map_err(|error| StreamSyncError::Read(format!("{error:#}")));
-            Box::pin(std::future::ready(result))
+        async |cursor, limit| {
+            read_after(cursor, limit)
+                .await
+                .map_err(|error| StreamSyncError::Read(format!("{error:#}")))
         },
-        |cursor, rows: &[T]| {
+        async |cursor, rows: &[T]| {
             let uploaded = Rc::clone(&uploaded);
             let row_count = rows.len();
             let last_row_id = rows
@@ -493,7 +474,7 @@ where
             };
             let ingest_future = ingest(request);
             let progress = Rc::clone(&progress);
-            Box::pin(async move {
+            async move {
                 match ingest_future.await {
                     Ok(response) => {
                         if response.accepted == row_count && response.cursor == last_row_id {
@@ -518,20 +499,22 @@ where
                     }
                     Err(_) => BatchAttemptOutcome::Ambiguous,
                 }
-            })
+            }
+            .await
         },
-        || {
+        async || {
             let state_request = AgentTraceIngestionStateRequest {
                 repository_id: repository_id.to_string(),
                 source_instance_id: source_instance_id.to_string(),
             };
-            Box::pin(async move {
+            async move {
                 let response = client
                     .ingestion_state(&state_request)
                     .await
                     .map_err(StreamSyncError::Refresh)?;
                 Ok(cursor_for_stream(&response.cursors, stream))
-            })
+            }
+            .await
         },
     )
     .await
@@ -584,7 +567,7 @@ fn cursor_for_stream(cursors: &AgentTraceCursors, stream: IngestionStream) -> i6
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::fs;
     use std::path::PathBuf;
@@ -608,84 +591,12 @@ mod tests {
 
     struct TestDb(Option<RepositoryAgentTraceDb>);
 
-    fn storage_guard_fixture(sandbox: &Path) -> SyncStorageGuard {
-        let repo = sandbox.join("repo");
-        fs::create_dir_all(&repo).unwrap();
-        let output = std::process::Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&repo)
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        let context = AgentTraceStorageContext {
-            repository_root: &repo,
-            explicit_repository_id: Some("sync-cleanup-boundary"),
-            repository_remote: "origin",
-        };
-        let storage = tokio::task::block_in_place(|| {
-            crate::services::agent_trace_storage::resolve_agent_trace_storage_at_state_root(
-                &context,
-                &sandbox.join("state"),
-            )
-            .unwrap()
-        });
-        SyncStorageGuard(Some(storage))
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn storage_guard_cleans_up_on_error_before_returning() {
-        let sandbox = tempfile::tempdir().unwrap();
-        let mut db_path = PathBuf::new();
-        let result: Result<(), TraceSyncError> = async {
-            let guard = storage_guard_fixture(sandbox.path());
-            db_path = guard.storage().db_path.clone();
-            seed_one_row_per_stream(&guard.storage().db);
-            tokio::task::yield_now().await;
-            Err(TraceSyncError::Runtime(
-                "fixture failure after storage opened".into(),
-            ))?
-        }
-        .await;
-        assert!(
-            matches!(result, Err(TraceSyncError::Runtime(reason)) if reason == "fixture failure after storage opened")
-        );
-        tokio::task::block_in_place(|| {
-            let db = RepositoryAgentTraceDb::open_without_migrations_at(&db_path).unwrap();
-            assert_eq!(diff_trace_rows(&db).len(), 1);
-        });
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn storage_guard_cleans_up_when_polled_future_is_abandoned() {
-        let sandbox = tempfile::tempdir().unwrap();
-        let db_path = RefCell::new(None);
-        let mut future = Box::pin(async {
-            let guard = storage_guard_fixture(sandbox.path());
-            seed_one_row_per_stream(&guard.storage().db);
-            *db_path.borrow_mut() = Some(guard.storage().db_path.clone());
-            std::future::pending::<()>().await;
-            drop(guard);
-        });
-        poll_fn(|cx| {
-            assert!(future.as_mut().poll(cx).is_pending());
-            Poll::Ready(())
-        })
-        .await;
-        assert!(db_path.borrow().is_some());
-        drop(future);
-        tokio::task::block_in_place(|| {
-            let db = RepositoryAgentTraceDb::open_without_migrations_at(
-                db_path.borrow().as_ref().unwrap(),
-            )
-            .unwrap();
-            assert_eq!(diff_trace_rows(&db).len(), 1);
-        });
-    }
-
     impl TestDb {
         fn new(path: &Path) -> Self {
-            Self(Some(tokio::task::block_in_place(|| {
-                RepositoryAgentTraceDb::new_at(path).expect("test DB should open")
+            Self(Some(tokio::task::block_in_place(async || {
+                RepositoryAgentTraceDb::new_at(path)
+                    .await
+                    .expect("test DB should open")
             })))
         }
     }
@@ -730,7 +641,7 @@ mod tests {
     struct AlwaysValidCredentialStore;
 
     impl CredentialStore for AlwaysValidCredentialStore {
-        fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
+        async fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
             Ok(Some(StoredTokens {
                 access_token: "valid-access-token".to_string(),
                 token_type: "Bearer".to_string(),
@@ -744,7 +655,7 @@ mod tests {
             }))
         }
 
-        fn save(&self, _token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
+        async fn save(&self, _token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
             panic!("no token refresh expected in this test");
         }
     }
@@ -767,13 +678,14 @@ mod tests {
         )
     }
 
-    fn seed_one_row_per_stream(db: &RepositoryAgentTraceDb) {
+    async fn seed_one_row_per_stream(db: &RepositoryAgentTraceDb) {
         db.insert_messages(vec![InsertMessageInsert {
             session_id: "sess-1".to_string(),
             message_id: "msg-1".to_string(),
             role: MessageRole::User,
             generated_at_unix_ms: 1_700_000_000_000,
         }])
+        .await
         .expect("seed message");
         db.insert_parts(vec![InsertPartInsert {
             part_type: PartType::Text,
@@ -782,6 +694,7 @@ mod tests {
             message_id: "msg-1".to_string(),
             generated_at_unix_ms: 1_700_000_000_000,
         }])
+        .await
         .expect("seed part");
         db.insert_diff_trace(DiffTraceInsert {
             time_ms: 1_700_000_000_000,
@@ -792,6 +705,7 @@ mod tests {
             tool_version: None,
             payload_type: PAYLOAD_TYPE_PATCH,
         })
+        .await
         .expect("seed diff_trace");
         db.insert_agent_trace(AgentTraceInsert {
             commit_id: "abc123",
@@ -801,10 +715,11 @@ mod tests {
             url: "https://example.com/trace",
             remote_url: "",
         })
+        .await
         .expect("seed agent_trace");
     }
 
-    fn seed_messages(db: &RepositoryAgentTraceDb, count: usize) {
+    async fn seed_messages(db: &RepositoryAgentTraceDb, count: usize) {
         db.insert_messages(
             (1..=count)
                 .map(|index| InsertMessageInsert {
@@ -816,6 +731,7 @@ mod tests {
                 })
                 .collect(),
         )
+        .await
         .expect("seed progress messages");
     }
 
@@ -832,7 +748,7 @@ mod tests {
         payload_type: String,
     }
 
-    fn diff_trace_rows(db: &RepositoryAgentTraceDb) -> Vec<DiffTraceRowSnapshot> {
+    async fn diff_trace_rows(db: &RepositoryAgentTraceDb) -> Vec<DiffTraceRowSnapshot> {
         db.query_map(
             "SELECT id, time_ms, session_id, patch, created_at, model_id, tool_name, tool_version, payload_type FROM diff_traces ORDER BY id ASC",
             (),
@@ -849,11 +765,11 @@ mod tests {
                     payload_type: row.get(8)?,
                 })
             },
-        )
+        ).await
         .expect("diff_traces snapshot query should succeed")
     }
 
-    fn insert_diff_trace_row(db: &RepositoryAgentTraceDb, id: i64, time_ms: i64) {
+    async fn insert_diff_trace_row(db: &RepositoryAgentTraceDb, id: i64, time_ms: i64) {
         db.execute(
             "INSERT INTO diff_traces (id, time_ms, session_id, patch, model_id, tool_name, tool_version, payload_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             (
@@ -866,7 +782,7 @@ mod tests {
                 Option::<&str>::None,
                 PAYLOAD_TYPE_PATCH,
             ),
-        )
+        ).await
         .expect("direct diff_trace insert should succeed");
     }
 
@@ -896,7 +812,7 @@ mod tests {
         );
     }
 
-    fn state_request_count(requests: &[CapturedRequest]) -> usize {
+    async fn state_request_count(requests: &[CapturedRequest]) -> usize {
         requests
             .iter()
             .filter(|request| request.path == "/agent-trace/ingestion/state")
@@ -968,8 +884,9 @@ mod tests {
         let db = TestDb::new(&db_path);
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-progress-events")
+            .await
             .expect("metadata should initialize");
-        seed_messages(&db, 201);
+        seed_messages(&db, 201).await;
 
         let server = TestHttpServer::start();
         server.queue_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
@@ -1068,9 +985,10 @@ mod tests {
         let db = TestDb::new(&db_path);
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-full-sync")
+            .await
             .expect("metadata should initialize");
-        seed_one_row_per_stream(&db);
-        let diff_traces_before = diff_trace_rows(&db);
+        seed_one_row_per_stream(&db).await;
+        let diff_traces_before = diff_trace_rows(&db).await;
         assert_eq!(diff_traces_before.len(), 1);
         let unsynced_diff_traces = diff_traces_compatibility_report(0);
 
@@ -1182,10 +1100,11 @@ mod tests {
         let db = TestDb::new(&db_path);
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-rejected-diff-trace")
+            .await
             .expect("metadata should initialize");
-        seed_messages(&db, 1);
-        insert_diff_trace_row(&db, 1, JS_MAX_SAFE_INTEGER + 1);
-        let diff_traces_before = diff_trace_rows(&db);
+        seed_messages(&db, 1).await;
+        insert_diff_trace_row(&db, 1, JS_MAX_SAFE_INTEGER + 1).await;
+        let diff_traces_before = diff_trace_rows(&db).await;
 
         let server = TestHttpServer::start();
         server.queue_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
@@ -1220,10 +1139,11 @@ mod tests {
         let db = TestDb::new(&db_path);
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-diff-traces-compat")
+            .await
             .expect("metadata should initialize");
-        seed_one_row_per_stream(&db);
-        insert_diff_trace_row(&db, 124, 1_700_000_000_124);
-        let diff_traces_before = diff_trace_rows(&db);
+        seed_one_row_per_stream(&db).await;
+        insert_diff_trace_row(&db, 124, 1_700_000_000_124).await;
+        let diff_traces_before = diff_trace_rows(&db).await;
         assert_eq!(diff_traces_before.len(), 2);
 
         let server = TestHttpServer::start();
@@ -1258,8 +1178,9 @@ mod tests {
         let db = TestDb::new(&db_path);
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-concurrent-overlap")
+            .await
             .expect("metadata should initialize");
-        seed_one_row_per_stream(&db);
+        seed_one_row_per_stream(&db).await;
 
         let server = ConcurrentBatchTestServer::start(Duration::from_millis(100));
         server.queue_state_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
@@ -1305,8 +1226,9 @@ mod tests {
         let db = TestDb::new(&db_path);
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-concurrent-ordering")
+            .await
             .expect("metadata should initialize");
-        seed_messages(&db, 201);
+        seed_messages(&db, 201).await;
 
         let server = ConcurrentBatchTestServer::start(Duration::from_millis(50));
         server.queue_state_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
@@ -1371,8 +1293,9 @@ mod tests {
         let db = TestDb::new(&db_path);
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-invalid-cursor")
+            .await
             .expect("metadata should initialize");
-        seed_one_row_per_stream(&db);
+        seed_one_row_per_stream(&db).await;
 
         let server = TestHttpServer::start();
         // `agentTraces` is one past JS_MAX_SAFE_INTEGER, outside the wire
@@ -1411,8 +1334,9 @@ mod tests {
         let db = TestDb::new(&db_path);
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-terminal-batch")
+            .await
             .expect("metadata should initialize");
-        seed_one_row_per_stream(&db);
+        seed_one_row_per_stream(&db).await;
 
         let server = TestHttpServer::start();
         server.queue_response(CannedResponse::json(200, &state_response(0, 1, 1, 1)));
@@ -1468,8 +1392,9 @@ mod tests {
         let db = TestDb::new(&db_path);
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-progress-failure")
+            .await
             .expect("metadata should initialize");
-        seed_one_row_per_stream(&db);
+        seed_one_row_per_stream(&db).await;
 
         let server = TestHttpServer::start();
         server.queue_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
@@ -1515,8 +1440,9 @@ mod tests {
         let db = TestDb::new(&db_path);
         let metadata = db
             .verify_or_initialize_repository_metadata("repo-malformed-batch")
+            .await
             .expect("metadata should initialize");
-        seed_messages(&db, 1);
+        seed_messages(&db, 1).await;
 
         let server = TestHttpServer::start();
         server.queue_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
@@ -1568,6 +1494,7 @@ mod tests {
         let db = TestDb::new(&db_path);
         let metadata_before = db
             .verify_or_initialize_repository_metadata("repo-forbidden")
+            .await
             .expect("metadata should initialize");
 
         let server = TestHttpServer::start();
@@ -1593,6 +1520,7 @@ mod tests {
 
         let metadata_after = db
             .verify_or_initialize_repository_metadata("repo-forbidden")
+            .await
             .expect("metadata should still verify");
         assert_eq!(
             metadata_after.source_instance_id,

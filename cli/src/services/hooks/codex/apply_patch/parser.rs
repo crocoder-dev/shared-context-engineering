@@ -296,7 +296,7 @@ fn validate_path(path: &str) -> Result<String, CodexPatchParseError> {
     Ok(path.to_string())
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 

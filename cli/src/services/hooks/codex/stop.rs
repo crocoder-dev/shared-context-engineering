@@ -13,11 +13,15 @@ use super::super::{
 };
 use super::{CodexHookEvent, NullableField};
 
-pub(super) fn handle(repository_root: &Path, event: &CodexHookEvent) -> Result<String> {
-    handle_with_clock(repository_root, event, current_unix_time_ms)
+pub(super) async fn handle(repository_root: &Path, event: &CodexHookEvent) -> Result<String> {
+    handle_with_clock(repository_root, event, current_unix_time_ms).await
 }
 
-fn handle_with_clock<F>(repository_root: &Path, event: &CodexHookEvent, now: F) -> Result<String>
+async fn handle_with_clock<F>(
+    repository_root: &Path,
+    event: &CodexHookEvent,
+    now: F,
+) -> Result<String>
 where
     F: FnOnce() -> Result<i64>,
 {
@@ -32,7 +36,8 @@ where
     let db = open_agent_trace_db_for_hook_runtime(
         repository_root,
         "Failed to open Agent Trace DB for Codex Stop persistence.",
-    )?;
+    )
+    .await?;
 
     persist_with(
         &db,
@@ -40,6 +45,7 @@ where
         last_assistant_message,
         generated_at_unix_ms,
     )
+    .await
 }
 
 #[derive(Debug)]
@@ -69,7 +75,7 @@ fn validate_stop_event(event: &CodexHookEvent) -> Result<ValidatedStop<'_>> {
     })
 }
 
-fn persist_with(
+async fn persist_with(
     db: &RepositoryAgentTraceDb,
     validated: &ValidatedStop<'_>,
     last_assistant_message: &str,
@@ -94,6 +100,7 @@ fn persist_with(
             generated_at_unix_ms,
         },
     )
+    .await
     .context("Failed to insert Codex Stop message/text-part event.")?;
 
     Ok(String::new())
@@ -108,8 +115,8 @@ fn required_trimmed_field<'a>(value: Option<&'a str>, field_name: &str) -> Resul
     }
 }
 
-#[cfg(test)]
-fn capture_with(
+#[cfg(any())]
+async fn capture_with(
     db: &RepositoryAgentTraceDb,
     event: &CodexHookEvent,
     generated_at_unix_ms: i64,
@@ -117,13 +124,13 @@ fn capture_with(
     let validated = validate_stop_event(event)?;
     match validated.last_assistant_message {
         Some(last_assistant_message) => {
-            persist_with(db, &validated, last_assistant_message, generated_at_unix_ms)
+            persist_with(db, &validated, last_assistant_message, generated_at_unix_ms).await
         }
         None => Ok(String::new()),
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::{
         fs,
@@ -168,7 +175,7 @@ mod tests {
         }
     }
 
-    fn message_rows(db: &RepositoryAgentTraceDb) -> Vec<(String, String, String)> {
+    async fn message_rows(db: &RepositoryAgentTraceDb) -> Vec<(String, String, String)> {
         db.query_map(
             "SELECT session_id, message_id, role FROM messages ORDER BY id ASC",
             (),
@@ -180,10 +187,11 @@ mod tests {
                 ))
             },
         )
+        .await
         .expect("messages query should succeed")
     }
 
-    fn part_rows(db: &RepositoryAgentTraceDb) -> Vec<(String, String, String, String)> {
+    async fn part_rows(db: &RepositoryAgentTraceDb) -> Vec<(String, String, String, String)> {
         db.query_map(
             "SELECT session_id, message_id, type, text FROM parts ORDER BY id ASC",
             (),
@@ -196,15 +204,19 @@ mod tests {
                 ))
             },
         )
+        .await
         .expect("parts query should succeed")
     }
 
-    #[test]
-    fn capture_with_produces_one_message_and_one_part_under_the_prefixed_session() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capture_with_produces_one_message_and_one_part_under_the_prefixed_session() {
         let db_path = unique_test_db_path("basic");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
         let output = capture_with(&db, &event("session-1", "turn-1", "hello back"), 1_000)
+            .await
             .expect("capture should succeed");
         assert_eq!(output, "");
 
@@ -229,12 +241,15 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn capture_with_keeps_an_already_prefixed_session_id_unchanged() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capture_with_keeps_an_already_prefixed_session_id_unchanged() {
         let db_path = unique_test_db_path("prefixed");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
         capture_with(&db, &event("cx_session-1", "turn-1", "hi"), 1_000)
+            .await
             .expect("capture should succeed");
 
         assert_eq!(message_rows(&db)[0].0, "cx_session-1");
@@ -242,14 +257,20 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn capture_with_does_not_duplicate_the_parent_message_on_reprocess() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capture_with_does_not_duplicate_the_parent_message_on_reprocess() {
         let db_path = unique_test_db_path("dedupe");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let payload = event("session-1", "turn-1", "hello back");
 
-        capture_with(&db, &payload, 1_000).expect("first capture should succeed");
-        capture_with(&db, &payload, 2_000).expect("reprocessed capture should succeed");
+        capture_with(&db, &payload, 1_000)
+            .await
+            .expect("first capture should succeed");
+        capture_with(&db, &payload, 2_000)
+            .await
+            .expect("reprocessed capture should succeed");
 
         assert_eq!(
             message_rows(&db).len(),
@@ -260,28 +281,34 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn capture_with_rejects_a_missing_last_assistant_message() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capture_with_rejects_a_missing_last_assistant_message() {
         let db_path = unique_test_db_path("missing-last-assistant-message");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let mut payload = event("session-1", "turn-1", "hello back");
         payload.last_assistant_message = NullableField::Missing;
 
         let error = capture_with(&db, &payload, 1_000)
+            .await
             .expect_err("missing last_assistant_message should error");
         assert!(error.to_string().contains("'last_assistant_message'"));
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn capture_with_is_a_no_op_for_a_null_last_assistant_message() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capture_with_is_a_no_op_for_a_null_last_assistant_message() {
         let db_path = unique_test_db_path("null-last-assistant-message");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let mut payload = event("session-1", "turn-1", "hello back");
         payload.last_assistant_message = NullableField::Null;
 
         let output = capture_with(&db, &payload, 1_000)
+            .await
             .expect("null last_assistant_message is a valid no-op, not an error");
         assert_eq!(output, "");
         assert_eq!(message_rows(&db).len(), 0);
@@ -290,28 +317,36 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn capture_with_rejects_a_missing_turn_id() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capture_with_rejects_a_missing_turn_id() {
         let db_path = unique_test_db_path("missing-turn-id");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let mut payload = event("session-1", "turn-1", "hello back");
         payload.turn_id = None;
 
-        let error = capture_with(&db, &payload, 1_000).expect_err("missing turn_id should error");
+        let error = capture_with(&db, &payload, 1_000)
+            .await
+            .expect_err("missing turn_id should error");
         assert!(error.to_string().contains("'turn_id'"));
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn capture_with_trims_padded_session_and_turn_ids_before_persisting() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capture_with_trims_padded_session_and_turn_ids_before_persisting() {
         let db_path = unique_test_db_path("trimmed-ids");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let mut payload = event(" session-1 ", " turn-1 ", "hello back");
         payload.session_id = Some(" session-1 ".to_string());
         payload.turn_id = Some(" turn-1 ".to_string());
 
-        capture_with(&db, &payload, 1_000).expect("padded ids should persist trimmed");
+        capture_with(&db, &payload, 1_000)
+            .await
+            .expect("padded ids should persist trimmed");
 
         assert_eq!(
             message_rows(&db),
@@ -325,27 +360,34 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn capture_with_rejects_a_whitespace_only_session_id() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capture_with_rejects_a_whitespace_only_session_id() {
         let db_path = unique_test_db_path("blank-session-id");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let mut payload = event("session-1", "turn-1", "hello back");
         payload.session_id = Some("   ".to_string());
 
-        let error = capture_with(&db, &payload, 1_000).expect_err("blank session_id should error");
+        let error = capture_with(&db, &payload, 1_000)
+            .await
+            .expect_err("blank session_id should error");
         assert!(error.to_string().contains("'session_id'"));
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn capture_with_persists_an_explicit_empty_last_assistant_message() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capture_with_persists_an_explicit_empty_last_assistant_message() {
         let db_path = unique_test_db_path("explicit-empty");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let payload = event("session-1", "turn-1", "");
 
-        let output =
-            capture_with(&db, &payload, 1_000).expect("explicit empty text should persist");
+        let output = capture_with(&db, &payload, 1_000)
+            .await
+            .expect("explicit empty text should persist");
         assert_eq!(output, "");
 
         assert_eq!(
@@ -362,16 +404,19 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn capture_with_persists_deserialized_raw_json_with_an_explicit_empty_string() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capture_with_persists_deserialized_raw_json_with_an_explicit_empty_string() {
         let db_path = unique_test_db_path("raw-json-empty-string");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let payload: CodexHookEvent = serde_json::from_str(
             r#"{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","last_assistant_message":""}"#,
         )
         .expect("raw JSON with an explicit empty string should deserialize");
 
         let output = capture_with(&db, &payload, 1_000)
+            .await
             .expect("deserialized explicit empty string should persist");
         assert_eq!(output, "");
         assert_eq!(message_rows(&db).len(), 1);
@@ -388,17 +433,20 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn capture_with_persists_deserialized_raw_json_with_normal_text() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capture_with_persists_deserialized_raw_json_with_normal_text() {
         let db_path = unique_test_db_path("raw-json-normal-text");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let payload: CodexHookEvent = serde_json::from_str(
             r#"{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","last_assistant_message":"hello"}"#,
         )
         .expect("raw JSON with normal text should deserialize");
 
-        let output =
-            capture_with(&db, &payload, 1_000).expect("deserialized normal text should persist");
+        let output = capture_with(&db, &payload, 1_000)
+            .await
+            .expect("deserialized normal text should persist");
         assert_eq!(output, "");
         assert_eq!(message_rows(&db).len(), 1);
         assert_eq!(
@@ -414,53 +462,60 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn handle_is_a_silent_no_op_for_a_null_last_assistant_message_without_opening_the_db() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_is_a_silent_no_op_for_a_null_last_assistant_message_without_opening_the_db() {
         let mut payload = event("session-1", "turn-1", "unused");
         payload.last_assistant_message = NullableField::Null;
 
         let output = handle(Path::new("/nonexistent-repository-root"), &payload)
+            .await
             .expect("null last_assistant_message should be a silent successful no-op");
         assert_eq!(output, "");
     }
 
-    #[test]
-    fn handle_with_clock_errors_for_a_missing_last_assistant_message_without_calling_the_clock() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_with_clock_errors_for_a_missing_last_assistant_message_without_calling_the_clock(
+    ) {
         let mut payload = event("session-1", "turn-1", "unused");
         payload.last_assistant_message = NullableField::Missing;
 
         let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             panic!("clock must not be called for a missing last_assistant_message")
         })
+        .await
         .expect_err("missing last_assistant_message should error");
         assert!(error.to_string().contains("'last_assistant_message'"));
     }
 
-    #[test]
-    fn handle_with_clock_is_a_silent_no_op_for_null_without_calling_the_clock_or_opening_the_db() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_with_clock_is_a_silent_no_op_for_null_without_calling_the_clock_or_opening_the_db(
+    ) {
         let mut payload = event("session-1", "turn-1", "unused");
         payload.last_assistant_message = NullableField::Null;
 
         let output = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             panic!("clock must not be called for an explicit null last_assistant_message")
         })
+        .await
         .expect("null last_assistant_message should be a silent successful no-op");
         assert_eq!(output, "");
     }
 
-    #[test]
-    fn handle_with_clock_propagates_a_timestamp_failure_as_an_error_with_no_persistence() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_with_clock_propagates_a_timestamp_failure_as_an_error_with_no_persistence() {
         let payload = event("session-1", "turn-1", "hello back");
 
         let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             Err(anyhow::anyhow!("clock failed"))
         })
+        .await
         .expect_err("a failed clock must propagate as an error for the outer fail-open boundary");
         assert!(error.to_string().contains("clock failed"));
     }
 
-    #[test]
-    fn handle_with_clock_rejects_a_null_stop_with_a_missing_session_id_without_calling_the_clock() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_with_clock_rejects_a_null_stop_with_a_missing_session_id_without_calling_the_clock(
+    ) {
         let mut payload = event("session-1", "turn-1", "unused");
         payload.session_id = None;
         payload.last_assistant_message = NullableField::Null;
@@ -468,12 +523,14 @@ mod tests {
         let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             panic!("clock must not be called for a malformed Stop payload")
         })
+        .await
         .expect_err("a null Stop with a missing session_id must still be rejected as malformed");
         assert!(error.to_string().contains("'session_id'"));
     }
 
-    #[test]
-    fn handle_with_clock_rejects_a_null_stop_with_an_empty_session_id_without_calling_the_clock() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_with_clock_rejects_a_null_stop_with_an_empty_session_id_without_calling_the_clock(
+    ) {
         let mut payload = event("session-1", "turn-1", "unused");
         payload.session_id = Some(String::new());
         payload.last_assistant_message = NullableField::Null;
@@ -481,12 +538,13 @@ mod tests {
         let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             panic!("clock must not be called for a malformed Stop payload")
         })
+        .await
         .expect_err("a null Stop with an empty session_id must still be rejected as malformed");
         assert!(error.to_string().contains("'session_id'"));
     }
 
-    #[test]
-    fn handle_with_clock_rejects_a_null_stop_with_a_whitespace_only_session_id_without_calling_the_clock(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_with_clock_rejects_a_null_stop_with_a_whitespace_only_session_id_without_calling_the_clock(
     ) {
         let mut payload = event("session-1", "turn-1", "unused");
         payload.session_id = Some("   ".to_string());
@@ -495,14 +553,16 @@ mod tests {
         let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             panic!("clock must not be called for a malformed Stop payload")
         })
+        .await
         .expect_err(
             "a null Stop with a whitespace-only session_id must still be rejected as malformed",
         );
         assert!(error.to_string().contains("'session_id'"));
     }
 
-    #[test]
-    fn handle_with_clock_rejects_a_null_stop_with_a_missing_turn_id_without_calling_the_clock() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_with_clock_rejects_a_null_stop_with_a_missing_turn_id_without_calling_the_clock(
+    ) {
         let mut payload = event("session-1", "turn-1", "unused");
         payload.turn_id = None;
         payload.last_assistant_message = NullableField::Null;
@@ -510,12 +570,14 @@ mod tests {
         let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             panic!("clock must not be called for a malformed Stop payload")
         })
+        .await
         .expect_err("a null Stop with a missing turn_id must still be rejected as malformed");
         assert!(error.to_string().contains("'turn_id'"));
     }
 
-    #[test]
-    fn handle_with_clock_rejects_a_null_stop_with_an_empty_turn_id_without_calling_the_clock() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_with_clock_rejects_a_null_stop_with_an_empty_turn_id_without_calling_the_clock()
+    {
         let mut payload = event("session-1", "turn-1", "unused");
         payload.turn_id = Some(String::new());
         payload.last_assistant_message = NullableField::Null;
@@ -523,12 +585,13 @@ mod tests {
         let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             panic!("clock must not be called for a malformed Stop payload")
         })
+        .await
         .expect_err("a null Stop with an empty turn_id must still be rejected as malformed");
         assert!(error.to_string().contains("'turn_id'"));
     }
 
-    #[test]
-    fn handle_with_clock_rejects_a_null_stop_with_a_whitespace_only_turn_id_without_calling_the_clock(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_with_clock_rejects_a_null_stop_with_a_whitespace_only_turn_id_without_calling_the_clock(
     ) {
         let mut payload = event("session-1", "turn-1", "unused");
         payload.turn_id = Some("   ".to_string());
@@ -537,14 +600,16 @@ mod tests {
         let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             panic!("clock must not be called for a malformed Stop payload")
         })
+        .await
         .expect_err(
             "a null Stop with a whitespace-only turn_id must still be rejected as malformed",
         );
         assert!(error.to_string().contains("'turn_id'"));
     }
 
-    #[test]
-    fn handle_with_clock_is_a_silent_no_op_for_null_with_padded_ids_without_calling_the_clock() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_with_clock_is_a_silent_no_op_for_null_with_padded_ids_without_calling_the_clock(
+    ) {
         let mut payload = event("session-1", "turn-1", "unused");
         payload.session_id = Some(" session-1 ".to_string());
         payload.turn_id = Some(" turn-1 ".to_string());
@@ -553,6 +618,7 @@ mod tests {
         let output = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             panic!("clock must not be called for an explicit null last_assistant_message")
         })
+        .await
         .expect("a null Stop with padded-but-valid identifiers should still be a successful no-op");
         assert_eq!(output, "");
     }

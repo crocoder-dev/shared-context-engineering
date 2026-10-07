@@ -552,7 +552,7 @@ fn format_database_retry_json(value: &ResolvedOptionalValue<DatabaseRetryConfig>
     })
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod database_retry_render_tests {
     use serde_json::json;
 

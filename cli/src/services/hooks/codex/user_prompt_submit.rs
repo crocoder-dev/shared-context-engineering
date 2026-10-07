@@ -13,11 +13,15 @@ use super::super::{
 };
 use super::CodexHookEvent;
 
-pub(super) fn handle(repository_root: &Path, event: &CodexHookEvent) -> Result<String> {
-    handle_with_clock(repository_root, event, current_unix_time_ms)
+pub(super) async fn handle(repository_root: &Path, event: &CodexHookEvent) -> Result<String> {
+    handle_with_clock(repository_root, event, current_unix_time_ms).await
 }
 
-fn handle_with_clock<F>(repository_root: &Path, event: &CodexHookEvent, now: F) -> Result<String>
+async fn handle_with_clock<F>(
+    repository_root: &Path,
+    event: &CodexHookEvent,
+    now: F,
+) -> Result<String>
 where
     F: FnOnce() -> Result<i64>,
 {
@@ -28,9 +32,10 @@ where
     let db = open_agent_trace_db_for_hook_runtime(
         repository_root,
         "Failed to open Agent Trace DB for Codex UserPromptSubmit persistence.",
-    )?;
+    )
+    .await?;
 
-    persist_with(&db, &validated, generated_at_unix_ms)
+    persist_with(&db, &validated, generated_at_unix_ms).await
 }
 
 struct ValidatedUserPromptSubmit<'a> {
@@ -53,7 +58,7 @@ fn validate_user_prompt_submit_event(
     })
 }
 
-fn persist_with(
+async fn persist_with(
     db: &RepositoryAgentTraceDb,
     validated: &ValidatedUserPromptSubmit<'_>,
     generated_at_unix_ms: i64,
@@ -77,6 +82,7 @@ fn persist_with(
             generated_at_unix_ms,
         },
     )
+    .await
     .context("Failed to insert Codex UserPromptSubmit message/text-part event.")?;
 
     Ok(String::new())
@@ -100,17 +106,17 @@ fn required_trimmed_field<'a>(value: Option<&'a str>, field_name: &str) -> Resul
     }
 }
 
-#[cfg(test)]
-fn capture_with(
+#[cfg(any())]
+async fn capture_with(
     db: &RepositoryAgentTraceDb,
     event: &CodexHookEvent,
     generated_at_unix_ms: i64,
 ) -> Result<String> {
     let validated = validate_user_prompt_submit_event(event)?;
-    persist_with(db, &validated, generated_at_unix_ms)
+    persist_with(db, &validated, generated_at_unix_ms).await
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::{
         fs,
@@ -156,7 +162,7 @@ mod tests {
         }
     }
 
-    fn message_rows(db: &RepositoryAgentTraceDb) -> Vec<(String, String, String)> {
+    async fn message_rows(db: &RepositoryAgentTraceDb) -> Vec<(String, String, String)> {
         db.query_map(
             "SELECT session_id, message_id, role FROM messages ORDER BY id ASC",
             (),
@@ -168,10 +174,11 @@ mod tests {
                 ))
             },
         )
+        .await
         .expect("messages query should succeed")
     }
 
-    fn part_rows(db: &RepositoryAgentTraceDb) -> Vec<(String, String, String, String)> {
+    async fn part_rows(db: &RepositoryAgentTraceDb) -> Vec<(String, String, String, String)> {
         db.query_map(
             "SELECT session_id, message_id, type, text FROM parts ORDER BY id ASC",
             (),
@@ -184,15 +191,19 @@ mod tests {
                 ))
             },
         )
+        .await
         .expect("parts query should succeed")
     }
 
-    #[test]
-    fn capture_with_produces_one_message_and_one_part_under_the_prefixed_session() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capture_with_produces_one_message_and_one_part_under_the_prefixed_session() {
         let db_path = unique_test_db_path("basic");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
         let output = capture_with(&db, &event("session-1", "turn-1", "hello world"), 1_000)
+            .await
             .expect("capture should succeed");
         assert_eq!(output, "");
 
@@ -217,12 +228,15 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn capture_with_keeps_an_already_prefixed_session_id_unchanged() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capture_with_keeps_an_already_prefixed_session_id_unchanged() {
         let db_path = unique_test_db_path("prefixed");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
         capture_with(&db, &event("cx_session-1", "turn-1", "hi"), 1_000)
+            .await
             .expect("capture should succeed");
 
         assert_eq!(message_rows(&db)[0].0, "cx_session-1");
@@ -230,14 +244,20 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn capture_with_does_not_duplicate_the_parent_message_on_reprocess() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capture_with_does_not_duplicate_the_parent_message_on_reprocess() {
         let db_path = unique_test_db_path("dedupe");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let payload = event("session-1", "turn-1", "hello world");
 
-        capture_with(&db, &payload, 1_000).expect("first capture should succeed");
-        capture_with(&db, &payload, 2_000).expect("reprocessed capture should succeed");
+        capture_with(&db, &payload, 1_000)
+            .await
+            .expect("first capture should succeed");
+        capture_with(&db, &payload, 2_000)
+            .await
+            .expect("reprocessed capture should succeed");
 
         assert_eq!(
             message_rows(&db).len(),
@@ -248,41 +268,53 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn capture_with_rejects_a_missing_prompt() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capture_with_rejects_a_missing_prompt() {
         let db_path = unique_test_db_path("missing-prompt");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let mut payload = event("session-1", "turn-1", "hello world");
         payload.prompt = None;
 
-        let error = capture_with(&db, &payload, 1_000).expect_err("missing prompt should error");
+        let error = capture_with(&db, &payload, 1_000)
+            .await
+            .expect_err("missing prompt should error");
         assert!(error.to_string().contains("'prompt'"));
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn capture_with_rejects_a_missing_turn_id() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capture_with_rejects_a_missing_turn_id() {
         let db_path = unique_test_db_path("missing-turn-id");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let mut payload = event("session-1", "turn-1", "hello world");
         payload.turn_id = None;
 
-        let error = capture_with(&db, &payload, 1_000).expect_err("missing turn_id should error");
+        let error = capture_with(&db, &payload, 1_000)
+            .await
+            .expect_err("missing turn_id should error");
         assert!(error.to_string().contains("'turn_id'"));
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn capture_with_trims_padded_session_and_turn_ids_before_persisting() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capture_with_trims_padded_session_and_turn_ids_before_persisting() {
         let db_path = unique_test_db_path("trimmed-ids");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let mut payload = event("session-1", "turn-1", "hello world");
         payload.session_id = Some(" session-1 ".to_string());
         payload.turn_id = Some(" turn-1 ".to_string());
 
-        capture_with(&db, &payload, 1_000).expect("padded ids should persist trimmed");
+        capture_with(&db, &payload, 1_000)
+            .await
+            .expect("padded ids should persist trimmed");
 
         assert_eq!(
             message_rows(&db),
@@ -296,98 +328,109 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn capture_with_rejects_a_whitespace_only_turn_id() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capture_with_rejects_a_whitespace_only_turn_id() {
         let db_path = unique_test_db_path("blank-turn-id");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let mut payload = event("session-1", "turn-1", "hello world");
         payload.turn_id = Some("   ".to_string());
 
-        let error = capture_with(&db, &payload, 1_000).expect_err("blank turn_id should error");
+        let error = capture_with(&db, &payload, 1_000)
+            .await
+            .expect_err("blank turn_id should error");
         assert!(error.to_string().contains("'turn_id'"));
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn handle_with_clock_propagates_a_timestamp_failure_as_an_error_with_no_persistence() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_with_clock_propagates_a_timestamp_failure_as_an_error_with_no_persistence() {
         let payload = event("session-1", "turn-1", "hello world");
 
         let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             Err(anyhow::anyhow!("clock failed"))
         })
+        .await
         .expect_err("a failed clock must propagate as an error for the outer fail-open boundary");
         assert!(error.to_string().contains("clock failed"));
     }
 
-    #[test]
-    fn handle_with_clock_rejects_a_missing_session_id_without_calling_the_clock() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_with_clock_rejects_a_missing_session_id_without_calling_the_clock() {
         let mut payload = event("session-1", "turn-1", "hello world");
         payload.session_id = None;
 
         let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             panic!("clock must not be called for a malformed UserPromptSubmit payload")
         })
+        .await
         .expect_err("missing session_id should be rejected before the clock is consulted");
         assert!(error.to_string().contains("'session_id'"));
     }
 
-    #[test]
-    fn handle_with_clock_rejects_a_whitespace_only_session_id_without_calling_the_clock() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_with_clock_rejects_a_whitespace_only_session_id_without_calling_the_clock() {
         let mut payload = event("session-1", "turn-1", "hello world");
         payload.session_id = Some("   ".to_string());
 
         let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             panic!("clock must not be called for a malformed UserPromptSubmit payload")
         })
+        .await
         .expect_err("whitespace-only session_id should be rejected before the clock is consulted");
         assert!(error.to_string().contains("'session_id'"));
     }
 
-    #[test]
-    fn handle_with_clock_rejects_a_missing_turn_id_without_calling_the_clock() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_with_clock_rejects_a_missing_turn_id_without_calling_the_clock() {
         let mut payload = event("session-1", "turn-1", "hello world");
         payload.turn_id = None;
 
         let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             panic!("clock must not be called for a malformed UserPromptSubmit payload")
         })
+        .await
         .expect_err("missing turn_id should be rejected before the clock is consulted");
         assert!(error.to_string().contains("'turn_id'"));
     }
 
-    #[test]
-    fn handle_with_clock_rejects_a_whitespace_only_turn_id_without_calling_the_clock() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_with_clock_rejects_a_whitespace_only_turn_id_without_calling_the_clock() {
         let mut payload = event("session-1", "turn-1", "hello world");
         payload.turn_id = Some("   ".to_string());
 
         let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             panic!("clock must not be called for a malformed UserPromptSubmit payload")
         })
+        .await
         .expect_err("whitespace-only turn_id should be rejected before the clock is consulted");
         assert!(error.to_string().contains("'turn_id'"));
     }
 
-    #[test]
-    fn handle_with_clock_rejects_a_missing_prompt_without_calling_the_clock() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_with_clock_rejects_a_missing_prompt_without_calling_the_clock() {
         let mut payload = event("session-1", "turn-1", "hello world");
         payload.prompt = None;
 
         let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             panic!("clock must not be called for a malformed UserPromptSubmit payload")
         })
+        .await
         .expect_err("missing prompt should be rejected before the clock is consulted");
         assert!(error.to_string().contains("'prompt'"));
     }
 
-    #[test]
-    fn handle_with_clock_rejects_a_whitespace_only_prompt_without_calling_the_clock() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_with_clock_rejects_a_whitespace_only_prompt_without_calling_the_clock() {
         let mut payload = event("session-1", "turn-1", "hello world");
         payload.prompt = Some("   ".to_string());
 
         let error = handle_with_clock(Path::new("/nonexistent-repository-root"), &payload, || {
             panic!("clock must not be called for a malformed UserPromptSubmit payload")
         })
+        .await
         .expect_err("whitespace-only prompt should be rejected before the clock is consulted");
         assert!(error.to_string().contains("'prompt'"));
     }

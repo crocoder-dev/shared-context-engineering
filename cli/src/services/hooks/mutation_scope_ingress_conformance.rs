@@ -7,10 +7,6 @@ use serde_json::{json, Map, Value};
 
 use crate::services::observability::traits::Logger;
 
-pub(crate) type GitDirResolver<'a> = &'a dyn Fn(&str) -> Result<PathBuf>;
-
-pub(crate) type IngressSeam<'a> = &'a dyn Fn(&Path, &str, Option<&dyn Logger>) -> Result<String>;
-
 static NEXT_CONFORMANCE_GIT_DIR_ID: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) trait IngressConformance {
@@ -24,12 +20,12 @@ pub(crate) trait IngressConformance {
 
     fn parse(payload: &str) -> Result<()>;
 
-    fn run(payload: &str) -> Result<String>;
+    async fn run(payload: &str) -> Result<String>;
 
-    fn run_with_seams(
+    async fn run_with_seams<L: Logger>(
         payload: &str,
-        resolve_git_dir: GitDirResolver,
-        seam: IngressSeam,
+        resolve_git_dir: &impl Fn(&str) -> Result<PathBuf>,
+        seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
     ) -> Result<String>;
 }
 
@@ -212,13 +208,13 @@ fn unresolved_git_dir<A: IngressConformance>(contract: &str) -> PathBuf {
     ))
 }
 
-fn assert_fails_closed_before_dispatch<A: IngressConformance>(rejections: &[Rejection]) {
+async fn assert_fails_closed_before_dispatch<A: IngressConformance>(rejections: &[Rejection]) {
     assert!(!rejections.is_empty());
     for rejection in rejections {
         assert_validation_error::<A, _>(
             "production entrypoint",
             rejection,
-            A::run(&rejection.payload),
+            A::run(&rejection.payload).await,
         );
 
         let git_dir = unresolved_git_dir::<A>("fails-closed");
@@ -228,12 +224,12 @@ fn assert_fails_closed_before_dispatch<A: IngressConformance>(rejections: &[Reje
             resolver_calls.set(resolver_calls.get() + 1);
             Ok(git_dir.clone())
         };
-        let seam = |_root: &Path, _payload: &str, _logger: Option<&dyn Logger>| {
+        let seam = async |_root: &Path, _payload: &str, _logger: Option<&crate::services::observability::traits::NoopLogger>| {
             seam_calls.set(seam_calls.get() + 1);
             Ok(String::new())
         };
 
-        let result = A::run_with_seams(&rejection.payload, &resolver, &seam);
+        let result = A::run_with_seams(&rejection.payload, &resolver, &seam).await;
         let fabricated_state = git_dir.exists();
         let _ = std::fs::remove_dir_all(&git_dir);
 
@@ -269,10 +265,12 @@ pub(crate) fn non_object_json_is_rejected<A: IngressConformance>() {
     assert_parser_rejects::<A>(&non_object_json_rejections());
 }
 
-pub(crate) fn missing_required_identity_is_rejected_without_fabrication<A: IngressConformance>() {
+pub(crate) async fn missing_required_identity_is_rejected_without_fabrication<
+    A: IngressConformance,
+>() {
     let rejections = missing_required_rejections::<A>();
     assert_parser_rejects::<A>(&rejections);
-    assert_fails_closed_before_dispatch::<A>(&rejections);
+    assert_fails_closed_before_dispatch::<A>(&rejections).await;
 }
 
 pub(crate) fn blank_required_identifiers_are_rejected<A: IngressConformance>() {
@@ -316,17 +314,17 @@ pub(crate) fn wrong_typed_or_blank_optional_fields_are_rejected<A: IngressConfor
     assert_parser_rejects::<A>(&invalid_optional_rejections::<A>());
 }
 
-pub(crate) fn malformed_runtime_input_fails_closed_before_dispatch<A: IngressConformance>() {
+pub(crate) async fn malformed_runtime_input_fails_closed_before_dispatch<A: IngressConformance>() {
     let mut rejections = malformed_json_rejections();
     rejections.extend(non_object_json_rejections());
     rejections.extend(blank_required_rejections::<A>());
     rejections.extend(wrong_typed_required_rejections::<A>());
     rejections.extend(unsupported_event_rejections::<A>());
     rejections.extend(invalid_optional_rejections::<A>());
-    assert_fails_closed_before_dispatch::<A>(&rejections);
+    assert_fails_closed_before_dispatch::<A>(&rejections).await;
 }
 
-pub(crate) fn tracked_start_fails_closed_when_its_checkout_cannot_be_resolved<
+pub(crate) async fn tracked_start_fails_closed_when_its_checkout_cannot_be_resolved<
     A: CheckoutResolutionConformance,
 >() {
     let unresolvable = start_with::<A>(
@@ -334,6 +332,7 @@ pub(crate) fn tracked_start_fails_closed_when_its_checkout_cannot_be_resolved<
         json!(format!("/nonexistent/sce/{}/checkout", A::ADAPTER)),
     );
     let error = A::run(&unresolvable)
+        .await
         .expect_err("a tracked start that cannot resolve its checkout must fail closed");
     assert!(
         error.to_string().contains(A::FAIL_CLOSED_MESSAGE),
@@ -346,13 +345,17 @@ pub(crate) fn tracked_start_fails_closed_when_its_checkout_cannot_be_resolved<
         resolver_calls.set(resolver_calls.get() + 1);
         Err(anyhow!("checkout resolution failure injected by test"))
     };
-    let seam = |_root: &Path, _payload: &str, _logger: Option<&dyn Logger>| {
-        seam_calls.set(seam_calls.get() + 1);
-        Ok(String::new())
-    };
+    let seam =
+        async |_root: &Path,
+               _payload: &str,
+               _logger: Option<&crate::services::observability::traits::NoopLogger>| {
+            seam_calls.set(seam_calls.get() + 1);
+            Ok(String::new())
+        };
 
     let payload = Value::Object(A::tracked_start()).to_string();
     let error = A::run_with_seams(&payload, &resolver, &seam)
+        .await
         .expect_err("a failed checkout resolution must surface as a hard failure");
     assert!(
         error.to_string().contains(A::FAIL_CLOSED_MESSAGE),
@@ -379,9 +382,9 @@ macro_rules! mutation_scope_ingress_conformance_tests {
     };
     ($adapter:ty => $($contract:ident),+ $(,)?) => {
         $(
-            #[test]
-            fn $contract() {
-                $crate::services::hooks::mutation_scope_ingress_conformance::$contract::<$adapter>();
+            #[tokio::test]
+            async fn $contract() {
+                $crate::services::hooks::mutation_scope_ingress_conformance::$contract::<$adapter>().await;
             }
         )+
     };

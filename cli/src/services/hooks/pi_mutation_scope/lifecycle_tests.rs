@@ -83,10 +83,15 @@ fn operation_of(payload: &str) -> String {
         .to_string()
 }
 
-fn drive(git_dir: &Path, seam: &RecordingSeam, payload: &str) -> Result<String> {
+async fn drive(git_dir: &Path, seam: &RecordingSeam, payload: &str) -> Result<String> {
     let resolver = |_cwd: &str| Ok(git_dir.to_path_buf());
-    let seam_fn = |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| seam.handle(payload);
-    run_pi_mutation_scope_from_payload_with_seams(payload, None, &resolver, &seam_fn)
+    let seam_fn =
+        async |_root: &Path,
+               payload: &str,
+               _logger: Option<&crate::services::observability::traits::NoopLogger>| {
+            seam.handle(payload)
+        };
+    run_pi_mutation_scope_from_payload_with_seams(payload, None, &resolver, &seam_fn).await
 }
 
 fn tool_call_event(tool_name: &str, tool_call_id: &str) -> String {
@@ -197,13 +202,16 @@ fn attempt_owned_by(state: &AdapterState, session_id: &str) -> AdapterAttempt {
         .clone()
 }
 
-#[test]
-fn tool_call_establishes_a_write_ahead_start_and_replays_idempotently() {
+#[tokio::test(flavor = "multi_thread")]
+async fn tool_call_establishes_a_write_ahead_start_and_replays_idempotently() {
     let git_dir = temp_git_dir("write-ahead-start");
     let seam = RecordingSeam::new();
 
-    drive(&git_dir, &seam, &tool_call_event("write", "call_1")).expect("first Start");
     drive(&git_dir, &seam, &tool_call_event("write", "call_1"))
+        .await
+        .expect("first Start");
+    drive(&git_dir, &seam, &tool_call_event("write", "call_1"))
+        .await
         .expect("duplicate Start is idempotent");
 
     assert_eq!(seam.operations(), vec!["start", "start"]);
@@ -215,13 +223,17 @@ fn tool_call_establishes_a_write_ahead_start_and_replays_idempotently() {
     cleanup(&git_dir);
 }
 
-#[test]
-fn concurrent_bash_calls_in_one_session_stay_separate_live_scopes() {
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_bash_calls_in_one_session_stay_separate_live_scopes() {
     let git_dir = temp_git_dir("concurrent-bash");
     let seam = RecordingSeam::new();
 
-    drive(&git_dir, &seam, &tool_call_event("bash", "call_a")).expect("A Start");
-    drive(&git_dir, &seam, &tool_call_event("bash", "call_b")).expect("B Start must not retire A");
+    drive(&git_dir, &seam, &tool_call_event("bash", "call_a"))
+        .await
+        .expect("A Start");
+    drive(&git_dir, &seam, &tool_call_event("bash", "call_b"))
+        .await
+        .expect("B Start must not retire A");
 
     let state = read_state(&git_dir).expect("state readable");
     assert_eq!(state.attempts.len(), 2);
@@ -233,18 +245,22 @@ fn concurrent_bash_calls_in_one_session_stay_separate_live_scopes() {
     cleanup(&git_dir);
 }
 
-#[test]
-fn full_success_lifecycle_start_result_close() {
+#[tokio::test(flavor = "multi_thread")]
+async fn full_success_lifecycle_start_result_close() {
     let git_dir = temp_git_dir("success-lifecycle");
     let seam = RecordingSeam::new();
 
-    drive(&git_dir, &seam, &tool_call_event("bash", "call_1")).expect("Start");
+    drive(&git_dir, &seam, &tool_call_event("bash", "call_1"))
+        .await
+        .expect("Start");
     assert_eq!(
         read_state(&git_dir).expect("state readable").attempts[0].phase,
         AttemptPhase::PendingStart
     );
 
-    drive(&git_dir, &seam, &tool_result_event("bash", "call_1")).expect("tool_result");
+    drive(&git_dir, &seam, &tool_result_event("bash", "call_1"))
+        .await
+        .expect("tool_result");
     assert_eq!(
         read_state(&git_dir).expect("state readable").attempts[0].phase,
         AttemptPhase::Executed,
@@ -252,6 +268,7 @@ fn full_success_lifecycle_start_result_close() {
     );
 
     drive(&git_dir, &seam, &tool_execution_end_event("bash", "call_1"))
+        .await
         .expect("tool_execution_end closes an Executed attempt");
     assert!(read_state(&git_dir)
         .expect("state readable")
@@ -262,14 +279,17 @@ fn full_success_lifecycle_start_result_close() {
     cleanup(&git_dir);
 }
 
-#[test]
-fn tool_execution_end_without_a_preceding_tool_result_abandons_never_closes() {
+#[tokio::test(flavor = "multi_thread")]
+async fn tool_execution_end_without_a_preceding_tool_result_abandons_never_closes() {
     let git_dir = temp_git_dir("d7-abandon");
     let seam = RecordingSeam::new();
 
-    drive(&git_dir, &seam, &tool_call_event("bash", "call_1")).expect("Start");
+    drive(&git_dir, &seam, &tool_call_event("bash", "call_1"))
+        .await
+        .expect("Start");
 
     drive(&git_dir, &seam, &tool_execution_end_event("bash", "call_1"))
+        .await
         .expect("D7: a terminal event with no preceding tool_result must abandon");
 
     assert!(read_state(&git_dir)
@@ -289,15 +309,20 @@ fn tool_execution_end_without_a_preceding_tool_result_abandons_never_closes() {
     cleanup(&git_dir);
 }
 
-#[test]
-fn a_failed_close_falls_back_to_abandon_recovery() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_close_falls_back_to_abandon_recovery() {
     let git_dir = temp_git_dir("close-failure-falls-back");
     let seam = RecordingSeam::failing_on(&["close"]);
 
-    drive(&git_dir, &seam, &tool_call_event("bash", "call_1")).expect("Start");
-    drive(&git_dir, &seam, &tool_result_event("bash", "call_1")).expect("tool_result");
+    drive(&git_dir, &seam, &tool_call_event("bash", "call_1"))
+        .await
+        .expect("Start");
+    drive(&git_dir, &seam, &tool_result_event("bash", "call_1"))
+        .await
+        .expect("tool_result");
 
     drive(&git_dir, &seam, &tool_execution_end_event("bash", "call_1"))
+        .await
         .expect("a Close failure must recover via abandon, not surface an error");
 
     assert!(read_state(&git_dir)
@@ -309,19 +334,24 @@ fn a_failed_close_falls_back_to_abandon_recovery() {
     cleanup(&git_dir);
 }
 
-#[test]
-fn execution_abandon_forces_abandon_even_when_the_attempt_is_already_executed() {
+#[tokio::test(flavor = "multi_thread")]
+async fn execution_abandon_forces_abandon_even_when_the_attempt_is_already_executed() {
     let git_dir = temp_git_dir("d9-execution-abandon-executed");
     let seam = RecordingSeam::new();
 
-    drive(&git_dir, &seam, &tool_call_event("bash", "call_1")).expect("Start");
-    drive(&git_dir, &seam, &tool_result_event("bash", "call_1")).expect("tool_result");
+    drive(&git_dir, &seam, &tool_call_event("bash", "call_1"))
+        .await
+        .expect("Start");
+    drive(&git_dir, &seam, &tool_result_event("bash", "call_1"))
+        .await
+        .expect("tool_result");
 
     drive(
         &git_dir,
         &seam,
         &tool_execution_abandon_event("bash", "call_1"),
     )
+    .await
     .expect("ExecutionAbandon must recover via abandon, not surface an error");
 
     assert!(read_state(&git_dir)
@@ -338,18 +368,21 @@ fn execution_abandon_forces_abandon_even_when_the_attempt_is_already_executed() 
     cleanup(&git_dir);
 }
 
-#[test]
-fn execution_abandon_on_a_pending_start_attempt_abandons() {
+#[tokio::test(flavor = "multi_thread")]
+async fn execution_abandon_on_a_pending_start_attempt_abandons() {
     let git_dir = temp_git_dir("d9-execution-abandon-pending-start");
     let seam = RecordingSeam::new();
 
-    drive(&git_dir, &seam, &tool_call_event("bash", "call_1")).expect("Start");
+    drive(&git_dir, &seam, &tool_call_event("bash", "call_1"))
+        .await
+        .expect("Start");
 
     drive(
         &git_dir,
         &seam,
         &tool_execution_abandon_event("bash", "call_1"),
     )
+    .await
     .expect("ExecutionAbandon must recover a PendingStart attempt via abandon");
 
     assert!(read_state(&git_dir)
@@ -361,8 +394,8 @@ fn execution_abandon_on_a_pending_start_attempt_abandons() {
     cleanup(&git_dir);
 }
 
-#[test]
-fn execution_abandon_for_an_unknown_attempt_is_a_safe_no_op() {
+#[tokio::test(flavor = "multi_thread")]
+async fn execution_abandon_for_an_unknown_attempt_is_a_safe_no_op() {
     let git_dir = temp_git_dir("d9-execution-abandon-unknown");
     let seam = RecordingSeam::new();
 
@@ -371,6 +404,7 @@ fn execution_abandon_for_an_unknown_attempt_is_a_safe_no_op() {
         &seam,
         &tool_execution_abandon_event("bash", "call_1"),
     )
+    .await
     .expect("an unknown attempt must be a safe no-op, never an error");
 
     assert_eq!(result, "");
@@ -379,8 +413,8 @@ fn execution_abandon_for_an_unknown_attempt_is_a_safe_no_op() {
     cleanup(&git_dir);
 }
 
-#[test]
-fn execution_abandon_for_an_untracked_tool_is_a_no_op() {
+#[tokio::test(flavor = "multi_thread")]
+async fn execution_abandon_for_an_untracked_tool_is_a_no_op() {
     let git_dir = temp_git_dir("d9-execution-abandon-untracked");
     let seam = RecordingSeam::new();
 
@@ -389,6 +423,7 @@ fn execution_abandon_for_an_untracked_tool_is_a_no_op() {
         &seam,
         &tool_execution_abandon_event("read", "call_1"),
     )
+    .await
     .expect("untracked tools are never adapter-relevant");
 
     assert_eq!(result, "");
@@ -397,18 +432,21 @@ fn execution_abandon_for_an_untracked_tool_is_a_no_op() {
     cleanup(&git_dir);
 }
 
-#[test]
-fn duplicate_execution_abandon_on_an_already_abandoned_attempt_is_a_safe_no_op() {
+#[tokio::test(flavor = "multi_thread")]
+async fn duplicate_execution_abandon_on_an_already_abandoned_attempt_is_a_safe_no_op() {
     let git_dir = temp_git_dir("d9-execution-abandon-duplicate");
     let seam = RecordingSeam::new();
 
-    drive(&git_dir, &seam, &tool_call_event("bash", "call_1")).expect("Start");
+    drive(&git_dir, &seam, &tool_call_event("bash", "call_1"))
+        .await
+        .expect("Start");
 
     drive(
         &git_dir,
         &seam,
         &tool_execution_abandon_event("bash", "call_1"),
     )
+    .await
     .expect("first ExecutionAbandon retires the attempt");
     assert!(read_state(&git_dir)
         .expect("state readable")
@@ -420,6 +458,7 @@ fn duplicate_execution_abandon_on_an_already_abandoned_attempt_is_a_safe_no_op()
         &seam,
         &tool_execution_abandon_event("bash", "call_1"),
     )
+    .await
     .expect("a duplicate ExecutionAbandon for an already-retired attempt must be a safe no-op");
 
     assert_eq!(result, "");
@@ -432,8 +471,8 @@ fn duplicate_execution_abandon_on_an_already_abandoned_attempt_is_a_safe_no_op()
     cleanup(&git_dir);
 }
 
-#[test]
-fn execution_abandon_for_one_session_never_touches_another_sessions_attempt_with_the_same_tool_call_id(
+#[tokio::test(flavor = "multi_thread")]
+async fn execution_abandon_for_one_session_never_touches_another_sessions_attempt_with_the_same_tool_call_id(
 ) {
     let git_dir = temp_git_dir("d9-execution-abandon-cross-session");
     let seam = RecordingSeam::new();
@@ -443,12 +482,14 @@ fn execution_abandon_for_one_session_never_touches_another_sessions_attempt_with
         &seam,
         &tool_call_event_for_session("bash", "ses-a", "call_1"),
     )
+    .await
     .expect("session A Start");
     drive(
         &git_dir,
         &seam,
         &tool_call_event_for_session("bash", "ses-b", "call_1"),
     )
+    .await
     .expect("session B Start with the same tool_call_id");
 
     assert_eq!(
@@ -461,6 +502,7 @@ fn execution_abandon_for_one_session_never_touches_another_sessions_attempt_with
         &seam,
         &tool_execution_abandon_event_for_session("bash", "ses-a", "call_1"),
     )
+    .await
     .expect("ExecutionAbandon for session A must not error");
 
     let remaining = read_state(&git_dir).expect("state readable").attempts;
@@ -478,6 +520,7 @@ fn execution_abandon_for_one_session_never_touches_another_sessions_attempt_with
         &seam,
         &tool_result_event_for_session("bash", "ses-b", "call_1"),
     )
+    .await
     .expect("session B must still be able to progress normally after A's abandon");
     assert_eq!(
         read_state(&git_dir).expect("state readable").attempts[0].phase,
@@ -487,8 +530,8 @@ fn execution_abandon_for_one_session_never_touches_another_sessions_attempt_with
     cleanup(&git_dir);
 }
 
-#[test]
-fn a_terminal_recovery_flush_failure_leaves_a_pending_recovery_and_denies_new_admission() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_terminal_recovery_flush_failure_leaves_a_pending_recovery_and_denies_new_admission() {
     let git_dir = temp_git_dir("recovery-flush-failure");
     let persistently_failing = RecordingSeam::failing_on(&["flush"]);
 
@@ -497,12 +540,14 @@ fn a_terminal_recovery_flush_failure_leaves_a_pending_recovery_and_denies_new_ad
         &persistently_failing,
         &tool_call_event("bash", "call_1"),
     )
+    .await
     .expect("Start");
     drive(
         &git_dir,
         &persistently_failing,
         &tool_execution_end_event("bash", "call_1"),
     )
+    .await
     .expect("abandon path swallows the flush failure rather than surfacing an error");
 
     assert_eq!(
@@ -516,11 +561,13 @@ fn a_terminal_recovery_flush_failure_leaves_a_pending_recovery_and_denies_new_ad
         &persistently_failing,
         &tool_call_event("bash", "call_2"),
     )
+    .await
     .expect_err("a new admission must fail closed while recovery remains unresolved");
     assert!(error.to_string().contains(FAIL_CLOSED_MESSAGE));
 
     let recovered = RecordingSeam::new();
     drive(&git_dir, &recovered, &tool_call_event("bash", "call_3"))
+        .await
         .expect("a new admission must self-heal once recovery can complete");
     assert!(read_state(&git_dir)
         .expect("state readable")
@@ -533,18 +580,21 @@ fn a_terminal_recovery_flush_failure_leaves_a_pending_recovery_and_denies_new_ad
     cleanup(&git_dir);
 }
 
-#[test]
-fn start_provenance_carries_the_prefixed_session_and_normalized_model_to_the_seam() {
+#[tokio::test(flavor = "multi_thread")]
+async fn start_provenance_carries_the_prefixed_session_and_normalized_model_to_the_seam() {
     let git_dir = temp_git_dir("provenance-present");
     let captured: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let resolver = |_cwd: &str| Ok(git_dir.clone());
-    let seam_fn = |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| {
-        captured
-            .lock()
-            .expect("capture mutex")
-            .push(payload.to_string());
-        Ok(String::new())
-    };
+    let seam_fn =
+        async |_root: &Path,
+               payload: &str,
+               _logger: Option<&crate::services::observability::traits::NoopLogger>| {
+            captured
+                .lock()
+                .expect("capture mutex")
+                .push(payload.to_string());
+            Ok(String::new())
+        };
 
     run_pi_mutation_scope_from_payload_with_seams(
         &tool_call_event("bash", "call_model"),
@@ -552,6 +602,7 @@ fn start_provenance_carries_the_prefixed_session_and_normalized_model_to_the_sea
         &resolver,
         &seam_fn,
     )
+    .await
     .expect("Start should succeed");
 
     let payloads = captured.into_inner().expect("capture mutex");
@@ -569,18 +620,21 @@ fn start_provenance_carries_the_prefixed_session_and_normalized_model_to_the_sea
     cleanup(&git_dir);
 }
 
-#[test]
-fn start_provenance_is_null_model_when_the_event_carries_no_model() {
+#[tokio::test(flavor = "multi_thread")]
+async fn start_provenance_is_null_model_when_the_event_carries_no_model() {
     let git_dir = temp_git_dir("provenance-absent");
     let captured: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let resolver = |_cwd: &str| Ok(git_dir.clone());
-    let seam_fn = |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| {
-        captured
-            .lock()
-            .expect("capture mutex")
-            .push(payload.to_string());
-        Ok(String::new())
-    };
+    let seam_fn =
+        async |_root: &Path,
+               payload: &str,
+               _logger: Option<&crate::services::observability::traits::NoopLogger>| {
+            captured
+                .lock()
+                .expect("capture mutex")
+                .push(payload.to_string());
+            Ok(String::new())
+        };
 
     let payload = json!({
         "hook_event_name": "ToolCall",
@@ -592,6 +646,7 @@ fn start_provenance_is_null_model_when_the_event_carries_no_model() {
     .to_string();
 
     run_pi_mutation_scope_from_payload_with_seams(&payload, None, &resolver, &seam_fn)
+        .await
         .expect("Start should succeed");
 
     let payloads = captured.into_inner().expect("capture mutex");
@@ -601,36 +656,43 @@ fn start_provenance_is_null_model_when_the_event_carries_no_model() {
     cleanup(&git_dir);
 }
 
-#[test]
-fn untracked_tool_call_never_admits_an_attempt() {
+#[tokio::test(flavor = "multi_thread")]
+async fn untracked_tool_call_never_admits_an_attempt() {
     let git_dir = temp_git_dir("untracked-no-admit");
     let seam = RecordingSeam::new();
 
-    drive(&git_dir, &seam, &tool_call_event("read", "call_ro")).expect("untracked is inert");
+    drive(&git_dir, &seam, &tool_call_event("read", "call_ro"))
+        .await
+        .expect("untracked is inert");
     assert!(seam.operations().is_empty());
     assert!(read_state(&git_dir)
         .expect("state readable")
         .attempts
         .is_empty());
 
-    drive(&git_dir, &seam, &tool_result_event("read", "call_ro")).expect("untracked result inert");
+    drive(&git_dir, &seam, &tool_result_event("read", "call_ro"))
+        .await
+        .expect("untracked result inert");
     drive(
         &git_dir,
         &seam,
         &tool_execution_end_event("read", "call_ro"),
     )
+    .await
     .expect("untracked terminal inert");
     assert!(seam.operations().is_empty());
 
     cleanup(&git_dir);
 }
 
-#[test]
-fn a_pending_start_attempt_owned_by_a_dead_process_is_abandoned_not_replayed() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pending_start_attempt_owned_by_a_dead_process_is_abandoned_not_replayed() {
     let git_dir = temp_git_dir("d10-dead-owner-abandon");
     let seam = RecordingSeam::new();
 
-    drive(&git_dir, &seam, &tool_call_event("bash", "call_1")).expect("first Start");
+    drive(&git_dir, &seam, &tool_call_event("bash", "call_1"))
+        .await
+        .expect("first Start");
     let scope_id = read_state(&git_dir).expect("state readable").attempts[0]
         .scope_id
         .clone();
@@ -650,6 +712,7 @@ fn a_pending_start_attempt_owned_by_a_dead_process_is_abandoned_not_replayed() {
     );
 
     drive(&git_dir, &seam, &tool_call_event("bash", "call_1"))
+        .await
         .expect("a replay whose recorded owner is positively dead must abandon, not reuse");
 
     assert_eq!(
@@ -670,13 +733,16 @@ fn a_pending_start_attempt_owned_by_a_dead_process_is_abandoned_not_replayed() {
     cleanup(&git_dir);
 }
 
-#[test]
-fn a_pending_start_attempt_owned_by_a_live_process_is_never_abandoned_by_a_replay() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pending_start_attempt_owned_by_a_live_process_is_never_abandoned_by_a_replay() {
     let git_dir = temp_git_dir("d10-live-owner-no-abandon");
     let seam = RecordingSeam::new();
 
-    drive(&git_dir, &seam, &tool_call_event("bash", "call_1")).expect("first Start");
     drive(&git_dir, &seam, &tool_call_event("bash", "call_1"))
+        .await
+        .expect("first Start");
+    drive(&git_dir, &seam, &tool_call_event("bash", "call_1"))
+        .await
         .expect("a replay owned by a still-live process must be treated as a normal replay");
 
     assert_eq!(
@@ -692,8 +758,8 @@ fn a_pending_start_attempt_owned_by_a_live_process_is_never_abandoned_by_a_repla
     cleanup(&git_dir);
 }
 
-#[test]
-fn a_dead_pending_start_attempt_is_recovered_by_an_unrelated_fresh_session_start() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dead_pending_start_attempt_is_recovered_by_an_unrelated_fresh_session_start() {
     let git_dir = temp_git_dir("d10-fresh-session-dead-pending-start");
     let seam = RecordingSeam::new();
 
@@ -702,6 +768,7 @@ fn a_dead_pending_start_attempt_is_recovered_by_an_unrelated_fresh_session_start
         &seam,
         &tool_call_event_for_session("bash", "sess-a", "call-a"),
     )
+    .await
     .expect("A's Start");
     let scope_a =
         attempt_owned_by(&read_state(&git_dir).expect("state readable"), "sess-a").scope_id;
@@ -712,6 +779,7 @@ fn a_dead_pending_start_attempt_is_recovered_by_an_unrelated_fresh_session_start
         &seam,
         &tool_call_event_for_session("bash", "sess-b", "call-b"),
     )
+    .await
     .expect(
         "B's Start must recover A's stale owner without ever replaying A's \
              (session_id, tool_call_id) key",
@@ -733,8 +801,8 @@ fn a_dead_pending_start_attempt_is_recovered_by_an_unrelated_fresh_session_start
     cleanup(&git_dir);
 }
 
-#[test]
-fn a_dead_executed_attempt_is_recovered_by_a_fresh_session_start_without_a_synthetic_close() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dead_executed_attempt_is_recovered_by_a_fresh_session_start_without_a_synthetic_close() {
     let git_dir = temp_git_dir("d10-fresh-session-dead-executed");
     let seam = RecordingSeam::new();
 
@@ -743,12 +811,14 @@ fn a_dead_executed_attempt_is_recovered_by_a_fresh_session_start_without_a_synth
         &seam,
         &tool_call_event_for_session("bash", "sess-a", "call-a"),
     )
+    .await
     .expect("A's Start");
     drive(
         &git_dir,
         &seam,
         &tool_result_event_for_session("bash", "sess-a", "call-a"),
     )
+    .await
     .expect("A's tool_result marks Executed");
     let state = read_state(&git_dir).expect("state readable");
     let scope_a = attempt_owned_by(&state, "sess-a").scope_id;
@@ -763,6 +833,7 @@ fn a_dead_executed_attempt_is_recovered_by_a_fresh_session_start_without_a_synth
         &seam,
         &tool_call_event_for_session("bash", "sess-b", "call-b"),
     )
+    .await
     .expect("B's Start must recover A's dead Executed attempt");
 
     assert_eq!(
@@ -784,8 +855,8 @@ fn a_dead_executed_attempt_is_recovered_by_a_fresh_session_start_without_a_synth
     cleanup(&git_dir);
 }
 
-#[test]
-fn a_dead_owner_scope_is_recovered_while_a_live_owner_sibling_survives_untouched() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dead_owner_scope_is_recovered_while_a_live_owner_sibling_survives_untouched() {
     let git_dir = temp_git_dir("d10-dead-live-sibling-isolation");
     let seam = RecordingSeam::new();
 
@@ -794,12 +865,14 @@ fn a_dead_owner_scope_is_recovered_while_a_live_owner_sibling_survives_untouched
         &seam,
         &tool_call_event_for_session("bash", "sess-a", "call-a"),
     )
+    .await
     .expect("A's Start (owner will die)");
     drive(
         &git_dir,
         &seam,
         &tool_call_event_for_session("bash", "sess-b", "call-b"),
     )
+    .await
     .expect("B's Start (owner stays live)");
 
     let state = read_state(&git_dir).expect("state readable");
@@ -812,6 +885,7 @@ fn a_dead_owner_scope_is_recovered_while_a_live_owner_sibling_survives_untouched
         &seam,
         &tool_call_event_for_session("bash", "sess-c", "call-c"),
     )
+    .await
     .expect("C's Start must recover only A");
 
     assert_eq!(
@@ -837,9 +911,9 @@ fn a_dead_owner_scope_is_recovered_while_a_live_owner_sibling_survives_untouched
     cleanup(&git_dir);
 }
 
-#[test]
-fn multiple_dead_owner_scopes_are_retired_in_one_recovery_generation_while_a_live_sibling_survives()
-{
+#[tokio::test(flavor = "multi_thread")]
+async fn multiple_dead_owner_scopes_are_retired_in_one_recovery_generation_while_a_live_sibling_survives(
+) {
     let git_dir = temp_git_dir("d10-multiple-dead-owner-scopes");
     let seam = RecordingSeam::new();
 
@@ -848,24 +922,28 @@ fn multiple_dead_owner_scopes_are_retired_in_one_recovery_generation_while_a_liv
         &seam,
         &tool_call_event_for_session("bash", "sess-a", "call-a"),
     )
+    .await
     .expect("A's Start");
     drive(
         &git_dir,
         &seam,
         &tool_result_event_for_session("bash", "sess-a", "call-a"),
     )
+    .await
     .expect("A's tool_result marks Executed");
     drive(
         &git_dir,
         &seam,
         &tool_call_event_for_session("bash", "sess-b", "call-b"),
     )
+    .await
     .expect("B's Start");
     drive(
         &git_dir,
         &seam,
         &tool_call_event_for_session("bash", "sess-q", "call-q"),
     )
+    .await
     .expect("Q's Start (owner stays live)");
 
     let state = read_state(&git_dir).expect("state readable");
@@ -881,6 +959,7 @@ fn multiple_dead_owner_scopes_are_retired_in_one_recovery_generation_while_a_liv
         &seam,
         &tool_call_event_for_session("bash", "sess-c", "call-c"),
     )
+    .await
     .expect("C's Start must recover both A and B, grouped into one recovery generation");
 
     assert_eq!(
@@ -899,8 +978,8 @@ fn multiple_dead_owner_scopes_are_retired_in_one_recovery_generation_while_a_liv
     cleanup(&git_dir);
 }
 
-#[test]
-fn an_owner_that_cannot_be_positively_proven_dead_is_never_abandoned_by_an_unrelated_start() {
+#[tokio::test(flavor = "multi_thread")]
+async fn an_owner_that_cannot_be_positively_proven_dead_is_never_abandoned_by_an_unrelated_start() {
     let git_dir = temp_git_dir("d10-uncertain-owner-preserved");
     let seam = RecordingSeam::new();
 
@@ -909,6 +988,7 @@ fn an_owner_that_cannot_be_positively_proven_dead_is_never_abandoned_by_an_unrel
         &seam,
         &tool_call_event_for_session("bash", "sess-a", "call-a"),
     )
+    .await
     .expect("A's Start");
     let scope_a =
         attempt_owned_by(&read_state(&git_dir).expect("state readable"), "sess-a").scope_id;
@@ -926,6 +1006,7 @@ fn an_owner_that_cannot_be_positively_proven_dead_is_never_abandoned_by_an_unrel
         &seam,
         &tool_call_event_for_session("bash", "sess-c", "call-c"),
     )
+    .await
     .expect(
         "C's Start must proceed without touching A, whose owner cannot be positively \
              proven dead",
@@ -948,8 +1029,8 @@ fn an_owner_that_cannot_be_positively_proven_dead_is_never_abandoned_by_an_unrel
     cleanup(&git_dir);
 }
 
-#[test]
-fn an_interrupted_stale_owner_recovery_remains_pending_and_denies_the_triggering_start_until_resumed(
+#[tokio::test(flavor = "multi_thread")]
+async fn an_interrupted_stale_owner_recovery_remains_pending_and_denies_the_triggering_start_until_resumed(
 ) {
     let git_dir = temp_git_dir("d10-interrupted-stale-recovery");
     let seam = RecordingSeam::new();
@@ -959,6 +1040,7 @@ fn an_interrupted_stale_owner_recovery_remains_pending_and_denies_the_triggering
         &seam,
         &tool_call_event_for_session("bash", "sess-a", "call-a"),
     )
+    .await
     .expect("A's Start");
     let scope_a =
         attempt_owned_by(&read_state(&git_dir).expect("state readable"), "sess-a").scope_id;
@@ -970,6 +1052,7 @@ fn an_interrupted_stale_owner_recovery_remains_pending_and_denies_the_triggering
         &crashing,
         &tool_call_event_for_session("bash", "sess-b", "call-b"),
     )
+    .await
     .expect_err("a Start that triggers a stale-owner recovery which fails mid-way must not commit");
     assert!(error.to_string().contains(FAIL_CLOSED_MESSAGE));
 
@@ -989,6 +1072,7 @@ fn an_interrupted_stale_owner_recovery_remains_pending_and_denies_the_triggering
         &crashing,
         &tool_call_event_for_session("bash", "sess-b", "call-b"),
     )
+    .await
     .expect(
         "the next boundary-lock acquisition must resume and complete the pending recovery, \
              and only then admit B",
@@ -1003,18 +1087,26 @@ fn an_interrupted_stale_owner_recovery_remains_pending_and_denies_the_triggering
     cleanup(&git_dir);
 }
 
-#[test]
-fn duplicate_tool_result_after_close_is_a_safe_no_op() {
+#[tokio::test(flavor = "multi_thread")]
+async fn duplicate_tool_result_after_close_is_a_safe_no_op() {
     let git_dir = temp_git_dir("duplicate-tool-result-after-close");
     let seam = RecordingSeam::new();
 
-    drive(&git_dir, &seam, &tool_call_event("bash", "call_1")).expect("Start");
-    drive(&git_dir, &seam, &tool_result_event("bash", "call_1")).expect("tool_result");
-    drive(&git_dir, &seam, &tool_execution_end_event("bash", "call_1")).expect("Close");
+    drive(&git_dir, &seam, &tool_call_event("bash", "call_1"))
+        .await
+        .expect("Start");
+    drive(&git_dir, &seam, &tool_result_event("bash", "call_1"))
+        .await
+        .expect("tool_result");
+    drive(&git_dir, &seam, &tool_execution_end_event("bash", "call_1"))
+        .await
+        .expect("Close");
 
     drive(&git_dir, &seam, &tool_result_event("bash", "call_1"))
+        .await
         .expect("a late duplicate tool_result after Close must be a safe no-op");
     drive(&git_dir, &seam, &tool_execution_end_event("bash", "call_1"))
+        .await
         .expect("a late duplicate tool_execution_end after Close must be a safe no-op");
 
     assert_eq!(
@@ -1030,15 +1122,20 @@ fn duplicate_tool_result_after_close_is_a_safe_no_op() {
     cleanup(&git_dir);
 }
 
-#[test]
-fn duplicate_tool_execution_end_after_abandon_is_a_safe_no_op() {
+#[tokio::test(flavor = "multi_thread")]
+async fn duplicate_tool_execution_end_after_abandon_is_a_safe_no_op() {
     let git_dir = temp_git_dir("duplicate-terminal-after-abandon");
     let seam = RecordingSeam::new();
 
-    drive(&git_dir, &seam, &tool_call_event("bash", "call_1")).expect("Start");
-    drive(&git_dir, &seam, &tool_execution_end_event("bash", "call_1")).expect("D7 abandon");
+    drive(&git_dir, &seam, &tool_call_event("bash", "call_1"))
+        .await
+        .expect("Start");
+    drive(&git_dir, &seam, &tool_execution_end_event("bash", "call_1"))
+        .await
+        .expect("D7 abandon");
 
     drive(&git_dir, &seam, &tool_execution_end_event("bash", "call_1"))
+        .await
         .expect("a late duplicate terminal event after abandon must be a safe no-op");
 
     assert_eq!(
@@ -1051,16 +1148,23 @@ fn duplicate_tool_execution_end_after_abandon_is_a_safe_no_op() {
     cleanup(&git_dir);
 }
 
-#[test]
-fn abandoning_one_sibling_never_touches_a_concurrent_sibling_in_the_same_session() {
+#[tokio::test(flavor = "multi_thread")]
+async fn abandoning_one_sibling_never_touches_a_concurrent_sibling_in_the_same_session() {
     let git_dir = temp_git_dir("sibling-abandon-isolation");
     let seam = RecordingSeam::new();
 
-    drive(&git_dir, &seam, &tool_call_event("bash", "call_a")).expect("A Start");
-    drive(&git_dir, &seam, &tool_call_event("bash", "call_b")).expect("B Start");
-    drive(&git_dir, &seam, &tool_result_event("bash", "call_b")).expect("B tool_result");
+    drive(&git_dir, &seam, &tool_call_event("bash", "call_a"))
+        .await
+        .expect("A Start");
+    drive(&git_dir, &seam, &tool_call_event("bash", "call_b"))
+        .await
+        .expect("B Start");
+    drive(&git_dir, &seam, &tool_result_event("bash", "call_b"))
+        .await
+        .expect("B tool_result");
 
     drive(&git_dir, &seam, &tool_execution_end_event("bash", "call_a"))
+        .await
         .expect("A's terminal event with no tool_result must abandon only A");
 
     let state = read_state(&git_dir).expect("state readable");
@@ -1073,6 +1177,7 @@ fn abandoning_one_sibling_never_touches_a_concurrent_sibling_in_the_same_session
     assert_eq!(state.attempts[0].phase, AttemptPhase::Executed);
 
     drive(&git_dir, &seam, &tool_execution_end_event("bash", "call_b"))
+        .await
         .expect("B must still close normally after A's abandonment and recovery");
     assert!(read_state(&git_dir)
         .expect("state readable")
@@ -1086,17 +1191,20 @@ fn abandoning_one_sibling_never_touches_a_concurrent_sibling_in_the_same_session
     cleanup(&git_dir);
 }
 
-#[test]
-fn a_crash_mid_abandon_loop_is_resumed_and_completed_on_the_next_boundary_lock_acquisition() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crash_mid_abandon_loop_is_resumed_and_completed_on_the_next_boundary_lock_acquisition() {
     let git_dir = temp_git_dir("crash-mid-abandon-loop");
     let crashing = RecordingSeam::failing_once_on(&["abandon"]);
 
-    drive(&git_dir, &crashing, &tool_call_event("bash", "call_1")).expect("Start");
+    drive(&git_dir, &crashing, &tool_call_event("bash", "call_1"))
+        .await
+        .expect("Start");
     drive(
         &git_dir,
         &crashing,
         &tool_execution_end_event("bash", "call_1"),
     )
+    .await
     .expect(
         "a transient abandon failure mid-recovery must leave recovery Pending, not surface \
              an error, simulating a crash between marking PendingAbandon and completing the \
@@ -1120,6 +1228,7 @@ fn a_crash_mid_abandon_loop_is_resumed_and_completed_on_the_next_boundary_lock_a
     );
 
     drive(&git_dir, &crashing, &tool_call_event("bash", "call_2"))
+        .await
         .expect("recovery must self-heal and complete on the very next invocation");
 
     assert!(read_state(&git_dir)
@@ -1133,20 +1242,28 @@ fn a_crash_mid_abandon_loop_is_resumed_and_completed_on_the_next_boundary_lock_a
     cleanup(&git_dir);
 }
 
-#[test]
-fn a_reused_tool_call_id_after_terminal_cleanup_gets_a_distinct_scope_id() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reused_tool_call_id_after_terminal_cleanup_gets_a_distinct_scope_id() {
     let git_dir = temp_git_dir("terminal-scope-id-non-reuse");
     let seam = RecordingSeam::new();
 
-    drive(&git_dir, &seam, &tool_call_event("bash", "call_1")).expect("first Start");
-    drive(&git_dir, &seam, &tool_result_event("bash", "call_1")).expect("first tool_result");
-    drive(&git_dir, &seam, &tool_execution_end_event("bash", "call_1")).expect("first Close");
+    drive(&git_dir, &seam, &tool_call_event("bash", "call_1"))
+        .await
+        .expect("first Start");
+    drive(&git_dir, &seam, &tool_result_event("bash", "call_1"))
+        .await
+        .expect("first tool_result");
+    drive(&git_dir, &seam, &tool_execution_end_event("bash", "call_1"))
+        .await
+        .expect("first Close");
     assert!(read_state(&git_dir)
         .expect("state readable")
         .attempts
         .is_empty());
 
-    drive(&git_dir, &seam, &tool_call_event("bash", "call_1")).expect("reused toolCallId Start");
+    drive(&git_dir, &seam, &tool_call_event("bash", "call_1"))
+        .await
+        .expect("reused toolCallId Start");
     let state = read_state(&git_dir).expect("state readable");
     assert_eq!(state.attempts.len(), 1);
     assert_eq!(state.attempts[0].attempt_seq, 2);

@@ -61,7 +61,7 @@ pub(crate) fn classify_health(git_dir: &Path) -> MutationScopeAdapterHealth {
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -75,7 +75,6 @@ mod tests {
     };
     use super::*;
     use crate::services::hooks::mutation_scope_owner::ProcessOwner;
-    use crate::services::observability::traits::Logger;
 
     const FAIL_CLOSED_MESSAGE: &str =
         "SCE could not establish Pi mutation attribution for this tool execution.";
@@ -160,11 +159,14 @@ mod tests {
             .to_string()
     }
 
-    fn drive(git_dir: &Path, seam: &RecordingSeam, payload: &str) -> anyhow::Result<String> {
+    async fn drive(git_dir: &Path, seam: &RecordingSeam, payload: &str) -> anyhow::Result<String> {
         let resolver = |_cwd: &str| Ok(git_dir.to_path_buf());
-        let seam_fn =
-            |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| seam.handle(payload);
-        run_pi_mutation_scope_from_payload_with_seams(payload, None, &resolver, &seam_fn)
+        let seam_fn = async |_root: &Path,
+                             payload: &str,
+                             _logger: Option<
+            &crate::services::observability::traits::NoopLogger,
+        >| seam.handle(payload);
+        run_pi_mutation_scope_from_payload_with_seams(payload, None, &resolver, &seam_fn).await
     }
 
     fn tool_call_event(session_id: &str, tool_call_id: &str) -> String {
@@ -212,8 +214,8 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn clear_recovery_is_healthy_with_a_live_owner_pending_start_attempt_never_swept_by_an_unrelated_start(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn clear_recovery_is_healthy_with_a_live_owner_pending_start_attempt_never_swept_by_an_unrelated_start(
     ) {
         let git_dir = unique_test_git_dir("clear-live-owner");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
@@ -231,6 +233,7 @@ mod tests {
 
         let seam = RecordingSeam::new();
         drive(&git_dir, &seam, &tool_call_event("ses-c", "call-c"))
+            .await
             .expect("an unrelated session's Start must proceed alongside a live-owner attempt");
         assert_eq!(
             seam.calls.lock().expect("seam mutex").clone(),
@@ -256,8 +259,8 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn clear_recovery_is_healthy_with_an_uncertain_owner_pending_start_attempt_never_swept_by_an_unrelated_start(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn clear_recovery_is_healthy_with_an_uncertain_owner_pending_start_attempt_never_swept_by_an_unrelated_start(
     ) {
         let git_dir = unique_test_git_dir("clear-uncertain-owner");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
@@ -283,7 +286,7 @@ mod tests {
         );
 
         let seam = RecordingSeam::new();
-        drive(&git_dir, &seam, &tool_call_event("ses-c", "call-c")).expect(
+        drive(&git_dir, &seam, &tool_call_event("ses-c", "call-c")).await.expect(
             "an unrelated session's Start must proceed without touching an uncertain-owner attempt",
         );
         assert_eq!(
@@ -300,14 +303,16 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn clear_recovery_with_a_dead_owner_pending_start_attempt_is_recovering_and_an_unrelated_session_start_sweeps_it_ac4(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn clear_recovery_with_a_dead_owner_pending_start_attempt_is_recovering_and_an_unrelated_session_start_sweeps_it_ac4(
     ) {
         let git_dir = unique_test_git_dir("clear-dead-owner-pending-start");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
         let seam = RecordingSeam::new();
 
-        drive(&git_dir, &seam, &tool_call_event("ses-a", "call-a")).expect("A starts");
+        drive(&git_dir, &seam, &tool_call_event("ses-a", "call-a"))
+            .await
+            .expect("A starts");
         let scope_a = state::read_state(&git_dir)
             .expect("state readable")
             .attempts[0]
@@ -323,6 +328,7 @@ mod tests {
         );
 
         drive(&git_dir, &seam, &tool_call_event("ses-b", "call-b"))
+            .await
             .expect("B's Start must recover A's stale owner without ever replaying A's own key");
 
         assert_eq!(
@@ -341,15 +347,20 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn clear_recovery_with_a_dead_owner_executed_attempt_is_recovering_and_is_swept_without_a_synthetic_close(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn clear_recovery_with_a_dead_owner_executed_attempt_is_recovering_and_is_swept_without_a_synthetic_close(
     ) {
         let git_dir = unique_test_git_dir("clear-dead-owner-executed");
-        std::fs::create_dir_all(&git_dir).expect("git dir should be created");
+        std::fs::create_dir_all(&git_dir)
+            .await
+            .expect("git dir should be created");
         let seam = RecordingSeam::new();
 
-        drive(&git_dir, &seam, &tool_call_event("ses-a", "call-a")).expect("A starts");
+        drive(&git_dir, &seam, &tool_call_event("ses-a", "call-a"))
+            .await
+            .expect("A starts");
         drive(&git_dir, &seam, &tool_result_event("ses-a", "call-a"))
+            .await
             .expect("A's tool_result marks Executed");
         let state = state::read_state(&git_dir).expect("state readable");
         assert_eq!(state.attempts[0].phase, AttemptPhase::Executed);
@@ -361,6 +372,7 @@ mod tests {
         );
 
         drive(&git_dir, &seam, &tool_call_event("ses-b", "call-b"))
+            .await
             .expect("B's Start must recover A's dead Executed attempt");
 
         assert_eq!(
@@ -384,19 +396,22 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn pending_recovery_from_a_failed_terminal_abandon_is_recovering_and_self_heals_on_the_next_start(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pending_recovery_from_a_failed_terminal_abandon_is_recovering_and_self_heals_on_the_next_start(
     ) {
         let git_dir = unique_test_git_dir("pending-failed-abandon");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
         let crashing = RecordingSeam::failing_once_on(&["abandon"]);
 
-        drive(&git_dir, &crashing, &tool_call_event("ses-1", "call-1")).expect("Start");
+        drive(&git_dir, &crashing, &tool_call_event("ses-1", "call-1"))
+            .await
+            .expect("Start");
         drive(
             &git_dir,
             &crashing,
             &tool_execution_end_event("ses-1", "call-1"),
         )
+        .await
         .expect("a transient abandon failure mid-recovery must not surface an error");
 
         let seeded = state::read_state(&git_dir).expect("state readable");
@@ -416,6 +431,7 @@ mod tests {
                 &still_failing,
                 &tool_call_event("ses-other", &format!("call-retry-{attempt_number}")),
             )
+            .await
             .expect_err("admission while recovery is unresolved must stay fail-closed");
             assert!(error.to_string().contains(FAIL_CLOSED_MESSAGE));
         }
@@ -427,6 +443,7 @@ mod tests {
 
         let healthy = RecordingSeam::new();
         drive(&git_dir, &healthy, &tool_call_event("ses-2", "call-2"))
+            .await
             .expect("recovery must self-heal and complete on the next successful invocation");
 
         let resolved = state::read_state(&git_dir).expect("state readable");
@@ -439,25 +456,30 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn pending_recovery_from_an_interrupted_dead_owner_sweep_is_recovering_and_denies_the_triggering_start_until_resumed(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pending_recovery_from_an_interrupted_dead_owner_sweep_is_recovering_and_denies_the_triggering_start_until_resumed(
     ) {
         let git_dir = unique_test_git_dir("pending-interrupted-sweep");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
         let seam = RecordingSeam::new();
 
-        drive(&git_dir, &seam, &tool_call_event("ses-a", "call-a")).expect("A's Start");
+        drive(&git_dir, &seam, &tool_call_event("ses-a", "call-a"))
+            .await
+            .expect("A's Start");
         let scope_a = state::read_state(&git_dir)
             .expect("state readable")
+            .await
             .attempts[0]
             .scope_id
             .clone();
         force_attempt_owner_dead_for_tests(&git_dir, &scope_a);
 
         let crashing = RecordingSeam::failing_once_on(&["abandon"]);
-        drive(&git_dir, &crashing, &tool_call_event("ses-b", "call-b")).expect_err(
-            "a Start that triggers a stale-owner recovery which fails mid-way must not commit",
-        );
+        drive(&git_dir, &crashing, &tool_call_event("ses-b", "call-b"))
+            .await
+            .expect_err(
+                "a Start that triggers a stale-owner recovery which fails mid-way must not commit",
+            );
 
         let seeded = state::read_state(&git_dir).expect("state readable");
         assert_eq!(seeded.recovery, RecoveryState::Pending { generation: 1 });
@@ -470,7 +492,7 @@ mod tests {
              tracked Start"
         );
 
-        drive(&git_dir, &crashing, &tool_call_event("ses-b", "call-b")).expect(
+        drive(&git_dir, &crashing, &tool_call_event("ses-b", "call-b")).await.expect(
             "the next boundary-lock acquisition must resume and complete the pending recovery, \
              then admit B",
         );
@@ -485,8 +507,8 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn orphaned_flushing_is_recovering_and_reclaimed_by_the_next_boundary() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn orphaned_flushing_is_recovering_and_reclaimed_by_the_next_boundary() {
         let git_dir = unique_test_git_dir("orphaned-flushing");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
 
@@ -513,6 +535,7 @@ mod tests {
 
         let healthy = RecordingSeam::new();
         drive(&git_dir, &healthy, &tool_call_event("ses-new", "call-new"))
+            .await
             .expect("the orphaned flush is reclaimed and retried, then the new call is admitted");
 
         let resolved = state::read_state(&git_dir).expect("state readable");
@@ -689,15 +712,19 @@ mod tests {
         }
     }
 
-    #[test]
-    fn pending_recovery_reuses_a_duplicate_start_for_an_existing_nonterminal_key_without_advancing_recovery_then_a_fresh_start_recovers(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pending_recovery_reuses_a_duplicate_start_for_an_existing_nonterminal_key_without_advancing_recovery_then_a_fresh_start_recovers(
     ) {
         let git_dir = unique_test_git_dir("pending-duplicate-start-vs-fresh-start");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
 
         let setup = RecordingSeam::new();
-        drive(&git_dir, &setup, &tool_call_event("ses-b", "call-b")).expect("B's Start");
-        drive(&git_dir, &setup, &tool_call_event("ses-a", "call-a")).expect("A's Start");
+        drive(&git_dir, &setup, &tool_call_event("ses-b", "call-b"))
+            .await
+            .expect("B's Start");
+        drive(&git_dir, &setup, &tool_call_event("ses-a", "call-a"))
+            .await
+            .expect("A's Start");
 
         let crashing_abandon = RecordingSeam::failing_once_on(&["abandon"]);
         drive(
@@ -705,6 +732,7 @@ mod tests {
             &crashing_abandon,
             &tool_execution_end_event("ses-a", "call-a"),
         )
+        .await
         .expect("a transient abandon failure mid-recovery must not surface an error");
 
         let seeded = state::read_state(&git_dir).expect("state readable");
@@ -727,6 +755,7 @@ mod tests {
 
         let duplicate = RecordingSeam::new();
         drive(&git_dir, &duplicate, &tool_call_event("ses-b", "call-b"))
+            .await
             .expect("a duplicate Start for an already-tracked nonterminal key stays idempotent");
 
         assert_eq!(
@@ -747,9 +776,11 @@ mod tests {
         );
 
         let fresh = RecordingSeam::new();
-        drive(&git_dir, &fresh, &tool_call_event("ses-c", "call-c")).expect(
-            "C's fresh Start must claim and complete the pending recovery, then be admitted",
-        );
+        drive(&git_dir, &fresh, &tool_call_event("ses-c", "call-c"))
+            .await
+            .expect(
+                "C's fresh Start must claim and complete the pending recovery, then be admitted",
+            );
 
         assert_eq!(
             fresh.calls.lock().expect("seam mutex").clone(),

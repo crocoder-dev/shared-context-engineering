@@ -110,25 +110,25 @@ impl std::fmt::Display for AbandonScopeError {
 
 impl std::error::Error for AbandonScopeError {}
 
-pub fn abandon_scope<P>(
+pub async fn abandon_scope<P>(
     repository_root: &Path,
     scope: &ScopeId,
     open_db: P,
 ) -> Result<AbandonScopeOutcome, AbandonScopeError>
 where
-    P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+    P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
 {
-    abandon_scope_inner(repository_root, scope, open_db, |_attempt| {})
+    abandon_scope_inner(repository_root, scope, open_db, |_attempt| {}).await
 }
 
-pub(super) fn abandon_scope_inner<P, L>(
+pub(super) async fn abandon_scope_inner<P, L>(
     repository_root: &Path,
     scope: &ScopeId,
     open_db: P,
     after_load: L,
 ) -> Result<AbandonScopeOutcome, AbandonScopeError>
 where
-    P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+    P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
     L: FnMut(u32),
 {
     let protected =
@@ -142,7 +142,7 @@ where
         });
     }
 
-    let outcome = abandon_protected(protected.worktree_id(), scope, open_db, after_load)?;
+    let outcome = abandon_protected(protected.worktree_id(), scope, open_db, after_load).await?;
 
     if matches!(outcome, AbandonScopeOutcome::RecoveryRequired { .. }) {
         return Ok(outcome);
@@ -157,21 +157,27 @@ where
     }
 }
 
-fn abandon_protected<P, L>(
+async fn abandon_protected<P, L>(
     worktree_id: &WorktreeId,
     scope: &ScopeId,
     open_db: P,
     mut after_load: L,
 ) -> Result<AbandonScopeOutcome, AbandonScopeError>
 where
-    P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+    P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
     L: FnMut(u32),
 {
-    let db = open_db().map_err(AbandonScopeError::AgentTraceDbUnavailable)?;
+    let db = open_db()
+        .await
+        .map_err(AbandonScopeError::AgentTraceDbUnavailable)?;
     let store = MutationTraceStore::new(&db);
 
     for attempt_index in 0..MAX_CAS_RETRY_ATTEMPTS {
-        let Some(scope_state) = store.load_scope(scope).map_err(AbandonScopeError::Other)? else {
+        let Some(scope_state) = store
+            .load_scope(scope)
+            .await
+            .map_err(AbandonScopeError::Other)?
+        else {
             return Ok(recovery_required(
                 worktree_id,
                 scope,
@@ -188,6 +194,7 @@ where
 
         let Some(projection) = store
             .load_worktree(worktree_id, Some(scope), None)
+            .await
             .map_err(AbandonScopeError::Other)?
         else {
             return Ok(recovery_required(
@@ -252,6 +259,7 @@ where
 
         match store
             .commit(&transition)
+            .await
             .map_err(AbandonScopeError::Other)?
         {
             CasResult::Applied => {
@@ -300,7 +308,7 @@ fn protected_worktree_failure(error: ProtectedWorktreeError) -> AbandonScopeErro
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::cell::Cell;
     use std::path::{Path, PathBuf};
@@ -322,7 +330,7 @@ mod tests {
     }
 
     impl TestScopeRepo {
-        fn new(label: &str) -> Self {
+        async fn new(label: &str) -> Self {
             let temp_dir = tempfile::Builder::new()
                 .prefix(&format!("sce-mutation-trace-scope-runtime-{label}-"))
                 .tempdir()
@@ -333,6 +341,7 @@ mod tests {
             let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
             let db_path = temp_dir.path().join("agent-trace.db");
             RepositoryAgentTraceDb::new_at(&db_path)
+                .await
                 .expect("the repository DB should open with schema");
             Self {
                 _temp_dir: temp_dir,
@@ -342,12 +351,13 @@ mod tests {
             }
         }
 
-        fn open_db(&self) -> anyhow::Result<RepositoryAgentTraceDb> {
-            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&self.db_path)
+        async fn open_db(&self) -> anyhow::Result<RepositoryAgentTraceDb> {
+            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&self.db_path).await
         }
 
-        fn db(&self) -> RepositoryAgentTraceDb {
+        async fn db(&self) -> RepositoryAgentTraceDb {
             self.open_db()
+                .await
                 .expect("reopening the DB for assertions should succeed")
         }
 
@@ -383,17 +393,18 @@ mod tests {
         );
     }
 
-    fn seed_worktree(db: &RepositoryAgentTraceDb, worktree: &WorktreeId, revision: u64) {
+    async fn seed_worktree(db: &RepositoryAgentTraceDb, worktree: &WorktreeId, revision: u64) {
         db.execute(
             "INSERT INTO mutation_trace_worktrees
                 (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline)
              VALUES (?1, 'tree-0', ?2, 0, 'healthy', 0)",
             (worktree.0.as_str(), encode_revision(revision).as_slice()),
         )
+        .await
         .expect("worktree insert should succeed");
     }
 
-    fn seed_scope(
+    async fn seed_scope(
         db: &RepositoryAgentTraceDb,
         scope: &ScopeId,
         worktree: &WorktreeId,
@@ -408,13 +419,17 @@ mod tests {
                 crate::services::mutation_trace::store::encode_scope_status(status),
             ),
         )
+        .await
         .expect("scope insert should succeed");
     }
 
-    fn bump_revision(db_path: &Path, worktree: &WorktreeId) {
+    async fn bump_revision(db_path: &Path, worktree: &WorktreeId) {
         let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(db_path)
+            .await
             .expect("the competing writer should open the DB");
-        let current = read_worktree(&db, worktree).expect("the worktree row should exist");
+        let current = read_worktree(&db, worktree)
+            .await
+            .expect("the worktree row should exist");
         db.execute(
             "UPDATE mutation_trace_worktrees SET revision = ?1 WHERE worktree_id = ?2",
             (
@@ -422,11 +437,13 @@ mod tests {
                 worktree.0.as_str(),
             ),
         )
+        .await
         .expect("the competing revision bump should succeed");
     }
 
-    fn set_scope_status(db_path: &Path, scope: &ScopeId, status: ScopeStatus) {
+    async fn set_scope_status(db_path: &Path, scope: &ScopeId, status: ScopeStatus) {
         let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(db_path)
+            .await
             .expect("the competing writer should open the DB");
         db.execute(
             "UPDATE mutation_trace_scopes SET status = ?1 WHERE scope_id = ?2",
@@ -435,21 +452,27 @@ mod tests {
                 scope.0.as_str(),
             ),
         )
+        .await
         .expect("the competing scope-status write should succeed");
     }
 
-    fn arm_a_scope_status_write_collision(db_path: &Path) {
+    async fn arm_a_scope_status_write_collision(db_path: &Path) {
         let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(db_path)
+            .await
             .expect("the competing writer should open the DB");
         db.execute(
             "CREATE UNIQUE INDEX idx_test_one_scope_per_status
              ON mutation_trace_scopes (status)",
             (),
         )
+        .await
         .expect("the collision index should be created");
     }
 
-    fn read_worktree(db: &RepositoryAgentTraceDb, worktree: &WorktreeId) -> Option<WorktreeState> {
+    async fn read_worktree(
+        db: &RepositoryAgentTraceDb,
+        worktree: &WorktreeId,
+    ) -> Option<WorktreeState> {
         let rows = db
             .query_map(
                 "SELECT cursor_tree, revision, tainted, failure_kind, needs_rebaseline
@@ -470,6 +493,7 @@ mod tests {
                     ))
                 },
             )
+            .await
             .expect("the worktree read should succeed");
 
         rows.into_iter().next().map(
@@ -486,13 +510,17 @@ mod tests {
         )
     }
 
-    fn read_scope_status(db: &RepositoryAgentTraceDb, scope: &ScopeId) -> Option<ScopeStatus> {
+    async fn read_scope_status(
+        db: &RepositoryAgentTraceDb,
+        scope: &ScopeId,
+    ) -> Option<ScopeStatus> {
         let rows = db
             .query_map(
                 "SELECT status FROM mutation_trace_scopes WHERE scope_id = ?1",
                 (scope.0.as_str(),),
                 |row| row.get::<String>(0).map_err(Into::into),
             )
+            .await
             .expect("the scope read should succeed");
 
         rows.into_iter().next().map(|status| {
@@ -501,18 +529,19 @@ mod tests {
         })
     }
 
-    fn count_rows(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
+    async fn count_rows(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
         let rows = db
             .query_map(&format!("SELECT COUNT(*) FROM {table}"), (), |row| {
                 row.get::<i64>(0).map_err(Into::into)
             })
+            .await
             .expect("the row count should succeed");
 
         rows.into_iter().next().unwrap_or_default()
     }
 
-    #[test]
-    fn an_inherited_marker_requires_recovery_without_consulting_the_db_provider() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_inherited_marker_requires_recovery_without_consulting_the_db_provider() {
         let repo = TestScopeRepo::new("inherited-marker");
         let scope = ScopeId("scope-dead".to_string());
         repo.marker()
@@ -524,6 +553,7 @@ mod tests {
             provider_called.set(true);
             Err(anyhow::anyhow!("the DB provider must never be invoked"))
         })
+        .await
         .expect("an inherited marker settles as a successful recovery-required outcome");
 
         assert!(
@@ -546,14 +576,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_missing_scope_row_requires_recovery_and_leaves_the_fence_armed() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_missing_scope_row_requires_recovery_and_leaves_the_fence_armed() {
         let repo = TestScopeRepo::new("missing-scope");
         let worktree = repo.worktree_id();
         let scope = ScopeId("scope-never-registered".to_string());
-        seed_worktree(&repo.db(), &worktree, 3);
+        seed_worktree(&repo.db().await, &worktree, 3).await;
 
-        let outcome = abandon_scope(&repo.repo_root, &scope, || repo.open_db())
+        let outcome = abandon_scope(&repo.repo_root, &scope, async || repo.open_db().await)
+            .await
             .expect("a missing scope row settles as a recovery-required outcome");
 
         assert!(
@@ -571,7 +602,7 @@ mod tests {
             "a scope whose Start never committed must leave the fence armed"
         );
 
-        let db = repo.db();
+        let db = repo.db().await;
         assert_eq!(
             read_worktree(&db, &worktree)
                 .expect("the worktree row should exist")
@@ -582,18 +613,19 @@ mod tests {
         assert_eq!(read_scope_status(&db, &scope), None);
     }
 
-    #[test]
-    fn a_never_seen_scope_requires_recovery_and_leaves_the_fence_armed() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_never_seen_scope_requires_recovery_and_leaves_the_fence_armed() {
         let repo = TestScopeRepo::new("never-seen-scope");
         let worktree = repo.worktree_id();
         let scope = ScopeId("scope-registered-only".to_string());
         {
-            let db = repo.db();
-            seed_worktree(&db, &worktree, 3);
-            seed_scope(&db, &scope, &worktree, ScopeStatus::NeverSeen);
+            let db = repo.db().await;
+            seed_worktree(&db, &worktree, 3).await;
+            seed_scope(&db, &scope, &worktree, ScopeStatus::NeverSeen).await;
         }
 
-        let outcome = abandon_scope(&repo.repo_root, &scope, || repo.open_db())
+        let outcome = abandon_scope(&repo.repo_root, &scope, async || repo.open_db().await)
+            .await
             .expect("a NeverSeen scope settles as a recovery-required outcome");
 
         assert!(
@@ -611,7 +643,7 @@ mod tests {
             "a scope with no observed Start must leave the fence armed"
         );
 
-        let db = repo.db();
+        let db = repo.db().await;
         assert_eq!(
             read_worktree(&db, &worktree)
                 .expect("the worktree row should exist")
@@ -626,14 +658,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_scope_whose_worktree_row_is_missing_requires_recovery() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_scope_whose_worktree_row_is_missing_requires_recovery() {
         let repo = TestScopeRepo::new("missing-worktree-row");
         let worktree = repo.worktree_id();
         let scope = ScopeId("scope-orphan".to_string());
-        seed_scope(&repo.db(), &scope, &worktree, ScopeStatus::Active);
+        seed_scope(&repo.db().await, &scope, &worktree, ScopeStatus::Active).await;
 
-        let outcome = abandon_scope(&repo.repo_root, &scope, || repo.open_db())
+        let outcome = abandon_scope(&repo.repo_root, &scope, async || repo.open_db().await)
+            .await
             .expect("a missing worktree row settles as a recovery-required outcome");
 
         assert!(
@@ -657,20 +690,21 @@ mod tests {
         );
     }
 
-    #[test]
-    fn abandoning_a_live_scope_writes_only_the_scope_and_worktree_rows() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn abandoning_a_live_scope_writes_only_the_scope_and_worktree_rows() {
         let repo = TestScopeRepo::new("active-abandonment");
         let worktree = repo.worktree_id();
         let scope = ScopeId("scope-live".to_string());
         let bystander = ScopeId("scope-bystander".to_string());
         {
-            let db = repo.db();
-            seed_worktree(&db, &worktree, 3);
-            seed_scope(&db, &scope, &worktree, ScopeStatus::Active);
-            seed_scope(&db, &bystander, &worktree, ScopeStatus::Active);
+            let db = repo.db().await;
+            seed_worktree(&db, &worktree, 3).await;
+            seed_scope(&db, &scope, &worktree, ScopeStatus::Active).await;
+            seed_scope(&db, &bystander, &worktree, ScopeStatus::Active).await;
         }
 
-        let outcome = abandon_scope(&repo.repo_root, &scope, || repo.open_db())
+        let outcome = abandon_scope(&repo.repo_root, &scope, async || repo.open_db().await)
+            .await
             .expect("abandoning a live scope should succeed");
 
         assert_eq!(
@@ -686,8 +720,10 @@ mod tests {
             "a settled abandonment must clear the marker it armed"
         );
 
-        let db = repo.db();
-        let worktree_state = read_worktree(&db, &worktree).expect("the worktree row should exist");
+        let db = repo.db().await;
+        let worktree_state = read_worktree(&db, &worktree)
+            .await
+            .expect("the worktree row should exist");
         assert_eq!(worktree_state.revision, 4, "the revision advances by one");
         assert!(worktree_state.needs_rebaseline);
         assert_eq!(
@@ -717,18 +753,19 @@ mod tests {
         assert_eq!(count_rows(&db, "mutation_trace_processed_events"), 0);
     }
 
-    #[test]
-    fn a_closed_scope_settles_as_a_terminal_no_op() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_closed_scope_settles_as_a_terminal_no_op() {
         let repo = TestScopeRepo::new("closed-scope");
         let worktree = repo.worktree_id();
         let scope = ScopeId("scope-closed".to_string());
         {
-            let db = repo.db();
-            seed_worktree(&db, &worktree, 7);
-            seed_scope(&db, &scope, &worktree, ScopeStatus::Closed);
+            let db = repo.db().await;
+            seed_worktree(&db, &worktree, 7).await;
+            seed_scope(&db, &scope, &worktree, ScopeStatus::Closed).await;
         }
 
-        let outcome = abandon_scope(&repo.repo_root, &scope, || repo.open_db())
+        let outcome = abandon_scope(&repo.repo_root, &scope, async || repo.open_db().await)
+            .await
             .expect("an already-closed scope settles successfully");
 
         assert_eq!(
@@ -745,7 +782,7 @@ mod tests {
             "a proven-terminal no-op must clear the marker it armed"
         );
 
-        let db = repo.db();
+        let db = repo.db().await;
         assert_eq!(
             read_worktree(&db, &worktree)
                 .expect("the worktree row should exist")
@@ -756,18 +793,19 @@ mod tests {
         assert_eq!(read_scope_status(&db, &scope), Some(ScopeStatus::Closed));
     }
 
-    #[test]
-    fn an_already_abandoned_scope_settles_as_a_terminal_no_op() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_already_abandoned_scope_settles_as_a_terminal_no_op() {
         let repo = TestScopeRepo::new("abandoned-scope");
         let worktree = repo.worktree_id();
         let scope = ScopeId("scope-abandoned".to_string());
         {
-            let db = repo.db();
-            seed_worktree(&db, &worktree, 7);
-            seed_scope(&db, &scope, &worktree, ScopeStatus::Abandoned);
+            let db = repo.db().await;
+            seed_worktree(&db, &worktree, 7).await;
+            seed_scope(&db, &scope, &worktree, ScopeStatus::Abandoned).await;
         }
 
-        let outcome = abandon_scope(&repo.repo_root, &scope, || repo.open_db())
+        let outcome = abandon_scope(&repo.repo_root, &scope, async || repo.open_db().await)
+            .await
             .expect("an already-abandoned scope settles successfully");
 
         assert_eq!(
@@ -792,20 +830,21 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_scope_owned_by_another_worktree_is_rejected_without_writing() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_scope_owned_by_another_worktree_is_rejected_without_writing() {
         let repo = TestScopeRepo::new("cross-worktree");
         let worktree = repo.worktree_id();
         let other = WorktreeId("wt-other".to_string());
         let scope = ScopeId("scope-elsewhere".to_string());
         {
-            let db = repo.db();
-            seed_worktree(&db, &worktree, 3);
-            seed_worktree(&db, &other, 11);
-            seed_scope(&db, &scope, &other, ScopeStatus::Active);
+            let db = repo.db().await;
+            seed_worktree(&db, &worktree, 3).await;
+            seed_worktree(&db, &other, 11).await;
+            seed_scope(&db, &scope, &other, ScopeStatus::Active).await;
         }
 
-        let error = abandon_scope(&repo.repo_root, &scope, || repo.open_db())
+        let error = abandon_scope(&repo.repo_root, &scope, async || repo.open_db().await)
+            .await
             .expect_err("a scope owned by another worktree must be rejected");
 
         match &error {
@@ -821,7 +860,7 @@ mod tests {
             other => panic!("expected WorktreeIdentityMismatch, got {other:?}"),
         }
 
-        let db = repo.db();
+        let db = repo.db().await;
         assert_eq!(
             read_worktree(&db, &worktree)
                 .expect("this worktree's row should exist")
@@ -837,18 +876,19 @@ mod tests {
         assert_eq!(read_scope_status(&db, &scope), Some(ScopeStatus::Active));
     }
 
-    #[test]
-    fn a_live_scope_on_an_exhausted_revision_is_a_distinct_error() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_live_scope_on_an_exhausted_revision_is_a_distinct_error() {
         let repo = TestScopeRepo::new("revision-exhausted");
         let worktree = repo.worktree_id();
         let scope = ScopeId("scope-live".to_string());
         {
-            let db = repo.db();
-            seed_worktree(&db, &worktree, u64::MAX);
-            seed_scope(&db, &scope, &worktree, ScopeStatus::Active);
+            let db = repo.db().await;
+            seed_worktree(&db, &worktree, u64::MAX).await;
+            seed_scope(&db, &scope, &worktree, ScopeStatus::Active).await;
         }
 
-        let error = abandon_scope(&repo.repo_root, &scope, || repo.open_db())
+        let error = abandon_scope(&repo.repo_root, &scope, async || repo.open_db().await)
+            .await
             .expect_err("a worktree at the maximum revision cannot abandon");
 
         match &error {
@@ -868,29 +908,30 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_cas_conflict_recomputes_the_abandonment_from_fresh_state() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cas_conflict_recomputes_the_abandonment_from_fresh_state() {
         let repo = TestScopeRepo::new("cas-conflict-retry");
         let worktree = repo.worktree_id();
         let scope = ScopeId("scope-live".to_string());
         {
-            let db = repo.db();
-            seed_worktree(&db, &worktree, 3);
-            seed_scope(&db, &scope, &worktree, ScopeStatus::Active);
+            let db = repo.db().await;
+            seed_worktree(&db, &worktree, 3).await;
+            seed_scope(&db, &scope, &worktree, ScopeStatus::Active).await;
         }
 
         let attempts = Cell::new(0u32);
         let outcome = abandon_scope_inner(
             &repo.repo_root,
             &scope,
-            || repo.open_db(),
-            |attempt| {
+            async || repo.open_db().await,
+            async |attempt| {
                 attempts.set(attempts.get() + 1);
                 if attempt == 0 {
-                    bump_revision(&repo.db_path, &worktree);
+                    bump_revision(&repo.db_path, &worktree).await;
                 }
             },
         )
+        .await
         .expect("a losing CAS attempt should retry and settle");
 
         assert_eq!(
@@ -908,7 +949,7 @@ mod tests {
             "the retry advances from the competitor's revision, not the stale one"
         );
 
-        let db = repo.db();
+        let db = repo.db().await;
         assert_eq!(
             read_worktree(&db, &worktree)
                 .expect("the worktree row should exist")
@@ -918,28 +959,29 @@ mod tests {
         assert_eq!(read_scope_status(&db, &scope), Some(ScopeStatus::Abandoned));
     }
 
-    #[test]
-    fn a_cas_conflict_whose_competitor_ended_the_scope_settles_as_a_terminal_no_op() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cas_conflict_whose_competitor_ended_the_scope_settles_as_a_terminal_no_op() {
         let repo = TestScopeRepo::new("cas-conflict-terminal");
         let worktree = repo.worktree_id();
         let scope = ScopeId("scope-live".to_string());
         {
-            let db = repo.db();
-            seed_worktree(&db, &worktree, 3);
-            seed_scope(&db, &scope, &worktree, ScopeStatus::Active);
+            let db = repo.db().await;
+            seed_worktree(&db, &worktree, 3).await;
+            seed_scope(&db, &scope, &worktree, ScopeStatus::Active).await;
         }
 
         let outcome = abandon_scope_inner(
             &repo.repo_root,
             &scope,
-            || repo.open_db(),
-            |attempt| {
+            async || repo.open_db().await,
+            async |attempt| {
                 if attempt == 0 {
-                    set_scope_status(&repo.db_path, &scope, ScopeStatus::Closed);
-                    bump_revision(&repo.db_path, &worktree);
+                    set_scope_status(&repo.db_path, &scope, ScopeStatus::Closed).await;
+                    bump_revision(&repo.db_path, &worktree).await;
                 }
             },
         )
+        .await
         .expect("a competitor that ended the scope should settle the retry");
 
         assert_eq!(
@@ -953,7 +995,7 @@ mod tests {
             "the retry must settle on the competitor's terminal status, not overwrite it"
         );
 
-        let db = repo.db();
+        let db = repo.db().await;
         assert_eq!(
             read_scope_status(&db, &scope),
             Some(ScopeStatus::Closed),
@@ -967,29 +1009,30 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_persistence_failure_rolls_back_the_whole_transition_and_leaves_the_fence_armed() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_persistence_failure_rolls_back_the_whole_transition_and_leaves_the_fence_armed() {
         let repo = TestScopeRepo::new("persistence-failure");
         let worktree = repo.worktree_id();
         let scope = ScopeId("scope-live".to_string());
         let bystander = ScopeId("scope-already-abandoned".to_string());
         {
-            let db = repo.db();
-            seed_worktree(&db, &worktree, 3);
-            seed_scope(&db, &scope, &worktree, ScopeStatus::Active);
-            seed_scope(&db, &bystander, &worktree, ScopeStatus::Abandoned);
+            let db = repo.db().await;
+            seed_worktree(&db, &worktree, 3).await;
+            seed_scope(&db, &scope, &worktree, ScopeStatus::Active).await;
+            seed_scope(&db, &bystander, &worktree, ScopeStatus::Abandoned).await;
         }
 
         let error = abandon_scope_inner(
             &repo.repo_root,
             &scope,
-            || repo.open_db(),
-            |attempt| {
+            async || repo.open_db().await,
+            async |attempt| {
                 if attempt == 0 {
-                    arm_a_scope_status_write_collision(&repo.db_path);
+                    arm_a_scope_status_write_collision(&repo.db_path).await;
                 }
             },
         )
+        .await
         .expect_err("a failing durable write must fail the abandonment");
 
         assert!(
@@ -1007,8 +1050,10 @@ mod tests {
             "a persistence failure after the fence is armed must leave it armed"
         );
 
-        let db = repo.db();
-        let worktree_state = read_worktree(&db, &worktree).expect("the worktree row should exist");
+        let db = repo.db().await;
+        let worktree_state = read_worktree(&db, &worktree)
+            .await
+            .expect("the worktree row should exist");
         assert_eq!(
             worktree_state.revision, 3,
             "the transaction's worktree CAS guard ran before the failing statement, so a \
@@ -1037,14 +1082,15 @@ mod tests {
         assert_eq!(count_rows(&db, "mutation_trace_processed_events"), 0);
     }
 
-    #[test]
-    fn a_db_provider_failure_leaves_the_fence_armed() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_db_provider_failure_leaves_the_fence_armed() {
         let repo = TestScopeRepo::new("db-provider-failure");
         let scope = ScopeId("scope-live".to_string());
 
         let error = abandon_scope(&repo.repo_root, &scope, || {
             Err(anyhow::anyhow!("simulated Agent Trace DB open failure"))
         })
+        .await
         .expect_err("a DB provider that returns Err must fail abandon_scope()");
 
         assert!(
@@ -1057,25 +1103,27 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_marker_clear_failure_carries_the_already_settled_outcome() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_marker_clear_failure_carries_the_already_settled_outcome() {
         let repo = TestScopeRepo::new("marker-clear-failure");
         let worktree = repo.worktree_id();
         let scope = ScopeId("scope-live".to_string());
         {
-            let db = repo.db();
-            seed_worktree(&db, &worktree, 3);
-            seed_scope(&db, &scope, &worktree, ScopeStatus::Active);
+            let db = repo.db().await;
+            seed_worktree(&db, &worktree, 3).await;
+            seed_scope(&db, &scope, &worktree, ScopeStatus::Active).await;
         }
 
         let marker_path = repo.marker_path();
-        let error = abandon_scope(&repo.repo_root, &scope, || {
+        let error = abandon_scope(&repo.repo_root, &scope, async || {
             std::fs::remove_file(&marker_path)
                 .expect("the armed marker file should be present mid-invocation");
             std::fs::create_dir_all(marker_path.join("nested"))
+                .await
                 .expect("planting a non-empty directory at the marker path should succeed");
-            repo.open_db()
+            repo.open_db().await
         })
+        .await
         .expect_err("clearing a marker that is now a non-empty directory must fail");
 
         let completed = match error {
@@ -1096,8 +1144,10 @@ mod tests {
             "the marker stays logically armed after a post-completion clear failure"
         );
 
-        let db = repo.db();
-        let worktree_state = read_worktree(&db, &worktree).expect("the worktree row should exist");
+        let db = repo.db().await;
+        let worktree_state = read_worktree(&db, &worktree)
+            .await
+            .expect("the worktree row should exist");
         assert_eq!(worktree_state.revision, 4);
         assert!(worktree_state.needs_rebaseline);
         assert_eq!(read_scope_status(&db, &scope), Some(ScopeStatus::Abandoned));

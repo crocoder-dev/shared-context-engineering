@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::thread;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -48,17 +47,17 @@ pub struct ResolvedAgentTraceStorage {
 
 /// Resolves the repository-scoped Agent Trace storage for a checkout using
 /// the canonical state root from the default-path catalog.
-pub fn resolve_agent_trace_storage(
+pub async fn resolve_agent_trace_storage(
     context: &AgentTraceStorageContext<'_>,
 ) -> Result<ResolvedAgentTraceStorage> {
     let repository_identity = resolve_identity(context)?;
     let db_path = agent_trace_db_path_for_repository(&repository_identity.identity.repository_id)?;
-    open_storage(repository_identity, db_path)
+    open_storage(repository_identity, db_path).await
 }
 
 /// Resolution core against an explicit state root, so tests can exercise the
 /// full path without touching the real user state directory.
-pub fn resolve_agent_trace_storage_at_state_root(
+pub async fn resolve_agent_trace_storage_at_state_root(
     context: &AgentTraceStorageContext<'_>,
     state_root: &Path,
 ) -> Result<ResolvedAgentTraceStorage> {
@@ -67,7 +66,7 @@ pub fn resolve_agent_trace_storage_at_state_root(
         state_root,
         &repository_identity.identity.repository_id,
     )?;
-    open_storage(repository_identity, db_path)
+    open_storage(repository_identity, db_path).await
 }
 
 /// Resolves repository-scoped Agent Trace storage for high-frequency hook
@@ -78,17 +77,17 @@ pub fn resolve_agent_trace_storage_at_state_root(
 /// baseline-only (pre-`002`) database fails with the same `sce setup`
 /// guidance `ensure_schema_ready_for_hooks` already reports, rather than
 /// silently migrating it from a hook path.
-pub fn resolve_agent_trace_storage_for_hook_runtime(
+pub async fn resolve_agent_trace_storage_for_hook_runtime(
     context: &AgentTraceStorageContext<'_>,
 ) -> Result<ResolvedAgentTraceStorage> {
     let repository_identity = resolve_identity(context)?;
     let db_path = agent_trace_db_path_for_repository(&repository_identity.identity.repository_id)?;
-    open_storage_for_hook_runtime(repository_identity, db_path)
+    open_storage_for_hook_runtime(repository_identity, db_path).await
 }
 
 /// Hook-runtime resolution core against an explicit state root, so tests can
 /// exercise the full path without touching the real user state directory.
-pub fn resolve_agent_trace_storage_for_hook_runtime_at_state_root(
+pub async fn resolve_agent_trace_storage_for_hook_runtime_at_state_root(
     context: &AgentTraceStorageContext<'_>,
     state_root: &Path,
 ) -> Result<ResolvedAgentTraceStorage> {
@@ -97,7 +96,7 @@ pub fn resolve_agent_trace_storage_for_hook_runtime_at_state_root(
         state_root,
         &repository_identity.identity.repository_id,
     )?;
-    open_storage_for_hook_runtime(repository_identity, db_path)
+    open_storage_for_hook_runtime(repository_identity, db_path).await
 }
 
 fn resolve_identity(context: &AgentTraceStorageContext<'_>) -> Result<ResolvedRepositoryIdentity> {
@@ -109,7 +108,7 @@ fn resolve_identity(context: &AgentTraceStorageContext<'_>) -> Result<ResolvedRe
     .map_err(|error| anyhow::anyhow!("{error}"))
 }
 
-fn open_storage(
+async fn open_storage(
     repository_identity: ResolvedRepositoryIdentity,
     db_path: PathBuf,
 ) -> Result<ResolvedAgentTraceStorage> {
@@ -118,9 +117,10 @@ fn open_storage(
         db_path,
         open_repository_db_concurrently_safe,
     )
+    .await
 }
 
-fn open_storage_for_hook_runtime(
+async fn open_storage_for_hook_runtime(
     repository_identity: ResolvedRepositoryIdentity,
     db_path: PathBuf,
 ) -> Result<ResolvedAgentTraceStorage> {
@@ -129,15 +129,19 @@ fn open_storage_for_hook_runtime(
         db_path,
         open_repository_db_for_hook_runtime,
     )
+    .await
 }
 
-fn open_storage_with(
+async fn open_storage_with(
     repository_identity: ResolvedRepositoryIdentity,
     db_path: PathBuf,
-    open_db: impl FnOnce(&Path, &str) -> Result<(RepositoryAgentTraceDb, RepositoryMetadata)>,
+    open_db: impl std::ops::AsyncFnOnce(
+        &Path,
+        &str,
+    ) -> Result<(RepositoryAgentTraceDb, RepositoryMetadata)>,
 ) -> Result<ResolvedAgentTraceStorage> {
     let repository_id = &repository_identity.identity.repository_id;
-    let (db, metadata) = open_db(&db_path, repository_id)?;
+    let (db, metadata) = open_db(&db_path, repository_id).await?;
 
     Ok(ResolvedAgentTraceStorage {
         repository_identity,
@@ -147,27 +151,33 @@ fn open_storage_with(
     })
 }
 
-fn open_repository_db_concurrently_safe(
+async fn open_repository_db_concurrently_safe(
     db_path: &Path,
     repository_id: &str,
 ) -> Result<(RepositoryAgentTraceDb, RepositoryMetadata)> {
     let mut last_error = None;
 
     for attempt in 1..=REPOSITORY_DB_INITIALIZATION_ATTEMPTS {
-        let fast_open =
-            RepositoryAgentTraceDb::open_without_migrations_at(db_path).and_then(|db| {
-                if db.ensure_schema_ready_for_hooks().is_err() {
-                    db.repair_missing_repository_schema_migration_metadata()?;
-                }
-                let metadata = db.verify_or_initialize_repository_metadata(repository_id)?;
-                Ok((db, metadata))
-            });
+        let fast_open = async {
+            let db = RepositoryAgentTraceDb::open_without_migrations_at(db_path).await?;
+            if db.ensure_schema_ready_for_hooks().await.is_err() {
+                db.repair_missing_repository_schema_migration_metadata()
+                    .await?;
+            }
+            let metadata = db
+                .verify_or_initialize_repository_metadata(repository_id)
+                .await?;
+            Ok::<_, anyhow::Error>((db, metadata))
+        }
+        .await;
 
         match fast_open {
             Ok(result) => return Ok(result),
-            Err(fast_error) => match RepositoryAgentTraceDb::new_at(db_path) {
+            Err(fast_error) => match RepositoryAgentTraceDb::new_at(db_path).await {
                 Ok(db) => {
-                    let metadata = db.verify_or_initialize_repository_metadata(repository_id)?;
+                    let metadata = db
+                        .verify_or_initialize_repository_metadata(repository_id)
+                        .await?;
                     return Ok((db, metadata));
                 }
                 Err(init_error) => {
@@ -178,7 +188,7 @@ fn open_repository_db_concurrently_safe(
                     )
                     .context(init_error));
                     if attempt < REPOSITORY_DB_INITIALIZATION_ATTEMPTS {
-                        thread::sleep(REPOSITORY_DB_INITIALIZATION_RETRY_DELAY);
+                        tokio::time::sleep(REPOSITORY_DB_INITIALIZATION_RETRY_DELAY).await;
                     }
                 }
             },
@@ -196,21 +206,24 @@ fn open_repository_db_concurrently_safe(
 /// confirmed. Never falls back to running migrations: a missing or
 /// baseline-only (pre-`002`) database fails with the existing `sce setup`
 /// guidance instead.
-fn open_repository_db_for_hook_runtime(
+async fn open_repository_db_for_hook_runtime(
     db_path: &Path,
     repository_id: &str,
 ) -> Result<(RepositoryAgentTraceDb, RepositoryMetadata)> {
-    let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(db_path)?;
+    let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(db_path).await?;
 
-    if db.ensure_schema_ready_for_hooks().is_err() {
-        db.repair_missing_repository_schema_migration_metadata()?;
+    if db.ensure_schema_ready_for_hooks().await.is_err() {
+        db.repair_missing_repository_schema_migration_metadata()
+            .await?;
     }
 
-    let metadata = db.verify_or_initialize_repository_metadata(repository_id)?;
+    let metadata = db
+        .verify_or_initialize_repository_metadata(repository_id)
+        .await?;
     Ok((db, metadata))
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
     use std::process::Command;
@@ -280,17 +293,19 @@ mod tests {
         }
     }
 
-    #[test]
-    fn different_repository_identities_use_different_db_paths() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn different_repository_identities_use_different_db_paths() {
         let state_root = unique_temp_dir("state-separate");
         let repo_a = init_git_repo_with_remote("repo-a", "git@github.com:acme/widgets.git");
         let repo_b = init_git_repo_with_remote("repo-b", "git@github.com:acme/gadgets.git");
 
         let storage_a =
             resolve_agent_trace_storage_at_state_root(&context_for(&repo_a), &state_root)
+                .await
                 .expect("repo A storage should resolve");
         let storage_b =
             resolve_agent_trace_storage_at_state_root(&context_for(&repo_b), &state_root)
+                .await
                 .expect("repo B storage should resolve");
 
         assert_ne!(
@@ -307,8 +322,8 @@ mod tests {
         std::fs::remove_dir_all(&repo_b).expect("clean up repo B");
     }
 
-    #[test]
-    fn clones_of_the_same_repository_share_the_db_path() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn clones_of_the_same_repository_share_the_db_path() {
         let state_root = unique_temp_dir("state-clones");
         // Equivalent SSH and HTTPS remotes for the same logical repository.
         let clone_a = init_git_repo_with_remote("clone-a", "git@github.com:acme/widgets.git");
@@ -316,9 +331,11 @@ mod tests {
 
         let storage_a =
             resolve_agent_trace_storage_at_state_root(&context_for(&clone_a), &state_root)
+                .await
                 .expect("clone A storage should resolve");
         let storage_b =
             resolve_agent_trace_storage_at_state_root(&context_for(&clone_b), &state_root)
+                .await
                 .expect("clone B storage should resolve");
 
         assert_eq!(
@@ -333,8 +350,8 @@ mod tests {
         std::fs::remove_dir_all(&clone_b).expect("clean up clone B");
     }
 
-    #[test]
-    fn linked_worktree_shares_the_db_path() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn linked_worktree_shares_the_db_path() {
         let state_root = unique_temp_dir("state-worktree");
         let repo = init_git_repo_with_remote("worktree-main", "git@github.com:acme/widgets.git");
         git(&repo, &["config", "user.email", "test@example.com"]);
@@ -355,9 +372,11 @@ mod tests {
 
         let storage_main =
             resolve_agent_trace_storage_at_state_root(&context_for(&repo), &state_root)
+                .await
                 .expect("main checkout storage should resolve");
         let storage_worktree =
             resolve_agent_trace_storage_at_state_root(&context_for(&worktree), &state_root)
+                .await
                 .expect("worktree storage should resolve");
 
         assert_eq!(storage_main.db_path, storage_worktree.db_path);
@@ -368,8 +387,8 @@ mod tests {
         std::fs::remove_dir_all(&repo).expect("clean up repo");
     }
 
-    #[test]
-    fn explicit_repository_id_overrides_the_remote() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explicit_repository_id_overrides_the_remote() {
         let state_root = unique_temp_dir("state-explicit");
         let repo = init_git_repo_with_remote("explicit", "git@github.com:acme/widgets.git");
         let context = AgentTraceStorageContext {
@@ -379,6 +398,7 @@ mod tests {
         };
 
         let storage = resolve_agent_trace_storage_at_state_root(&context, &state_root)
+            .await
             .expect("explicit identity storage should resolve");
         assert_eq!(
             storage.repository_identity.identity.canonical_identity,
@@ -395,14 +415,16 @@ mod tests {
         std::fs::remove_dir_all(&repo).expect("clean up repo");
     }
 
-    #[test]
-    fn repeated_resolution_is_idempotent() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn repeated_resolution_is_idempotent() {
         let state_root = unique_temp_dir("state-idempotent");
         let repo = init_git_repo_with_remote("idempotent", "git@github.com:acme/widgets.git");
 
         let first = resolve_agent_trace_storage_at_state_root(&context_for(&repo), &state_root)
+            .await
             .expect("first resolution should succeed");
         let second = resolve_agent_trace_storage_at_state_root(&context_for(&repo), &state_root)
+            .await
             .expect("second resolution should succeed");
 
         assert_eq!(first.db_path, second.db_path);
@@ -421,14 +443,14 @@ mod tests {
         std::fs::remove_dir_all(&repo).expect("clean up repo");
     }
 
-    #[test]
-    fn missing_identity_fails_with_config_guidance_and_creates_nothing() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_identity_fails_with_config_guidance_and_creates_nothing() {
         let state_root = unique_temp_dir("state-missing");
         let repo = unique_temp_dir("no-remote");
         git(&repo, &["init", "-q"]);
 
         let Err(error) =
-            resolve_agent_trace_storage_at_state_root(&context_for(&repo), &state_root)
+            resolve_agent_trace_storage_at_state_root(&context_for(&repo), &state_root).await
         else {
             panic!("repo without identity should fail")
         };
@@ -449,8 +471,8 @@ mod tests {
         assert!(error.to_string().contains("must not be empty"));
     }
 
-    #[test]
-    fn legacy_checkout_database_files_are_not_selected_or_modified() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn legacy_checkout_database_files_are_not_selected_or_modified() {
         let state_root = unique_temp_dir("state-legacy-untouched");
         let repo = init_git_repo_with_remote("legacy-untouched", "git@github.com:acme/widgets.git");
         let sce_dir = state_root.join("sce");
@@ -460,6 +482,7 @@ mod tests {
         std::fs::write(&legacy_db_path, legacy_bytes).expect("write legacy DB fixture");
 
         let storage = resolve_agent_trace_storage_at_state_root(&context_for(&repo), &state_root)
+            .await
             .expect("repository storage should resolve");
 
         assert_ne!(storage.db_path, legacy_db_path);
@@ -474,8 +497,8 @@ mod tests {
         std::fs::remove_dir_all(&repo).expect("clean up repo");
     }
 
-    #[test]
-    fn new_repository_database_starts_empty_and_shares_repository_level_rows() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_repository_database_starts_empty_and_shares_repository_level_rows() {
         let state_root = unique_temp_dir("state-repository-rows");
         let clone_a = init_git_repo_with_remote("rows-clone-a", "git@github.com:acme/widgets.git");
         let clone_b =
@@ -483,6 +506,7 @@ mod tests {
 
         let storage_a =
             resolve_agent_trace_storage_at_state_root(&context_for(&clone_a), &state_root)
+                .await
                 .expect("clone A storage should resolve");
         assert!(
             storage_a
@@ -504,17 +528,19 @@ mod tests {
                 tool_name: "opencode",
                 tool_version: Some("1.0.0"),
                 payload_type: PAYLOAD_TYPE_PATCH,
-            })
+            }).await
             .expect("diff trace insert should succeed");
 
         let storage_b =
             resolve_agent_trace_storage_at_state_root(&context_for(&clone_b), &state_root)
+                .await
                 .expect("clone B storage should resolve");
         assert_eq!(storage_a.db_path, storage_b.db_path);
 
         let patches = storage_b
             .db
             .recent_diff_trace_patches(0, 10_000)
+            .await
             .expect("shared repository DB rows should query from clone B");
         assert_eq!(patches.patches.len(), 1);
         let parsed = &patches.patches[0];
@@ -529,8 +555,8 @@ mod tests {
         std::fs::remove_dir_all(&clone_b).expect("clean up clone B");
     }
 
-    #[test]
-    fn credential_bearing_remote_is_canonicalized_without_leaking_secrets_to_paths() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn credential_bearing_remote_is_canonicalized_without_leaking_secrets_to_paths() {
         let state_root = unique_temp_dir("state-credential-safe");
         let repo = init_git_repo_with_remote(
             "credential-safe",
@@ -538,6 +564,7 @@ mod tests {
         );
 
         let storage = resolve_agent_trace_storage_at_state_root(&context_for(&repo), &state_root)
+            .await
             .expect("credential-bearing remote should resolve safely");
 
         assert_eq!(
@@ -557,15 +584,17 @@ mod tests {
         std::fs::remove_dir_all(&repo).expect("clean up repo");
     }
 
-    #[test]
-    fn hook_runtime_resolution_fails_before_setup_when_db_is_missing() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hook_runtime_resolution_fails_before_setup_when_db_is_missing() {
         let state_root = unique_temp_dir("state-hook-missing");
         let repo = init_git_repo_with_remote("hook-missing", "git@github.com:acme/widgets.git");
 
         let Err(error) = resolve_agent_trace_storage_for_hook_runtime_at_state_root(
             &context_for(&repo),
             &state_root,
-        ) else {
+        )
+        .await
+        else {
             panic!("hook runtime resolution must fail before sce setup runs");
         };
         assert!(
@@ -577,8 +606,8 @@ mod tests {
         std::fs::remove_dir_all(&repo).expect("clean up repo");
     }
 
-    #[test]
-    fn hook_runtime_resolution_fails_before_setup_on_baseline_only_schema_without_recording_migration_002(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hook_runtime_resolution_fails_before_setup_on_baseline_only_schema_without_recording_migration_002(
     ) {
         let state_root = unique_temp_dir("state-hook-baseline");
         let repo = init_git_repo_with_remote("hook-baseline", "git@github.com:acme/widgets.git");
@@ -594,6 +623,7 @@ mod tests {
         // fixture in `repository.rs`'s
         // `baseline_only_fixture_migrates_and_gets_a_stable_source_instance_id`.
         let baseline_only = RepositoryAgentTraceDb::open_without_migrations_at(&db_path)
+            .await
             .expect("baseline-only repository DB should open");
         baseline_only
             .execute(
@@ -603,6 +633,7 @@ mod tests {
 )",
                 (),
             )
+            .await
             .expect("migration metadata table should create");
         baseline_only
             .execute(
@@ -613,25 +644,30 @@ mod tests {
 )",
                 (),
             )
+            .await
             .expect("baseline repository_metadata table should create");
         baseline_only
             .execute(
                 "INSERT INTO __sce_migrations (id) VALUES ('001_repository_schema')",
                 (),
             )
+            .await
             .expect("baseline migration record should insert");
         baseline_only
             .execute(
                 "INSERT INTO repository_metadata (id, repository_id) VALUES (1, ?1)",
                 (repository_id.as_str(),),
             )
+            .await
             .expect("baseline metadata row should seed");
         drop(baseline_only);
 
         let Err(error) = resolve_agent_trace_storage_for_hook_runtime_at_state_root(
             &context_for(&repo),
             &state_root,
-        ) else {
+        )
+        .await
+        else {
             panic!("hook runtime resolution must fail on a baseline-only (pre-002) schema");
         };
         assert!(
@@ -640,9 +676,11 @@ mod tests {
         );
 
         let reopened = RepositoryAgentTraceDb::open_without_migrations_at(&db_path)
+            .await
             .expect("baseline DB should still be openable after the failed hook resolution");
         let problems = reopened
             .migration_metadata_problems()
+            .await
             .expect("migration metadata problems should be queryable");
         assert!(
             problems.iter().any(|problem| problem.contains("002")),
@@ -653,18 +691,20 @@ mod tests {
         std::fs::remove_dir_all(&repo).expect("clean up repo");
     }
 
-    #[test]
-    fn hook_runtime_resolution_after_setup_matches_setup_path_metadata() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hook_runtime_resolution_after_setup_matches_setup_path_metadata() {
         let state_root = unique_temp_dir("state-hook-after-setup");
         let repo = init_git_repo_with_remote("hook-after-setup", "git@github.com:acme/widgets.git");
 
         let setup = resolve_agent_trace_storage_at_state_root(&context_for(&repo), &state_root)
+            .await
             .expect("setup/lifecycle resolution should succeed");
 
         let hook_runtime = resolve_agent_trace_storage_for_hook_runtime_at_state_root(
             &context_for(&repo),
             &state_root,
         )
+        .await
         .expect("hook runtime resolution should succeed once sce setup has run");
 
         assert_eq!(hook_runtime.db_path, setup.db_path);

@@ -39,7 +39,7 @@ fn identity(session_id: &str, agent_id: Option<&str>, tool_use_id: &str) -> Atte
 mod ingress_conformance {
     use super::*;
     use crate::services::hooks::mutation_scope_ingress_conformance::{
-        self as conformance, mutation_scope_ingress_conformance_tests, IngressConformance,
+        mutation_scope_ingress_conformance_tests, IngressConformance,
     };
 
     struct ClaudeIngressConformance;
@@ -70,16 +70,19 @@ mod ingress_conformance {
             parse_claude_hook_event(payload).map(|_| ())
         }
 
-        fn run(payload: &str) -> Result<String> {
-            run_claude_mutation_scope_from_payload(payload, None)
+        async fn run(payload: &str) -> Result<String> {
+            run_claude_mutation_scope_from_payload::<
+                crate::services::observability::traits::NoopLogger,
+            >(payload, None)
+            .await
         }
 
-        fn run_with_seams(
+        async fn run_with_seams<L: crate::services::observability::traits::Logger>(
             payload: &str,
-            resolve_git_dir: conformance::GitDirResolver,
-            seam: conformance::IngressSeam,
+            resolve_git_dir: &impl Fn(&str) -> Result<PathBuf>,
+            seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
         ) -> Result<String> {
-            run_claude_mutation_scope_from_payload_with(payload, None, resolve_git_dir, seam)
+            run_claude_mutation_scope_from_payload_with(payload, None, resolve_git_dir, seam).await
         }
     }
 
@@ -636,28 +639,42 @@ mod driver {
     }
 
     #[allow(clippy::unnecessary_wraps)]
-    fn ok_seam(_root: &Path, _payload: &str, _logger: Option<&dyn Logger>) -> Result<String> {
+    async fn ok_seam(
+        _root: &Path,
+        _payload: &str,
+        _logger: Option<&crate::services::observability::traits::NoopLogger>,
+    ) -> Result<String> {
         Ok(String::new())
     }
 
-    fn unreachable_seam(
+    async fn unreachable_seam(
         _root: &Path,
         payload: &str,
-        _logger: Option<&dyn Logger>,
+        _logger: Option<&crate::services::observability::traits::NoopLogger>,
     ) -> Result<String> {
         panic!("the ingress seam must not be called for this payload: {payload}");
     }
 
     fn seam_failing_on(
         operation: &'static str,
-    ) -> impl Fn(&Path, &str, Option<&dyn Logger>) -> Result<String> {
+    ) -> impl std::ops::AsyncFn(
+        &Path,
+        &str,
+        Option<&crate::services::observability::traits::NoopLogger>,
+    ) -> Result<String> {
         seam_failing_on_any(vec![operation])
     }
 
     fn seam_failing_on_any(
         operations: Vec<&'static str>,
-    ) -> impl Fn(&Path, &str, Option<&dyn Logger>) -> Result<String> {
-        move |_root, payload, _logger| {
+    ) -> impl std::ops::AsyncFn(
+        &Path,
+        &str,
+        Option<&crate::services::observability::traits::NoopLogger>,
+    ) -> Result<String> {
+        async move |_root: &Path,
+                    payload: &str,
+                    _logger: Option<&crate::services::observability::traits::NoopLogger>| {
             if operations
                 .iter()
                 .any(|operation| payload.contains(&format!(r#""operation":"{operation}""#)))
@@ -675,12 +692,12 @@ mod driver {
         move |_cwd| Ok(git_dir.clone())
     }
 
-    fn start_with_model_resolver(
+    async fn start_with_model_resolver<L: crate::services::observability::traits::Logger>(
         payload: &str,
-        logger: Option<&dyn Logger>,
-        resolve_git_dir: GitDirResolver,
-        model_state_resolver: ClaudeModelStateResolver,
-        seam: IngressSeam,
+        logger: Option<&L>,
+        resolve_git_dir: &impl Fn(&str) -> Result<PathBuf>,
+        model_state_resolver: &impl std::ops::AsyncFn(&Path, &str, &str) -> Result<Option<String>>,
+        seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
     ) -> Result<String> {
         run_claude_mutation_scope_from_payload_with_resolver(
             payload,
@@ -689,6 +706,7 @@ mod driver {
             model_state_resolver,
             seam,
         )
+        .await
     }
 
     #[derive(Clone, Default)]
@@ -735,8 +753,8 @@ mod driver {
         Value::Object(object).to_string()
     }
 
-    #[test]
-    fn pre_tool_use_resolves_main_and_subagent_model_state_exactly_at_admission() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pre_tool_use_resolves_main_and_subagent_model_state_exactly_at_admission() {
         let git_dir = unique_test_git_dir("model-state-admission");
         let git_dir_resolver = fixed_resolver(git_dir.clone());
         let resolver_calls: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
@@ -751,7 +769,10 @@ mod driver {
             }))
         };
         let starts: RefCell<Vec<Value>> = RefCell::new(Vec::new());
-        let seam = |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| -> Result<String> {
+        let seam = async |_root: &Path,
+                          payload: &str,
+                          _logger: Option<&crate::services::observability::traits::NoopLogger>|
+               -> Result<String> {
             let value: Value = serde_json::from_str(payload).expect("payload is JSON");
             if value.get("operation") == Some(&Value::String("start".to_string())) {
                 starts.borrow_mut().push(value);
@@ -774,6 +795,7 @@ mod driver {
             &model_state_resolver,
             &seam,
         )
+        .await
         .expect("main-agent Start should succeed");
         start_with_model_resolver(
             &subagent_payload,
@@ -782,6 +804,7 @@ mod driver {
             &model_state_resolver,
             &seam,
         )
+        .await
         .expect("subagent Start should succeed");
 
         assert_eq!(
@@ -805,8 +828,8 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn subagent_without_exact_model_state_does_not_inherit_main_model() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subagent_without_exact_model_state_does_not_inherit_main_model() {
         let git_dir = unique_test_git_dir("subagent-model-state-missing");
         let git_dir_resolver = fixed_resolver(git_dir.clone());
         let starts: RefCell<Vec<Value>> = RefCell::new(Vec::new());
@@ -817,7 +840,10 @@ mod driver {
                 None
             })
         };
-        let seam = |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| -> Result<String> {
+        let seam = async |_root: &Path,
+                          payload: &str,
+                          _logger: Option<&crate::services::observability::traits::NoopLogger>|
+               -> Result<String> {
             starts
                 .borrow_mut()
                 .push(serde_json::from_str(payload).expect("payload is JSON"));
@@ -838,6 +864,7 @@ mod driver {
                 &model_state_resolver,
                 &seam,
             )
+            .await
             .expect("both Starts should succeed");
         }
 
@@ -850,12 +877,15 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn missing_or_failed_model_resolution_keeps_session_provenance_and_allows_start() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_or_failed_model_resolution_keeps_session_provenance_and_allows_start() {
         let git_dir = unique_test_git_dir("model-state-unavailable");
         let git_dir_resolver = fixed_resolver(git_dir.clone());
         let starts: RefCell<Vec<Value>> = RefCell::new(Vec::new());
-        let seam = |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| -> Result<String> {
+        let seam = async |_root: &Path,
+                          payload: &str,
+                          _logger: Option<&crate::services::observability::traits::NoopLogger>|
+               -> Result<String> {
             starts
                 .borrow_mut()
                 .push(serde_json::from_str(payload).expect("payload is JSON"));
@@ -882,6 +912,7 @@ mod driver {
                 &model_state_resolver,
                 &seam,
             )
+            .await
             .expect("model unavailability must not fail Start");
             assert_eq!(output, "");
         }
@@ -898,8 +929,8 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn read_only_tool_creates_no_scope_and_never_touches_the_seam_or_git_dir() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_only_tool_creates_no_scope_and_never_touches_the_seam_or_git_dir() {
         let resolver = |_: &str| -> Result<PathBuf> {
             panic!("a read-only tool must never resolve a git dir")
         };
@@ -911,13 +942,14 @@ mod driver {
             &resolver,
             &unreachable_seam,
         )
+        .await
         .expect("read-only PreToolUse should succeed");
 
         assert_eq!(output, "");
     }
 
-    #[test]
-    fn delegation_tool_creates_no_scope_ac3() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn delegation_tool_creates_no_scope_ac3() {
         let resolver = |_: &str| -> Result<PathBuf> {
             panic!("Agent delegation must never resolve a git dir")
         };
@@ -929,13 +961,14 @@ mod driver {
             &resolver,
             &unreachable_seam,
         )
+        .await
         .expect("Agent delegation PreToolUse should succeed");
 
         assert_eq!(output, "");
     }
 
-    #[test]
-    fn session_start_and_subagent_start_establish_no_scope_ac3() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_start_and_subagent_start_establish_no_scope_ac3() {
         let resolver = |_: &str| -> Result<PathBuf> {
             panic!("a lifecycle-only event must never resolve a git dir")
         };
@@ -958,6 +991,7 @@ mod driver {
                 &resolver,
                 &unreachable_seam,
             )
+            .await
             .expect("a lifecycle-only event should succeed with no scope");
             assert_eq!(output, "");
         }
@@ -986,8 +1020,8 @@ mod driver {
         ])
     }
 
-    #[test]
-    fn explicit_background_bash_is_allowed_untracked_before_any_repository_or_seam_access() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explicit_background_bash_is_allowed_untracked_before_any_repository_or_seam_access() {
         let resolver = |_: &str| -> Result<PathBuf> {
             panic!("untracked background Bash must never resolve a git dir")
         };
@@ -1002,13 +1036,14 @@ mod driver {
             &model_state_resolver,
             &unreachable_seam,
         )
+        .await
         .expect("background Bash should be allowed");
 
         assert_eq!(output, "");
     }
 
-    #[test]
-    fn explicit_background_bash_is_allowed_while_the_recovery_barrier_is_armed() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explicit_background_bash_is_allowed_while_the_recovery_barrier_is_armed() {
         let git_dir = unique_test_git_dir("background-bash-recovery-barrier");
         let resolver = fixed_resolver(git_dir.clone());
         state::mark_recovery_pending(&git_dir).expect("recovery should arm");
@@ -1020,6 +1055,7 @@ mod driver {
             &resolver,
             &unreachable_seam,
         )
+        .await
         .expect("background Bash should be allowed");
 
         assert_eq!(output, "");
@@ -1036,8 +1072,8 @@ mod driver {
         std::fs::read(state::state_path(git_dir)).expect("adapter state file should be readable")
     }
 
-    #[test]
-    fn terminal_hooks_for_untracked_background_bash_are_no_ops_with_no_live_attempt() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn terminal_hooks_for_untracked_background_bash_are_no_ops_with_no_live_attempt() {
         for event_name in [HOOK_EVENT_POST_TOOL_USE, HOOK_EVENT_POST_TOOL_USE_FAILURE] {
             let git_dir = unique_test_git_dir("background-bash-terminal-no-attempt");
             let resolver = fixed_resolver(git_dir.clone());
@@ -1048,6 +1084,7 @@ mod driver {
                 &resolver,
                 &unreachable_seam,
             )
+            .await
             .expect("a terminal hook for untracked background Bash must be a safe no-op");
 
             assert_eq!(output, "");
@@ -1060,8 +1097,9 @@ mod driver {
         }
     }
 
-    #[test]
-    fn terminal_hooks_for_untracked_background_bash_leave_an_unrelated_live_attempt_untouched() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn terminal_hooks_for_untracked_background_bash_leave_an_unrelated_live_attempt_untouched(
+    ) {
         for event_name in [HOOK_EVENT_POST_TOOL_USE, HOOK_EVENT_POST_TOOL_USE_FAILURE] {
             let git_dir = unique_test_git_dir("background-bash-terminal-unrelated-attempt");
             let resolver = fixed_resolver(git_dir.clone());
@@ -1072,6 +1110,7 @@ mod driver {
                 &resolver,
                 &ok_seam,
             )
+            .await
             .expect("the unrelated foreground PreToolUse should establish an attempt");
             run_claude_mutation_scope_from_payload_with(
                 &background_bash_pre_tool_use_json("toolu_background"),
@@ -1079,6 +1118,7 @@ mod driver {
                 &resolver,
                 &unreachable_seam,
             )
+            .await
             .expect("background Bash should be allowed");
 
             let state_before = state::read_state(&git_dir).expect("state should be readable");
@@ -1092,6 +1132,7 @@ mod driver {
                 &resolver,
                 &unreachable_seam,
             )
+            .await
             .expect("a terminal hook for untracked background Bash must be a safe no-op");
 
             assert_eq!(output, "");
@@ -1106,8 +1147,8 @@ mod driver {
         }
     }
 
-    #[test]
-    fn explicit_background_powershell_is_denied_ac21() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explicit_background_powershell_is_denied_ac21() {
         let git_dir = unique_test_git_dir("explicit-background-powershell");
         let resolver = fixed_resolver(git_dir.clone());
         let payload = pre_tool_use_json(&[
@@ -1124,6 +1165,7 @@ mod driver {
             &resolver,
             &unreachable_seam,
         )
+        .await
         .expect("explicit background PowerShell should be denied");
 
         assert_eq!(
@@ -1172,7 +1214,7 @@ mod driver {
         pre_tool_use_json(&overrides)
     }
 
-    fn assert_tracked_foreground_lifecycle(
+    async fn assert_tracked_foreground_lifecycle(
         label: &str,
         tool_name: &str,
         tool_input: Option<&Value>,
@@ -1181,7 +1223,10 @@ mod driver {
         let git_dir = unique_test_git_dir(label);
         let resolver = fixed_resolver(git_dir.clone());
         let payloads: RefCell<Vec<String>> = RefCell::new(Vec::new());
-        let seam = |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| -> Result<String> {
+        let seam = async |_root: &Path,
+                          payload: &str,
+                          _logger: Option<&crate::services::observability::traits::NoopLogger>|
+               -> Result<String> {
             payloads.borrow_mut().push(payload.to_string());
             Ok(String::new())
         };
@@ -1198,6 +1243,7 @@ mod driver {
             &resolver,
             &seam,
         )
+        .await
         .expect("foreground PreToolUse should succeed");
 
         assert_eq!(output, "", "{case}");
@@ -1219,6 +1265,7 @@ mod driver {
             &resolver,
             &seam,
         )
+        .await
         .expect("the foreground terminal hook should close the scope");
 
         assert_eq!(output, "", "{case}");
@@ -1234,8 +1281,8 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn foreground_bash_with_run_in_background_false_or_absent_keeps_the_tracked_lifecycle() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn foreground_bash_with_run_in_background_false_or_absent_keeps_the_tracked_lifecycle() {
         let tool_inputs = [
             None,
             Some(serde_json::json!({ "command": "true" })),
@@ -1250,13 +1297,14 @@ mod driver {
                     "Bash",
                     tool_input.as_ref(),
                     terminal_event,
-                );
+                )
+                .await;
             }
         }
     }
 
-    #[test]
-    fn foreground_powershell_keeps_the_tracked_lifecycle() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn foreground_powershell_keeps_the_tracked_lifecycle() {
         let tool_input = serde_json::json!({ "run_in_background": false });
 
         for terminal_event in [HOOK_EVENT_POST_TOOL_USE, HOOK_EVENT_POST_TOOL_USE_FAILURE] {
@@ -1265,12 +1313,13 @@ mod driver {
                 "PowerShell",
                 Some(&tool_input),
                 terminal_event,
-            );
+            )
+            .await;
         }
     }
 
-    #[test]
-    fn non_shell_mutation_capable_tools_stay_tracked_even_with_run_in_background_true() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn non_shell_mutation_capable_tools_stay_tracked_even_with_run_in_background_true() {
         let tool_input = serde_json::json!({ "run_in_background": true });
 
         for tool_name in [
@@ -1287,13 +1336,14 @@ mod driver {
                     tool_name,
                     Some(&tool_input),
                     terminal_event,
-                );
+                )
+                .await;
             }
         }
     }
 
-    #[test]
-    fn read_only_and_delegation_tools_with_run_in_background_true_create_no_scope() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_only_and_delegation_tools_with_run_in_background_true_create_no_scope() {
         let resolver = |_: &str| -> Result<PathBuf> {
             panic!("a read-only or delegation tool must never resolve a git dir")
         };
@@ -1323,14 +1373,15 @@ mod driver {
                 &model_state_resolver,
                 &unreachable_seam,
             )
+            .await
             .expect("read-only and delegation PreToolUse should succeed");
 
             assert_eq!(output, "", "{tool_name}");
         }
     }
 
-    #[test]
-    fn self_detaching_foreground_bash_fixture_keeps_the_ordinary_tracked_path() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn self_detaching_foreground_bash_fixture_keeps_the_ordinary_tracked_path() {
         let execution = parsed_pre_tool_use(PROBE17_SELF_DETACHING_FOREGROUND_PRE_TOOL_USE);
         assert_eq!(execution.identity.tool_name, "Bash");
         assert!(!execution.run_in_background);
@@ -1338,7 +1389,10 @@ mod driver {
         let git_dir = unique_test_git_dir("probe17-self-detaching-foreground");
         let resolver = fixed_resolver(git_dir.clone());
         let payloads: RefCell<Vec<String>> = RefCell::new(Vec::new());
-        let seam = |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| -> Result<String> {
+        let seam = async |_root: &Path,
+                          payload: &str,
+                          _logger: Option<&crate::services::observability::traits::NoopLogger>|
+               -> Result<String> {
             payloads.borrow_mut().push(payload.to_string());
             Ok(String::new())
         };
@@ -1349,6 +1403,7 @@ mod driver {
             &resolver,
             &seam,
         )
+        .await
         .expect("the self-detaching foreground PreToolUse should succeed");
 
         assert_eq!(output, "");
@@ -1367,6 +1422,7 @@ mod driver {
             &resolver,
             &seam,
         )
+        .await
         .expect("the self-detaching foreground PostToolUse should close the scope");
 
         assert_eq!(output, "");
@@ -1378,14 +1434,17 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn write_ahead_pending_start_persists_before_the_seam_start_call_ac7() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_ahead_pending_start_persists_before_the_seam_start_call_ac7() {
         let git_dir = unique_test_git_dir("write-ahead");
         let resolver = fixed_resolver(git_dir.clone());
         let git_dir_for_seam = git_dir.clone();
         let phase_seen_before_start: RefCell<Option<state::AttemptPhase>> = RefCell::new(None);
         let observed_roots: RefCell<Vec<PathBuf>> = RefCell::new(Vec::new());
-        let seam = |root: &Path, payload: &str, _logger: Option<&dyn Logger>| -> Result<String> {
+        let seam = async |root: &Path,
+                          payload: &str,
+                          _logger: Option<&crate::services::observability::traits::NoopLogger>|
+               -> Result<String> {
             if payload.contains(r#""operation":"start""#) {
                 observed_roots.borrow_mut().push(root.to_path_buf());
                 let observed = state::read_state(&git_dir_for_seam)
@@ -1398,6 +1457,7 @@ mod driver {
 
         let payload = pre_tool_use_json(&[]);
         let output = run_claude_mutation_scope_from_payload_with(&payload, None, &resolver, &seam)
+            .await
             .expect("mutation-capable PreToolUse should succeed");
 
         assert_eq!(output, "");
@@ -1423,20 +1483,24 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn linked_worktree_cwd_and_git_dir_are_never_conflated_for_pre_tool_use_start() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn linked_worktree_cwd_and_git_dir_are_never_conflated_for_pre_tool_use_start() {
         let git_dir = unique_test_git_dir("cwd-vs-git-dir-start");
         let raw_cwd = "/repo/.claude/worktrees/agent-123";
         let resolver = fixed_resolver(git_dir.clone());
 
         let observed_roots: RefCell<Vec<PathBuf>> = RefCell::new(Vec::new());
-        let seam = |root: &Path, _payload: &str, _logger: Option<&dyn Logger>| -> Result<String> {
+        let seam = async |root: &Path,
+                          _payload: &str,
+                          _logger: Option<&crate::services::observability::traits::NoopLogger>|
+               -> Result<String> {
             observed_roots.borrow_mut().push(root.to_path_buf());
             Ok(String::new())
         };
 
         let payload = pre_tool_use_json(&[(CWD_FIELD, Value::String(raw_cwd.to_string()))]);
         run_claude_mutation_scope_from_payload_with(&payload, None, &resolver, &seam)
+            .await
             .expect("PreToolUse Start should succeed");
 
         assert_ne!(
@@ -1460,18 +1524,22 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn post_tool_use_close_uses_git_dir_for_state_and_raw_cwd_for_the_seam() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn post_tool_use_close_uses_git_dir_for_state_and_raw_cwd_for_the_seam() {
         let git_dir = unique_test_git_dir("cwd-vs-git-dir-close");
         let raw_cwd = "/repo/.claude/worktrees/agent-123";
         let resolver = fixed_resolver(git_dir.clone());
 
         let pre_payload = pre_tool_use_json(&[(CWD_FIELD, Value::String(raw_cwd.to_string()))]);
         run_claude_mutation_scope_from_payload_with(&pre_payload, None, &resolver, &ok_seam)
+            .await
             .expect("PreToolUse should establish an active attempt");
 
         let observed_roots: RefCell<Vec<PathBuf>> = RefCell::new(Vec::new());
-        let seam = |root: &Path, _payload: &str, _logger: Option<&dyn Logger>| -> Result<String> {
+        let seam = async |root: &Path,
+                          _payload: &str,
+                          _logger: Option<&crate::services::observability::traits::NoopLogger>|
+               -> Result<String> {
             observed_roots.borrow_mut().push(root.to_path_buf());
             Ok(String::new())
         };
@@ -1483,6 +1551,7 @@ mod driver {
             ),
         ]);
         run_claude_mutation_scope_from_payload_with(&post_payload, None, &resolver, &seam)
+            .await
             .expect("PostToolUse Close should succeed");
 
         assert_eq!(
@@ -1500,18 +1569,22 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn abandon_via_permission_denied_uses_git_dir_for_state_and_raw_cwd_for_the_seam() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn abandon_via_permission_denied_uses_git_dir_for_state_and_raw_cwd_for_the_seam() {
         let git_dir = unique_test_git_dir("cwd-vs-git-dir-abandon");
         let raw_cwd = "/repo/.claude/worktrees/agent-123";
         let resolver = fixed_resolver(git_dir.clone());
 
         let pre_payload = pre_tool_use_json(&[(CWD_FIELD, Value::String(raw_cwd.to_string()))]);
         run_claude_mutation_scope_from_payload_with(&pre_payload, None, &resolver, &ok_seam)
+            .await
             .expect("PreToolUse should establish an active attempt");
 
         let observed_roots: RefCell<Vec<PathBuf>> = RefCell::new(Vec::new());
-        let seam = |root: &Path, payload: &str, _logger: Option<&dyn Logger>| -> Result<String> {
+        let seam = async |root: &Path,
+                          payload: &str,
+                          _logger: Option<&crate::services::observability::traits::NoopLogger>|
+               -> Result<String> {
             if payload.contains(r#""operation":"abandon""#) {
                 observed_roots.borrow_mut().push(root.to_path_buf());
             }
@@ -1525,6 +1598,7 @@ mod driver {
             ),
         ]);
         run_claude_mutation_scope_from_payload_with(&denied_payload, None, &resolver, &seam)
+            .await
             .expect("PermissionDenied should succeed");
 
         assert_eq!(
@@ -1540,8 +1614,8 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn recovery_barrier_flush_uses_raw_cwd_for_the_seam_and_git_dir_for_state() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recovery_barrier_flush_uses_raw_cwd_for_the_seam_and_git_dir_for_state() {
         let git_dir = unique_test_git_dir("cwd-vs-git-dir-flush");
         let raw_cwd = "/repo/.claude/worktrees/agent-123";
         let resolver = fixed_resolver(git_dir.clone());
@@ -1556,13 +1630,17 @@ mod driver {
             },
             "Write",
         )
+        .await
         .expect("seed allocation should succeed");
         state::mark_recovery_pending(&git_dir).expect("arming the barrier should succeed");
         state::remove_attempt(&git_dir, &seeded.attempt.scope_id)
             .expect("removing the seed attempt should succeed");
 
         let observed_roots: RefCell<Vec<PathBuf>> = RefCell::new(Vec::new());
-        let seam = |root: &Path, payload: &str, _logger: Option<&dyn Logger>| -> Result<String> {
+        let seam = async |root: &Path,
+                          payload: &str,
+                          _logger: Option<&crate::services::observability::traits::NoopLogger>|
+               -> Result<String> {
             if payload.contains(r#""operation":"flush""#) {
                 observed_roots.borrow_mut().push(root.to_path_buf());
             }
@@ -1574,6 +1652,7 @@ mod driver {
             (TOOL_USE_ID_FIELD, Value::String("toolu_new".to_string())),
         ]);
         run_claude_mutation_scope_from_payload_with(&new_pre, None, &resolver, &seam)
+            .await
             .expect("quiescent recovery should flush against the raw checkout path");
 
         assert_eq!(
@@ -1585,12 +1664,15 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn duplicate_live_pre_tool_use_reuses_the_same_scope_and_start_event_id_ac4() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn duplicate_live_pre_tool_use_reuses_the_same_scope_and_start_event_id_ac4() {
         let git_dir = unique_test_git_dir("duplicate-delivery");
         let resolver = fixed_resolver(git_dir.clone());
         let start_event_ids: RefCell<Vec<String>> = RefCell::new(Vec::new());
-        let seam = |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| -> Result<String> {
+        let seam = async |_root: &Path,
+                          payload: &str,
+                          _logger: Option<&crate::services::observability::traits::NoopLogger>|
+               -> Result<String> {
             if payload.contains(r#""operation":"start""#) {
                 let value: Value = serde_json::from_str(payload).unwrap();
                 start_event_ids
@@ -1602,8 +1684,10 @@ mod driver {
 
         let payload = pre_tool_use_json(&[]);
         run_claude_mutation_scope_from_payload_with(&payload, None, &resolver, &seam)
+            .await
             .expect("first delivery should succeed");
         run_claude_mutation_scope_from_payload_with(&payload, None, &resolver, &seam)
+            .await
             .expect("duplicate delivery should succeed");
 
         let ids = start_event_ids.into_inner();
@@ -1623,14 +1707,15 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn seam_start_failure_denies_and_leaves_the_attempt_pending_start_d8_d11() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn seam_start_failure_denies_and_leaves_the_attempt_pending_start_d8_d11() {
         let git_dir = unique_test_git_dir("start-failure");
         let resolver = fixed_resolver(git_dir.clone());
         let seam = seam_failing_on("start");
 
         let payload = pre_tool_use_json(&[]);
         let output = run_claude_mutation_scope_from_payload_with(&payload, None, &resolver, &seam)
+            .await
             .expect("a Start failure must still return Ok with a deny payload, not propagate");
 
         assert_eq!(output, pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON));
@@ -1646,8 +1731,8 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn pending_start_attempt_is_abandoned_not_late_started_on_a_terminal_signal_d11() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pending_start_attempt_is_abandoned_not_late_started_on_a_terminal_signal_d11() {
         let git_dir = unique_test_git_dir("pending-start-then-terminal");
         let resolver = fixed_resolver(git_dir.clone());
 
@@ -1659,11 +1744,15 @@ mod driver {
             &resolver,
             &start_failing_seam,
         )
+        .await
         .expect("the failed Start must still return Ok with a deny payload");
 
         let seen_operations: RefCell<Vec<String>> = RefCell::new(Vec::new());
         let recording =
-            |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| -> Result<String> {
+            async |_root: &Path,
+                   payload: &str,
+                   _logger: Option<&crate::services::observability::traits::NoopLogger>|
+                   -> Result<String> {
                 seen_operations.borrow_mut().push(payload.to_string());
                 Ok(String::new())
             };
@@ -1673,6 +1762,7 @@ mod driver {
         )]);
         let output =
             run_claude_mutation_scope_from_payload_with(&post_payload, None, &resolver, &recording)
+                .await
                 .expect("PostToolUse for a pending_start attempt should succeed");
 
         assert_eq!(output, "");
@@ -1690,13 +1780,14 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn close_seam_failure_is_retired_through_abandonment_not_a_replayed_close_d12() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn close_seam_failure_is_retired_through_abandonment_not_a_replayed_close_d12() {
         let git_dir = unique_test_git_dir("close-failure");
         let resolver = fixed_resolver(git_dir.clone());
 
         let pre_payload = pre_tool_use_json(&[]);
         run_claude_mutation_scope_from_payload_with(&pre_payload, None, &resolver, &ok_seam)
+            .await
             .expect("PreToolUse should establish an active attempt");
 
         let close_failing_seam = seam_failing_on("close");
@@ -1710,6 +1801,7 @@ mod driver {
             &resolver,
             &close_failing_seam,
         )
+        .await
         .expect("a Close failure must still succeed via abandonment");
 
         assert_eq!(output, "");
@@ -1723,18 +1815,22 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn post_tool_use_failure_also_closes_the_scope_d10() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn post_tool_use_failure_also_closes_the_scope_d10() {
         let git_dir = unique_test_git_dir("post-tool-use-failure");
         let resolver = fixed_resolver(git_dir.clone());
 
         let pre_payload = pre_tool_use_json(&[]);
         run_claude_mutation_scope_from_payload_with(&pre_payload, None, &resolver, &ok_seam)
+            .await
             .expect("PreToolUse should establish an active attempt");
 
         let seen_operations: RefCell<Vec<String>> = RefCell::new(Vec::new());
         let recording =
-            |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| -> Result<String> {
+            async |_root: &Path,
+                   payload: &str,
+                   _logger: Option<&crate::services::observability::traits::NoopLogger>|
+                   -> Result<String> {
                 seen_operations.borrow_mut().push(payload.to_string());
                 Ok(String::new())
             };
@@ -1748,6 +1844,7 @@ mod driver {
             &resolver,
             &recording,
         )
+        .await
         .expect("PostToolUseFailure should close the scope");
 
         assert_eq!(output, "");
@@ -1761,8 +1858,8 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn post_tool_use_with_no_live_attempt_is_a_safe_no_op_d9() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn post_tool_use_with_no_live_attempt_is_a_safe_no_op_d9() {
         let payload = pre_tool_use_json(&[(
             HOOK_EVENT_NAME_FIELD,
             Value::String(HOOK_EVENT_POST_TOOL_USE.to_string()),
@@ -1775,23 +1872,28 @@ mod driver {
             &resolver,
             &unreachable_seam,
         )
+        .await
         .expect("a PostToolUse with no live attempt must be a safe no-op");
 
         assert_eq!(output, "");
     }
 
-    #[test]
-    fn permission_denied_abandons_a_live_attempt_d13() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn permission_denied_abandons_a_live_attempt_d13() {
         let git_dir = unique_test_git_dir("permission-denied");
         let resolver = fixed_resolver(git_dir.clone());
 
         let pre_payload = pre_tool_use_json(&[]);
         run_claude_mutation_scope_from_payload_with(&pre_payload, None, &resolver, &ok_seam)
+            .await
             .expect("PreToolUse should establish an active attempt");
 
         let seen_operations: RefCell<Vec<String>> = RefCell::new(Vec::new());
         let recording =
-            |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| -> Result<String> {
+            async |_root: &Path,
+                   payload: &str,
+                   _logger: Option<&crate::services::observability::traits::NoopLogger>|
+                   -> Result<String> {
                 seen_operations.borrow_mut().push(payload.to_string());
                 Ok(String::new())
             };
@@ -1805,6 +1907,7 @@ mod driver {
             &resolver,
             &recording,
         )
+        .await
         .expect("PermissionDenied should succeed");
 
         assert_eq!(output, "");
@@ -1819,8 +1922,8 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn stop_abandons_only_stale_main_thread_attempts_d14() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stop_abandons_only_stale_main_thread_attempts_d14() {
         let git_dir = unique_test_git_dir("stop-cleanup");
         let resolver = fixed_resolver(git_dir.clone());
 
@@ -1831,13 +1934,16 @@ mod driver {
             (AGENT_ID_FIELD, Value::String("agent-1".to_string())),
         ]);
         run_claude_mutation_scope_from_payload_with(&main_pre, None, &resolver, &ok_seam)
+            .await
             .expect("main-thread PreToolUse should succeed");
         run_claude_mutation_scope_from_payload_with(&subagent_pre, None, &resolver, &ok_seam)
+            .await
             .expect("subagent PreToolUse should succeed");
 
         let stop_payload = session_scoped_payload(HOOK_EVENT_STOP, "session-1", "/repo/checkout");
         let output =
             run_claude_mutation_scope_from_payload_with(&stop_payload, None, &resolver, &ok_seam)
+                .await
                 .expect("Stop cleanup should succeed");
         assert_eq!(output, "");
 
@@ -1856,14 +1962,15 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn stop_failure_abandons_stale_main_thread_attempts_the_same_way_d15() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stop_failure_abandons_stale_main_thread_attempts_the_same_way_d15() {
         let git_dir = unique_test_git_dir("stop-failure-cleanup");
         let resolver = fixed_resolver(git_dir.clone());
 
         let main_pre =
             pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String("toolu_main".to_string()))]);
         run_claude_mutation_scope_from_payload_with(&main_pre, None, &resolver, &ok_seam)
+            .await
             .expect("main-thread PreToolUse should succeed");
 
         let stop_failure_payload =
@@ -1874,6 +1981,7 @@ mod driver {
             &resolver,
             &ok_seam,
         )
+        .await
         .expect("StopFailure cleanup should succeed");
 
         let final_state = state::read_state(&git_dir).expect("state should be readable");
@@ -1882,8 +1990,8 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn user_prompt_submit_abandons_only_stale_main_thread_attempts_d16() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn user_prompt_submit_abandons_only_stale_main_thread_attempts_d16() {
         let git_dir = unique_test_git_dir("user-prompt-submit-cleanup");
         let resolver = fixed_resolver(git_dir.clone());
 
@@ -1894,13 +2002,16 @@ mod driver {
             (AGENT_ID_FIELD, Value::String("agent-1".to_string())),
         ]);
         run_claude_mutation_scope_from_payload_with(&main_pre, None, &resolver, &ok_seam)
+            .await
             .expect("main-thread PreToolUse should succeed");
         run_claude_mutation_scope_from_payload_with(&subagent_pre, None, &resolver, &ok_seam)
+            .await
             .expect("subagent PreToolUse should succeed");
 
         let prompt_payload =
             session_scoped_payload(HOOK_EVENT_USER_PROMPT_SUBMIT, "session-1", "/repo/checkout");
         run_claude_mutation_scope_from_payload_with(&prompt_payload, None, &resolver, &ok_seam)
+            .await
             .expect("UserPromptSubmit cleanup should succeed");
 
         let final_state = state::read_state(&git_dir).expect("state should be readable");
@@ -1914,8 +2025,8 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn subagent_stop_abandons_only_the_matching_agent_id_attempts_d17() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subagent_stop_abandons_only_the_matching_agent_id_attempts_d17() {
         let git_dir = unique_test_git_dir("subagent-stop-cleanup");
         let resolver = fixed_resolver(git_dir.clone());
 
@@ -1933,6 +2044,7 @@ mod driver {
             &resolver,
             &ok_seam,
         )
+        .await
         .expect("agent-a PreToolUse should succeed");
         run_claude_mutation_scope_from_payload_with(
             &second_agent_payload,
@@ -1940,6 +2052,7 @@ mod driver {
             &resolver,
             &ok_seam,
         )
+        .await
         .expect("agent-b PreToolUse should succeed");
 
         let mut object = serde_json::Map::new();
@@ -1967,6 +2080,7 @@ mod driver {
             &resolver,
             &ok_seam,
         )
+        .await
         .expect("SubagentStop cleanup should succeed");
 
         let final_state = state::read_state(&git_dir).expect("state should be readable");
@@ -1976,8 +2090,8 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn session_end_abandons_every_attempt_regardless_of_agent_id_d18() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_end_abandons_every_attempt_regardless_of_agent_id_d18() {
         let git_dir = unique_test_git_dir("session-end-cleanup");
         let resolver = fixed_resolver(git_dir.clone());
 
@@ -1988,8 +2102,10 @@ mod driver {
             (AGENT_ID_FIELD, Value::String("agent-1".to_string())),
         ]);
         run_claude_mutation_scope_from_payload_with(&main_pre, None, &resolver, &ok_seam)
+            .await
             .expect("main-thread PreToolUse should succeed");
         run_claude_mutation_scope_from_payload_with(&subagent_pre, None, &resolver, &ok_seam)
+            .await
             .expect("subagent PreToolUse should succeed");
 
         let session_end_payload =
@@ -2000,6 +2116,7 @@ mod driver {
             &resolver,
             &ok_seam,
         )
+        .await
         .expect("SessionEnd cleanup should succeed");
 
         let final_state = state::read_state(&git_dir).expect("state should be readable");
@@ -2008,8 +2125,8 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn worktree_remove_resolves_git_dir_from_worktree_path_not_cwd_d22() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn worktree_remove_resolves_git_dir_from_worktree_path_not_cwd_d22() {
         let main_git_dir = unique_test_git_dir("worktree-remove-main");
         let worktree_git_dir = unique_test_git_dir("worktree-remove-isolated");
         let main_git_dir_for_resolver = main_git_dir.clone();
@@ -2031,6 +2148,7 @@ mod driver {
             (AGENT_ID_FIELD, Value::String("agent-1".to_string())),
         ]);
         run_claude_mutation_scope_from_payload_with(&subagent_pre, None, &resolver, &ok_seam)
+            .await
             .expect("isolated-worktree PreToolUse should succeed");
 
         let mut object = serde_json::Map::new();
@@ -2054,6 +2172,7 @@ mod driver {
             &resolver,
             &ok_seam,
         )
+        .await
         .expect("WorktreeRemove cleanup should succeed");
 
         let worktree_state =
@@ -2067,8 +2186,8 @@ mod driver {
         remove_test_git_dir(&worktree_git_dir);
     }
 
-    #[test]
-    fn recovery_barrier_denies_new_mutation_capable_pre_tool_use_while_attempts_remain_d19() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recovery_barrier_denies_new_mutation_capable_pre_tool_use_while_attempts_remain_d19() {
         let git_dir = unique_test_git_dir("barrier-attempts-remain");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
         let resolver = fixed_resolver(git_dir.clone());
@@ -2092,6 +2211,7 @@ mod driver {
             },
             "Write",
         )
+        .await
         .expect("seeding a retiring attempt should succeed");
         state::mark_recovery_pending(&git_dir).expect("arming the barrier should succeed");
         state::remove_attempt(&git_dir, &retiring.attempt.scope_id)
@@ -2106,6 +2226,7 @@ mod driver {
             &resolver,
             &unreachable_seam,
         )
+        .await
         .expect("D19: barrier denial must still return Ok with a deny payload");
 
         assert_eq!(output, pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON));
@@ -2113,8 +2234,8 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn recovery_barrier_flushes_once_quiescent_and_clears_before_starting_d19() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recovery_barrier_flushes_once_quiescent_and_clears_before_starting_d19() {
         let git_dir = unique_test_git_dir("barrier-flush-success");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
         let resolver = fixed_resolver(git_dir.clone());
@@ -2134,7 +2255,10 @@ mod driver {
             .expect("removing the seeded attempt should succeed");
 
         let seen_operations: RefCell<Vec<String>> = RefCell::new(Vec::new());
-        let seam = |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| -> Result<String> {
+        let seam = async |_root: &Path,
+                          payload: &str,
+                          _logger: Option<&crate::services::observability::traits::NoopLogger>|
+               -> Result<String> {
             seen_operations.borrow_mut().push(payload.to_string());
             Ok(String::new())
         };
@@ -2142,6 +2266,7 @@ mod driver {
         let new_pre =
             pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String("toolu_new".to_string()))]);
         let output = run_claude_mutation_scope_from_payload_with(&new_pre, None, &resolver, &seam)
+            .await
             .expect("D19: a quiescent recovery should flush then proceed");
 
         assert_eq!(output, "");
@@ -2159,13 +2284,13 @@ mod driver {
             !final_state.recovery_pending,
             "a successful flush must clear the barrier"
         );
-        assert_eq!(final_state.attempts.len(), 1);
+        assert_eq!(final_state.attempts.len(), 1).await;
 
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn recovery_barrier_stays_fail_closed_when_flush_fails_d19() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recovery_barrier_stays_fail_closed_when_flush_fails_d19() {
         let git_dir = unique_test_git_dir("barrier-flush-failure");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
         let resolver = fixed_resolver(git_dir.clone());
@@ -2188,6 +2313,7 @@ mod driver {
         let new_pre =
             pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String("toolu_new".to_string()))]);
         let output = run_claude_mutation_scope_from_payload_with(&new_pre, None, &resolver, &seam)
+            .await
             .expect("D19: a failed flush must still return Ok with a deny payload");
 
         assert_eq!(output, pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON));
@@ -2205,13 +2331,14 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn failed_close_and_failed_abandon_keep_recovery_armed_and_the_attempt_tracked_d12_d19() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn failed_close_and_failed_abandon_keep_recovery_armed_and_the_attempt_tracked_d12_d19() {
         let git_dir = unique_test_git_dir("close-and-abandon-failure");
         let resolver = fixed_resolver(git_dir.clone());
 
         let pre_payload = pre_tool_use_json(&[]);
         run_claude_mutation_scope_from_payload_with(&pre_payload, None, &resolver, &ok_seam)
+            .await
             .expect("PreToolUse should establish an active attempt");
 
         let failing_seam = seam_failing_on_any(vec!["close", "abandon"]);
@@ -2225,6 +2352,7 @@ mod driver {
             &resolver,
             &failing_seam,
         )
+        .await
         .expect_err(
             "a failed Close followed by a failed Abandon must propagate, not silently succeed",
         );
@@ -2249,6 +2377,7 @@ mod driver {
             &resolver,
             &unreachable_seam,
         )
+        .await
         .expect("the barrier denial must still return Ok with a deny payload");
         assert_eq!(
             output,
@@ -2259,14 +2388,16 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn lifecycle_cleanup_with_a_failed_abandon_keeps_recovery_armed_and_the_attempt_tracked() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lifecycle_cleanup_with_a_failed_abandon_keeps_recovery_armed_and_the_attempt_tracked()
+    {
         let git_dir = unique_test_git_dir("lifecycle-cleanup-abandon-failure");
         let resolver = fixed_resolver(git_dir.clone());
 
         let main_pre =
             pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String("toolu_main".to_string()))]);
         run_claude_mutation_scope_from_payload_with(&main_pre, None, &resolver, &ok_seam)
+            .await
             .expect("main-thread PreToolUse should succeed");
 
         let abandon_failing_seam = seam_failing_on("abandon");
@@ -2277,6 +2408,7 @@ mod driver {
             &resolver,
             &abandon_failing_seam,
         )
+        .await
         .expect_err("a failed abandonment during Stop cleanup must propagate");
         assert!(error.to_string().contains("abandon"));
 
@@ -2294,8 +2426,8 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn resolver_failure_logs_the_detailed_error_and_denies_with_the_stable_reason_ac8_d8() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resolver_failure_logs_the_detailed_error_and_denies_with_the_stable_reason_ac8_d8() {
         let logger = RecordingLogger::default();
         let resolver =
             |_: &str| -> Result<PathBuf> { Err(anyhow!("boom: git rev-parse --git-dir failed")) };
@@ -2307,6 +2439,7 @@ mod driver {
             &resolver,
             &unreachable_seam,
         )
+        .await
         .expect("a resolver failure must still return Ok with a deny payload");
 
         assert_eq!(output, pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON));
@@ -2327,8 +2460,8 @@ mod driver {
         );
     }
 
-    #[test]
-    fn start_seam_failure_logs_the_detailed_error_and_denies_with_the_stable_reason() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_seam_failure_logs_the_detailed_error_and_denies_with_the_stable_reason() {
         let git_dir = unique_test_git_dir("start-failure-logged");
         let resolver = fixed_resolver(git_dir.clone());
         let logger = RecordingLogger::default();
@@ -2337,6 +2470,7 @@ mod driver {
         let payload = pre_tool_use_json(&[]);
         let output =
             run_claude_mutation_scope_from_payload_with(&payload, Some(&logger), &resolver, &seam)
+                .await
                 .expect("a Start failure must still return Ok with a deny payload");
 
         assert_eq!(output, pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON));
@@ -2350,8 +2484,8 @@ mod driver {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn recovery_barrier_flush_failure_logs_the_detailed_error() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recovery_barrier_flush_failure_logs_the_detailed_error() {
         let git_dir = unique_test_git_dir("barrier-flush-failure-logged");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
         let resolver = fixed_resolver(git_dir.clone());
@@ -2376,6 +2510,7 @@ mod driver {
             pre_tool_use_json(&[(TOOL_USE_ID_FIELD, Value::String("toolu_new".to_string()))]);
         let output =
             run_claude_mutation_scope_from_payload_with(&new_pre, Some(&logger), &resolver, &seam)
+                .await
                 .expect("a failed flush must still return Ok with a deny payload");
 
         assert_eq!(output, pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON));
@@ -2422,7 +2557,7 @@ mod production_regressions {
     }
 
     impl ClaudeRepo {
-        fn new(label: &str) -> Self {
+        async fn new(label: &str) -> Self {
             let temp = tempfile::Builder::new()
                 .prefix(&format!("sce-claude-mutation-scope-regression-{label}-"))
                 .tempdir()
@@ -2450,6 +2585,7 @@ mod production_regressions {
                 },
                 &state_root,
             )
+            .await
             .expect("state-root storage should initialize the repository DB");
 
             Self {
@@ -2459,29 +2595,31 @@ mod production_regressions {
             }
         }
 
-        fn drive(&self, payload: &str) -> Result<String> {
-            run_claude_mutation_scope_from_payload_at_state_root(&self.state_root, payload, None)
+        async fn drive(&self, payload: &str) -> Result<String> {
+            run_claude_mutation_scope_from_payload_at_state_root::<
+                crate::services::observability::traits::NoopLogger,
+            >(&self.state_root, payload, None)
+            .await
         }
 
-        fn drive_generic(&self, payload: &str) -> Result<String> {
-            crate::services::hooks::mutation_scope::run_mutation_scope_from_payload_at_state_root(
-                &self.root,
-                &self.state_root,
-                payload,
-                None,
-            )
+        async fn drive_generic(&self, payload: &str) -> Result<String> {
+            crate::services::hooks::mutation_scope::run_mutation_scope_from_payload_at_state_root::<
+                crate::services::observability::traits::NoopLogger,
+            >(&self.root, &self.state_root, payload, None)
+            .await
         }
 
-        fn drive_flush(&self) -> Result<String> {
-            self.drive_generic(&flush_payload())
+        async fn drive_flush(&self) -> Result<String> {
+            self.drive_generic(&flush_payload()).await
         }
 
-        fn db(&self) -> RepositoryAgentTraceDb {
+        async fn db(&self) -> RepositoryAgentTraceDb {
             crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
                 &self.root,
                 &self.state_root,
                 "claude mutation-scope regression test assertions",
             )
+            .await
             .expect("assertion DB should open")
         }
 
@@ -2493,13 +2631,13 @@ mod production_regressions {
             root.to_string_lossy().into_owned()
         }
 
-        fn working_tree_at(root: &Path) -> String {
+        async fn working_tree_at(root: &Path) -> String {
             git(root, &["add", "-A"]);
             git(root, &["write-tree"]).trim().to_owned()
         }
 
-        fn working_tree(&self) -> String {
-            Self::working_tree_at(&self.root)
+        async fn working_tree(&self) -> String {
+            Self::working_tree_at(&self.root).await
         }
 
         fn git_dir_at(root: &Path) -> PathBuf {
@@ -2543,10 +2681,11 @@ mod production_regressions {
         }
     }
 
-    fn count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
+    async fn count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
         db.query_map(&format!("SELECT COUNT(*) FROM {table}"), (), |row| {
             row.get::<i64>(0).map_err(anyhow::Error::from)
         })
+        .await
         .expect("count query should succeed")
         .into_iter()
         .next()
@@ -2559,7 +2698,10 @@ mod production_regressions {
         assert_eq!(count(db, "agent_traces"), 0);
     }
 
-    fn worktree_row(db: &RepositoryAgentTraceDb, worktree_id: &str) -> Option<(u64, String, bool)> {
+    async fn worktree_row(
+        db: &RepositoryAgentTraceDb,
+        worktree_id: &str,
+    ) -> Option<(u64, String, bool)> {
         db.query_map(
             "SELECT revision, cursor_tree, needs_rebaseline FROM mutation_trace_worktrees \
                  WHERE worktree_id = ?1",
@@ -2572,12 +2714,13 @@ mod production_regressions {
                 Ok((revision, cursor_tree, needs_rebaseline))
             },
         )
+        .await
         .expect("worktree-row query should succeed")
         .into_iter()
         .next()
     }
 
-    fn processed_events(db: &RepositoryAgentTraceDb) -> Vec<(String, String)> {
+    async fn processed_events(db: &RepositoryAgentTraceDb) -> Vec<(String, String)> {
         db.query_map(
             "SELECT scope_id, event_id FROM mutation_trace_processed_events \
                  ORDER BY scope_id, event_id",
@@ -2588,10 +2731,11 @@ mod production_regressions {
                 Ok((scope_id, event_id))
             },
         )
+        .await
         .expect("processed-events query should succeed")
     }
 
-    fn scope_status(db: &RepositoryAgentTraceDb, scope_id: &str) -> Option<(String, String)> {
+    async fn scope_status(db: &RepositoryAgentTraceDb, scope_id: &str) -> Option<(String, String)> {
         db.query_map(
             "SELECT actor_kind, status FROM mutation_trace_scopes WHERE scope_id = ?1",
             (scope_id,),
@@ -2601,12 +2745,13 @@ mod production_regressions {
                 Ok((actor_kind, status))
             },
         )
+        .await
         .expect("scope query should succeed")
         .into_iter()
         .next()
     }
 
-    fn scope_provenance(
+    async fn scope_provenance(
         db: &RepositoryAgentTraceDb,
         scope_id: &str,
     ) -> Option<(String, Option<String>)> {
@@ -2620,12 +2765,13 @@ mod production_regressions {
                 Ok((session_id, model_id))
             },
         )
+        .await
         .expect("scope-provenance query should succeed")
         .into_iter()
         .next()
     }
 
-    fn mutation_events_for(
+    async fn mutation_events_for(
         db: &RepositoryAgentTraceDb,
         worktree_id: &str,
     ) -> Vec<(String, Option<String>, String)> {
@@ -2641,6 +2787,7 @@ mod production_regressions {
                 Ok((attribution_kind, attribution_scope_id, boundary_kind))
             },
         )
+        .await
         .expect("mutation-events query should succeed")
     }
 
@@ -2768,7 +2915,7 @@ mod production_regressions {
         )
     }
 
-    fn session_json(event_name: &str, cwd: &str, session_id: &str) -> String {
+    async fn session_json(event_name: &str, cwd: &str, session_id: &str) -> String {
         let mut object = serde_json::Map::new();
         object.insert(
             HOOK_EVENT_NAME_FIELD.to_string(),
@@ -2817,8 +2964,8 @@ mod production_regressions {
         Value::Object(object).to_string()
     }
 
-    #[test]
-    fn test1_foreground_write_closes_ai_exclusive() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test1_foreground_write_closes_ai_exclusive() {
         let repo = ClaudeRepo::new("test1-foreground-write");
         let cwd = repo.cwd();
 
@@ -2855,7 +3002,7 @@ mod production_regressions {
             "the closed attempt must be removed from adapter bookkeeping"
         );
 
-        let db = repo.db();
+        let db = repo.db().await;
         assert_eq!(
             scope_status(&db, &scope_id),
             Some(("claude_code".to_string(), "closed".to_string()))
@@ -2870,8 +3017,10 @@ mod production_regressions {
             )]
         );
         assert_eq!(
-            worktree_row(&db, &worktree_id).map(|(_, cursor_tree, _)| cursor_tree),
-            Some(repo.working_tree())
+            worktree_row(&db, &worktree_id)
+                .await
+                .map(|(_, cursor_tree, _)| cursor_tree),
+            Some(repo.working_tree().await)
         );
         assert_eq!(
             processed_events(&db),
@@ -2885,8 +3034,8 @@ mod production_regressions {
         assert_raw_agent_trace_tables_untouched(&db);
     }
 
-    #[test]
-    fn test2_failed_bash_partial_write_still_closes_ai_exclusive() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test2_failed_bash_partial_write_still_closes_ai_exclusive() {
         let repo = ClaudeRepo::new("test2-failed-bash");
         let cwd = repo.cwd();
 
@@ -2897,6 +3046,7 @@ mod production_regressions {
             "toolu_1",
             None,
         ))
+        .await
         .expect("PreToolUse should succeed");
         let scope_id = repo.adapter_state().attempts[0].scope_id.clone();
 
@@ -2917,7 +3067,7 @@ mod production_regressions {
 
         assert!(repo.adapter_state().attempts.is_empty());
 
-        let db = repo.db();
+        let db = repo.db().await;
         assert_eq!(
             scope_status(&db, &scope_id),
             Some(("claude_code".to_string(), "closed".to_string()))
@@ -2939,13 +3089,15 @@ mod production_regressions {
         assert_raw_agent_trace_tables_untouched(&db);
     }
 
-    #[test]
-    fn test4_duplicate_pre_and_post_replay_has_no_duplicate_transition() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test4_duplicate_pre_and_post_replay_has_no_duplicate_transition() {
         let repo = ClaudeRepo::new("test4-duplicate-replay");
         let cwd = repo.cwd();
         let pre = pre_tool_use_for(&cwd, "session-1", "Write", "toolu_1", None);
 
-        repo.drive(&pre).expect("first PreToolUse should succeed");
+        repo.drive(&pre)
+            .await
+            .expect("first PreToolUse should succeed");
         assert_eq!(
             repo.drive(&pre)
                 .expect("duplicate PreToolUse should be idempotent"),
@@ -2961,15 +3113,18 @@ mod production_regressions {
         fs::write(repo.root.join("file.txt"), "one\ntwo\n").expect("the edit should write");
 
         let post = post_tool_use_for(&cwd, "session-1", "Write", "toolu_1", None);
-        repo.drive(&post).expect("first PostToolUse should succeed");
+        repo.drive(&post)
+            .await
+            .expect("first PostToolUse should succeed");
 
-        let db = repo.db();
+        let db = repo.db().await;
         let (revision_before, events_before, processed_before) = (
             worktree_row(&db, &repo.worktree_id())
+                .await
                 .map(|(revision, _, _)| revision)
                 .expect("a worktree row should exist"),
-            count(&db, "mutation_trace_events"),
-            count(&db, "mutation_trace_processed_events"),
+            count(&db, "mutation_trace_events").await,
+            count(&db, "mutation_trace_processed_events").await,
         );
 
         assert_eq!(
@@ -2978,7 +3133,7 @@ mod production_regressions {
             ""
         );
 
-        let db = repo.db();
+        let db = repo.db().await;
         assert_eq!(
             worktree_row(&db, &repo.worktree_id()).map(|(revision, _, _)| revision),
             Some(revision_before)
@@ -3000,8 +3155,8 @@ mod production_regressions {
         assert_raw_agent_trace_tables_untouched(&db);
     }
 
-    #[test]
-    fn test5_auto_permission_denied_abandons_and_requires_rebaseline() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test5_auto_permission_denied_abandons_and_requires_rebaseline() {
         let repo = ClaudeRepo::new("test5-permission-denied");
         let cwd = repo.cwd();
 
@@ -3012,6 +3167,7 @@ mod production_regressions {
             "toolu_1",
             None,
         ))
+        .await
         .expect("PreToolUse should succeed");
         let scope_id = repo.adapter_state().attempts[0].scope_id.clone();
 
@@ -3036,7 +3192,7 @@ mod production_regressions {
             "D19: abandonment must arm the recovery barrier"
         );
 
-        let db = repo.db();
+        let db = repo.db().await;
         assert_eq!(
             scope_status(&db, &scope_id),
             Some(("claude_code".to_string(), "abandoned".to_string()))
@@ -3052,8 +3208,8 @@ mod production_regressions {
         assert_raw_agent_trace_tables_untouched(&db);
     }
 
-    #[test]
-    fn test3_two_parallel_subagent_tools_produce_ai_contended() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test3_two_parallel_subagent_tools_produce_ai_contended() {
         let repo = ClaudeRepo::new("test3-parallel-subagents");
         let cwd = repo.cwd();
 
@@ -3064,6 +3220,7 @@ mod production_regressions {
             "toolu_a",
             Some("agent-a"),
         ))
+        .await
         .expect("agent-a PreToolUse should succeed");
         repo.drive(&pre_tool_use_for(
             &cwd,
@@ -3072,6 +3229,7 @@ mod production_regressions {
             "toolu_b",
             Some("agent-b"),
         ))
+        .await
         .expect("agent-b PreToolUse should succeed");
         assert_eq!(repo.adapter_state().attempts.len(), 2);
 
@@ -3085,6 +3243,7 @@ mod production_regressions {
             "toolu_a",
             Some("agent-a"),
         ))
+        .await
         .expect("agent-a PostToolUse (closing while agent-b is still active) should succeed");
         repo.drive(&post_tool_use_for(
             &cwd,
@@ -3093,11 +3252,12 @@ mod production_regressions {
             "toolu_b",
             Some("agent-b"),
         ))
+        .await
         .expect("agent-b PostToolUse should succeed");
 
         assert!(repo.adapter_state().attempts.is_empty());
 
-        let db = repo.db();
+        let db = repo.db().await;
         let worktree_id = repo.worktree_id();
         assert_eq!(
             mutation_events_for(&db, &worktree_id),
@@ -3112,8 +3272,8 @@ mod production_regressions {
         assert_raw_agent_trace_tables_untouched(&db);
     }
 
-    #[test]
-    fn test6_other_hook_denial_is_retired_by_stop_cleanup() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test6_other_hook_denial_is_retired_by_stop_cleanup() {
         let repo = ClaudeRepo::new("test6-stop-cleanup");
         let cwd = repo.cwd();
 
@@ -3124,8 +3284,9 @@ mod production_regressions {
             "toolu_1",
             None,
         ))
+        .await
         .expect("PreToolUse should succeed");
-        let scope_id = repo.adapter_state().attempts[0].scope_id.clone();
+        let scope_id = repo.adapter_state().await.attempts[0].scope_id.clone();
 
         assert_eq!(
             repo.drive(&session_json(HOOK_EVENT_STOP, &cwd, "session-1"))
@@ -3139,7 +3300,7 @@ mod production_regressions {
         );
         assert!(repo.adapter_state().recovery_pending);
 
-        let db = repo.db();
+        let db = repo.db().await;
         assert_eq!(
             scope_status(&db, &scope_id),
             Some(("claude_code".to_string(), "abandoned".to_string()))
@@ -3148,8 +3309,8 @@ mod production_regressions {
         assert_raw_agent_trace_tables_untouched(&db);
     }
 
-    #[test]
-    fn test7_interrupted_main_turn_is_retired_by_next_user_prompt_submit() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test7_interrupted_main_turn_is_retired_by_next_user_prompt_submit() {
         let repo = ClaudeRepo::new("test7-user-prompt-submit-cleanup");
         let cwd = repo.cwd();
 
@@ -3160,6 +3321,7 @@ mod production_regressions {
             "toolu_1",
             None,
         ))
+        .await
         .expect("PreToolUse should succeed");
         let scope_id = repo.adapter_state().attempts[0].scope_id.clone();
 
@@ -3182,20 +3344,21 @@ mod production_regressions {
                  before another mutation-capable tool can start"
         );
 
-        let db = repo.db();
+        let db = repo.db().await;
         assert_eq!(
             scope_status(&db, &scope_id),
             Some(("claude_code".to_string(), "abandoned".to_string()))
         );
         let worktree_id = repo.worktree_id();
         assert!(worktree_row(&db, &worktree_id)
+            .await
             .is_some_and(|(_, _, needs_rebaseline)| needs_rebaseline));
 
         assert_raw_agent_trace_tables_untouched(&db);
     }
 
-    #[test]
-    fn test8_resumed_subagent_tool_use_id_gets_a_fresh_scope_id() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test8_resumed_subagent_tool_use_id_gets_a_fresh_scope_id() {
         let repo = ClaudeRepo::new("test8-resumed-subagent");
         let cwd = repo.cwd();
 
@@ -3206,6 +3369,7 @@ mod production_regressions {
             "toolu_resumed",
             Some("agent-a"),
         ))
+        .await
         .expect("first PreToolUse should succeed");
         let first_scope_id = repo.adapter_state().attempts[0].scope_id.clone();
 
@@ -3217,6 +3381,7 @@ mod production_regressions {
             "toolu_resumed",
             Some("agent-a"),
         ))
+        .await
         .expect("first PostToolUse should succeed");
         assert!(repo.adapter_state().attempts.is_empty());
 
@@ -3227,6 +3392,7 @@ mod production_regressions {
             "toolu_resumed",
             Some("agent-a"),
         ))
+        .await
         .expect("resumed PreToolUse should succeed");
         let second_scope_id = repo.adapter_state().attempts[0].scope_id.clone();
 
@@ -3244,9 +3410,10 @@ mod production_regressions {
             "toolu_resumed",
             Some("agent-a"),
         ))
+        .await
         .expect("second PostToolUse should succeed");
 
-        let db = repo.db();
+        let db = repo.db().await;
         assert_eq!(
             scope_status(&db, &first_scope_id).map(|(_, status)| status),
             Some("closed".to_string())
@@ -3259,8 +3426,8 @@ mod production_regressions {
         assert_raw_agent_trace_tables_untouched(&db);
     }
 
-    #[test]
-    fn test9_main_and_subagent_concurrent_mutation_is_ai_contended() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test9_main_and_subagent_concurrent_mutation_is_ai_contended() {
         let repo = ClaudeRepo::new("test9-main-plus-subagent");
         let cwd = repo.cwd();
 
@@ -3271,6 +3438,7 @@ mod production_regressions {
             "toolu_main",
             None,
         ))
+        .await
         .expect("main-thread PreToolUse should succeed");
         repo.drive(&pre_tool_use_for(
             &cwd,
@@ -3279,6 +3447,7 @@ mod production_regressions {
             "toolu_sub",
             Some("agent-a"),
         ))
+        .await
         .expect("subagent PreToolUse should succeed");
         assert_eq!(repo.adapter_state().attempts.len(), 2);
 
@@ -3292,6 +3461,7 @@ mod production_regressions {
             "toolu_main",
             None,
         ))
+        .await
         .expect("main-thread PostToolUse should succeed");
         repo.drive(&post_tool_use_for(
             &cwd,
@@ -3300,9 +3470,10 @@ mod production_regressions {
             "toolu_sub",
             Some("agent-a"),
         ))
+        .await
         .expect("subagent PostToolUse should succeed");
 
-        let db = repo.db();
+        let db = repo.db().await;
         let worktree_id = repo.worktree_id();
         assert_eq!(
             mutation_events_for(&db, &worktree_id),
@@ -3313,8 +3484,8 @@ mod production_regressions {
         assert_raw_agent_trace_tables_untouched(&db);
     }
 
-    #[test]
-    fn test10_isolated_subagent_worktree_advances_only_its_own_cursor() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test10_isolated_subagent_worktree_advances_only_its_own_cursor() {
         let repo = ClaudeRepo::new("test10-isolated-worktree");
         let worktree_path = repo.add_worktree("subagent-worktree");
         let worktree_cwd = ClaudeRepo::cwd_at(&worktree_path);
@@ -3327,8 +3498,10 @@ mod production_regressions {
         );
 
         repo.drive_flush()
+            .await
             .expect("main-checkout baseline flush should succeed");
-        let main_cursor_before = worktree_row(&repo.db(), &main_worktree_id)
+        let main_cursor_before = worktree_row(&repo.db().await, &main_worktree_id)
+            .await
             .map(|(_, cursor_tree, _)| cursor_tree)
             .expect("main checkout should have a baseline worktree row");
 
@@ -3339,8 +3512,10 @@ mod production_regressions {
             "toolu_sub",
             Some("agent-a"),
         ))
+        .await
         .expect("subagent PreToolUse in the isolated worktree should succeed");
         fs::write(worktree_path.join("file.txt"), "one\nisolated\n")
+            .await
             .expect("the isolated worktree's own edit should write");
         repo.drive(&post_tool_use_for(
             &worktree_cwd,
@@ -3349,15 +3524,18 @@ mod production_regressions {
             "toolu_sub",
             Some("agent-a"),
         ))
+        .await
         .expect("subagent PostToolUse in the isolated worktree should succeed");
 
-        let db = repo.db();
+        let db = repo.db().await;
         assert_eq!(
             worktree_row(&db, &main_worktree_id).map(|(_, cursor_tree, _)| cursor_tree),
             Some(main_cursor_before),
             "AC17: the main checkout's mutation cursor must be unchanged"
         );
-        let sub_row = worktree_row(&db, &sub_worktree_id).expect("subagent worktree row");
+        let sub_row = worktree_row(&db, &sub_worktree_id)
+            .await
+            .expect("subagent worktree row");
         assert_eq!(
             sub_row.1,
             ClaudeRepo::working_tree_at(&worktree_path),
@@ -3374,8 +3552,8 @@ mod production_regressions {
         assert_raw_agent_trace_tables_untouched(&db);
     }
 
-    #[test]
-    fn test11_worktree_remove_cleans_only_that_worktrees_outstanding_attempt() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test11_worktree_remove_cleans_only_that_worktrees_outstanding_attempt() {
         let repo = ClaudeRepo::new("test11-worktree-remove");
         let worktree_path = repo.add_worktree("removed-worktree");
         let worktree_cwd = ClaudeRepo::cwd_at(&worktree_path);
@@ -3388,6 +3566,7 @@ mod production_regressions {
             "toolu_main",
             None,
         ))
+        .await
         .expect("main-thread PreToolUse should succeed");
         repo.drive(&pre_tool_use_for(
             &worktree_cwd,
@@ -3396,6 +3575,7 @@ mod production_regressions {
             "toolu_sub",
             Some("agent-a"),
         ))
+        .await
         .expect("subagent PreToolUse in the isolated worktree should succeed");
 
         assert_eq!(ClaudeRepo::adapter_state_at(&repo.root).attempts.len(), 1);
@@ -3422,11 +3602,11 @@ mod production_regressions {
             "WorktreeRemove for one worktree must not touch the main checkout's attempts"
         );
 
-        assert_raw_agent_trace_tables_untouched(&repo.db());
+        assert_raw_agent_trace_tables_untouched(&repo.db().await);
     }
 
-    #[test]
-    fn test12_pending_start_crash_before_start_is_recovered_conservatively() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test12_pending_start_crash_before_start_is_recovered_conservatively() {
         let repo = ClaudeRepo::new("test12-pending-start-crash");
         let cwd = repo.cwd();
         let git_dir = repo.git_dir();
@@ -3457,7 +3637,7 @@ mod production_regressions {
             "the never-started attempt must be retired"
         );
         assert!(repo.adapter_state().recovery_pending);
-        let db = repo.db();
+        let db = repo.db().await;
         assert_eq!(
             scope_status(&db, &allocated.attempt.scope_id),
             None,
@@ -3472,6 +3652,7 @@ mod production_regressions {
             "toolu_fresh",
             None,
         ))
+        .await
         .expect("the next PreToolUse should proceed after the quiescent flush");
         assert!(!repo.adapter_state().recovery_pending);
         assert_eq!(repo.adapter_state().attempts.len(), 1);
@@ -3479,8 +3660,8 @@ mod production_regressions {
         assert_raw_agent_trace_tables_untouched(&db);
     }
 
-    #[test]
-    fn test13_start_committed_before_state_settlement_is_recovered_by_abandonment() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test13_start_committed_before_state_settlement_is_recovered_by_abandonment() {
         let repo = ClaudeRepo::new("test13-start-committed-crash");
         let cwd = repo.cwd();
         let git_dir = repo.git_dir();
@@ -3499,6 +3680,7 @@ mod production_regressions {
             &scope_id,
             &claude_scope_start_event_id(&scope_id),
         ))
+        .await
         .expect("the runtime Start should commit durably");
         assert_eq!(
             state::read_state(&git_dir).unwrap().attempts[0].phase,
@@ -3520,7 +3702,7 @@ mod production_regressions {
         assert!(repo.adapter_state().attempts.is_empty());
         assert!(repo.adapter_state().recovery_pending);
 
-        let db = repo.db();
+        let db = repo.db().await;
         assert_eq!(
             scope_status(&db, &scope_id),
             Some(("claude_code".to_string(), "abandoned".to_string())),
@@ -3533,8 +3715,8 @@ mod production_regressions {
         assert_raw_agent_trace_tables_untouched(&db);
     }
 
-    #[test]
-    fn test14_terminal_runtime_success_before_state_cleanup_is_replay_safe() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test14_terminal_runtime_success_before_state_cleanup_is_replay_safe() {
         let repo = ClaudeRepo::new("test14-close-committed-crash");
         let cwd = repo.cwd();
         let git_dir = repo.git_dir();
@@ -3546,6 +3728,7 @@ mod production_regressions {
             "toolu_1",
             None,
         ))
+        .await
         .expect("PreToolUse should succeed");
         let scope_id = repo.adapter_state().attempts[0].scope_id.clone();
         fs::write(repo.root.join("file.txt"), "one\ntwo\n").expect("the edit should write");
@@ -3555,15 +3738,17 @@ mod production_regressions {
             &scope_id,
             &claude_scope_close_event_id(&scope_id),
         ))
+        .await
         .expect("the runtime Close should commit durably");
         assert_eq!(state::read_state(&git_dir).unwrap().attempts.len(), 1);
 
-        let db = repo.db();
+        let db = repo.db().await;
         let (revision_before, events_before) = (
             worktree_row(&db, &repo.worktree_id())
+                .await
                 .map(|(revision, _, _)| revision)
                 .expect("a worktree row should exist"),
-            count(&db, "mutation_trace_events"),
+            count(&db, "mutation_trace_events").await,
         );
 
         assert_eq!(
@@ -3583,7 +3768,7 @@ mod production_regressions {
             "the stale bookkeeping must finally be cleared"
         );
 
-        let db = repo.db();
+        let db = repo.db().await;
         assert_eq!(
             worktree_row(&db, &repo.worktree_id()).map(|(revision, _, _)| revision),
             Some(revision_before),
@@ -3598,8 +3783,8 @@ mod production_regressions {
         assert_raw_agent_trace_tables_untouched(&db);
     }
 
-    #[test]
-    fn test15_explicit_background_bash_is_allowed_untracked_with_no_scope_or_attempt() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test15_explicit_background_bash_is_allowed_untracked_with_no_scope_or_attempt() {
         let repo = ClaudeRepo::new("test15-explicit-background-bash");
         let cwd = repo.cwd();
         let state_path = state::state_path(&repo.git_dir());
@@ -3611,6 +3796,7 @@ mod production_regressions {
                 "toolu_background",
                 None,
             ))
+            .await
             .expect("background Bash should be allowed");
 
         assert_eq!(output, "");
@@ -3631,7 +3817,8 @@ mod production_regressions {
         ] {
             assert_eq!(
                 repo.drive(&payload)
-                    .expect("a terminal hook for untracked background Bash must be a no-op"),
+                    .expect("a terminal hook for untracked background Bash must be a no-op")
+                    .await,
                 ""
             );
             assert!(
@@ -3640,7 +3827,7 @@ mod production_regressions {
             );
         }
 
-        let db = repo.db();
+        let db = repo.db().await;
         assert_eq!(count(&db, "mutation_trace_scopes"), 0);
         assert_eq!(count(&db, "mutation_trace_events"), 0);
         assert!(processed_events(&db).is_empty());
@@ -3648,8 +3835,8 @@ mod production_regressions {
         assert_raw_agent_trace_tables_untouched(&db);
     }
 
-    #[test]
-    fn test19_terminal_hooks_for_untracked_background_bash_do_not_transition_a_live_foreground_attempt(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test19_terminal_hooks_for_untracked_background_bash_do_not_transition_a_live_foreground_attempt(
     ) {
         let repo = ClaudeRepo::new("test19-background-terminal-unrelated");
         let cwd = repo.cwd();
@@ -3661,6 +3848,7 @@ mod production_regressions {
             "toolu_foreground",
             None,
         ))
+        .await
         .expect("the foreground PreToolUse should succeed");
         let scope_id = repo.adapter_state().attempts[0].scope_id.clone();
 
@@ -3676,8 +3864,8 @@ mod production_regressions {
         );
 
         let state_before = repo.adapter_state();
-        let scope_before = scope_status(&repo.db(), &scope_id);
-        let processed_before = processed_events(&repo.db());
+        let scope_before = scope_status(&repo.db().await, &scope_id).await;
+        let processed_before = processed_events(&repo.db().await).await;
 
         for payload in [
             post_tool_use_for(&cwd, "session-1", "Bash", "toolu_background", None),
@@ -3691,7 +3879,7 @@ mod production_regressions {
             assert_eq!(repo.adapter_state(), state_before);
         }
 
-        let db = repo.db();
+        let db = repo.db().await;
         assert_eq!(count(&db, "mutation_trace_scopes"), 1);
         assert_eq!(scope_status(&db, &scope_id), scope_before);
         assert_eq!(processed_events(&db), processed_before);
@@ -3700,8 +3888,8 @@ mod production_regressions {
         assert_raw_agent_trace_tables_untouched(&db);
     }
 
-    #[test]
-    fn test20_untracked_background_bash_mutation_is_observed_at_foreground_close_with_no_attribution_guarantee(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test20_untracked_background_bash_mutation_is_observed_at_foreground_close_with_no_attribution_guarantee(
     ) {
         let repo = ClaudeRepo::new("test20-background-a-foreground-b");
         let cwd = repo.cwd();
@@ -3713,7 +3901,8 @@ mod production_regressions {
                 "toolu_background_a",
                 None,
             ))
-            .expect("background A should be allowed"),
+            .expect("background A should be allowed")
+            .await,
             ""
         );
         assert!(!state::state_path(&repo.git_dir()).exists());
@@ -3725,6 +3914,7 @@ mod production_regressions {
             "toolu_foreground_b",
             None,
         ))
+        .await
         .expect("foreground B PreToolUse should succeed");
         let state_with_b = repo.adapter_state();
         assert_eq!(state_with_b.attempts.len(), 1);
@@ -3741,9 +3931,10 @@ mod production_regressions {
             "toolu_foreground_b",
             None,
         ))
+        .await
         .expect("foreground B PostToolUse should succeed");
 
-        let db = repo.db();
+        let db = repo.db().await;
         let worktree_id = repo.worktree_id();
         assert_eq!(count(&db, "mutation_trace_scopes"), 1);
         assert_eq!(
@@ -3764,11 +3955,11 @@ mod production_regressions {
         assert_raw_agent_trace_tables_untouched(&db);
     }
 
-    #[test]
-    fn test18_model_switch_does_not_rewrite_scope_provenance() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test18_model_switch_does_not_rewrite_scope_provenance() {
         let repo = ClaudeRepo::new("model-switch-provenance");
         let session_id = "session-model-switch";
-        let db = repo.db();
+        let db = repo.db().await;
         db.upsert_claude_model_state(ClaudeModelStateObservation {
             session_id: "cc_session-model-switch".to_string(),
             agent_id: String::new(),
@@ -3777,11 +3968,13 @@ mod production_regressions {
             source: "test".to_string(),
             observed_at_ms: 1,
         })
+        .await
         .expect("initial Claude model state should persist");
 
         let pre_payload =
             pre_tool_use_for(&repo.cwd(), session_id, "Bash", "toolu_model_switch", None);
         repo.drive(&pre_payload)
+            .await
             .expect("initial PreToolUse should establish a scope");
         let scope_id = repo
             .adapter_state()
@@ -3790,7 +3983,7 @@ mod production_regressions {
             .expect("the scope should remain live")
             .scope_id
             .clone();
-        let before = scope_provenance(&repo.db(), &scope_id);
+        let before = scope_provenance(&repo.db().await, &scope_id).await;
         assert_eq!(
             before,
             Some((
@@ -3800,6 +3993,7 @@ mod production_regressions {
         );
 
         repo.db()
+            .await
             .upsert_claude_model_state(ClaudeModelStateObservation {
                 session_id: "cc_session-model-switch".to_string(),
                 agent_id: String::new(),
@@ -3808,24 +4002,26 @@ mod production_regressions {
                 source: "test".to_string(),
                 observed_at_ms: 2,
             })
+            .await
             .expect("model switch should persist");
         repo.drive(&pre_payload)
+            .await
             .expect("replayed PreToolUse should remain idempotent");
 
         assert_eq!(scope_provenance(&repo.db(), &scope_id), before);
     }
 
-    #[test]
-    fn test16_regression_matrix_leaves_raw_agent_trace_tables_untouched() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test16_regression_matrix_leaves_raw_agent_trace_tables_untouched() {
         let repo = ClaudeRepo::new("test16-raw-tables-untouched");
         let cwd = repo.cwd();
 
         let before = {
-            let db = repo.db();
+            let db = repo.db().await;
             (
-                count(&db, "diff_traces"),
-                count(&db, "post_commit_patch_intersections"),
-                count(&db, "agent_traces"),
+                count(&db, "diff_traces").await,
+                count(&db, "post_commit_patch_intersections").await,
+                count(&db, "agent_traces").await,
             )
         };
         assert_eq!(before, (0, 0, 0));
@@ -3837,6 +4033,7 @@ mod production_regressions {
             "toolu_1",
             None,
         ))
+        .await
         .expect("PreToolUse should succeed");
         fs::write(repo.root.join("file.txt"), "one\ntwo\n").expect("the edit should write");
         repo.drive(&post_tool_use_for(
@@ -3846,6 +4043,7 @@ mod production_regressions {
             "toolu_1",
             None,
         ))
+        .await
         .expect("PostToolUse should succeed");
         repo.drive(&pre_tool_use_for(
             &cwd,
@@ -3854,6 +4052,7 @@ mod production_regressions {
             "toolu_2",
             None,
         ))
+        .await
         .expect("second PreToolUse should succeed");
         repo.drive(&permission_denied_for(
             &cwd,
@@ -3862,13 +4061,14 @@ mod production_regressions {
             "toolu_2",
             None,
         ))
+        .await
         .expect("PermissionDenied should succeed");
 
-        let db = repo.db();
+        let db = repo.db().await;
         let after = (
-            count(&db, "diff_traces"),
-            count(&db, "post_commit_patch_intersections"),
-            count(&db, "agent_traces"),
+            count(&db, "diff_traces").await,
+            count(&db, "post_commit_patch_intersections").await,
+            count(&db, "agent_traces").await,
         );
         assert_eq!(
             after,
@@ -3880,8 +4080,9 @@ mod production_regressions {
         assert_raw_agent_trace_tables_untouched(&db);
     }
 
-    #[test]
-    fn test17_detached_descendant_write_after_post_tool_use_is_not_folded_into_the_closed_scope() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test17_detached_descendant_write_after_post_tool_use_is_not_folded_into_the_closed_scope(
+    ) {
         let repo = ClaudeRepo::new("test17-detached-descendant");
         let cwd = repo.cwd();
 
@@ -3892,6 +4093,7 @@ mod production_regressions {
             "toolu_1",
             None,
         ))
+        .await
         .expect("PreToolUse should succeed");
         let scope_id = repo.adapter_state().attempts[0].scope_id.clone();
 
@@ -3906,9 +4108,10 @@ mod production_regressions {
             "toolu_1",
             None,
         ))
+        .await
         .expect("PostToolUse should succeed");
 
-        let db = repo.db();
+        let db = repo.db().await;
         let worktree_id = repo.worktree_id();
         assert_eq!(
             scope_status(&db, &scope_id).map(|(_, status)| status),
@@ -3928,13 +4131,14 @@ mod production_regressions {
         let tree_after_descendant = repo.working_tree();
         assert_ne!(tree_after_descendant, tree_at_close);
 
-        let events_before_flush = mutation_events_for(&db, &worktree_id);
+        let events_before_flush = mutation_events_for(&db, &worktree_id).await;
 
         repo.drive_flush()
+            .await
             .expect("a later recovery/diagnostic flush should succeed");
 
-        let db = repo.db();
-        let events_after_flush = mutation_events_for(&db, &worktree_id);
+        let db = repo.db().await;
+        let events_after_flush = mutation_events_for(&db, &worktree_id).await;
         assert_eq!(
             events_after_flush.len(),
             events_before_flush.len() + 1,

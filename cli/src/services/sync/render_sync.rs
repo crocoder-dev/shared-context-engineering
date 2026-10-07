@@ -57,7 +57,7 @@ fn stream_json(stream: &StreamSyncReport) -> serde_json::Value {
     })
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 

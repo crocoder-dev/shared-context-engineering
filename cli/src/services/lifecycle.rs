@@ -135,15 +135,19 @@ pub trait ServiceLifecycle: Send + Sync {
     #[allow(dead_code)]
     fn id(&self) -> LifecycleProviderId;
 
-    fn diagnose<C: HasRepoRoot>(&self, _ctx: &C) -> Vec<HealthProblem> {
+    async fn diagnose<C: HasRepoRoot>(&self, _ctx: &C) -> Vec<HealthProblem> {
         Vec::new()
     }
 
-    fn fix<C: HasRepoRoot>(&self, _ctx: &C, _problems: &[HealthProblem]) -> Vec<FixResultRecord> {
+    async fn fix<C: HasRepoRoot>(
+        &self,
+        _ctx: &C,
+        _problems: &[HealthProblem],
+    ) -> Vec<FixResultRecord> {
         Vec::new()
     }
 
-    fn setup<C: HasRepoRoot>(&self, _ctx: &C) -> Result<SetupOutcome> {
+    async fn setup<C: HasRepoRoot>(&self, _ctx: &C) -> Result<SetupOutcome> {
         Ok(SetupOutcome::default())
     }
 }
@@ -168,41 +172,97 @@ impl LifecycleProvider {
         }
     }
 
-    pub fn diagnose<C: HasRepoRoot>(self, ctx: &C) -> Vec<HealthProblem> {
+    pub async fn diagnose<C: HasRepoRoot>(self, ctx: &C) -> Vec<HealthProblem> {
         match self {
-            Self::Config => crate::services::config::lifecycle::ConfigLifecycle.diagnose(ctx),
-            Self::LocalDb => crate::services::local_db::lifecycle::LocalDbLifecycle.diagnose(ctx),
-            Self::AuthDb => crate::services::auth_db::lifecycle::AuthDbLifecycle.diagnose(ctx),
-            Self::AgentTraceDb => {
-                crate::services::agent_trace_db::lifecycle::AgentTraceDbLifecycle.diagnose(ctx)
+            Self::Config => {
+                crate::services::config::lifecycle::ConfigLifecycle
+                    .diagnose(ctx)
+                    .await
             }
-            Self::Hooks => crate::services::hooks::lifecycle::HooksLifecycle.diagnose(ctx),
-        }
-    }
-
-    pub fn fix<C: HasRepoRoot>(self, ctx: &C, problems: &[HealthProblem]) -> Vec<FixResultRecord> {
-        match self {
-            Self::Config => crate::services::config::lifecycle::ConfigLifecycle.fix(ctx, problems),
             Self::LocalDb => {
-                crate::services::local_db::lifecycle::LocalDbLifecycle.fix(ctx, problems)
+                crate::services::local_db::lifecycle::LocalDbLifecycle
+                    .diagnose(ctx)
+                    .await
             }
-            Self::AuthDb => crate::services::auth_db::lifecycle::AuthDbLifecycle.fix(ctx, problems),
+            Self::AuthDb => {
+                crate::services::auth_db::lifecycle::AuthDbLifecycle
+                    .diagnose(ctx)
+                    .await
+            }
             Self::AgentTraceDb => {
-                crate::services::agent_trace_db::lifecycle::AgentTraceDbLifecycle.fix(ctx, problems)
+                crate::services::agent_trace_db::lifecycle::AgentTraceDbLifecycle
+                    .diagnose(ctx)
+                    .await
             }
-            Self::Hooks => crate::services::hooks::lifecycle::HooksLifecycle.fix(ctx, problems),
+            Self::Hooks => {
+                crate::services::hooks::lifecycle::HooksLifecycle
+                    .diagnose(ctx)
+                    .await
+            }
         }
     }
 
-    pub fn setup<C: HasRepoRoot>(self, ctx: &C) -> Result<SetupOutcome> {
+    pub async fn fix<C: HasRepoRoot>(
+        self,
+        ctx: &C,
+        problems: &[HealthProblem],
+    ) -> Vec<FixResultRecord> {
         match self {
-            Self::Config => crate::services::config::lifecycle::ConfigLifecycle.setup(ctx),
-            Self::LocalDb => crate::services::local_db::lifecycle::LocalDbLifecycle.setup(ctx),
-            Self::AuthDb => crate::services::auth_db::lifecycle::AuthDbLifecycle.setup(ctx),
-            Self::AgentTraceDb => {
-                crate::services::agent_trace_db::lifecycle::AgentTraceDbLifecycle.setup(ctx)
+            Self::Config => {
+                crate::services::config::lifecycle::ConfigLifecycle
+                    .fix(ctx, problems)
+                    .await
             }
-            Self::Hooks => crate::services::hooks::lifecycle::HooksLifecycle.setup(ctx),
+            Self::LocalDb => {
+                crate::services::local_db::lifecycle::LocalDbLifecycle
+                    .fix(ctx, problems)
+                    .await
+            }
+            Self::AuthDb => {
+                crate::services::auth_db::lifecycle::AuthDbLifecycle
+                    .fix(ctx, problems)
+                    .await
+            }
+            Self::AgentTraceDb => {
+                crate::services::agent_trace_db::lifecycle::AgentTraceDbLifecycle
+                    .fix(ctx, problems)
+                    .await
+            }
+            Self::Hooks => {
+                crate::services::hooks::lifecycle::HooksLifecycle
+                    .fix(ctx, problems)
+                    .await
+            }
+        }
+    }
+
+    pub async fn setup<C: HasRepoRoot>(self, ctx: &C) -> Result<SetupOutcome> {
+        match self {
+            Self::Config => {
+                crate::services::config::lifecycle::ConfigLifecycle
+                    .setup(ctx)
+                    .await
+            }
+            Self::LocalDb => {
+                crate::services::local_db::lifecycle::LocalDbLifecycle
+                    .setup(ctx)
+                    .await
+            }
+            Self::AuthDb => {
+                crate::services::auth_db::lifecycle::AuthDbLifecycle
+                    .setup(ctx)
+                    .await
+            }
+            Self::AgentTraceDb => {
+                crate::services::agent_trace_db::lifecycle::AgentTraceDbLifecycle
+                    .setup(ctx)
+                    .await
+            }
+            Self::Hooks => {
+                crate::services::hooks::lifecycle::HooksLifecycle
+                    .setup(ctx)
+                    .await
+            }
         }
     }
 }

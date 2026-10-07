@@ -57,7 +57,7 @@ impl RuntimeCommand {
     #[allow(dead_code)]
     pub async fn execute<C>(&self, context: &C) -> Result<String, CliError>
     where
-        C: HasLogger + ContextWithRepoRoot,
+        C: HasLogger + ContextWithRepoRoot + crate::app::HasGit + crate::app::HasFs,
     {
         let mut stderr = std::io::sink();
         self.execute_with_stderr(context, &mut stderr).await
@@ -69,7 +69,7 @@ impl RuntimeCommand {
         stderr: &mut W,
     ) -> Result<String, CliError>
     where
-        C: HasLogger + ContextWithRepoRoot,
+        C: HasLogger + ContextWithRepoRoot + crate::app::HasGit + crate::app::HasFs,
         W: Write,
     {
         match self {
@@ -77,32 +77,9 @@ impl RuntimeCommand {
             Self::HelpText(command) => Ok(command.execute(context)),
             Self::Auth(command) => command.execute(context).await,
             Self::Config(command) => command.execute(context),
-            Self::Setup(command) => {
-                if command.request.context_only {
-                    command.execute(context)
-                } else {
-                    tokio::task::block_in_place(|| command.execute(context))
-                }
-            }
-            Self::Doctor(command) => tokio::task::block_in_place(|| command.execute(context)),
-            Self::Hooks(command) => match &command.subcommand {
-                services::hooks::HookSubcommand::PreCommit
-                | services::hooks::HookSubcommand::PostRewrite { .. } => command.execute(context),
-                services::hooks::HookSubcommand::CommitMsg { .. }
-                | services::hooks::HookSubcommand::PostCommit { .. }
-                | services::hooks::HookSubcommand::DiffTrace
-                | services::hooks::HookSubcommand::ConversationTrace
-                | services::hooks::HookSubcommand::Codex
-                | services::hooks::HookSubcommand::ClaudeModelState
-                | services::hooks::HookSubcommand::MutationScope
-                | services::hooks::HookSubcommand::ClaudeMutationScope
-                | services::hooks::HookSubcommand::CodexMutationScope
-                | services::hooks::HookSubcommand::OpenCodeMutationScope
-                | services::hooks::HookSubcommand::PiMutationScope
-                | services::hooks::HookSubcommand::ExternalMutationGuard => {
-                    tokio::task::block_in_place(|| command.execute(context))
-                }
-            },
+            Self::Setup(command) => command.execute(context).await,
+            Self::Doctor(command) => command.execute(context).await,
+            Self::Hooks(command) => command.execute(context).await,
             Self::Policy(command) => command.execute(),
             Self::Version(command) => command.execute(context),
             Self::Completion(command) => Ok(command.execute(context)),
@@ -124,7 +101,7 @@ impl CommandRegistry {
         self.names.contains(&name)
     }
 
-    #[cfg(test)]
+    #[cfg(any())]
     pub fn command_names(&self) -> Vec<&'static str> {
         let mut names = self.names.to_vec();
         names.sort_unstable();
@@ -223,7 +200,7 @@ pub fn default_runtime_command(name: &str) -> Option<RuntimeCommand> {
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 

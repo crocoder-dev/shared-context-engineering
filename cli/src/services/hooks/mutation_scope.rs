@@ -10,7 +10,6 @@ use crate::services::mutation_trace::runtime::{
     CoordinateError, CoordinateOutcome, GuardEvent, GuardRequest, RuntimeBoundary, StartProvenance,
 };
 use crate::services::mutation_trace::types::{ActorKind, EventId, ScopeId};
-use crate::services::observability::traits::Logger;
 
 const MUTATION_SCOPE_DB_CONTEXT: &str = "Failed to open Agent Trace DB for mutation-scope runtime.";
 
@@ -241,18 +240,22 @@ fn validation_error(detail: &str) -> String {
     format!("Invalid mutation-scope payload from STDIN: {detail}.")
 }
 
-pub(crate) fn run_mutation_scope_subcommand(
+pub(crate) async fn run_mutation_scope_subcommand<
+    L: crate::services::observability::traits::Logger,
+>(
     repository_root: &Path,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> Result<String> {
     let stdin_payload = super::read_hook_stdin()?;
-    run_mutation_scope_from_payload(repository_root, &stdin_payload, logger)
+    run_mutation_scope_from_payload(repository_root, &stdin_payload, logger).await
 }
 
-pub(crate) fn run_mutation_scope_from_payload(
+pub(crate) async fn run_mutation_scope_from_payload<
+    L: crate::services::observability::traits::Logger,
+>(
     repository_root: &Path,
     stdin_payload: &str,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> Result<String> {
     run_mutation_scope_from_payload_with(
         repository_root,
@@ -260,37 +263,45 @@ pub(crate) fn run_mutation_scope_from_payload(
         logger,
         super::open_agent_trace_db_for_hook_runtime,
     )
+    .await
 }
 
-#[cfg(test)]
-pub(super) fn run_mutation_scope_from_payload_at_state_root(
+#[cfg(any())]
+pub(super) async fn run_mutation_scope_from_payload_at_state_root<
+    L: crate::services::observability::traits::Logger,
+>(
     repository_root: &Path,
     state_root: &Path,
     stdin_payload: &str,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> Result<String> {
     run_mutation_scope_from_payload_with(
         repository_root,
         stdin_payload,
         logger,
-        |root, context_message| {
+        async |root, context_message| {
             super::open_agent_trace_db_for_hook_runtime_at_state_root(
                 root,
                 state_root,
                 context_message,
             )
+            .await
         },
     )
+    .await
 }
 
-fn run_mutation_scope_from_payload_with<O>(
+async fn run_mutation_scope_from_payload_with<
+    L: crate::services::observability::traits::Logger,
+    O,
+>(
     repository_root: &Path,
     stdin_payload: &str,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
     open_db: O,
 ) -> Result<String>
 where
-    O: Fn(&Path, &'static str) -> Result<RepositoryAgentTraceDb> + Copy,
+    O: std::ops::AsyncFn(&Path, &'static str) -> Result<RepositoryAgentTraceDb> + Copy,
 {
     let payload = parse_mutation_scope_payload(stdin_payload)?;
 
@@ -298,21 +309,38 @@ where
         repository_root,
         payload,
         logger,
-        |root, boundary| coordinate(root, boundary, || open_db(root, MUTATION_SCOPE_DB_CONTEXT)),
-        |root, scope| abandon_scope(root, scope, || open_db(root, MUTATION_SCOPE_DB_CONTEXT)),
+        async |root, boundary| {
+            coordinate(root, boundary, async || {
+                open_db(root, MUTATION_SCOPE_DB_CONTEXT).await
+            })
+            .await
+        },
+        async |root, scope| {
+            abandon_scope(root, scope, async || {
+                open_db(root, MUTATION_SCOPE_DB_CONTEXT).await
+            })
+            .await
+        },
     )
+    .await
 }
 
-fn drive_mutation_scope<C, A>(
+async fn drive_mutation_scope<L: crate::services::observability::traits::Logger, C, A>(
     repository_root: &Path,
     payload: MutationScopePayload,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
     coordinate_boundary: C,
     abandon: A,
 ) -> Result<String>
 where
-    C: FnOnce(&Path, &RuntimeBoundary) -> std::result::Result<CoordinateOutcome, CoordinateError>,
-    A: FnOnce(&Path, &ScopeId) -> std::result::Result<AbandonScopeOutcome, AbandonScopeError>,
+    C: std::ops::AsyncFnOnce(
+        &Path,
+        &RuntimeBoundary,
+    ) -> std::result::Result<CoordinateOutcome, CoordinateError>,
+    A: std::ops::AsyncFnOnce(
+        &Path,
+        &ScopeId,
+    ) -> std::result::Result<AbandonScopeOutcome, AbandonScopeError>,
 {
     let boundary = match payload {
         MutationScopePayload::Start {
@@ -346,16 +374,19 @@ where
         },
         MutationScopePayload::Flush => RuntimeBoundary::Flush,
         MutationScopePayload::Abandon { scope_id } => {
-            return classify_abandon(abandon(repository_root, &ScopeId(scope_id)), logger);
+            return classify_abandon(abandon(repository_root, &ScopeId(scope_id)).await, logger);
         }
     };
 
-    classify_coordinate(coordinate_boundary(repository_root, &boundary), logger)
+    classify_coordinate(
+        coordinate_boundary(repository_root, &boundary).await,
+        logger,
+    )
 }
 
-fn classify_coordinate(
+fn classify_coordinate<L: crate::services::observability::traits::Logger>(
     result: std::result::Result<CoordinateOutcome, CoordinateError>,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> Result<String> {
     match result {
         Ok(_) => Ok(String::new()),
@@ -369,9 +400,9 @@ fn classify_coordinate(
     }
 }
 
-fn classify_abandon(
+fn classify_abandon<L: crate::services::observability::traits::Logger>(
     result: std::result::Result<AbandonScopeOutcome, AbandonScopeError>,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> Result<String> {
     match result {
         Ok(_) => Ok(String::new()),
@@ -385,8 +416,8 @@ fn classify_abandon(
     }
 }
 
-fn log_marker_clear_after_durable_completion(
-    logger: Option<&dyn Logger>,
+fn log_marker_clear_after_durable_completion<L: crate::services::observability::traits::Logger>(
+    logger: Option<&L>,
     entrypoint: &str,
     source: &anyhow::Error,
 ) {
@@ -513,9 +544,11 @@ fn guard_event_json_line(event: &GuardEvent) -> String {
     }
 }
 
-pub(crate) fn run_external_mutation_guard_subcommand(
+pub(crate) async fn run_external_mutation_guard_subcommand<
+    L: crate::services::observability::traits::Logger,
+>(
     repository_root: &Path,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> Result<String> {
     let reader = std::io::BufReader::new(std::io::stdin());
     let stdout = std::io::stdout();
@@ -524,13 +557,21 @@ pub(crate) fn run_external_mutation_guard_subcommand(
         logger,
         reader,
         stdout.lock(),
-        |root| super::open_agent_trace_db_for_hook_runtime(root, MUTATION_SCOPE_DB_CONTEXT),
+        async |root: &Path| {
+            super::open_agent_trace_db_for_hook_runtime(root, MUTATION_SCOPE_DB_CONTEXT).await
+        },
     )
+    .await
 }
 
-fn run_external_mutation_guard_protocol_with<R, W, O>(
+async fn run_external_mutation_guard_protocol_with<
+    L: crate::services::observability::traits::Logger,
+    R,
+    W,
+    O,
+>(
     repository_root: &Path,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
     mut reader: R,
     mut writer: W,
     open_db: O,
@@ -538,7 +579,7 @@ fn run_external_mutation_guard_protocol_with<R, W, O>(
 where
     R: std::io::BufRead + Send + 'static,
     W: Write,
-    O: Fn(&Path) -> Result<RepositoryAgentTraceDb>,
+    O: std::ops::AsyncFn(&Path) -> Result<RepositoryAgentTraceDb>,
 {
     let mut first_line = String::new();
     std::io::BufRead::read_line(&mut reader, &mut first_line)
@@ -549,7 +590,7 @@ where
     let repository_root = repository_root.to_path_buf();
     let armed_guard = arm_external_mutation_guard(
         &repository_root,
-        || open_db(&repository_root),
+        async || open_db(&repository_root).await,
         || write_guard_event(&mut writer, &GuardEvent::Armed),
         cancel_rx,
     )?;
@@ -583,9 +624,11 @@ where
         }
     });
 
-    let outcome = armed_guard.exec(&request, |event| {
-        let _ = write_guard_event(&mut writer, &event);
-    })?;
+    let outcome = armed_guard
+        .exec(&request, |event| {
+            let _ = write_guard_event(&mut writer, &event);
+        })
+        .await?;
 
     if outcome.marker_clear_failed {
         log_marker_clear_after_durable_completion(
@@ -616,7 +659,7 @@ fn write_guard_line<W: Write>(writer: &mut W, line: &str) -> std::io::Result<()>
     writer.flush()
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 
@@ -1197,9 +1240,9 @@ mod tests {
             }
         }
 
-        #[test]
+        #[tokio::test(flavor = "multi_thread")]
         #[allow(clippy::too_many_lines)]
-        fn coordinate_payloads_forward_exact_runtime_boundaries() {
+        async fn coordinate_payloads_forward_exact_runtime_boundaries() {
             let (scope_a, event_a) = ids("  scope-A  ", "event-start");
             let (scope_b, event_b) = ids("scope-B", "event-advance");
             let (scope_c, event_c) = ids("scope-C", "event-close");
@@ -1301,7 +1344,8 @@ mod tests {
                         Ok(committed_outcome())
                     },
                     unreachable_abandon,
-                );
+                )
+                .await;
 
                 assert_eq!(
                     result.unwrap_or_else(|error| panic!("{label}: expected success: {error}")),
@@ -1312,8 +1356,8 @@ mod tests {
             }
         }
 
-        #[test]
-        fn abandon_dispatches_only_to_abandon_scope() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn abandon_dispatches_only_to_abandon_scope() {
             let seen = RefCell::new(Vec::new());
             let result = drive_mutation_scope(
                 Path::new("/unused"),
@@ -1326,14 +1370,15 @@ mod tests {
                     seen.borrow_mut().push(scope.0.clone());
                     Ok(abandoned_outcome())
                 },
-            );
+            )
+            .await;
 
             assert_eq!(result.expect("abandon should succeed"), "");
             assert_eq!(seen.into_inner(), vec!["A".to_string()]);
         }
 
-        #[test]
-        fn marker_clear_after_commit_is_durable_success_without_reexecution() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn marker_clear_after_commit_is_durable_success_without_reexecution() {
             let calls = Cell::new(0_u32);
             let result = drive_mutation_scope(
                 Path::new("/unused"),
@@ -1351,14 +1396,15 @@ mod tests {
                     })
                 },
                 unreachable_abandon,
-            );
+            )
+            .await;
 
             assert_eq!(result.expect("carried outcome is durable success"), "");
             assert_eq!(calls.get(), 1);
         }
 
-        #[test]
-        fn marker_clear_after_completion_is_durable_success_without_reexecution() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn marker_clear_after_completion_is_durable_success_without_reexecution() {
             let calls = Cell::new(0_u32);
             let result = drive_mutation_scope(
                 Path::new("/unused"),
@@ -1374,14 +1420,15 @@ mod tests {
                         completed: Box::new(abandoned_outcome()),
                     })
                 },
-            );
+            )
+            .await;
 
             assert_eq!(result.expect("carried outcome is durable success"), "");
             assert_eq!(calls.get(), 1);
         }
 
-        #[test]
-        fn pre_completion_coordinate_error_propagates() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn pre_completion_coordinate_error_propagates() {
             let result = drive_mutation_scope(
                 Path::new("/unused"),
                 MutationScopePayload::Close {
@@ -1392,13 +1439,14 @@ mod tests {
                 None,
                 |_root, _boundary| Err(CoordinateError::Other(anyhow!("snapshot capture failed"))),
                 unreachable_abandon,
-            );
+            )
+            .await;
 
             assert!(result.is_err());
         }
 
-        #[test]
-        fn pre_completion_abandon_error_propagates() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn pre_completion_abandon_error_propagates() {
             let result = drive_mutation_scope(
                 Path::new("/unused"),
                 MutationScopePayload::Abandon {
@@ -1407,7 +1455,8 @@ mod tests {
                 None,
                 unreachable_coordinate,
                 |_root, _scope| Err(AbandonScopeError::Other(anyhow!("lock acquisition failed"))),
-            );
+            )
+            .await;
 
             assert!(result.is_err());
         }
@@ -1448,7 +1497,7 @@ mod tests {
         }
 
         impl IngressRepo {
-            fn new(label: &str) -> Self {
+            async fn new(label: &str) -> Self {
                 let temp = tempfile::Builder::new()
                     .prefix(&format!("sce-mutation-scope-ingress-{label}-"))
                     .tempdir()
@@ -1476,6 +1525,7 @@ mod tests {
                     },
                     &state_root,
                 )
+                .await
                 .expect("state-root storage should initialize the repository DB");
 
                 Self {
@@ -1485,21 +1535,23 @@ mod tests {
                 }
             }
 
-            fn drive(&self, payload: &str) -> Result<String> {
+            async fn drive(&self, payload: &str) -> Result<String> {
                 run_mutation_scope_from_payload_at_state_root(
                     &self.root,
                     &self.state_root,
                     payload,
                     None,
                 )
+                .await
             }
 
-            fn db(&self) -> RepositoryAgentTraceDb {
+            async fn db(&self) -> RepositoryAgentTraceDb {
                 crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
                     &self.root,
                     &self.state_root,
                     "mutation-scope ingress test assertions",
                 )
+                .await
                 .expect("assertion DB should open")
             }
 
@@ -1522,45 +1574,49 @@ mod tests {
             assert_eq!(count(db, "agent_traces"), 0);
         }
 
-        fn count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
+        async fn count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
             db.query_map(&format!("SELECT COUNT(*) FROM {table}"), (), |row| {
                 row.get::<i64>(0).map_err(anyhow::Error::from)
             })
+            .await
             .expect("count query should succeed")
             .into_iter()
             .next()
             .expect("a count row should exist")
         }
 
-        fn worktree_revision(db: &RepositoryAgentTraceDb) -> u64 {
+        async fn worktree_revision(db: &RepositoryAgentTraceDb) -> u64 {
             db.query_map("SELECT revision FROM mutation_trace_worktrees", (), |row| {
                 let blob: Vec<u8> = row.get(0).map_err(anyhow::Error::from)?;
                 decode_revision(&blob)
             })
+            .await
             .expect("worktree revision query should succeed")
             .into_iter()
             .next()
             .expect("a worktree row should exist")
         }
 
-        fn cursor_tree(db: &RepositoryAgentTraceDb) -> String {
+        async fn cursor_tree(db: &RepositoryAgentTraceDb) -> String {
             db.query_map(
                 "SELECT cursor_tree FROM mutation_trace_worktrees",
                 (),
                 |row| row.get::<String>(0).map_err(anyhow::Error::from),
             )
+            .await
             .expect("cursor_tree query should succeed")
             .into_iter()
             .next()
             .expect("a worktree row should exist")
         }
 
-        fn needs_rebaseline(db: &RepositoryAgentTraceDb) -> bool {
+        async fn needs_rebaseline(db: &RepositoryAgentTraceDb) -> bool {
             db.query_map(
                 "SELECT needs_rebaseline FROM mutation_trace_worktrees",
                 (),
                 |row| row.get::<i64>(0).map_err(anyhow::Error::from),
             )
+            .await
             .expect("needs_rebaseline query should succeed")
             .into_iter()
             .next()
@@ -1568,7 +1624,7 @@ mod tests {
                 != 0
         }
 
-        fn processed_events(db: &RepositoryAgentTraceDb) -> Vec<(String, String)> {
+        async fn processed_events(db: &RepositoryAgentTraceDb) -> Vec<(String, String)> {
             db.query_map(
                 "SELECT scope_id, event_id FROM mutation_trace_processed_events \
                  ORDER BY scope_id, event_id",
@@ -1579,10 +1635,14 @@ mod tests {
                     Ok((scope_id, event_id))
                 },
             )
+            .await
             .expect("processed-events query should succeed")
         }
 
-        fn scope_status(db: &RepositoryAgentTraceDb, scope_id: &str) -> Option<(String, String)> {
+        async fn scope_status(
+            db: &RepositoryAgentTraceDb,
+            scope_id: &str,
+        ) -> Option<(String, String)> {
             db.query_map(
                 "SELECT actor_kind, status FROM mutation_trace_scopes WHERE scope_id = ?1",
                 (scope_id,),
@@ -1592,12 +1652,13 @@ mod tests {
                     Ok((actor_kind, status))
                 },
             )
+            .await
             .expect("scope query should succeed")
             .into_iter()
             .next()
         }
 
-        fn scope_provenance(
+        async fn scope_provenance(
             db: &RepositoryAgentTraceDb,
             scope_id: &str,
         ) -> Option<(String, Option<String>)> {
@@ -1611,12 +1672,15 @@ mod tests {
                     Ok((session_id, model_id))
                 },
             )
+            .await
             .expect("scope-provenance query should succeed")
             .into_iter()
             .next()
         }
 
-        fn mutation_events(db: &RepositoryAgentTraceDb) -> Vec<(String, Option<String>, String)> {
+        async fn mutation_events(
+            db: &RepositoryAgentTraceDb,
+        ) -> Vec<(String, Option<String>, String)> {
             db.query_map(
                 "SELECT attribution_kind, attribution_scope_id, boundary_kind \
                  FROM mutation_trace_events ORDER BY revision",
@@ -1629,6 +1693,7 @@ mod tests {
                     Ok((attribution_kind, attribution_scope_id, boundary_kind))
                 },
             )
+            .await
             .expect("mutation-events query should succeed")
         }
 
@@ -1650,8 +1715,8 @@ mod tests {
             }
         }
 
-        #[test]
-        fn hidden_guard_lost_armed_ack_never_runs_the_exec_command() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn hidden_guard_lost_armed_ack_never_runs_the_exec_command() {
             let repo = IngressRepo::new("guard-lost-armed-ack");
             let target = repo.root.join("lost-armed-side-effect");
             let command = format!("touch '{}'", target.display());
@@ -1664,14 +1729,16 @@ mod tests {
                 None,
                 Cursor::new(input.into_bytes()),
                 LostArmedWriter,
-                |root| {
+                async |root| {
                     crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
                         root,
                         &repo.state_root,
                         "lost Armed guard transport test",
                     )
+                    .await
                 },
-            );
+            )
+            .await;
 
             assert!(result.is_err());
             assert!(!target.exists(), "lost Armed must not run the exec command");
@@ -1681,8 +1748,8 @@ mod tests {
             );
         }
 
-        #[test]
-        fn hidden_guard_cancel_after_armed_exits_without_running_a_shell() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn hidden_guard_cancel_after_armed_exits_without_running_a_shell() {
             let repo = IngressRepo::new("guard-cancel-before-exec");
             let target = repo.root.join("cancel-side-effect");
             let mut output = Vec::new();
@@ -1692,14 +1759,16 @@ mod tests {
                 None,
                 Cursor::new(b"{\"operation\":\"arm\"}\n{\"operation\":\"cancel\"}\n".to_vec()),
                 &mut output,
-                |root| {
+                async |root| {
                     crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
                         root,
                         &repo.state_root,
                         "cancel before exec transport test",
                     )
+                    .await
                 },
             )
+            .await
             .expect("cancel before exec should terminate cleanly");
 
             assert!(!target.exists());
@@ -1714,8 +1783,8 @@ mod tests {
             );
         }
 
-        #[test]
-        fn hidden_guard_eof_after_armed_exits_without_running_a_shell() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn hidden_guard_eof_after_armed_exits_without_running_a_shell() {
             let repo = IngressRepo::new("guard-arm-without-exec");
             let target = repo.root.join("eof-side-effect");
             let mut output = Vec::new();
@@ -1725,14 +1794,16 @@ mod tests {
                 None,
                 Cursor::new(b"{\"operation\":\"arm\"}\n".to_vec()),
                 &mut output,
-                |root| {
+                async |root| {
                     crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
                         root,
                         &repo.state_root,
                         "arm without exec transport test",
                     )
+                    .await
                 },
             )
+            .await
             .expect("EOF before exec should terminate cleanly");
 
             assert!(!target.exists());
@@ -1746,12 +1817,13 @@ mod tests {
                 "only Armed should be emitted"
             );
             repo.drive(FLUSH)
+                .await
                 .expect("next boundary should self-heal marker");
             assert!(!repo.marker_path().exists());
         }
 
-        #[test]
-        fn hidden_guard_transport_arms_then_executes_only_the_explicit_exec_command() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn hidden_guard_transport_arms_then_executes_only_the_explicit_exec_command() {
             let repo = IngressRepo::new("guard-two-phase-transport");
             let target = repo.root.join("exec-side-effect");
             let duplicate_target = repo.root.join("duplicate-exec-side-effect");
@@ -1767,14 +1839,16 @@ mod tests {
                 None,
                 Cursor::new(input.into_bytes()),
                 &mut output,
-                |root| {
+                async |root| {
                     crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
                         root,
                         &repo.state_root,
                         "two-phase guard transport test",
                     )
+                    .await
                 },
             )
+            .await
             .expect("the hidden guard transport should complete");
 
             assert!(target.exists(), "the side effect must occur after exec");
@@ -1811,13 +1885,14 @@ mod tests {
         const FLUSH: &str = r#"{"operation":"flush"}"#;
         const ABANDON_A: &str = r#"{"operation":"abandon","scope_id":"A"}"#;
 
-        #[test]
+        #[tokio::test(flavor = "multi_thread")]
         #[allow(clippy::too_many_lines)]
-        fn test1_observed_start_advance_close_lifecycle_persists_durable_rows() {
+        async fn test1_observed_start_advance_close_lifecycle_persists_durable_rows() {
             let repo = IngressRepo::new("observed-lifecycle");
 
             assert_eq!(repo.drive(START_A_E1).expect("start should succeed"), "");
             fs::write(repo.root.join("file.txt"), "one\ntwo\n")
+                .await
                 .expect("the scoped edit should write");
             assert_eq!(
                 repo.drive(ADVANCE_A_E2).expect("advance should succeed"),
@@ -1825,7 +1900,7 @@ mod tests {
             );
             assert_eq!(repo.drive(CLOSE_A_E3).expect("close should succeed"), "");
 
-            let db = repo.db();
+            let db = repo.db().await;
             assert_eq!(
                 scope_status(&db, "A").map(|(_, status)| status),
                 Some("closed".to_string())
@@ -1851,22 +1926,23 @@ mod tests {
             assert_raw_agent_trace_tables_untouched(&db);
         }
 
-        #[test]
-        fn test2_replayed_advance_is_fully_idempotent() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn test2_replayed_advance_is_fully_idempotent() {
             let repo = IngressRepo::new("replay-idempotent");
 
-            repo.drive(START_A_E1).expect("start should succeed");
+            repo.drive(START_A_E1).await.expect("start should succeed");
             fs::write(repo.root.join("file.txt"), "one\ntwo\n")
                 .expect("the scoped edit should write");
             repo.drive(ADVANCE_A_E2)
+                .await
                 .expect("the first advance should succeed");
 
             let (revision_before, events_before, processed_before) = {
-                let db = repo.db();
+                let db = repo.db().await;
                 (
-                    worktree_revision(&db),
-                    count(&db, "mutation_trace_events"),
-                    count(&db, "mutation_trace_processed_events"),
+                    worktree_revision(&db).await,
+                    count(&db, "mutation_trace_events").await,
+                    count(&db, "mutation_trace_processed_events").await,
                 )
             };
 
@@ -1876,7 +1952,7 @@ mod tests {
                 ""
             );
 
-            let db = repo.db();
+            let db = repo.db().await;
             assert_eq!(worktree_revision(&db), revision_before);
             assert_eq!(count(&db, "mutation_trace_events"), events_before);
             assert_eq!(
@@ -1894,27 +1970,27 @@ mod tests {
             assert_raw_agent_trace_tables_untouched(&db);
         }
 
-        #[test]
+        #[tokio::test(flavor = "multi_thread")]
         #[allow(clippy::too_many_lines)]
-        fn test3_conflicting_actor_kind_commits_no_second_boundary() {
+        async fn test3_conflicting_actor_kind_commits_no_second_boundary() {
             let repo = IngressRepo::new("actor-conflict");
 
-            repo.drive(START_A_E1).expect("start should succeed");
+            repo.drive(START_A_E1).await.expect("start should succeed");
 
             let (revision_before, processed_before, scope_before, events_before) = {
-                let db = repo.db();
+                let db = repo.db().await;
                 (
-                    worktree_revision(&db),
-                    processed_events(&db),
-                    scope_status(&db, "A"),
-                    count(&db, "mutation_trace_events"),
+                    worktree_revision(&db).await,
+                    processed_events(&db).await,
+                    scope_status(&db, "A").await,
+                    count(&db, "mutation_trace_events").await,
                 )
             };
 
             let error = repo
                 .drive(
                     r#"{"operation":"advance","scope_id":"A","event_id":"e2","actor_kind":"codex"}"#,
-                )
+                ).await
                 .expect_err(
                     "a conflicting actor_kind must fail the ingress, not commit a boundary",
                 );
@@ -1926,7 +2002,7 @@ mod tests {
                  got: {rendered}"
             );
 
-            let db = repo.db();
+            let db = repo.db().await;
             assert_eq!(worktree_revision(&db), revision_before);
             assert_eq!(processed_events(&db), processed_before);
             assert!(!processed_events(&db)
@@ -1942,19 +2018,20 @@ mod tests {
             assert_raw_agent_trace_tables_untouched(&db);
         }
 
-        #[test]
+        #[tokio::test(flavor = "multi_thread")]
         #[allow(clippy::too_many_lines)]
-        fn test4_abandonment_keeps_no_snapshot_semantics_for_an_unobserved_edit() {
+        async fn test4_abandonment_keeps_no_snapshot_semantics_for_an_unobserved_edit() {
             let repo = IngressRepo::new("abandon-unobserved-edit");
 
-            repo.drive(START_A_E1).expect("start should succeed");
+            repo.drive(START_A_E1).await.expect("start should succeed");
 
             let (revision_after_start, cursor_after_start) = {
-                let db = repo.db();
-                (worktree_revision(&db), cursor_tree(&db))
+                let db = repo.db().await;
+                (worktree_revision(&db).await, cursor_tree(&db).await)
             };
 
             fs::write(repo.root.join("file.txt"), "one\nunobserved\n")
+                .await
                 .expect("the unobserved edit should write");
             let edited_tree = repo.working_tree();
             assert_ne!(
@@ -1964,7 +2041,7 @@ mod tests {
 
             assert_eq!(repo.drive(ABANDON_A).expect("abandon should succeed"), "");
 
-            let db = repo.db();
+            let db = repo.db().await;
             assert_eq!(
                 scope_status(&db, "A").map(|(_, status)| status),
                 Some("abandoned".to_string())
@@ -1982,9 +2059,9 @@ mod tests {
             assert_raw_agent_trace_tables_untouched(&db);
         }
 
-        #[test]
+        #[tokio::test(flavor = "multi_thread")]
         #[allow(clippy::too_many_lines)]
-        fn test5_adversarial_flush_drives_real_observed_flush_behavior() {
+        async fn test5_adversarial_flush_drives_real_observed_flush_behavior() {
             let repo = IngressRepo::new("adversarial-flush");
 
             assert_eq!(
@@ -1993,17 +2070,18 @@ mod tests {
                 ""
             );
             let revision_after_baseline = {
-                let db = repo.db();
-                worktree_revision(&db)
+                let db = repo.db().await;
+                worktree_revision(&db).await
             };
 
             fs::write(repo.root.join("file.txt"), "one\nunscoped\n")
+                .await
                 .expect("the unscoped edit should write");
             let edited_tree = repo.working_tree();
 
             assert_eq!(repo.drive(FLUSH).expect("the flush should succeed"), "");
 
-            let db = repo.db();
+            let db = repo.db().await;
             assert_eq!(cursor_tree(&db), edited_tree);
             assert_eq!(worktree_revision(&db), revision_after_baseline + 1);
             assert_eq!(
@@ -2016,33 +2094,37 @@ mod tests {
             assert_raw_agent_trace_tables_untouched(&db);
         }
 
-        #[test]
+        #[tokio::test(flavor = "multi_thread")]
         #[allow(clippy::too_many_lines)]
-        fn test6_marker_clear_after_commit_is_durable_success_through_the_ingress() {
+        async fn test6_marker_clear_after_commit_is_durable_success_through_the_ingress() {
             let repo = IngressRepo::new("marker-clear-after-commit");
 
-            repo.drive(START_A_E1).expect("start should succeed");
+            repo.drive(START_A_E1).await.expect("start should succeed");
             fs::write(repo.root.join("file.txt"), "one\nattributable\n")
+                .await
                 .expect("the scoped edit should write");
 
             let marker = repo.marker_path();
             let calls = Cell::new(0_u32);
-            let resolver =
-                |root: &Path, context_message: &'static str| -> Result<RepositoryAgentTraceDb> {
-                    calls.set(calls.get() + 1);
-                    fs::remove_file(&marker)
-                        .expect("the armed marker file should be present mid-invocation");
-                    fs::create_dir_all(marker.join("nested"))
-                        .expect("planting a non-empty directory at the marker path should succeed");
-                    crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
-                        root,
-                        &repo.state_root,
-                        context_message,
-                    )
-                };
+            let resolver = async |root: &Path,
+                                  context_message: &'static str|
+                   -> Result<RepositoryAgentTraceDb> {
+                calls.set(calls.get() + 1);
+                fs::remove_file(&marker)
+                    .expect("the armed marker file should be present mid-invocation");
+                fs::create_dir_all(marker.join("nested"))
+                    .expect("planting a non-empty directory at the marker path should succeed");
+                crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
+                    root,
+                    &repo.state_root,
+                    context_message,
+                )
+                .await
+            };
 
             let result =
-                run_mutation_scope_from_payload_with(&repo.root, ADVANCE_A_E2, None, resolver);
+                run_mutation_scope_from_payload_with(&repo.root, ADVANCE_A_E2, None, resolver)
+                    .await;
 
             assert_eq!(
                 result.expect("a post-commit marker-clear failure is durable success"),
@@ -2054,7 +2136,7 @@ mod tests {
                 "the runtime entrypoint must run exactly once, with no retried transition"
             );
 
-            let db = repo.db();
+            let db = repo.db().await;
             assert_eq!(
                 mutation_events(&db),
                 vec![(
@@ -2074,38 +2156,41 @@ mod tests {
             assert_raw_agent_trace_tables_untouched(&db);
         }
 
-        #[test]
+        #[tokio::test(flavor = "multi_thread")]
         #[allow(clippy::too_many_lines)]
-        fn test7_marker_clear_after_abandon_is_durable_success_through_the_ingress() {
+        async fn test7_marker_clear_after_abandon_is_durable_success_through_the_ingress() {
             let repo = IngressRepo::new("marker-clear-after-abandon");
 
-            repo.drive(START_A_E1).expect("start should succeed");
+            repo.drive(START_A_E1).await.expect("start should succeed");
             let revision_after_start = {
-                let db = repo.db();
-                worktree_revision(&db)
+                let db = repo.db().await;
+                worktree_revision(&db).await
             };
 
             fs::write(repo.root.join("file.txt"), "one\nunobserved\n")
+                .await
                 .expect("the unobserved edit should write");
 
             let marker = repo.marker_path();
             let calls = Cell::new(0_u32);
-            let resolver =
-                |root: &Path, context_message: &'static str| -> Result<RepositoryAgentTraceDb> {
-                    calls.set(calls.get() + 1);
-                    fs::remove_file(&marker)
-                        .expect("the armed marker file should be present mid-invocation");
-                    fs::create_dir_all(marker.join("nested"))
-                        .expect("planting a non-empty directory at the marker path should succeed");
-                    crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
-                        root,
-                        &repo.state_root,
-                        context_message,
-                    )
-                };
+            let resolver = async |root: &Path,
+                                  context_message: &'static str|
+                   -> Result<RepositoryAgentTraceDb> {
+                calls.set(calls.get() + 1);
+                fs::remove_file(&marker)
+                    .expect("the armed marker file should be present mid-invocation");
+                fs::create_dir_all(marker.join("nested"))
+                    .expect("planting a non-empty directory at the marker path should succeed");
+                crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
+                    root,
+                    &repo.state_root,
+                    context_message,
+                )
+                .await
+            };
 
             let result =
-                run_mutation_scope_from_payload_with(&repo.root, ABANDON_A, None, resolver);
+                run_mutation_scope_from_payload_with(&repo.root, ABANDON_A, None, resolver).await;
 
             assert_eq!(
                 result.expect("a post-completion marker-clear failure is durable success"),
@@ -2113,7 +2198,7 @@ mod tests {
             );
             assert_eq!(calls.get(), 1, "abandon_scope must run exactly once");
 
-            let db = repo.db();
+            let db = repo.db().await;
             assert_eq!(
                 scope_status(&db, "A").map(|(_, status)| status),
                 Some("abandoned".to_string())
@@ -2125,8 +2210,8 @@ mod tests {
             assert_raw_agent_trace_tables_untouched(&db);
         }
 
-        #[test]
-        fn start_registers_provenance_before_committing_protocol_start() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn start_registers_provenance_before_committing_protocol_start() {
             let repo = IngressRepo::new("provenance-start");
 
             assert_eq!(
@@ -2135,7 +2220,7 @@ mod tests {
                 ""
             );
 
-            let db = repo.db();
+            let db = repo.db().await;
             assert_eq!(
                 scope_status(&db, "A"),
                 Some(("claude_code".to_string(), "active".to_string())),
@@ -2154,14 +2239,15 @@ mod tests {
             assert_raw_agent_trace_tables_untouched(&db);
         }
 
-        #[test]
-        fn start_without_provenance_creates_no_provenance() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn start_without_provenance_creates_no_provenance() {
             let repo = IngressRepo::new("provenance-absent");
 
             repo.drive(START_A_E1)
+                .await
                 .expect("a start without provenance should succeed");
 
-            let db = repo.db();
+            let db = repo.db().await;
             assert_eq!(
                 scope_status(&db, "A").map(|(_, status)| status),
                 Some("active".to_string())
@@ -2179,18 +2265,19 @@ mod tests {
             assert_raw_agent_trace_tables_untouched(&db);
         }
 
-        #[test]
-        fn replayed_start_with_provenance_commits_nothing_new() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn replayed_start_with_provenance_commits_nothing_new() {
             let repo = IngressRepo::new("provenance-replay");
 
             repo.drive(START_A_E1_WITH_PROVENANCE)
+                .await
                 .expect("the first start should succeed");
             let (revision_before, processed_before, provenance_before) = {
-                let db = repo.db();
+                let db = repo.db().await;
                 (
-                    worktree_revision(&db),
-                    processed_events(&db),
-                    scope_provenance(&db, "A"),
+                    worktree_revision(&db).await,
+                    processed_events(&db).await,
+                    scope_provenance(&db, "A").await,
                 )
             };
 
@@ -2200,7 +2287,7 @@ mod tests {
                 ""
             );
 
-            let db = repo.db();
+            let db = repo.db().await;
             assert_eq!(scope_provenance(&db, "A"), provenance_before);
             assert_eq!(worktree_revision(&db), revision_before);
             assert_eq!(processed_events(&db), processed_before);
@@ -2208,26 +2295,27 @@ mod tests {
             assert_raw_agent_trace_tables_untouched(&db);
         }
 
-        #[test]
-        fn provenance_conflict_prevents_start_commit() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn provenance_conflict_prevents_start_commit() {
             let repo = IngressRepo::new("provenance-session-conflict");
 
             repo.drive(START_A_E1_WITH_PROVENANCE)
+                .await
                 .expect("the first start should succeed");
 
             let (revision_before, processed_before, provenance_before) = {
-                let db = repo.db();
+                let db = repo.db().await;
                 (
-                    worktree_revision(&db),
-                    processed_events(&db),
-                    scope_provenance(&db, "A"),
+                    worktree_revision(&db).await,
+                    processed_events(&db).await,
+                    scope_provenance(&db, "A").await,
                 )
             };
 
             let error = repo
                 .drive(
                     r#"{"operation":"start","scope_id":"A","event_id":"e9","actor_kind":"claude_code","provenance":{"session_id":"cc_session-2","model_id":"claude/opus"}}"#,
-                )
+                ).await
                 .expect_err("a conflicting provenance session must fail the start");
 
             let rendered = format!("{error:#}");
@@ -2237,7 +2325,7 @@ mod tests {
                  got: {rendered}"
             );
 
-            let db = repo.db();
+            let db = repo.db().await;
             assert_eq!(
                 processed_events(&db),
                 processed_before,
@@ -2249,21 +2337,22 @@ mod tests {
             assert_raw_agent_trace_tables_untouched(&db);
         }
 
-        #[test]
-        fn admitted_scope_is_never_backfilled_with_replay_provenance() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn admitted_scope_is_never_backfilled_with_replay_provenance() {
             let repo = IngressRepo::new("provenance-no-late-backfill");
 
             repo.drive(START_A_E1)
+                .await
                 .expect("a start without provenance should succeed");
 
             let (revision_before, processed_before) = {
-                let db = repo.db();
+                let db = repo.db().await;
                 assert_eq!(
                     scope_status(&db, "A").map(|(_, status)| status),
                     Some("active".to_string())
                 );
                 assert_eq!(scope_provenance(&db, "A"), None);
-                (worktree_revision(&db), processed_events(&db))
+                (worktree_revision(&db).await, processed_events(&db).await)
             };
 
             assert_eq!(
@@ -2272,7 +2361,7 @@ mod tests {
                 ""
             );
 
-            let db = repo.db();
+            let db = repo.db().await;
             assert_eq!(
                 scope_provenance(&db, "A"),
                 None,

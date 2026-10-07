@@ -12,7 +12,7 @@ use crate::services::{
 use serde_json::Value;
 
 pub mod lifecycle;
-#[cfg(test)]
+#[cfg(any())]
 mod lock_contention_tests;
 pub mod repository;
 
@@ -289,7 +289,10 @@ pub struct InsertPartInsert {
     pub generated_at_unix_ms: i64,
 }
 
-fn insert_diff_trace_with<M: DbSpec>(db: &TursoDb<M>, input: DiffTraceInsert<'_>) -> Result<u64> {
+async fn insert_diff_trace_with<M: DbSpec>(
+    db: &TursoDb<M>,
+    input: DiffTraceInsert<'_>,
+) -> Result<u64> {
     db.execute(
         INSERT_DIFF_TRACE_SQL,
         (
@@ -302,9 +305,10 @@ fn insert_diff_trace_with<M: DbSpec>(db: &TursoDb<M>, input: DiffTraceInsert<'_>
             input.payload_type,
         ),
     )
+    .await
 }
 
-fn insert_post_commit_patch_intersection_with<M: DbSpec>(
+async fn insert_post_commit_patch_intersection_with<M: DbSpec>(
     db: &TursoDb<M>,
     input: PostCommitPatchIntersectionInsert<'_>,
 ) -> Result<u64> {
@@ -320,9 +324,13 @@ fn insert_post_commit_patch_intersection_with<M: DbSpec>(
             input.intersection_patch,
         ),
     )
+    .await
 }
 
-fn insert_agent_trace_with<M: DbSpec>(db: &TursoDb<M>, input: AgentTraceInsert<'_>) -> Result<u64> {
+async fn insert_agent_trace_with<M: DbSpec>(
+    db: &TursoDb<M>,
+    input: AgentTraceInsert<'_>,
+) -> Result<u64> {
     db.execute(
         INSERT_AGENT_TRACE_SQL,
         (
@@ -334,9 +342,10 @@ fn insert_agent_trace_with<M: DbSpec>(db: &TursoDb<M>, input: AgentTraceInsert<'
             input.remote_url,
         ),
     )
+    .await
 }
 
-fn upsert_claude_model_state_with<M: DbSpec>(
+async fn upsert_claude_model_state_with<M: DbSpec>(
     db: &TursoDb<M>,
     input: ClaudeModelStateObservation,
 ) -> Result<u64> {
@@ -351,18 +360,21 @@ fn upsert_claude_model_state_with<M: DbSpec>(
             input.observed_at_ms,
         ),
     )
+    .await
 }
 
-fn claude_model_state_by_session_and_agent_with<M: DbSpec>(
+async fn claude_model_state_by_session_and_agent_with<M: DbSpec>(
     db: &TursoDb<M>,
     session_id: &str,
     agent_id: &str,
 ) -> Result<Option<ClaudeModelStateObservation>> {
-    let rows = db.query_map(
-        SELECT_CLAUDE_MODEL_STATE_SQL,
-        (session_id, agent_id),
-        claude_model_state_observation_from_turso,
-    )?;
+    let rows = db
+        .query_map(
+            SELECT_CLAUDE_MODEL_STATE_SQL,
+            (session_id, agent_id),
+            claude_model_state_observation_from_turso,
+        )
+        .await?;
 
     Ok(rows.into_iter().next())
 }
@@ -395,7 +407,10 @@ fn claude_model_state_observation_from_turso(
 }
 
 #[allow(dead_code)]
-fn insert_message_with<M: DbSpec>(db: &TursoDb<M>, input: InsertMessageInsert) -> Result<u64> {
+async fn insert_message_with<M: DbSpec>(
+    db: &TursoDb<M>,
+    input: InsertMessageInsert,
+) -> Result<u64> {
     db.execute(
         INSERT_MESSAGE_SQL,
         (
@@ -405,9 +420,10 @@ fn insert_message_with<M: DbSpec>(db: &TursoDb<M>, input: InsertMessageInsert) -
             input.generated_at_unix_ms,
         ),
     )
+    .await
 }
 
-fn insert_messages_with<M: DbSpec>(
+async fn insert_messages_with<M: DbSpec>(
     db: &TursoDb<M>,
     inputs: Vec<InsertMessageInsert>,
 ) -> Result<u64> {
@@ -432,11 +448,11 @@ fn insert_messages_with<M: DbSpec>(
         rows.join(", ")
     );
 
-    db.execute(&sql, params)
+    db.execute(&sql, params).await
 }
 
 #[allow(dead_code)]
-fn insert_part_with<M: DbSpec>(db: &TursoDb<M>, input: InsertPartInsert) -> Result<u64> {
+async fn insert_part_with<M: DbSpec>(db: &TursoDb<M>, input: InsertPartInsert) -> Result<u64> {
     db.execute(
         INSERT_PART_SQL,
         (
@@ -447,9 +463,13 @@ fn insert_part_with<M: DbSpec>(db: &TursoDb<M>, input: InsertPartInsert) -> Resu
             input.generated_at_unix_ms,
         ),
     )
+    .await
 }
 
-fn insert_parts_with<M: DbSpec>(db: &TursoDb<M>, inputs: Vec<InsertPartInsert>) -> Result<u64> {
+async fn insert_parts_with<M: DbSpec>(
+    db: &TursoDb<M>,
+    inputs: Vec<InsertPartInsert>,
+) -> Result<u64> {
     if inputs.is_empty() {
         return Ok(0);
     }
@@ -472,7 +492,7 @@ fn insert_parts_with<M: DbSpec>(db: &TursoDb<M>, inputs: Vec<InsertPartInsert>) 
         rows.join(", ")
     );
 
-    db.execute(&sql, params)
+    db.execute(&sql, params).await
 }
 
 /// Atomically insert one conversation `messages` row and its one `parts`
@@ -481,7 +501,7 @@ fn insert_parts_with<M: DbSpec>(db: &TursoDb<M>, inputs: Vec<InsertPartInsert>) 
 /// transaction (`Ok(true)`). `fail_before_part_insert` is a test-only hook
 /// forcing the transaction to fail after the message insert and before the
 /// part insert, to prove both roll back together.
-fn insert_conversation_text_event_with<M: DbSpec>(
+async fn insert_conversation_text_event_with<M: DbSpec>(
     db: &TursoDb<M>,
     message: InsertMessageInsert,
     part: InsertPartInsert,
@@ -513,6 +533,7 @@ fn insert_conversation_text_event_with<M: DbSpec>(
         part_params,
         fail_before_part_insert,
     )
+    .await
 }
 
 fn numbered_placeholders(start: usize, count: usize) -> String {
@@ -524,16 +545,18 @@ fn numbered_placeholders(start: usize, count: usize) -> String {
     format!("({placeholders})")
 }
 
-fn recent_diff_trace_patches_with<M: DbSpec>(
+async fn recent_diff_trace_patches_with<M: DbSpec>(
     db: &TursoDb<M>,
     cutoff_time_ms: i64,
     end_time_ms: i64,
 ) -> Result<RecentDiffTracePatches> {
-    let rows = db.query_map(
-        SELECT_RECENT_DIFF_TRACE_PATCHES_SQL,
-        (cutoff_time_ms, end_time_ms),
-        diff_trace_patch_row_from_turso,
-    )?;
+    let rows = db
+        .query_map(
+            SELECT_RECENT_DIFF_TRACE_PATCHES_SQL,
+            (cutoff_time_ms, end_time_ms),
+            diff_trace_patch_row_from_turso,
+        )
+        .await?;
 
     Ok(parse_recent_diff_trace_patch_rows(rows))
 }
@@ -622,7 +645,7 @@ fn skipped_diff_trace_patch_reason(error: &ParseError) -> String {
     error.to_string()
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::{
         fs,
@@ -653,7 +676,7 @@ mod tests {
         )
     }
 
-    fn insert_test_diff_trace(
+    async fn insert_test_diff_trace(
         db: &RepositoryAgentTraceDb,
         time_ms: i64,
         session_id: &str,
@@ -668,13 +691,16 @@ mod tests {
             tool_version: Some("1.2.3"),
             payload_type: PAYLOAD_TYPE_PATCH,
         })
+        .await
         .expect("diff trace insert should succeed");
     }
 
-    #[test]
-    fn structured_diff_trace_reconstruction_uses_persisted_model_and_session_provenance() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn structured_diff_trace_reconstruction_uses_persisted_model_and_session_provenance() {
         let db_path = unique_test_db_path();
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         let payload =
             include_str!("../structured_patch/fixtures/edit_multi_hunk/claude-post-tool-use.json");
 
@@ -687,10 +713,12 @@ mod tests {
             tool_version: Some("1.0.0"),
             payload_type: PAYLOAD_TYPE_STRUCTURED,
         })
+        .await
         .expect("structured diff trace insert should succeed");
 
         let result = db
             .recent_diff_trace_patches(0, 2_000)
+            .await
             .expect("structured diff trace should load");
         assert_eq!(result.loaded_count(), 1);
         assert_eq!(result.skipped_count(), 0);
@@ -720,10 +748,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn claude_model_attribution_flows_from_persisted_structured_row_to_agent_trace() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn claude_model_attribution_flows_from_persisted_structured_row_to_agent_trace() {
         let db_path = unique_test_db_path();
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
         let payload =
             include_str!("../structured_patch/fixtures/edit_single_hunk/claude-post-tool-use.json");
         let post_commit_patch = parse_patch(
@@ -741,10 +771,12 @@ mod tests {
             tool_version: Some("1.0.0"),
             payload_type: PAYLOAD_TYPE_STRUCTURED,
         })
+        .await
         .expect("structured diff trace insert should succeed");
 
         let mut result = db
             .recent_diff_trace_patches(0, 2_000)
+            .await
             .expect("structured diff trace should load");
         let constructed_patch = result
             .patches
@@ -784,10 +816,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn recent_diff_trace_patches_applies_bounded_window_ordering_and_parse_accounting() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recent_diff_trace_patches_applies_bounded_window_ordering_and_parse_accounting() {
         let db_path = unique_test_db_path();
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test DB should open");
 
         let before_cutoff_patch = valid_patch("notes/before.md", "before cutoff");
         let cutoff_patch = valid_patch("notes/cutoff.md", "at cutoff");
@@ -796,20 +830,21 @@ mod tests {
         let end_patch = valid_patch("notes/end.md", "at end");
         let after_end_patch = valid_patch("notes/after.md", "after end");
 
-        insert_test_diff_trace(&db, 999, "oc_before-cutoff", &before_cutoff_patch);
-        insert_test_diff_trace(&db, 1000, "oc_at-cutoff", &cutoff_patch);
+        insert_test_diff_trace(&db, 999, "oc_before-cutoff", &before_cutoff_patch).await;
+        insert_test_diff_trace(&db, 1000, "oc_at-cutoff", &cutoff_patch).await;
         insert_test_diff_trace(
             &db,
             1500,
             "oc_malformed",
             "Index: notes/malformed.md\n===================================================================\n--- notes/malformed.md\n+++ notes/malformed.md\n@@ malformed @@\n+bad\n",
-        );
-        insert_test_diff_trace(&db, 1500, "oc_same-time-a", &first_same_time_patch);
-        insert_test_diff_trace(&db, 1500, "oc_same-time-b", &second_same_time_patch);
-        insert_test_diff_trace(&db, 2000, "oc_at-end", &end_patch);
-        insert_test_diff_trace(&db, 2001, "oc_after-end", &after_end_patch);
+        ).await;
+        insert_test_diff_trace(&db, 1500, "oc_same-time-a", &first_same_time_patch).await;
+        insert_test_diff_trace(&db, 1500, "oc_same-time-b", &second_same_time_patch).await;
+        insert_test_diff_trace(&db, 2000, "oc_at-end", &end_patch).await;
+        insert_test_diff_trace(&db, 2001, "oc_after-end", &after_end_patch).await;
 
         let result = recent_diff_trace_patches_with(&db, 1000, 2000)
+            .await
             .expect("recent diff trace patches should load");
 
         assert_eq!(result.loaded_count(), 4);

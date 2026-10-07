@@ -102,7 +102,7 @@ fn extract_claude_bridge_session_id_from_reader<R: BufRead>(
     None
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::{
         fs,

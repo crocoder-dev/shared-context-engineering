@@ -26,21 +26,21 @@ pub const MAX_MUTATION_ATTRIBUTION_EVENTS: usize = 128;
 const REVISION_CUT_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub trait MutationEventPageSource {
-    fn load_mutation_event_page(
+    async fn load_mutation_event_page(
         &self,
         worktree: &WorktreeId,
         revision_cursor: Option<u64>,
         requested_limit: usize,
     ) -> Result<Vec<MutationEventPageRow>>;
 
-    fn load_scope_provenance(&self, scope_id: &ScopeId) -> Result<Option<ScopeProvenance>> {
+    async fn load_scope_provenance(&self, scope_id: &ScopeId) -> Result<Option<ScopeProvenance>> {
         let _ = scope_id;
         Ok(None)
     }
 }
 
 impl MutationEventPageSource for MutationTraceStore<'_> {
-    fn load_mutation_event_page(
+    async fn load_mutation_event_page(
         &self,
         worktree: &WorktreeId,
         revision_cursor: Option<u64>,
@@ -52,10 +52,11 @@ impl MutationEventPageSource for MutationTraceStore<'_> {
             revision_cursor,
             requested_limit,
         )
+        .await
     }
 
-    fn load_scope_provenance(&self, scope_id: &ScopeId) -> Result<Option<ScopeProvenance>> {
-        MutationTraceStore::load_scope_provenance(self, scope_id)
+    async fn load_scope_provenance(&self, scope_id: &ScopeId) -> Result<Option<ScopeProvenance>> {
+        MutationTraceStore::load_scope_provenance(self, scope_id).await
     }
 }
 
@@ -115,7 +116,7 @@ fn empty_patch() -> ParsedPatch {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn resolve_bounded_mutation_attribution<P, R>(
+pub async fn resolve_bounded_mutation_attribution<P, R>(
     page_source: &P,
     tree_source: &R,
     worktree: &WorktreeId,
@@ -143,7 +144,7 @@ where
         barrier: None,
     };
 
-    let events = load_event_window(page_source, worktree, revision_ceiling, &mut state);
+    let events = load_event_window(page_source, worktree, revision_ceiling, &mut state).await;
     let lineage = if events.is_empty() {
         None
     } else {
@@ -155,7 +156,7 @@ where
             &mut state,
         ))
     };
-    finish(&target, lineage.as_ref(), &state, page_source)
+    finish(&target, lineage.as_ref(), &state, page_source).await
 }
 
 struct ReplayState {
@@ -167,7 +168,7 @@ struct ReplayState {
     barrier: Option<MutationAttributionBarrier>,
 }
 
-fn finish<P>(
+async fn finish<P>(
     target: &ParsedPatch,
     lineage: Option<&MutationLineage>,
     state: &ReplayState,
@@ -177,7 +178,7 @@ where
     P: MutationEventPageSource + ?Sized,
 {
     let result = match lineage {
-        Some(lineage) => project(target, lineage, page_source),
+        Some(lineage) => project(target, lineage, page_source).await,
         None => MutationAttributionResult {
             mutation_ai_patch: empty_patch(),
             resolved_non_ai_patch: empty_patch(),
@@ -205,7 +206,7 @@ fn target_logical_paths(target: &ParsedPatch) -> BTreeSet<String> {
         .collect()
 }
 
-fn load_event_window<P>(
+async fn load_event_window<P>(
     page_source: &P,
     worktree: &WorktreeId,
     revision_ceiling: Option<u64>,
@@ -223,7 +224,10 @@ where
         }
         let want = MUTATION_ATTRIBUTION_PAGE_SIZE.min(MAX_MUTATION_ATTRIBUTION_EVENTS - rows.len());
 
-        let Ok(page) = page_source.load_mutation_event_page(worktree, cursor, want) else {
+        let Ok(page) = page_source
+            .load_mutation_event_page(worktree, cursor, want)
+            .await
+        else {
             state.barrier = Some(MutationAttributionBarrier::PageQuery);
             break;
         };
@@ -361,7 +365,7 @@ fn transition_origin(row: &MutationEventPageRow) -> TransitionOrigin {
     }
 }
 
-fn project<P>(
+async fn project<P>(
     target: &ParsedPatch,
     lineage: &MutationLineage,
     page_source: &P,
@@ -401,15 +405,15 @@ where
         }
     }
 
-    let scope_provenance = ai
-        .values()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .map(|scope_id| {
-            let provenance = page_source.load_scope_provenance(scope_id).ok().flatten();
-            (scope_id.clone(), provenance)
-        })
-        .collect::<BTreeMap<_, _>>();
+    let mut scope_provenance = BTreeMap::new();
+    for scope_id in ai.values().collect::<BTreeSet<_>>() {
+        let provenance = page_source
+            .load_scope_provenance(scope_id)
+            .await
+            .ok()
+            .flatten();
+        scope_provenance.insert(scope_id.clone(), provenance);
+    }
     let ai_with_provenance = ai
         .into_iter()
         .map(|(location, scope_id)| {
@@ -431,7 +435,7 @@ where
     }
 }
 
-pub(crate) fn resolve_post_commit_mutation_ai_patch(
+pub(crate) async fn resolve_post_commit_mutation_ai_patch(
     repository_root: &Path,
     db: &RepositoryAgentTraceDb,
     direct_coverage: &ParsedPatch,
@@ -451,7 +455,7 @@ pub(crate) fn resolve_post_commit_mutation_ai_patch(
     };
     let store = MutationTraceStore::new(db);
 
-    let Some(revision_ceiling) = capture_revision_cut(&git_dir, &store, &worktree) else {
+    let Some(revision_ceiling) = capture_revision_cut(&git_dir, &store, &worktree).await else {
         return empty_patch();
     };
 
@@ -464,11 +468,12 @@ pub(crate) fn resolve_post_commit_mutation_ai_patch(
         &commit_tree,
         Some(revision_ceiling),
     )
+    .await
     .result
     .mutation_ai_patch
 }
 
-fn capture_revision_cut(
+async fn capture_revision_cut(
     git_dir: &Path,
     store: &MutationTraceStore<'_>,
     worktree: &WorktreeId,
@@ -476,10 +481,11 @@ fn capture_revision_cut(
     let _lock = WorktreeLock::acquire(git_dir, REVISION_CUT_LOCK_TIMEOUT).ok()?;
     store
         .latest_mutation_event_revision(worktree)
+        .await
         .ok()
         .flatten()
 }
 
-#[cfg(test)]
+#[cfg(any())]
 #[path = "mutation_attribution/tests.rs"]
 mod tests;

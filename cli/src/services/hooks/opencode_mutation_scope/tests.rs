@@ -53,13 +53,14 @@ fn tool_execution(payload: &str) -> OpenCodeToolExecution {
 }
 
 mod ingress_conformance {
+    use std::path::{Path, PathBuf};
+
     use anyhow::Result;
 
     use super::super::lifecycle::run_opencode_mutation_scope_from_payload_with_seams;
     use super::*;
     use crate::services::hooks::mutation_scope_ingress_conformance::{
-        self as conformance, mutation_scope_ingress_conformance_tests,
-        CheckoutResolutionConformance, IngressConformance,
+        mutation_scope_ingress_conformance_tests, CheckoutResolutionConformance, IngressConformance,
     };
 
     struct OpenCodeIngressConformance;
@@ -83,14 +84,14 @@ mod ingress_conformance {
             parse_opencode_hook_event(payload).map(|_| ())
         }
 
-        fn run(payload: &str) -> Result<String> {
-            run_opencode_mutation_scope_from_payload(payload, None)
+        async fn run(payload: &str) -> Result<String> {
+            run_opencode_mutation_scope_from_payload(payload, None).await
         }
 
-        fn run_with_seams(
+        async fn run_with_seams<L: crate::services::observability::traits::Logger>(
             payload: &str,
-            resolve_git_dir: conformance::GitDirResolver,
-            seam: conformance::IngressSeam,
+            resolve_git_dir: &impl Fn(&str) -> Result<PathBuf>,
+            seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
         ) -> Result<String> {
             run_opencode_mutation_scope_from_payload_with_seams(
                 payload,
@@ -98,6 +99,7 @@ mod ingress_conformance {
                 resolve_git_dir,
                 seam,
             )
+            .await
         }
     }
 
@@ -466,8 +468,6 @@ mod lifecycle_tests {
     use anyhow::{bail, Result};
     use serde_json::{json, Value};
 
-    use crate::services::observability::traits::Logger;
-
     use super::super::lifecycle::{
         run_opencode_mutation_scope_from_payload_with_seams, FAIL_CLOSED_MESSAGE,
     };
@@ -525,7 +525,7 @@ mod lifecycle_tests {
             }
         }
 
-        fn handle(&self, payload: &str) -> Result<String> {
+        async fn handle(&self, payload: &str) -> Result<String> {
             let operation = operation_of(payload);
             let occurrence = {
                 let mut calls = self.calls.lock().expect("seam mutex");
@@ -569,11 +569,15 @@ mod lifecycle_tests {
             .to_string()
     }
 
-    fn drive(git_dir: &Path, seam: &RecordingSeam, payload: &str) -> Result<String> {
+    async fn drive(git_dir: &Path, seam: &RecordingSeam, payload: &str) -> Result<String> {
         let resolver = |_cwd: &str| Ok(git_dir.to_path_buf());
-        let seam_fn =
-            |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| seam.handle(payload);
+        let seam_fn = async |_root: &Path,
+                             payload: &str,
+                             _logger: Option<
+            &crate::services::observability::traits::NoopLogger,
+        >| { seam.handle(payload) };
         run_opencode_mutation_scope_from_payload_with_seams(payload, None, &resolver, &seam_fn)
+            .await
     }
 
     fn tool_before(tool_name: &str, call_id: &str) -> String {
@@ -638,13 +642,16 @@ mod lifecycle_tests {
         let _ = std::fs::remove_dir_all(git_dir);
     }
 
-    #[test]
-    fn file_tool_before_establishes_a_write_ahead_start_and_replays_idempotently() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn file_tool_before_establishes_a_write_ahead_start_and_replays_idempotently() {
         let git_dir = temp_git_dir("write-ahead-start");
         let seam = RecordingSeam::new();
 
-        drive(&git_dir, &seam, &tool_before("write", "call_1")).expect("first Start");
         drive(&git_dir, &seam, &tool_before("write", "call_1"))
+            .await
+            .expect("first Start");
+        drive(&git_dir, &seam, &tool_before("write", "call_1"))
+            .await
             .expect("duplicate Start is a no-op");
 
         assert_eq!(seam.operations(), vec!["start"]);
@@ -656,19 +663,23 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn bash_start_is_anchored_to_shell_env_not_tool_execute_before() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bash_start_is_anchored_to_shell_env_not_tool_execute_before() {
         let git_dir = temp_git_dir("bash-shell-env");
         let seam = RecordingSeam::new();
 
-        drive(&git_dir, &seam, &tool_before("bash", "call_bash")).expect("bash before is inert");
+        drive(&git_dir, &seam, &tool_before("bash", "call_bash"))
+            .await
+            .expect("bash before is inert");
         assert!(seam.operations().is_empty());
         assert!(read_state(&git_dir)
             .expect("state readable")
             .attempts
             .is_empty());
 
-        drive(&git_dir, &seam, &shell_env("call_bash")).expect("shell.env establishes Start");
+        drive(&git_dir, &seam, &shell_env("call_bash"))
+            .await
+            .expect("shell.env establishes Start");
         assert_eq!(seam.operations(), vec!["start"]);
         assert_eq!(
             read_state(&git_dir).expect("state readable").attempts[0].phase,
@@ -678,13 +689,17 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn concurrent_bash_calls_in_one_session_stay_separate_live_scopes() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_bash_calls_in_one_session_stay_separate_live_scopes() {
         let git_dir = temp_git_dir("concurrent-bash");
         let seam = RecordingSeam::new();
 
-        drive(&git_dir, &seam, &shell_env("call_a")).expect("A Start");
-        drive(&git_dir, &seam, &shell_env("call_b")).expect("B Start must not retire A");
+        drive(&git_dir, &seam, &shell_env("call_a"))
+            .await
+            .expect("A Start");
+        drive(&git_dir, &seam, &shell_env("call_b"))
+            .await
+            .expect("B Start must not retire A");
 
         let state = read_state(&git_dir).expect("state readable");
         assert_eq!(state.attempts.len(), 2);
@@ -697,14 +712,20 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn successful_after_closes_exactly_that_attempt_and_replays_as_a_no_op() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn successful_after_closes_exactly_that_attempt_and_replays_as_a_no_op() {
         let git_dir = temp_git_dir("close-replay");
         let seam = RecordingSeam::new();
 
-        drive(&git_dir, &seam, &tool_before("edit", "call_1")).expect("Start");
-        drive(&git_dir, &seam, &tool_after("edit", "call_1")).expect("Close");
-        drive(&git_dir, &seam, &tool_after("edit", "call_1")).expect("duplicate Close is a no-op");
+        drive(&git_dir, &seam, &tool_before("edit", "call_1"))
+            .await
+            .expect("Start");
+        drive(&git_dir, &seam, &tool_after("edit", "call_1"))
+            .await
+            .expect("Close");
+        drive(&git_dir, &seam, &tool_after("edit", "call_1"))
+            .await
+            .expect("duplicate Close is a no-op");
 
         assert_eq!(seam.operations(), vec!["start", "close"]);
         assert!(read_state(&git_dir)
@@ -715,14 +736,20 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn tool_error_retires_the_named_attempt_and_consumes_the_ambiguous_interval() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tool_error_retires_the_named_attempt_and_consumes_the_ambiguous_interval() {
         let git_dir = temp_git_dir("tool-error-consume");
         let seam = RecordingSeam::new();
 
-        drive(&git_dir, &seam, &shell_env("call_a")).expect("A Start");
-        drive(&git_dir, &seam, &shell_env("call_b")).expect("B Start");
-        drive(&git_dir, &seam, &tool_error("bash", "call_a")).expect("A terminal failure");
+        drive(&git_dir, &seam, &shell_env("call_a"))
+            .await
+            .expect("A Start");
+        drive(&git_dir, &seam, &shell_env("call_b"))
+            .await
+            .expect("B Start");
+        drive(&git_dir, &seam, &tool_error("bash", "call_a"))
+            .await
+            .expect("A terminal failure");
 
         assert_eq!(
             seam.operations(),
@@ -742,15 +769,23 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn exact_error_retires_only_the_named_sibling() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn exact_error_retires_only_the_named_sibling() {
         let git_dir = temp_git_dir("exact-error-siblings");
         let seam = RecordingSeam::new();
 
-        drive(&git_dir, &seam, &shell_env("call_a")).expect("A Start");
-        drive(&git_dir, &seam, &shell_env("call_b")).expect("B Start");
-        drive(&git_dir, &seam, &shell_env("call_c")).expect("C Start");
-        drive(&git_dir, &seam, &tool_error("bash", "call_b")).expect("B terminal failure");
+        drive(&git_dir, &seam, &shell_env("call_a"))
+            .await
+            .expect("A Start");
+        drive(&git_dir, &seam, &shell_env("call_b"))
+            .await
+            .expect("B Start");
+        drive(&git_dir, &seam, &shell_env("call_c"))
+            .await
+            .expect("C Start");
+        drive(&git_dir, &seam, &tool_error("bash", "call_b"))
+            .await
+            .expect("B terminal failure");
 
         let state = read_state(&git_dir).expect("state readable");
         let mut remaining: Vec<&str> = state
@@ -777,12 +812,13 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn a_close_before_start_confirmation_consumes_rather_than_closes() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_close_before_start_confirmation_consumes_rather_than_closes() {
         let git_dir = temp_git_dir("pending-start-close");
         let seam = RecordingSeam::failing_on(&["start"]);
 
         let error = drive(&git_dir, &seam, &tool_before("write", "call_1"))
+            .await
             .expect_err("a failed Start seam must fail closed");
         assert!(error.to_string().contains(FAIL_CLOSED_MESSAGE));
         assert_eq!(
@@ -791,7 +827,9 @@ mod lifecycle_tests {
         );
 
         let ok_seam = RecordingSeam::new();
-        drive(&git_dir, &ok_seam, &tool_after("write", "call_1")).expect("After on a PendingStart");
+        drive(&git_dir, &ok_seam, &tool_after("write", "call_1"))
+            .await
+            .expect("After on a PendingStart");
         assert_eq!(ok_seam.operations(), vec!["flush", "abandon", "flush"]);
         assert!(read_state(&git_dir)
             .expect("state readable")
@@ -801,12 +839,14 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn session_idle_is_non_destructive() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_idle_is_non_destructive() {
         let git_dir = temp_git_dir("session-idle-noop");
         let seam = RecordingSeam::new();
 
-        drive(&git_dir, &seam, &shell_env("call_a")).expect("A Start");
+        drive(&git_dir, &seam, &shell_env("call_a"))
+            .await
+            .expect("A Start");
         drive(
             &git_dir,
             &seam,
@@ -818,10 +858,13 @@ mod lifecycle_tests {
             })
             .to_string(),
         )
+        .await
         .expect("other-session Start");
 
         for name in ["SessionIdle", "SessionError", "SessionDeleted"] {
-            drive(&git_dir, &seam, &session_event(name, "ses_main")).expect("broad event is inert");
+            drive(&git_dir, &seam, &session_event(name, "ses_main"))
+                .await
+                .expect("broad event is inert");
         }
 
         let state = read_state(&git_dir).expect("state readable");
@@ -840,13 +883,16 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn delayed_session_idle_cannot_retire_a_newer_call() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn delayed_session_idle_cannot_retire_a_newer_call() {
         let git_dir = temp_git_dir("delayed-session-idle");
         let seam = RecordingSeam::new();
 
-        drive(&git_dir, &seam, &shell_env("call_b")).expect("newer call B Start");
+        drive(&git_dir, &seam, &shell_env("call_b"))
+            .await
+            .expect("newer call B Start");
         drive(&git_dir, &seam, &session_event("SessionIdle", "ses_main"))
+            .await
             .expect("a delayed SessionIdle for the same session arrives after B started");
 
         let state = read_state(&git_dir).expect("state readable");
@@ -859,12 +905,14 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn server_disposed_cannot_sweep_another_processes_attempt() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn server_disposed_cannot_sweep_another_processes_attempt() {
         let git_dir = temp_git_dir("server-disposed-noop");
         let seam = RecordingSeam::new();
 
-        drive(&git_dir, &seam, &shell_env("call_a")).expect("process P1 owns call A");
+        drive(&git_dir, &seam, &shell_env("call_a"))
+            .await
+            .expect("process P1 owns call A");
         drive(
             &git_dir,
             &seam,
@@ -876,9 +924,12 @@ mod lifecycle_tests {
             })
             .to_string(),
         )
+        .await
         .expect("process P2 owns call B in the same checkout");
 
-        drive(&git_dir, &seam, &server_disposed()).expect("P1 server disposal is inert");
+        drive(&git_dir, &seam, &server_disposed())
+            .await
+            .expect("P1 server disposal is inert");
 
         let state = read_state(&git_dir).expect("state readable");
         assert_eq!(
@@ -892,16 +943,23 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn a_failed_sibling_does_not_retire_survivors_or_block_new_starts() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_sibling_does_not_retire_survivors_or_block_new_starts() {
         let git_dir = temp_git_dir("failed-sibling-survivors");
         let seam = RecordingSeam::new();
 
-        drive(&git_dir, &seam, &shell_env("call_a")).expect("A Start");
-        drive(&git_dir, &seam, &shell_env("call_b")).expect("B Start");
-        drive(&git_dir, &seam, &tool_error("bash", "call_a")).expect("A fails");
+        drive(&git_dir, &seam, &shell_env("call_a"))
+            .await
+            .expect("A Start");
+        drive(&git_dir, &seam, &shell_env("call_b"))
+            .await
+            .expect("B Start");
+        drive(&git_dir, &seam, &tool_error("bash", "call_a"))
+            .await
+            .expect("A fails");
 
         drive(&git_dir, &seam, &shell_env("call_c"))
+            .await
             .expect("a new Start is admitted normally once the ambiguity flush cleared recovery");
 
         let state = read_state(&git_dir).expect("state readable");
@@ -921,13 +979,17 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn a_terminal_failure_consumes_the_interval_and_the_next_start_proceeds() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_terminal_failure_consumes_the_interval_and_the_next_start_proceeds() {
         let git_dir = temp_git_dir("terminal-then-start");
         let seam = RecordingSeam::new();
 
-        drive(&git_dir, &seam, &tool_before("write", "call_1")).expect("Start");
-        drive(&git_dir, &seam, &tool_error("write", "call_1")).expect("terminal failure");
+        drive(&git_dir, &seam, &tool_before("write", "call_1"))
+            .await
+            .expect("Start");
+        drive(&git_dir, &seam, &tool_error("write", "call_1"))
+            .await
+            .expect("terminal failure");
         assert!(
             read_state(&git_dir)
                 .expect("state readable")
@@ -936,7 +998,9 @@ mod lifecycle_tests {
             "the ambiguity flush is done at abandon time, not deferred to the next Start",
         );
 
-        drive(&git_dir, &seam, &tool_before("write", "call_2")).expect("Start after consume");
+        drive(&git_dir, &seam, &tool_before("write", "call_2"))
+            .await
+            .expect("Start after consume");
 
         assert_eq!(
             seam.operations(),
@@ -950,17 +1014,20 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn a_failed_ambiguity_flush_stays_recovery_pending_and_fails_closed_starts() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_ambiguity_flush_stays_recovery_pending_and_fails_closed_starts() {
         let git_dir = temp_git_dir("failed-ambiguity-flush");
 
         {
             let ok_seam = RecordingSeam::new();
-            drive(&git_dir, &ok_seam, &tool_before("write", "call_1")).expect("Start");
+            drive(&git_dir, &ok_seam, &tool_before("write", "call_1"))
+                .await
+                .expect("Start");
         }
 
         let failing = RecordingSeam::failing_on(&["flush"]);
         drive(&git_dir, &failing, &tool_error("write", "call_1"))
+            .await
             .expect("a terminal failure whose flush fails still returns (best-effort)");
         assert_eq!(
             read_state(&git_dir).expect("state readable").recovery,
@@ -969,6 +1036,7 @@ mod lifecycle_tests {
         );
 
         let error = drive(&git_dir, &failing, &tool_before("write", "call_2"))
+            .await
             .expect_err("a new Start while recovery is unresolved must stay fail-closed");
         assert!(error.to_string().contains(FAIL_CLOSED_MESSAGE));
         assert_eq!(
@@ -979,8 +1047,8 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn untracked_and_delegation_events_are_zero_footprint() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn untracked_and_delegation_events_are_zero_footprint() {
         let git_dir = temp_git_dir("zero-footprint");
         let seam = RecordingSeam::new();
 
@@ -992,7 +1060,9 @@ mod lifecycle_tests {
             tool_error("read", "call_r"),
             tool_error("task", "call_t"),
         ] {
-            drive(&git_dir, &seam, &payload).expect("untracked event is neutral");
+            drive(&git_dir, &seam, &payload)
+                .await
+                .expect("untracked event is neutral");
         }
 
         assert!(seam.operations().is_empty());
@@ -1004,17 +1074,21 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn close_seam_failure_falls_back_to_consume() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn close_seam_failure_falls_back_to_consume() {
         let git_dir = temp_git_dir("close-seam-failure");
 
         {
             let ok_seam = RecordingSeam::new();
-            drive(&git_dir, &ok_seam, &tool_before("edit", "call_1")).expect("Start");
+            drive(&git_dir, &ok_seam, &tool_before("edit", "call_1"))
+                .await
+                .expect("Start");
         }
 
         let failing = RecordingSeam::failing_on(&["close"]);
-        drive(&git_dir, &failing, &tool_after("edit", "call_1")).expect("Close seam failure");
+        drive(&git_dir, &failing, &tool_after("edit", "call_1"))
+            .await
+            .expect("Close seam failure");
 
         assert_eq!(
             failing.operations(),
@@ -1027,17 +1101,20 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn regression_a_abandon_failure_preserves_terminal_intent_then_recovers() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn regression_a_abandon_failure_preserves_terminal_intent_then_recovers() {
         let git_dir = temp_git_dir("regression-a-abandon-failure");
 
         {
             let ok_seam = RecordingSeam::new();
-            drive(&git_dir, &ok_seam, &tool_before("write", "call_1")).expect("A Start");
+            drive(&git_dir, &ok_seam, &tool_before("write", "call_1"))
+                .await
+                .expect("A Start");
         }
 
         let failing = RecordingSeam::failing_on(&["abandon"]);
         drive(&git_dir, &failing, &tool_error("write", "call_1"))
+            .await
             .expect("a terminal failure whose abandon fails still returns best-effort");
 
         let state = read_state(&git_dir).expect("state readable");
@@ -1061,6 +1138,7 @@ mod lifecycle_tests {
 
         let healthy = RecordingSeam::new();
         drive(&git_dir, &healthy, &tool_before("write", "call_2"))
+            .await
             .expect("a healthy retry boundary resolves recovery and admits the new Start");
 
         let state = read_state(&git_dir).expect("state readable");
@@ -1076,16 +1154,22 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn regression_b_ambiguity_flush_failure_blocks_new_starts_then_recovers() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn regression_b_ambiguity_flush_failure_blocks_new_starts_then_recovers() {
         let git_dir = temp_git_dir("regression-b-ambiguity-flush-failure");
         let live = RecordingSeam::new();
 
-        drive(&git_dir, &live, &shell_env("call_a")).expect("A Start");
-        drive(&git_dir, &live, &shell_env("call_b")).expect("B Start");
+        drive(&git_dir, &live, &shell_env("call_a"))
+            .await
+            .expect("A Start");
+        drive(&git_dir, &live, &shell_env("call_b"))
+            .await
+            .expect("B Start");
 
         let failing = RecordingSeam::failing_on(&["flush"]);
-        drive(&git_dir, &failing, &tool_error("bash", "call_a")).expect("A terminal failure");
+        drive(&git_dir, &failing, &tool_error("bash", "call_a"))
+            .await
+            .expect("A terminal failure");
 
         let state = read_state(&git_dir).expect("state readable");
         let pending_abandon: Vec<&str> = state
@@ -1105,6 +1189,7 @@ mod lifecycle_tests {
         assert!(!state.recovery.is_clear(), "recovery pending");
 
         let error = drive(&git_dir, &failing, &shell_env("call_c"))
+            .await
             .expect_err("a new tracked Start must fail closed while recovery is unresolved");
         assert!(error.to_string().contains(FAIL_CLOSED_MESSAGE));
         assert!(read_state(&git_dir)
@@ -1115,6 +1200,7 @@ mod lifecycle_tests {
 
         let healthy = RecordingSeam::new();
         drive(&git_dir, &healthy, &shell_env("call_c"))
+            .await
             .expect("once recovery succeeds a new Start is admitted normally");
 
         let state = read_state(&git_dir).expect("state readable");
@@ -1138,17 +1224,20 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn regression_c_rebaseline_flush_failure_is_recoverable_without_poison() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn regression_c_rebaseline_flush_failure_is_recoverable_without_poison() {
         let git_dir = temp_git_dir("regression-c-rebaseline-flush-failure");
 
         {
             let ok_seam = RecordingSeam::new();
-            drive(&git_dir, &ok_seam, &tool_before("edit", "call_1")).expect("Start");
+            drive(&git_dir, &ok_seam, &tool_before("edit", "call_1"))
+                .await
+                .expect("Start");
         }
 
         let rebaseline_failing = RecordingSeam::failing_on_nth_occurrence("flush", 2);
         drive(&git_dir, &rebaseline_failing, &tool_error("edit", "call_1"))
+            .await
             .expect("terminal failure whose rebaseline flush fails still returns");
 
         assert_eq!(
@@ -1156,7 +1245,7 @@ mod lifecycle_tests {
             vec!["flush", "abandon", "flush"],
             "the ambiguity flush and the abandon succeeded; the rebaseline flush failed",
         );
-        let state = read_state(&git_dir).expect("state readable");
+        let state = read_state(&git_dir).await.expect("state readable");
         assert!(
             state.attempts.is_empty(),
             "the abandon succeeded so the attempt is removed",
@@ -1167,7 +1256,9 @@ mod lifecycle_tests {
         );
 
         let healthy = RecordingSeam::new();
-        drive(&git_dir, &healthy, &tool_before("edit", "call_2")).expect("retry admits new work");
+        drive(&git_dir, &healthy, &tool_before("edit", "call_2"))
+            .await
+            .expect("retry admits new work");
 
         let state = read_state(&git_dir).expect("state readable");
         assert_eq!(state.attempts.len(), 1);
@@ -1177,18 +1268,23 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn regression_e_duplicate_tool_error_is_idempotent() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn regression_e_duplicate_tool_error_is_idempotent() {
         let git_dir = temp_git_dir("regression-e-duplicate-tool-error");
 
         {
             let ok_seam = RecordingSeam::new();
-            drive(&git_dir, &ok_seam, &tool_before("write", "call_1")).expect("Start");
+            drive(&git_dir, &ok_seam, &tool_before("write", "call_1"))
+                .await
+                .expect("Start");
         }
 
         let stuck = RecordingSeam::failing_on(&["abandon"]);
-        drive(&git_dir, &stuck, &tool_error("write", "call_1")).expect("first terminal failure");
         drive(&git_dir, &stuck, &tool_error("write", "call_1"))
+            .await
+            .expect("first terminal failure");
+        drive(&git_dir, &stuck, &tool_error("write", "call_1"))
+            .await
             .expect("a duplicate ToolError while PendingAbandon is idempotent");
 
         let state = read_state(&git_dir).expect("state readable");
@@ -1202,19 +1298,24 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn regression_f_start_replay_for_a_pending_abandon_identity_never_reactivates() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn regression_f_start_replay_for_a_pending_abandon_identity_never_reactivates() {
         let git_dir = temp_git_dir("regression-f-start-replay-pending-abandon");
 
         {
             let ok_seam = RecordingSeam::new();
-            drive(&git_dir, &ok_seam, &tool_before("write", "call_1")).expect("Start");
+            drive(&git_dir, &ok_seam, &tool_before("write", "call_1"))
+                .await
+                .expect("Start");
         }
 
         let stuck = RecordingSeam::failing_on(&["abandon"]);
-        drive(&git_dir, &stuck, &tool_error("write", "call_1")).expect("terminal failure");
+        drive(&git_dir, &stuck, &tool_error("write", "call_1"))
+            .await
+            .expect("terminal failure");
 
         let error = drive(&git_dir, &stuck, &tool_before("write", "call_1"))
+            .await
             .expect_err("a replayed Start for a PendingAbandon identity must fail closed");
         assert!(error.to_string().contains(FAIL_CLOSED_MESSAGE));
 
@@ -1229,14 +1330,19 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn regression_g_late_tool_error_after_close_is_a_harmless_no_op() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn regression_g_late_tool_error_after_close_is_a_harmless_no_op() {
         let git_dir = temp_git_dir("regression-g-late-tool-error");
         let seam = RecordingSeam::new();
 
-        drive(&git_dir, &seam, &tool_before("write", "call_1")).expect("Start");
-        drive(&git_dir, &seam, &tool_after("write", "call_1")).expect("Close");
+        drive(&git_dir, &seam, &tool_before("write", "call_1"))
+            .await
+            .expect("Start");
+        drive(&git_dir, &seam, &tool_after("write", "call_1"))
+            .await
+            .expect("Close");
         drive(&git_dir, &seam, &tool_error("write", "call_1"))
+            .await
             .expect("a late ToolError after a completed Close is inert");
 
         assert_eq!(seam.operations(), vec!["start", "close"]);
@@ -1247,17 +1353,24 @@ mod lifecycle_tests {
         cleanup(&git_dir);
     }
 
-    #[test]
-    fn regression_h_siblings_stay_active_through_a_transient_cleanup_failure() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn regression_h_siblings_stay_active_through_a_transient_cleanup_failure() {
         let git_dir = temp_git_dir("regression-h-siblings-preserved");
         let live = RecordingSeam::new();
 
-        drive(&git_dir, &live, &shell_env("call_a")).expect("A Start");
-        drive(&git_dir, &live, &shell_env("call_b")).expect("B Start");
-        drive(&git_dir, &live, &shell_env("call_c")).expect("C Start");
+        drive(&git_dir, &live, &shell_env("call_a"))
+            .await
+            .expect("A Start");
+        drive(&git_dir, &live, &shell_env("call_b"))
+            .await
+            .expect("B Start");
+        drive(&git_dir, &live, &shell_env("call_c"))
+            .await
+            .expect("C Start");
 
         let transient = RecordingSeam::failing_once_on(&["abandon"]);
         drive(&git_dir, &transient, &tool_error("bash", "call_b"))
+            .await
             .expect("B terminal failure with a transient abandon failure");
 
         let snapshot = read_state(&git_dir).expect("state readable");
@@ -1276,6 +1389,7 @@ mod lifecycle_tests {
 
         let healthy = RecordingSeam::new();
         drive(&git_dir, &healthy, &shell_env("call_d"))
+            .await
             .expect("the retry boundary resolves recovery and admits D");
 
         let state = read_state(&git_dir).expect("state readable");
@@ -1317,7 +1431,6 @@ mod runtime_seam_tests {
         run_opencode_mutation_scope_from_payload_with_seams,
     };
     use crate::services::mutation_trace::runtime::resolve_git_dir;
-    use crate::services::observability::traits::Logger;
 
     use super::super::state::{adapter_state_dir, read_state, AttemptPhase};
 
@@ -1341,7 +1454,7 @@ mod runtime_seam_tests {
     }
 
     impl OpenCodeRepo {
-        fn new(label: &str) -> Self {
+        async fn new(label: &str) -> Self {
             let temp = tempfile::Builder::new()
                 .prefix(&format!("sce-opencode-mutation-scope-seam-{label}-"))
                 .tempdir()
@@ -1369,6 +1482,7 @@ mod runtime_seam_tests {
                 },
                 &state_root,
             )
+            .await
             .expect("state-root storage should initialize the repository DB");
 
             Self {
@@ -1382,18 +1496,23 @@ mod runtime_seam_tests {
             self.root.to_string_lossy().into_owned()
         }
 
-        fn drive(&self, payload: &str) -> Result<String> {
+        async fn drive(&self, payload: &str) -> Result<String> {
             run_opencode_mutation_scope_from_payload_at_state_root(&self.state_root, payload, None)
+                .await
         }
 
-        fn drive_failing_seam_operation_once(
+        async fn drive_failing_seam_operation_once(
             &self,
             payload: &str,
             fail_operation: &str,
             remaining_failures: &std::cell::Cell<u32>,
         ) -> Result<String> {
             let resolver = |cwd: &str| resolve_git_dir(Path::new(cwd));
-            let seam_fn = |root: &Path, seam_payload: &str, logger: Option<&dyn Logger>| {
+            let seam_fn = async |root: &Path,
+                                 seam_payload: &str,
+                                 logger: Option<
+                &crate::services::observability::traits::NoopLogger,
+            >| {
                 let operation = serde_json::from_str::<serde_json::Value>(seam_payload)
                     .ok()
                     .and_then(|value| {
@@ -1412,9 +1531,10 @@ mod runtime_seam_tests {
                     &self.state_root,
                     seam_payload,
                     logger,
-                )
+                ).await
             };
             run_opencode_mutation_scope_from_payload_with_seams(payload, None, &resolver, &seam_fn)
+                .await
         }
 
         fn write(&self, name: &str, contents: &str) {
@@ -1425,17 +1545,19 @@ mod runtime_seam_tests {
             resolve_git_dir(&self.root).expect("git dir should resolve")
         }
 
-        fn db(&self) -> RepositoryAgentTraceDb {
+        async fn db(&self) -> RepositoryAgentTraceDb {
             crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
                 &self.root,
                 &self.state_root,
                 "opencode mutation-scope seam test assertions",
             )
+            .await
             .expect("assertion DB should open")
         }
 
-        fn scope_status(&self, scope_id: &str) -> Option<(String, String)> {
+        async fn scope_status(&self, scope_id: &str) -> Option<(String, String)> {
             self.db()
+                .await
                 .query_map(
                     "SELECT actor_kind, status FROM mutation_trace_scopes WHERE scope_id = ?1",
                     (scope_id,),
@@ -1445,24 +1567,28 @@ mod runtime_seam_tests {
                         Ok((actor_kind, status))
                     },
                 )
+                .await
                 .expect("scope query should succeed")
                 .into_iter()
                 .next()
         }
 
-        fn scope_count(&self) -> i64 {
+        async fn scope_count(&self) -> i64 {
             self.db()
+                .await
                 .query_map("SELECT COUNT(*) FROM mutation_trace_scopes", (), |row| {
                     row.get::<i64>(0).map_err(anyhow::Error::from)
                 })
+                .await
                 .expect("count query should succeed")
                 .into_iter()
                 .next()
                 .expect("a count row should exist")
         }
 
-        fn mutation_events(&self) -> Vec<(String, Option<String>)> {
+        async fn mutation_events(&self) -> Vec<(String, Option<String>)> {
             self.db()
+                .await
                 .query_map(
                     "SELECT attribution_kind, attribution_scope_id \
                      FROM mutation_trace_events ORDER BY revision",
@@ -1474,6 +1600,7 @@ mod runtime_seam_tests {
                         Ok((attribution_kind, attribution_scope_id))
                     },
                 )
+                .await
                 .expect("mutation-events query should succeed")
         }
     }
@@ -1543,8 +1670,8 @@ mod runtime_seam_tests {
         );
     }
 
-    #[test]
-    fn linked_worktree_uses_its_worktree_specific_git_dir_for_mutation_scope_state() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn linked_worktree_uses_its_worktree_specific_git_dir_for_mutation_scope_state() {
         let repo = OpenCodeRepo::new("linked-worktree");
         let linked_root = repo.temp.path().join("linked");
         git(
@@ -1576,6 +1703,7 @@ mod runtime_seam_tests {
         })
         .to_string();
         run_opencode_mutation_scope_from_payload_at_state_root(&repo.state_root, &before, None)
+            .await
             .expect("linked-worktree Start");
 
         let scope_id = read_state(&linked_git_dir)
@@ -1595,6 +1723,7 @@ mod runtime_seam_tests {
         })
         .to_string();
         run_opencode_mutation_scope_from_payload_at_state_root(&repo.state_root, &after, None)
+            .await
             .expect("linked-worktree Close");
 
         assert!(read_state(&linked_git_dir)
@@ -1607,19 +1736,23 @@ mod runtime_seam_tests {
         );
     }
 
-    #[test]
-    fn a_tool_error_abandons_the_scope_through_the_real_runtime() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_tool_error_abandons_the_scope_through_the_real_runtime() {
         let repo = OpenCodeRepo::new("tool-error-abandon");
 
-        repo.drive(&before(&repo, "edit", "call_1")).expect("Start");
+        repo.drive(&before(&repo, "edit", "call_1"))
+            .await
+            .expect("Start");
         let scope_id = read_state(&repo.git_dir())
             .expect("adapter state readable")
+            .await
             .attempts[0]
             .scope_id
             .clone();
 
         repo.write("file.txt", "one\nabandoned-a\n");
         repo.drive(&error(&repo, "edit", "call_1"))
+            .await
             .expect("terminal failure");
 
         let state = read_state(&repo.git_dir()).expect("adapter state readable");
@@ -1634,19 +1767,22 @@ mod runtime_seam_tests {
         );
     }
 
-    #[test]
-    fn regression_a_failed_concurrent_scope_cannot_contaminate_a_survivor() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn regression_a_failed_concurrent_scope_cannot_contaminate_a_survivor() {
         let repo = OpenCodeRepo::new("regression-a-no-contamination");
 
         repo.drive(&before(&repo, "write", "call_a"))
+            .await
             .expect("A Start");
         repo.drive(&before(&repo, "write", "call_b"))
+            .await
             .expect("B Start");
         let scope_b = read_state(&repo.git_dir())
             .expect("adapter state readable")
             .attempts
             .iter()
             .find(|attempt| attempt.call_id == "call_b")
+            .await
             .expect("B is tracked")
             .scope_id
             .clone();
@@ -1655,6 +1791,7 @@ mod runtime_seam_tests {
         repo.write("file_b.txt", "b mutated\n");
 
         repo.drive(&error(&repo, "write", "call_a"))
+            .await
             .expect("A terminal failure");
 
         let state = read_state(&repo.git_dir()).expect("adapter state readable");
@@ -1663,9 +1800,10 @@ mod runtime_seam_tests {
         assert_eq!(state.attempts[0].phase, AttemptPhase::Active);
 
         repo.drive(&after(&repo, "write", "call_b"))
+            .await
             .expect("B Close");
 
-        let events = repo.mutation_events();
+        let events = repo.mutation_events().await;
         assert!(
             events.iter().any(|(kind, _)| kind == "ineligible_unscoped"),
             "the ambiguous interval containing A's mutations is consumed as \
@@ -1682,32 +1820,39 @@ mod runtime_seam_tests {
         );
     }
 
-    #[test]
-    fn regression_b_survivor_still_attributes_its_later_mutations() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn regression_b_survivor_still_attributes_its_later_mutations() {
         let repo = OpenCodeRepo::new("regression-b-survivor-liveness");
 
         repo.drive(&before(&repo, "write", "call_a"))
+            .await
             .expect("A Start");
         repo.drive(&before(&repo, "write", "call_b"))
+            .await
             .expect("B Start");
         let scope_b = read_state(&repo.git_dir())
             .expect("adapter state readable")
+            .await
             .attempts
             .iter()
             .find(|attempt| attempt.call_id == "call_b")
+            .await
             .expect("B is tracked")
+            .await
             .scope_id
             .clone();
 
         repo.write("file_a.txt", "a mutated\n");
         repo.drive(&error(&repo, "write", "call_a"))
+            .await
             .expect("A terminal failure consumes the ambiguous interval");
 
         repo.write("file_c.txt", "b's own later work\n");
         repo.drive(&after(&repo, "write", "call_b"))
+            .await
             .expect("B Close");
 
-        let events = repo.mutation_events();
+        let events = repo.mutation_events().await;
         assert!(
             events.iter().any(|(kind, scope)| kind == "ai_exclusive"
                 && scope.as_deref() == Some(scope_b.as_str())),
@@ -1720,19 +1865,23 @@ mod runtime_seam_tests {
         );
     }
 
-    #[test]
-    fn regression_c_exact_error_does_not_sweep_siblings_through_the_real_runtime() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn regression_c_exact_error_does_not_sweep_siblings_through_the_real_runtime() {
         let repo = OpenCodeRepo::new("regression-c-no-sibling-sweep");
 
         repo.drive(&before(&repo, "write", "call_a"))
+            .await
             .expect("A Start");
         repo.drive(&before(&repo, "write", "call_b"))
+            .await
             .expect("B Start");
         repo.drive(&before(&repo, "write", "call_c"))
+            .await
             .expect("C Start");
 
         repo.write("file.txt", "one\nmutated\n");
         repo.drive(&error(&repo, "write", "call_b"))
+            .await
             .expect("B terminal failure");
 
         let state = read_state(&repo.git_dir()).expect("adapter state readable");
@@ -1750,11 +1899,12 @@ mod runtime_seam_tests {
         assert!(state.recovery.is_clear());
     }
 
-    #[test]
-    fn regression_d_delayed_session_idle_cannot_kill_a_newer_call() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn regression_d_delayed_session_idle_cannot_kill_a_newer_call() {
         let repo = OpenCodeRepo::new("regression-d-delayed-session-idle");
 
         repo.drive(&before(&repo, "write", "call_b"))
+            .await
             .expect("newer call B Start");
 
         repo.drive(
@@ -1765,6 +1915,7 @@ mod runtime_seam_tests {
             })
             .to_string(),
         )
+        .await
         .expect("a delayed SessionIdle for the same session is inert");
 
         let state = read_state(&repo.git_dir()).expect("adapter state readable");
@@ -1774,11 +1925,12 @@ mod runtime_seam_tests {
         assert!(state.recovery.is_clear());
     }
 
-    #[test]
-    fn regression_e_server_disposed_cannot_sweep_another_process() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn regression_e_server_disposed_cannot_sweep_another_process() {
         let repo = OpenCodeRepo::new("regression-e-server-disposed");
 
         repo.drive(&before(&repo, "write", "call_a"))
+            .await
             .expect("P1 owns call A");
         repo.drive(
             &json!({
@@ -1790,9 +1942,11 @@ mod runtime_seam_tests {
             })
             .to_string(),
         )
+        .await
         .expect("P2 owns call B in the same checkout");
 
         repo.drive(&json!({ "hook_event_name": "ServerDisposed", "cwd": repo.cwd() }).to_string())
+            .await
             .expect("P1 server disposal is inert");
 
         let state = read_state(&repo.git_dir()).expect("adapter state readable");
@@ -1804,12 +1958,13 @@ mod runtime_seam_tests {
         assert!(state.recovery.is_clear());
     }
 
-    #[test]
-    fn regression_f_untracked_tool_error_is_zero_footprint() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn regression_f_untracked_tool_error_is_zero_footprint() {
         let repo = OpenCodeRepo::new("regression-f-untracked-tool-error");
 
         for tool_name in ["read", "task", "brave-search_brave_web_search"] {
             repo.drive(&error(&repo, tool_name, "call_x"))
+                .await
                 .expect("an untracked ToolError is neutral");
         }
 
@@ -1838,13 +1993,15 @@ mod runtime_seam_tests {
             .exists());
     }
 
-    #[test]
-    fn regression_d_concurrent_survivor_stays_usable_after_a_transient_cleanup_failure() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn regression_d_concurrent_survivor_stays_usable_after_a_transient_cleanup_failure() {
         let repo = OpenCodeRepo::new("regression-d-transient-cleanup-failure");
 
         repo.drive(&before(&repo, "write", "call_a"))
+            .await
             .expect("A Start");
         repo.drive(&before(&repo, "write", "call_b"))
+            .await
             .expect("B Start");
         let scoped = read_state(&repo.git_dir()).expect("adapter state readable");
         let scope_a = scoped
@@ -1858,6 +2015,7 @@ mod runtime_seam_tests {
             .attempts
             .iter()
             .find(|attempt| attempt.call_id == "call_b")
+            .await
             .expect("B is tracked")
             .scope_id
             .clone();
@@ -1871,6 +2029,7 @@ mod runtime_seam_tests {
             "abandon",
             &remaining_failures,
         )
+        .await
         .expect("A terminal failure with a transient abandon failure returns best-effort");
 
         let state = read_state(&repo.git_dir()).expect("adapter state readable");
@@ -1895,6 +2054,7 @@ mod runtime_seam_tests {
         assert!(!state.recovery.is_clear());
 
         repo.drive(&error(&repo, "write", "call_a"))
+            .await
             .expect("a healthy duplicate ToolError retries and completes cleanup");
 
         let state = read_state(&repo.git_dir()).expect("adapter state readable");
@@ -1913,9 +2073,10 @@ mod runtime_seam_tests {
 
         repo.write("file_c.txt", "b's own later work\n");
         repo.drive(&after(&repo, "write", "call_b"))
+            .await
             .expect("B Close");
 
-        let events = repo.mutation_events();
+        let events = repo.mutation_events().await;
         assert!(
             events.iter().any(|(kind, _)| kind == "ineligible_unscoped"),
             "the ambiguous A/B interval is consumed as IneligibleUnscoped: {events:?}",

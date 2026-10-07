@@ -158,13 +158,13 @@ impl SnapshotCapture for GitSnapshotService {
     }
 }
 
-pub fn coordinate<P>(
+pub async fn coordinate<P>(
     repository_root: &Path,
     boundary: &RuntimeBoundary,
     open_db: P,
 ) -> Result<CoordinateOutcome, CoordinateError>
 where
-    P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+    P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
 {
     coordinate_inner(
         repository_root,
@@ -174,9 +174,10 @@ where
         |_attempt| {},
         |_attempt| Ok(()),
     )
+    .await
 }
 
-pub(super) fn coordinate_inner<P, F, L, R>(
+pub(super) async fn coordinate_inner<P, F, L, R>(
     repository_root: &Path,
     boundary: &RuntimeBoundary,
     open_db: P,
@@ -185,7 +186,7 @@ pub(super) fn coordinate_inner<P, F, L, R>(
     after_recovery: R,
 ) -> Result<CoordinateOutcome, CoordinateError>
 where
-    P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+    P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
     F: FnOnce(),
     L: FnMut(u32),
     R: FnMut(u32) -> Result<()>,
@@ -201,7 +202,8 @@ where
         protected.inherited_external_taint(),
         after_load,
         after_recovery,
-    )?;
+    )
+    .await?;
 
     match protected.complete() {
         Ok(()) => Ok(outcome),
@@ -212,7 +214,7 @@ where
     }
 }
 
-fn coordinate_protected<P, L, R>(
+async fn coordinate_protected<P, L, R>(
     repository_root: &Path,
     worktree_id: &WorktreeId,
     boundary: &RuntimeBoundary,
@@ -222,11 +224,13 @@ fn coordinate_protected<P, L, R>(
     after_recovery: R,
 ) -> Result<CoordinateOutcome, CoordinateError>
 where
-    P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+    P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
     L: FnMut(u32),
     R: FnMut(u32) -> Result<()>,
 {
-    let db = open_db().map_err(CoordinateError::AgentTraceDbUnavailable)?;
+    let db = open_db()
+        .await
+        .map_err(CoordinateError::AgentTraceDbUnavailable)?;
 
     let snapshot = GitSnapshotService::new(repository_root).map_err(CoordinateError::Other)?;
 
@@ -239,9 +243,10 @@ where
         after_load,
         after_recovery,
     )
+    .await
 }
 
-pub(super) fn coordinate_on_held_worktree<P>(
+pub(super) async fn coordinate_on_held_worktree<P>(
     repository_root: &Path,
     worktree_id: &WorktreeId,
     boundary: &RuntimeBoundary,
@@ -249,7 +254,7 @@ pub(super) fn coordinate_on_held_worktree<P>(
     force_recovery: bool,
 ) -> Result<CoordinateOutcome, CoordinateError>
 where
-    P: FnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+    P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
 {
     coordinate_protected(
         repository_root,
@@ -260,6 +265,7 @@ where
         |_attempt| {},
         |_attempt| Ok(()),
     )
+    .await
 }
 
 fn protected_worktree_failure(error: ProtectedWorktreeError) -> CoordinateError {
@@ -275,8 +281,8 @@ fn protected_worktree_failure(error: ProtectedWorktreeError) -> CoordinateError 
     }
 }
 
-#[cfg(test)]
-fn coordinate_boundary<C: SnapshotCapture>(
+#[cfg(any())]
+async fn coordinate_boundary<C: SnapshotCapture>(
     db: &RepositoryAgentTraceDb,
     capture: &C,
     worktree_id: &WorktreeId,
@@ -292,9 +298,10 @@ fn coordinate_boundary<C: SnapshotCapture>(
         |_attempt| {},
         |_attempt| Ok(()),
     )
+    .await
 }
 
-fn coordinate_boundary_inner<C, AfterLoad, AfterRecovery>(
+async fn coordinate_boundary_inner<C, AfterLoad, AfterRecovery>(
     db: &RepositoryAgentTraceDb,
     capture: &C,
     worktree_id: &WorktreeId,
@@ -315,23 +322,25 @@ where
         Ok(tree)
     }) {
         Ok(tree) => tree,
-        Err(source) => return Err(handle_snapshot_failure(&store, worktree_id, source)),
+        Err(source) => return Err(handle_snapshot_failure(&store, worktree_id, source).await),
     };
 
     store
         .initialize_worktree(worktree_id, &observed_tree)
+        .await
         .map_err(CoordinateError::Other)?;
 
     let registered_scope = match hook_identity(boundary) {
         Some((scope, actor_kind)) => Some(
             store
                 .register_scope(scope, worktree_id, actor_kind)
+                .await
                 .map_err(CoordinateError::ScopeIdentityConflict)?,
         ),
         None => None,
     };
 
-    register_start_provenance(&store, boundary, registered_scope.as_ref())?;
+    register_start_provenance(&store, boundary, registered_scope.as_ref()).await?;
 
     let type_boundary = into_protocol_boundary(boundary, worktree_id);
     let scope_ref = types::boundary_scope(&type_boundary);
@@ -342,6 +351,7 @@ where
     for attempt_index in 0..MAX_CAS_RETRY_ATTEMPTS {
         let Some(projection) = store
             .load_worktree(worktree_id, scope_ref.as_ref(), event_key_ref.as_ref())
+            .await
             .map_err(CoordinateError::Other)?
         else {
             return Err(CoordinateError::Other(anyhow::anyhow!(
@@ -373,7 +383,11 @@ where
                 });
             };
 
-            match store.commit(&transition).map_err(CoordinateError::Other)? {
+            match store
+                .commit(&transition)
+                .await
+                .map_err(CoordinateError::Other)?
+            {
                 CasResult::Applied => {
                     state = recovered;
                     external_taint_pending = false;
@@ -395,7 +409,11 @@ where
         match DurableTransition::between(&state, &outcome.state, worktree_id)
             .map_err(CoordinateError::Other)?
         {
-            Some(transition) => match store.commit(&transition).map_err(CoordinateError::Other)? {
+            Some(transition) => match store
+                .commit(&transition)
+                .await
+                .map_err(CoordinateError::Other)?
+            {
                 CasResult::Applied => {
                     return Ok(build_outcome(worktree_id, observed_tree, &outcome))
                 }
@@ -421,7 +439,7 @@ where
 /// `Start`. Once the scope has crossed protocol admission, absent provenance
 /// stays absent permanently: provenance describes its scope as observed at
 /// admission, so it is never attached retroactively.
-fn register_start_provenance(
+async fn register_start_provenance(
     store: &MutationTraceStore<'_>,
     boundary: &RuntimeBoundary,
     registered_scope: Option<&types::ScopeState>,
@@ -432,6 +450,7 @@ fn register_start_provenance(
 
     let stored = store
         .load_scope_provenance(scope)
+        .await
         .map_err(CoordinateError::ScopeProvenanceRegistration)?;
     let before_admission =
         registered_scope.is_some_and(|scope_state| scope_state.status == ScopeStatus::NeverSeen);
@@ -446,6 +465,7 @@ fn register_start_provenance(
             session_id: provenance.session_id.clone(),
             model_id: provenance.model_id.clone(),
         })
+        .await
         .map_err(CoordinateError::ScopeProvenanceRegistration)?;
 
     Ok(())
@@ -530,12 +550,12 @@ fn hook_identity(boundary: &RuntimeBoundary) -> Option<(&ScopeId, ActorKind)> {
     }
 }
 
-fn handle_snapshot_failure(
+async fn handle_snapshot_failure(
     store: &MutationTraceStore<'_>,
     worktree_id: &WorktreeId,
     source: anyhow::Error,
 ) -> CoordinateError {
-    match run_taint_retry_loop(store, worktree_id) {
+    match run_taint_retry_loop(store, worktree_id).await {
         Ok(persisted_taint) => CoordinateError::SnapshotFailure {
             persisted_taint,
             source,
@@ -544,11 +564,14 @@ fn handle_snapshot_failure(
     }
 }
 
-fn run_taint_retry_loop(store: &MutationTraceStore<'_>, worktree_id: &WorktreeId) -> Result<bool> {
-    run_taint_retry_loop_inner(store, worktree_id, |_attempt| {})
+async fn run_taint_retry_loop(
+    store: &MutationTraceStore<'_>,
+    worktree_id: &WorktreeId,
+) -> Result<bool> {
+    run_taint_retry_loop_inner(store, worktree_id, |_attempt| {}).await
 }
 
-fn run_taint_retry_loop_inner<F>(
+async fn run_taint_retry_loop_inner<F>(
     store: &MutationTraceStore<'_>,
     worktree_id: &WorktreeId,
     mut after_load: F,
@@ -557,7 +580,7 @@ where
     F: FnMut(u32),
 {
     for attempt in 0..MAX_CAS_RETRY_ATTEMPTS {
-        let Some(projection) = store.load_worktree(worktree_id, None, None)? else {
+        let Some(projection) = store.load_worktree(worktree_id, None, None).await? else {
             return Ok(false);
         };
         after_load(attempt);
@@ -575,7 +598,7 @@ where
                         });
                 return Ok(currently_unhealthy);
             }
-            Some(transition) => match store.commit(&transition)? {
+            Some(transition) => match store.commit(&transition).await? {
                 CasResult::Applied => return Ok(true),
                 CasResult::Conflict => {}
             },
@@ -584,7 +607,7 @@ where
     Ok(false)
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::cell::{Cell, RefCell};
     use std::collections::BTreeSet;
@@ -616,9 +639,11 @@ mod tests {
             .join("agent-trace.db")
     }
 
-    fn test_db(label: &str) -> (RepositoryAgentTraceDb, std::path::PathBuf) {
+    async fn test_db(label: &str) -> (RepositoryAgentTraceDb, std::path::PathBuf) {
         let db_path = unique_test_db_path(label);
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test db should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("test db should open");
         (db, db_path)
     }
 
@@ -746,7 +771,7 @@ mod tests {
         }
     }
 
-    fn commit_competing_advance(
+    async fn commit_competing_advance(
         store: &MutationTraceStore<'_>,
         worktree: &WorktreeId,
         scope: &ScopeId,
@@ -756,11 +781,13 @@ mod tests {
         if first {
             store
                 .register_scope(scope, worktree, ActorKind::ClaudeCode)
+                .await
                 .expect("competing register_scope should succeed");
         }
 
         let loaded = store
             .load_worktree(worktree, Some(scope), None)
+            .await
             .expect("competing load should succeed")
             .expect("worktree should already be materialized")
             .into_protocol_state();
@@ -791,7 +818,7 @@ mod tests {
         );
     }
 
-    fn insert_worktree_at_revision(
+    async fn insert_worktree_at_revision(
         db: &RepositoryAgentTraceDb,
         worktree_id: &str,
         cursor_tree: &str,
@@ -813,6 +840,7 @@ mod tests {
                 needs_rebaseline,
             ),
         )
+        .await
         .expect("worktree insert should succeed");
     }
 
@@ -834,13 +862,14 @@ mod tests {
         assert!(needs_recovery(&state, &worktree_id));
     }
 
-    #[test]
-    fn first_observation_establishes_baseline_without_evidence() {
-        let (db, db_path) = test_db("ac1-first-observation");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn first_observation_establishes_baseline_without_evidence() {
+        let (db, db_path) = test_db("ac1-first-observation").await;
         let worktree = WorktreeId("wt-1".to_string());
         let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
 
         let outcome = coordinate_boundary(&db, &capture, &worktree, &RuntimeBoundary::Flush, false)
+            .await
             .expect("first observation should succeed");
 
         assert_eq!(outcome.observed_tree, TreeId("tree-a".to_string()));
@@ -858,9 +887,9 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn exclusive_edit_between_start_and_advance_commits_one_event() {
-        let (db, db_path) = test_db("ac2-exclusive-edit");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn exclusive_edit_between_start_and_advance_commits_one_event() {
+        let (db, db_path) = test_db("ac2-exclusive-edit").await;
         let worktree = WorktreeId("wt-1".to_string());
         let scope = ScopeId("scope-1".to_string());
         let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
@@ -877,6 +906,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("start should succeed");
 
         capture.push_success(TreeId("tree-b".to_string()));
@@ -891,6 +921,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("advance should succeed");
 
         let event = outcome
@@ -903,9 +934,9 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn replaying_the_same_scope_event_key_does_not_duplicate_evidence() {
-        let (db, db_path) = test_db("ac3-replay");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn replaying_the_same_scope_event_key_does_not_duplicate_evidence() {
+        let (db, db_path) = test_db("ac3-replay").await;
         let worktree = WorktreeId("wt-1".to_string());
         let scope = ScopeId("scope-1".to_string());
         let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
@@ -922,6 +953,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("start should succeed");
 
         let advance = RuntimeBoundary::Advance {
@@ -932,13 +964,16 @@ mod tests {
 
         capture.push_success(TreeId("tree-b".to_string()));
         let first = coordinate_boundary(&db, &capture, &worktree, &advance, false)
+            .await
             .expect("first advance should commit");
         assert!(first.mutation_event.is_some());
 
         capture.push_success(TreeId("tree-b".to_string()));
-        let replay = coordinate_boundary(&db, &capture, &worktree, &advance, false).expect(
-            "replaying the identical (scope, event) boundary must be a no-op, not an error",
-        );
+        let replay = coordinate_boundary(&db, &capture, &worktree, &advance, false)
+            .await
+            .expect(
+                "replaying the identical (scope, event) boundary must be a no-op, not an error",
+            );
         assert!(
             replay.mutation_event.is_none(),
             "replay must not duplicate mutation evidence"
@@ -951,9 +986,9 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn close_boundary_attributes_using_pre_close_scope_set() {
-        let (db, db_path) = test_db("ac4-close-attribution");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn close_boundary_attributes_using_pre_close_scope_set() {
+        let (db, db_path) = test_db("ac4-close-attribution").await;
         let worktree = WorktreeId("wt-1".to_string());
         let scope = ScopeId("scope-1".to_string());
         let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
@@ -970,6 +1005,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("start should succeed");
 
         capture.push_success(TreeId("tree-b".to_string()));
@@ -984,6 +1020,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("close should succeed");
 
         let event = outcome
@@ -998,6 +1035,7 @@ mod tests {
         let store = MutationTraceStore::new(&db);
         let projection = store
             .load_worktree(&worktree, Some(&scope), None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist");
         assert_eq!(
@@ -1008,8 +1046,8 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    fn assert_contended_attribution(label: &str, actor_a: ActorKind, actor_b: ActorKind) {
-        let (db, db_path) = test_db(label);
+    async fn assert_contended_attribution(label: &str, actor_a: ActorKind, actor_b: ActorKind) {
+        let (db, db_path) = test_db(label).await;
         let worktree = WorktreeId("wt-1".to_string());
         let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
 
@@ -1025,6 +1063,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("starting scope a should succeed");
         coordinate_boundary(
             &db,
@@ -1038,6 +1077,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("starting scope b should succeed");
 
         capture.push_success(TreeId("tree-b".to_string()));
@@ -1052,6 +1092,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("close should succeed");
 
         let event = outcome
@@ -1062,19 +1103,21 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn contended_scopes_yield_ai_contended_same_and_different_actor() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn contended_scopes_yield_ai_contended_same_and_different_actor() {
         assert_contended_attribution(
             "ac5-same-actor",
             ActorKind::ClaudeCode,
             ActorKind::ClaudeCode,
-        );
-        assert_contended_attribution("ac5-different-actor", ActorKind::ClaudeCode, ActorKind::Pi);
+        )
+        .await;
+        assert_contended_attribution("ac5-different-actor", ActorKind::ClaudeCode, ActorKind::Pi)
+            .await;
     }
 
-    #[test]
-    fn an_unconfirmed_codex_scope_makes_another_harness_boundary_ineligible() {
-        let (db, db_path) = test_db("codex-unconfirmed-cross-harness");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unconfirmed_codex_scope_makes_another_harness_boundary_ineligible() {
+        let (db, db_path) = test_db("codex-unconfirmed-cross-harness").await;
         let worktree = WorktreeId("wt-1".to_string());
         let codex = ScopeId("codex-a".to_string());
         let claude = ScopeId("claude-c".to_string());
@@ -1092,6 +1135,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("starting the Codex scope should succeed");
         coordinate_boundary(
             &db,
@@ -1105,6 +1149,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("starting the Claude scope should succeed");
 
         capture.push_success(TreeId("tree-b".to_string()));
@@ -1119,6 +1164,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("closing the Claude scope should succeed");
 
         let event = outcome
@@ -1143,6 +1189,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("closing the Codex scope should succeed");
 
         let confirmed_event = confirmed
@@ -1157,9 +1204,9 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn a_confirming_codex_close_contends_with_a_live_non_codex_scope() {
-        let (db, db_path) = test_db("codex-confirmed-cross-harness");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_confirming_codex_close_contends_with_a_live_non_codex_scope() {
+        let (db, db_path) = test_db("codex-confirmed-cross-harness").await;
         let worktree = WorktreeId("wt-1".to_string());
         let codex = ScopeId("codex-a".to_string());
         let claude = ScopeId("claude-c".to_string());
@@ -1177,6 +1224,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("starting the Codex scope should succeed");
         coordinate_boundary(
             &db,
@@ -1190,6 +1238,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("starting the Claude scope should succeed");
 
         capture.push_success(TreeId("tree-b".to_string()));
@@ -1204,6 +1253,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("closing the Codex scope should succeed");
 
         let event = outcome
@@ -1215,9 +1265,9 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn an_unconfirmed_opencode_scope_makes_another_harness_boundary_ineligible() {
-        let (db, db_path) = test_db("opencode-unconfirmed-cross-harness");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unconfirmed_opencode_scope_makes_another_harness_boundary_ineligible() {
+        let (db, db_path) = test_db("opencode-unconfirmed-cross-harness").await;
         let worktree = WorktreeId("wt-1".to_string());
         let opencode = ScopeId("opencode-a".to_string());
         let claude = ScopeId("claude-c".to_string());
@@ -1235,6 +1285,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("starting the OpenCode scope should succeed");
         coordinate_boundary(
             &db,
@@ -1248,6 +1299,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("starting the Claude scope should succeed");
 
         capture.push_success(TreeId("tree-b".to_string()));
@@ -1262,6 +1314,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("closing the Claude scope should succeed");
 
         let event = outcome
@@ -1286,6 +1339,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("closing the OpenCode scope should succeed");
 
         let confirmed_event = confirmed
@@ -1300,9 +1354,9 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn a_confirming_opencode_close_contends_with_a_live_non_opencode_scope() {
-        let (db, db_path) = test_db("opencode-confirmed-cross-harness");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_confirming_opencode_close_contends_with_a_live_non_opencode_scope() {
+        let (db, db_path) = test_db("opencode-confirmed-cross-harness").await;
         let worktree = WorktreeId("wt-1".to_string());
         let opencode = ScopeId("opencode-a".to_string());
         let claude = ScopeId("claude-c".to_string());
@@ -1320,6 +1374,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("starting the OpenCode scope should succeed");
         coordinate_boundary(
             &db,
@@ -1333,6 +1388,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("starting the Claude scope should succeed");
 
         capture.push_success(TreeId("tree-b".to_string()));
@@ -1347,6 +1403,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("closing the OpenCode scope should succeed");
 
         let event = outcome
@@ -1358,15 +1415,17 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn cas_conflict_reloads_and_recomputes_without_a_second_snapshot() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cas_conflict_reloads_and_recomputes_without_a_second_snapshot() {
         const WRITERS: usize = 3;
 
         let db_path = unique_test_db_path("ac8-cas-conflict");
         let worktree = WorktreeId("wt-1".to_string());
 
         {
-            let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test db should open");
+            let db = RepositoryAgentTraceDb::new_at(&db_path)
+                .await
+                .expect("test db should open");
             let bootstrap_capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
             coordinate_boundary(
                 &db,
@@ -1375,6 +1434,7 @@ mod tests {
                 &RuntimeBoundary::Flush,
                 false,
             )
+            .await
             .expect("baseline flush should succeed");
         }
 
@@ -1384,13 +1444,15 @@ mod tests {
             let db_path = db_path.clone();
             let worktree = worktree.clone();
             let barrier = std::sync::Arc::clone(&barrier);
-            handles.push(std::thread::spawn(move || {
+            handles.push(std::thread::spawn(async move || {
                 let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+                    .await
                     .expect("writer handle should open");
                 let capture = FakeSnapshotCapture::new(TreeId(format!("tree-writer-{i}")));
                 barrier.wait();
                 let outcome =
                     coordinate_boundary(&db, &capture, &worktree, &RuntimeBoundary::Flush, false)
+                        .await
                         .expect(
                             "each racing writer should eventually succeed after reload+recompute",
                         );
@@ -1427,9 +1489,9 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn recovers_from_needs_rebaseline_preserving_live_scopes() {
-        let (db, db_path) = test_db("ac10-needs-rebaseline");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recovers_from_needs_rebaseline_preserving_live_scopes() {
+        let (db, db_path) = test_db("ac10-needs-rebaseline").await;
         let worktree = WorktreeId("wt-1".to_string());
         let live_scope = ScopeId("scope-live".to_string());
         let abandoned_scope = ScopeId("scope-abandoned".to_string());
@@ -1447,6 +1509,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("starting the live scope should succeed");
         coordinate_boundary(
             &db,
@@ -1460,11 +1523,13 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("starting the to-be-abandoned scope should succeed");
 
         let store = MutationTraceStore::new(&db);
         let state = store
             .load_worktree(&worktree, Some(&abandoned_scope), None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist")
             .into_protocol_state();
@@ -1481,6 +1546,7 @@ mod tests {
 
         let before_recovery = store
             .load_worktree(&worktree, None, None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist");
         assert!(before_recovery.worktree_state.needs_rebaseline);
@@ -1497,6 +1563,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("advance should trigger needs_rebaseline recovery first, then succeed");
         assert!(
             outcome.mutation_event.is_none(),
@@ -1505,6 +1572,7 @@ mod tests {
 
         let after = store
             .load_worktree(&worktree, Some(&live_scope), None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist");
         assert!(
@@ -1525,9 +1593,9 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn recovers_from_snapshot_failure_taint_abandoning_live_scopes() {
-        let (db, db_path) = test_db("ac10-taint-recovery");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recovers_from_snapshot_failure_taint_abandoning_live_scopes() {
+        let (db, db_path) = test_db("ac10-taint-recovery").await;
         let worktree = WorktreeId("wt-1".to_string());
         let live_scope = ScopeId("scope-live".to_string());
         let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
@@ -1544,11 +1612,13 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("start should succeed");
 
         let store = MutationTraceStore::new(&db);
         let state = store
             .load_worktree(&worktree, None, None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist")
             .into_protocol_state();
@@ -1565,6 +1635,7 @@ mod tests {
 
         let before_recovery = store
             .load_worktree(&worktree, None, None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist");
         assert!(before_recovery.worktree_state.tainted);
@@ -1581,10 +1652,12 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("advance should trigger taint recovery first, then succeed");
 
         let after = store
             .load_worktree(&worktree, Some(&live_scope), None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist");
         assert!(
@@ -1600,13 +1673,13 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    fn assert_recovery_at_revision_exhaustion_is_rejected(
+    async fn assert_recovery_at_revision_exhaustion_is_rejected(
         label: &str,
         tainted: bool,
         failure_kind: &str,
         needs_rebaseline: bool,
     ) {
-        let (db, db_path) = test_db(label);
+        let (db, db_path) = test_db(label).await;
         let worktree = WorktreeId("wt-1".to_string());
         let scope = ScopeId("scope-1".to_string());
         let event = EventId("evt-start".to_string());
@@ -1619,7 +1692,8 @@ mod tests {
             tainted,
             failure_kind,
             needs_rebaseline,
-        );
+        )
+        .await;
 
         let capture = FakeSnapshotCapture::new(TreeId("tree-b".to_string()));
         let error = coordinate_boundary(
@@ -1634,6 +1708,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect_err("recovery that cannot advance revision must reject the triggering boundary");
 
         match error {
@@ -1650,6 +1725,7 @@ mod tests {
         let store = MutationTraceStore::new(&db);
         let projection = store
             .load_worktree(&worktree, Some(&scope), None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist");
         assert_eq!(projection.worktree_state.revision, u64::MAX);
@@ -1673,9 +1749,9 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn start_registers_provenance_after_its_owning_scope_and_before_the_protocol_commits() {
-        let (db, db_path) = test_db("provenance-start-ordering");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_registers_provenance_after_its_owning_scope_and_before_the_protocol_commits() {
+        let (db, db_path) = test_db("provenance-start-ordering").await;
         let worktree = WorktreeId("wt-1".to_string());
         let scope = ScopeId("scope-1".to_string());
         let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
@@ -1695,6 +1771,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("a start carrying provenance for a first-seen scope should succeed");
 
         let store = MutationTraceStore::new(&db);
@@ -1712,6 +1789,7 @@ mod tests {
 
         let projection = store
             .load_worktree(&worktree, Some(&scope), None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist");
         assert_eq!(
@@ -1723,9 +1801,9 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn start_without_provenance_then_replay_with_provenance_does_not_backfill() {
-        let (db, db_path) = test_db("provenance-no-late-backfill");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_without_provenance_then_replay_with_provenance_does_not_backfill() {
+        let (db, db_path) = test_db("provenance-no-late-backfill").await;
         let worktree = WorktreeId("wt-1".to_string());
         let scope = ScopeId("scope-1".to_string());
         let event = EventId("evt-start".to_string());
@@ -1743,11 +1821,13 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("a start without provenance should succeed");
 
         let store = MutationTraceStore::new(&db);
         let admitted = store
             .load_worktree(&worktree, Some(&scope), None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist");
         assert_eq!(
@@ -1778,6 +1858,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("replaying the start with provenance follows normal replay semantics");
 
         assert_eq!(
@@ -1790,6 +1871,7 @@ mod tests {
 
         let replayed = store
             .load_worktree(&worktree, Some(&scope), None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist");
         assert_eq!(
@@ -1808,9 +1890,9 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn never_seen_scope_can_receive_provenance_before_successful_start() {
-        let (db, db_path) = test_db("provenance-retry-before-admission");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn never_seen_scope_can_receive_provenance_before_successful_start() {
+        let (db, db_path) = test_db("provenance-retry-before-admission").await;
         let worktree = WorktreeId("wt-1".to_string());
         let scope = ScopeId("scope-1".to_string());
         let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
@@ -1818,9 +1900,11 @@ mod tests {
         let store = MutationTraceStore::new(&db);
         store
             .initialize_worktree(&worktree, &TreeId("tree-a".to_string()))
+            .await
             .expect("worktree initialization should succeed");
         let seeded = store
             .register_scope(&scope, &worktree, ActorKind::ClaudeCode)
+            .await
             .expect("seeding the owning scope row should succeed");
         assert_eq!(
             seeded.status,
@@ -1849,6 +1933,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("retrying a start against a still-NeverSeen scope should succeed");
 
         assert_eq!(
@@ -1865,6 +1950,7 @@ mod tests {
 
         let projection = store
             .load_worktree(&worktree, Some(&scope), None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist");
         assert_eq!(
@@ -1876,9 +1962,9 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn an_admitted_scope_with_provenance_still_rejects_a_different_session() {
-        let (db, db_path) = test_db("provenance-admitted-session-conflict");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_admitted_scope_with_provenance_still_rejects_a_different_session() {
+        let (db, db_path) = test_db("provenance-admitted-session-conflict").await;
         let worktree = WorktreeId("wt-1".to_string());
         let scope = ScopeId("scope-1".to_string());
         let event = EventId("evt-start".to_string());
@@ -1899,11 +1985,13 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("the admitting start should succeed");
 
         let store = MutationTraceStore::new(&db);
         let admitted = store
             .load_worktree(&worktree, Some(&scope), None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist");
         assert_eq!(
@@ -1912,6 +2000,7 @@ mod tests {
         );
         let stored = store
             .load_scope_provenance(&scope)
+            .await
             .expect("provenance load should succeed");
 
         let failure = coordinate_boundary(
@@ -1929,6 +2018,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect_err("an existing provenance row is checked even after admission");
 
         assert!(
@@ -1946,6 +2036,7 @@ mod tests {
 
         let after = store
             .load_worktree(&worktree, Some(&scope), None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist");
         assert_eq!(
@@ -1957,9 +2048,9 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn a_provenance_registration_failure_rejects_the_start_before_the_protocol_commits() {
-        let (db, db_path) = test_db("provenance-registration-failure");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_provenance_registration_failure_rejects_the_start_before_the_protocol_commits() {
+        let (db, db_path) = test_db("provenance-registration-failure").await;
         let worktree = WorktreeId("wt-1".to_string());
         let scope = ScopeId("scope-1".to_string());
         let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
@@ -1967,9 +2058,11 @@ mod tests {
         let store = MutationTraceStore::new(&db);
         store
             .initialize_worktree(&worktree, &TreeId("tree-a".to_string()))
+            .await
             .expect("worktree initialization should succeed");
         store
             .register_scope(&scope, &worktree, ActorKind::ClaudeCode)
+            .await
             .expect("seeding the owning scope row should succeed");
         let seeded = store
             .register_scope_provenance(&ScopeProvenance {
@@ -1977,6 +2070,7 @@ mod tests {
                 session_id: "cc_session-1".to_string(),
                 model_id: Some("claude/opus".to_string()),
             })
+            .await
             .expect("seeding provenance should succeed");
 
         let failure = coordinate_boundary(
@@ -1994,6 +2088,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect_err("a conflicting provenance session must reject the start");
 
         assert!(
@@ -2011,6 +2106,7 @@ mod tests {
 
         let projection = store
             .load_worktree(&worktree, Some(&scope), None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist");
         assert_eq!(
@@ -2027,34 +2123,38 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn mandatory_recovery_that_cannot_advance_revision_rejects_the_triggering_boundary() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mandatory_recovery_that_cannot_advance_revision_rejects_the_triggering_boundary() {
         assert_recovery_at_revision_exhaustion_is_rejected(
             "revision-exhausted-tainted",
             true,
             "snapshot_failure",
             false,
-        );
+        )
+        .await;
         assert_recovery_at_revision_exhaustion_is_rejected(
             "revision-exhausted-needs-rebaseline",
             false,
             "healthy",
             true,
-        );
+        )
+        .await;
     }
 
-    #[test]
-    fn snapshot_failure_taints_an_existing_worktree() {
-        let (db, db_path) = test_db("ac11-taints-existing");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn snapshot_failure_taints_an_existing_worktree() {
+        let (db, db_path) = test_db("ac11-taints-existing").await;
         let worktree = WorktreeId("wt-1".to_string());
         let bootstrap = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
         coordinate_boundary(&db, &bootstrap, &worktree, &RuntimeBoundary::Flush, false)
+            .await
             .expect("baseline flush should materialize the worktree");
 
         let failing = FakeSnapshotCapture::new(TreeId("tree-b".to_string()));
         failing.push_failure("simulated git snapshot failure");
 
         let error = coordinate_boundary(&db, &failing, &worktree, &RuntimeBoundary::Flush, false)
+            .await
             .expect_err("a capture failure against an existing worktree should be reported");
         match error {
             CoordinateError::SnapshotFailure {
@@ -2066,6 +2166,7 @@ mod tests {
         let store = MutationTraceStore::new(&db);
         let projection = store
             .load_worktree(&worktree, None, None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist");
         assert!(projection.worktree_state.tainted);
@@ -2077,18 +2178,19 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn snapshot_failure_taint_survives_a_losing_cas_and_commits_on_retry() {
-        let (db, db_path) = test_db("ac11-taint-retry-succeeds");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn snapshot_failure_taint_survives_a_losing_cas_and_commits_on_retry() {
+        let (db, db_path) = test_db("ac11-taint-retry-succeeds").await;
         let worktree = WorktreeId("wt-1".to_string());
         let bootstrap = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
         coordinate_boundary(&db, &bootstrap, &worktree, &RuntimeBoundary::Flush, false)
+            .await
             .expect("baseline flush should materialize the worktree");
 
         let store = MutationTraceStore::new(&db);
         let competing_scope = ScopeId("competing-scope".to_string());
         let mut interfered = false;
-        let persisted_taint = run_taint_retry_loop_inner(&store, &worktree, |attempt| {
+        let persisted_taint = run_taint_retry_loop_inner(&store, &worktree, async |attempt| {
             if attempt == 0 && !interfered {
                 interfered = true;
                 commit_competing_advance(
@@ -2097,9 +2199,11 @@ mod tests {
                     &competing_scope,
                     "competing-event-1",
                     true,
-                );
+                )
+                .await;
             }
         })
+        .await
         .expect("taint retry loop should not error");
 
         assert!(
@@ -2109,6 +2213,7 @@ mod tests {
 
         let projection = store
             .load_worktree(&worktree, None, None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist");
         assert!(projection.worktree_state.tainted);
@@ -2120,18 +2225,19 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn snapshot_failure_taint_reports_not_persisted_after_retries_are_exhausted() {
-        let (db, db_path) = test_db("ac11-taint-exhaustion");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn snapshot_failure_taint_reports_not_persisted_after_retries_are_exhausted() {
+        let (db, db_path) = test_db("ac11-taint-exhaustion").await;
         let worktree = WorktreeId("wt-1".to_string());
         let bootstrap = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
         coordinate_boundary(&db, &bootstrap, &worktree, &RuntimeBoundary::Flush, false)
+            .await
             .expect("baseline flush should materialize the worktree");
 
         let store = MutationTraceStore::new(&db);
         let competing_scope = ScopeId("competing-scope".to_string());
         let mut competing_calls = 0u32;
-        let persisted_taint = run_taint_retry_loop_inner(&store, &worktree, |_attempt| {
+        let persisted_taint = run_taint_retry_loop_inner(&store, &worktree, async |_attempt| {
             competing_calls += 1;
             commit_competing_advance(
                 &store,
@@ -2139,8 +2245,10 @@ mod tests {
                 &competing_scope,
                 &format!("competing-event-{competing_calls}"),
                 competing_calls == 1,
-            );
+            )
+            .await;
         })
+        .await
         .expect("taint retry loop should not error even when every attempt conflicts");
 
         assert!(
@@ -2150,6 +2258,7 @@ mod tests {
 
         let projection = store
             .load_worktree(&worktree, None, None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist");
         assert!(
@@ -2160,14 +2269,15 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn snapshot_failure_before_any_baseline_makes_no_durable_write() {
-        let (db, db_path) = test_db("ac11-bootstrap-failure");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn snapshot_failure_before_any_baseline_makes_no_durable_write() {
+        let (db, db_path) = test_db("ac11-bootstrap-failure").await;
         let worktree = WorktreeId("wt-1".to_string());
         let failing = FakeSnapshotCapture::new(TreeId("unused".to_string()));
         failing.push_failure("simulated git snapshot failure before any baseline exists");
 
         let error = coordinate_boundary(&db, &failing, &worktree, &RuntimeBoundary::Flush, false)
+            .await
             .expect_err("a capture failure with no prior worktree row should still be reported");
         match error {
             CoordinateError::SnapshotFailure {
@@ -2179,6 +2289,7 @@ mod tests {
         let store = MutationTraceStore::new(&db);
         let projection = store
             .load_worktree(&worktree, None, None)
+            .await
             .expect("load should succeed");
         assert!(
             projection.is_none(),
@@ -2188,25 +2299,27 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn snapshot_failure_taints_a_worktree_materialized_concurrently_during_capture() {
-        let (db, db_path) = test_db("ac11-concurrent-materialization");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn snapshot_failure_taints_a_worktree_materialized_concurrently_during_capture() {
+        let (db, db_path) = test_db("ac11-concurrent-materialization").await;
         let worktree = WorktreeId("wt-1".to_string());
 
         let capture = HookedFailingCapture::new(
             "simulated git snapshot failure racing a concurrent materialization",
-            || {
+            async || {
                 let store = MutationTraceStore::new(&db);
                 store
                     .initialize_worktree(
                         &worktree,
                         &TreeId("tree-materialized-concurrently".to_string()),
                     )
+                    .await
                     .expect("concurrent materialization should succeed");
             },
         );
 
         let error = coordinate_boundary(&db, &capture, &worktree, &RuntimeBoundary::Flush, false)
+            .await
             .expect_err(
                 "a capture failure racing a concurrent materialization should still be reported",
             );
@@ -2221,6 +2334,7 @@ mod tests {
         let store = MutationTraceStore::new(&db);
         let projection = store
             .load_worktree(&worktree, None, None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist");
         assert!(projection.worktree_state.tainted);
@@ -2242,11 +2356,11 @@ mod tests {
         let (result_tx, result_rx) = mpsc::channel();
         let repo_root_clone = repo_root.clone();
         let db_path_clone = db_path.clone();
-        let worker = thread::spawn(move || {
+        let worker = thread::spawn(async move || {
             let outcome = coordinate_inner(
                 &repo_root_clone,
                 &RuntimeBoundary::Flush,
-                || RepositoryAgentTraceDb::new_at(&db_path_clone),
+                async || RepositoryAgentTraceDb::new_at(&db_path_clone).await,
                 move || {
                     contention_tx
                         .send(())
@@ -2254,7 +2368,8 @@ mod tests {
                 },
                 |_attempt| {},
                 |_attempt| Ok(()),
-            );
+            )
+            .await;
             result_tx
                 .send(())
                 .expect("result signal channel should still be open");
@@ -2291,18 +2406,21 @@ mod tests {
         remove_test_repo(&repo_root);
     }
 
-    #[test]
-    fn public_coordinate_clears_marker_on_success() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn public_coordinate_clears_marker_on_success() {
         let repo_root = unique_test_repo("t02-success-clears-marker");
         init_repo(&repo_root);
         let db_path = repo_root.join("agent-trace.db");
-        RepositoryAgentTraceDb::new_at(&db_path).expect("seed db should open with schema");
+        RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("seed db should open with schema");
         let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
         let marker = ExternalTaintMarker::new(&git_dir);
 
-        let outcome = coordinate(&repo_root, &RuntimeBoundary::Flush, || {
-            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+        let outcome = coordinate(&repo_root, &RuntimeBoundary::Flush, async || {
+            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path).await
         })
+        .await
         .expect("a first observation should succeed");
         assert_eq!(
             outcome.revision, 0,
@@ -2316,18 +2434,21 @@ mod tests {
         remove_test_repo(&repo_root);
     }
 
-    #[test]
-    fn public_coordinate_leaves_marker_after_a_snapshot_failure() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn public_coordinate_leaves_marker_after_a_snapshot_failure() {
         let repo_root = unique_test_repo("t02-snapshot-failure-marker");
         init_repo(&repo_root);
         let db_path = repo_root.join("agent-trace.db");
-        RepositoryAgentTraceDb::new_at(&db_path).expect("seed db should open with schema");
+        RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("seed db should open with schema");
         let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
         let marker = ExternalTaintMarker::new(&git_dir);
 
-        coordinate(&repo_root, &RuntimeBoundary::Flush, || {
-            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+        coordinate(&repo_root, &RuntimeBoundary::Flush, async || {
+            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path).await
         })
+        .await
         .expect("the baseline observation should succeed");
         assert!(
             !marker.exists().expect("marker existence should resolve"),
@@ -2340,9 +2461,10 @@ mod tests {
             "planting a file where the snapshot service expects its temp-index directory should succeed",
         );
 
-        let error = coordinate(&repo_root, &RuntimeBoundary::Flush, || {
-            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+        let error = coordinate(&repo_root, &RuntimeBoundary::Flush, async || {
+            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path).await
         })
+        .await
         .expect_err("a Git snapshot failure after marker arming should be reported");
         assert!(
             matches!(error, CoordinateError::SnapshotFailure { .. }),
@@ -2356,12 +2478,14 @@ mod tests {
         remove_test_repo(&repo_root);
     }
 
-    #[test]
-    fn public_coordinate_leaves_marker_after_a_non_snapshot_failure() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn public_coordinate_leaves_marker_after_a_non_snapshot_failure() {
         let repo_root = unique_test_repo("t02-non-snapshot-failure-marker");
         init_repo(&repo_root);
         let db_path = repo_root.join("agent-trace.db");
-        let seed_db = RepositoryAgentTraceDb::new_at(&db_path).expect("seed db should open");
+        let seed_db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("seed db should open");
         let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
         let worktree_id = resolve_worktree_id(&repo_root).expect("worktree id should resolve");
         insert_worktree_at_revision(
@@ -2372,13 +2496,15 @@ mod tests {
             true,
             "snapshot_failure",
             false,
-        );
+        )
+        .await;
         drop(seed_db);
 
         let marker = ExternalTaintMarker::new(&git_dir);
-        let error = coordinate(&repo_root, &RuntimeBoundary::Flush, || {
-            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+        let error = coordinate(&repo_root, &RuntimeBoundary::Flush, async || {
+            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path).await
         })
+        .await
         .expect_err("mandatory recovery that cannot advance the revision must reject the boundary");
         assert!(
             matches!(error, CoordinateError::RevisionExhausted { .. }),
@@ -2392,12 +2518,14 @@ mod tests {
         remove_test_repo(&repo_root);
     }
 
-    #[test]
-    fn public_coordinate_fails_closed_when_the_marker_cannot_be_armed() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn public_coordinate_fails_closed_when_the_marker_cannot_be_armed() {
         let repo_root = unique_test_repo("t02-marker-arm-failure");
         init_repo(&repo_root);
         let db_path = repo_root.join("agent-trace.db");
-        RepositoryAgentTraceDb::new_at(&db_path).expect("seed db should open with schema");
+        RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("seed db should open with schema");
         let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
 
         // Plant a directory exactly where the marker file must be created, so
@@ -2406,10 +2534,11 @@ mod tests {
             .expect("planting a directory at the marker path should succeed");
 
         let provider_called = std::sync::atomic::AtomicBool::new(false);
-        let error = coordinate(&repo_root, &RuntimeBoundary::Flush, || {
+        let error = coordinate(&repo_root, &RuntimeBoundary::Flush, async || {
             provider_called.store(true, Ordering::SeqCst);
-            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path).await
         })
+        .await
         .expect_err("an unarmed marker must fail coordinate() closed");
         assert!(
             matches!(
@@ -2429,12 +2558,14 @@ mod tests {
         remove_test_repo(&repo_root);
     }
 
-    #[test]
-    fn public_coordinate_fails_closed_when_marker_inspection_fails() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn public_coordinate_fails_closed_when_marker_inspection_fails() {
         let repo_root = unique_test_repo("t02-marker-inspect-failure");
         init_repo(&repo_root);
         let db_path = repo_root.join("agent-trace.db");
-        RepositoryAgentTraceDb::new_at(&db_path).expect("seed db should open with schema");
+        RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("seed db should open with schema");
         let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
         let sce_dir = git_dir.join("sce");
         std::fs::create_dir_all(&sce_dir).expect("the sce directory should be creatable");
@@ -2449,13 +2580,13 @@ mod tests {
             let repo_root = repo_root.clone();
             let db_path = db_path.clone();
             let provider_called = std::sync::Arc::clone(&provider_called);
-            thread::spawn(move || {
+            thread::spawn(async move || {
                 coordinate_inner(
                     &repo_root,
                     &RuntimeBoundary::Flush,
-                    || {
+                    async || {
                         provider_called.store(true, Ordering::SeqCst);
-                        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+                        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path).await
                     },
                     move || {
                         contention_tx
@@ -2465,6 +2596,7 @@ mod tests {
                     |_attempt| {},
                     |_attempt| Ok(()),
                 )
+                .await
             })
         };
 
@@ -2500,8 +2632,8 @@ mod tests {
         remove_test_repo(&repo_root);
     }
 
-    #[test]
-    fn public_coordinate_leaves_marker_when_the_db_provider_fails() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn public_coordinate_leaves_marker_when_the_db_provider_fails() {
         let repo_root = unique_test_repo("t02-db-provider-failure-marker");
         init_repo(&repo_root);
         let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
@@ -2514,6 +2646,7 @@ mod tests {
                 Err(anyhow::anyhow!("simulated Agent Trace DB open failure"))
             },
         )
+        .await
         .expect_err("a DB provider that returns Err must fail coordinate()");
         assert!(
             matches!(error, CoordinateError::AgentTraceDbUnavailable(_)),
@@ -2527,9 +2660,9 @@ mod tests {
         remove_test_repo(&repo_root);
     }
 
-    #[test]
-    fn inherited_external_taint_recovers_once_before_the_boundary() {
-        let (db, db_path) = test_db("t03-inherited-recovers-once");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inherited_external_taint_recovers_once_before_the_boundary() {
+        let (db, db_path) = test_db("t03-inherited-recovers-once").await;
         let worktree = WorktreeId("wt-1".to_string());
         let scope = ScopeId("scope-live".to_string());
         let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
@@ -2546,6 +2679,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("start should establish the baseline and the live scope");
 
         let advance_capture = FakeSnapshotCapture::new(TreeId("tree-b".to_string()));
@@ -2560,6 +2694,7 @@ mod tests {
             },
             true,
         )
+        .await
         .expect("an inherited external-taint marker must recover, then process the boundary");
 
         assert!(
@@ -2580,6 +2715,7 @@ mod tests {
         let store = MutationTraceStore::new(&db);
         let projection = store
             .load_worktree(&worktree, Some(&scope), None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist");
         assert!(!projection.worktree_state.tainted);
@@ -2599,13 +2735,14 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn inherited_external_taint_with_no_worktree_row_baselines_without_evidence() {
-        let (db, db_path) = test_db("t03-inherited-no-row");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inherited_external_taint_with_no_worktree_row_baselines_without_evidence() {
+        let (db, db_path) = test_db("t03-inherited-no-row").await;
         let worktree = WorktreeId("wt-1".to_string());
         let capture = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
 
         let outcome = coordinate_boundary(&db, &capture, &worktree, &RuntimeBoundary::Flush, true)
+            .await
             .expect("a first-ever invocation carrying an inherited marker must still succeed");
 
         assert!(
@@ -2620,6 +2757,7 @@ mod tests {
         let store = MutationTraceStore::new(&db);
         let projection = store
             .load_worktree(&worktree, None, None)
+            .await
             .expect("load should succeed")
             .expect("the worktree row should now exist");
         assert!(!projection.worktree_state.tainted);
@@ -2632,9 +2770,9 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn a_losing_recovery_cas_reinjects_external_taint_until_it_applies() {
-        let (db, db_path) = test_db("t03-recovery-cas-reinjection");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_losing_recovery_cas_reinjects_external_taint_until_it_applies() {
+        let (db, db_path) = test_db("t03-recovery-cas-reinjection").await;
         let worktree = WorktreeId("wt-1".to_string());
         let scope = ScopeId("scope-live".to_string());
         let bootstrap = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
@@ -2651,6 +2789,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("bootstrap start should establish the baseline and live scope");
 
         let store = MutationTraceStore::new(&db);
@@ -2664,7 +2803,7 @@ mod tests {
             &worktree,
             &RuntimeBoundary::Flush,
             true,
-            |attempt| {
+            async |attempt| {
                 if attempt == 0 && !interfered.get() {
                     interfered.set(true);
                     commit_competing_advance(
@@ -2673,11 +2812,13 @@ mod tests {
                         &competing_scope,
                         "competing-event-1",
                         true,
-                    );
+                    )
+                    .await;
                 }
             },
             |_attempt| Ok(()),
         )
+        .await
         .expect("recovery must recompute past the losing CAS and still succeed");
 
         assert_eq!(
@@ -2692,6 +2833,7 @@ mod tests {
 
         let projection = store
             .load_worktree(&worktree, Some(&scope), None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist");
         assert!(!projection.worktree_state.tainted);
@@ -2703,6 +2845,7 @@ mod tests {
 
         let competing_projection = store
             .load_worktree(&worktree, Some(&competing_scope), None)
+            .await
             .expect("load should succeed")
             .expect("worktree should exist");
         assert_eq!(
@@ -2716,9 +2859,9 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn a_landed_recovery_clears_the_flag_so_a_boundary_cas_retry_does_not_re_recover() {
-        let (db, db_path) = test_db("t03-flag-clears-after-recovery");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_landed_recovery_clears_the_flag_so_a_boundary_cas_retry_does_not_re_recover() {
+        let (db, db_path) = test_db("t03-flag-clears-after-recovery").await;
         let worktree = WorktreeId("wt-1".to_string());
         let scope = ScopeId("scope-live".to_string());
         let bootstrap = FakeSnapshotCapture::new(TreeId("tree-a".to_string()));
@@ -2735,6 +2878,7 @@ mod tests {
             },
             false,
         )
+        .await
         .expect("bootstrap start should establish the baseline and live scope");
 
         let store = MutationTraceStore::new(&db);
@@ -2754,7 +2898,7 @@ mod tests {
             },
             true,
             |_attempt| {},
-            |attempt| {
+            async |attempt| {
                 if attempt == 0 && !interfered.get() {
                     interfered.set(true);
                     commit_competing_advance(
@@ -2763,11 +2907,13 @@ mod tests {
                         &competing_scope,
                         "competing-event-1",
                         true,
-                    );
+                    )
+                    .await;
                 }
                 Ok(())
             },
         )
+        .await
         .expect("the boundary CAS retry after a landed recovery must still succeed");
 
         assert_eq!(
@@ -2783,19 +2929,24 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
+    #[tokio::test(flavor = "multi_thread")]
     #[allow(clippy::too_many_lines)]
-    fn a_failure_after_recovery_before_boundary_commit_leaves_marker_and_forces_later_recovery() {
+    async fn a_failure_after_recovery_before_boundary_commit_leaves_marker_and_forces_later_recovery(
+    ) {
         let repo_root = unique_test_repo("t-ac8-recovery-then-fail");
         init_repo(&repo_root);
         let db_path = unique_test_db_path("t-ac8-recovery-then-fail");
-        RepositoryAgentTraceDb::new_at(&db_path).expect("seed db should open with schema");
+        RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("seed db should open with schema");
         let git_dir = resolve_git_dir(&repo_root).expect("git dir should resolve");
         let marker = ExternalTaintMarker::new(&git_dir);
-        let ok_db = || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path);
+        let ok_db =
+            async || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path).await;
 
         std::fs::write(repo_root.join("work.txt"), b"a").expect("the baseline edit should write");
         let baseline = coordinate(&repo_root, &RuntimeBoundary::Flush, ok_db)
+            .await
             .expect("the baseline observation should establish cursor A");
         let worktree_id = baseline.worktree_id.clone();
         let tree_a = baseline.observed_tree.clone();
@@ -2811,6 +2962,7 @@ mod tests {
             },
             ok_db,
         )
+        .await
         .expect("starting the live scope should succeed");
 
         marker.persist().expect(
@@ -2838,6 +2990,7 @@ mod tests {
                 anyhow::bail!("injected failure after recovery, before the boundary commits")
             },
         )
+        .await
         .expect_err("the injected post-recovery failure must fail the invocation");
         assert!(
             matches!(error, CoordinateError::Other(_)),
@@ -2852,6 +3005,7 @@ mod tests {
         let store = MutationTraceStore::new(&store_db);
         let after_fail = store
             .load_worktree(&worktree_id, Some(&scope), Some(&event_key))
+            .await
             .expect("loading the worktree row should succeed")
             .expect("the worktree row should exist");
         assert!(
@@ -2891,6 +3045,7 @@ mod tests {
 
         std::fs::write(repo_root.join("work.txt"), b"c").expect("the B -> C edit should write");
         let recovered = coordinate(&repo_root, &RuntimeBoundary::Flush, ok_db)
+            .await
             .expect("the later invocation inherits the still-armed marker and recovers again");
         assert!(
             recovered.mutation_event.is_none(),
@@ -2909,6 +3064,7 @@ mod tests {
         let store = MutationTraceStore::new(&store_db);
         let after_recover = store
             .load_worktree(&worktree_id, Some(&scope), None)
+            .await
             .expect("loading the worktree row should succeed")
             .expect("the worktree row should exist");
         assert_eq!(

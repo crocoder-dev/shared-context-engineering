@@ -12,7 +12,7 @@ pub struct SetupCommand {
 }
 
 impl SetupCommand {
-    pub fn execute<C: ContextWithRepoRoot>(&self, context: &C) -> Result<String, CliError> {
+    pub async fn execute<C: ContextWithRepoRoot>(&self, context: &C) -> Result<String, CliError> {
         let setup_start_path = match &self.request.hooks_repo_path {
             Some(path) => path.clone(),
             None => std::env::current_dir()
@@ -71,7 +71,7 @@ impl SetupCommand {
         let providers = lifecycle_providers(self.request.install_hooks);
 
         for provider in &providers {
-            let outcome = provider.setup(&ctx).map_err(unexpected_failure)?;
+            let outcome = provider.setup(&ctx).await.map_err(unexpected_failure)?;
 
             sections.extend(outcome.messages);
 

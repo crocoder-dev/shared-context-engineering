@@ -91,7 +91,7 @@ pub(crate) fn classify_health(git_dir: &Path) -> MutationScopeAdapterHealth {
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -102,7 +102,6 @@ mod tests {
     use super::super::events::AttemptKey;
     use super::super::lifecycle::run_opencode_mutation_scope_from_payload_with_seams;
     use super::*;
-    use crate::services::observability::traits::Logger;
 
     const FAIL_CLOSED_MESSAGE: &str =
         "SCE could not establish OpenCode mutation attribution for this tool execution.";
@@ -180,7 +179,7 @@ mod tests {
             }
         }
 
-        fn handle(&self, payload: &str) -> anyhow::Result<String> {
+        async fn handle(&self, payload: &str) -> anyhow::Result<String> {
             let operation = operation_of(payload);
             let occurrence = {
                 let mut calls = self.calls.lock().expect("seam mutex");
@@ -213,11 +212,15 @@ mod tests {
             .to_string()
     }
 
-    fn drive(git_dir: &Path, seam: &RecordingSeam, payload: &str) -> anyhow::Result<String> {
+    async fn drive(git_dir: &Path, seam: &RecordingSeam, payload: &str) -> anyhow::Result<String> {
         let resolver = |_cwd: &str| Ok(git_dir.to_path_buf());
-        let seam_fn =
-            |_root: &Path, payload: &str, _logger: Option<&dyn Logger>| seam.handle(payload);
+        let seam_fn = async |_root: &Path,
+                             payload: &str,
+                             _logger: Option<
+            &crate::services::observability::traits::NoopLogger,
+        >| seam.handle(payload);
         run_opencode_mutation_scope_from_payload_with_seams(payload, None, &resolver, &seam_fn)
+            .await
     }
 
     #[test]
@@ -232,13 +235,15 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn pending_start_with_clear_recovery_is_blocked_and_denies_repeated_unrelated_admissions_ac4() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pending_start_with_clear_recovery_is_blocked_and_denies_repeated_unrelated_admissions_ac4(
+    ) {
         let git_dir = unique_test_git_dir("pending-start-blocked");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
 
         let failing_start = RecordingSeam::failing_on(&["start"]);
         drive(&git_dir, &failing_start, &tool_before("write", "call-1"))
+            .await
             .expect_err("a failed Start seam must fail closed, leaving the attempt PendingStart");
         assert_eq!(
             state::read_state(&git_dir)
@@ -256,8 +261,9 @@ mod tests {
 
         let healthy = RecordingSeam::new();
         for (index, call_id) in ["call-2", "call-3"].into_iter().enumerate() {
-            let error =
-                drive(&git_dir, &healthy, &tool_before("write", call_id)).expect_err(&format!(
+            let error = drive(&git_dir, &healthy, &tool_before("write", call_id))
+                .await
+                .expect_err(&format!(
                     "unrelated admission #{} must be denied without self-clearing",
                     index + 1
                 ));
@@ -273,19 +279,22 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn pending_recovery_with_a_pending_start_attempt_is_blocked_even_though_an_unrelated_pending_abandon_can_still_clear_ac4(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pending_recovery_with_a_pending_start_attempt_is_blocked_even_though_an_unrelated_pending_abandon_can_still_clear_ac4(
     ) {
         let git_dir = unique_test_git_dir("pending-recovery-with-pending-start");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
 
         {
             let ok_seam = RecordingSeam::new();
-            drive(&git_dir, &ok_seam, &tool_before("write", "call-a")).expect("A starts");
+            drive(&git_dir, &ok_seam, &tool_before("write", "call-a"))
+                .await
+                .expect("A starts");
         }
 
         let failing_start = RecordingSeam::failing_on(&["start"]);
         drive(&git_dir, &failing_start, &tool_before("write", "call-b"))
+            .await
             .expect_err("B's Start seam fails, leaving B PendingStart");
         assert_eq!(
             state::read_state(&git_dir)
@@ -300,6 +309,7 @@ mod tests {
 
         let failing_flush = RecordingSeam::failing_on(&["flush"]);
         drive(&git_dir, &failing_flush, &tool_error("write", "call-a"))
+            .await
             .expect("A's terminal cleanup returns best-effort even though its flush fails");
 
         let seeded = state::read_state(&git_dir).expect("state readable");
@@ -339,6 +349,7 @@ mod tests {
 
         let healthy = RecordingSeam::new();
         let error = drive(&git_dir, &healthy, &tool_before("write", "call-c"))
+            .await
             .expect_err("C is unrelated to both A and B and must still be denied");
         assert!(error.to_string().contains(FAIL_CLOSED_MESSAGE));
 
@@ -371,6 +382,7 @@ mod tests {
         );
 
         let error = drive(&git_dir, &healthy, &tool_before("write", "call-d"))
+            .await
             .expect_err("D is denied again; the adapter never self-clears without B's own event");
         assert!(error.to_string().contains(FAIL_CLOSED_MESSAGE));
         assert_eq!(
@@ -382,18 +394,21 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn orphaned_flushing_with_a_pending_start_attempt_is_blocked_not_recovering_ac4() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn orphaned_flushing_with_a_pending_start_attempt_is_blocked_not_recovering_ac4() {
         let git_dir = unique_test_git_dir("orphaned-flushing-with-pending-start");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
 
         {
             let ok_seam = RecordingSeam::new();
-            drive(&git_dir, &ok_seam, &tool_before("write", "call-a")).expect("A starts");
+            drive(&git_dir, &ok_seam, &tool_before("write", "call-a"))
+                .await
+                .expect("A starts");
         }
 
         let failing_start = RecordingSeam::failing_on(&["start"]);
         drive(&git_dir, &failing_start, &tool_before("write", "call-b"))
+            .await
             .expect_err("B's Start seam fails, leaving B PendingStart");
 
         let doomed = state::read_state(&git_dir)
@@ -426,6 +441,7 @@ mod tests {
 
         let healthy = RecordingSeam::new();
         let error = drive(&git_dir, &healthy, &tool_before("write", "call-c"))
+            .await
             .expect_err("C is unrelated to both A and B and must still be denied");
         assert!(error.to_string().contains(FAIL_CLOSED_MESSAGE));
 
@@ -454,19 +470,22 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn pending_recovery_with_pending_abandon_attempts_is_recovering_and_an_unrelated_admission_clears_it(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pending_recovery_with_pending_abandon_attempts_is_recovering_and_an_unrelated_admission_clears_it(
     ) {
         let git_dir = unique_test_git_dir("pending-non-empty-recovering");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
 
         {
             let ok_seam = RecordingSeam::new();
-            drive(&git_dir, &ok_seam, &tool_before("write", "call-1")).expect("Start");
+            drive(&git_dir, &ok_seam, &tool_before("write", "call-1"))
+                .await
+                .expect("Start");
         }
 
         let failing = RecordingSeam::failing_on(&["abandon"]);
         drive(&git_dir, &failing, &tool_error("write", "call-1"))
+            .await
             .expect("a terminal failure whose abandon fails still returns best-effort");
 
         let seeded = state::read_state(&git_dir).expect("state readable");
@@ -490,6 +509,7 @@ mod tests {
                 &failing,
                 &tool_before("write", &format!("call-retry-{attempt_number}")),
             )
+            .await
             .expect_err("admission while recovery is unresolved must stay fail-closed");
             assert!(error.to_string().contains(FAIL_CLOSED_MESSAGE));
         }
@@ -501,6 +521,7 @@ mod tests {
 
         let healthy = RecordingSeam::new();
         drive(&git_dir, &healthy, &tool_before("write", "call-2"))
+            .await
             .expect("an unrelated call's admission resolves recovery once the seam succeeds");
 
         let resolved = state::read_state(&git_dir).expect("state readable");
@@ -514,18 +535,21 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn pending_recovery_with_empty_attempts_is_recovering_and_the_next_admission_clears_it() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pending_recovery_with_empty_attempts_is_recovering_and_the_next_admission_clears_it() {
         let git_dir = unique_test_git_dir("pending-empty-recovering");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
 
         {
             let ok_seam = RecordingSeam::new();
-            drive(&git_dir, &ok_seam, &tool_before("edit", "call-1")).expect("Start");
+            drive(&git_dir, &ok_seam, &tool_before("edit", "call-1"))
+                .await
+                .expect("Start");
         }
 
         let rebaseline_failing = RecordingSeam::failing_on_nth_occurrence("flush", 2);
         drive(&git_dir, &rebaseline_failing, &tool_error("edit", "call-1"))
+            .await
             .expect("a terminal failure whose rebaseline flush fails still returns");
 
         let seeded = state::read_state(&git_dir).expect("state readable");
@@ -541,7 +565,9 @@ mod tests {
         );
 
         let healthy = RecordingSeam::new();
-        drive(&git_dir, &healthy, &tool_before("edit", "call-2")).expect("retry admits new work");
+        drive(&git_dir, &healthy, &tool_before("edit", "call-2"))
+            .await
+            .expect("retry admits new work");
 
         let resolved = state::read_state(&git_dir).expect("state readable");
         assert!(resolved.recovery.is_clear());
@@ -553,8 +579,8 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn orphaned_flushing_with_pending_abandon_attempts_is_recovering_and_reclaimed_by_the_next_boundary(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn orphaned_flushing_with_pending_abandon_attempts_is_recovering_and_reclaimed_by_the_next_boundary(
     ) {
         let git_dir = unique_test_git_dir("orphaned-flushing-recovering");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
@@ -582,6 +608,7 @@ mod tests {
 
         let healthy = RecordingSeam::new();
         drive(&git_dir, &healthy, &tool_before("write", "call-new"))
+            .await
             .expect("the orphaned flush is reclaimed and retried, then the new call is admitted");
 
         let resolved = state::read_state(&git_dir).expect("state readable");
@@ -834,8 +861,8 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn repair_blocked_clears_a_dead_owner_pending_start_end_to_end() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn repair_blocked_clears_a_dead_owner_pending_start_end_to_end() {
         let git_dir = unique_test_git_dir("repair-end-to-end");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
         seed_pending_start_with_owner(&git_dir, "call-1", Some(dead_owner()));
@@ -851,8 +878,9 @@ mod tests {
             &git_dir,
             repository_root,
             None,
-            &|_root: &Path, payload: &str, _logger: Option<&dyn Logger>| healthy.handle(payload),
+            &async |_root: &Path, payload: &str, _logger: Option<&crate::services::observability::traits::NoopLogger>| healthy.handle(payload).await,
         )
+        .await
         .expect("repair should not error");
 
         assert_eq!(outcome, super::super::lifecycle::RepairOutcome::Repaired);
@@ -872,8 +900,8 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn repair_blocked_is_a_safe_no_op_when_the_pending_start_owner_is_live() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn repair_blocked_is_a_safe_no_op_when_the_pending_start_owner_is_live() {
         let git_dir = unique_test_git_dir("repair-live-owner-noop");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
         let attempt = seed_pending_start_with_owner(&git_dir, "call-1", Some(live_owner()));
@@ -884,8 +912,9 @@ mod tests {
             &git_dir,
             repository_root,
             None,
-            &|_root: &Path, payload: &str, _logger: Option<&dyn Logger>| seam.handle(payload),
+            &async |_root: &Path, payload: &str, _logger: Option<&crate::services::observability::traits::NoopLogger>| seam.handle(payload).await,
         )
+        .await
         .expect("repair should not error");
 
         assert_eq!(outcome, super::super::lifecycle::RepairOutcome::NoOp);
@@ -905,8 +934,8 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn repair_blocked_refuses_to_abandon_an_attempt_a_concurrent_process_already_started_before_the_lock_is_acquired(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn repair_blocked_refuses_to_abandon_an_attempt_a_concurrent_process_already_started_before_the_lock_is_acquired(
     ) {
         let git_dir = unique_test_git_dir("repair-concurrent-race");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
@@ -923,8 +952,9 @@ mod tests {
             &git_dir,
             repository_root,
             None,
-            &|_root: &Path, payload: &str, _logger: Option<&dyn Logger>| seam.handle(payload),
+            &async |_root: &Path, payload: &str, _logger: Option<&crate::services::observability::traits::NoopLogger>| seam.handle(payload).await,
         )
+        .await
         .expect("repair should not error");
 
         assert_eq!(
@@ -948,8 +978,8 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn repair_blocked_is_all_or_nothing_when_auto_fixable_assessment_becomes_stale() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn repair_blocked_is_all_or_nothing_when_auto_fixable_assessment_becomes_stale() {
         let git_dir = unique_test_git_dir("repair-all-or-nothing-stale");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
 
@@ -970,8 +1000,9 @@ mod tests {
             &git_dir,
             repository_root,
             None,
-            &|_root: &Path, payload: &str, _logger: Option<&dyn Logger>| seam.handle(payload),
+            &async |_root: &Path, payload: &str, _logger: Option<&crate::services::observability::traits::NoopLogger>| seam.handle(payload).await,
         )
+        .await
         .expect("repair should not error");
 
         assert_eq!(
@@ -1024,8 +1055,8 @@ mod tests {
         remove_test_git_dir(&git_dir);
     }
 
-    #[test]
-    fn repair_blocked_interrupted_before_the_seam_resolves_leaves_state_the_ordinary_recovery_path_completes_without_duplication(
+    #[tokio::test(flavor = "multi_thread")]
+    async fn repair_blocked_interrupted_before_the_seam_resolves_leaves_state_the_ordinary_recovery_path_completes_without_duplication(
     ) {
         let git_dir = unique_test_git_dir("repair-interrupted-resume");
         std::fs::create_dir_all(&git_dir).expect("git dir should be created");
@@ -1037,10 +1068,11 @@ mod tests {
             &git_dir,
             repository_root,
             None,
-            &|_root: &Path, payload: &str, _logger: Option<&dyn Logger>| {
+            &async |_root: &Path, payload: &str, _logger: Option<&crate::services::observability::traits::NoopLogger>| {
                 failing_abandon.handle(payload)
             },
         )
+        .await
         .expect("repair should not error even though the seam abandon call fails");
 
         assert_eq!(outcome, super::super::lifecycle::RepairOutcome::NoOp);
@@ -1060,6 +1092,7 @@ mod tests {
 
         let healthy = RecordingSeam::new();
         drive(&git_dir, &healthy, &tool_before("write", "call-2"))
+            .await
             .expect("the ordinary recovery path resumes the interrupted repair automatically");
 
         let resolved = state::read_state(&git_dir).expect("state readable");

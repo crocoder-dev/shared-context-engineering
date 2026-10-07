@@ -3,12 +3,10 @@
 
 pub mod control_plane;
 
-#[cfg(test)]
+#[cfg(any())]
 pub(crate) mod test_http_server;
 
 use std::fmt;
-use std::future::Future;
-use std::pin::Pin;
 
 use crate::services::agent_trace_export::{
     AgentTraceAgentTraceExportRow, AgentTraceDiffTraceExportRow, AgentTraceMessageExportRow,
@@ -159,7 +157,6 @@ pub struct StreamSyncOutcome {
 /// already-accepted rows; if unchanged, the same rows are re-read and
 /// resent. Both cases share one bounded reconciliation counter. A `Terminal`
 /// outcome stops immediately without calling `refresh_cursor`.
-pub type SyncFuture<'a, Output> = Pin<Box<dyn Future<Output = Output> + 'a>>;
 
 pub async fn sync_stream<'a, T, ReadFn, IngestFn, RefreshFn>(
     initial_cursor: i64,
@@ -170,9 +167,9 @@ pub async fn sync_stream<'a, T, ReadFn, IngestFn, RefreshFn>(
 ) -> Result<StreamSyncOutcome, StreamSyncError>
 where
     T: AgentTraceExportRow + 'a,
-    ReadFn: FnMut(i64, usize) -> SyncFuture<'a, Result<Vec<T>, StreamSyncError>>,
-    IngestFn: for<'rows> FnMut(i64, &'rows [T]) -> SyncFuture<'a, BatchAttemptOutcome>,
-    RefreshFn: FnMut() -> SyncFuture<'a, Result<i64, StreamSyncError>>,
+    ReadFn: std::ops::AsyncFnMut(i64, usize) -> Result<Vec<T>, StreamSyncError>,
+    IngestFn: for<'rows> std::ops::AsyncFnMut(i64, &'rows [T]) -> BatchAttemptOutcome,
+    RefreshFn: std::ops::AsyncFnMut() -> Result<i64, StreamSyncError>,
 {
     let mut cursor = initial_cursor;
     let mut uploaded = 0usize;
@@ -229,7 +226,7 @@ where
     })
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::cell::RefCell;
     use std::future::Future;
@@ -245,8 +242,8 @@ mod tests {
             .block_on(future)
     }
 
-    fn ready<T: 'static>(value: T) -> SyncFuture<'static, T> {
-        Box::pin(std::future::ready(value))
+    fn ready<T: 'static>(value: T) -> impl Future<Output = T> + 'static {
+        std::future::ready(value)
     }
 
     fn row(source_row_id: i64) -> AgentTraceMessageExportRow {

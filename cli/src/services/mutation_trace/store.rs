@@ -535,15 +535,21 @@ impl<'a> MutationTraceStore<'a> {
     /// healthy, not tainted, not needing rebaseline, with `cursor_tree` set to
     /// `initial_tree`. A no-op when the worktree row already exists — an
     /// existing cursor, revision, or failure state is never overwritten.
-    pub fn initialize_worktree(&self, worktree: &WorktreeId, initial_tree: &TreeId) -> Result<()> {
-        self.db.execute_idempotent_write(
-            INSERT_WORKTREE_IF_ABSENT_SQL,
-            (
-                worktree.0.as_str(),
-                initial_tree.0.as_str(),
-                encode_revision(0).as_slice(),
-            ),
-        )?;
+    pub async fn initialize_worktree(
+        &self,
+        worktree: &WorktreeId,
+        initial_tree: &TreeId,
+    ) -> Result<()> {
+        self.db
+            .execute_idempotent_write(
+                INSERT_WORKTREE_IF_ABSENT_SQL,
+                (
+                    worktree.0.as_str(),
+                    initial_tree.0.as_str(),
+                    encode_revision(0).as_slice(),
+                ),
+            )
+            .await?;
 
         Ok(())
     }
@@ -563,28 +569,30 @@ impl<'a> MutationTraceStore<'a> {
     /// existing one: an existing scope whose stored `worktree_id` has no
     /// worktree row is never returned as valid merely because it matches the
     /// arguments.
-    pub fn register_scope(
+    pub async fn register_scope(
         &self,
         scope: &ScopeId,
         worktree: &WorktreeId,
         actor_kind: ActorKind,
     ) -> Result<ScopeState> {
-        if self.load_worktree_state(worktree)?.is_none() {
+        if self.load_worktree_state(worktree).await?.is_none() {
             bail!(
                 "cannot register scope {scope:?}: worktree {worktree:?} has no mutation_trace_worktrees row"
             );
         }
 
-        self.db.execute_idempotent_write(
-            INSERT_SCOPE_IF_ABSENT_SQL,
-            (
-                scope.0.as_str(),
-                worktree.0.as_str(),
-                encode_actor_kind(actor_kind),
-            ),
-        )?;
+        self.db
+            .execute_idempotent_write(
+                INSERT_SCOPE_IF_ABSENT_SQL,
+                (
+                    scope.0.as_str(),
+                    worktree.0.as_str(),
+                    encode_actor_kind(actor_kind),
+                ),
+            )
+            .await?;
 
-        let scope_state = self.load_scope(scope)?.ok_or_else(|| {
+        let scope_state = self.load_scope(scope).await?.ok_or_else(|| {
             anyhow::anyhow!("scope {scope:?} has no row immediately after register_scope insert")
         })?;
 
@@ -626,7 +634,7 @@ impl<'a> MutationTraceStore<'a> {
     /// already exists; the lookup never references a `worktree_id` column,
     /// since `mutation_trace_processed_events` has none. This method never
     /// queries `mutation_trace_events`.
-    pub fn load_worktree(
+    pub async fn load_worktree(
         &self,
         worktree: &WorktreeId,
         scope: Option<&ScopeId>,
@@ -634,15 +642,15 @@ impl<'a> MutationTraceStore<'a> {
     ) -> Result<Option<WorktreeProjection>> {
         let effective_scope = effective_referenced_scope(scope, event_key)?;
 
-        let Some(worktree_state) = self.load_worktree_state(worktree)? else {
+        let Some(worktree_state) = self.load_worktree_state(worktree).await? else {
             return Ok(None);
         };
 
-        let mut scopes = self.load_active_scopes(worktree)?;
+        let mut scopes = self.load_active_scopes(worktree).await?;
 
         if let Some(effective_scope_id) = effective_scope {
             if !scopes.contains_key(effective_scope_id) {
-                let scope_state = self.load_scope(effective_scope_id)?.ok_or_else(|| {
+                let scope_state = self.load_scope(effective_scope_id).await?.ok_or_else(|| {
                     anyhow::anyhow!(
                         "effective referenced scope {effective_scope_id:?} has no mutation_trace_scopes row"
                     )
@@ -660,7 +668,7 @@ impl<'a> MutationTraceStore<'a> {
         }
 
         let processed_events = match event_key {
-            Some(event_key) if self.processed_event_exists(event_key)? => {
+            Some(event_key) if self.processed_event_exists(event_key).await? => {
                 let mut processed_events = BTreeSet::new();
                 processed_events.insert(event_key.clone());
                 processed_events
@@ -680,24 +688,29 @@ impl<'a> MutationTraceStore<'a> {
     /// revision)`, decoding its full `Attribution` and `Boundary`, or `None`
     /// when no such row exists. Never called from `load_worktree` or from
     /// any hook-boundary path.
-    pub fn load_mutation_event(
+    pub async fn load_mutation_event(
         &self,
         worktree: &WorktreeId,
         revision: u64,
     ) -> Result<Option<MutationEvent>> {
         let revision_blob = encode_revision(revision);
 
-        let rows = self.db.query_map(
-            SELECT_MUTATION_EVENT_SQL,
-            (worktree.0.as_str(), revision_blob.as_slice()),
-            mutation_event_row_from_turso,
-        )?;
+        let rows = self
+            .db
+            .query_map(
+                SELECT_MUTATION_EVENT_SQL,
+                (worktree.0.as_str(), revision_blob.as_slice()),
+                mutation_event_row_from_turso,
+            )
+            .await?;
 
         let Some(row) = rows.into_iter().next() else {
             return Ok(None);
         };
 
-        let active_scopes = self.load_mutation_event_active_scopes(worktree, &revision_blob)?;
+        let active_scopes = self
+            .load_mutation_event_active_scopes(worktree, &revision_blob)
+            .await?;
 
         Ok(Some(MutationEvent {
             worktree_id: worktree.clone(),
@@ -725,7 +738,7 @@ impl<'a> MutationTraceStore<'a> {
     ///
     /// This is a read-only cold path. It does not load active scopes, processed
     /// events, boundary data, or any timestamp column.
-    pub fn load_mutation_event_page(
+    pub async fn load_mutation_event_page(
         &self,
         worktree: &WorktreeId,
         revision_cursor: Option<u64>,
@@ -735,37 +748,49 @@ impl<'a> MutationTraceStore<'a> {
         let rows = match revision_cursor {
             Some(cursor) => {
                 let cursor_blob = encode_revision(cursor);
-                self.db.query_map(
-                    SELECT_MUTATION_EVENT_PAGE_AFTER_SQL,
-                    (
-                        worktree.0.as_str(),
-                        cursor_blob.as_slice(),
-                        limit_as_i64(limit),
-                    ),
-                    mutation_event_page_row_from_turso,
-                )?
+                self.db
+                    .query_map(
+                        SELECT_MUTATION_EVENT_PAGE_AFTER_SQL,
+                        (
+                            worktree.0.as_str(),
+                            cursor_blob.as_slice(),
+                            limit_as_i64(limit),
+                        ),
+                        mutation_event_page_row_from_turso,
+                    )
+                    .await?
             }
-            None => self.db.query_map(
-                SELECT_MUTATION_EVENT_PAGE_SQL,
-                (worktree.0.as_str(), limit_as_i64(limit)),
-                mutation_event_page_row_from_turso,
-            )?,
+            None => {
+                self.db
+                    .query_map(
+                        SELECT_MUTATION_EVENT_PAGE_SQL,
+                        (worktree.0.as_str(), limit_as_i64(limit)),
+                        mutation_event_page_row_from_turso,
+                    )
+                    .await?
+            }
         };
 
         Ok(rows)
     }
 
-    pub fn latest_mutation_event_revision(&self, worktree: &WorktreeId) -> Result<Option<u64>> {
-        let rows = self.db.query_map(
-            SELECT_LATEST_MUTATION_EVENT_REVISION_SQL,
-            (worktree.0.as_str(),),
-            |row| {
-                let blob: Vec<u8> = row
-                    .get(0)
-                    .context("failed to read mutation_trace_events.revision")?;
-                decode_revision(&blob)
-            },
-        )?;
+    pub async fn latest_mutation_event_revision(
+        &self,
+        worktree: &WorktreeId,
+    ) -> Result<Option<u64>> {
+        let rows = self
+            .db
+            .query_map(
+                SELECT_LATEST_MUTATION_EVENT_REVISION_SQL,
+                (worktree.0.as_str(),),
+                |row| {
+                    let blob: Vec<u8> = row
+                        .get(0)
+                        .context("failed to read mutation_trace_events.revision")?;
+                    decode_revision(&blob)
+                },
+            )
+            .await?;
         Ok(rows.into_iter().next())
     }
 
@@ -790,12 +815,15 @@ impl<'a> MutationTraceStore<'a> {
     /// the single statement observes either the pre-commit snapshot
     /// (`cursor_tree` still contains `T`) or the post-commit snapshot
     /// (`before_tree` contains `T`).
-    pub fn load_tree_roots(&self, worktree: &WorktreeId) -> Result<BTreeSet<TreeId>> {
-        let rows = self.db.query_map(
-            SELECT_TREE_ROOTS_BY_WORKTREE_SQL,
-            (worktree.0.as_str(),),
-            tree_root_row_from_turso,
-        )?;
+    pub async fn load_tree_roots(&self, worktree: &WorktreeId) -> Result<BTreeSet<TreeId>> {
+        let rows = self
+            .db
+            .query_map(
+                SELECT_TREE_ROOTS_BY_WORKTREE_SQL,
+                (worktree.0.as_str(),),
+                tree_root_row_from_turso,
+            )
+            .await?;
 
         Ok(rows.into_iter().collect())
     }
@@ -813,10 +841,11 @@ impl<'a> MutationTraceStore<'a> {
     /// statement through one `query_map` call, so it cannot tear across a
     /// concurrent atomic `cursor T -> X` + `event T -> X` commit on another
     /// worktree.
-    pub fn load_all_tree_roots(&self) -> Result<BTreeSet<TreeId>> {
+    pub async fn load_all_tree_roots(&self) -> Result<BTreeSet<TreeId>> {
         let rows = self
             .db
-            .query_map(SELECT_ALL_TREE_ROOTS_SQL, (), tree_root_row_from_turso)?;
+            .query_map(SELECT_ALL_TREE_ROOTS_SQL, (), tree_root_row_from_turso)
+            .await?;
 
         Ok(rows.into_iter().collect())
     }
@@ -839,38 +868,43 @@ impl<'a> MutationTraceStore<'a> {
     /// Comparing the two is the caller's decision, since the same row is a
     /// legitimate read from its owning worktree and a cross-worktree reference
     /// from any other.
-    pub fn load_scope(&self, scope_id: &ScopeId) -> Result<Option<ScopeState>> {
-        let rows = self.db.query_map(
-            SELECT_SCOPE_BY_ID_SQL,
-            (scope_id.0.as_str(),),
-            scope_row_from_turso,
-        )?;
+    pub async fn load_scope(&self, scope_id: &ScopeId) -> Result<Option<ScopeState>> {
+        let rows = self
+            .db
+            .query_map(
+                SELECT_SCOPE_BY_ID_SQL,
+                (scope_id.0.as_str(),),
+                scope_row_from_turso,
+            )
+            .await?;
 
         Ok(rows.into_iter().next().map(|(_, scope_state)| scope_state))
     }
 
-    pub fn register_scope_provenance(
+    pub async fn register_scope_provenance(
         &self,
         provenance: &ScopeProvenance,
     ) -> Result<ScopeProvenance> {
-        if self.load_scope(&provenance.scope_id)?.is_none() {
+        if self.load_scope(&provenance.scope_id).await?.is_none() {
             bail!(
                 "cannot register provenance for scope {:?}: it has no mutation_trace_scopes row",
                 provenance.scope_id
             );
         }
 
-        self.db.execute_idempotent_write(
-            INSERT_SCOPE_PROVENANCE_IF_ABSENT_SQL,
-            (
-                provenance.scope_id.0.as_str(),
-                provenance.session_id.as_str(),
-                provenance.model_id.as_deref(),
-            ),
-        )?;
+        self.db
+            .execute_idempotent_write(
+                INSERT_SCOPE_PROVENANCE_IF_ABSENT_SQL,
+                (
+                    provenance.scope_id.0.as_str(),
+                    provenance.session_id.as_str(),
+                    provenance.model_id.as_deref(),
+                ),
+            )
+            .await?;
 
         let stored = self
-            .load_scope_provenance(&provenance.scope_id)?
+            .load_scope_provenance(&provenance.scope_id).await?
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "scope {:?} has no provenance row immediately after register_scope_provenance insert",
@@ -890,64 +924,85 @@ impl<'a> MutationTraceStore<'a> {
         Ok(stored)
     }
 
-    pub fn load_scope_provenance(&self, scope_id: &ScopeId) -> Result<Option<ScopeProvenance>> {
-        let rows = self.db.query_map(
-            SELECT_SCOPE_PROVENANCE_SQL,
-            (scope_id.0.as_str(),),
-            scope_provenance_row_from_turso,
-        )?;
+    pub async fn load_scope_provenance(
+        &self,
+        scope_id: &ScopeId,
+    ) -> Result<Option<ScopeProvenance>> {
+        let rows = self
+            .db
+            .query_map(
+                SELECT_SCOPE_PROVENANCE_SQL,
+                (scope_id.0.as_str(),),
+                scope_provenance_row_from_turso,
+            )
+            .await?;
 
         Ok(rows.into_iter().next())
     }
 
-    fn load_worktree_state(&self, worktree: &WorktreeId) -> Result<Option<WorktreeState>> {
-        let rows = self.db.query_map(
-            SELECT_WORKTREE_SQL,
-            (worktree.0.as_str(),),
-            worktree_state_row_from_turso,
-        )?;
+    async fn load_worktree_state(&self, worktree: &WorktreeId) -> Result<Option<WorktreeState>> {
+        let rows = self
+            .db
+            .query_map(
+                SELECT_WORKTREE_SQL,
+                (worktree.0.as_str(),),
+                worktree_state_row_from_turso,
+            )
+            .await?;
 
         Ok(rows.into_iter().next())
     }
 
-    fn load_active_scopes(&self, worktree: &WorktreeId) -> Result<BTreeMap<ScopeId, ScopeState>> {
-        let rows = self.db.query_map(
-            SELECT_SCOPES_BY_WORKTREE_AND_STATUS_SQL,
-            (
-                worktree.0.as_str(),
-                encode_scope_status(ScopeStatus::Active),
-            ),
-            scope_row_from_turso,
-        )?;
+    async fn load_active_scopes(
+        &self,
+        worktree: &WorktreeId,
+    ) -> Result<BTreeMap<ScopeId, ScopeState>> {
+        let rows = self
+            .db
+            .query_map(
+                SELECT_SCOPES_BY_WORKTREE_AND_STATUS_SQL,
+                (
+                    worktree.0.as_str(),
+                    encode_scope_status(ScopeStatus::Active),
+                ),
+                scope_row_from_turso,
+            )
+            .await?;
 
         Ok(rows.into_iter().collect())
     }
 
-    fn processed_event_exists(&self, event_key: &EventKey) -> Result<bool> {
-        let rows = self.db.query_map(
-            SELECT_PROCESSED_EVENT_SQL,
-            (event_key.scope_id.0.as_str(), event_key.event_id.0.as_str()),
-            |row| row.get::<i64>(0).map_err(Into::into),
-        )?;
+    async fn processed_event_exists(&self, event_key: &EventKey) -> Result<bool> {
+        let rows = self
+            .db
+            .query_map(
+                SELECT_PROCESSED_EVENT_SQL,
+                (event_key.scope_id.0.as_str(), event_key.event_id.0.as_str()),
+                |row| row.get::<i64>(0).map_err(Into::into),
+            )
+            .await?;
 
         Ok(!rows.is_empty())
     }
 
-    fn load_mutation_event_active_scopes(
+    async fn load_mutation_event_active_scopes(
         &self,
         worktree: &WorktreeId,
         revision_blob: &[u8],
     ) -> Result<BTreeSet<ScopeId>> {
-        let rows = self.db.query_map(
-            SELECT_MUTATION_EVENT_ACTIVE_SCOPES_SQL,
-            (worktree.0.as_str(), revision_blob),
-            |row| row.get::<String>(0).map(ScopeId).map_err(Into::into),
-        )?;
+        let rows = self
+            .db
+            .query_map(
+                SELECT_MUTATION_EVENT_ACTIVE_SCOPES_SQL,
+                (worktree.0.as_str(), revision_blob),
+                |row| row.get::<String>(0).map(ScopeId).map_err(Into::into),
+            )
+            .await?;
 
         Ok(rows.into_iter().collect())
     }
 
-    pub fn commit(&self, transition: &DurableTransition) -> Result<CasResult> {
+    pub async fn commit(&self, transition: &DurableTransition) -> Result<CasResult> {
         let expected_revision_blob = encode_revision(transition.expected_revision);
         let next_revision_blob = encode_revision(transition.next_worktree_state.revision);
 
@@ -962,7 +1017,8 @@ impl<'a> MutationTraceStore<'a> {
                 transition.worktree.0.as_str(),
                 expected_revision_blob.as_slice(),
             ),
-        )?;
+        )
+        .await?;
 
         let mut statements = Vec::new();
 
@@ -971,7 +1027,8 @@ impl<'a> MutationTraceStore<'a> {
                 TransactionStatement::new(
                     UPDATE_SCOPE_STATUS_SQL,
                     (encode_scope_status(*status), scope_id.0.as_str()),
-                )?
+                )
+                .await?
                 .expect_rows_affected(1),
             );
         }
@@ -981,7 +1038,8 @@ impl<'a> MutationTraceStore<'a> {
                 TransactionStatement::new(
                     INSERT_PROCESSED_EVENT_SQL,
                     (event_key.scope_id.0.as_str(), event_key.event_id.0.as_str()),
-                )?
+                )
+                .await?
                 .expect_rows_affected(1),
             );
         }
@@ -1007,7 +1065,8 @@ impl<'a> MutationTraceStore<'a> {
                         boundary_scope_id,
                         boundary_event_id,
                     ),
-                )?
+                )
+                .await?
                 .expect_rows_affected(1),
             );
 
@@ -1020,18 +1079,22 @@ impl<'a> MutationTraceStore<'a> {
                             event_revision_blob.as_slice(),
                             scope_id.0.as_str(),
                         ),
-                    )?
+                    )
+                    .await?
                     .expect_rows_affected(1),
                 );
             }
         }
 
-        let applied = self.db.execute_transactional_cas_batch(
-            "commit mutation-trace durable transition",
-            "reload the worktree and retry the transition",
-            &guard,
-            &statements,
-        )?;
+        let applied = self
+            .db
+            .execute_transactional_cas_batch(
+                "commit mutation-trace durable transition",
+                "reload the worktree and retry the transition",
+                &guard,
+                &statements,
+            )
+            .await?;
 
         Ok(if applied {
             CasResult::Applied
@@ -1321,7 +1384,7 @@ fn reconstruct_boundary(
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::thread;
 
@@ -1471,17 +1534,18 @@ mod tests {
         }
     }
 
-    fn insert_worktree(db: &RepositoryAgentTraceDb, worktree_id: &str, revision: u64) {
+    async fn insert_worktree(db: &RepositoryAgentTraceDb, worktree_id: &str, revision: u64) {
         db.execute(
             "INSERT INTO mutation_trace_worktrees
                 (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline)
              VALUES (?1, 'tree-0', ?2, 0, 'healthy', 0)",
             (worktree_id, encode_revision(revision).as_slice()),
         )
+        .await
         .expect("worktree insert should succeed");
     }
 
-    fn insert_scope(
+    async fn insert_scope(
         db: &RepositoryAgentTraceDb,
         scope_id: &str,
         worktree_id: &str,
@@ -1492,18 +1556,20 @@ mod tests {
              VALUES (?1, ?2, 'claude_code', ?3)",
             (scope_id, worktree_id, encode_scope_status(status)),
         )
+        .await
         .expect("scope insert should succeed");
     }
 
-    fn insert_processed_event(db: &RepositoryAgentTraceDb, scope_id: &str, event_id: &str) {
+    async fn insert_processed_event(db: &RepositoryAgentTraceDb, scope_id: &str, event_id: &str) {
         db.execute(
             "INSERT INTO mutation_trace_processed_events (scope_id, event_id) VALUES (?1, ?2)",
             (scope_id, event_id),
         )
+        .await
         .expect("processed-event insert should succeed");
     }
 
-    fn insert_active_scope(
+    async fn insert_active_scope(
         db: &RepositoryAgentTraceDb,
         worktree_id: &str,
         revision: u64,
@@ -1512,13 +1578,18 @@ mod tests {
         db.execute(
             "INSERT INTO mutation_trace_event_active_scopes (worktree_id, revision, scope_id)
              VALUES (?1, ?2, ?3)",
-            (worktree_id, encode_revision(revision).as_slice(), scope_id),
+            (
+                worktree_id,
+                encode_revision(revision).await.as_slice(),
+                scope_id,
+            ),
         )
+        .await
         .expect("active-scope insert should succeed");
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn insert_mutation_event(
+    async fn insert_mutation_event(
         db: &RepositoryAgentTraceDb,
         worktree_id: &str,
         revision: u64,
@@ -1549,7 +1620,7 @@ mod tests {
                 boundary_scope_id,
                 boundary_event_id,
             ),
-        )
+        ).await
         .expect("mutation event insert should succeed");
 
         for scope_id in active_scopes {
@@ -1558,36 +1629,43 @@ mod tests {
                  VALUES (?1, ?2, ?3)",
                 (worktree_id, revision_blob.as_slice(), *scope_id),
             )
+            .await
             .expect("active-scope insert should succeed");
         }
     }
 
-    #[test]
-    fn load_worktree_returns_none_for_a_missing_worktree() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_worktree_returns_none_for_a_missing_worktree() {
         let db_fixture = test_db_path("missing-worktree");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         let projection = store
             .load_worktree(&WorktreeId("wt-missing".to_string()), None, None)
+            .await
             .expect("load_worktree should succeed");
         assert!(projection.is_none());
     }
 
-    #[test]
-    fn load_worktree_with_no_scope_or_event_key_loads_only_active_scopes() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_worktree_with_no_scope_or_event_key_loads_only_active_scopes() {
         let db_fixture = test_db_path("case-1-active-only");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree(&db, "wt-1", 5);
-        insert_scope(&db, "scope-active", "wt-1", ScopeStatus::Active);
-        insert_scope(&db, "scope-closed", "wt-1", ScopeStatus::Closed);
+        insert_worktree(&db, "wt-1", 5).await;
+        insert_scope(&db, "scope-active", "wt-1", ScopeStatus::Active).await;
+        insert_scope(&db, "scope-closed", "wt-1", ScopeStatus::Closed).await;
 
         let projection = store
             .load_worktree(&WorktreeId("wt-1".to_string()), None, None)
+            .await
             .expect("load_worktree should succeed")
             .expect("worktree should exist");
 
@@ -1600,15 +1678,17 @@ mod tests {
         assert!(projection.processed_events.is_empty());
     }
 
-    #[test]
-    fn load_worktree_with_explicit_scope_includes_it_regardless_of_status() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_worktree_with_explicit_scope_includes_it_regardless_of_status() {
         let db_fixture = test_db_path("case-2-explicit-scope");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree(&db, "wt-1", 0);
-        insert_scope(&db, "scope-closed", "wt-1", ScopeStatus::Closed);
+        insert_worktree(&db, "wt-1", 0).await;
+        insert_scope(&db, "scope-closed", "wt-1", ScopeStatus::Closed).await;
 
         let projection = store
             .load_worktree(
@@ -1616,6 +1696,7 @@ mod tests {
                 Some(&ScopeId("scope-closed".to_string())),
                 None,
             )
+            .await
             .expect("load_worktree should succeed")
             .expect("worktree should exist");
 
@@ -1629,16 +1710,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn load_worktree_with_explicit_scope_on_another_worktree_errors() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_worktree_with_explicit_scope_on_another_worktree_errors() {
         let db_fixture = test_db_path("case-2-wrong-worktree");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree(&db, "wt-1", 0);
-        insert_worktree(&db, "wt-2", 0);
-        insert_scope(&db, "scope-1", "wt-2", ScopeStatus::Active);
+        insert_worktree(&db, "wt-1", 0).await;
+        insert_worktree(&db, "wt-2", 0).await;
+        insert_scope(&db, "scope-1", "wt-2", ScopeStatus::Active).await;
 
         let error = store
             .load_worktree(
@@ -1646,18 +1729,21 @@ mod tests {
                 Some(&ScopeId("scope-1".to_string())),
                 None,
             )
+            .await
             .expect_err("scope belonging to another worktree should error");
         assert!(error.to_string().contains("scope-1"));
     }
 
-    #[test]
-    fn load_worktree_with_explicit_missing_scope_errors() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_worktree_with_explicit_missing_scope_errors() {
         let db_fixture = test_db_path("case-2-missing-scope");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree(&db, "wt-1", 0);
+        insert_worktree(&db, "wt-1", 0).await;
 
         let error = store
             .load_worktree(
@@ -1665,20 +1751,23 @@ mod tests {
                 Some(&ScopeId("scope-missing".to_string())),
                 None,
             )
+            .await
             .expect_err("missing effective scope should error");
         assert!(error.to_string().contains("scope-missing"));
     }
 
-    #[test]
-    fn load_worktree_with_only_event_key_loads_its_scope_and_replay_row() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_worktree_with_only_event_key_loads_its_scope_and_replay_row() {
         let db_fixture = test_db_path("case-3-event-key-only");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree(&db, "wt-1", 0);
-        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::NeverSeen);
-        insert_processed_event(&db, "scope-1", "event-1");
+        insert_worktree(&db, "wt-1", 0).await;
+        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::NeverSeen).await;
+        insert_processed_event(&db, "scope-1", "event-1").await;
 
         let event_key = EventKey {
             scope_id: ScopeId("scope-1".to_string()),
@@ -1687,6 +1776,7 @@ mod tests {
 
         let projection = store
             .load_worktree(&WorktreeId("wt-1".to_string()), None, Some(&event_key))
+            .await
             .expect("load_worktree should succeed")
             .expect("worktree should exist");
 
@@ -1703,16 +1793,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn load_worktree_with_event_key_scope_on_another_worktree_errors() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_worktree_with_event_key_scope_on_another_worktree_errors() {
         let db_fixture = test_db_path("case-3-wrong-worktree");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree(&db, "wt-1", 0);
-        insert_worktree(&db, "wt-2", 0);
-        insert_scope(&db, "scope-1", "wt-2", ScopeStatus::Active);
+        insert_worktree(&db, "wt-1", 0).await;
+        insert_worktree(&db, "wt-2", 0).await;
+        insert_scope(&db, "scope-1", "wt-2", ScopeStatus::Active).await;
 
         let event_key = EventKey {
             scope_id: ScopeId("scope-1".to_string()),
@@ -1721,18 +1813,21 @@ mod tests {
 
         let error = store
             .load_worktree(&WorktreeId("wt-1".to_string()), None, Some(&event_key))
+            .await
             .expect_err("event_key scope on another worktree should error");
         assert!(error.to_string().contains("scope-1"));
     }
 
-    #[test]
-    fn load_worktree_with_event_key_missing_scope_errors() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_worktree_with_event_key_missing_scope_errors() {
         let db_fixture = test_db_path("case-3-missing-scope");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree(&db, "wt-1", 0);
+        insert_worktree(&db, "wt-1", 0).await;
 
         let event_key = EventKey {
             scope_id: ScopeId("scope-missing".to_string()),
@@ -1741,19 +1836,22 @@ mod tests {
 
         let error = store
             .load_worktree(&WorktreeId("wt-1".to_string()), None, Some(&event_key))
+            .await
             .expect_err("missing event_key.scope_id should error");
         assert!(error.to_string().contains("scope-missing"));
     }
 
-    #[test]
-    fn load_worktree_with_event_key_missing_scope_and_orphan_replay_row_errors() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_worktree_with_event_key_missing_scope_and_orphan_replay_row_errors() {
         let db_fixture = test_db_path("case-3-orphan-replay-row");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree(&db, "wt-1", 0);
-        insert_processed_event(&db, "scope-missing", "event-1");
+        insert_worktree(&db, "wt-1", 0).await;
+        insert_processed_event(&db, "scope-missing", "event-1").await;
 
         let event_key = EventKey {
             scope_id: ScopeId("scope-missing".to_string()),
@@ -1762,21 +1860,24 @@ mod tests {
 
         let error = store
             .load_worktree(&WorktreeId("wt-1".to_string()), None, Some(&event_key))
+            .await
             .expect_err(
                 "an orphan processed-event row must not let a missing scope produce a projection",
             );
         assert!(error.to_string().contains("scope-missing"));
     }
 
-    #[test]
-    fn load_worktree_with_agreeing_scope_and_event_key_loads_it_once() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_worktree_with_agreeing_scope_and_event_key_loads_it_once() {
         let db_fixture = test_db_path("case-4-agreeing");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree(&db, "wt-1", 0);
-        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Active);
+        insert_worktree(&db, "wt-1", 0).await;
+        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Active).await;
 
         let event_key = EventKey {
             scope_id: ScopeId("scope-1".to_string()),
@@ -1789,6 +1890,7 @@ mod tests {
                 Some(&ScopeId("scope-1".to_string())),
                 Some(&event_key),
             )
+            .await
             .expect("load_worktree should succeed")
             .expect("worktree should exist");
 
@@ -1798,16 +1900,18 @@ mod tests {
             .contains_key(&ScopeId("scope-1".to_string())));
     }
 
-    #[test]
-    fn load_worktree_with_disagreeing_scope_and_event_key_errors_without_loading() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_worktree_with_disagreeing_scope_and_event_key_errors_without_loading() {
         let db_fixture = test_db_path("case-5-disagreeing");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree(&db, "wt-1", 0);
-        insert_scope(&db, "scope-a", "wt-1", ScopeStatus::Active);
-        insert_scope(&db, "scope-b", "wt-1", ScopeStatus::Active);
+        insert_worktree(&db, "wt-1", 0).await;
+        insert_scope(&db, "scope-a", "wt-1", ScopeStatus::Active).await;
+        insert_scope(&db, "scope-b", "wt-1", ScopeStatus::Active).await;
 
         let event_key = EventKey {
             scope_id: ScopeId("scope-b".to_string()),
@@ -1820,20 +1924,23 @@ mod tests {
                 Some(&ScopeId("scope-a".to_string())),
                 Some(&event_key),
             )
+            .await
             .expect_err("disagreeing scope/event_key.scope_id should error");
         assert!(error.to_string().contains("scope-a"));
         assert!(error.to_string().contains("scope-b"));
     }
 
-    #[test]
-    fn load_scope_returns_the_durable_state_for_a_known_scope() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_scope_returns_the_durable_state_for_a_known_scope() {
         let db_fixture = test_db_path("load-scope-known");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree(&db, "wt-1", 7);
-        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Closed);
+        insert_worktree(&db, "wt-1", 7).await;
+        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Closed).await;
         insert_mutation_event(
             &db,
             "wt-1",
@@ -1846,11 +1953,13 @@ mod tests {
             Some("scope-1"),
             Some("event-1"),
             &["scope-1"],
-        );
-        insert_processed_event(&db, "scope-1", "event-1");
+        )
+        .await;
+        insert_processed_event(&db, "scope-1", "event-1").await;
 
         let scope_state = store
             .load_scope(&ScopeId("scope-1".to_string()))
+            .await
             .expect("load_scope should succeed")
             .expect("known scope should be present");
 
@@ -1864,34 +1973,40 @@ mod tests {
         );
     }
 
-    #[test]
-    fn load_scope_returns_none_for_an_unknown_scope() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_scope_returns_none_for_an_unknown_scope() {
         let db_fixture = test_db_path("load-scope-unknown");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree(&db, "wt-1", 0);
-        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Active);
+        insert_worktree(&db, "wt-1", 0).await;
+        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Active).await;
 
         let scope_state = store
             .load_scope(&ScopeId("scope-missing".to_string()))
+            .await
             .expect("load_scope should succeed for an unknown scope");
         assert!(scope_state.is_none());
     }
 
-    #[test]
-    fn load_scope_returns_a_scope_belonging_to_another_worktree() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_scope_returns_a_scope_belonging_to_another_worktree() {
         let db_fixture = test_db_path("load-scope-other-worktree");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree(&db, "wt-1", 0);
-        insert_scope(&db, "scope-other", "wt-2", ScopeStatus::Active);
+        insert_worktree(&db, "wt-1", 0).await;
+        insert_scope(&db, "scope-other", "wt-2", ScopeStatus::Active).await;
 
         let scope_state = store
             .load_scope(&ScopeId("scope-other".to_string()))
+            .await
             .expect("load_scope should not reject a scope on another worktree")
             .expect("the scope row should be returned as-is");
 
@@ -1910,28 +2025,34 @@ mod tests {
                 Some(&ScopeId("scope-other".to_string())),
                 None,
             )
+            .await
             .expect_err("load_worktree should still reject the cross-worktree scope");
         assert!(error.to_string().contains("scope-other"));
     }
 
-    #[test]
-    fn load_mutation_event_returns_none_when_missing() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_mutation_event_returns_none_when_missing() {
         let db_fixture = test_db_path("cold-path-missing");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         let event = store
             .load_mutation_event(&WorktreeId("wt-1".to_string()), 1)
+            .await
             .expect("load_mutation_event should succeed");
         assert!(event.is_none());
     }
 
-    #[test]
-    fn load_mutation_event_reconstructs_ai_exclusive_start_event() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_mutation_event_reconstructs_ai_exclusive_start_event() {
         let db_fixture = test_db_path("cold-path-ai-exclusive-start");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_mutation_event(
@@ -1946,10 +2067,12 @@ mod tests {
             Some("scope-1"),
             Some("event-1"),
             &["scope-1"],
-        );
+        )
+        .await;
 
         let event = store
             .load_mutation_event(&WorktreeId("wt-1".to_string()), 1)
+            .await
             .expect("load_mutation_event should succeed")
             .expect("mutation event row should exist");
 
@@ -1972,11 +2095,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn load_mutation_event_reconstructs_a_flush_event_with_multiple_active_scopes() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_mutation_event_reconstructs_a_flush_event_with_multiple_active_scopes() {
         let db_fixture = test_db_path("cold-path-flush");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         insert_mutation_event(
@@ -1991,10 +2116,12 @@ mod tests {
             None,
             None,
             &["scope-1", "scope-2"],
-        );
+        )
+        .await;
 
         let event = store
             .load_mutation_event(&WorktreeId("wt-1".to_string()), 3)
+            .await
             .expect("load_mutation_event should succeed")
             .expect("mutation event row should exist");
 
@@ -2021,18 +2148,22 @@ mod tests {
         );
     }
 
-    #[test]
-    fn into_protocol_state_carries_only_the_loaded_worktree_and_leaves_transient_fields_empty() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn into_protocol_state_carries_only_the_loaded_worktree_and_leaves_transient_fields_empty(
+    ) {
         let db_fixture = test_db_path("into-protocol-state");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree(&db, "wt-1", 7);
-        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Active);
+        insert_worktree(&db, "wt-1", 7).await;
+        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Active).await;
 
         let projection = store
             .load_worktree(&WorktreeId("wt-1".to_string()), None, None)
+            .await
             .expect("load_worktree should succeed")
             .expect("worktree should exist");
 
@@ -2051,11 +2182,13 @@ mod tests {
         assert!(protocol_state.external_taint.is_empty());
     }
 
-    #[test]
-    fn initialize_worktree_inserts_a_fresh_healthy_cursor() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn initialize_worktree_inserts_a_fresh_healthy_cursor() {
         let db_fixture = test_db_path("init-worktree-fresh");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         store
@@ -2063,10 +2196,12 @@ mod tests {
                 &WorktreeId("wt-1".to_string()),
                 &TreeId("tree-0".to_string()),
             )
+            .await
             .expect("initialize_worktree should succeed");
 
         let projection = store
             .load_worktree(&WorktreeId("wt-1".to_string()), None, None)
+            .await
             .expect("load_worktree should succeed")
             .expect("worktree should exist");
 
@@ -2082,24 +2217,28 @@ mod tests {
         );
     }
 
-    #[test]
-    fn initialize_worktree_never_overwrites_an_existing_cursor() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn initialize_worktree_never_overwrites_an_existing_cursor() {
         let db_fixture = test_db_path("init-worktree-idempotent");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree(&db, "wt-1", 5);
+        insert_worktree(&db, "wt-1", 5).await;
 
         store
             .initialize_worktree(
                 &WorktreeId("wt-1".to_string()),
                 &TreeId("tree-new".to_string()),
             )
+            .await
             .expect("initialize_worktree should succeed as a no-op");
 
         let projection = store
             .load_worktree(&WorktreeId("wt-1".to_string()), None, None)
+            .await
             .expect("load_worktree should succeed")
             .expect("worktree should exist");
 
@@ -2110,14 +2249,16 @@ mod tests {
         assert_eq!(projection.worktree_state.revision, 5);
     }
 
-    #[test]
-    fn register_scope_inserts_never_seen_when_missing() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn register_scope_inserts_never_seen_when_missing() {
         let db_fixture = test_db_path("register-scope-fresh");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree(&db, "wt-1", 0);
+        insert_worktree(&db, "wt-1", 0).await;
 
         let scope_state = store
             .register_scope(
@@ -2125,6 +2266,7 @@ mod tests {
                 &WorktreeId("wt-1".to_string()),
                 ActorKind::ClaudeCode,
             )
+            .await
             .expect("register_scope should succeed");
 
         assert_eq!(
@@ -2137,15 +2279,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn register_scope_returns_existing_state_when_worktree_and_actor_match() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn register_scope_returns_existing_state_when_worktree_and_actor_match() {
         let db_fixture = test_db_path("register-scope-existing-match");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree(&db, "wt-1", 0);
-        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Active);
+        insert_worktree(&db, "wt-1", 0).await;
+        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Active).await;
 
         let scope_state = store
             .register_scope(
@@ -2153,6 +2297,7 @@ mod tests {
                 &WorktreeId("wt-1".to_string()),
                 ActorKind::ClaudeCode,
             )
+            .await
             .expect("register_scope should succeed for a matching existing scope");
 
         assert_eq!(
@@ -2165,16 +2310,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn register_scope_errors_on_worktree_mismatch() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn register_scope_errors_on_worktree_mismatch() {
         let db_fixture = test_db_path("register-scope-worktree-mismatch");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree(&db, "wt-1", 0);
-        insert_worktree(&db, "wt-2", 0);
-        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Active);
+        insert_worktree(&db, "wt-1", 0).await;
+        insert_worktree(&db, "wt-2", 0).await;
+        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Active).await;
 
         let error = store
             .register_scope(
@@ -2182,19 +2329,22 @@ mod tests {
                 &WorktreeId("wt-2".to_string()),
                 ActorKind::ClaudeCode,
             )
+            .await
             .expect_err("a worktree mismatch on an existing scope should error");
         assert!(error.to_string().contains("scope-1"));
     }
 
-    #[test]
-    fn register_scope_errors_on_actor_mismatch() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn register_scope_errors_on_actor_mismatch() {
         let db_fixture = test_db_path("register-scope-actor-mismatch");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree(&db, "wt-1", 0);
-        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Active);
+        insert_worktree(&db, "wt-1", 0).await;
+        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Active).await;
 
         let error = store
             .register_scope(
@@ -2202,15 +2352,18 @@ mod tests {
                 &WorktreeId("wt-1".to_string()),
                 ActorKind::Codex,
             )
+            .await
             .expect_err("an actor mismatch on an existing scope should error");
         assert!(error.to_string().contains("scope-1"));
     }
 
-    #[test]
-    fn register_scope_errors_when_worktree_does_not_exist_and_leaves_no_scope_row() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn register_scope_errors_when_worktree_does_not_exist_and_leaves_no_scope_row() {
         let db_fixture = test_db_path("register-scope-missing-worktree-fresh");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         let error = store
@@ -2219,12 +2372,14 @@ mod tests {
                 &WorktreeId("wt-missing".to_string()),
                 ActorKind::ClaudeCode,
             )
+            .await
             .expect_err("registering a scope against a missing worktree should error");
         assert!(error.to_string().contains("scope-1"));
         assert!(error.to_string().contains("wt-missing"));
 
         let scope_state = store
             .load_scope(&ScopeId("scope-1".to_string()))
+            .await
             .expect("load_scope should succeed");
         assert!(
             scope_state.is_none(),
@@ -2232,14 +2387,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn register_scope_errors_when_existing_scopes_worktree_row_is_missing() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn register_scope_errors_when_existing_scopes_worktree_row_is_missing() {
         let db_fixture = test_db_path("register-scope-missing-worktree-existing");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_scope(&db, "scope-1", "wt-missing", ScopeStatus::Active);
+        insert_scope(&db, "scope-1", "wt-missing", ScopeStatus::Active).await;
 
         let error = store
             .register_scope(
@@ -2247,6 +2404,7 @@ mod tests {
                 &WorktreeId("wt-missing".to_string()),
                 ActorKind::ClaudeCode,
             )
+            .await
             .expect_err(
                 "an existing scope whose worktree row is missing must not be accepted as valid",
             );
@@ -2262,29 +2420,31 @@ mod tests {
         }
     }
 
-    fn provenance_row_count(db: &RepositoryAgentTraceDb) -> i64 {
+    async fn provenance_row_count(db: &RepositoryAgentTraceDb) -> i64 {
         db.query_map(
             "SELECT COUNT(*) FROM mutation_trace_scope_provenance",
             (),
             |row| row.get::<i64>(0).map_err(Into::into),
         )
+        .await
         .expect("provenance count query should succeed")
         .into_iter()
         .next()
         .expect("count row should exist")
     }
 
-    fn registered_scope_store(label: &str) -> (TestDbPath, RepositoryAgentTraceDb) {
+    async fn registered_scope_store(label: &str) -> (TestDbPath, RepositoryAgentTraceDb) {
         let db_fixture = test_db_path(label);
-        let db =
-            RepositoryAgentTraceDb::new_at(db_fixture.path()).expect("repository DB should open");
-        insert_worktree(&db, "wt-1", 0);
-        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Active);
+        let db = RepositoryAgentTraceDb::new_at(db_fixture.path())
+            .await
+            .expect("repository DB should open");
+        insert_worktree(&db, "wt-1", 0).await;
+        insert_scope(&db, "scope-1", "wt-1", ScopeStatus::Active).await;
         (db_fixture, db)
     }
 
-    #[test]
-    fn scope_provenance_loads_exactly_what_was_registered_or_none() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scope_provenance_loads_exactly_what_was_registered_or_none() {
         let cases = [
             (
                 "session and model",
@@ -2298,7 +2458,8 @@ mod tests {
         ];
 
         for (index, (label, registered)) in cases.into_iter().enumerate() {
-            let (_fixture, db) = registered_scope_store(&format!("provenance-round-trip-{index}"));
+            let (_fixture, db) =
+                registered_scope_store(&format!("provenance-round-trip-{index}")).await;
             let store = MutationTraceStore::new(&db);
 
             if let Some(incoming) = &registered {
@@ -2321,8 +2482,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn register_scope_provenance_keeps_the_first_model_observation_including_none() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn register_scope_provenance_keeps_the_first_model_observation_including_none() {
         let cases: [(&str, Option<&str>, Option<&str>); 5] = [
             ("none then none", None, None),
             ("none then a model", None, Some("model-a")),
@@ -2340,16 +2501,19 @@ mod tests {
         ];
 
         for (index, (label, first_model, replay_model)) in cases.into_iter().enumerate() {
-            let (_fixture, db) = registered_scope_store(&format!("provenance-first-model-{index}"));
+            let (_fixture, db) =
+                registered_scope_store(&format!("provenance-first-model-{index}")).await;
             let store = MutationTraceStore::new(&db);
 
             let first = provenance("scope-1", "cc_session-1", first_model);
             store
                 .register_scope_provenance(&first)
+                .await
                 .unwrap_or_else(|error| panic!("{label}: first registration failed: {error}"));
 
             let replayed = store
                 .register_scope_provenance(&provenance("scope-1", "cc_session-1", replay_model))
+                .await
                 .unwrap_or_else(|error| {
                     panic!("{label}: a same-session replay must succeed: {error}")
                 });
@@ -2365,20 +2529,22 @@ mod tests {
         }
     }
 
-    #[test]
-    fn register_scope_provenance_errors_on_a_session_conflict_without_rewriting_the_row() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn register_scope_provenance_errors_on_a_session_conflict_without_rewriting_the_row() {
         for (index, first_model) in [Some("model-a"), None].into_iter().enumerate() {
             let (_fixture, db) =
-                registered_scope_store(&format!("provenance-session-conflict-{index}"));
+                registered_scope_store(&format!("provenance-session-conflict-{index}")).await;
             let store = MutationTraceStore::new(&db);
 
             let first = provenance("scope-1", "cc_session-1", first_model);
             store
                 .register_scope_provenance(&first)
+                .await
                 .expect("first registration should succeed");
 
             let error = store
                 .register_scope_provenance(&provenance("scope-1", "cc_session-2", Some("model-b")))
+                .await
                 .expect_err("a different session for the same scope should error");
             assert!(error.to_string().contains("scope-1"));
             assert!(error.to_string().contains("cc_session-1"));
@@ -2394,11 +2560,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn register_scope_provenance_errors_for_an_unregistered_scope_and_creates_no_rows() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn register_scope_provenance_errors_for_an_unregistered_scope_and_creates_no_rows() {
         let db_fixture = test_db_path("provenance-missing-scope");
-        let db =
-            RepositoryAgentTraceDb::new_at(db_fixture.path()).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_fixture.path())
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         let error = store
@@ -2407,6 +2574,7 @@ mod tests {
                 "cc_session-1",
                 Some("claude/opus-5"),
             ))
+            .await
             .expect_err("provenance for a scope with no mutation_trace_scopes row should error");
         assert!(error.to_string().contains("scope-1"));
 
@@ -2888,16 +3056,18 @@ mod tests {
         assert!(error.to_string().contains("scope set"));
     }
 
-    #[test]
-    fn commit_applies_a_full_transition_and_makes_every_write_visible() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn commit_applies_a_full_transition_and_makes_every_write_visible() {
         let db_fixture = test_db_path("commit-applies-full-transition");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
         let wt = WorktreeId("wt0".to_string());
         let scope_id = ScopeId("scope0".to_string());
-        insert_worktree(&db, &wt.0, 0);
-        insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active);
+        insert_worktree(&db, &wt.0, 0).await;
+        insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active).await;
 
         let event_key = EventKey {
             scope_id: scope_id.clone(),
@@ -2951,17 +3121,22 @@ mod tests {
             .expect("between should succeed")
             .expect("a transition should exist for this change");
 
-        let result = store.commit(&transition).expect("commit should succeed");
+        let result = store
+            .commit(&transition)
+            .await
+            .expect("commit should succeed");
         assert_eq!(result, CasResult::Applied);
 
         let worktree_state = store
             .load_worktree_state(&wt)
+            .await
             .expect("worktree read should succeed")
             .expect("worktree row should exist");
         assert_eq!(worktree_state, transition.next_worktree_state);
 
         let scope_state = store
             .load_scope(&scope_id)
+            .await
             .expect("scope read should succeed")
             .expect("scope row should exist");
         assert_eq!(scope_state.status, ScopeStatus::Closed);
@@ -2972,19 +3147,22 @@ mod tests {
 
         let reloaded_event = store
             .load_mutation_event(&wt, 1)
+            .await
             .expect("mutation-event read should succeed")
             .expect("mutation-event row should exist");
         assert_eq!(reloaded_event, mutation_event);
     }
 
-    #[test]
-    fn commit_returns_conflict_and_writes_nothing_when_the_worktree_revision_has_moved_on() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn commit_returns_conflict_and_writes_nothing_when_the_worktree_revision_has_moved_on() {
         let db_fixture = test_db_path("commit-conflict");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
         let wt = WorktreeId("wt0".to_string());
-        insert_worktree(&db, &wt.0, 5);
+        insert_worktree(&db, &wt.0, 5).await;
 
         let mut before = ProtocolState::default();
         before
@@ -2997,26 +3175,32 @@ mod tests {
             .expect("between should succeed")
             .expect("a transition should exist for this change");
 
-        let result = store.commit(&transition).expect("commit should succeed");
+        let result = store
+            .commit(&transition)
+            .await
+            .expect("commit should succeed");
         assert_eq!(result, CasResult::Conflict);
 
         let worktree_state = store
             .load_worktree_state(&wt)
+            .await
             .expect("worktree read should succeed")
             .expect("worktree row should exist");
         assert_eq!(worktree_state.revision, 5);
     }
 
-    #[test]
-    fn commit_propagates_a_deterministic_failure_without_reporting_conflict() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn commit_propagates_a_deterministic_failure_without_reporting_conflict() {
         let db_fixture = test_db_path("commit-deterministic-failure");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
         let wt = WorktreeId("wt0".to_string());
         let scope_id = ScopeId("scope0".to_string());
-        insert_worktree(&db, &wt.0, 0);
-        insert_processed_event(&db, "scope0", "event-1");
+        insert_worktree(&db, &wt.0, 0).await;
+        insert_processed_event(&db, "scope0", "event-1").await;
 
         let before = state_with_scope(
             &wt,
@@ -3038,11 +3222,13 @@ mod tests {
 
         let error = store
             .commit(&transition)
+            .await
             .expect_err("a duplicate processed-event insert should fail deterministically");
         assert!(error.to_string().contains("execute failed"));
 
         let worktree_state = store
             .load_worktree_state(&wt)
+            .await
             .expect("worktree read should succeed")
             .expect("worktree row should exist");
         assert_eq!(
@@ -3100,8 +3286,8 @@ mod tests {
             .expect("a transition should exist for this change")
     }
 
-    fn assert_race_winner_state(
-        store: &MutationTraceStore,
+    async fn assert_race_winner_state(
+        store: &MutationTraceStore<'_>,
         worktree: &WorktreeId,
         persisted_event: &MutationEvent,
         writer_a: &RaceEvidence,
@@ -3120,6 +3306,7 @@ mod tests {
 
         let winning_scope_state = store
             .load_scope(&winner.scope)
+            .await
             .expect("winning scope read should succeed")
             .expect("winning scope row should exist");
         assert_eq!(
@@ -3130,6 +3317,7 @@ mod tests {
 
         let losing_scope_state = store
             .load_scope(&loser.scope)
+            .await
             .expect("losing scope read should succeed")
             .expect("losing scope row should exist");
         assert_eq!(
@@ -3162,6 +3350,7 @@ mod tests {
                 worktree,
                 encode_revision(winner.mutation_event.revision).as_slice(),
             )
+            .await
             .expect("active-scope read should succeed");
         assert_eq!(
             &persisted_active_scopes, &winner.mutation_event.active_scopes,
@@ -3170,8 +3359,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn commit_from_two_independent_connections_races_and_only_one_applies() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn commit_from_two_independent_connections_races_and_only_one_applies() {
         let db_fixture = test_db_path("commit-two-writer-race");
         let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
@@ -3179,10 +3368,12 @@ mod tests {
         let scope_b = ScopeId("scope-b".to_string());
 
         {
-            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
-            insert_worktree(&db, &wt.0, 0);
-            insert_scope(&db, &scope_a.0, &wt.0, ScopeStatus::Active);
-            insert_scope(&db, &scope_b.0, &wt.0, ScopeStatus::Active);
+            let db = RepositoryAgentTraceDb::new_at(db_path)
+                .await
+                .expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0).await;
+            insert_scope(&db, &scope_a.0, &wt.0, ScopeStatus::Active).await;
+            insert_scope(&db, &scope_b.0, &wt.0, ScopeStatus::Active).await;
         }
 
         let mut before = ProtocolState::default();
@@ -3212,8 +3403,10 @@ mod tests {
         let transition_b = closing_transition(&before, &wt, &writer_b);
 
         let db_a = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(db_path)
+            .await
             .expect("writer A handle should open");
         let db_b = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(db_path)
+            .await
             .expect("writer B handle should open");
 
         let handle_a = thread::spawn(move || MutationTraceStore::new(&db_a).commit(&transition_a));
@@ -3222,10 +3415,12 @@ mod tests {
         let result_a = handle_a
             .join()
             .expect("writer A thread should not panic")
+            .await
             .expect("writer A commit should not error");
         let result_b = handle_b
             .join()
             .expect("writer B thread should not panic")
+            .await
             .expect("writer B commit should not error");
         let results = [result_a, result_b];
 
@@ -3244,11 +3439,13 @@ mod tests {
         );
 
         let db_reopened = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(db_path)
+            .await
             .expect("reopened handle should open");
         let store = MutationTraceStore::new(&db_reopened);
 
         let worktree_state = store
             .load_worktree_state(&wt)
+            .await
             .expect("worktree read should succeed")
             .expect("worktree row should exist");
         assert_eq!(
@@ -3258,14 +3455,15 @@ mod tests {
 
         let persisted_event = store
             .load_mutation_event(&wt, 1)
+            .await
             .expect("mutation-event read should succeed")
             .expect("exactly one writer's mutation event should be visible at the new revision");
 
-        assert_race_winner_state(&store, &wt, &persisted_event, &writer_a, &writer_b);
+        assert_race_winner_state(&store, &wt, &persisted_event, &writer_a, &writer_b).await;
     }
 
-    fn assert_atomic_rollback_state(
-        store: &MutationTraceStore,
+    async fn assert_atomic_rollback_state(
+        store: &MutationTraceStore<'_>,
         worktree: &WorktreeId,
         scope_id: &ScopeId,
         rolled_back_active_scope: &ScopeId,
@@ -3273,6 +3471,7 @@ mod tests {
     ) {
         let worktree_state = store
             .load_worktree_state(worktree)
+            .await
             .expect("worktree read should succeed")
             .expect("worktree row should exist");
         assert_eq!(worktree_state.revision, 0, "revision must roll back");
@@ -3293,6 +3492,7 @@ mod tests {
 
         let scope_state = store
             .load_scope(scope_id)
+            .await
             .expect("scope read should succeed")
             .expect("scope row should exist");
         assert_eq!(
@@ -3321,6 +3521,7 @@ mod tests {
 
         let active_scopes = store
             .load_mutation_event_active_scopes(worktree, encode_revision(1).as_slice())
+            .await
             .expect("active-scope read should succeed");
         assert!(
             !active_scopes.contains(rolled_back_active_scope),
@@ -3335,19 +3536,21 @@ mod tests {
         );
     }
 
-    #[test]
-    fn commit_rolls_back_every_write_kind_together_on_a_deterministic_failure() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn commit_rolls_back_every_write_kind_together_on_a_deterministic_failure() {
         let db_fixture = test_db_path("commit-atomic-rollback");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
         let wt = WorktreeId("wt0".to_string());
         let scope_id = ScopeId("scope0".to_string());
         let scope_a = ScopeId("scope-a".to_string());
         let scope_z = ScopeId("scope-z".to_string());
-        insert_worktree(&db, &wt.0, 0);
-        insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active);
-        insert_active_scope(&db, &wt.0, 1, &scope_z.0);
+        insert_worktree(&db, &wt.0, 0).await;
+        insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active).await;
+        insert_active_scope(&db, &wt.0, 1, &scope_z.0).await;
 
         let before = state_with_scope(
             &wt,
@@ -3380,25 +3583,28 @@ mod tests {
 
         let transition = DurableTransition::between(&before, &after, &wt)
             .expect("between should succeed")
+            .await
             .expect("a transition should exist for this change");
 
-        let error = store.commit(&transition).expect_err(
+        let error = store.commit(&transition).await.expect_err(
             "the pre-seeded (wt0, revision=1, scope-z) active-scope row should collide with \
              the second active-scope insert, after every earlier write kind already succeeded",
         );
         assert!(error.to_string().contains("execute failed"));
 
-        assert_atomic_rollback_state(&store, &wt, &scope_id, &scope_a, &scope_z);
+        assert_atomic_rollback_state(&store, &wt, &scope_id, &scope_a, &scope_z).await;
     }
 
-    #[test]
-    fn commit_round_trips_u64_max_through_the_real_database() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn commit_round_trips_u64_max_through_the_real_database() {
         let db_fixture = test_db_path("commit-u64-max");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
         let wt = WorktreeId("wt0".to_string());
-        insert_worktree(&db, &wt.0, u64::MAX - 1);
+        insert_worktree(&db, &wt.0, u64::MAX - 1).await;
 
         let mut before = ProtocolState::default();
         before
@@ -3409,29 +3615,36 @@ mod tests {
 
         let transition = DurableTransition::between(&before, &after, &wt)
             .expect("between should succeed")
+            .await
             .expect("a transition should exist for this change");
 
-        let result = store.commit(&transition).expect("commit should succeed");
+        let result = store
+            .commit(&transition)
+            .await
+            .expect("commit should succeed");
         assert_eq!(result, CasResult::Applied);
 
         let worktree_state = store
             .load_worktree_state(&wt)
+            .await
             .expect("worktree read should succeed")
             .expect("worktree row should exist");
         assert_eq!(worktree_state.revision, u64::MAX);
     }
 
-    #[test]
-    fn commit_rejects_a_replayed_event_key_via_the_processed_event_uniqueness_constraint() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn commit_rejects_a_replayed_event_key_via_the_processed_event_uniqueness_constraint() {
         let db_fixture = test_db_path("commit-replay-uniqueness");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
         let wt = WorktreeId("wt0".to_string());
         let scope_id = ScopeId("scope0".to_string());
-        insert_worktree(&db, &wt.0, 0);
-        insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active);
-        insert_processed_event(&db, "scope0", "event-1");
+        insert_worktree(&db, &wt.0, 0).await;
+        insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active).await;
+        insert_processed_event(&db, "scope0", "event-1").await;
 
         let before = state_with_scope(
             &wt,
@@ -3453,11 +3666,13 @@ mod tests {
 
         let error = store
             .commit(&transition)
+            .await
             .expect_err("a replayed (scope_id, event_id) must be rejected, not silently applied");
         assert!(error.to_string().contains("execute failed"));
 
         let worktree_state = store
             .load_worktree_state(&wt)
+            .await
             .expect("worktree read should succeed")
             .expect("worktree row should exist");
         assert_eq!(
@@ -3466,18 +3681,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn commit_of_strong_recovery_abandons_every_live_scope_on_the_worktree() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn commit_of_strong_recovery_abandons_every_live_scope_on_the_worktree() {
         let db_fixture = test_db_path("commit-strong-recovery");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
         let wt = WorktreeId("wt0".to_string());
         let scope_a = ScopeId("scope-a".to_string());
         let scope_b = ScopeId("scope-b".to_string());
-        insert_worktree(&db, &wt.0, 0);
-        insert_scope(&db, &scope_a.0, &wt.0, ScopeStatus::Active);
-        insert_scope(&db, &scope_b.0, &wt.0, ScopeStatus::Active);
+        insert_worktree(&db, &wt.0, 0).await;
+        insert_scope(&db, &scope_a.0, &wt.0, ScopeStatus::Active).await;
+        insert_scope(&db, &scope_b.0, &wt.0, ScopeStatus::Active).await;
 
         let mut before = ProtocolState::default();
         before.worktrees.insert(
@@ -3510,30 +3727,37 @@ mod tests {
         let after = recover(&before, &wt, TreeId("tree1".to_string()));
         let transition = DurableTransition::between(&before, &after, &wt)
             .expect("between should succeed")
+            .await
             .expect("strong recovery should produce a durable transition");
 
-        let result = store.commit(&transition).expect("commit should succeed");
+        let result = store
+            .commit(&transition)
+            .await
+            .expect("commit should succeed");
         assert_eq!(result, CasResult::Applied);
 
         for scope_id in [&scope_a, &scope_b] {
             let scope_state = store
                 .load_scope(scope_id)
+                .await
                 .expect("scope read should succeed")
                 .expect("scope row should exist");
             assert_eq!(scope_state.status, ScopeStatus::Abandoned);
         }
     }
 
-    #[test]
-    fn commit_of_needs_only_recovery_leaves_live_scopes_active() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn commit_of_needs_only_recovery_leaves_live_scopes_active() {
         let db_fixture = test_db_path("commit-needs-only-recovery");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
         let wt = WorktreeId("wt0".to_string());
         let scope_id = ScopeId("scope0".to_string());
-        insert_worktree(&db, &wt.0, 0);
-        insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active);
+        insert_worktree(&db, &wt.0, 0).await;
+        insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active).await;
 
         let mut before = ProtocolState::default();
         before.worktrees.insert(
@@ -3558,19 +3782,25 @@ mod tests {
         let after = recover(&before, &wt, TreeId("tree1".to_string()));
         let transition = DurableTransition::between(&before, &after, &wt)
             .expect("between should succeed")
+            .await
             .expect("needs-only recovery should produce a durable transition");
 
-        let result = store.commit(&transition).expect("commit should succeed");
+        let result = store
+            .commit(&transition)
+            .await
+            .expect("commit should succeed");
         assert_eq!(result, CasResult::Applied);
 
         let worktree_state = store
             .load_worktree_state(&wt)
+            .await
             .expect("worktree read should succeed")
             .expect("worktree row should exist");
         assert!(!worktree_state.needs_rebaseline);
 
         let scope_state = store
             .load_scope(&scope_id)
+            .await
             .expect("scope read should succeed")
             .expect("scope row should exist");
         assert_eq!(
@@ -3580,7 +3810,7 @@ mod tests {
         );
     }
 
-    fn insert_worktree_with_state(
+    async fn insert_worktree_with_state(
         db: &RepositoryAgentTraceDb,
         worktree_id: &str,
         revision: u64,
@@ -3600,32 +3830,39 @@ mod tests {
                 needs_rebaseline,
             ),
         )
+        .await
         .expect("worktree insert should succeed");
     }
 
-    fn reopen_store(db_path: &std::path::Path) -> RepositoryAgentTraceDb {
+    async fn reopen_store(db_path: &std::path::Path) -> RepositoryAgentTraceDb {
         RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(db_path)
+            .await
             .expect("reopened handle should open")
     }
 
-    fn load_before_state(
+    async fn load_before_state(
         db_path: &std::path::Path,
         worktree: &WorktreeId,
         scope: Option<&ScopeId>,
         event_key: Option<&EventKey>,
     ) -> ProtocolState {
-        let db = reopen_store(db_path);
+        let db = reopen_store(db_path).await;
         MutationTraceStore::new(&db)
             .load_worktree(worktree, scope, event_key)
+            .await
             .expect("load_worktree should succeed")
             .expect("worktree projection should exist")
             .into_protocol_state()
     }
 
-    fn commit_transition(db_path: &std::path::Path, transition: &DurableTransition) -> CasResult {
-        let db = reopen_store(db_path);
+    async fn commit_transition(
+        db_path: &std::path::Path,
+        transition: &DurableTransition,
+    ) -> CasResult {
+        let db = reopen_store(db_path).await;
         MutationTraceStore::new(&db)
             .commit(transition)
+            .await
             .expect("commit should succeed")
     }
 
@@ -3672,18 +3909,19 @@ mod tests {
         }
     }
 
-    fn assert_round_trip(
+    async fn assert_round_trip(
         db_path: &std::path::Path,
         worktree: &WorktreeId,
         scope: Option<&ScopeId>,
         event_key: Option<&EventKey>,
         after: &ProtocolState,
     ) -> WorktreeProjection {
-        let db = reopen_store(db_path);
+        let db = reopen_store(db_path).await;
         let store = MutationTraceStore::new(&db);
 
         let reloaded = store
             .load_worktree(worktree, scope, event_key)
+            .await
             .expect("load_worktree should succeed")
             .expect("worktree projection should exist");
 
@@ -3695,6 +3933,7 @@ mod tests {
         for expected_event in &after.mutation_events {
             let reloaded_event = store
                 .load_mutation_event(worktree, expected_event.revision)
+                .await
                 .expect("load_mutation_event should succeed")
                 .expect("mutation event row should exist");
             assert_eq!(&reloaded_event, expected_event);
@@ -3703,19 +3942,21 @@ mod tests {
         reloaded
     }
 
-    #[test]
-    fn round_trip_start_persists_and_reloads_exactly_after_reopening_the_database() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn round_trip_start_persists_and_reloads_exactly_after_reopening_the_database() {
         let db_fixture = test_db_path("roundtrip-start");
         let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         let scope_id = ScopeId("scope0".to_string());
         {
-            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
-            insert_worktree(&db, &wt.0, 0);
-            insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::NeverSeen);
+            let db = RepositoryAgentTraceDb::new_at(db_path)
+                .await
+                .expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0).await;
+            insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::NeverSeen).await;
         }
 
-        let before = load_before_state(db_path, &wt, Some(&scope_id), None);
+        let before = load_before_state(db_path, &wt, Some(&scope_id), None).await;
         let attempt = AttemptId("attempt0".to_string());
         let event_id = EventId("event0".to_string());
         let prepared = prepare(
@@ -3743,22 +3984,24 @@ mod tests {
             scope_id: scope_id.clone(),
             event_id,
         };
-        assert_round_trip(db_path, &wt, Some(&scope_id), Some(&event_key), &after);
+        assert_round_trip(db_path, &wt, Some(&scope_id), Some(&event_key), &after).await;
     }
 
-    #[test]
-    fn round_trip_advance_persists_and_reloads_exactly_after_reopening_the_database() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn round_trip_advance_persists_and_reloads_exactly_after_reopening_the_database() {
         let db_fixture = test_db_path("roundtrip-advance");
         let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         let scope_id = ScopeId("scope0".to_string());
         {
-            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
-            insert_worktree(&db, &wt.0, 0);
-            insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active);
+            let db = RepositoryAgentTraceDb::new_at(db_path)
+                .await
+                .expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0).await;
+            insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active).await;
         }
 
-        let before = load_before_state(db_path, &wt, Some(&scope_id), None);
+        let before = load_before_state(db_path, &wt, Some(&scope_id), None).await;
         let attempt = AttemptId("attempt0".to_string());
         let event_id = EventId("event0".to_string());
         let prepared = prepare(
@@ -3786,22 +4029,24 @@ mod tests {
             scope_id: scope_id.clone(),
             event_id,
         };
-        assert_round_trip(db_path, &wt, Some(&scope_id), Some(&event_key), &after);
+        assert_round_trip(db_path, &wt, Some(&scope_id), Some(&event_key), &after).await;
     }
 
-    #[test]
-    fn round_trip_close_persists_and_reloads_exactly_after_reopening_the_database() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn round_trip_close_persists_and_reloads_exactly_after_reopening_the_database() {
         let db_fixture = test_db_path("roundtrip-close");
         let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         let scope_id = ScopeId("scope0".to_string());
         {
-            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
-            insert_worktree(&db, &wt.0, 0);
-            insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active);
+            let db = RepositoryAgentTraceDb::new_at(db_path)
+                .await
+                .expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0).await;
+            insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active).await;
         }
 
-        let before = load_before_state(db_path, &wt, Some(&scope_id), None);
+        let before = load_before_state(db_path, &wt, Some(&scope_id), None).await;
         let attempt = AttemptId("attempt0".to_string());
         let event_id = EventId("event0".to_string());
         let prepared = prepare(
@@ -3833,20 +4078,23 @@ mod tests {
             scope_id: scope_id.clone(),
             event_id,
         };
-        assert_round_trip(db_path, &wt, Some(&scope_id), Some(&event_key), &after);
+        assert_round_trip(db_path, &wt, Some(&scope_id), Some(&event_key), &after).await;
     }
 
-    #[test]
-    fn round_trip_flush_with_change_persists_and_reloads_exactly_after_reopening_the_database() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn round_trip_flush_with_change_persists_and_reloads_exactly_after_reopening_the_database(
+    ) {
         let db_fixture = test_db_path("roundtrip-flush-change");
         let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         {
-            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
-            insert_worktree(&db, &wt.0, 0);
+            let db = RepositoryAgentTraceDb::new_at(db_path)
+                .await
+                .expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0).await;
         }
 
-        let before = load_before_state(db_path, &wt, None, None);
+        let before = load_before_state(db_path, &wt, None, None).await;
         let attempt = AttemptId("attempt0".to_string());
         let prepared = prepare(
             &before,
@@ -3868,20 +4116,22 @@ mod tests {
             .expect("a changed flush transition should produce a durable transition");
         assert_eq!(commit_transition(db_path, &transition), CasResult::Applied);
 
-        assert_round_trip(db_path, &wt, None, None, &after);
+        assert_round_trip(db_path, &wt, None, None, &after).await;
     }
 
-    #[test]
-    fn round_trip_flush_without_change_persists_nothing_new() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn round_trip_flush_without_change_persists_nothing_new() {
         let db_fixture = test_db_path("roundtrip-flush-no-change");
         let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         {
-            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
-            insert_worktree(&db, &wt.0, 0);
+            let db = RepositoryAgentTraceDb::new_at(db_path)
+                .await
+                .expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0).await;
         }
 
-        let before = load_before_state(db_path, &wt, None, None);
+        let before = load_before_state(db_path, &wt, None, None).await;
         let attempt = AttemptId("attempt0".to_string());
         let prepared = prepare(
             &before,
@@ -3904,20 +4154,22 @@ mod tests {
             "a no-change flush must produce no durable transition to persist"
         );
 
-        assert_round_trip(db_path, &wt, None, None, &after);
+        assert_round_trip(db_path, &wt, None, None, &after).await;
     }
 
-    #[test]
-    fn round_trip_taint_persists_and_reloads_exactly_after_reopening_the_database() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn round_trip_taint_persists_and_reloads_exactly_after_reopening_the_database() {
         let db_fixture = test_db_path("roundtrip-taint");
         let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         {
-            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
-            insert_worktree(&db, &wt.0, 0);
+            let db = RepositoryAgentTraceDb::new_at(db_path)
+                .await
+                .expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0).await;
         }
 
-        let before = load_before_state(db_path, &wt, None, None);
+        let before = load_before_state(db_path, &wt, None, None).await;
         let after = taint(&before, &wt);
 
         let transition = DurableTransition::between(&before, &after, &wt)
@@ -3925,22 +4177,24 @@ mod tests {
             .expect("taint should produce a durable transition");
         assert_eq!(commit_transition(db_path, &transition), CasResult::Applied);
 
-        assert_round_trip(db_path, &wt, None, None, &after);
+        assert_round_trip(db_path, &wt, None, None, &after).await;
     }
 
-    #[test]
-    fn round_trip_abandon_persists_and_reloads_exactly_after_reopening_the_database() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn round_trip_abandon_persists_and_reloads_exactly_after_reopening_the_database() {
         let db_fixture = test_db_path("roundtrip-abandon");
         let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         let scope_id = ScopeId("scope0".to_string());
         {
-            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
-            insert_worktree(&db, &wt.0, 0);
-            insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active);
+            let db = RepositoryAgentTraceDb::new_at(db_path)
+                .await
+                .expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0).await;
+            insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active).await;
         }
 
-        let before = load_before_state(db_path, &wt, Some(&scope_id), None);
+        let before = load_before_state(db_path, &wt, Some(&scope_id), None).await;
         let after = abandon(&before, &scope_id);
 
         let transition = DurableTransition::between(&before, &after, &wt)
@@ -3948,24 +4202,27 @@ mod tests {
             .expect("abandon should produce a durable transition");
         assert_eq!(commit_transition(db_path, &transition), CasResult::Applied);
 
-        assert_round_trip(db_path, &wt, Some(&scope_id), None, &after);
+        assert_round_trip(db_path, &wt, Some(&scope_id), None, &after).await;
     }
 
-    #[test]
-    fn round_trip_strong_recovery_abandons_every_live_scope_after_reopening_the_database() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn round_trip_strong_recovery_abandons_every_live_scope_after_reopening_the_database() {
         let db_fixture = test_db_path("roundtrip-recover-strong");
         let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         let scope_a = ScopeId("scope-a".to_string());
         let scope_b = ScopeId("scope-b".to_string());
         {
-            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
-            insert_worktree_with_state(&db, &wt.0, 0, true, FailureKind::SnapshotFailure, false);
-            insert_scope(&db, &scope_a.0, &wt.0, ScopeStatus::Active);
-            insert_scope(&db, &scope_b.0, &wt.0, ScopeStatus::Active);
+            let db = RepositoryAgentTraceDb::new_at(db_path)
+                .await
+                .expect("repository DB should open");
+            insert_worktree_with_state(&db, &wt.0, 0, true, FailureKind::SnapshotFailure, false)
+                .await;
+            insert_scope(&db, &scope_a.0, &wt.0, ScopeStatus::Active).await;
+            insert_scope(&db, &scope_b.0, &wt.0, ScopeStatus::Active).await;
         }
 
-        let before = load_before_state(db_path, &wt, None, None);
+        let before = load_before_state(db_path, &wt, None, None).await;
         let after = recover(&before, &wt, TreeId("tree1".to_string()));
 
         let transition = DurableTransition::between(&before, &after, &wt)
@@ -3973,34 +4230,38 @@ mod tests {
             .expect("strong recovery should produce a durable transition");
         assert_eq!(commit_transition(db_path, &transition), CasResult::Applied);
 
-        assert_round_trip(db_path, &wt, None, None, &after);
+        assert_round_trip(db_path, &wt, None, None, &after).await;
 
-        let db = reopen_store(db_path);
+        let db = reopen_store(db_path).await;
         let store = MutationTraceStore::new(&db);
         for scope_id in [&scope_a, &scope_b] {
             let scope_state = store
                 .load_scope(scope_id)
+                .await
                 .expect("scope read should succeed")
                 .expect("scope row should exist");
             assert_eq!(scope_state.status, ScopeStatus::Abandoned);
         }
     }
 
-    #[test]
-    fn round_trip_contended_mutation_persists_and_reloads_exactly_after_reopening_the_database() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn round_trip_contended_mutation_persists_and_reloads_exactly_after_reopening_the_database(
+    ) {
         let db_fixture = test_db_path("roundtrip-contended");
         let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         let scope_a = ScopeId("scope-a".to_string());
         let scope_b = ScopeId("scope-b".to_string());
         {
-            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
-            insert_worktree(&db, &wt.0, 0);
-            insert_scope(&db, &scope_a.0, &wt.0, ScopeStatus::Active);
-            insert_scope(&db, &scope_b.0, &wt.0, ScopeStatus::Active);
+            let db = RepositoryAgentTraceDb::new_at(db_path)
+                .await
+                .expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0).await;
+            insert_scope(&db, &scope_a.0, &wt.0, ScopeStatus::Active).await;
+            insert_scope(&db, &scope_b.0, &wt.0, ScopeStatus::Active).await;
         }
 
-        let before = load_before_state(db_path, &wt, None, None);
+        let before = load_before_state(db_path, &wt, None, None).await;
         let attempt = AttemptId("attempt0".to_string());
         let prepared = prepare(
             &before,
@@ -4032,7 +4293,7 @@ mod tests {
             .expect("a contended flush transition should produce a durable transition");
         assert_eq!(commit_transition(db_path, &transition), CasResult::Applied);
 
-        let reloaded = assert_round_trip(db_path, &wt, None, None, &after);
+        let reloaded = assert_round_trip(db_path, &wt, None, None, &after).await;
         assert_eq!(
             reloaded.scopes.keys().cloned().collect::<BTreeSet<_>>(),
             BTreeSet::from([scope_a.clone(), scope_b.clone()]),
@@ -4046,17 +4307,19 @@ mod tests {
         }
     }
 
-    #[test]
-    fn round_trip_database_failure_changes_only_non_persistent_external_taint() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn round_trip_database_failure_changes_only_non_persistent_external_taint() {
         let db_fixture = test_db_path("roundtrip-database-failure");
         let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
         {
-            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
-            insert_worktree(&db, &wt.0, 0);
+            let db = RepositoryAgentTraceDb::new_at(db_path)
+                .await
+                .expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0).await;
         }
 
-        let before = load_before_state(db_path, &wt, None, None);
+        let before = load_before_state(db_path, &wt, None, None).await;
         let after = database_failure(&before, &wt);
 
         assert!(!before.external_taint.contains(&wt));
@@ -4076,12 +4339,12 @@ mod tests {
              DurableTransition should exist to commit"
         );
 
-        let reloaded = assert_round_trip(db_path, &wt, None, None, &after);
+        let reloaded = assert_round_trip(db_path, &wt, None, None, &after).await;
         assert!(reloaded.into_protocol_state().external_taint.is_empty());
     }
 
-    #[test]
-    fn round_trip_a_replayed_event_key_is_rejected_and_does_not_advance_the_worktree_again() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn round_trip_a_replayed_event_key_is_rejected_and_does_not_advance_the_worktree_again() {
         let db_fixture = test_db_path("roundtrip-replay");
         let db_path = db_fixture.path();
         let wt = WorktreeId("wt0".to_string());
@@ -4091,12 +4354,14 @@ mod tests {
             event_id: EventId("event0".to_string()),
         };
         {
-            let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
-            insert_worktree(&db, &wt.0, 0);
-            insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active);
+            let db = RepositoryAgentTraceDb::new_at(db_path)
+                .await
+                .expect("repository DB should open");
+            insert_worktree(&db, &wt.0, 0).await;
+            insert_scope(&db, &scope_id.0, &wt.0, ScopeStatus::Active).await;
         }
 
-        let before = load_before_state(db_path, &wt, Some(&scope_id), None);
+        let before = load_before_state(db_path, &wt, Some(&scope_id), None).await;
         let attempt = AttemptId("attempt0".to_string());
         let prepared = prepare(
             &before,
@@ -4119,7 +4384,8 @@ mod tests {
             .expect("the first delivery should produce a durable transition");
         assert_eq!(commit_transition(db_path, &transition), CasResult::Applied);
 
-        let before_replay = load_before_state(db_path, &wt, Some(&scope_id), Some(&event_key));
+        let before_replay =
+            load_before_state(db_path, &wt, Some(&scope_id), Some(&event_key)).await;
         assert!(before_replay.processed_events.contains(&event_key));
 
         let replay_attempt = AttemptId("attempt1".to_string());
@@ -4146,10 +4412,10 @@ mod tests {
             "a rejected replay must produce no durable transition to persist"
         );
 
-        assert_round_trip(db_path, &wt, Some(&scope_id), Some(&event_key), &after);
+        assert_round_trip(db_path, &wt, Some(&scope_id), Some(&event_key), &after).await;
     }
 
-    fn insert_worktree_with_cursor(
+    async fn insert_worktree_with_cursor(
         db: &RepositoryAgentTraceDb,
         worktree_id: &str,
         revision: u64,
@@ -4165,10 +4431,11 @@ mod tests {
                 encode_revision(revision).as_slice(),
             ),
         )
+        .await
         .expect("worktree insert should succeed");
     }
 
-    fn insert_event_trees(
+    async fn insert_event_trees(
         db: &RepositoryAgentTraceDb,
         worktree_id: &str,
         revision: u64,
@@ -4186,7 +4453,7 @@ mod tests {
                 before_tree,
                 after_tree,
             ),
-        )
+        ).await
         .expect("mutation event insert should succeed");
     }
 
@@ -4194,72 +4461,83 @@ mod tests {
         trees.into_iter().map(|t| TreeId(t.to_string())).collect()
     }
 
-    #[test]
-    fn load_tree_roots_returns_cursor_and_every_event_tree_deduplicated() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_tree_roots_returns_cursor_and_every_event_tree_deduplicated() {
         let db_fixture = test_db_path("tree-roots-cursor-and-events");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree_with_cursor(&db, "wt-1", 2, "tree-2");
-        insert_event_trees(&db, "wt-1", 1, "tree-0", "tree-1");
-        insert_event_trees(&db, "wt-1", 2, "tree-1", "tree-2");
+        insert_worktree_with_cursor(&db, "wt-1", 2, "tree-2").await;
+        insert_event_trees(&db, "wt-1", 1, "tree-0", "tree-1").await;
+        insert_event_trees(&db, "wt-1", 2, "tree-1", "tree-2").await;
 
         let roots = store
             .load_tree_roots(&WorktreeId("wt-1".to_string()))
+            .await
             .expect("load_tree_roots should succeed");
 
         assert_eq!(roots, tree_set(["tree-0", "tree-1", "tree-2"]));
     }
 
-    #[test]
-    fn load_tree_roots_excludes_other_worktrees_trees() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_tree_roots_excludes_other_worktrees_trees() {
         let db_fixture = test_db_path("tree-roots-excludes-other-worktree");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree_with_cursor(&db, "wt-1", 1, "tree-1a");
-        insert_event_trees(&db, "wt-1", 1, "tree-0a", "tree-1a");
+        insert_worktree_with_cursor(&db, "wt-1", 1, "tree-1a").await;
+        insert_event_trees(&db, "wt-1", 1, "tree-0a", "tree-1a").await;
 
-        insert_worktree_with_cursor(&db, "wt-2", 1, "tree-1b");
-        insert_event_trees(&db, "wt-2", 1, "tree-0b", "tree-1b");
+        insert_worktree_with_cursor(&db, "wt-2", 1, "tree-1b").await;
+        insert_event_trees(&db, "wt-2", 1, "tree-0b", "tree-1b").await;
 
         let roots = store
             .load_tree_roots(&WorktreeId("wt-1".to_string()))
+            .await
             .expect("load_tree_roots should succeed");
 
         assert_eq!(roots, tree_set(["tree-0a", "tree-1a"]));
     }
 
-    #[test]
-    fn load_tree_roots_is_empty_for_an_unmaterialized_worktree() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_tree_roots_is_empty_for_an_unmaterialized_worktree() {
         let db_fixture = test_db_path("tree-roots-unmaterialized-worktree");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree_with_cursor(&db, "wt-other", 0, "tree-other");
+        insert_worktree_with_cursor(&db, "wt-other", 0, "tree-other").await;
 
         let roots = store
             .load_tree_roots(&WorktreeId("wt-missing".to_string()))
+            .await
             .expect("load_tree_roots should return Ok for a worktree with no durable row");
 
         assert!(roots.is_empty());
     }
 
-    #[test]
-    fn load_tree_roots_remains_worktree_scoped() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_tree_roots_remains_worktree_scoped() {
         let db_fixture = test_db_path("tree-roots-worktree-scoped");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree_with_cursor(&db, "wt-1", 1, "tree-1a");
-        insert_event_trees(&db, "wt-1", 1, "tree-0a", "tree-1a");
-        insert_worktree_with_cursor(&db, "wt-2", 2, "tree-2b");
-        insert_event_trees(&db, "wt-2", 1, "tree-0b", "tree-1b");
-        insert_event_trees(&db, "wt-2", 2, "tree-1b", "tree-2b");
+        insert_worktree_with_cursor(&db, "wt-1", 1, "tree-1a").await;
+        insert_event_trees(&db, "wt-1", 1, "tree-0a", "tree-1a").await;
+        insert_worktree_with_cursor(&db, "wt-2", 2, "tree-2b").await;
+        insert_event_trees(&db, "wt-2", 1, "tree-0b", "tree-1b").await;
+        insert_event_trees(&db, "wt-2", 2, "tree-1b", "tree-2b").await;
 
         assert_eq!(
             store
@@ -4275,21 +4553,24 @@ mod tests {
         );
     }
 
-    #[test]
-    fn load_all_tree_roots_returns_every_worktree_cursor_and_event_tree_deduplicated() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_all_tree_roots_returns_every_worktree_cursor_and_event_tree_deduplicated() {
         let db_fixture = test_db_path("all-tree-roots-every-worktree");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree_with_cursor(&db, "wt-1", 1, "tree-1a");
-        insert_event_trees(&db, "wt-1", 1, "tree-0a", "tree-1a");
-        insert_worktree_with_cursor(&db, "wt-2", 2, "tree-2b");
-        insert_event_trees(&db, "wt-2", 1, "tree-0b", "tree-1b");
-        insert_event_trees(&db, "wt-2", 2, "tree-1b", "tree-2b");
+        insert_worktree_with_cursor(&db, "wt-1", 1, "tree-1a").await;
+        insert_event_trees(&db, "wt-1", 1, "tree-0a", "tree-1a").await;
+        insert_worktree_with_cursor(&db, "wt-2", 2, "tree-2b").await;
+        insert_event_trees(&db, "wt-2", 1, "tree-0b", "tree-1b").await;
+        insert_event_trees(&db, "wt-2", 2, "tree-1b", "tree-2b").await;
 
         let roots = store
             .load_all_tree_roots()
+            .await
             .expect("load_all_tree_roots should succeed");
 
         assert_eq!(
@@ -4298,40 +4579,46 @@ mod tests {
         );
     }
 
-    #[test]
-    fn load_all_tree_roots_deduplicates_a_tree_shared_by_multiple_worktrees() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_all_tree_roots_deduplicates_a_tree_shared_by_multiple_worktrees() {
         let db_fixture = test_db_path("all-tree-roots-shared-tree");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree_with_cursor(&db, "wt-1", 1, "tree-shared");
-        insert_event_trees(&db, "wt-1", 1, "tree-0a", "tree-shared");
-        insert_worktree_with_cursor(&db, "wt-2", 1, "tree-1b");
-        insert_event_trees(&db, "wt-2", 1, "tree-shared", "tree-1b");
+        insert_worktree_with_cursor(&db, "wt-1", 1, "tree-shared").await;
+        insert_event_trees(&db, "wt-1", 1, "tree-0a", "tree-shared").await;
+        insert_worktree_with_cursor(&db, "wt-2", 1, "tree-1b").await;
+        insert_event_trees(&db, "wt-2", 1, "tree-shared", "tree-1b").await;
 
         let roots = store
             .load_all_tree_roots()
+            .await
             .expect("load_all_tree_roots should succeed");
 
         assert_eq!(roots, tree_set(["tree-0a", "tree-shared", "tree-1b"]));
     }
 
-    #[test]
-    fn load_all_tree_roots_is_empty_for_an_empty_repository() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_all_tree_roots_is_empty_for_an_empty_repository() {
         let db_fixture = test_db_path("all-tree-roots-empty-repository");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
         let roots = store
             .load_all_tree_roots()
+            .await
             .expect("load_all_tree_roots should return Ok for an empty repository");
 
         assert!(roots.is_empty());
     }
 
-    fn apply_atomic_cursor_advance(db: &RepositoryAgentTraceDb) {
+    async fn apply_atomic_cursor_advance(db: &RepositoryAgentTraceDb) {
         let guard = TransactionStatement::new(
             "UPDATE mutation_trace_worktrees SET cursor_tree = ?1, revision = ?2
              WHERE worktree_id = ?3 AND revision = ?4",
@@ -4342,6 +4629,7 @@ mod tests {
                 encode_revision(0).as_slice(),
             ),
         )
+        .await
         .expect("guard statement should build");
         let statements = [TransactionStatement::new(
             "INSERT INTO mutation_trace_events
@@ -4354,7 +4642,7 @@ mod tests {
                 "tree-t",
                 "tree-x",
             ),
-        )
+        ).await
         .expect("event statement should build")];
 
         let applied = db
@@ -4364,15 +4652,17 @@ mod tests {
                 &guard,
                 &statements,
             )
+            .await
             .expect("the atomic cursor advance should commit");
         assert!(applied, "the CAS guard should have matched revision 0");
     }
 
-    fn select_trees(db: &RepositoryAgentTraceDb, sql: &str) -> BTreeSet<TreeId> {
+    async fn select_trees(db: &RepositoryAgentTraceDb, sql: &str) -> BTreeSet<TreeId> {
         db.query_map(sql, (), |row| {
             let tree: String = row.get(0).context("failed to read a tree column")?;
             Ok(TreeId(tree))
         })
+        .await
         .expect("tree column select should succeed")
         .into_iter()
         .collect()
@@ -4384,27 +4674,31 @@ mod tests {
     /// multi-read implementation would still pass this pre/post check.
     /// `load_all_tree_roots_reads_every_durable_root_in_one_sql_statement` is
     /// the deterministic regression for that property.
-    #[test]
-    fn load_all_tree_roots_retains_previous_cursor_after_atomic_cursor_advance() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_all_tree_roots_retains_previous_cursor_after_atomic_cursor_advance() {
         let db_fixture = test_db_path("all-tree-roots-retains-previous-cursor");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree_with_cursor(&db, "wt-b", 0, "tree-t");
+        insert_worktree_with_cursor(&db, "wt-b", 0, "tree-t").await;
 
         let pre = store
             .load_all_tree_roots()
+            .await
             .expect("load_all_tree_roots should succeed");
         assert!(
             pre.contains(&TreeId("tree-t".to_string())),
             "T is a durable root before the transition (via cursor_tree)"
         );
 
-        apply_atomic_cursor_advance(&db);
+        apply_atomic_cursor_advance(&db).await;
 
         let post = store
             .load_all_tree_roots()
+            .await
             .expect("load_all_tree_roots should succeed");
         assert!(
             post.contains(&TreeId("tree-t".to_string())),
@@ -4427,41 +4721,46 @@ mod tests {
     /// worktrees read, unioned in Rust — losing `T`) and then asserts the
     /// production path issues exactly one read statement, so it can never
     /// enter the interleaving and always retains `T`.
-    #[test]
-    fn load_all_tree_roots_reads_every_durable_root_in_one_sql_statement() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_all_tree_roots_reads_every_durable_root_in_one_sql_statement() {
         let db_fixture = test_db_path("all-tree-roots-single-statement");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree_with_cursor(&db, "wt-b", 0, "tree-t");
+        insert_worktree_with_cursor(&db, "wt-b", 0, "tree-t").await;
 
         let events_first = select_trees(
             &db,
             "SELECT before_tree AS tree FROM mutation_trace_events
              UNION
              SELECT after_tree AS tree FROM mutation_trace_events",
-        );
+        )
+        .await;
         assert!(
             events_first.is_empty(),
             "no event references T before the advance"
         );
 
-        apply_atomic_cursor_advance(&db);
+        apply_atomic_cursor_advance(&db).await;
 
         let cursors_second = select_trees(
             &db,
             "SELECT cursor_tree AS tree FROM mutation_trace_worktrees",
-        );
+        )
+        .await;
         let torn: BTreeSet<TreeId> = events_first.union(&cursors_second).cloned().collect();
         assert!(
             !torn.contains(&TreeId("tree-t".to_string())),
             "a two-read implementation loses T across the atomic advance"
         );
 
-        let (roots, statements_issued) = crate::services::db::count_read_statements(|| {
+        let (roots, statements_issued) = crate::services::db::count_read_statements(async || {
             store
                 .load_all_tree_roots()
+                .await
                 .expect("load_all_tree_roots should succeed")
         });
         assert_eq!(
@@ -4480,41 +4779,46 @@ mod tests {
     /// `after_tree` through one statement. A two-read reimplementation
     /// (events-for-W, then cursor-for-W) would tear across an atomic cursor
     /// advance in exactly the same way.
-    #[test]
-    fn load_tree_roots_reads_every_durable_root_in_one_sql_statement() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_tree_roots_reads_every_durable_root_in_one_sql_statement() {
         let db_fixture = test_db_path("tree-roots-single-statement");
         let db_path = db_fixture.path();
-        let db = RepositoryAgentTraceDb::new_at(db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(db_path)
+            .await
+            .expect("repository DB should open");
         let store = MutationTraceStore::new(&db);
 
-        insert_worktree_with_cursor(&db, "wt-b", 0, "tree-t");
+        insert_worktree_with_cursor(&db, "wt-b", 0, "tree-t").await;
 
         let events_first = select_trees(
             &db,
             "SELECT before_tree AS tree FROM mutation_trace_events WHERE worktree_id = 'wt-b'
              UNION
              SELECT after_tree AS tree FROM mutation_trace_events WHERE worktree_id = 'wt-b'",
-        );
+        )
+        .await;
         assert!(
             events_first.is_empty(),
             "no event references T before the advance"
         );
 
-        apply_atomic_cursor_advance(&db);
+        apply_atomic_cursor_advance(&db).await;
 
         let cursors_second = select_trees(
             &db,
             "SELECT cursor_tree AS tree FROM mutation_trace_worktrees WHERE worktree_id = 'wt-b'",
-        );
+        )
+        .await;
         let torn: BTreeSet<TreeId> = events_first.union(&cursors_second).cloned().collect();
         assert!(
             !torn.contains(&TreeId("tree-t".to_string())),
             "a two-read implementation loses T across the atomic advance"
         );
 
-        let (roots, statements_issued) = crate::services::db::count_read_statements(|| {
+        let (roots, statements_issued) = crate::services::db::count_read_statements(async || {
             store
                 .load_tree_roots(&WorktreeId("wt-b".to_string()))
+                .await
                 .expect("load_tree_roots should succeed")
         });
         assert_eq!(
@@ -4531,10 +4835,11 @@ mod tests {
     mod mutation_attribution {
         use super::*;
 
-        #[test]
-        fn page_reader_orders_big_endian_revisions_and_isolates_worktrees() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn page_reader_orders_big_endian_revisions_and_isolates_worktrees() {
             let db_fixture = test_db_path("mutation-attribution-ordering");
             let db = RepositoryAgentTraceDb::new_at(db_fixture.path())
+                .await
                 .expect("repository DB should open");
             let store = MutationTraceStore::new(&db);
 
@@ -4551,7 +4856,8 @@ mod tests {
                     None,
                     None,
                     &[],
-                );
+                )
+                .await;
             }
             insert_mutation_event(
                 &db,
@@ -4565,10 +4871,12 @@ mod tests {
                 None,
                 None,
                 &[],
-            );
+            )
+            .await;
 
             let rows = store
                 .load_mutation_event_page(&WorktreeId("wt-1".to_string()), None, 100)
+                .await
                 .expect("mutation event page should load");
 
             assert_eq!(
@@ -4585,10 +4893,11 @@ mod tests {
             );
         }
 
-        #[test]
-        fn page_reader_caps_limits_and_continues_with_an_exclusive_cursor() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn page_reader_caps_limits_and_continues_with_an_exclusive_cursor() {
             let db_fixture = test_db_path("mutation-attribution-pagination");
             let db = RepositoryAgentTraceDb::new_at(db_fixture.path())
+                .await
                 .expect("repository DB should open");
             let store = MutationTraceStore::new(&db);
 
@@ -4605,11 +4914,13 @@ mod tests {
                     None,
                     None,
                     &[],
-                );
+                )
+                .await;
             }
 
             let first_page = store
                 .load_mutation_event_page(&WorktreeId("wt-1".to_string()), None, 100)
+                .await
                 .expect("first mutation event page should load");
             assert_eq!(first_page.len(), MUTATION_ATTRIBUTION_PAGE_SIZE);
             assert_eq!(first_page.first().map(|row| row.revision), Some(33));
@@ -4625,6 +4936,7 @@ mod tests {
                     Some(cursor),
                     MUTATION_ATTRIBUTION_PAGE_SIZE,
                 )
+                .await
                 .expect("second mutation event page should load");
             assert_eq!(
                 second_page
@@ -4636,6 +4948,7 @@ mod tests {
 
             let empty_page = store
                 .load_mutation_event_page(&WorktreeId("wt-1".to_string()), Some(1), 1)
+                .await
                 .expect("page after the final cursor should load");
             assert!(empty_page.is_empty());
         }
@@ -4663,14 +4976,15 @@ mod tests {
 
     const INCONSISTENT_HEALTH_PAIRS: [(i64, &str); 2] = [(0, "snapshot_failure"), (1, "healthy")];
 
-    fn open_pre_health_invariant_db(
+    async fn open_pre_health_invariant_db(
         label: &str,
         statements: &[String],
     ) -> (TestDbPath, RepositoryAgentTraceDb) {
         let db_fixture = test_db_path(label);
         let statements: Vec<&str> = statements.iter().map(String::as_str).collect();
-        seed_pre_health_invariant_fixture(db_fixture.path(), &statements);
+        seed_pre_health_invariant_fixture(db_fixture.path(), &statements).await;
         let db = RepositoryAgentTraceDb::open_without_migrations_at(db_fixture.path())
+            .await
             .expect("pre-006 fixture DB should reopen without applying 006");
         (db_fixture, db)
     }
@@ -4705,49 +5019,56 @@ mod tests {
         );
     }
 
-    #[test]
-    fn load_worktree_rejects_a_stored_health_pair_that_disagrees_with_failure_kind() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_worktree_rejects_a_stored_health_pair_that_disagrees_with_failure_kind() {
         for (tainted, failure_kind) in INCONSISTENT_HEALTH_PAIRS {
             let (_db_fixture, db) = open_pre_health_invariant_db(
                 "inconsistent-worktree-health",
                 &[inconsistent_worktree_sql("wt-1", tainted, failure_kind)],
-            );
+            )
+            .await;
             let store = MutationTraceStore::new(&db);
 
             let error = store
                 .load_worktree(&WorktreeId("wt-1".to_string()), None, None)
+                .await
                 .expect_err("an inconsistent worktree health pair must not load");
             assert_health_rejection(&error, "mutation_trace_worktrees");
         }
     }
 
-    #[test]
-    fn load_mutation_event_rejects_a_stored_health_pair_that_disagrees_with_failure_kind() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_mutation_event_rejects_a_stored_health_pair_that_disagrees_with_failure_kind() {
         for (tainted, failure_kind) in INCONSISTENT_HEALTH_PAIRS {
             let (_db_fixture, db) = open_pre_health_invariant_db(
                 "inconsistent-event-health",
                 &[inconsistent_event_sql("wt-1", tainted, failure_kind)],
-            );
+            )
+            .await;
             let store = MutationTraceStore::new(&db);
 
             let error = store
                 .load_mutation_event(&WorktreeId("wt-1".to_string()), 1)
+                .await
                 .expect_err("an inconsistent mutation-event health pair must not load");
             assert_health_rejection(&error, "mutation_trace_events");
         }
     }
 
-    #[test]
-    fn load_mutation_event_page_rejects_a_stored_health_pair_that_disagrees_with_failure_kind() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_mutation_event_page_rejects_a_stored_health_pair_that_disagrees_with_failure_kind(
+    ) {
         for (tainted, failure_kind) in INCONSISTENT_HEALTH_PAIRS {
             let (_db_fixture, db) = open_pre_health_invariant_db(
                 "inconsistent-event-page-health",
                 &[inconsistent_event_sql("wt-1", tainted, failure_kind)],
-            );
+            )
+            .await;
             let store = MutationTraceStore::new(&db);
 
             let error = store
                 .load_mutation_event_page(&WorktreeId("wt-1".to_string()), None, 1)
+                .await
                 .expect_err("an inconsistent mutation-event health pair must not page");
             assert_health_rejection(&error, "mutation_trace_events");
         }

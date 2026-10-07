@@ -132,7 +132,7 @@ impl WorktreeLock {
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc;

@@ -135,7 +135,7 @@ impl FakePageSource {
 }
 
 impl MutationEventPageSource for FakePageSource {
-    fn load_mutation_event_page(
+    async fn load_mutation_event_page(
         &self,
         _worktree: &WorktreeId,
         revision_cursor: Option<u64>,
@@ -253,8 +253,8 @@ fn unresolved_contents(attr: &BoundedMutationAttribution) -> Vec<String> {
         .collect()
 }
 
-#[test]
-fn no_events_leaves_every_target_line_unresolved() {
+#[tokio::test(flavor = "multi_thread")]
+async fn no_events_leaves_every_target_line_unresolved() {
     let page_source = FakePageSource::new(Vec::new());
     let tree_source = FakeTreeSource::new();
 
@@ -266,7 +266,8 @@ fn no_events_leaves_every_target_line_unresolved() {
         &committed("f.rs", 1, 1, 1, vec![added(2, "foo")]),
         &tree("commit"),
         Some(5),
-    );
+    )
+    .await;
 
     assert!(ai_contents(&attr).is_empty());
     assert_eq!(unresolved_contents(&attr), vec!["foo".to_owned()]);
@@ -277,8 +278,8 @@ fn no_events_leaves_every_target_line_unresolved() {
     assert_eq!(page_source.requests().len(), 1);
 }
 
-#[test]
-fn fully_direct_covered_target_does_zero_mutation_history_work() {
+#[tokio::test(flavor = "multi_thread")]
+async fn fully_direct_covered_target_does_zero_mutation_history_work() {
     let page_source = FakePageSource::new(vec![ai_row(1, "b", "a", "s")]);
     let tree_source = FakeTreeSource::new();
 
@@ -291,7 +292,8 @@ fn fully_direct_covered_target_does_zero_mutation_history_work() {
         &direct,
         &tree("commit"),
         Some(1),
-    );
+    )
+    .await;
 
     assert!(page_source.requests().is_empty());
     assert_eq!(tree_source.diff_calls(), 0);
@@ -299,8 +301,8 @@ fn fully_direct_covered_target_does_zero_mutation_history_work() {
     assert!(attr.result.mutation_ai_patch.files.is_empty());
 }
 
-#[test]
-fn a_surviving_ai_mutation_line_is_attributed() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_surviving_ai_mutation_line_is_attributed() {
     let page_source = FakePageSource::new(vec![ai_row(1, "t0", "t1", "scope-1")]);
     let tree_source = FakeTreeSource::new()
         .with_file("t0", "f.rs", "a\n")
@@ -318,7 +320,8 @@ fn a_surviving_ai_mutation_line_is_attributed() {
         &committed("f.rs", 1, 1, 1, vec![added(2, "foo")]),
         &tree("t1"),
         Some(1),
-    );
+    )
+    .await;
 
     assert_eq!(ai_contents(&attr), vec!["foo".to_owned()]);
     assert!(unresolved_contents(&attr).is_empty());
@@ -329,8 +332,8 @@ fn a_surviving_ai_mutation_line_is_attributed() {
     assert_eq!(hunk.lines[0].session_id, None);
 }
 
-#[test]
-fn a_mutation_ai_hunk_carries_scope_session_and_model_provenance() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mutation_ai_hunk_carries_scope_session_and_model_provenance() {
     let page_source = FakePageSource::new(vec![ai_row(1, "t0", "t1", "scope-1")])
         .with_provenance(provenance("scope-1", "cx_session-1", Some("codex/gpt-5")));
     let tree_source = FakeTreeSource::new()
@@ -349,7 +352,8 @@ fn a_mutation_ai_hunk_carries_scope_session_and_model_provenance() {
         &committed("f.rs", 1, 1, 1, vec![added(2, "foo")]),
         &tree("t1"),
         Some(1),
-    );
+    )
+    .await;
 
     let hunk = &attr.result.mutation_ai_patch.files[0].hunks[0];
     assert_eq!(hunk.model_id.as_deref(), Some("codex/gpt-5"));
@@ -360,8 +364,8 @@ fn a_mutation_ai_hunk_carries_scope_session_and_model_provenance() {
     );
 }
 
-#[test]
-fn mutation_ai_lines_keep_their_sessions_and_agreeing_models_across_scopes() {
+#[tokio::test(flavor = "multi_thread")]
+async fn mutation_ai_lines_keep_their_sessions_and_agreeing_models_across_scopes() {
     let page_source = FakePageSource::new(vec![
         ai_row(2, "t1", "t2", "scope-2"),
         ai_row(1, "t0", "t1", "scope-1"),
@@ -389,7 +393,8 @@ fn mutation_ai_lines_keep_their_sessions_and_agreeing_models_across_scopes() {
         &committed("f.rs", 1, 1, 1, vec![added(2, "foo"), added(3, "bar")]),
         &tree("t2"),
         Some(2),
-    );
+    )
+    .await;
 
     let hunk = &attr.result.mutation_ai_patch.files[0].hunks[0];
     assert_eq!(hunk.model_id.as_deref(), Some("codex/gpt-5"));
@@ -403,8 +408,8 @@ fn mutation_ai_lines_keep_their_sessions_and_agreeing_models_across_scopes() {
     assert_eq!(page_source.provenance_reads().len(), 2);
 }
 
-#[test]
-fn mutation_ai_hunk_omits_a_conflicting_model_but_keeps_line_sessions() {
+#[tokio::test(flavor = "multi_thread")]
+async fn mutation_ai_hunk_omits_a_conflicting_model_but_keeps_line_sessions() {
     let page_source = FakePageSource::new(vec![
         ai_row(2, "t1", "t2", "scope-2"),
         ai_row(1, "t0", "t1", "scope-1"),
@@ -432,7 +437,8 @@ fn mutation_ai_hunk_omits_a_conflicting_model_but_keeps_line_sessions() {
         &committed("f.rs", 1, 1, 1, vec![added(2, "foo"), added(3, "bar")]),
         &tree("t2"),
         Some(2),
-    );
+    )
+    .await;
 
     let hunk = &attr.result.mutation_ai_patch.files[0].hunks[0];
     assert_eq!(hunk.model_id, None);
@@ -445,8 +451,8 @@ fn mutation_ai_hunk_omits_a_conflicting_model_but_keeps_line_sessions() {
     );
 }
 
-#[test]
-fn missing_or_unknown_scope_provenance_does_not_downgrade_ai_lines() {
+#[tokio::test(flavor = "multi_thread")]
+async fn missing_or_unknown_scope_provenance_does_not_downgrade_ai_lines() {
     let page_source = FakePageSource::new(vec![
         ai_row(2, "t1", "t2", "scope-2"),
         ai_row(1, "t0", "t1", "scope-1"),
@@ -474,7 +480,8 @@ fn missing_or_unknown_scope_provenance_does_not_downgrade_ai_lines() {
         &committed("f.rs", 1, 1, 1, vec![added(2, "foo"), added(3, "bar")]),
         &tree("t2"),
         Some(2),
-    );
+    )
+    .await;
 
     let hunk = &attr.result.mutation_ai_patch.files[0].hunks[0];
     assert_eq!(ai_contents(&attr), vec!["foo".to_owned(), "bar".to_owned()]);
@@ -483,8 +490,8 @@ fn missing_or_unknown_scope_provenance_does_not_downgrade_ai_lines() {
     assert_eq!(hunk.lines[1].session_id.as_deref(), Some("cx_session-2"));
 }
 
-#[test]
-fn an_ineligible_unscoped_transition_never_becomes_ai_mutation_lineage() {
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ineligible_unscoped_transition_never_becomes_ai_mutation_lineage() {
     let page_source = FakePageSource::new(vec![page_row(
         1,
         "t0",
@@ -508,15 +515,16 @@ fn an_ineligible_unscoped_transition_never_becomes_ai_mutation_lineage() {
         &committed("f.rs", 1, 1, 1, vec![added(2, "foo")]),
         &tree("t1"),
         Some(1),
-    );
+    )
+    .await;
 
     assert_eq!(attr.reconstructed_events, 1);
     assert!(ai_contents(&attr).is_empty());
     assert!(unresolved_contents(&attr).is_empty());
 }
 
-#[test]
-fn ai_mutation_survives_an_unrelated_later_mutation() {
+#[tokio::test(flavor = "multi_thread")]
+async fn ai_mutation_survives_an_unrelated_later_mutation() {
     let page_source = FakePageSource::new(vec![
         non_ai_row(2, "t1", "t2"),
         ai_row(1, "t0", "t1", "scope-1"),
@@ -542,7 +550,8 @@ fn ai_mutation_survives_an_unrelated_later_mutation() {
         &committed("f.rs", 1, 1, 1, vec![added(2, "foo"), added(3, "bar")]),
         &tree("t2"),
         Some(2),
-    );
+    )
+    .await;
 
     assert_eq!(ai_contents(&attr), vec!["foo".to_owned()]);
     let non_ai: Vec<String> = attr
@@ -557,8 +566,8 @@ fn ai_mutation_survives_an_unrelated_later_mutation() {
     assert_eq!(non_ai, vec!["bar".to_owned()]);
 }
 
-#[test]
-fn a_stale_ai_mutation_cannot_resurrect_through_an_unobserved_tail() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stale_ai_mutation_cannot_resurrect_through_an_unobserved_tail() {
     let page_source = FakePageSource::new(vec![
         non_ai_row(2, "t1", "t2"),
         ai_row(1, "t0", "t1", "scope-1"),
@@ -589,7 +598,8 @@ fn a_stale_ai_mutation_cannot_resurrect_through_an_unobserved_tail() {
         &committed("f.rs", 1, 1, 1, vec![added(2, "foo")]),
         &tree("commit"),
         Some(2),
-    );
+    )
+    .await;
 
     assert!(
         ai_contents(&attr).is_empty(),
@@ -598,8 +608,8 @@ fn a_stale_ai_mutation_cannot_resurrect_through_an_unobserved_tail() {
     assert_eq!(unresolved_contents(&attr), vec!["foo".to_owned()]);
 }
 
-#[test]
-fn a_non_ai_replacement_of_an_ai_line_owns_the_new_line() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_non_ai_replacement_of_an_ai_line_owns_the_new_line() {
     let page_source = FakePageSource::new(vec![
         non_ai_row(2, "t1", "t2"),
         ai_row(1, "t0", "t1", "scope-1"),
@@ -625,7 +635,8 @@ fn a_non_ai_replacement_of_an_ai_line_owns_the_new_line() {
         &committed("f.rs", 1, 1, 1, vec![added(2, "foo = 2")]),
         &tree("t2"),
         Some(2),
-    );
+    )
+    .await;
 
     assert!(ai_contents(&attr).is_empty());
     let non_ai: Vec<String> = attr
@@ -640,8 +651,8 @@ fn a_non_ai_replacement_of_an_ai_line_owns_the_new_line() {
     assert_eq!(non_ai, vec!["foo = 2".to_owned()]);
 }
 
-#[test]
-fn a_suffix_related_mutation_file_never_pairs_with_the_committed_target() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_suffix_related_mutation_file_never_pairs_with_the_committed_target() {
     let page_source = FakePageSource::new(vec![ai_row(1, "t0", "t1", "scope-1")]);
     let tree_source = FakeTreeSource::new()
         .with_file("t0", "src/lib.rs", "a\nunique_line\n")
@@ -663,7 +674,8 @@ fn a_suffix_related_mutation_file_never_pairs_with_the_committed_target() {
         &committed("src/lib.rs", 1, 1, 1, vec![added(2, "unique_line")]),
         &tree("t1"),
         Some(1),
-    );
+    )
+    .await;
 
     assert!(
         ai_contents(&attr).is_empty(),
@@ -672,8 +684,8 @@ fn a_suffix_related_mutation_file_never_pairs_with_the_committed_target() {
     assert_eq!(unresolved_contents(&attr), vec!["unique_line".to_owned()]);
 }
 
-#[test]
-fn an_exact_nested_repository_path_still_attributes() {
+#[tokio::test(flavor = "multi_thread")]
+async fn an_exact_nested_repository_path_still_attributes() {
     let page_source = FakePageSource::new(vec![ai_row(1, "t0", "t1", "scope-1")]);
     let tree_source = FakeTreeSource::new()
         .with_file("t0", "src/lib.rs", "a\n")
@@ -694,14 +706,15 @@ fn an_exact_nested_repository_path_still_attributes() {
         &committed("src/lib.rs", 1, 1, 1, vec![added(2, "unique_line")]),
         &tree("t1"),
         Some(1),
-    );
+    )
+    .await;
 
     assert_eq!(ai_contents(&attr), vec!["unique_line".to_owned()]);
     assert!(unresolved_contents(&attr).is_empty());
 }
 
-#[test]
-fn multiple_similar_nested_mutation_paths_stay_independent_of_the_target() {
+#[tokio::test(flavor = "multi_thread")]
+async fn multiple_similar_nested_mutation_paths_stay_independent_of_the_target() {
     let page_source = FakePageSource::new(vec![ai_row(1, "t0", "t1", "scope-1")]);
     let tree_source = FakeTreeSource::new()
         .with_file("t0", "src/lib.rs", "a\nunique_line\n")
@@ -728,14 +741,15 @@ fn multiple_similar_nested_mutation_paths_stay_independent_of_the_target() {
         &committed("src/lib.rs", 1, 1, 1, vec![added(2, "unique_line")]),
         &tree("t1"),
         Some(1),
-    );
+    )
+    .await;
 
     assert!(ai_contents(&attr).is_empty());
     assert_eq!(unresolved_contents(&attr), vec!["unique_line".to_owned()]);
 }
 
-#[test]
-fn a_shared_basename_between_mutation_and_target_is_not_a_match() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shared_basename_between_mutation_and_target_is_not_a_match() {
     let page_source = FakePageSource::new(vec![ai_row(1, "t0", "t1", "scope-1")]);
     let tree_source = FakeTreeSource::new()
         .with_file("t0", "bar/config.rs", "a\nunique_line\n")
@@ -757,14 +771,15 @@ fn a_shared_basename_between_mutation_and_target_is_not_a_match() {
         &committed("bar/config.rs", 1, 1, 1, vec![added(2, "unique_line")]),
         &tree("t1"),
         Some(1),
-    );
+    )
+    .await;
 
     assert!(ai_contents(&attr).is_empty());
     assert_eq!(unresolved_contents(&attr), vec!["unique_line".to_owned()]);
 }
 
-#[test]
-fn a_history_gap_is_not_crossed_by_older_provenance() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_history_gap_is_not_crossed_by_older_provenance() {
     let page_source = FakePageSource::new(vec![
         ai_row(2, "t9", "commit", "scope-2"),
         ai_row(1, "t0", "t1", "scope-1"),
@@ -791,15 +806,16 @@ fn a_history_gap_is_not_crossed_by_older_provenance() {
         &committed("f.rs", 1, 2, 1, vec![added(2, "foo"), added(3, "bar")]),
         &tree("commit"),
         Some(2),
-    );
+    )
+    .await;
 
     assert_eq!(ai_contents(&attr), vec!["bar".to_owned()]);
     assert_eq!(unresolved_contents(&attr), vec!["foo".to_owned()]);
     assert_eq!(attr.gap_resets, 1);
 }
 
-#[test]
-fn bounded_history_baseline_starts_unknown() {
+#[tokio::test(flavor = "multi_thread")]
+async fn bounded_history_baseline_starts_unknown() {
     let page_source = FakePageSource::new(vec![non_ai_row(2, "t1", "t2")]);
     let tree_source = FakeTreeSource::new()
         .with_file("t1", "f.rs", "a\nfoo\n")
@@ -817,14 +833,15 @@ fn bounded_history_baseline_starts_unknown() {
         &committed("f.rs", 1, 2, 1, vec![added(2, "foo")]),
         &tree("t2"),
         Some(2),
-    );
+    )
+    .await;
 
     assert!(ai_contents(&attr).is_empty());
     assert_eq!(unresolved_contents(&attr), vec!["foo".to_owned()]);
 }
 
-#[test]
-fn an_unobserved_tail_adds_unknown_lines_but_keeps_surviving_ai_lines() {
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unobserved_tail_adds_unknown_lines_but_keeps_surviving_ai_lines() {
     let page_source = FakePageSource::new(vec![ai_row(1, "t0", "t1", "scope-1")]);
     let tree_source = FakeTreeSource::new()
         .with_file("t0", "f.rs", "a\n")
@@ -853,14 +870,15 @@ fn an_unobserved_tail_adds_unknown_lines_but_keeps_surviving_ai_lines() {
         ),
         &tree("commit"),
         Some(1),
-    );
+    )
+    .await;
 
     assert_eq!(ai_contents(&attr), vec!["ai_line".to_owned()]);
     assert_eq!(unresolved_contents(&attr), vec!["human_line".to_owned()]);
 }
 
-#[test]
-fn an_event_after_the_commit_cut_has_no_influence() {
+#[tokio::test(flavor = "multi_thread")]
+async fn an_event_after_the_commit_cut_has_no_influence() {
     let page_source = FakePageSource::new(vec![
         ai_row(2, "t0", "t1", "scope-after"),
         non_ai_row(1, "t0", "t0"),
@@ -881,7 +899,8 @@ fn an_event_after_the_commit_cut_has_no_influence() {
         &committed("f.rs", 1, 2, 1, vec![added(2, "foo")]),
         &tree("t0"),
         Some(1),
-    );
+    )
+    .await;
 
     assert!(
         ai_contents(&attr).is_empty(),
@@ -890,8 +909,8 @@ fn an_event_after_the_commit_cut_has_no_influence() {
     assert_eq!(page_source.requests()[0].cursor, Some(2));
 }
 
-#[test]
-fn event_128_within_the_horizon_contributes_and_event_129_is_never_loaded() {
+#[tokio::test(flavor = "multi_thread")]
+async fn event_128_within_the_horizon_contributes_and_event_129_is_never_loaded() {
     let total = 200u64;
     let relevant = total - 127;
     let mut events = Vec::new();
@@ -919,7 +938,8 @@ fn event_128_within_the_horizon_contributes_and_event_129_is_never_loaded() {
         &committed("f.rs", 1, 1, 1, vec![added(2, "target")]),
         &tree("t1"),
         None,
-    );
+    )
+    .await;
 
     assert_eq!(ai_contents(&attr), vec!["target".to_owned()]);
     assert_eq!(attr.inspected_events, 128);
@@ -928,8 +948,8 @@ fn event_128_within_the_horizon_contributes_and_event_129_is_never_loaded() {
     assert_eq!(attr.barrier, None);
 }
 
-#[test]
-fn a_page_query_failure_is_a_conservative_barrier() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_query_failure_is_a_conservative_barrier() {
     let mut events = Vec::new();
     for revision in (1..=40).rev() {
         events.push(non_ai_row(revision, "t1", "t1"));
@@ -945,15 +965,16 @@ fn a_page_query_failure_is_a_conservative_barrier() {
         &committed("f.rs", 1, 1, 1, vec![added(2, "foo")]),
         &tree("t1"),
         None,
-    );
+    )
+    .await;
 
     assert_eq!(attr.barrier, Some(MutationAttributionBarrier::PageQuery));
     assert_eq!(attr.loaded_rows, 32);
     assert_eq!(unresolved_contents(&attr), vec!["foo".to_owned()]);
 }
 
-#[test]
-fn a_reconstruction_failure_reloads_a_conservative_baseline_and_keeps_going() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reconstruction_failure_reloads_a_conservative_baseline_and_keeps_going() {
     let page_source = FakePageSource::new(vec![
         ai_row(2, "t1", "t2", "scope-2"),
         ai_row(1, "t0", "t1", "scope-1"),
@@ -976,7 +997,8 @@ fn a_reconstruction_failure_reloads_a_conservative_baseline_and_keeps_going() {
         &committed("f.rs", 1, 1, 1, vec![added(2, "foo")]),
         &tree("t2"),
         Some(2),
-    );
+    )
+    .await;
 
     assert_eq!(
         attr.barrier,
@@ -985,8 +1007,8 @@ fn a_reconstruction_failure_reloads_a_conservative_baseline_and_keeps_going() {
     assert_eq!(ai_contents(&attr), vec!["foo".to_owned()]);
 }
 
-#[test]
-fn real_git_snapshot_and_store_satisfy_the_consumer_seams() {
+#[tokio::test(flavor = "multi_thread")]
+async fn real_git_snapshot_and_store_satisfy_the_consumer_seams() {
     use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
     use crate::services::mutation_trace::store::encode_revision;
     use std::process::Command;
@@ -1016,7 +1038,9 @@ fn real_git_snapshot_and_store_satisfy_the_consumer_seams() {
     std::fs::write(repo_root.join("file.rs"), b"one\ntwo\n").expect("write");
     let after = snapshot.capture_tree().expect("capture after");
 
-    let db = RepositoryAgentTraceDb::new_at(temp.path().join("agent-trace.db")).expect("db opens");
+    let db = RepositoryAgentTraceDb::new_at(temp.path().join("agent-trace.db"))
+        .await
+        .expect("db opens");
     db.execute(
         "INSERT INTO mutation_trace_events
             (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
@@ -1028,7 +1052,7 @@ fn real_git_snapshot_and_store_satisfy_the_consumer_seams() {
             before.0.as_str(),
             after.0.as_str(),
         ),
-    )
+    ).await
     .expect("event insert");
     let store = MutationTraceStore::new(&db);
 
@@ -1040,7 +1064,8 @@ fn real_git_snapshot_and_store_satisfy_the_consumer_seams() {
         &committed("file.rs", 1, 1, 1, vec![added(2, "two")]),
         &after,
         Some(1),
-    );
+    )
+    .await;
 
     assert_eq!(ai_contents(&attr), vec!["two".to_owned()]);
     assert_eq!(attr.reconstructed_events, 1);
@@ -1066,8 +1091,8 @@ fn init_repo_with_commit(repo_root: &std::path::Path) {
     git(&["commit", "--quiet", "-m", "init"]);
 }
 
-#[test]
-fn post_commit_entry_point_with_no_mutation_events_yields_empty() {
+#[tokio::test(flavor = "multi_thread")]
+async fn post_commit_entry_point_with_no_mutation_events_yields_empty() {
     use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 
     let temp = tempfile::Builder::new()
@@ -1077,20 +1102,23 @@ fn post_commit_entry_point_with_no_mutation_events_yields_empty() {
     let repo_root = temp.path().join("repo");
     init_repo_with_commit(&repo_root);
 
-    let db = RepositoryAgentTraceDb::new_at(temp.path().join("agent-trace.db")).expect("db opens");
+    let db = RepositoryAgentTraceDb::new_at(temp.path().join("agent-trace.db"))
+        .await
+        .expect("db opens");
 
     let result = resolve_post_commit_mutation_ai_patch(
         &repo_root,
         &db,
         &empty(),
         &committed("file.rs", 1, 1, 1, vec![added(2, "two")]),
-    );
+    )
+    .await;
 
     assert!(result.files.is_empty());
 }
 
-#[test]
-fn post_commit_entry_point_resolves_current_worktree_and_ignores_foreign_rows() {
+#[tokio::test(flavor = "multi_thread")]
+async fn post_commit_entry_point_resolves_current_worktree_and_ignores_foreign_rows() {
     use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
     use crate::services::mutation_trace::store::encode_revision;
 
@@ -1120,7 +1148,9 @@ fn post_commit_entry_point_resolves_current_worktree_and_ignores_foreign_rows() 
         .output()
         .expect("git commit");
 
-    let db = RepositoryAgentTraceDb::new_at(temp.path().join("agent-trace.db")).expect("db opens");
+    let db = RepositoryAgentTraceDb::new_at(temp.path().join("agent-trace.db"))
+        .await
+        .expect("db opens");
     for (row_worktree_id, revision, scope) in [
         (worktree_id.0.as_str(), 1u64, "scope-current"),
         ("wt-foreign", 2u64, "scope-foreign"),
@@ -1137,7 +1167,7 @@ fn post_commit_entry_point_resolves_current_worktree_and_ignores_foreign_rows() 
                 after.0.as_str(),
                 scope,
             ),
-        )
+        ).await
         .expect("event insert");
     }
 
@@ -1146,7 +1176,8 @@ fn post_commit_entry_point_resolves_current_worktree_and_ignores_foreign_rows() 
         &db,
         &empty(),
         &committed("file.rs", 1, 1, 1, vec![added(2, "two")]),
-    );
+    )
+    .await;
 
     let contents: Vec<String> = result
         .files

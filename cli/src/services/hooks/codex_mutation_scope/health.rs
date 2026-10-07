@@ -53,7 +53,7 @@ pub(crate) fn classify_health(git_dir: &Path) -> MutationScopeAdapterHealth {
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};

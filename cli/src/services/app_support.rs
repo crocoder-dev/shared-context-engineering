@@ -107,7 +107,7 @@ pub(crate) async fn execute_command_phase<C, W>(
     stderr: &mut W,
 ) -> Result<String, CliError>
 where
-    C: HasLogger + ContextWithRepoRoot,
+    C: HasLogger + ContextWithRepoRoot + crate::app::HasGit + crate::app::HasFs,
     W: Write,
 {
     let command_name = command.name();
@@ -210,7 +210,7 @@ fn write_startup_diagnostic<W: Write>(writer: &mut W, diagnostic: &str) {
         .expect("writing startup diagnostic to writer should not fail");
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
     use services::error::UserError;

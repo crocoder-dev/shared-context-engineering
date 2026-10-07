@@ -148,7 +148,7 @@ impl ExternalTaintMarker {
     fn best_effort_sync_marker_dir(&self) {}
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 

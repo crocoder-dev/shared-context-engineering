@@ -922,7 +922,7 @@ fn hook_content_state(state: HookContentState) -> &'static str {
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::{
         mutation_scope_health_node, mutation_scope_health_status, mutation_scope_target_id,

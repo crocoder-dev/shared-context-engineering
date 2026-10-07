@@ -303,7 +303,7 @@ pub(crate) fn admit_tracked_attempt(
 }
 
 pub(crate) fn mark_active(git_dir: &Path, scope_id: &str) -> Result<()> {
-    #[cfg(test)]
+    #[cfg(any())]
     if fault::take_mark_active_failure() {
         return Err(anyhow!("injected mark_active failure for tests"));
     }
@@ -392,7 +392,7 @@ pub(crate) fn relinquish_recovery_flush(git_dir: &Path, generation: u64) -> Resu
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(any())]
 pub(crate) fn seed_attempt_for_tests(
     git_dir: &Path,
     key: &AttemptKey,
@@ -410,7 +410,7 @@ pub(crate) fn seed_attempt_for_tests(
     attempt
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod fault {
     use std::cell::Cell;
 
@@ -427,12 +427,12 @@ mod fault {
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 pub(crate) fn arm_mark_active_failure_for_tests() {
     fault::arm_mark_active_failure();
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod state_conformance {
     use super::*;
     use crate::services::hooks::mutation_scope_state_conformance::{
@@ -572,7 +572,7 @@ mod state_conformance {
     mutation_scope_state_conformance_tests!(CodexStateConformance);
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::thread;

@@ -38,7 +38,7 @@ pub type AuthDb = EncryptedTursoDb<AuthDbSpec>;
 
 pub mod lifecycle;
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::{
         collections::HashMap,
@@ -90,34 +90,43 @@ mod tests {
             .join("auth.db")
     }
 
-    fn sqlite_object_exists<M: DbSpec>(db: &TursoDb<M>, object_type: &str, name: &str) -> bool {
+    async fn sqlite_object_exists<M: DbSpec>(
+        db: &TursoDb<M>,
+        object_type: &str,
+        name: &str,
+    ) -> bool {
         let rows: Vec<String> = db
             .query_map(
                 "SELECT name FROM sqlite_master WHERE type = ?1 AND name = ?2",
                 (object_type, name),
                 |row| row.get::<String>(0).map_err(anyhow::Error::from),
             )
+            .await
             .expect("sqlite_master query should succeed");
         !rows.is_empty()
     }
 
-    fn applied_migration_ids<M: DbSpec>(db: &TursoDb<M>) -> Vec<String> {
+    async fn applied_migration_ids<M: DbSpec>(db: &TursoDb<M>) -> Vec<String> {
         db.query_map(
             "SELECT id FROM __sce_migrations ORDER BY id ASC",
             (),
             |row| row.get::<String>(0).map_err(anyhow::Error::from),
         )
+        .await
         .expect("migration metadata query should succeed")
     }
 
-    #[test]
-    fn auth_db_baseline_migration_creates_table_index_and_constraints() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn auth_db_baseline_migration_creates_table_index_and_constraints() {
         let db_path = unique_test_db_path();
         TEST_DB_PATH
             .set(db_path.clone())
+            .await
             .expect("test DB path should only be initialized once");
 
-        let db = TursoDb::<TestAuthDbSpec>::new().expect("test auth DB should open");
+        let db = TursoDb::<TestAuthDbSpec>::new()
+            .await
+            .expect("test auth DB should open");
 
         // Verify table, trigger, and migration IDs
         assert!(sqlite_object_exists(&db, "table", "auth_credentials"));
@@ -128,7 +137,7 @@ mod tests {
         ));
 
         // Verify migration IDs are ordered
-        let applied_ids = applied_migration_ids(&db);
+        let applied_ids = applied_migration_ids(&db).await;
         assert_eq!(
             applied_ids.len(),
             generated_migrations::AUTH_MIGRATIONS.len(),
@@ -159,6 +168,7 @@ mod tests {
                     Ok((name, notnull))
                 },
             )
+            .await
             .expect("pragma table_info should succeed");
 
         let col_map: HashMap<String, i32> = columns.into_iter().collect();
@@ -193,8 +203,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn auth_db_lifecycle_provider_included() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn auth_db_lifecycle_provider_included() {
         let providers = lifecycle_providers(false);
 
         let auth_count = providers

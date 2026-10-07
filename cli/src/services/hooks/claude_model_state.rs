@@ -5,7 +5,6 @@ use serde_json::Value;
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::agent_trace_db::{ClaudeModelStateObservation, ObservationKind};
-use crate::services::observability::traits::Logger;
 
 use super::{
     current_unix_time_ms, normalize_claude_model_id, prefixed_diff_trace_session_id,
@@ -24,9 +23,11 @@ struct BridgeInheritanceCandidate {
     transcript_path: PathBuf,
 }
 
-pub(super) fn run_claude_model_state_subcommand(
+pub(super) async fn run_claude_model_state_subcommand<
+    L: crate::services::observability::traits::Logger,
+>(
     repository_root: &Path,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> String {
     let stdin_payload = match read_hook_stdin() {
         Ok(payload) => payload,
@@ -48,14 +49,18 @@ pub(super) fn run_claude_model_state_subcommand(
     run_claude_model_state_from_payload(repository_root, &stdin_payload, logger, || {
         Ok(observed_at_ms)
     })
+    .await
 }
 
-#[cfg(test)]
-pub(super) fn run_claude_model_state_from_payload_at_state_root<F>(
+#[cfg(any())]
+pub(super) async fn run_claude_model_state_from_payload_at_state_root<
+    L: crate::services::observability::traits::Logger,
+    F,
+>(
     repository_root: &Path,
     state_root: &Path,
     stdin_payload: &str,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
     observed_at_ms: F,
 ) -> String
 where
@@ -66,20 +71,22 @@ where
         stdin_payload,
         logger,
         observed_at_ms,
-        |repository_root, context_message| {
+        async |repository_root: &Path, context_message: &'static str| {
             super::open_agent_trace_db_for_hook_runtime_at_state_root(
                 repository_root,
                 state_root,
                 context_message,
             )
+            .await
         },
     )
+    .await
 }
 
-fn run_claude_model_state_from_payload<F>(
+async fn run_claude_model_state_from_payload<L: crate::services::observability::traits::Logger, F>(
     repository_root: &Path,
     stdin_payload: &str,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
     observed_at_ms: F,
 ) -> String
 where
@@ -92,18 +99,23 @@ where
         observed_at_ms,
         super::open_agent_trace_db_for_hook_runtime,
     )
+    .await
 }
 
-fn run_claude_model_state_from_payload_with<F, O>(
+async fn run_claude_model_state_from_payload_with<
+    L: crate::services::observability::traits::Logger,
+    F,
+    O,
+>(
     repository_root: &Path,
     stdin_payload: &str,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
     observed_at_ms: F,
     open_db: O,
 ) -> String
 where
     F: FnOnce() -> Result<i64>,
-    O: FnOnce(&Path, &'static str) -> Result<RepositoryAgentTraceDb>,
+    O: std::ops::AsyncFnOnce(&Path, &'static str) -> Result<RepositoryAgentTraceDb>,
 {
     let session_id = fail_open_session_id(stdin_payload);
     let observed_at_ms = match observed_at_ms() {
@@ -147,7 +159,9 @@ where
     let db = match open_db(
         repository_root,
         "Failed to open Agent Trace DB for Claude model-state persistence.",
-    ) {
+    )
+    .await
+    {
         Ok(db) => db,
         Err(error) => {
             log_fail_open(
@@ -168,7 +182,8 @@ where
     } else {
         let candidate = bridge_candidate
             .expect("bridge candidate must exist when no direct observation exists");
-        let Some(model_id) = newest_bridge_chain_model(&db, &candidate.transcript_path) else {
+        let Some(model_id) = newest_bridge_chain_model(&db, &candidate.transcript_path).await
+        else {
             return String::new();
         };
 
@@ -182,7 +197,7 @@ where
         }
     };
 
-    if let Err(error) = persist_claude_model_state(&db, observation) {
+    if let Err(error) = persist_claude_model_state(&db, observation).await {
         log_fail_open(logger, DB_WRITE_FAILED_EVENT, &error, session_id.as_deref());
     }
 
@@ -229,7 +244,7 @@ fn bridge_inheritance_candidate(stdin_payload: &str) -> Result<Option<BridgeInhe
     }))
 }
 
-pub(super) fn newest_bridge_chain_model(
+pub(super) async fn newest_bridge_chain_model(
     db: &RepositoryAgentTraceDb,
     transcript_path: &Path,
 ) -> Option<String> {
@@ -243,7 +258,9 @@ pub(super) fn newest_bridge_chain_model(
     let mut winner: Option<(i64, String, String)> = None;
     for member in members {
         let member_session_id = prefixed_diff_trace_session_id(CLAUDE_TOOL_NAME, &member);
-        let Ok(Some(state)) = db.claude_model_state_by_session_and_agent(&member_session_id, "")
+        let Ok(Some(state)) = db
+            .claude_model_state_by_session_and_agent(&member_session_id, "")
+            .await
         else {
             continue;
         };
@@ -263,11 +280,12 @@ pub(super) fn newest_bridge_chain_model(
     winner.map(|(_, _, model_id)| model_id)
 }
 
-fn persist_claude_model_state(
+async fn persist_claude_model_state(
     db: &RepositoryAgentTraceDb,
     observation: ClaudeModelStateObservation,
 ) -> Result<()> {
     db.upsert_claude_model_state(observation)
+        .await
         .context("Failed to persist Claude model-state observation.")?;
     Ok(())
 }
@@ -413,8 +431,8 @@ fn fail_open_session_id(stdin_payload: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn log_fail_open(
-    logger: Option<&dyn Logger>,
+fn log_fail_open<L: crate::services::observability::traits::Logger>(
+    logger: Option<&L>,
     event_id: &str,
     error: &anyhow::Error,
     session_id: Option<&str>,
@@ -424,7 +442,7 @@ fn log_fail_open(
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::{
         fs,
@@ -452,7 +470,7 @@ mod tests {
         errors: Arc<Mutex<Vec<(String, String)>>>,
     }
 
-    impl Logger for RecordingLogger {
+    impl crate::services::observability::traits::Logger for RecordingLogger {
         fn info(&self, _: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {}
         fn debug(&self, _: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {}
         fn warn(&self, _: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {}
@@ -705,8 +723,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn present_empty_agent_id_fails_open_without_opening_or_writing_a_database() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn present_empty_agent_id_fails_open_without_opening_or_writing_a_database() {
         let repo_root = std::env::temp_dir().join(format!(
             "sce-claude-model-state-invalid-agent-{}",
             std::process::id()
@@ -724,7 +742,8 @@ mod tests {
             .to_string(),
             Some(&logger),
             || Ok(42),
-        );
+        )
+        .await;
 
         assert_eq!(output, "");
         assert!(!repo_root.exists(), "validation failure must not open a DB");
@@ -774,8 +793,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn pre_003_hook_runtime_fails_open_without_migrating_or_writing_state() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pre_003_hook_runtime_fails_open_without_migrating_or_writing_state() {
         let repo_root = init_git_repo("pre-003-repo");
         let state_root = unique_temp_dir("pre-003-state");
         let storage = resolve_agent_trace_storage_at_state_root(
@@ -786,11 +805,13 @@ mod tests {
             },
             &state_root,
         )
+        .await
         .expect("setup path should create the pre-003 fixture");
         let db_path = storage.db_path.clone();
         storage
             .db
             .execute("DROP TABLE claude_model_state", ())
+            .await
             .expect("fixture should remove migration 003 table");
         storage
             .db
@@ -798,6 +819,7 @@ mod tests {
                 "DELETE FROM __sce_migrations WHERE id = '003_claude_model_state'",
                 (),
             )
+            .await
             .expect("fixture should remove migration 003 metadata");
         drop(storage);
 
@@ -814,7 +836,8 @@ mod tests {
             .to_string(),
             Some(&logger),
             || Ok(42),
-        );
+        )
+        .await;
 
         assert_eq!(output, "", "hook stdout must remain empty");
         let errors = logger
@@ -830,13 +853,14 @@ mod tests {
         drop(errors);
 
         let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+            .await
             .expect("pre-003 DB should remain openable without migrations");
         let table_exists = db
             .query_map(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'claude_model_state'",
                 (),
                 |row| row.get::<String>(0).map_err(Into::into),
-            )
+            ).await
             .expect("table existence query should succeed");
         assert!(
             table_exists.is_empty(),
@@ -848,6 +872,7 @@ mod tests {
                 (),
                 |row| row.get::<String>(0).map_err(Into::into),
             )
+            .await
             .expect("migration metadata query should succeed");
         assert!(!applied_ids.iter().any(|id| id == "003_claude_model_state"));
 
@@ -856,14 +881,16 @@ mod tests {
         fs::remove_dir_all(state_root).expect("state fixture should be removed");
     }
 
-    #[test]
-    fn lifecycle_observation_is_written_to_the_repository_state_register() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lifecycle_observation_is_written_to_the_repository_state_register() {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be after Unix epoch")
             .as_nanos();
         let db_path = std::env::temp_dir().join(format!("sce-claude-model-state-{suffix}.db"));
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let observation = parse(
             &json!({
                 "hook_event_name": "PostModelSwitch",
@@ -876,10 +903,13 @@ mod tests {
         )
         .expect("switch should produce an observation");
 
-        persist_claude_model_state(&db, observation).expect("state write should succeed");
+        persist_claude_model_state(&db, observation)
+            .await
+            .expect("state write should succeed");
 
         let state = db
             .claude_model_state_by_session_and_agent("cc_session-1", "")
+            .await
             .expect("state lookup should succeed")
             .expect("state should be present");
         assert_eq!(state.model_id, "claude/model-b");

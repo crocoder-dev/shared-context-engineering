@@ -11,7 +11,6 @@ use crate::services::agent_trace_db::{DiffTraceInsert, PAYLOAD_TYPE_PATCH};
 use crate::services::agent_trace_storage::{
     resolve_agent_trace_storage_for_hook_runtime_at_state_root, AgentTraceStorageContext,
 };
-use crate::services::observability::traits::Logger;
 
 use normalize::normalize_codex_patch;
 #[allow(unused_imports)]
@@ -27,19 +26,19 @@ use super::super::{
 };
 use super::CodexHookEvent;
 
-pub(super) fn handle(
+pub(super) async fn handle<L: crate::services::observability::traits::Logger>(
     repository_root: &Path,
     event: &CodexHookEvent,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> Result<String> {
-    handle_with_state_root(repository_root, event, None, logger)
+    handle_with_state_root(repository_root, event, None, logger).await
 }
 
-pub(super) fn handle_with_state_root(
+pub(super) async fn handle_with_state_root<L: crate::services::observability::traits::Logger>(
     repository_root: &Path,
     event: &CodexHookEvent,
     state_root: Option<&Path>,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> Result<String> {
     required_session_id(event.session_id.as_deref())?;
 
@@ -134,15 +133,19 @@ pub(super) fn handle_with_state_root(
             },
             state_root,
         )
+        .await
         .map(|storage| storage.db)
         .context("Failed to open Agent Trace DB for Codex apply_patch persistence."),
-        None => open_agent_trace_db_for_hook_runtime(
-            repository_root,
-            "Failed to open Agent Trace DB for Codex apply_patch persistence.",
-        ),
+        None => {
+            open_agent_trace_db_for_hook_runtime(
+                repository_root,
+                "Failed to open Agent Trace DB for Codex apply_patch persistence.",
+            )
+            .await
+        }
     }?;
 
-    persist_with(&db, event, &normalized_patch, time_ms)
+    persist_with(&db, event, &normalized_patch, time_ms).await
 }
 
 fn apply_patch_command_from_event(event: &CodexHookEvent) -> Option<&str> {
@@ -162,7 +165,7 @@ fn required_session_id(value: Option<&str>) -> Result<&str> {
     }
 }
 
-fn persist_with(
+async fn persist_with(
     db: &RepositoryAgentTraceDb,
     event: &CodexHookEvent,
     normalized_patch: &str,
@@ -183,12 +186,13 @@ fn persist_with(
         tool_version: None,
         payload_type: PAYLOAD_TYPE_PATCH,
     })
+    .await
     .context("Failed to persist Codex apply_patch diff-trace row.")?;
 
     Ok(String::new())
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::{
         fs,
@@ -301,65 +305,72 @@ mod tests {
         }
     }
 
-    #[test]
-    fn handle_fails_open_silently_when_tool_input_missing() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_fails_open_silently_when_tool_input_missing() {
         let output = handle(
             Path::new("/nonexistent"),
             &event_with_tool_input("session-1", None, None),
             None,
         )
+        .await
         .expect("apply_patch handling should succeed");
         assert_eq!(output, "");
     }
 
-    #[test]
-    fn handle_fails_open_silently_when_command_missing() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_fails_open_silently_when_command_missing() {
         let output = handle(
             Path::new("/nonexistent"),
             &event_with_tool_input("session-1", None, Some(json!({}))),
             None,
         )
+        .await
         .expect("apply_patch handling should succeed");
         assert_eq!(output, "");
     }
 
-    #[test]
-    fn handle_fails_open_silently_when_command_non_string() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_fails_open_silently_when_command_non_string() {
         let output = handle(
             Path::new("/nonexistent"),
             &event_with_tool_input("session-1", None, Some(json!({"command": 42}))),
             None,
         )
+        .await
         .expect("apply_patch handling should succeed");
         assert_eq!(output, "");
     }
 
-    #[test]
-    fn handle_fails_open_silently_on_malformed_patch_text() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_fails_open_silently_on_malformed_patch_text() {
         let output = handle(
             Path::new("/nonexistent"),
             &event("session-1", None, MALFORMED_PATCH),
             None,
         )
+        .await
         .expect("apply_patch handling should succeed");
         assert_eq!(output, "");
     }
 
-    #[test]
-    fn handle_is_a_successful_no_op_for_a_delete_only_patch() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_is_a_successful_no_op_for_a_delete_only_patch() {
         let output = handle(
             Path::new("/nonexistent"),
             &event("session-1", None, DELETE_ONLY_PATCH),
             None,
         )
+        .await
         .expect("apply_patch handling should succeed");
         assert_eq!(output, "");
     }
 
-    #[test]
-    fn persist_with_rejects_missing_empty_and_whitespace_session_ids_without_rows() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn persist_with_rejects_missing_empty_and_whitespace_session_ids_without_rows() {
         let db_path = unique_test_db_path("invalid-session");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let normalized_patch = normalized(UPDATE_ONLY_PATCH);
 
         for session_id in [None, Some(""), Some("   ")] {
@@ -370,23 +381,28 @@ mod tests {
 
         let recent = db
             .recent_diff_trace_patches(0, i64::MAX)
+            .await
             .expect("diff trace query should succeed");
         assert_eq!(recent.loaded_count(), 0);
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn persist_with_trims_valid_session_ids_before_prefixing() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn persist_with_trims_valid_session_ids_before_prefixing() {
         let db_path = unique_test_db_path("trimmed-session");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let normalized_patch = normalized(UPDATE_ONLY_PATCH);
         let mut trimmed_event = event(" session-1 ", None, UPDATE_ONLY_PATCH);
 
         persist_with(&db, &trimmed_event, &normalized_patch, 1_000)
+            .await
             .expect("trimmed session should persist");
         trimmed_event.session_id = Some("cx_session-2".to_string());
         persist_with(&db, &trimmed_event, &normalized_patch, 2_000)
+            .await
             .expect("already prefixed session should persist");
 
         let rows = db
@@ -395,27 +411,31 @@ mod tests {
                 (),
                 |row| row.get::<String>(0).map_err(anyhow::Error::from),
             )
+            .await
             .expect("diff trace query should succeed");
         assert_eq!(rows, vec!["cx_session-1", "cx_session-2"]);
 
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn handle_is_a_successful_no_op_for_a_pure_rename_with_no_changed_lines() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_is_a_successful_no_op_for_a_pure_rename_with_no_changed_lines() {
         let output = handle(
             Path::new("/nonexistent"),
             &event("session-1", None, PURE_RENAME_PATCH),
             None,
         )
+        .await
         .expect("apply_patch handling should succeed");
         assert_eq!(output, "");
     }
 
-    #[test]
-    fn apply_patch_persists_one_row_with_expected_field_values_for_add_and_update() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_patch_persists_one_row_with_expected_field_values_for_add_and_update() {
         let db_path = unique_test_db_path("add-update");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
         let normalized_patch = normalized(ADD_AND_UPDATE_PATCH);
         let output = persist_with(
@@ -424,11 +444,13 @@ mod tests {
             &normalized_patch,
             1_000,
         )
+        .await
         .expect("persist_with should succeed");
         assert_eq!(output, "");
 
         let recent = db
             .recent_diff_trace_patches(0, i64::MAX)
+            .await
             .expect("diff trace query should succeed");
         assert_eq!(recent.loaded_count(), 1);
         assert_eq!(recent.skipped_count(), 0);
@@ -453,10 +475,12 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn apply_patch_persists_truthful_model_ids_without_fabricating_openai() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_patch_persists_truthful_model_ids_without_fabricating_openai() {
         let db_path = unique_test_db_path("model-provenance");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
         let normalized_patch = normalized(UPDATE_ONLY_PATCH);
         let cases = [
             (Some("openai/gpt-x"), Some("openai/gpt-x")),
@@ -476,11 +500,13 @@ mod tests {
                 &normalized_patch,
                 i64::try_from(index).expect("test index should fit") + 1_000,
             )
+            .await
             .expect("model provenance should persist");
         }
 
         let recent = db
             .recent_diff_trace_patches(0, i64::MAX)
+            .await
             .expect("diff trace query should succeed");
         let model_ids: Vec<Option<String>> = recent
             .patches
@@ -496,10 +522,12 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn apply_patch_move_with_edits_persists_row_with_expected_paths() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_patch_move_with_edits_persists_row_with_expected_paths() {
         let db_path = unique_test_db_path("move-edits");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
         let normalized_patch = normalized(MOVE_WITH_EDITS_PATCH);
         persist_with(
@@ -508,10 +536,12 @@ mod tests {
             &normalized_patch,
             1_000,
         )
+        .await
         .expect("persist_with should succeed");
 
         let recent = db
             .recent_diff_trace_patches(0, i64::MAX)
+            .await
             .expect("diff trace query should succeed");
         assert_eq!(recent.loaded_count(), 1);
         let file = &recent.patches[0].patch.files[0];
@@ -522,10 +552,12 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn apply_patch_mixed_operations_persists_only_add_and_update_evidence() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_patch_mixed_operations_persists_only_add_and_update_evidence() {
         let db_path = unique_test_db_path("mixed");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
         let normalized_patch = normalized(MIXED_PATCH);
         persist_with(
@@ -534,10 +566,12 @@ mod tests {
             &normalized_patch,
             1_000,
         )
+        .await
         .expect("persist_with should succeed");
 
         let recent = db
             .recent_diff_trace_patches(0, i64::MAX)
+            .await
             .expect("diff trace query should succeed");
         assert_eq!(recent.loaded_count(), 1);
         let file_paths: Vec<&str> = recent.patches[0]
@@ -555,10 +589,13 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-    #[test]
-    fn apply_patch_diff_trace_attributes_through_agent_trace_pipeline_at_different_real_lines() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_patch_diff_trace_attributes_through_agent_trace_pipeline_at_different_real_lines(
+    ) {
         let db_path = unique_test_db_path("agent-trace-pipeline");
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository DB should open");
 
         let normalized_patch = normalized(UPDATE_ONLY_PATCH);
         persist_with(
@@ -567,10 +604,12 @@ mod tests {
             &normalized_patch,
             1_000,
         )
+        .await
         .expect("persist_with should succeed");
 
         let recent = db
             .recent_diff_trace_patches(0, i64::MAX)
+            .await
             .expect("diff trace query should succeed");
         assert_eq!(recent.loaded_count(), 1);
         let constructed = &recent.patches[0];

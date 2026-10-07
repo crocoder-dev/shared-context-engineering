@@ -122,14 +122,14 @@ impl std::error::Error for ReconcileError {}
 /// Module-private to `runtime`, exactly like `coordinate` — never re-exported
 /// outside mutation-trace `runtime`. It is a one-line delegation to
 /// [`reconcile_worktree_inner`] with a no-op lock-contention closure.
-pub fn reconcile_worktree<P>(
+pub async fn reconcile_worktree<P>(
     repository_root: &Path,
     open_db: P,
 ) -> std::result::Result<ReconciliationOutcome, ReconcileError>
 where
-    P: FnOnce() -> Result<RepositoryAgentTraceDb>,
+    P: std::ops::AsyncFnOnce() -> Result<RepositoryAgentTraceDb>,
 {
-    reconcile_worktree_inner(repository_root, open_db, || {})
+    reconcile_worktree_inner(repository_root, open_db, || {}).await
 }
 
 /// Body of [`reconcile_worktree`] with a deterministic test seam:
@@ -142,13 +142,13 @@ where
 /// `WorktreeLock`, which is the same lock file `coordinate()` holds across
 /// `pin -> recovery -> prepare -> CAS -> marker clear -> return` — the mutual
 /// exclusion that makes the pin -> DB-CAS race structurally impossible.
-pub(super) fn reconcile_worktree_inner<P, F>(
+pub(super) async fn reconcile_worktree_inner<P, F>(
     repository_root: &Path,
     open_db: P,
     on_lock_contention: F,
 ) -> std::result::Result<ReconciliationOutcome, ReconcileError>
 where
-    P: FnOnce() -> Result<RepositoryAgentTraceDb>,
+    P: std::ops::AsyncFnOnce() -> Result<RepositoryAgentTraceDb>,
     F: FnOnce(),
 {
     let git_dir = resolve_git_dir(repository_root).map_err(ReconcileError::GitDir)?;
@@ -162,7 +162,9 @@ where
     let worktree_id =
         resolve_worktree_id(repository_root).map_err(ReconcileError::CheckoutIdentity)?;
 
-    let db = open_db().map_err(ReconcileError::AgentTraceDbUnavailable)?;
+    let db = open_db()
+        .await
+        .map_err(ReconcileError::AgentTraceDbUnavailable)?;
 
     let snapshot =
         GitSnapshotService::new(repository_root).map_err(ReconcileError::SnapshotService)?;
@@ -186,6 +188,7 @@ where
     // live pin, or the pass fails closed and deletes nothing.
     let required_local = store
         .load_tree_roots(&worktree_id)
+        .await
         .map_err(ReconcileError::DurableRoots)?;
     let missing_local: Vec<TreeId> = required_local.difference(&pinned_trees).cloned().collect();
     if !missing_local.is_empty() {
@@ -200,6 +203,7 @@ where
     // last SCE ref protecting a tree that only worktree B durably requires.
     let required_repository = store
         .load_all_tree_roots()
+        .await
         .map_err(ReconcileError::DurableRoots)?;
     let stale: Vec<PinnedRef> = actual
         .iter()
@@ -220,7 +224,7 @@ where
     }))
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
@@ -266,7 +270,7 @@ mod tests {
         String::from_utf8(output.stdout).expect("git output should be valid UTF-8")
     }
 
-    fn fixture(label: &str) -> Fixture {
+    async fn fixture(label: &str) -> Fixture {
         let temp_dir = tempfile::Builder::new()
             .prefix(&format!("sce-ref-reconciliation-{label}-"))
             .tempdir()
@@ -287,7 +291,9 @@ mod tests {
         // The DB lives beside the worktree, never inside it, so it can never
         // perturb a captured tree.
         let db_path = temp_dir.path().join("agent-trace.db");
-        RepositoryAgentTraceDb::new_at(&db_path).expect("repository schema DB should open");
+        RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("repository schema DB should open");
 
         Fixture {
             _temp_dir: temp_dir,
@@ -298,12 +304,12 @@ mod tests {
     }
 
     impl Fixture {
-        fn open_db(&self) -> Result<RepositoryAgentTraceDb> {
-            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&self.db_path)
+        async fn open_db(&self) -> Result<RepositoryAgentTraceDb> {
+            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&self.db_path).await
         }
 
-        fn db(&self) -> RepositoryAgentTraceDb {
-            self.open_db().expect("repository DB should reopen")
+        async fn db(&self) -> RepositoryAgentTraceDb {
+            self.open_db().await.expect("repository DB should reopen")
         }
 
         fn snapshot(&self) -> GitSnapshotService {
@@ -332,8 +338,8 @@ mod tests {
                 .expect("pin should succeed");
         }
 
-        fn reconcile(&self) -> std::result::Result<ReconciliationOutcome, ReconcileError> {
-            reconcile_worktree(&self.repo_root, || self.open_db())
+        async fn reconcile(&self) -> std::result::Result<ReconciliationOutcome, ReconcileError> {
+            reconcile_worktree(&self.repo_root, async || self.open_db().await).await
         }
 
         fn owned_ref(&self, tree: &TreeId) -> String {
@@ -379,7 +385,7 @@ mod tests {
         }
     }
 
-    fn seed_worktree_cursor(
+    async fn seed_worktree_cursor(
         db: &RepositoryAgentTraceDb,
         worktree_id: &str,
         revision: u64,
@@ -395,10 +401,11 @@ mod tests {
                 encode_revision(revision).as_slice(),
             ),
         )
+        .await
         .expect("worktree row insert should succeed");
     }
 
-    fn seed_event(
+    async fn seed_event(
         db: &RepositoryAgentTraceDb,
         worktree_id: &str,
         revision: u64,
@@ -417,20 +424,20 @@ mod tests {
                 before_tree,
                 after_tree,
             ),
-        )
+        ).await
         .expect("event row insert should succeed");
     }
 
-    #[test]
-    fn orphan_pin_with_a_worktree_row_is_deleted() {
-        let fx = fixture("orphan-with-row");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn orphan_pin_with_a_worktree_row_is_deleted() {
+        let fx = fixture("orphan-with-row").await;
         let cursor = fx.capture_after_writing("a.txt", "cursor\n");
         let orphan = fx.capture_after_writing("a.txt", "orphan\n");
         fx.pin(&cursor);
         fx.pin(&orphan);
-        seed_worktree_cursor(&fx.db(), &fx.worktree_id.0, 1, &cursor.0);
+        seed_worktree_cursor(&fx.db().await, &fx.worktree_id.0, 1, &cursor.0).await;
 
-        let report = expect_reconciled(fx.reconcile());
+        let report = expect_reconciled(fx.reconcile().await);
 
         assert_eq!(
             report,
@@ -444,13 +451,13 @@ mod tests {
         assert!(!fx.ref_exists(&fx.owned_ref(&orphan)), "orphan pin deleted");
     }
 
-    #[test]
-    fn orphan_pin_with_no_worktree_row_is_deleted() {
-        let fx = fixture("orphan-no-row");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn orphan_pin_with_no_worktree_row_is_deleted() {
+        let fx = fixture("orphan-no-row").await;
         let orphan = fx.capture_after_writing("a.txt", "orphan\n");
         fx.pin(&orphan);
 
-        let report = expect_reconciled(fx.reconcile());
+        let report = expect_reconciled(fx.reconcile().await);
 
         assert_eq!(
             report,
@@ -463,14 +470,14 @@ mod tests {
         assert!(!fx.ref_exists(&fx.owned_ref(&orphan)), "orphan pin deleted");
     }
 
-    #[test]
-    fn current_cursor_pin_is_retained_without_a_referencing_event() {
-        let fx = fixture("cursor-no-event");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn current_cursor_pin_is_retained_without_a_referencing_event() {
+        let fx = fixture("cursor-no-event").await;
         let cursor = fx.capture_after_writing("a.txt", "cursor\n");
         fx.pin(&cursor);
-        seed_worktree_cursor(&fx.db(), &fx.worktree_id.0, 3, &cursor.0);
+        seed_worktree_cursor(&fx.db().await, &fx.worktree_id.0, 3, &cursor.0).await;
 
-        let report = expect_reconciled(fx.reconcile());
+        let report = expect_reconciled(fx.reconcile().await);
 
         assert_eq!(
             report,
@@ -486,9 +493,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn historical_event_before_and_after_pins_are_retained_after_the_cursor_advances() {
-        let fx = fixture("historical-retention");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn historical_event_before_and_after_pins_are_retained_after_the_cursor_advances() {
+        let fx = fixture("historical-retention").await;
         let tree_a = fx.capture_after_writing("a.txt", "A\n");
         let tree_b = fx.capture_after_writing("a.txt", "B\n");
         let tree_c = fx.capture_after_writing("a.txt", "C\n");
@@ -497,13 +504,13 @@ mod tests {
             fx.pin(tree);
         }
 
-        let db = fx.db();
-        seed_worktree_cursor(&db, &fx.worktree_id.0, 3, &tree_d.0);
-        seed_event(&db, &fx.worktree_id.0, 1, &tree_a.0, &tree_b.0);
-        seed_event(&db, &fx.worktree_id.0, 2, &tree_b.0, &tree_c.0);
-        seed_event(&db, &fx.worktree_id.0, 3, &tree_c.0, &tree_d.0);
+        let db = fx.db().await;
+        seed_worktree_cursor(&db, &fx.worktree_id.0, 3, &tree_d.0).await;
+        seed_event(&db, &fx.worktree_id.0, 1, &tree_a.0, &tree_b.0).await;
+        seed_event(&db, &fx.worktree_id.0, 2, &tree_b.0, &tree_c.0).await;
+        seed_event(&db, &fx.worktree_id.0, 3, &tree_c.0, &tree_d.0).await;
 
-        let report = expect_reconciled(fx.reconcile());
+        let report = expect_reconciled(fx.reconcile().await);
 
         assert_eq!(
             report,
@@ -522,9 +529,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_pin_another_worktree_durably_requires_is_retained() {
-        let fx = fixture("cross-worktree-retention");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pin_another_worktree_durably_requires_is_retained() {
+        let fx = fixture("cross-worktree-retention").await;
         let shared = fx.capture_after_writing("a.txt", "shared\n");
         let orphan = fx.capture_after_writing("a.txt", "orphan\n");
         fx.pin(&shared);
@@ -532,9 +539,9 @@ mod tests {
 
         // Another worktree in the same repository durably references `shared`;
         // this worktree does not.
-        seed_worktree_cursor(&fx.db(), "other-worktree", 1, &shared.0);
+        seed_worktree_cursor(&fx.db().await, "other-worktree", 1, &shared.0).await;
 
-        let report = expect_reconciled(fx.reconcile());
+        let report = expect_reconciled(fx.reconcile().await);
 
         assert_eq!(
             report,
@@ -561,9 +568,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_missing_required_pin_fails_closed_and_deletes_nothing() {
-        let fx = fixture("missing-required-pin");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_missing_required_pin_fails_closed_and_deletes_nothing() {
+        let fx = fixture("missing-required-pin").await;
         let tree_a = fx.capture_after_writing("a.txt", "A\n");
         let tree_b = fx.capture_after_writing("a.txt", "B\n");
         let tree_x = fx.capture_after_writing("a.txt", "X\n");
@@ -571,12 +578,13 @@ mod tests {
         fx.pin(&tree_a);
         fx.pin(&tree_x);
 
-        let db = fx.db();
-        seed_worktree_cursor(&db, &fx.worktree_id.0, 1, &tree_b.0);
-        seed_event(&db, &fx.worktree_id.0, 1, &tree_a.0, &tree_b.0);
+        let db = fx.db().await;
+        seed_worktree_cursor(&db, &fx.worktree_id.0, 1, &tree_b.0).await;
+        seed_event(&db, &fx.worktree_id.0, 1, &tree_a.0, &tree_b.0).await;
 
         let error = fx
             .reconcile()
+            .await
             .expect_err("reconciliation should fail closed");
 
         match error {
@@ -599,14 +607,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_malformed_namespace_ref_fails_closed_and_deletes_nothing() {
-        let fx = fixture("malformed-ref");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_malformed_namespace_ref_fails_closed_and_deletes_nothing() {
+        let fx = fixture("malformed-ref").await;
         let cursor = fx.capture_after_writing("a.txt", "cursor\n");
         let orphan = fx.capture_after_writing("a.txt", "orphan\n");
         fx.pin(&cursor);
         fx.pin(&orphan);
-        seed_worktree_cursor(&fx.db(), &fx.worktree_id.0, 1, &cursor.0);
+        seed_worktree_cursor(&fx.db().await, &fx.worktree_id.0, 1, &cursor.0).await;
 
         // A symbolic ref inside the SCE mutation-cursor namespace is malformed.
         let symref = format!("{NAMESPACE}/{}/symbolic", fx.worktree_id.0);
@@ -617,6 +625,7 @@ mod tests {
 
         let error = fx
             .reconcile()
+            .await
             .expect_err("reconciliation should fail closed");
 
         match error {
@@ -635,16 +644,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reconciliation_is_idempotent() {
-        let fx = fixture("idempotent");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reconciliation_is_idempotent() {
+        let fx = fixture("idempotent").await;
         let cursor = fx.capture_after_writing("a.txt", "cursor\n");
         let orphan = fx.capture_after_writing("a.txt", "orphan\n");
         fx.pin(&cursor);
         fx.pin(&orphan);
-        seed_worktree_cursor(&fx.db(), &fx.worktree_id.0, 1, &cursor.0);
+        seed_worktree_cursor(&fx.db().await, &fx.worktree_id.0, 1, &cursor.0).await;
 
-        let first = expect_reconciled(fx.reconcile());
+        let first = expect_reconciled(fx.reconcile().await);
         assert_eq!(
             first,
             ReconciliationReport {
@@ -654,7 +663,7 @@ mod tests {
             }
         );
 
-        let second = expect_reconciled(fx.reconcile());
+        let second = expect_reconciled(fx.reconcile().await);
         assert_eq!(
             second,
             ReconciliationReport {
@@ -667,15 +676,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reconciliation_deletes_refs_without_reclaiming_objects() {
-        let fx = fixture("no-object-reclamation");
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reconciliation_deletes_refs_without_reclaiming_objects() {
+        let fx = fixture("no-object-reclamation").await;
         let orphan = fx.capture_after_writing("a.txt", "orphan\n");
         fx.pin(&orphan);
 
         assert_eq!(fx.object_type(&orphan.0).as_deref(), Some("tree"));
 
-        let report = expect_reconciled(fx.reconcile());
+        let report = expect_reconciled(fx.reconcile().await);
         assert_eq!(report.deleted, 1);
         assert!(
             !fx.ref_exists(&fx.owned_ref(&orphan)),

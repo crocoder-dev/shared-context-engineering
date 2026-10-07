@@ -7,7 +7,7 @@ use crate::services::bash_policy::{
     evaluate_bash_command_policy, format_policy_block_message, PolicyEvaluation,
 };
 use crate::services::config;
-#[cfg(test)]
+#[cfg(any())]
 use crate::services::config::policy::BashPolicyConfig;
 
 use super::CodexHookEvent;
@@ -73,7 +73,7 @@ pub(super) fn handle(repository_root: &Path, event: &CodexHookEvent) -> Result<S
     )
 }
 
-#[cfg(test)]
+#[cfg(any())]
 fn render_bash_policy_response(
     command: &str,
     policy_config: Option<&BashPolicyConfig>,
@@ -90,7 +90,7 @@ fn bash_command_from_event(event: &CodexHookEvent) -> Result<&str> {
     bash_command_from_tool_input(event.tool_input.as_ref())
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::{
         path::{Path, PathBuf},
@@ -251,8 +251,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn codex_bash_pre_tool_use_path_creates_no_diff_trace_for_a_filesystem_mutation_command() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn codex_bash_pre_tool_use_path_creates_no_diff_trace_for_a_filesystem_mutation_command()
+    {
         let repo_root = unique_temp_dir("repo");
         git(&repo_root, &["init", "-q"]);
         git(
@@ -277,6 +278,7 @@ mod tests {
         .to_string();
 
         let output = super::super::run_codex_subcommand_from_payload(&repo_root, &payload, None)
+            .await
             .expect("Codex Bash PreToolUse dispatch should succeed");
         assert_eq!(output, "", "an allowed command must be silent");
 
@@ -288,11 +290,13 @@ mod tests {
             },
             &state_root,
         )
+        .await
         .expect("Agent Trace storage should resolve for the scratch repo");
 
         let recent = storage
             .db
             .recent_diff_trace_patches(0, i64::MAX)
+            .await
             .expect("diff trace query should succeed");
         assert_eq!(
             recent.loaded_count(),

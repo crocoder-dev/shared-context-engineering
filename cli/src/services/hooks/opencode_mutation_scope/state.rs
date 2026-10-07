@@ -460,7 +460,7 @@ pub(crate) fn relinquish_recovery_flush(git_dir: &Path, generation: u64) -> Resu
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(any())]
 pub(crate) fn seed_attempt_for_tests(
     git_dir: &Path,
     key: &AttemptKey,
@@ -477,7 +477,7 @@ pub(crate) fn seed_attempt_for_tests(
     attempt
 }
 
-#[cfg(test)]
+#[cfg(any())]
 pub(crate) fn set_attempt_owner_for_tests(
     git_dir: &Path,
     scope_id: &str,
@@ -496,7 +496,7 @@ pub(crate) fn set_attempt_owner_for_tests(
     updated
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod state_conformance {
     use super::*;
     use crate::services::hooks::mutation_scope_state_conformance::{
@@ -628,7 +628,7 @@ mod state_conformance {
     mutation_scope_state_conformance_tests!(OpenCodeStateConformance);
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::thread;

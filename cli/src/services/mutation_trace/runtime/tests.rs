@@ -56,7 +56,7 @@ struct TestRepo {
 }
 
 impl TestRepo {
-    fn new(label: &str) -> Self {
+    async fn new(label: &str) -> Self {
         let temp_dir = tempfile::Builder::new()
             .prefix(&format!("sce-mutation-trace-runtime-{label}-"))
             .tempdir()
@@ -65,6 +65,7 @@ impl TestRepo {
         init_repo(&repo_root);
         let db_path = temp_dir.path().join("agent-trace.db");
         RepositoryAgentTraceDb::new_at(&db_path)
+            .await
             .expect("the repository DB should open with schema");
         Self {
             _temp_dir: temp_dir,
@@ -73,12 +74,13 @@ impl TestRepo {
         }
     }
 
-    fn open_db(&self) -> anyhow::Result<RepositoryAgentTraceDb> {
-        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&self.db_path)
+    async fn open_db(&self) -> anyhow::Result<RepositoryAgentTraceDb> {
+        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&self.db_path).await
     }
 
-    fn db(&self) -> RepositoryAgentTraceDb {
+    async fn db(&self) -> RepositoryAgentTraceDb {
         self.open_db()
+            .await
             .expect("reopening the DB for assertions should succeed")
     }
 }
@@ -91,7 +93,7 @@ struct LinkedTestRepo {
 }
 
 impl LinkedTestRepo {
-    fn new(label: &str) -> Self {
+    async fn new(label: &str) -> Self {
         let temp_dir = tempfile::Builder::new()
             .prefix(&format!("sce-mutation-trace-runtime-{label}-"))
             .tempdir()
@@ -110,6 +112,7 @@ impl LinkedTestRepo {
         );
         let db_path = temp_dir.path().join("agent-trace.db");
         RepositoryAgentTraceDb::new_at(&db_path)
+            .await
             .expect("the shared repository DB should open with schema");
         Self {
             _temp_dir: temp_dir,
@@ -119,17 +122,18 @@ impl LinkedTestRepo {
         }
     }
 
-    fn open_db(&self) -> anyhow::Result<RepositoryAgentTraceDb> {
-        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&self.db_path)
+    async fn open_db(&self) -> anyhow::Result<RepositoryAgentTraceDb> {
+        RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&self.db_path).await
     }
 
-    fn db(&self) -> RepositoryAgentTraceDb {
+    async fn db(&self) -> RepositoryAgentTraceDb {
         self.open_db()
+            .await
             .expect("reopening the shared DB for assertions should succeed")
     }
 }
 
-fn seed_event(
+async fn seed_event(
     db: &RepositoryAgentTraceDb,
     worktree_id: &str,
     revision: u64,
@@ -149,10 +153,11 @@ fn seed_event(
             after_tree,
         ),
     )
+    .await
     .expect("event row insert should succeed");
 }
 
-fn seed_attribution_event(
+async fn seed_attribution_event(
     db: &RepositoryAgentTraceDb,
     worktree_id: &str,
     revision: u64,
@@ -176,6 +181,7 @@ fn seed_attribution_event(
             attribution_scope_id,
         ),
     )
+    .await
     .expect("attribution event row insert should succeed");
 }
 
@@ -188,18 +194,19 @@ fn ref_exists(dir: &Path, ref_name: &str) -> bool {
         .success()
 }
 
-fn row_count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
+async fn row_count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
     db.query_map(&format!("SELECT COUNT(*) FROM {table}"), (), |row| {
         row.get::<i64>(0).map_err(Into::into)
     })
+    .await
     .expect("count query should succeed")
     .into_iter()
     .next()
     .expect("count row should exist")
 }
 
-#[test]
-fn linked_worktrees_have_independent_locks_and_worktree_ids() {
+#[tokio::test(flavor = "multi_thread")]
+async fn linked_worktrees_have_independent_locks_and_worktree_ids() {
     let repo = LinkedTestRepo::new("linked-ids");
 
     let main_git_dir = resolve_git_dir(&repo.main_root).expect("main git dir should resolve");
@@ -209,15 +216,18 @@ fn linked_worktrees_have_independent_locks_and_worktree_ids() {
         "a linked worktree must resolve its own worktree-specific git dir, giving it a distinct lock and identity path"
     );
 
-    let main_outcome = coordinate(&repo.main_root, &RuntimeBoundary::Flush, || repo.open_db())
-        .expect("first observation on the main worktree should succeed");
+    let main_outcome = coordinate(&repo.main_root, &RuntimeBoundary::Flush, async || {
+        repo.open_db().await
+    })
+    .await
+    .expect("first observation on the main worktree should succeed");
 
     let held = WorktreeLock::acquire(&main_git_dir, Duration::from_secs(5))
         .expect("the main worktree's runtime lock should be acquirable");
 
-    let linked_outcome = coordinate(&repo.linked_root, &RuntimeBoundary::Flush, || {
-        repo.open_db()
-    })
+    let linked_outcome = coordinate(&repo.linked_root, &RuntimeBoundary::Flush, async || {
+        repo.open_db().await
+    }).await
     .expect(
         "coordinate() on the linked worktree must acquire its own distinct runtime lock while the main worktree's lock is still held",
     );
@@ -229,7 +239,7 @@ fn linked_worktrees_have_independent_locks_and_worktree_ids() {
         "each linked worktree must derive a distinct WorktreeId from Git's own worktree topology"
     );
 
-    let db_main = repo.db();
+    let db_main = repo.db().await;
     let store = MutationTraceStore::new(&db_main);
     assert!(
         store
@@ -253,13 +263,14 @@ fn linked_worktrees_have_independent_locks_and_worktree_ids() {
         .expect("a tree pinned by the main worktree's coordinator must resolve through the linked worktree's git dir");
 }
 
-#[test]
+#[tokio::test(flavor = "multi_thread")]
 
-fn a_snapshot_failure_then_recovery_cycle_runs_through_the_public_api() {
+async fn a_snapshot_failure_then_recovery_cycle_runs_through_the_public_api() {
     let repo = TestRepo::new("failure-recovery");
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
 
     let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
 
@@ -281,6 +292,7 @@ fn a_snapshot_failure_then_recovery_cycle_runs_through_the_public_api() {
         },
         ok_db,
     )
+    .await
     .expect_err("a Git snapshot failure against a materialized worktree should be reported");
     match failure {
         CoordinateError::SnapshotFailure {
@@ -293,10 +305,11 @@ fn a_snapshot_failure_then_recovery_cycle_runs_through_the_public_api() {
     }
 
     {
-        let db = repo.db();
+        let db = repo.db().await;
         let store = MutationTraceStore::new(&db);
         let projection = store
             .load_worktree(&worktree_id, None, None)
+            .await
             .expect("loading the worktree row should succeed")
             .expect("the worktree row should still exist");
         assert!(
@@ -309,16 +322,18 @@ fn a_snapshot_failure_then_recovery_cycle_runs_through_the_public_api() {
         .expect("removing the planted file should let the snapshot service recreate its temp dir");
 
     let recovered = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the coordinator should recover from the taint and process the boundary");
     assert_eq!(
         recovered.worktree_id, worktree_id,
         "recovery must operate on the same worktree identity"
     );
 
-    let db = repo.db();
+    let db = repo.db().await;
     let store = MutationTraceStore::new(&db);
     let projection = store
         .load_worktree(&worktree_id, None, None)
+        .await
         .expect("loading the worktree row should succeed")
         .expect("the worktree row should still exist");
     assert!(
@@ -327,14 +342,17 @@ fn a_snapshot_failure_then_recovery_cycle_runs_through_the_public_api() {
     );
 }
 
-#[test]
-fn a_successful_coordinate_through_the_public_api_leaves_no_external_taint_marker() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_successful_coordinate_through_the_public_api_leaves_no_external_taint_marker() {
     let repo = TestRepo::new("public-success-no-marker");
     let git_dir = resolve_git_dir(&repo.repo_root).expect("git dir should resolve");
     let marker = ExternalTaintMarker::new(&git_dir);
 
-    let outcome = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, || repo.open_db())
-        .expect("a first observation through the public entrypoint should succeed");
+    let outcome = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, async || {
+        repo.open_db().await
+    })
+    .await
+    .expect("a first observation through the public entrypoint should succeed");
     assert_eq!(
         outcome.revision, 0,
         "a first-observation flush should not advance the revision"
@@ -347,16 +365,17 @@ fn a_successful_coordinate_through_the_public_api_leaves_no_external_taint_marke
     );
 }
 
-#[test]
+#[tokio::test(flavor = "multi_thread")]
 #[allow(clippy::too_many_lines)]
-fn a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_rebaselines_without_evidence(
+async fn a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_rebaselines_without_evidence(
 ) {
     let repo = TestRepo::new("public-db-open-failure-gap");
     let git_dir = resolve_git_dir(&repo.repo_root).expect("git dir should resolve");
     let marker = ExternalTaintMarker::new(&git_dir);
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
 
     let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
     let scope = ScopeId("scope-across-the-gap".to_string());
@@ -370,6 +389,7 @@ fn a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_reba
         },
         ok_db,
     )
+    .await
     .expect("starting the scope should succeed");
     std::fs::write(repo.repo_root.join("work.txt"), b"v1").expect("the A -> B edit should write");
     let advanced = coordinate(
@@ -381,6 +401,7 @@ fn a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_reba
         },
         ok_db,
     )
+    .await
     .expect("the advance should commit exactly one event");
     let tree_b = advanced.observed_tree.clone();
     assert!(
@@ -395,6 +416,7 @@ fn a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_reba
             Err(anyhow::anyhow!("simulated Agent Trace DB open failure"))
         },
     )
+    .await
     .expect_err("a failing DB provider must fail coordinate()");
     assert!(
         matches!(db_failure, CoordinateError::AgentTraceDbUnavailable(_)),
@@ -406,7 +428,7 @@ fn a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_reba
     );
     std::fs::write(repo.repo_root.join("work.txt"), b"v2-during-the-gap").expect("the B -> C edit");
 
-    let recovered = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+    let recovered = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db).await
         .expect("the follow-up invocation with a working provider should recover, then process its boundary");
     let tree_c = recovered.observed_tree.clone();
     assert_ne!(
@@ -421,10 +443,11 @@ fn a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_reba
         !marker.exists().expect("marker existence should resolve"),
         "the recovering invocation must clear the marker on success"
     );
-    let db = repo.db();
+    let db = repo.db().await;
     let store = MutationTraceStore::new(&db);
     let projection = store
         .load_worktree(&worktree_id, Some(&scope), None)
+        .await
         .expect("loading the worktree row should succeed")
         .expect("the worktree row should exist");
     assert_eq!(
@@ -440,6 +463,7 @@ fn a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_reba
     for revision in 1..=recovered.revision {
         if let Some(event) = store
             .load_mutation_event(&worktree_id, revision)
+            .await
             .expect("loading a mutation event should succeed")
         {
             assert_ne!(
@@ -450,14 +474,16 @@ fn a_db_open_failure_after_arming_leaves_the_marker_and_the_next_invocation_reba
     }
 }
 
-#[test]
-fn a_stale_marker_rebaselines_to_the_current_tree_abandons_scopes_then_processes_the_boundary() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stale_marker_rebaselines_to_the_current_tree_abandons_scopes_then_processes_the_boundary(
+) {
     let repo = TestRepo::new("public-stale-marker-rebaseline");
     let git_dir = resolve_git_dir(&repo.repo_root).expect("git dir should resolve");
     let marker = ExternalTaintMarker::new(&git_dir);
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
 
     let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
     let tree_a = baseline.observed_tree.clone();
@@ -472,6 +498,7 @@ fn a_stale_marker_rebaselines_to_the_current_tree_abandons_scopes_then_processes
         },
         ok_db,
     )
+    .await
     .expect("starting scope S should succeed");
 
     marker
@@ -493,6 +520,7 @@ fn a_stale_marker_rebaselines_to_the_current_tree_abandons_scopes_then_processes
         },
         ok_db,
     )
+    .await
     .expect("an inherited marker must recover, then process the triggering boundary");
     let tree_c = recovered.observed_tree.clone();
     assert_ne!(
@@ -508,10 +536,11 @@ fn a_stale_marker_rebaselines_to_the_current_tree_abandons_scopes_then_processes
         "a successful recovery must clear the inherited marker"
     );
 
-    let db = repo.db();
+    let db = repo.db().await;
     let store = MutationTraceStore::new(&db);
     let projection = store
         .load_worktree(&worktree_id, Some(&scope), None)
+        .await
         .expect("loading the worktree row should succeed")
         .expect("the worktree row should exist");
     assert_eq!(
@@ -526,6 +555,7 @@ fn a_stale_marker_rebaselines_to_the_current_tree_abandons_scopes_then_processes
     );
 
     let stable = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("a plain flush after recovery should succeed");
     assert_eq!(
         stable.revision, recovered.revision,
@@ -534,8 +564,9 @@ fn a_stale_marker_rebaselines_to_the_current_tree_abandons_scopes_then_processes
     assert!(stable.mutation_event.is_none());
 }
 
-#[test]
-fn a_first_ever_failed_invocation_that_never_materialized_a_worktree_row_creates_no_evidence() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_first_ever_failed_invocation_that_never_materialized_a_worktree_row_creates_no_evidence()
+{
     let repo = TestRepo::new("public-first-ever-failure");
     let git_dir = resolve_git_dir(&repo.repo_root).expect("git dir should resolve");
     let marker = ExternalTaintMarker::new(&git_dir);
@@ -555,6 +586,7 @@ fn a_first_ever_failed_invocation_that_never_materialized_a_worktree_row_creates
             ))
         },
     )
+    .await
     .expect_err("the first-ever invocation's DB provider fails");
     assert!(
         matches!(first, CoordinateError::AgentTraceDbUnavailable(_)),
@@ -571,8 +603,11 @@ fn a_first_ever_failed_invocation_that_never_materialized_a_worktree_row_creates
     )
     .expect("another unobserved edit should write");
 
-    let established = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, || repo.open_db())
-        .expect("the first successful invocation establishes the baseline");
+    let established = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, async || {
+        repo.open_db().await
+    })
+    .await
+    .expect("the first successful invocation establishes the baseline");
     assert!(
         established.mutation_event.is_none(),
         "a worktree with no prior durable row cannot produce evidence for the unknown interval"
@@ -582,10 +617,11 @@ fn a_first_ever_failed_invocation_that_never_materialized_a_worktree_row_creates
         "the successful baseline must clear the inherited marker"
     );
 
-    let db = repo.db();
+    let db = repo.db().await;
     let store = MutationTraceStore::new(&db);
     let projection = store
         .load_worktree(&established.worktree_id, None, None)
+        .await
         .expect("loading the worktree row should succeed")
         .expect("the worktree row should now exist");
     assert_eq!(
@@ -605,9 +641,9 @@ fn a_first_ever_failed_invocation_that_never_materialized_a_worktree_row_creates
     }
 }
 
-#[test]
+#[tokio::test(flavor = "multi_thread")]
 #[allow(clippy::too_many_lines)]
-fn linked_worktrees_keep_independent_external_taint_markers_over_a_shared_db() {
+async fn linked_worktrees_keep_independent_external_taint_markers_over_a_shared_db() {
     let repo = LinkedTestRepo::new("public-taint-linked");
 
     let main_git_dir = resolve_git_dir(&repo.main_root).expect("main git dir should resolve");
@@ -615,11 +651,15 @@ fn linked_worktrees_keep_independent_external_taint_markers_over_a_shared_db() {
     let main_marker = ExternalTaintMarker::new(&main_git_dir);
     let linked_marker = ExternalTaintMarker::new(&linked_git_dir);
 
-    let main_baseline = coordinate(&repo.main_root, &RuntimeBoundary::Flush, || repo.open_db())
-        .expect("the main worktree baseline should succeed");
-    let linked_baseline = coordinate(&repo.linked_root, &RuntimeBoundary::Flush, || {
-        repo.open_db()
+    let main_baseline = coordinate(&repo.main_root, &RuntimeBoundary::Flush, async || {
+        repo.open_db().await
     })
+    .await
+    .expect("the main worktree baseline should succeed");
+    let linked_baseline = coordinate(&repo.linked_root, &RuntimeBoundary::Flush, async || {
+        repo.open_db().await
+    })
+    .await
     .expect("the linked worktree baseline should succeed");
     assert_ne!(main_baseline.worktree_id, linked_baseline.worktree_id);
 
@@ -632,8 +672,9 @@ fn linked_worktrees_keep_independent_external_taint_markers_over_a_shared_db() {
             actor_kind: ActorKind::ClaudeCode,
             provenance: None,
         },
-        || repo.open_db(),
+        async || repo.open_db().await,
     )
+    .await
     .expect("starting the linked worktree's scope should succeed");
     linked_marker
         .persist()
@@ -641,9 +682,11 @@ fn linked_worktrees_keep_independent_external_taint_markers_over_a_shared_db() {
 
     std::fs::write(repo.main_root.join("main-work.txt"), b"v1")
         .expect("a main-worktree edit should write");
-    coordinate(&repo.main_root, &RuntimeBoundary::Flush, || repo.open_db()).expect(
-        "the main worktree flush must succeed without inheriting the linked worktree's marker",
-    );
+    coordinate(&repo.main_root, &RuntimeBoundary::Flush, async || {
+        repo.open_db().await
+    })
+    .await
+    .expect("the main worktree flush must succeed without inheriting the linked worktree's marker");
     assert!(
         !main_marker
             .exists()
@@ -657,10 +700,11 @@ fn linked_worktrees_keep_independent_external_taint_markers_over_a_shared_db() {
         "the main worktree's invocation must not touch the linked worktree's independent marker"
     );
 
-    let db = repo.db();
+    let db = repo.db().await;
     let store = MutationTraceStore::new(&db);
     let linked_mid = store
         .load_worktree(&linked_baseline.worktree_id, Some(&linked_scope), None)
+        .await
         .expect("loading the linked worktree row should succeed")
         .expect("the linked worktree row should exist");
     assert_eq!(
@@ -671,9 +715,10 @@ fn linked_worktrees_keep_independent_external_taint_markers_over_a_shared_db() {
 
     std::fs::write(repo.linked_root.join("linked-work.txt"), b"v1")
         .expect("a linked-worktree edit should write");
-    let linked_recovered = coordinate(&repo.linked_root, &RuntimeBoundary::Flush, || {
-        repo.open_db()
+    let linked_recovered = coordinate(&repo.linked_root, &RuntimeBoundary::Flush, async || {
+        repo.open_db().await
     })
+    .await
     .expect("the linked worktree's own invocation recovers from its inherited marker");
     assert!(
         linked_recovered.mutation_event.is_none(),
@@ -688,6 +733,7 @@ fn linked_worktrees_keep_independent_external_taint_markers_over_a_shared_db() {
 
     let linked_after = store
         .load_worktree(&linked_baseline.worktree_id, Some(&linked_scope), None)
+        .await
         .expect("loading the linked worktree row should succeed")
         .expect("the linked worktree row should exist");
     assert_eq!(
@@ -697,14 +743,15 @@ fn linked_worktrees_keep_independent_external_taint_markers_over_a_shared_db() {
     );
 }
 
-#[test]
-fn a_snapshot_failure_arms_the_marker_and_the_next_invocation_recovers_once() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_snapshot_failure_arms_the_marker_and_the_next_invocation_recovers_once() {
     let repo = TestRepo::new("public-snapshot-failure-marker-recovery");
     let git_dir = resolve_git_dir(&repo.repo_root).expect("git dir should resolve");
     let marker = ExternalTaintMarker::new(&git_dir);
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
 
     let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
     assert!(!marker.exists().expect("marker existence should resolve"));
@@ -725,6 +772,7 @@ fn a_snapshot_failure_arms_the_marker_and_the_next_invocation_recovers_once() {
         },
         ok_db,
     )
+    .await
     .expect_err("a Git snapshot failure after marker arming should be reported");
     assert!(
         matches!(
@@ -742,10 +790,11 @@ fn a_snapshot_failure_arms_the_marker_and_the_next_invocation_recovers_once() {
     );
 
     {
-        let db = repo.db();
+        let db = repo.db().await;
         let store = MutationTraceStore::new(&db);
         let projection = store
             .load_worktree(&worktree_id, None, None)
+            .await
             .expect("loading the worktree row should succeed")
             .expect("the worktree row should still exist");
         assert!(projection.worktree_state.tainted);
@@ -761,6 +810,7 @@ fn a_snapshot_failure_arms_the_marker_and_the_next_invocation_recovers_once() {
         .expect("an edit before recovery should write");
 
     let recovered = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the coordinator should recover from the taint and process the boundary");
     assert!(
         recovered.mutation_event.is_none(),
@@ -771,10 +821,11 @@ fn a_snapshot_failure_arms_the_marker_and_the_next_invocation_recovers_once() {
         "a successful recovery clears the marker"
     );
 
-    let db = repo.db();
+    let db = repo.db().await;
     let store = MutationTraceStore::new(&db);
     let projection = store
         .load_worktree(&worktree_id, None, None)
+        .await
         .expect("loading the worktree row should succeed")
         .expect("the worktree row should still exist");
     assert!(
@@ -788,6 +839,7 @@ fn a_snapshot_failure_arms_the_marker_and_the_next_invocation_recovers_once() {
     );
 
     let stable = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("a plain flush after recovery should succeed");
     assert_eq!(
         stable.revision, recovered.revision,
@@ -796,16 +848,17 @@ fn a_snapshot_failure_arms_the_marker_and_the_next_invocation_recovers_once() {
     assert!(stable.mutation_event.is_none());
 }
 
-#[test]
+#[tokio::test(flavor = "multi_thread")]
 #[allow(clippy::too_many_lines)]
-fn a_marker_clear_failure_after_a_durable_boundary_keeps_the_marker_for_a_later_recovery() {
+async fn a_marker_clear_failure_after_a_durable_boundary_keeps_the_marker_for_a_later_recovery() {
     let repo = TestRepo::new("public-marker-clear-failure");
     let git_dir = resolve_git_dir(&repo.repo_root).expect("git dir should resolve");
     let marker = ExternalTaintMarker::new(&git_dir);
-    let marker_path = git_dir.join("sce").join("mutation-cursor-tainted");
-    let ok_db = || repo.open_db();
+    let marker_path = git_dir.join("sce").await.join("mutation-cursor-tainted");
+    let ok_db = async || repo.open_db().await;
 
     let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
 
@@ -820,6 +873,7 @@ fn a_marker_clear_failure_after_a_durable_boundary_keeps_the_marker_for_a_later_
         },
         ok_db,
     )
+    .await
     .expect("starting the scope should succeed");
     std::fs::write(repo.repo_root.join("work.txt"), b"v1")
         .expect("an exclusive edit before the boundary should write");
@@ -833,14 +887,15 @@ fn a_marker_clear_failure_after_a_durable_boundary_keeps_the_marker_for_a_later_
             event: EventId("evt-advance".to_string()),
             actor_kind: ActorKind::ClaudeCode,
         },
-        move || {
+        async move || {
             std::fs::remove_file(&clear_marker_path)
                 .expect("the armed marker file should be present mid-invocation");
             std::fs::create_dir_all(clear_marker_path.join("nested"))
                 .expect("planting a non-empty directory at the marker path should succeed");
-            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&clear_db_path)
+            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&clear_db_path).await
         },
     )
+    .await
     .expect_err("clearing a marker that is now a non-empty directory must fail");
 
     let committed = match error {
@@ -853,14 +908,16 @@ fn a_marker_clear_failure_after_a_durable_boundary_keeps_the_marker_for_a_later_
     );
 
     let (durable_revision, durable_cursor) = {
-        let db = repo.db();
+        let db = repo.db().await;
         let store = MutationTraceStore::new(&db);
         let projection = store
             .load_worktree(&worktree_id, Some(&scope), None)
+            .await
             .expect("loading the worktree row should succeed")
             .expect("the worktree row should exist");
         let event = store
             .load_mutation_event(&worktree_id, projection.worktree_state.revision)
+            .await
             .expect("loading the committed mutation event should succeed")
             .expect("the attributable Advance must have committed one durable event");
         assert_eq!(event.after_tree, projection.worktree_state.cursor_tree);
@@ -885,6 +942,7 @@ fn a_marker_clear_failure_after_a_durable_boundary_keeps_the_marker_for_a_later_
     std::fs::write(repo.repo_root.join("work.txt"), b"v2").expect("a later edit should write");
 
     let recovered = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the later invocation recovers from the still-armed marker");
     assert!(
         recovered.mutation_event.is_none(),
@@ -900,12 +958,14 @@ fn a_marker_clear_failure_after_a_durable_boundary_keeps_the_marker_for_a_later_
     );
 }
 
-#[test]
-fn reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_durable_under_it() {
+#[tokio::test(flavor = "multi_thread")]
+async fn reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_durable_under_it(
+) {
     let repo = TestRepo::new("reconcile-blocks-on-worktree-lock");
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
 
     let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
     let baseline_tree = baseline.observed_tree.clone();
@@ -918,16 +978,19 @@ fn reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_dur
     let (result_tx, result_rx) = mpsc::channel();
     let repo_root_clone = repo.repo_root.clone();
     let db_path_clone = repo.db_path.clone();
-    let worker = thread::spawn(move || {
+    let worker = thread::spawn(async move || {
         let outcome = reconcile_worktree_inner(
             &repo_root_clone,
-            || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path_clone),
+            async || {
+                RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&db_path_clone).await
+            },
             move || {
                 contention_tx
                     .send(())
                     .expect("contention signal channel should still be open");
             },
-        );
+        )
+        .await;
         result_tx
             .send(())
             .expect("result signal channel should still be open");
@@ -957,7 +1020,8 @@ fn reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_dur
         1,
         &baseline_tree.0,
         &x.0,
-    );
+    )
+    .await;
 
     drop(held);
 
@@ -996,13 +1060,14 @@ fn reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_dur
     );
 }
 
-#[test]
+#[tokio::test(flavor = "multi_thread")]
 #[allow(clippy::too_many_lines)]
-fn reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree() {
+async fn reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree() {
     let repo = TestRepo::new("reconcile-blocks-until-real-cas");
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
 
     let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
     let baseline_tree = baseline.observed_tree.clone();
@@ -1018,12 +1083,14 @@ fn reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree() {
     let (coordinate_done_tx, coordinate_done_rx) = mpsc::channel();
     let coord_repo_root = repo.repo_root.clone();
     let coord_db_path = repo.db_path.clone();
-    let coordinator = thread::spawn(move || {
+    let coordinator = thread::spawn(async move || {
         let mut paused = false;
         let outcome = coordinate_inner(
             &coord_repo_root,
             &RuntimeBoundary::Flush,
-            || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&coord_db_path),
+            async || {
+                RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&coord_db_path).await
+            },
             || {},
             move |_attempt| {
                 if !paused {
@@ -1037,7 +1104,8 @@ fn reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree() {
                 }
             },
             |_attempt| Ok(()),
-        );
+        )
+        .await;
         coordinate_done_tx
             .send(())
             .expect("the coordinate-done signal channel should still be open");
@@ -1053,16 +1121,19 @@ fn reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree() {
     let (reconcile_done_tx, reconcile_done_rx) = mpsc::channel();
     let rec_repo_root = repo.repo_root.clone();
     let rec_db_path = repo.db_path.clone();
-    let reconciler = thread::spawn(move || {
+    let reconciler = thread::spawn(async move || {
         let outcome = reconcile_worktree_inner(
             &rec_repo_root,
-            || RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&rec_db_path),
+            async || {
+                RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&rec_db_path).await
+            },
             move || {
                 contention_tx
                     .send(())
                     .expect("the contention signal channel should still be open");
             },
-        );
+        )
+        .await;
         reconcile_done_tx
             .send(())
             .expect("the reconcile-done signal channel should still be open");
@@ -1140,6 +1211,7 @@ fn reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree() {
     let store = MutationTraceStore::new(&db);
     let projection = store
         .load_worktree(&worktree_id, None, None)
+        .await
         .expect("loading the worktree row should succeed")
         .expect("the worktree row should exist");
     assert_eq!(
@@ -1148,18 +1220,20 @@ fn reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree() {
     );
     let event = store
         .load_mutation_event(&worktree_id, projection.worktree_state.revision)
+        .await
         .expect("loading the committed mutation event should succeed")
         .expect("the observed drift must have committed one durable event");
     assert_eq!(event.before_tree, baseline_tree);
     assert_eq!(event.after_tree, x);
 }
 
-#[test]
-fn a_pin_with_no_durable_root_is_reclaimed_by_a_later_reconciliation() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pin_with_no_durable_root_is_reclaimed_by_a_later_reconciliation() {
     let repo = TestRepo::new("orphan-reclaimed-via-public-api");
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
 
     let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
 
@@ -1181,6 +1255,7 @@ fn a_pin_with_no_durable_root_is_reclaimed_by_a_later_reconciliation() {
     );
 
     let outcome = reconcile_worktree(&repo.repo_root, ok_db)
+        .await
         .expect("reconciliation should succeed through the public entrypoint");
     let report = match outcome {
         ReconciliationOutcome::Reconciled(report) => report,
@@ -1199,12 +1274,14 @@ fn a_pin_with_no_durable_root_is_reclaimed_by_a_later_reconciliation() {
     );
 }
 
-#[test]
-fn current_cursor_pin_survives_reconciliation_without_a_referencing_event_through_the_public_api() {
+#[tokio::test(flavor = "multi_thread")]
+async fn current_cursor_pin_survives_reconciliation_without_a_referencing_event_through_the_public_api(
+) {
     let repo = TestRepo::new("cursor-retained-no-event");
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
 
     let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
     let cursor_ref = format!(
@@ -1216,10 +1293,11 @@ fn current_cursor_pin_survives_reconciliation_without_a_referencing_event_throug
         "the baseline flush must pin the current cursor tree"
     );
 
-    let db = repo.db();
+    let db = repo.db().await;
     let store = MutationTraceStore::new(&db);
     let roots = store
         .load_tree_roots(&worktree_id)
+        .await
         .expect("load_tree_roots should succeed");
     assert_eq!(
         roots.len(),
@@ -1232,6 +1310,7 @@ fn current_cursor_pin_survives_reconciliation_without_a_referencing_event_throug
     );
 
     let outcome = reconcile_worktree(&repo.repo_root, ok_db)
+        .await
         .expect("reconciliation should succeed through the public entrypoint");
     let report = match outcome {
         ReconciliationOutcome::Reconciled(report) => report,
@@ -1250,12 +1329,14 @@ fn current_cursor_pin_survives_reconciliation_without_a_referencing_event_throug
     );
 }
 
-#[test]
-fn historical_before_and_after_pins_survive_reconciliation_after_real_coordinate_transitions() {
+#[tokio::test(flavor = "multi_thread")]
+async fn historical_before_and_after_pins_survive_reconciliation_after_real_coordinate_transitions()
+{
     let repo = TestRepo::new("historical-retention-real-transitions");
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
 
     let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
     let tree_a = baseline.observed_tree.clone();
@@ -1271,6 +1352,7 @@ fn historical_before_and_after_pins_survive_reconciliation_after_real_coordinate
         },
         ok_db,
     )
+    .await
     .expect("starting the scope should succeed");
 
     std::fs::write(repo.repo_root.join("work.txt"), b"v1").expect("the A -> B edit should write");
@@ -1283,6 +1365,7 @@ fn historical_before_and_after_pins_survive_reconciliation_after_real_coordinate
         },
         ok_db,
     )
+    .await
     .expect("the A -> B advance should commit one event");
     let tree_b = advance_b.observed_tree.clone();
 
@@ -1296,6 +1379,7 @@ fn historical_before_and_after_pins_survive_reconciliation_after_real_coordinate
         },
         ok_db,
     )
+    .await
     .expect("the B -> C advance should commit one event");
     let tree_c = advance_c.observed_tree.clone();
 
@@ -1309,6 +1393,7 @@ fn historical_before_and_after_pins_survive_reconciliation_after_real_coordinate
         },
         ok_db,
     )
+    .await
     .expect("the C -> D advance should commit one event");
     let tree_d = advance_d.observed_tree.clone();
 
@@ -1326,6 +1411,7 @@ fn historical_before_and_after_pins_survive_reconciliation_after_real_coordinate
     );
 
     let outcome = reconcile_worktree(&repo.repo_root, ok_db)
+        .await
         .expect("reconciliation should succeed through the public entrypoint");
     let report = match outcome {
         ReconciliationOutcome::Reconciled(report) => report,
@@ -1347,12 +1433,13 @@ fn historical_before_and_after_pins_survive_reconciliation_after_real_coordinate
     }
 }
 
-#[test]
-fn reconciliation_through_the_public_api_is_idempotent() {
+#[tokio::test(flavor = "multi_thread")]
+async fn reconciliation_through_the_public_api_is_idempotent() {
     let repo = TestRepo::new("idempotent-via-public-api");
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
 
     let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
 
@@ -1375,25 +1462,29 @@ fn reconciliation_through_the_public_api_is_idempotent() {
         .pin_tree(&worktree_id, &x2)
         .expect("pinning X2 should succeed");
 
-    let first =
-        match reconcile_worktree(&repo.repo_root, ok_db).expect("the first pass should succeed") {
-            ReconciliationOutcome::Reconciled(report) => report,
-            ReconciliationOutcome::SkippedNoCheckoutIdentity => {
-                panic!("expected a Reconciled outcome, got SkippedNoCheckoutIdentity")
-            }
-        };
+    let first = match reconcile_worktree(&repo.repo_root, ok_db)
+        .await
+        .expect("the first pass should succeed")
+    {
+        ReconciliationOutcome::Reconciled(report) => report,
+        ReconciliationOutcome::SkippedNoCheckoutIdentity => {
+            panic!("expected a Reconciled outcome, got SkippedNoCheckoutIdentity")
+        }
+    };
     assert_eq!(
         first.deleted, 2,
         "the first pass must reclaim both orphan pins"
     );
 
-    let second =
-        match reconcile_worktree(&repo.repo_root, ok_db).expect("the second pass should succeed") {
-            ReconciliationOutcome::Reconciled(report) => report,
-            ReconciliationOutcome::SkippedNoCheckoutIdentity => {
-                panic!("expected a Reconciled outcome, got SkippedNoCheckoutIdentity")
-            }
-        };
+    let second = match reconcile_worktree(&repo.repo_root, ok_db)
+        .await
+        .expect("the second pass should succeed")
+    {
+        ReconciliationOutcome::Reconciled(report) => report,
+        ReconciliationOutcome::SkippedNoCheckoutIdentity => {
+            panic!("expected a Reconciled outcome, got SkippedNoCheckoutIdentity")
+        }
+    };
     assert_eq!(
         second.deleted, 0,
         "the second pass has nothing left to reclaim"
@@ -1408,15 +1499,17 @@ fn reconciliation_through_the_public_api_is_idempotent() {
     );
 }
 
-#[test]
-fn reconcile_one_linked_worktree_leaves_the_other_worktrees_pins_and_shared_objects_intact() {
+#[tokio::test(flavor = "multi_thread")]
+async fn reconcile_one_linked_worktree_leaves_the_other_worktrees_pins_and_shared_objects_intact() {
     let repo = LinkedTestRepo::new("linked-isolation");
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
 
     let a_baseline = coordinate(&repo.main_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("A's baseline observation should materialize its worktree");
     let a_id = a_baseline.worktree_id.clone();
     let b_baseline = coordinate(&repo.linked_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("B's baseline observation should materialize its worktree");
     let b_id = b_baseline.worktree_id.clone();
     assert_ne!(
@@ -1446,6 +1539,7 @@ fn reconcile_one_linked_worktree_leaves_the_other_worktrees_pins_and_shared_obje
     let a_orphan_ref = format!("refs/sce/mutation-cursor/{}/{}", a_id.0, a_orphan.0);
 
     let outcome = reconcile_worktree(&repo.main_root, ok_db)
+        .await
         .expect("reconciling A should succeed through the public entrypoint");
     let report = match outcome {
         ReconciliationOutcome::Reconciled(report) => report,
@@ -1472,7 +1566,7 @@ fn reconcile_one_linked_worktree_leaves_the_other_worktrees_pins_and_shared_obje
         .diff_trees(&b_baseline.observed_tree, &b_baseline.observed_tree)
         .expect("B's durable tree must still resolve in the shared object database after A's pass");
 
-    let db = repo.db();
+    let db = repo.db().await;
     let store = MutationTraceStore::new(&db);
     assert!(
         store
@@ -1483,15 +1577,17 @@ fn reconcile_one_linked_worktree_leaves_the_other_worktrees_pins_and_shared_obje
     );
 }
 
-#[test]
-fn reconcile_a_retains_its_pin_when_another_worktree_durably_requires_the_same_tree() {
+#[tokio::test(flavor = "multi_thread")]
+async fn reconcile_a_retains_its_pin_when_another_worktree_durably_requires_the_same_tree() {
     let repo = LinkedTestRepo::new("cross-worktree-degraded-retention");
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
 
     let a_baseline = coordinate(&repo.main_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("A's baseline observation should materialize its worktree");
     let a_id = a_baseline.worktree_id.clone();
     let b_baseline = coordinate(&repo.linked_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("B's baseline observation should materialize its worktree");
     let b_id = b_baseline.worktree_id.clone();
 
@@ -1504,9 +1600,10 @@ fn reconcile_a_retains_its_pin_when_another_worktree_durably_requires_the_same_t
     .expect("B's edit toward T should write");
     let tree_t = b_snapshot
         .capture_tree()
+        .await
         .expect("capturing T should succeed");
-    let db = repo.db();
-    seed_event(&db, &b_id.0, 1, &b_baseline.observed_tree.0, &tree_t.0);
+    let db = repo.db().await;
+    seed_event(&db, &b_id.0, 1, &b_baseline.observed_tree.0, &tree_t.0).await;
     let b_t_ref = format!("refs/sce/mutation-cursor/{}/{}", b_id.0, tree_t.0);
     assert!(
         !ref_exists(&repo.linked_root, &b_t_ref),
@@ -1533,6 +1630,7 @@ fn reconcile_a_retains_its_pin_when_another_worktree_durably_requires_the_same_t
     let a_t_ref = format!("refs/sce/mutation-cursor/{}/{}", a_id.0, a_tree_t.0);
 
     let outcome = reconcile_worktree(&repo.main_root, ok_db)
+        .await
         .expect("reconciling A should succeed through the public entrypoint");
     let report = match outcome {
         ReconciliationOutcome::Reconciled(report) => report,
@@ -1552,13 +1650,14 @@ fn reconcile_a_retains_its_pin_when_another_worktree_durably_requires_the_same_t
     run_git(&repo.main_root, &["cat-file", "-t", &a_tree_t.0]);
 }
 
-#[test]
-fn missing_local_required_pin_fails_closed_and_deletes_nothing_even_when_another_worktree_pins_the_tree(
+#[tokio::test(flavor = "multi_thread")]
+async fn missing_local_required_pin_fails_closed_and_deletes_nothing_even_when_another_worktree_pins_the_tree(
 ) {
     let repo = LinkedTestRepo::new("missing-required-pin-fail-closed");
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
 
     let a_baseline = coordinate(&repo.main_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("A's baseline observation should materialize its worktree");
     let a_id = a_baseline.worktree_id.clone();
     let tree_a = a_baseline.observed_tree.clone();
@@ -1569,9 +1668,10 @@ fn missing_local_required_pin_fails_closed_and_deletes_nothing_even_when_another
         .expect("the edit toward B should write");
     let tree_b = a_snapshot
         .capture_tree()
+        .await
         .expect("capturing B should succeed");
-    let db = repo.db();
-    seed_event(&db, &a_id.0, 1, &tree_a.0, &tree_b.0);
+    let db = repo.db().await;
+    seed_event(&db, &a_id.0, 1, &tree_a.0, &tree_b.0).await;
     let pin_ref_for_missing_b = format!("refs/sce/mutation-cursor/{}/{}", a_id.0, tree_b.0);
     assert!(
         !ref_exists(&repo.main_root, &pin_ref_for_missing_b),
@@ -1589,6 +1689,7 @@ fn missing_local_required_pin_fails_closed_and_deletes_nothing_even_when_another
     let pin_ref_for_x = format!("refs/sce/mutation-cursor/{}/{}", a_id.0, tree_x.0);
 
     let b_baseline = coordinate(&repo.linked_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the linked worktree's baseline observation should materialize");
     let b_id = b_baseline.worktree_id.clone();
     let b_snapshot = GitSnapshotService::new(&repo.linked_root)
@@ -1597,7 +1698,7 @@ fn missing_local_required_pin_fails_closed_and_deletes_nothing_even_when_another
         .pin_tree(&b_id, &tree_b)
         .expect("the other worktree pinning B should succeed");
 
-    let outcome = reconcile_worktree(&repo.main_root, ok_db);
+    let outcome = reconcile_worktree(&repo.main_root, ok_db).await;
     match outcome {
         Err(ReconcileError::MissingRequiredPins { missing }) => {
             assert_eq!(
@@ -1619,12 +1720,13 @@ fn missing_local_required_pin_fails_closed_and_deletes_nothing_even_when_another
     );
 }
 
-#[test]
-fn a_malformed_namespace_ref_fails_closed_through_the_public_entrypoint() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_malformed_namespace_ref_fails_closed_through_the_public_entrypoint() {
     let repo = TestRepo::new("malformed-ref-fail-closed");
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
 
     let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
     let cursor_ref = format!(
@@ -1645,7 +1747,7 @@ fn a_malformed_namespace_ref_fails_closed_through_the_public_entrypoint() {
         &["symbolic-ref", &symbolic_ref, &cursor_ref],
     );
 
-    let outcome = reconcile_worktree(&repo.repo_root, ok_db);
+    let outcome = reconcile_worktree(&repo.repo_root, ok_db).await;
     match outcome {
         Err(ReconcileError::MalformedPin { ref_name, .. }) => {
             assert_eq!(ref_name, symbolic_ref);
@@ -1664,14 +1766,15 @@ fn a_malformed_namespace_ref_fails_closed_through_the_public_entrypoint() {
     );
 }
 
-#[test]
-fn reconciliation_makes_no_protocol_or_marker_write() {
+#[tokio::test(flavor = "multi_thread")]
+async fn reconciliation_makes_no_protocol_or_marker_write() {
     let repo = TestRepo::new("no-protocol-or-marker-write");
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
     let git_dir = resolve_git_dir(&repo.repo_root).expect("git dir should resolve");
     let marker = ExternalTaintMarker::new(&git_dir);
 
     let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
 
@@ -1693,14 +1796,15 @@ fn reconciliation_makes_no_protocol_or_marker_write() {
         "mutation_trace_processed_events",
         "mutation_trace_event_active_scopes",
     ];
-    let db_before = repo.db();
+    let db_before = repo.db().await;
     let counts_before: Vec<i64> = tables
         .iter()
-        .map(|table| row_count(&db_before, table))
+        .map(async |table| row_count(&db_before, table).await)
         .collect();
     let store_before = MutationTraceStore::new(&db_before);
     let worktree_state_before = store_before
         .load_worktree(&worktree_id, None, None)
+        .await
         .expect("loading the worktree row should succeed")
         .expect("the worktree row should exist")
         .worktree_state;
@@ -1713,6 +1817,7 @@ fn reconciliation_makes_no_protocol_or_marker_write() {
     );
 
     let outcome = reconcile_worktree(&repo.repo_root, ok_db)
+        .await
         .expect("reconciliation should succeed through the public entrypoint");
     let report = match outcome {
         ReconciliationOutcome::Reconciled(report) => report,
@@ -1725,10 +1830,10 @@ fn reconciliation_makes_no_protocol_or_marker_write() {
         "the pass must actually mutate Git refs, not be a trivial no-op"
     );
 
-    let db_after = repo.db();
+    let db_after = repo.db().await;
     let counts_after: Vec<i64> = tables
         .iter()
-        .map(|table| row_count(&db_after, table))
+        .map(async |table| row_count(&db_after, table).await)
         .collect();
     assert_eq!(
         counts_before, counts_after,
@@ -1737,6 +1842,7 @@ fn reconciliation_makes_no_protocol_or_marker_write() {
     let store_after = MutationTraceStore::new(&db_after);
     let worktree_state_after = store_after
         .load_worktree(&worktree_id, None, None)
+        .await
         .expect("loading the worktree row should succeed")
         .expect("the worktree row should exist")
         .worktree_state;
@@ -1752,12 +1858,13 @@ fn reconciliation_makes_no_protocol_or_marker_write() {
     );
 }
 
-#[test]
-fn reconciliation_deletes_a_stale_ref_without_reclaiming_the_object_through_the_public_api() {
+#[tokio::test(flavor = "multi_thread")]
+async fn reconciliation_deletes_a_stale_ref_without_reclaiming_the_object_through_the_public_api() {
     let repo = TestRepo::new("no-object-reclamation-via-public-api");
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
 
     let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
 
@@ -1778,6 +1885,7 @@ fn reconciliation_deletes_a_stale_ref_without_reclaiming_the_object_through_the_
     run_git(&repo.repo_root, &["cat-file", "-t", &tree_o.0]);
 
     let outcome = reconcile_worktree(&repo.repo_root, ok_db)
+        .await
         .expect("reconciliation should succeed through the public entrypoint");
     let report = match outcome {
         ReconciliationOutcome::Reconciled(report) => report,
@@ -1803,13 +1911,14 @@ fn reconciliation_deletes_a_stale_ref_without_reclaiming_the_object_through_the_
          because reconciliation runs no git gc / git prune / git reflog expire"
     );
 }
-#[test]
+#[tokio::test(flavor = "multi_thread")]
 #[allow(clippy::too_many_lines)]
-fn an_abandoned_scope_rebaselines_the_successor_start_without_evidence_for_the_gap() {
+async fn an_abandoned_scope_rebaselines_the_successor_start_without_evidence_for_the_gap() {
     let repo = TestRepo::new("public-abandon-then-successor-start");
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
 
     let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
     let tree_a = baseline.observed_tree.clone();
@@ -1825,6 +1934,7 @@ fn an_abandoned_scope_rebaselines_the_successor_start_without_evidence_for_the_g
         },
         ok_db,
     )
+    .await
     .expect("starting scope A should succeed");
     let first_gap_revision = started.revision;
 
@@ -1835,6 +1945,7 @@ fn an_abandoned_scope_rebaselines_the_successor_start_without_evidence_for_the_g
     .expect("the edit inside scope A should write");
 
     let abandoned = abandon_scope(&repo.repo_root, &scope_a, ok_db)
+        .await
         .expect("abandoning the stale scope should succeed");
     let AbandonScopeOutcome::Abandoned {
         revision: abandon_revision,
@@ -1866,6 +1977,7 @@ fn an_abandoned_scope_rebaselines_the_successor_start_without_evidence_for_the_g
         },
         ok_db,
     )
+    .await
     .expect("the successor Start must rebaseline over the abandoned scope's gap");
     let tree_c = successor.observed_tree.clone();
     assert_ne!(
@@ -1877,10 +1989,11 @@ fn an_abandoned_scope_rebaselines_the_successor_start_without_evidence_for_the_g
         "no evidence may be emitted for the A -> B interval, whose final boundary was never observed"
     );
 
-    let db = repo.db();
+    let db = repo.db().await;
     let store = MutationTraceStore::new(&db);
     let projection = store
         .load_worktree(&worktree_id, Some(&scope_b), None)
+        .await
         .expect("loading the worktree row should succeed")
         .expect("the worktree row should exist");
     assert_eq!(
@@ -1893,6 +2006,7 @@ fn an_abandoned_scope_rebaselines_the_successor_start_without_evidence_for_the_g
 
     let statuses = store
         .load_worktree(&worktree_id, Some(&scope_a), None)
+        .await
         .expect("loading the worktree row should succeed")
         .expect("the worktree row should exist");
     assert_eq!(
@@ -1922,12 +2036,13 @@ fn an_abandoned_scope_rebaselines_the_successor_start_without_evidence_for_the_g
     }
 }
 
-#[test]
-fn abandoning_a_stale_scope_leaves_an_unrelated_live_scope_active_through_the_recovery() {
+#[tokio::test(flavor = "multi_thread")]
+async fn abandoning_a_stale_scope_leaves_an_unrelated_live_scope_active_through_the_recovery() {
     let repo = TestRepo::new("public-abandon-preserves-live-scope");
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
 
     let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
 
@@ -1943,6 +2058,7 @@ fn abandoning_a_stale_scope_leaves_an_unrelated_live_scope_active_through_the_re
         },
         ok_db,
     )
+    .await
     .expect("starting the scope that will go stale should succeed");
     coordinate(
         &repo.repo_root,
@@ -1954,9 +2070,11 @@ fn abandoning_a_stale_scope_leaves_an_unrelated_live_scope_active_through_the_re
         },
         ok_db,
     )
+    .await
     .expect("starting the unrelated live scope should succeed");
 
     let abandoned = abandon_scope(&repo.repo_root, &stale, ok_db)
+        .await
         .expect("abandoning the stale scope should succeed");
     assert!(
         matches!(abandoned, AbandonScopeOutcome::Abandoned { .. }),
@@ -1978,16 +2096,18 @@ fn abandoning_a_stale_scope_leaves_an_unrelated_live_scope_active_through_the_re
         },
         ok_db,
     )
+    .await
     .expect("the live scope must still be able to advance after the unrelated abandonment");
     assert!(
         advanced.mutation_event.is_none(),
         "the needs_rebaseline recovery consumes the ambiguous interval rather than attributing it"
     );
 
-    let db = repo.db();
+    let db = repo.db().await;
     let store = MutationTraceStore::new(&db);
     let projection = store
         .load_worktree(&worktree_id, Some(&live), None)
+        .await
         .expect("loading the worktree row should succeed")
         .expect("the worktree row should exist");
     assert_eq!(
@@ -1998,6 +2118,7 @@ fn abandoning_a_stale_scope_leaves_an_unrelated_live_scope_active_through_the_re
 
     let stale_projection = store
         .load_worktree(&worktree_id, Some(&stale), None)
+        .await
         .expect("loading the worktree row should succeed")
         .expect("the worktree row should exist");
     assert_eq!(
@@ -2010,14 +2131,16 @@ fn abandoning_a_stale_scope_leaves_an_unrelated_live_scope_active_through_the_re
     );
 }
 
-#[test]
-fn abandoning_a_scope_through_another_worktrees_checkout_is_rejected_without_writing() {
+#[tokio::test(flavor = "multi_thread")]
+async fn abandoning_a_scope_through_another_worktrees_checkout_is_rejected_without_writing() {
     let repo = LinkedTestRepo::new("public-abandon-wrong-checkout");
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
 
     let main = coordinate(&repo.main_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the main worktree should materialize");
     let linked = coordinate(&repo.linked_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the linked worktree should materialize");
     assert_ne!(main.worktree_id, linked.worktree_id);
 
@@ -2032,9 +2155,11 @@ fn abandoning_a_scope_through_another_worktrees_checkout_is_rejected_without_wri
         },
         ok_db,
     )
+    .await
     .expect("starting a scope on the main worktree should succeed");
 
     let error = abandon_scope(&repo.linked_root, &scope, ok_db)
+        .await
         .expect_err("a scope may only be abandoned through its own checkout");
     match &error {
         AbandonScopeError::WorktreeIdentityMismatch {
@@ -2049,10 +2174,11 @@ fn abandoning_a_scope_through_another_worktrees_checkout_is_rejected_without_wri
         other => panic!("expected WorktreeIdentityMismatch, got {other:?}"),
     }
 
-    let db = repo.db();
+    let db = repo.db().await;
     let store = MutationTraceStore::new(&db);
     let main_projection = store
         .load_worktree(&main.worktree_id, Some(&scope), None)
+        .await
         .expect("loading the main worktree row should succeed")
         .expect("the main worktree row should exist");
     assert_eq!(
@@ -2067,6 +2193,7 @@ fn abandoning_a_scope_through_another_worktrees_checkout_is_rejected_without_wri
 
     let linked_projection = store
         .load_worktree(&linked.worktree_id, None, None)
+        .await
         .expect("loading the linked worktree row should succeed")
         .expect("the linked worktree row should exist");
     assert_eq!(
@@ -2090,13 +2217,14 @@ fn abandoning_a_scope_through_another_worktrees_checkout_is_rejected_without_wri
     );
 }
 
-#[test]
+#[tokio::test(flavor = "multi_thread")]
 #[allow(clippy::too_many_lines)]
-fn a_real_thread_cas_race_settles_on_the_competitors_terminal_status() {
+async fn a_real_thread_cas_race_settles_on_the_competitors_terminal_status() {
     let repo = TestRepo::new("public-abandon-cas-race");
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
 
     let baseline = coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the baseline observation should materialize the worktree");
     let worktree_id = baseline.worktree_id.clone();
 
@@ -2111,6 +2239,7 @@ fn a_real_thread_cas_race_settles_on_the_competitors_terminal_status() {
         },
         ok_db,
     )
+    .await
     .expect("starting the raced scope should succeed");
 
     let (release_tx, release_rx) = mpsc::channel::<()>();
@@ -2118,11 +2247,12 @@ fn a_real_thread_cas_race_settles_on_the_competitors_terminal_status() {
     let competitor_db_path = repo.db_path.clone();
     let competitor_worktree = worktree_id.clone();
     let competitor_scope = scope.clone();
-    let competitor = thread::spawn(move || {
+    let competitor = thread::spawn(async move || {
         release_rx
             .recv()
             .expect("the abandoning thread should release the competitor");
         let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&competitor_db_path)
+            .await
             .expect("the competing writer should open its own DB handle");
         let store = MutationTraceStore::new(&db);
         let boundary = Boundary::Close {
@@ -2133,6 +2263,7 @@ fn a_real_thread_cas_race_settles_on_the_competitors_terminal_status() {
         let event_key = boundary_event_key(&boundary);
         let projection = store
             .load_worktree(&competitor_worktree, scope_ref.as_ref(), event_key.as_ref())
+            .await
             .expect("the competitor's load should succeed")
             .expect("the worktree row should exist");
         let state = projection.into_protocol_state();
@@ -2184,6 +2315,7 @@ fn a_real_thread_cas_race_settles_on_the_competitors_terminal_status() {
             );
         }
     })
+    .await
     .expect("a lost CAS against a competing Close should settle, not fail");
     let competitor_revision =
         competitor_revision.expect("the competitor must have run on the first attempt");
@@ -2202,10 +2334,11 @@ fn a_real_thread_cas_race_settles_on_the_competitors_terminal_status() {
         "the retry must settle on the competitor's terminal status rather than abandon again"
     );
 
-    let db = repo.db();
+    let db = repo.db().await;
     let store = MutationTraceStore::new(&db);
     let projection = store
         .load_worktree(&worktree_id, Some(&scope), None)
+        .await
         .expect("loading the worktree row should succeed")
         .expect("the worktree row should exist");
     assert_eq!(
@@ -2219,8 +2352,8 @@ fn a_real_thread_cas_race_settles_on_the_competitors_terminal_status() {
     );
 }
 
-#[test]
-fn a_relevant_event_behind_128_newer_events_is_never_loaded_or_reconstructed() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_relevant_event_behind_128_newer_events_is_never_loaded_or_reconstructed() {
     let repo = TestRepo::new("attribution-horizon");
     let worktree_id =
         resolve_worktree_id(&repo.repo_root).expect("worktree identity should resolve");
@@ -2237,7 +2370,7 @@ fn a_relevant_event_behind_128_newer_events_is_never_loaded_or_reconstructed() {
         .capture_tree()
         .expect("capturing the after tree should succeed");
 
-    let db = repo.db();
+    let db = repo.db().await;
     seed_attribution_event(
         &db,
         &worktree_id.0,
@@ -2246,7 +2379,8 @@ fn a_relevant_event_behind_128_newer_events_is_never_loaded_or_reconstructed() {
         &after.0,
         "ai_exclusive",
         Some("scope-behind-the-horizon"),
-    );
+    )
+    .await;
     for revision in 2..=129 {
         seed_attribution_event(
             &db,
@@ -2256,7 +2390,8 @@ fn a_relevant_event_behind_128_newer_events_is_never_loaded_or_reconstructed() {
             &after.0,
             "ineligible_unscoped",
             None,
-        );
+        )
+        .await;
     }
 
     let store = MutationTraceStore::new(&db);
@@ -2274,7 +2409,8 @@ fn a_relevant_event_behind_128_newer_events_is_never_loaded_or_reconstructed() {
         &committed,
         &after,
         None,
-    );
+    )
+    .await;
 
     assert_eq!(
         attribution.inspected_events, 128,
@@ -2323,7 +2459,7 @@ fn patch_is_empty(patch: &ParsedPatch) -> bool {
         .all(|file| file.hunks.iter().all(|hunk| hunk.lines.is_empty()))
 }
 
-fn drive_codex_overlap_transition(
+async fn drive_codex_overlap_transition(
     label: &str,
     closing_scope: &ScopeId,
     closing_actor: ActorKind,
@@ -2333,10 +2469,11 @@ fn drive_codex_overlap_transition(
         resolve_worktree_id(&repo.repo_root).expect("worktree identity should resolve");
     let snapshot =
         GitSnapshotService::new(&repo.repo_root).expect("a snapshot service should build");
-    let ok_db = || repo.open_db();
+    let ok_db = async || repo.open_db().await;
 
     std::fs::write(repo.repo_root.join("file.rs"), b"one\n").expect("the baseline write");
     coordinate(&repo.repo_root, &RuntimeBoundary::Flush, ok_db)
+        .await
         .expect("the baseline observation should materialize the worktree");
 
     let codex = ScopeId("codex-a".to_string());
@@ -2351,6 +2488,7 @@ fn drive_codex_overlap_transition(
         },
         ok_db,
     )
+    .await
     .expect("starting the Codex scope should succeed");
     coordinate(
         &repo.repo_root,
@@ -2362,6 +2500,7 @@ fn drive_codex_overlap_transition(
         },
         ok_db,
     )
+    .await
     .expect("starting the Claude scope should succeed");
 
     std::fs::write(repo.repo_root.join("file.rs"), b"one\ntwo\n").expect("the mutating write");
@@ -2374,6 +2513,7 @@ fn drive_codex_overlap_transition(
         },
         ok_db,
     )
+    .await
     .expect("the closing boundary should succeed");
 
     let event = outcome
@@ -2388,7 +2528,7 @@ fn drive_codex_overlap_transition(
     let after = snapshot
         .capture_tree()
         .expect("capturing the committed tree should succeed");
-    let db = repo.db();
+    let db = repo.db().await;
     let store = MutationTraceStore::new(&db);
     let committed = parse_patch(
         "diff --git a/file.rs b/file.rs\n--- a/file.rs\n+++ b/file.rs\n@@ -1,1 +1,2 @@\n one\n+two\n",
@@ -2403,7 +2543,8 @@ fn drive_codex_overlap_transition(
         &committed,
         &after,
         None,
-    );
+    )
+    .await;
 
     (
         event.attribution,
@@ -2412,13 +2553,14 @@ fn drive_codex_overlap_transition(
     )
 }
 
-#[test]
-fn an_unconfirmed_codex_overlap_never_reaches_the_mutation_ai_patch() {
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unconfirmed_codex_overlap_never_reaches_the_mutation_ai_patch() {
     let (attribution, ai_patch, non_ai_patch) = drive_codex_overlap_transition(
         "codex-unconfirmed-lineage",
         &ScopeId("claude-c".to_string()),
         ActorKind::ClaudeCode,
-    );
+    )
+    .await;
 
     assert_eq!(attribution, Attribution::IneligibleUnscoped);
     assert_ne!(attribution, Attribution::AiContended);
@@ -2432,13 +2574,14 @@ fn an_unconfirmed_codex_overlap_never_reaches_the_mutation_ai_patch() {
     );
 }
 
-#[test]
-fn a_confirmed_codex_close_overlap_is_contended_and_still_not_ai_lineage() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_confirmed_codex_close_overlap_is_contended_and_still_not_ai_lineage() {
     let (attribution, ai_patch, non_ai_patch) = drive_codex_overlap_transition(
         "codex-confirmed-lineage",
         &ScopeId("codex-a".to_string()),
         ActorKind::Codex,
-    );
+    )
+    .await;
 
     assert_eq!(attribution, Attribution::AiContended);
     assert!(

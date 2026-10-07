@@ -29,7 +29,7 @@ struct PiRepo {
 }
 
 impl PiRepo {
-    fn new(label: &str) -> Self {
+    async fn new(label: &str) -> Self {
         let temp = tempfile::Builder::new()
             .prefix(&format!("sce-pi-mutation-scope-seam-{label}-"))
             .tempdir()
@@ -57,6 +57,7 @@ impl PiRepo {
             },
             &state_root,
         )
+        .await
         .expect("state-root storage should initialize the repository DB");
 
         Self {
@@ -70,25 +71,27 @@ impl PiRepo {
         self.root.to_string_lossy().into_owned()
     }
 
-    fn drive(&self, payload: &str) -> Result<String> {
-        run_pi_mutation_scope_from_payload_at_state_root(&self.state_root, payload, None)
+    async fn drive(&self, payload: &str) -> Result<String> {
+        run_pi_mutation_scope_from_payload_at_state_root(&self.state_root, payload, None).await
     }
 
     fn write(&self, name: &str, contents: &str) {
         fs::write(self.root.join(name), contents).expect("write should succeed");
     }
 
-    fn db(&self) -> RepositoryAgentTraceDb {
+    async fn db(&self) -> RepositoryAgentTraceDb {
         crate::services::hooks::open_agent_trace_db_for_hook_runtime_at_state_root(
             &self.root,
             &self.state_root,
             "Pi mutation-scope seam test assertions",
         )
+        .await
         .expect("assertion DB should open")
     }
 
-    fn scope_status(&self, scope_id: &str) -> Option<(String, String)> {
+    async fn scope_status(&self, scope_id: &str) -> Option<(String, String)> {
         self.db()
+            .await
             .query_map(
                 "SELECT actor_kind, status FROM mutation_trace_scopes WHERE scope_id = ?1",
                 (scope_id,),
@@ -98,13 +101,15 @@ impl PiRepo {
                     Ok((actor_kind, status))
                 },
             )
+            .await
             .expect("scope query should succeed")
             .into_iter()
             .next()
     }
 
-    fn scope_provenance(&self, scope_id: &str) -> Option<(String, Option<String>)> {
+    async fn scope_provenance(&self, scope_id: &str) -> Option<(String, Option<String>)> {
         self.db()
+            .await
             .query_map(
                 "SELECT session_id, model_id FROM mutation_trace_scope_provenance \
                      WHERE scope_id = ?1",
@@ -115,13 +120,15 @@ impl PiRepo {
                     Ok((session_id, model_id))
                 },
             )
+            .await
             .expect("scope-provenance query should succeed")
             .into_iter()
             .next()
     }
 
-    fn mutation_events(&self) -> Vec<(String, Option<String>)> {
+    async fn mutation_events(&self) -> Vec<(String, Option<String>)> {
         self.db()
+            .await
             .query_map(
                 "SELECT attribution_kind, attribution_scope_id \
                      FROM mutation_trace_events ORDER BY revision",
@@ -133,6 +140,7 @@ impl PiRepo {
                     Ok((attribution_kind, attribution_scope_id))
                 },
             )
+            .await
             .expect("mutation-events query should succeed")
     }
 }
@@ -171,8 +179,8 @@ fn tool_execution_end(repo: &PiRepo, tool_name: &str, tool_call_id: &str) -> Str
     .to_string()
 }
 
-#[test]
-fn a_write_start_result_close_lands_a_real_ai_exclusive_event_with_pi_provenance() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_start_result_close_lands_a_real_ai_exclusive_event_with_pi_provenance() {
     let repo = PiRepo::new("real-lifecycle");
     let key = AttemptKey {
         session_id: "01a091f4-seam-session".to_string(),
@@ -181,6 +189,7 @@ fn a_write_start_result_close_lands_a_real_ai_exclusive_event_with_pi_provenance
     let scope_id = format_pi_scope_id(&key, 1);
 
     repo.drive(&tool_call(&repo, "write", "call_write"))
+        .await
         .expect("Start should reach the real runtime");
     assert_eq!(
         repo.scope_status(&scope_id),
@@ -196,9 +205,11 @@ fn a_write_start_result_close_lands_a_real_ai_exclusive_event_with_pi_provenance
 
     repo.write("file.txt", "one\ntwo\n");
     repo.drive(&tool_result(&repo, "write", "call_write"))
+        .await
         .expect("tool_result should mark Executed");
 
     repo.drive(&tool_execution_end(&repo, "write", "call_write"))
+        .await
         .expect("Close should reach the real runtime");
 
     assert_eq!(
@@ -217,8 +228,8 @@ fn a_write_start_result_close_lands_a_real_ai_exclusive_event_with_pi_provenance
     );
 }
 
-#[test]
-fn a_start_followed_by_no_execution_abandons_through_the_real_runtime() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_followed_by_no_execution_abandons_through_the_real_runtime() {
     let repo = PiRepo::new("real-abandon");
     let key = AttemptKey {
         session_id: "01a091f4-seam-session".to_string(),
@@ -227,9 +238,11 @@ fn a_start_followed_by_no_execution_abandons_through_the_real_runtime() {
     let scope_id = format_pi_scope_id(&key, 1);
 
     repo.drive(&tool_call(&repo, "bash", "call_blocked"))
+        .await
         .expect("Start should reach the real runtime");
 
     repo.drive(&tool_execution_end(&repo, "bash", "call_blocked"))
+        .await
         .expect("the terminal event must resolve via abandon, not surface an error");
 
     assert_eq!(

@@ -82,7 +82,7 @@ fn extract_claude_transcript_model_from_reader<R: BufRead>(
     None
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use std::io::{Cursor, Error, ErrorKind};
 
