@@ -135,7 +135,7 @@ Run from repo root through Nix (do not call bare `bun` on the host). Working dir
 
 ## Testing notes
 
-- Rust tests live inline in source files and in module test files such as `cli/src/services/setup/tests.rs`.
+- Rust tests live inline in source files and in module test files such as `cli/src/services/mutation_trace/mbt/tests.rs`.
 - Repository Cargo builds must use `scripts/run-cli-cargo.sh`; it generates a fresh temporary Pkl payload, passes `SCE_CLI_GENERATED_INPUT_DIR` to Cargo, and cleans up the payload afterward.
 - Rust/Cargo commands should be executed through `nix develop`, even for one-off builds, tests, fmt, and clippy runs.
 - Prefer `nix flake check` for routine verification and avoid bare `cargo test` / `cargo check` / `cargo fmt --check` unless the user explicitly asks.
@@ -258,7 +258,6 @@ Run from repo root through Nix (do not call bare `bun` on the host). Working dir
 - `context/overview.md`
 - `cli/Cargo.toml`
 - `cli/src/app.rs`
-- `cli/src/services/setup/tests.rs`
 - `config/lib/bash-policy-plugin/package.json`
 - `config/lib/bash-policy-plugin/bash-policy-runtime.test.ts`
 - `config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts`

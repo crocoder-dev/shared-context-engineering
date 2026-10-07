@@ -21,6 +21,7 @@ pub struct WorktreeLock {
 pub enum WorktreeLockError {
     TimedOut { path: PathBuf, timeout: Duration },
     Io(anyhow::Error),
+    WorkerFailed(tokio::task::JoinError),
 }
 
 impl std::fmt::Display for WorktreeLockError {
@@ -32,6 +33,9 @@ impl std::fmt::Display for WorktreeLockError {
                 path.display()
             ),
             WorktreeLockError::Io(source) => write!(f, "{source}"),
+            WorktreeLockError::WorkerFailed(source) => {
+                write!(f, "Worktree lock acquisition worker failed: {source}")
+            }
         }
     }
 }
@@ -42,6 +46,27 @@ impl WorktreeLock {
     pub fn acquire(git_dir: &Path, timeout: Duration) -> Result<WorktreeLock, WorktreeLockError> {
         acquire_inner(git_dir, timeout, || {})
     }
+
+    pub async fn acquire_async(
+        git_dir: &Path,
+        timeout: Duration,
+    ) -> Result<WorktreeLock, WorktreeLockError> {
+        acquire_inner_async(git_dir, timeout, || {}).await
+    }
+}
+
+pub(super) async fn acquire_inner_async<F>(
+    git_dir: &Path,
+    timeout: Duration,
+    on_contention: F,
+) -> Result<WorktreeLock, WorktreeLockError>
+where
+    F: FnOnce() + Send + 'static,
+{
+    let git_dir = git_dir.to_owned();
+    tokio::task::spawn_blocking(move || acquire_inner(&git_dir, timeout, on_contention))
+        .await
+        .map_err(WorktreeLockError::WorkerFailed)?
 }
 
 pub(super) fn acquire_inner<F>(

@@ -10,7 +10,7 @@ use crate::services::mutation_trace::store::MutationTraceStore;
 use crate::services::mutation_trace::types::TreeId;
 
 use super::git_snapshot::{resolve_git_dir, GitSnapshotService, PinInventoryError, PinnedRef};
-use super::worktree_lock::{acquire_inner, WorktreeLockError};
+use super::worktree_lock::{acquire_inner_async, WorktreeLockError};
 
 const RECONCILIATION_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -132,16 +132,6 @@ where
     reconcile_worktree_inner(repository_root, open_db, || {}).await
 }
 
-/// Body of [`reconcile_worktree`] with a deterministic test seam:
-/// `on_lock_contention` fires once the moment the pass first observes the
-/// `WorktreeLock` is already held by another owner (see
-/// [`super::worktree_lock::acquire_inner`]). `pub(super)` keeps it reachable
-/// from `runtime` and `runtime::tests` but invisible outside `runtime`.
-///
-/// Every fallible step below runs entirely while holding the worktree's
-/// `WorktreeLock`, which is the same lock file `coordinate()` holds across
-/// `pin -> recovery -> prepare -> CAS -> marker clear -> return` — the mutual
-/// exclusion that makes the pin -> DB-CAS race structurally impossible.
 pub(super) async fn reconcile_worktree_inner<P, F>(
     repository_root: &Path,
     open_db: P,
@@ -149,16 +139,14 @@ pub(super) async fn reconcile_worktree_inner<P, F>(
 ) -> std::result::Result<ReconciliationOutcome, ReconcileError>
 where
     P: std::ops::AsyncFnOnce() -> Result<RepositoryAgentTraceDb>,
-    F: FnOnce(),
+    F: FnOnce() + Send + 'static,
 {
     let git_dir = resolve_git_dir(repository_root).map_err(ReconcileError::GitDir)?;
 
-    let _lock = acquire_inner(&git_dir, RECONCILIATION_LOCK_TIMEOUT, on_lock_contention)
+    let _lock = acquire_inner_async(&git_dir, RECONCILIATION_LOCK_TIMEOUT, on_lock_contention)
+        .await
         .map_err(ReconcileError::Lock)?;
 
-    // The lock is held from here until this function returns. Worktree identity
-    // comes directly from Git topology and never creates or reads SCE identity
-    // metadata.
     let worktree_id =
         resolve_worktree_id(repository_root).map_err(ReconcileError::CheckoutIdentity)?;
 
