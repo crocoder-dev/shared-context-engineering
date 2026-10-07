@@ -75,7 +75,14 @@ pub(crate) fn state_path(git_dir: &Path) -> PathBuf {
     state_dir(git_dir).join(ADAPTER_STATE_FILE)
 }
 
-pub(crate) fn read_state(git_dir: &Path) -> Result<AdapterState> {
+pub(crate) async fn read_state(git_dir: &Path) -> Result<AdapterState> {
+    let git_dir = git_dir.to_owned();
+    tokio::task::spawn_blocking(move || read_state_sync(&git_dir))
+        .await
+        .context("Adapter state read worker failed")?
+}
+
+fn read_state_sync(git_dir: &Path) -> Result<AdapterState> {
     let path = state_path(git_dir);
     if !path.exists() {
         return Ok(AdapterState::default());
@@ -100,11 +107,12 @@ fn parse_adapter_state(content: &str, path: &Path) -> Result<AdapterState> {
     Ok(state)
 }
 
-fn write_state_durably(git_dir: &Path, state: &AdapterState) -> Result<()> {
-    write_state_durably_inner(git_dir, state, |_, _| Ok(()))
+#[cfg(test)]
+fn write_state_durably_sync(git_dir: &Path, state: &AdapterState) -> Result<()> {
+    write_state_durably_sync_inner(git_dir, state, |_, _| Ok(()))
 }
 
-fn write_state_durably_inner<F>(
+fn write_state_durably_sync_inner<F>(
     git_dir: &Path,
     state: &AdapterState,
     before_rename: F,
@@ -171,71 +179,110 @@ where
     Ok(())
 }
 
+enum StateTransaction<T> {
+    Unchanged(T),
+    Persist(T),
+}
+
+async fn with_locked_state<T, F>(git_dir: &Path, operation: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut AdapterState) -> Result<StateTransaction<T>> + Send + 'static,
+{
+    with_locked_state_inner(git_dir, |_, _| Ok(()), operation).await
+}
+
+async fn with_locked_state_inner<T, B, F>(
+    git_dir: &Path,
+    before_rename: B,
+    operation: F,
+) -> Result<T>
+where
+    T: Send + 'static,
+    B: FnOnce(&Path, &Path) -> Result<()> + Send + 'static,
+    F: FnOnce(&mut AdapterState) -> Result<StateTransaction<T>> + Send + 'static,
+{
+    let git_dir = git_dir.to_owned();
+    STATE_LOCK
+        .run_locked_blocking(&state_dir(&git_dir), move || {
+            let mut state = read_state_sync(&git_dir)?;
+            match operation(&mut state)? {
+                StateTransaction::Unchanged(result) => Ok(result),
+                StateTransaction::Persist(result) => {
+                    write_state_durably_sync_inner(&git_dir, &state, before_rename)?;
+                    Ok(result)
+                }
+            }
+        })
+        .await
+}
+
 pub(crate) async fn allocate_attempt(
     git_dir: &Path,
     key: &AttemptKey,
     tool_name: &str,
 ) -> Result<AllocatedAttempt> {
-    let _lock = STATE_LOCK.acquire_async(&state_dir(git_dir)).await?;
+    let key = key.clone();
+    let tool_name = tool_name.to_string();
+    with_locked_state(git_dir, move |state| {
+        if let Some(existing) = state
+            .attempts
+            .iter()
+            .find(|attempt| attempt.matches_key(&key))
+        {
+            return Ok(StateTransaction::Unchanged(AllocatedAttempt {
+                attempt: existing.clone(),
+                reused: true,
+            }));
+        }
 
-    let mut state = read_state(git_dir)?;
+        let attempt_seq = state.next_attempt_seq;
+        let scope_id = format_claude_scope_id(attempt_seq, &key);
+        let attempt = AdapterAttempt {
+            attempt_seq,
+            scope_id,
+            session_id: key.session_id.clone(),
+            agent_id: key.agent_id.clone(),
+            tool_use_id: key.tool_use_id.clone(),
+            tool_name,
+            phase: AttemptPhase::PendingStart,
+        };
 
-    if let Some(existing) = state
-        .attempts
-        .iter()
-        .find(|attempt| attempt.matches_key(key))
-    {
-        return Ok(AllocatedAttempt {
-            attempt: existing.clone(),
-            reused: true,
-        });
-    }
+        state.attempts.push(attempt.clone());
+        state.next_attempt_seq += 1;
 
-    let attempt_seq = state.next_attempt_seq;
-    let scope_id = format_claude_scope_id(attempt_seq, key);
-    let attempt = AdapterAttempt {
-        attempt_seq,
-        scope_id,
-        session_id: key.session_id.clone(),
-        agent_id: key.agent_id.clone(),
-        tool_use_id: key.tool_use_id.clone(),
-        tool_name: tool_name.to_string(),
-        phase: AttemptPhase::PendingStart,
-    };
-
-    state.attempts.push(attempt.clone());
-    state.next_attempt_seq += 1;
-    write_state_durably(git_dir, &state)?;
-
-    Ok(AllocatedAttempt {
-        attempt,
-        reused: false,
+        Ok(StateTransaction::Persist(AllocatedAttempt {
+            attempt,
+            reused: false,
+        }))
     })
+    .await
 }
 
 pub(crate) async fn mark_active(git_dir: &Path, scope_id: &str) -> Result<()> {
-    let _lock = STATE_LOCK.acquire_async(&state_dir(git_dir)).await?;
+    let scope_id = scope_id.to_string();
+    with_locked_state(git_dir, move |state| {
+        let attempt = state
+            .attempts
+            .iter_mut()
+            .find(|attempt| attempt.scope_id == scope_id)
+            .ok_or_else(|| anyhow!("No adapter-state attempt found for scope_id '{scope_id}'"))?;
 
-    let mut state = read_state(git_dir)?;
-    let attempt = state
-        .attempts
-        .iter_mut()
-        .find(|attempt| attempt.scope_id == scope_id)
-        .ok_or_else(|| anyhow!("No adapter-state attempt found for scope_id '{scope_id}'"))?;
-
-    match attempt.phase {
-        AttemptPhase::PendingStart => {
-            attempt.phase = AttemptPhase::Active;
+        match attempt.phase {
+            AttemptPhase::PendingStart => {
+                attempt.phase = AttemptPhase::Active;
+            }
+            AttemptPhase::Active => return Ok(StateTransaction::Unchanged(())),
+            AttemptPhase::PendingAbandon => {
+                return Err(anyhow!(
+                    "Cannot mark mutation-scope attempt '{scope_id}' active after abandonment was established"
+                ));
+            }
         }
-        AttemptPhase::Active => return Ok(()),
-        AttemptPhase::PendingAbandon => {
-            return Err(anyhow!(
-                "Cannot mark mutation-scope attempt '{scope_id}' active after abandonment was established"
-            ));
-        }
-    }
 
-    write_state_durably(git_dir, &state)
+        Ok(StateTransaction::Persist(()))
+    })
+    .await
 }
 
 fn transition_to_pending_abandon(state: &mut AdapterState, scope_ids: &[String]) {
@@ -257,55 +304,56 @@ pub(crate) async fn mark_recovery_pending_and_pending_abandon(
         return Ok(());
     }
 
-    let _lock = STATE_LOCK.acquire_async(&state_dir(git_dir)).await?;
-
-    let mut state = read_state(git_dir)?;
-    state.recovery_pending = true;
-    transition_to_pending_abandon(&mut state, scope_ids);
-    write_state_durably(git_dir, &state)
+    let scope_ids = scope_ids.to_vec();
+    with_locked_state(git_dir, move |state| {
+        state.recovery_pending = true;
+        transition_to_pending_abandon(state, &scope_ids);
+        Ok(StateTransaction::Persist(()))
+    })
+    .await
 }
 
 pub(crate) async fn reprove_pending_abandon(git_dir: &Path) -> Result<Option<Vec<AdapterAttempt>>> {
-    let _lock = STATE_LOCK.acquire_async(&state_dir(git_dir)).await?;
+    with_locked_state(git_dir, |state| {
+        if !state.recovery_pending || state.attempts.is_empty() {
+            return Ok(StateTransaction::Unchanged(None));
+        }
 
-    let state = read_state(git_dir)?;
+        let every_attempt_is_pending_abandon = state
+            .attempts
+            .iter()
+            .all(|attempt| attempt.phase == AttemptPhase::PendingAbandon);
 
-    if !state.recovery_pending || state.attempts.is_empty() {
-        return Ok(None);
-    }
+        if !every_attempt_is_pending_abandon {
+            return Ok(StateTransaction::Unchanged(None));
+        }
 
-    let every_attempt_is_pending_abandon = state
-        .attempts
-        .iter()
-        .all(|attempt| attempt.phase == AttemptPhase::PendingAbandon);
-
-    if !every_attempt_is_pending_abandon {
-        return Ok(None);
-    }
-
-    Ok(Some(state.attempts))
+        Ok(StateTransaction::Unchanged(Some(state.attempts.clone())))
+    })
+    .await
 }
 
 pub(crate) async fn remove_attempt(git_dir: &Path, scope_id: &str) -> Result<()> {
-    let _lock = STATE_LOCK.acquire_async(&state_dir(git_dir)).await?;
-
-    let mut state = read_state(git_dir)?;
-    let before = state.attempts.len();
-    state
-        .attempts
-        .retain(|attempt| attempt.scope_id != scope_id);
-    if state.attempts.len() == before {
-        return Ok(());
-    }
-    write_state_durably(git_dir, &state)
+    let scope_id = scope_id.to_string();
+    with_locked_state(git_dir, move |state| {
+        let before = state.attempts.len();
+        state
+            .attempts
+            .retain(|attempt| attempt.scope_id != scope_id);
+        if state.attempts.len() == before {
+            return Ok(StateTransaction::Unchanged(()));
+        }
+        Ok(StateTransaction::Persist(()))
+    })
+    .await
 }
 
 pub(crate) async fn mark_recovery_pending(git_dir: &Path) -> Result<()> {
-    let _lock = STATE_LOCK.acquire_async(&state_dir(git_dir)).await?;
-
-    let mut state = read_state(git_dir)?;
-    state.recovery_pending = true;
-    write_state_durably(git_dir, &state)
+    with_locked_state(git_dir, |state| {
+        state.recovery_pending = true;
+        Ok(StateTransaction::Persist(()))
+    })
+    .await
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -325,21 +373,120 @@ async fn clear_recovery_pending_if_quiescent_inner<F>(
     before_rename: F,
 ) -> Result<ClearRecoveryOutcome>
 where
-    F: FnOnce(&Path, &Path) -> Result<()>,
+    F: FnOnce(&Path, &Path) -> Result<()> + Send + 'static,
 {
-    let _lock = STATE_LOCK.acquire_async(&state_dir(git_dir)).await?;
+    with_locked_state_inner(git_dir, before_rename, |state| {
+        if !state.recovery_pending {
+            return Ok(StateTransaction::Unchanged(ClearRecoveryOutcome::Cleared));
+        }
 
-    let mut state = read_state(git_dir)?;
+        if !state.attempts.is_empty() {
+            return Ok(StateTransaction::Unchanged(
+                ClearRecoveryOutcome::StillPending,
+            ));
+        }
 
-    if !state.recovery_pending {
-        return Ok(ClearRecoveryOutcome::Cleared);
+        state.recovery_pending = false;
+        Ok(StateTransaction::Persist(ClearRecoveryOutcome::Cleared))
+    })
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    use super::{
+        clear_recovery_pending_if_quiescent_inner, read_state, write_state_durably_sync,
+        AdapterState, ClearRecoveryOutcome,
+    };
+
+    const INJECTED_WRITE_DELAY: Duration = Duration::from_millis(500);
+    const UNRELATED_TIMER: Duration = Duration::from_millis(10);
+    const RESPONSIVENESS_BUDGET: Duration = Duration::from_millis(250);
+    const HOOK_RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
+
+    fn seed_quiescent_recovery_pending(git_dir: &std::path::Path) {
+        write_state_durably_sync(
+            git_dir,
+            &AdapterState {
+                recovery_pending: true,
+                ..AdapterState::default()
+            },
+        )
+        .expect("seeding adapter state should succeed");
     }
 
-    if !state.attempts.is_empty() {
-        return Ok(ClearRecoveryOutcome::StillPending);
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn state_transaction_persistence_does_not_starve_the_tokio_worker() {
+        let git_dir = tempfile::tempdir().expect("temp dir");
+        seed_quiescent_recovery_pending(git_dir.path());
+
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let transaction_git_dir = git_dir.path().to_owned();
+        let transaction = tokio::spawn(async move {
+            clear_recovery_pending_if_quiescent_inner(&transaction_git_dir, move |_, _| {
+                let _ = entered_tx.send(Instant::now());
+                std::thread::sleep(INJECTED_WRITE_DELAY);
+                Ok(())
+            })
+            .await
+        });
+
+        let entered_at = entered_rx.await.expect("transaction should reach the hook");
+        let unrelated = tokio::spawn(async {
+            tokio::time::sleep(UNRELATED_TIMER).await;
+            Instant::now()
+        });
+        let unrelated_done_at = unrelated.await.expect("unrelated task should complete");
+
+        assert!(
+            unrelated_done_at.duration_since(entered_at) < RESPONSIVENESS_BUDGET,
+            "unrelated Tokio task was starved for {:?} by the state transaction",
+            unrelated_done_at.duration_since(entered_at)
+        );
+
+        let outcome = transaction
+            .await
+            .expect("transaction task should join")
+            .expect("transaction should succeed");
+        assert_eq!(outcome, ClearRecoveryOutcome::Cleared);
     }
 
-    state.recovery_pending = false;
-    write_state_durably_inner(git_dir, &state, before_rename)?;
-    Ok(ClearRecoveryOutcome::Cleared)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn aborted_caller_does_not_interrupt_a_started_state_transaction() {
+        let git_dir = tempfile::tempdir().expect("temp dir");
+        seed_quiescent_recovery_pending(git_dir.path());
+
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let transaction_git_dir = git_dir.path().to_owned();
+        let transaction = tokio::spawn(async move {
+            clear_recovery_pending_if_quiescent_inner(&transaction_git_dir, move |_, _| {
+                let _ = entered_tx.send(());
+                let _ = release_rx.recv_timeout(HOOK_RELEASE_TIMEOUT);
+                Ok(())
+            })
+            .await
+        });
+
+        entered_rx.await.expect("transaction should reach the hook");
+        transaction.abort();
+        assert!(transaction
+            .await
+            .expect_err("aborted caller should not join successfully")
+            .is_cancelled());
+        release_tx.send(()).expect("hook should still be waiting");
+
+        let outcome = clear_recovery_pending_if_quiescent_inner(git_dir.path(), |_, _| Ok(()))
+            .await
+            .expect("state lock should be released and state should parse");
+        assert_eq!(outcome, ClearRecoveryOutcome::Cleared);
+
+        let state = read_state(git_dir.path())
+            .await
+            .expect("persisted state should parse");
+        assert!(!state.recovery_pending);
+    }
 }

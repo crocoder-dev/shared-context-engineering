@@ -235,38 +235,37 @@ async fn inspect_mutation_scope_health(
         return Vec::new();
     };
 
-    targets
-        .into_iter()
-        .map(|target_id| {
-            let (target, health) = match target_id {
-                IntegrationTargetId::Claude => (
-                    IntegrationTarget::ClaudeCode,
-                    claude_mutation_scope::health::classify_health(&git_dir),
-                ),
-                IntegrationTargetId::Codex => (
-                    IntegrationTarget::Codex,
-                    codex_mutation_scope::health::classify_health(&git_dir),
-                ),
-                IntegrationTargetId::Opencode => (
-                    IntegrationTarget::OpenCode,
-                    opencode_mutation_scope::health::classify_health(&git_dir),
-                ),
-                IntegrationTargetId::Pi => (
-                    IntegrationTarget::Pi,
-                    pi_mutation_scope::health::classify_health(&git_dir),
-                ),
-            };
-            let remediation =
-                push_mutation_scope_health_problem(target, &health, &git_dir, problems);
-            MutationScopeHealthRow {
-                target,
-                status: health.status,
-                reason: health.reason,
-                detail: health.detail,
-                remediation,
-            }
-        })
-        .collect()
+    let mut rows = Vec::with_capacity(targets.len());
+    for target_id in targets {
+        let (target, health) = match target_id {
+            IntegrationTargetId::Claude => (
+                IntegrationTarget::ClaudeCode,
+                claude_mutation_scope::health::classify_health(&git_dir).await,
+            ),
+            IntegrationTargetId::Codex => (
+                IntegrationTarget::Codex,
+                codex_mutation_scope::health::classify_health(&git_dir).await,
+            ),
+            IntegrationTargetId::Opencode => (
+                IntegrationTarget::OpenCode,
+                opencode_mutation_scope::health::classify_health(&git_dir).await,
+            ),
+            IntegrationTargetId::Pi => (
+                IntegrationTarget::Pi,
+                pi_mutation_scope::health::classify_health(&git_dir).await,
+            ),
+        };
+        let remediation =
+            push_mutation_scope_health_problem(target, &health, &git_dir, problems).await;
+        rows.push(MutationScopeHealthRow {
+            target,
+            status: health.status,
+            reason: health.reason,
+            detail: health.detail,
+            remediation,
+        });
+    }
+    rows
 }
 
 pub(super) async fn repair_blocked_mutation_scope_targets_with_seam(
@@ -320,7 +319,7 @@ async fn repair_blocked_mutation_scope_target(
 ) -> Option<IntegrationTarget> {
     match target {
         IntegrationTarget::ClaudeCode => {
-            if claude_repairability(git_dir) != Repairability::AutoFixable {
+            if claude_repairability(git_dir).await != Repairability::AutoFixable {
                 return None;
             }
             let _ =
@@ -328,7 +327,7 @@ async fn repair_blocked_mutation_scope_target(
             Some(target)
         }
         IntegrationTarget::OpenCode => {
-            if opencode_repairability(git_dir) != Repairability::AutoFixable {
+            if opencode_repairability(git_dir).await != Repairability::AutoFixable {
                 return None;
             }
             let _ =
@@ -339,24 +338,24 @@ async fn repair_blocked_mutation_scope_target(
     }
 }
 
-fn claude_repairability(git_dir: &Path) -> Repairability {
-    match claude_mutation_scope::assess_repairability(git_dir) {
+async fn claude_repairability(git_dir: &Path) -> Repairability {
+    match claude_mutation_scope::assess_repairability(git_dir).await {
         claude_mutation_scope::Repairability::AutoFixable => Repairability::AutoFixable,
         claude_mutation_scope::Repairability::ManualOnly => Repairability::ManualOnly,
     }
 }
 
-fn opencode_repairability(git_dir: &Path) -> Repairability {
-    match opencode_mutation_scope::assess_repairability(git_dir) {
+async fn opencode_repairability(git_dir: &Path) -> Repairability {
+    match opencode_mutation_scope::assess_repairability(git_dir).await {
         opencode_mutation_scope::Repairability::AutoFixable => Repairability::AutoFixable,
         opencode_mutation_scope::Repairability::ManualOnly => Repairability::ManualOnly,
     }
 }
 
-fn mutation_scope_repairability(target: IntegrationTarget, git_dir: &Path) -> Repairability {
+async fn mutation_scope_repairability(target: IntegrationTarget, git_dir: &Path) -> Repairability {
     match target {
-        IntegrationTarget::ClaudeCode => claude_repairability(git_dir),
-        IntegrationTarget::OpenCode => opencode_repairability(git_dir),
+        IntegrationTarget::ClaudeCode => claude_repairability(git_dir).await,
+        IntegrationTarget::OpenCode => opencode_repairability(git_dir).await,
         IntegrationTarget::Pi | IntegrationTarget::Codex => Repairability::ManualOnly,
     }
 }
@@ -418,7 +417,7 @@ fn mutation_scope_state_path(target: IntegrationTarget, git_dir: &Path) -> PathB
     }
 }
 
-fn push_mutation_scope_health_problem(
+async fn push_mutation_scope_health_problem(
     target: IntegrationTarget,
     health: &MutationScopeAdapterHealth,
     git_dir: &Path,
@@ -439,36 +438,38 @@ fn push_mutation_scope_health_problem(
                  state remains recovering unexpectedly.",
             ),
         ),
-        MutationScopeHealthStatus::Blocked => match mutation_scope_repairability(target, git_dir) {
-            Repairability::AutoFixable => (
-                ProblemKind::MutationScopeHealthBlocked,
-                ProblemSeverity::Error,
-                ProblemFixability::AutoFixable,
-                "doctor_fix",
-                format!(
-                    "Run 'sce doctor --fix' to recover this state: the owning process for \
+        MutationScopeHealthStatus::Blocked => {
+            match mutation_scope_repairability(target, git_dir).await {
+                Repairability::AutoFixable => (
+                    ProblemKind::MutationScopeHealthBlocked,
+                    ProblemSeverity::Error,
+                    ProblemFixability::AutoFixable,
+                    "doctor_fix",
+                    format!(
+                        "Run 'sce doctor --fix' to recover this state: the owning process for \
                          the blocking attempt(s) has been positively proven dead, so automatic \
                          recovery is safe. The persisted state is at '{}'.",
-                    mutation_scope_state_path(target, git_dir).display()
+                        mutation_scope_state_path(target, git_dir).display()
+                    ),
                 ),
-            ),
-            Repairability::ManualOnly => (
-                ProblemKind::MutationScopeHealthBlocked,
-                ProblemSeverity::Error,
-                ProblemFixability::ManualOnly,
-                "manual_steps",
-                format!(
-                    "Agent tracing remains blocked. Inspect '{}'. 'sce doctor --fix' will \
+                Repairability::ManualOnly => (
+                    ProblemKind::MutationScopeHealthBlocked,
+                    ProblemSeverity::Error,
+                    ProblemFixability::ManualOnly,
+                    "manual_steps",
+                    format!(
+                        "Agent tracing remains blocked. Inspect '{}'. 'sce doctor --fix' will \
                          not modify persisted mutation-scope recovery state automatically: \
                          clearing it could silently discard unresolved mutation-scope \
                          lifecycle or recovery evidence. No safe generic recovery command \
                          exists yet for this case; preserve the persisted state while \
                          reviewing this adapter's recovery model directly before taking \
                          manual action.",
-                    mutation_scope_state_path(target, git_dir).display()
+                        mutation_scope_state_path(target, git_dir).display()
+                    ),
                 ),
-            ),
-        },
+            }
+        }
         MutationScopeHealthStatus::Invalid => (
             ProblemKind::MutationScopeHealthInvalid,
             ProblemSeverity::Error,

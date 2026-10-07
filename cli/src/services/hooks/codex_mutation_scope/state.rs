@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::services::hooks::mutation_scope_lock::{AdapterLockSpec, OsAdvisoryLock};
+use crate::services::hooks::mutation_scope_lock::AdapterLockSpec;
 
 use super::{format_codex_scope_id, AttemptKey};
 
@@ -125,7 +125,14 @@ pub(crate) fn state_path(git_dir: &Path) -> PathBuf {
     adapter_state_dir(git_dir).join(ADAPTER_STATE_FILE)
 }
 
-pub(crate) fn read_state(git_dir: &Path) -> Result<AdapterState> {
+pub(crate) async fn read_state(git_dir: &Path) -> Result<AdapterState> {
+    let git_dir = git_dir.to_owned();
+    tokio::task::spawn_blocking(move || read_state_sync(&git_dir))
+        .await
+        .context("Adapter state read worker failed")?
+}
+
+fn read_state_sync(git_dir: &Path) -> Result<AdapterState> {
     let path = state_path(git_dir);
     if !path.exists() {
         return Ok(AdapterState::default());
@@ -150,11 +157,11 @@ fn parse_adapter_state(content: &str, path: &Path) -> Result<AdapterState> {
     Ok(state)
 }
 
-fn write_state_durably(git_dir: &Path, state: &AdapterState) -> Result<()> {
-    write_state_durably_inner(git_dir, state, |_, _| Ok(()))
+fn write_state_durably_sync(git_dir: &Path, state: &AdapterState) -> Result<()> {
+    write_state_durably_sync_inner(git_dir, state, |_, _| Ok(()))
 }
 
-fn write_state_durably_inner<F>(
+fn write_state_durably_sync_inner<F>(
     git_dir: &Path,
     state: &AdapterState,
     before_rename: F,
@@ -221,8 +228,29 @@ where
     Ok(())
 }
 
-async fn acquire_lock(git_dir: &Path) -> Result<OsAdvisoryLock> {
-    STATE_LOCK.acquire_async(&adapter_state_dir(git_dir)).await
+enum StateTransaction<T> {
+    Unchanged(T),
+    Persist(T),
+}
+
+async fn with_locked_state<T, F>(git_dir: &Path, operation: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut AdapterState) -> Result<StateTransaction<T>> + Send + 'static,
+{
+    let git_dir = git_dir.to_owned();
+    STATE_LOCK
+        .run_locked_blocking(&adapter_state_dir(&git_dir), move || {
+            let mut state = read_state_sync(&git_dir)?;
+            match operation(&mut state)? {
+                StateTransaction::Unchanged(result) => Ok(result),
+                StateTransaction::Persist(result) => {
+                    write_state_durably_sync(&git_dir, &state)?;
+                    Ok(result)
+                }
+            }
+        })
+        .await
 }
 
 fn allocate_pending_start(
@@ -253,136 +281,149 @@ pub(crate) async fn admit_tracked_attempt(
     turn_id: &str,
     tool_name: &str,
 ) -> Result<AdmitDecision> {
-    let _lock = acquire_lock(git_dir).await?;
-    let mut state = read_state(git_dir)?;
-
-    match state.recovery {
-        RecoveryState::Flushing { .. } => return Ok(AdmitDecision::RecoveryBlocked),
-        RecoveryState::Pending { generation } => {
-            if !state.attempts.is_empty() {
-                return Ok(AdmitDecision::RecoveryBlocked);
+    let key = key.clone();
+    let turn_id = turn_id.to_string();
+    let tool_name = tool_name.to_string();
+    with_locked_state(git_dir, move |state| {
+        match state.recovery {
+            RecoveryState::Flushing { .. } => {
+                return Ok(StateTransaction::Unchanged(AdmitDecision::RecoveryBlocked))
             }
-            state.recovery = RecoveryState::Flushing { generation };
-            write_state_durably(git_dir, &state)?;
-            return Ok(AdmitDecision::FlushClaimed { generation });
+            RecoveryState::Pending { generation } => {
+                if !state.attempts.is_empty() {
+                    return Ok(StateTransaction::Unchanged(AdmitDecision::RecoveryBlocked));
+                }
+                state.recovery = RecoveryState::Flushing { generation };
+                return Ok(StateTransaction::Persist(AdmitDecision::FlushClaimed {
+                    generation,
+                }));
+            }
+            RecoveryState::Clear => {}
         }
-        RecoveryState::Clear => {}
-    }
 
-    if let Some(existing) = state
-        .attempts
-        .iter()
-        .find(|attempt| attempt.matches_key(key))
-    {
-        return Ok(AdmitDecision::Admitted(AllocatedAttempt {
-            attempt: existing.clone(),
-            reused: true,
-        }));
-    }
+        if let Some(existing) = state
+            .attempts
+            .iter()
+            .find(|attempt| attempt.matches_key(&key))
+        {
+            return Ok(StateTransaction::Unchanged(AdmitDecision::Admitted(
+                AllocatedAttempt {
+                    attempt: existing.clone(),
+                    reused: true,
+                },
+            )));
+        }
 
-    if state.attempts.iter().any(|attempt| {
-        attempt.in_builtin_lane(&key.session_id, turn_id) && !attempt.matches_key(key)
-    }) {
-        return Ok(AdmitDecision::StalePredecessorBlocked);
-    }
+        if state.attempts.iter().any(|attempt| {
+            attempt.in_builtin_lane(&key.session_id, &turn_id) && !attempt.matches_key(&key)
+        }) {
+            return Ok(StateTransaction::Unchanged(
+                AdmitDecision::StalePredecessorBlocked,
+            ));
+        }
 
-    if state
-        .attempts
-        .iter()
-        .any(|attempt| attempt.phase == AttemptPhase::PendingStart)
-    {
-        return Ok(AdmitDecision::UncertainAttemptBlocked);
-    }
+        if state
+            .attempts
+            .iter()
+            .any(|attempt| attempt.phase == AttemptPhase::PendingStart)
+        {
+            return Ok(StateTransaction::Unchanged(
+                AdmitDecision::UncertainAttemptBlocked,
+            ));
+        }
 
-    let attempt = allocate_pending_start(&mut state, key, turn_id, tool_name);
-    write_state_durably(git_dir, &state)?;
-    Ok(AdmitDecision::Admitted(AllocatedAttempt {
-        attempt,
-        reused: false,
-    }))
+        let attempt = allocate_pending_start(state, &key, &turn_id, &tool_name);
+        Ok(StateTransaction::Persist(AdmitDecision::Admitted(
+            AllocatedAttempt {
+                attempt,
+                reused: false,
+            },
+        )))
+    })
+    .await
 }
 
 pub(crate) async fn mark_active(git_dir: &Path, scope_id: &str) -> Result<()> {
-    let _lock = acquire_lock(git_dir).await?;
-
-    let mut state = read_state(git_dir)?;
-    let attempt = state
-        .attempts
-        .iter_mut()
-        .find(|attempt| attempt.scope_id == scope_id)
-        .ok_or_else(|| anyhow!("No adapter-state attempt found for scope_id '{scope_id}'"))?;
-    attempt.phase = AttemptPhase::Active;
-    write_state_durably(git_dir, &state)
+    let scope_id = scope_id.to_string();
+    with_locked_state(git_dir, move |state| {
+        let attempt = state
+            .attempts
+            .iter_mut()
+            .find(|attempt| attempt.scope_id == scope_id)
+            .ok_or_else(|| anyhow!("No adapter-state attempt found for scope_id '{scope_id}'"))?;
+        attempt.phase = AttemptPhase::Active;
+        Ok(StateTransaction::Persist(()))
+    })
+    .await
 }
 
 pub(crate) async fn remove_attempt(git_dir: &Path, scope_id: &str) -> Result<()> {
-    let _lock = acquire_lock(git_dir).await?;
-
-    let mut state = read_state(git_dir)?;
-    let before = state.attempts.len();
-    state
-        .attempts
-        .retain(|attempt| attempt.scope_id != scope_id);
-    if state.attempts.len() == before {
-        return Ok(());
-    }
-    write_state_durably(git_dir, &state)
+    let scope_id = scope_id.to_string();
+    with_locked_state(git_dir, move |state| {
+        let before = state.attempts.len();
+        state
+            .attempts
+            .retain(|attempt| attempt.scope_id != scope_id);
+        if state.attempts.len() == before {
+            return Ok(StateTransaction::Unchanged(()));
+        }
+        Ok(StateTransaction::Persist(()))
+    })
+    .await
 }
 
 pub(crate) async fn normalize_recovery_after_boundary_lock_acquired(git_dir: &Path) -> Result<()> {
-    let _lock = acquire_lock(git_dir).await?;
-    let mut state = read_state(git_dir)?;
-
-    if let RecoveryState::Flushing { generation } = state.recovery {
-        state.recovery = RecoveryState::Pending { generation };
-        write_state_durably(git_dir, &state)?;
-    }
-    Ok(())
+    with_locked_state(git_dir, |state| {
+        if let RecoveryState::Flushing { generation } = state.recovery {
+            state.recovery = RecoveryState::Pending { generation };
+            return Ok(StateTransaction::Persist(()));
+        }
+        Ok(StateTransaction::Unchanged(()))
+    })
+    .await
 }
 
 pub(crate) async fn arm_recovery(git_dir: &Path) -> Result<u64> {
-    let _lock = acquire_lock(git_dir).await?;
-    let mut state = read_state(git_dir)?;
-
-    let generation = match state.recovery {
-        RecoveryState::Pending { generation } => generation,
-        RecoveryState::Clear | RecoveryState::Flushing { .. } => {
-            let generation = state.next_recovery_generation;
-            state.next_recovery_generation += 1;
-            generation
-        }
-    };
-    state.recovery = RecoveryState::Pending { generation };
-    write_state_durably(git_dir, &state)?;
-    Ok(generation)
+    with_locked_state(git_dir, |state| {
+        let generation = match state.recovery {
+            RecoveryState::Pending { generation } => generation,
+            RecoveryState::Clear | RecoveryState::Flushing { .. } => {
+                let generation = state.next_recovery_generation;
+                state.next_recovery_generation += 1;
+                generation
+            }
+        };
+        state.recovery = RecoveryState::Pending { generation };
+        Ok(StateTransaction::Persist(generation))
+    })
+    .await
 }
 
 pub(crate) async fn complete_recovery_flush(
     git_dir: &Path,
     generation: u64,
 ) -> Result<RecoveryFlushCompletion> {
-    let _lock = acquire_lock(git_dir).await?;
-    let mut state = read_state(git_dir)?;
-
-    match state.recovery {
+    with_locked_state(git_dir, move |state| match state.recovery {
         RecoveryState::Flushing { generation: owned } if owned == generation => {
             state.recovery = RecoveryState::Clear;
-            write_state_durably(git_dir, &state)?;
-            Ok(RecoveryFlushCompletion::Cleared)
+            Ok(StateTransaction::Persist(RecoveryFlushCompletion::Cleared))
         }
-        _ => Ok(RecoveryFlushCompletion::Superseded),
-    }
+        _ => Ok(StateTransaction::Unchanged(
+            RecoveryFlushCompletion::Superseded,
+        )),
+    })
+    .await
 }
 
 pub(crate) async fn relinquish_recovery_flush(git_dir: &Path, generation: u64) -> Result<()> {
-    let _lock = acquire_lock(git_dir).await?;
-    let mut state = read_state(git_dir)?;
-
-    if let RecoveryState::Flushing { generation: owned } = state.recovery {
-        if owned == generation {
-            state.recovery = RecoveryState::Pending { generation: owned };
-            write_state_durably(git_dir, &state)?;
+    with_locked_state(git_dir, move |state| {
+        if let RecoveryState::Flushing { generation: owned } = state.recovery {
+            if owned == generation {
+                state.recovery = RecoveryState::Pending { generation: owned };
+                return Ok(StateTransaction::Persist(()));
+            }
         }
-    }
-    Ok(())
+        Ok(StateTransaction::Unchanged(()))
+    })
+    .await
 }
