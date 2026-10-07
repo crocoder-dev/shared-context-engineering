@@ -38,7 +38,7 @@
 
 ## Application runtime compatibility
 
-The adapter remains synchronous and owns a current-thread Tokio runtime. `block_on_isolated` protects reentry from the application runtime, but owning runtime destruction must occur in a blocking region. DB-capable dispatch and sync storage guards establish that caller boundary without changing DB APIs, retry/WAL/migration policies or credential storage. See [application execution runtime](../architecture.md#application-execution-runtime). PR2 is future work removing DB-owned runtimes and the DB-related compatibility scopes together.
+The adapter remains synchronous and owns a current-thread Tokio runtime built by `build_current_thread_runtime`. When Tokio is already entered, `block_on_isolated` polls that runtime on a fresh scoped thread to protect reentry; this does not protect runtime destruction inside async execution. DB-capable dispatch and sync storage guards establish blocking construction/destruction scopes at the caller without changing DB APIs, retry/WAL/migration policies or credential storage. See the [dispatch lifetime inventory](../cli/cli-command-surface.md#application-runtime-dispatch) and [application execution runtime](../architecture.md#application-execution-runtime). PR2 is future work converting Turso to async and removing DB-owned runtimes, `build_current_thread_runtime`, `block_on_isolated`, and the DB-related `block_in_place` compatibility scopes together.
 
 ## Transactional primitives
 

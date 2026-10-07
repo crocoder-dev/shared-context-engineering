@@ -165,7 +165,7 @@ Every task carries `pending | synced | blocked`. A completed task must be `synce
   - Context synchronization: synced
   - Context synchronization evidence: Verified all five root files (`overview.md`, `architecture.md`, `glossary.md`, `patterns.md`, `context-map.md`) against unchanged application runtime ownership, scoped borrowing, static telemetry, foreground hooks and retained DB bridging. Corrected the existing execution/parser coverage section in `context/cli/cli-command-surface.md` to name actual test owners and the focused async/resource-lifetime checks. The observability and sync owners already describe polling/repeat protection and storage cleanup accurately. The edited domain owner remains 170 lines with resolving relative links; `git diff --check` passed. No architecture decision qualified: tests and the private lifecycle seam preserve the accepted boundaries. No final-plan validation was run.
 
-- [ ] T05: `Document the staged runtime architecture and scoped DI borrowing` (status:todo)
+- [x] T05: `Document the staged runtime architecture and scoped DI borrowing` (status:done)
   - Task ID: T05
   - Goal: Durable context describes the completed PR1 architecture and PR2 boundary accurately.
   - Files likely affected: `context/architecture.md`, `context/glossary.md`, `context/overview.md`, `context/patterns.md`, `context/cli/cli-command-surface.md`, `context/cli/capability-traits.md`, `context/cli/sync-command.md`, `context/cli/agent-trace-sync-command.md`, `context/sce/cli-observability-contract.md`, `context/sce/shared-turso-db.md`; narrowly update `context/sce/cli-exit-code-contract.md`, `context/sce/cli-stdout-stderr-contract.md`, `context/context-map.md` only where boundary ownership/annotations need adjustment.
@@ -175,7 +175,14 @@ Every task carries `pending | synced | blocked`. A completed task must be `synce
   - Done when: Durable owners match final code and clearly separate PR1 application-level runtime ownership from retained PR2 DB infrastructure.
   - Verification: Inspect every touched paragraph against source, section 2's blocking inventory and section 9; search touched docs for stale auth/sync command-runtime ownership, blanket borrow-across-await prohibition, active Telemetry object-safety claims and premature claims that async Turso/one process-wide runtime object are implemented. Ensure validation-tier descriptions distinguish normal checks from the CI/release aggregate.
   - Dependencies: T02, T03, T04.
-  - Context synchronization: pending
+  - Completed: 2026-10-07
+  - Files changed: `context/architecture.md`, `context/cli/cli-command-surface.md`, `context/context-map.md`, `context/sce/cli-exit-code-contract.md`, `context/sce/cli-stdout-stderr-contract.md`, `context/sce/shared-turso-db.md`, `context/plans/cli-single-tokio-runtime-pr1.md` (clean baseline at `39884477da7491422ca8431f699698a6ccb7e83d`).
+  - Result: Completed the existing staged runtime owner with a future PR2 diagram and explicit bridge/blocking-scope removal boundary. Documented each of the five production blocking scopes and direct synchronous branches in the command owner; clarified retained credential isolation and foreground hook completion. Corrected the context-map's remaining object-safe telemetry annotation and obsolete exit/output helper ownership. Preserved already accurate scoped borrowing, async telemetry polling/repeat guard, stream count and explicit Tokio features from T02–T04 synchronization. Refreshed command verification guidance to distinguish normal checks, the separate CI/release aggregate and generated-payload-aware targeted Cargo execution.
+  - Verify: Passed — inspected all changed paragraphs against `main.rs`, `app.rs`, `app_support.rs`, `command_registry.rs`, `parse/command_runtime.rs`, `error.rs`, auth/sync orchestration, telemetry traits, retained DB bridge and `flake.nix`, plus section 2's blocking inventory. Nix Python checks found no stale execution claims across 14 applicable owners, confirmed PR1/PR2 diagrams and future removal names, and confirmed validation-tier descriptions. All six edited durable owners are at or below 250 lines (architecture 246, command surface 186, context map 183, exit contract 28, stream contract 31, shared Turso 138); all their relative links and anchors resolve. Baseline-relative Git comparison confirms only the listed context/plan files changed, with no staged/untracked or code/generated-input changes; `git diff --check` passed. No full-plan validation was run.
+  - Done-check evidence: Final source matches the documented one application-level multi-thread runtime, directly awaited static auth/sync dispatch, scoped borrowed dependencies and polling telemetry, direct ordinary commands, five justified DB lifetime scopes and retained synchronous Turso infrastructure. PR2 is labeled future work; numeric exit/output, refresh/sync policies and existing detached auto-sync behavior are unchanged.
+  - Context impact: root — documentation completes the existing cross-cutting execution owners and index without changing implementation, terminology or the accepted architecture decision.
+  - Context synchronization: synced
+  - Context synchronization evidence: Verified all five root owners: `overview.md` retains application/DB runtime ownership and separate validation tiers; `architecture.md` carries staged diagrams and linked lifetime inventory; `glossary.md` delegates scoped borrowing/static telemetry to the execution glossary; `patterns.md` retains directly awaited borrowing and credential isolation; `context-map.md` indexes the owners with the corrected telemetry annotation. Execution already updated the six applicable durable owners, so no further context edit was warranted. Source review and focused Nix Python link/anchor, line-count, stale-claim and root-fact checks passed, as did `git diff --check`. No new architecture decision qualified: documentation preserves the existing Accepted runtime ADR without changing its constraint. No final-plan validation was run.
 
 ## 6. File-by-file impact
 
@@ -293,27 +300,74 @@ deleted by PR2:
 
 ## 9. Acceptance criteria
 
-- [ ] AC1: Exactly one application-level multi-thread Tokio runtime drives `app::run`; direct Tokio defaults remain disabled and only the required features are added.
+- [x] AC1: Exactly one application-level multi-thread Tokio runtime drives `app::run`; direct Tokio defaults remain disabled and only the required features are added.
   - Validate: Inspect `cli/src/main.rs` for the multi-thread `#[tokio::main]` and awaited `app::run`; inspect Cargo feature/lock diff and classify all production runtime-construction matches using section 7's source audit.
-- [ ] AC2: The app lifecycle and `RuntimeCommand` execution await auth/sync while retaining concrete enum dispatch, concrete capabilities and synchronous parsing/rendering/lifecycle providers.
+- [x] AC2: The app lifecycle and `RuntimeCommand` execution await auth/sync while retaining concrete enum dispatch, concrete capabilities and synchronous parsing/rendering/lifecycle providers.
   - Validate: Inspect the exact T02 call chain, auth/sync match arms and capability bounds; run app/static registry/parser tests through the full suite; confirm no new erased command future/trait objects or command spawn.
-- [ ] AC3: Auth and sync contain no production `AUTH_RUNTIME`, `SYNC_RUNTIME`, runtime-owning OnceLocks, `shared_runtime()` or command `block_on` calls.
+- [x] AC3: Auth and sync contain no production `AUTH_RUNTIME`, `SYNC_RUNTIME`, runtime-owning OnceLocks, `shared_runtime()` or command `block_on` calls.
   - Validate: Run section 7's targeted cleanup search, inspect test boundaries for any matches, and verify no replacement command runtime infrastructure in the full source audit.
-- [ ] AC4: Existing Turso production APIs/runtime bridge and all database policies remain unchanged while persistence-backed commands safely execute from the application-level runtime.
+- [x] AC4: Existing Turso production APIs/runtime bridge and all database policies remain unchanged while persistence-backed commands safely execute from the application-level runtime.
   - Validate: Inspect DB/persistence production diff as empty, including `build_current_thread_runtime`, `block_on_isolated` and DB-owned runtime; run focused T04 representative command/cleanup tests and existing migrations/WAL/contention suites through their normal tiers. A runtime panic fails acceptance.
-- [ ] AC5: Auth token loading/renewal/persistence, refresh single-flight and 401 retry contracts work from an existing application-level runtime; credential load/save remain awaited blocking operations.
+- [x] AC5: Auth token loading/renewal/persistence, refresh single-flight and 401 retry contracts work from an existing application-level runtime; credential load/save remain awaited blocking operations.
   - Validate: Run T03 async auth/credential tests and existing named control-plane refresh/401 tests; inspect both production `spawn_blocking` bodies and join/error mappings as unchanged.
-- [ ] AC6: Sync preserves one initial state call, three concurrent remote streams, sequential per-stream batches, cursors/reconciliation/retries, diff compatibility and progress/output.
+- [x] AC6: Sync preserves one initial state call, three concurrent remote streams, sequential per-stream batches, cursors/reconciliation/retries, diff compatibility and progress/output.
   - Validate: Run section 7's eleven named sync tests under multi-thread async execution plus engine/control-plane regressions; assert actual HTTP overlap/order/counts and progress/JSON invariants.
-- [ ] AC7: Synchronous commands retain stdout/stderr routing, exit codes, help/unknown-command behavior, JSON/text output, diagnostics, redaction and typed errors.
+- [x] AC7: Synchronous commands retain stdout/stderr routing, exit codes, help/unknown-command behavior, JSON/text output, diagnostics, redaction and typed errors.
   - Validate: Run T04 app byte/output/exit tests and unchanged app_support/parser/rendering tests; inspect output/error/catalog diffs for no semantic changes.
-- [ ] AC8: All hook adapters preserve completion, persistence, payloads and foreground semantics; only the existing explicit post-commit auto-sync child remains detached.
+- [x] AC8: All hook adapters preserve completion, persistence, payloads and foreground semantics; only the existing explicit post-commit auto-sync child remains detached.
   - Validate: Run existing Claude/Codex/OpenCode/Pi/Git hook suites unchanged plus T04's one representative async-dispatch persistence/completion assertion; inspect hook/auto-sync production diff and audit no new hook `tokio::spawn`. Add adapter-specific tests only if a distinct changed boundary lacks existing coverage.
-- [ ] AC9: Telemetry intentionally becomes non-object-safe and remains statically selected through `HasTelemetry::Telemetry`; its scope surrounds awaited polling with unchanged events/repeat error, and borrowed AppContext dependencies outlive command awaits. No dynamic async abstraction is introduced.
+- [x] AC9: Telemetry intentionally becomes non-object-safe and remains statically selected through `HasTelemetry::Telemetry`; its scope surrounds awaited polling with unchanged events/repeat error, and borrowed AppContext dependencies outlive command awaits. No dynamic async abstraction is introduced.
   - Validate: Inspect generic async Telemetry signature, concrete Noop/AppRuntime/HasTelemetry selection and no active `dyn Telemetry` consumers/new `async-trait`/`BoxFuture` command dispatch. Run T04 polling/repeat tests and inspect T05's object-safety/borrowing corrections. Validate that the async telemetry API does not encode a thread-local `with_default`/`set_default` guard held across `.await`, and that the documented future OTel implementation is expected to attach its subscriber to the future or install it globally by explicit design.
-- [ ] AC10: Reproducible packaging and durable context represent PR1 accurately, including retained synchronous Turso bridging for PR2.
+- [x] AC10: Reproducible packaging and durable context represent PR1 accurately, including retained synchronous Turso bridging for PR2.
   - Validate: Cargo-source parity and full validation under section 7 pass; inspect every T05 owner against final code and the staged architecture diagram. No document claims async persistence.
-- [ ] AC11: Every production `block_in_place` introduced by PR1 has an individual documented reason tied to an existing runtime-backed dependency and its safe construction/destruction; ordinary synchronous commands run directly.
+- [x] AC11: Every production `block_in_place` introduced by PR1 has an individual documented reason tied to an existing runtime-backed dependency and its safe construction/destruction; ordinary synchronous commands run directly.
   - Validate: Run section 7's source audit and reconcile each introduced call with section 2's inventory and actual lifetime/cleanup path. Inspect direct Help/HelpText/Version/Completion/Policy/Config, context-only Setup and non-DB Hooks branches. No blanket synchronous wrapper or unclassified blocking site is accepted.
-- [ ] AC12: Both normal repository and long-running CI/release validation pass for the changed execution/build model.
+- [x] AC12: Both normal repository and long-running CI/release validation pass for the changed execution/build model.
   - Validate: Section 7's `nix flake check`, `nix build .#ci-checks` and `git diff --check` all pass; retain targeted Nix-wrapped Rust test evidence and Cargo-source parity. Do not treat normal flake checks alone as the entire current CI tier.
+
+## Validation Report
+
+**Status:** validated
+
+**Date:** 2026-10-07
+
+### Commands run
+
+- `nix flake check` -> exit 0 (all normal checks passed on x86_64-linux; Rust suite: 1766 passed, 0 failed, 4 ignored; tests, Clippy, formatting, generated-input/config checks and Cargo-source parity passed).
+- `nix build .#ci-checks` -> exit 0 (static-musl release binary and Linux release portability audit passed).
+- `git diff --check` -> exit 0 (no whitespace errors before or after validation recording).
+- Section 7 targeted auth/sync cleanup search through `nix shell nixpkgs#ripgrep -c rg` -> exit 0 (four matches, all inside auth's `#[cfg(test)]` module; no production command runtime bridge).
+- Section 7 full `cli/src` runtime/blocking/spawn audit through `nix shell nixpkgs#ripgrep -c rg` -> exit 0 (application entrypoint, retained DB bridge/persistence singleton and test fixtures classified; five production DB blocking scopes and three credential blocking call sites).
+- Section 7 entrypoint/Cargo feature search through `nix shell nixpkgs#ripgrep -c rg` -> exit 0 (multi-thread macro and explicit features with disabled Tokio defaults).
+- Section 7 DB bridge/control-plane blocking search through `nix shell nixpkgs#ripgrep -c rg` -> exit 0 (retained bridge and both unchanged credential load/save closures).
+- `nix shell nixpkgs#ripgrep -c rg -n 'dyn Telemetry|dyn.*Telemetry|async-trait|BoxFuture|set_default' cli/src cli/Cargo.toml` -> exit 0 (only unrelated existing keyring default-store calls matched; no erased telemetry/command futures or tracing subscriber guard).
+- `git diff b57dcaf6..HEAD` inspections of affected source, Cargo metadata and T05 context owners -> exit 0 (minimal feature/lock additions, awaited static execution, documented lifetime scopes; DB/persistence, hook production, auth HTTP, output/error/catalog/parser and generation inputs unchanged).
+- `git status --short --untracked-files=all` -> exit 0 (clean before validation recording; no leftover debug files, scaffolding or generated target trees introduced by PR1).
+- `nix log /nix/store/yk26hnvcpn85912d7801a4aadqnxvz7z-sce-cli-tests-test-0.4.0-pre-alpha-v9.drv` with tail and Nix-wrapped module/ignored-result filtering -> exit 0 (confirmed all required named auth/control-plane/sync/app/representative-hook tests passed).
+- `nix log /nix/store/q1b755h9yamxbkql78rzdjqd5clxr3yd-sce-cli-clippy-clippy-0.4.0-pre-alpha-v9.drv` -> exit 0 (successful Clippy derivation inspected).
+- `nix log /nix/store/q3v7krk78p2qsnydfv6rcvyzbxnnrhxc-sce-release-portability-audit.drv` -> exit 0 (release binary has no forbidden Linux `/nix/store/` runtime references).
+
+### Success-criteria verification
+
+- [x] AC1: One application-level multi-thread runtime with minimal Tokio features -> `main.rs:12` awaits `app::run`; Cargo adds only `macros`/`rt-multi-thread`, defaults remain disabled; lock adds only tokio-macros 2.7.2 and syn 3.0.6. Source construction audit identifies only the entrypoint and retained shared DB adapter in production.
+- [x] AC2: Awaited concrete app/command execution -> inspected main/app/app_support/registry/auth/sync delegates and concrete capability bounds; Auth/Sync are directly awaited; parsing, rendering and lifecycle providers remain synchronous. App, registry and parser suites passed; no detached or erased command future.
+- [x] AC3: No auth/sync production runtime ownership -> targeted search matches only auth test flavor assertions and nested fixture runtime; removed AUTH_RUNTIME/SYNC_RUNTIME/shared_runtime/command block_on have no replacement production owner.
+- [x] AC4: Unchanged persistence with safe async-call-site lifetimes -> baseline-relative DB/persistence production diff empty; representative Doctor/hook dispatch and both storage-guard error/abandonment regressions passed alongside normal DB migration/WAL/contention checks. No runtime panic failed the suite.
+- [x] AC5: Auth and credential contracts -> all 10 auth and 28 control-plane tests passed, including owned blocking operations, storage/join errors, expired-token refresh, concurrent single-flight, credential isolation and both 401 cases. Production control-plane load/save closures and join mappings unchanged.
+- [x] AC6: Sync contracts -> all 11 section 7 named regressions and both new cleanup tests passed. Original overlap, sequential-batch, request-count, cursor/reconciliation, diff compatibility and progress assertions retained; engine/control-plane, renderer and progress suites passed; JSON still selects NoopProgressReporter.
+- [x] AC7: Output/error contracts -> captured exact app bytes and success/runtime/dependency exits passed, as did unchanged app_support/parser/rendering/security suites; reviewed rendering, error/catalog and parser production diffs as unchanged.
+- [x] AC8: Foreground hooks -> unchanged adapter suites and representative awaited Doctor/DiffTrace persistence test passed; hook/auto-sync production diff empty; no new production hook Tokio spawn; existing detached auto-sync coverage passed.
+- [x] AC9: Static telemetry and scoped borrowing -> generic async Telemetry/Noop/HasTelemetry and live AppRuntime owner inspected; yielding polling, event/error/repeat tests passed. No erased dispatch, command Send bound or thread-local tracing guard; T05 owners explicitly require future-aware or deliberately global subscriber selection.
+- [x] AC10: Packaging and accurate durable context -> Cargo-source parity and both validation tiers passed. Inspected overview, architecture, glossary/execution glossary, patterns, context map, command/capability/sync/control-plane, observability, shared-Turso and exit/output owners; PR1 is application-level async with synchronous Turso retained, and PR2 is labeled future work. Canonical generation inputs unchanged.
+- [x] AC11: Individually justified blocking scopes -> registry Setup:84, Doctor:87, DB Hooks:103 and sync storage construction:220/guard Drop:164 match section 2 and durable inventory. Direct ordinary commands, context-only Setup and PreCommit/PostRewrite inspected; additional scopes are test-only fixtures.
+- [x] AC12: Both validation tiers -> `nix flake check`, `nix build .#ci-checks` and whitespace verification passed; current derivation logs retain named regression evidence alongside the plan's prior targeted Nix-wrapped test evidence.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- Execution was verified on x86_64-linux. Nix omitted aarch64-linux, aarch64-darwin and x86_64-darwin; this session did not run the remote platform matrix.
+- Normal Rust validation leaves three existing ignored lock-contention characterization tests unexecuted; the fourth ignored entry is a subprocess helper. No ignored tests were added by PR1.
+- Synchronous Turso and its DB-owned runtimes remain intentionally retained until PR2; the five caller blocking scopes are temporary compatibility boundaries.
