@@ -144,17 +144,17 @@ impl std::fmt::Display for CoordinateError {
 impl std::error::Error for CoordinateError {}
 
 pub trait SnapshotCapture {
-    fn capture(&self) -> Result<TreeId>;
-    fn pin(&self, worktree_id: &WorktreeId, tree: &TreeId) -> Result<()>;
+    async fn capture(&self) -> Result<TreeId>;
+    async fn pin(&self, worktree_id: &WorktreeId, tree: &TreeId) -> Result<()>;
 }
 
 impl SnapshotCapture for GitSnapshotService {
-    fn capture(&self) -> Result<TreeId> {
-        self.capture_tree()
+    async fn capture(&self) -> Result<TreeId> {
+        self.capture_tree().await
     }
 
-    fn pin(&self, worktree_id: &WorktreeId, tree: &TreeId) -> Result<()> {
-        self.pin_tree(worktree_id, tree)
+    async fn pin(&self, worktree_id: &WorktreeId, tree: &TreeId) -> Result<()> {
+        self.pin_tree(worktree_id, tree).await
     }
 }
 
@@ -233,7 +233,9 @@ where
         .await
         .map_err(CoordinateError::AgentTraceDbUnavailable)?;
 
-    let snapshot = GitSnapshotService::new(repository_root).map_err(CoordinateError::Other)?;
+    let snapshot = GitSnapshotService::new(repository_root)
+        .await
+        .map_err(CoordinateError::Other)?;
 
     coordinate_boundary_inner(
         &db,
@@ -298,10 +300,11 @@ where
 {
     let store = MutationTraceStore::new(db);
 
-    let observed_tree = match capture.capture().and_then(|tree| {
-        capture.pin(worktree_id, &tree)?;
-        Ok(tree)
-    }) {
+    let captured = match capture.capture().await {
+        Ok(tree) => capture.pin(worktree_id, &tree).await.map(|()| tree),
+        Err(source) => Err(source),
+    };
+    let observed_tree = match captured {
         Ok(tree) => tree,
         Err(source) => return Err(handle_snapshot_failure(&store, worktree_id, source).await),
     };
