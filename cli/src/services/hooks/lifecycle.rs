@@ -7,8 +7,8 @@ use anyhow::{anyhow, Context, Result};
 use crate::app::HasRepoRoot;
 use crate::services::lifecycle::{
     FixOutcome, FixResultRecord, HealthCategory, HealthFixability, HealthProblem,
-    HealthProblemKind, HealthSeverity, LifecycleProviderId, RequiredHookInstallStatus,
-    RequiredHooksInstallOutcome, ServiceLifecycle, SetupOutcome,
+    HealthProblemKind, HealthSeverity, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
+    ServiceLifecycle, SetupOutcome,
 };
 use crate::services::setup::{
     hook_merge, install_required_git_hooks, iter_required_hook_assets,
@@ -28,10 +28,6 @@ enum HookContentState {
 }
 
 impl ServiceLifecycle for HooksLifecycle {
-    fn id(&self) -> LifecycleProviderId {
-        LifecycleProviderId::Hooks
-    }
-
     async fn diagnose<C: HasRepoRoot>(&self, ctx: &C) -> Vec<HealthProblem> {
         let repository_root = match ctx.repo_root() {
             Some(path) => path.to_path_buf(),

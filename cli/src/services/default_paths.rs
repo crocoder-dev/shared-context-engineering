@@ -7,8 +7,11 @@ mod roots {
 
     use anyhow::{anyhow, Result};
 
-    #[allow(dead_code)]
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    #[allow(
+        dead_code,
+        reason = "constructed only under cfg(target_os) on non-Linux platforms"
+    )]
     pub(crate) enum PlatformFamily {
         Linux,
         Macos,
@@ -56,11 +59,6 @@ mod roots {
         pub(crate) fn state_root(&self) -> &Path {
             &self.state_root
         }
-
-        #[allow(dead_code)]
-        pub(crate) fn cache_root(&self) -> &Path {
-            &self.cache_root
-        }
     }
 
     #[derive(Clone, Debug, Eq, PartialEq)]
@@ -75,15 +73,6 @@ mod roots {
 
         pub(crate) fn global_config_file(&self) -> PathBuf {
             self.roots.config_root().join("sce").join("config.json")
-        }
-
-        #[allow(dead_code)]
-        pub(crate) fn persisted_artifact_locations(&self) -> Vec<super::PersistedArtifactLocation> {
-            vec![super::PersistedArtifactLocation {
-                id: super::PersistedArtifactId::GlobalConfig,
-                root_kind: super::PersistedArtifactRootKind::Config,
-                path: self.global_config_file(),
-            }]
         }
     }
 
@@ -322,62 +311,26 @@ fn sce_state_dir() -> anyhow::Result<PathBuf> {
         .join("sce"))
 }
 
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PersistedArtifactRootKind {
-    Config,
-    State,
-    Cache,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PersistedArtifactId {
-    GlobalConfig,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PersistedArtifactLocation {
-    pub id: PersistedArtifactId,
-    pub root_kind: PersistedArtifactRootKind,
-    pub path: PathBuf,
-}
-
 pub(crate) mod repo_dir {
     pub const SCE: &str = ".sce";
     pub const OPENCODE: &str = ".opencode";
     pub const CLAUDE: &str = ".claude";
     pub const PI: &str = ".pi";
     pub const CODEX: &str = ".codex";
-    pub const GIT: &str = ".git";
 }
 
 pub(crate) mod repo_file {
     pub const SCE_CONFIG: &str = "config.json";
     pub const OPENCODE_MANIFEST: &str = "opencode.json";
-    pub const GIT_COMMIT_EDITMSG: &str = "COMMIT_EDITMSG";
 }
 
-pub(crate) mod hook_dir {
-    pub const HOOKS: &str = "hooks";
-    pub const PRE_COMMIT: &str = "pre-commit";
-    pub const COMMIT_MSG: &str = "commit-msg";
-    pub const POST_COMMIT: &str = "post-commit";
-}
-
-#[allow(dead_code)]
 pub(crate) mod opencode_asset {
-    pub const OPENCODE_DIR: &str = "opencode";
     pub const PLUGINS_DIR: &str = "plugins";
-    pub const PLUGIN_FILE: &str = "sce-bash-policy.ts";
-    pub const PLUGIN_MANIFEST_ENTRY: &str = "./plugins/sce-bash-policy.ts";
     pub const LIB_DIR: &str = "lib";
     pub const PRESET_CATALOG: &str = "bash-policy-presets.json";
     pub const OPENCODE_AGENT_DIR: &str = "agent";
     pub const OPENCODE_COMMAND_DIR: &str = "command";
     pub const SKILLS_DIR: &str = "skills";
-    pub const AGENTS_DIR: &str = "agents";
 }
 
 pub(crate) mod claude_asset {
@@ -415,7 +368,6 @@ pub(crate) mod context_file {
     pub const PATTERNS: &str = "patterns.md";
     pub const CONTEXT_MAP: &str = "context-map.md";
     pub const TMP_GITIGNORE: &str = ".gitignore";
-    pub const SKILL_DEFINITION: &str = "SKILL.md";
 }
 
 pub(crate) mod schema {
@@ -428,7 +380,6 @@ pub(crate) struct RepoPaths {
     root: PathBuf,
 }
 
-#[allow(dead_code)]
 impl RepoPaths {
     pub(crate) fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
@@ -460,22 +411,6 @@ impl RepoPaths {
 
     pub(crate) fn codex_dir(&self) -> PathBuf {
         self.root.join(repo_dir::CODEX)
-    }
-
-    pub(crate) fn git_dir(&self) -> PathBuf {
-        self.root.join(repo_dir::GIT)
-    }
-
-    pub(crate) fn git_hooks_dir(&self) -> PathBuf {
-        self.git_dir().join(hook_dir::HOOKS)
-    }
-
-    pub(crate) fn git_hook_file(&self, hook_name: &str) -> PathBuf {
-        self.git_hooks_dir().join(hook_name)
-    }
-
-    pub(crate) fn git_commit_editmsg(&self) -> PathBuf {
-        self.git_dir().join(repo_file::GIT_COMMIT_EDITMSG)
     }
 
     pub(crate) fn context_dir(&self) -> PathBuf {
@@ -528,7 +463,6 @@ pub(crate) struct InstallTargetPaths {
     repo_root: PathBuf,
 }
 
-#[allow(dead_code)]
 impl InstallTargetPaths {
     pub(crate) fn new(repo_root: impl Into<PathBuf>) -> Self {
         Self {
@@ -555,45 +489,9 @@ impl InstallTargetPaths {
         self.repo_root.clone()
     }
 
-    pub(crate) fn opencode_plugin_target(&self) -> PathBuf {
-        self.opencode_target_dir()
-            .join(opencode_asset::PLUGINS_DIR)
-            .join(opencode_asset::PLUGIN_FILE)
-    }
-
     pub(crate) fn opencode_preset_catalog_target(&self) -> PathBuf {
         self.opencode_target_dir()
             .join(opencode_asset::LIB_DIR)
             .join(opencode_asset::PRESET_CATALOG)
-    }
-
-    pub(crate) fn skill_tile_relative_path(skill_name: &str) -> String {
-        format!(
-            "{}/{}/{}",
-            opencode_asset::SKILLS_DIR,
-            skill_name,
-            context_file::SKILL_DEFINITION
-        )
-    }
-
-    pub(crate) fn pre_commit_hook_path(&self) -> PathBuf {
-        self.repo_root
-            .join(repo_dir::GIT)
-            .join(hook_dir::HOOKS)
-            .join(hook_dir::PRE_COMMIT)
-    }
-
-    pub(crate) fn commit_msg_hook_path(&self) -> PathBuf {
-        self.repo_root
-            .join(repo_dir::GIT)
-            .join(hook_dir::HOOKS)
-            .join(hook_dir::COMMIT_MSG)
-    }
-
-    pub(crate) fn post_commit_hook_path(&self) -> PathBuf {
-        self.repo_root
-            .join(repo_dir::GIT)
-            .join(hook_dir::HOOKS)
-            .join(hook_dir::POST_COMMIT)
     }
 }

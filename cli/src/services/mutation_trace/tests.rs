@@ -125,20 +125,15 @@ fn prepare_and_commit(
 }
 
 #[test]
-fn scope_status_live_and_terminal_table() {
+fn scope_status_live_table() {
     let cases = [
-        (ScopeStatus::NeverSeen, false, false),
-        (ScopeStatus::Active, true, false),
-        (ScopeStatus::Closed, false, true),
-        (ScopeStatus::Abandoned, false, true),
+        (ScopeStatus::NeverSeen, false),
+        (ScopeStatus::Active, true),
+        (ScopeStatus::Closed, false),
+        (ScopeStatus::Abandoned, false),
     ];
-    for (status, expected_live, expected_terminal) in cases {
+    for (status, expected_live) in cases {
         assert_eq!(is_live(status), expected_live, "is_live({status:?})");
-        assert_eq!(
-            is_terminal(status),
-            expected_terminal,
-            "is_terminal({status:?})"
-        );
     }
 }
 

@@ -24,16 +24,7 @@ Available-CLI behavior remains hook-specific:
 
 ## Setup-service accessor surface
 
-`cli/src/services/setup/mod.rs` exposes hook-template access through:
-
-- `iter_required_hook_assets()` for deterministic full-set iteration
-- `get_required_hook_asset(RequiredHookAsset)` for stable per-hook lookup
-
-`RequiredHookAsset` is the canonical hook mapping enum for this packaging layer:
-
-- `PreCommit`
-- `CommitMsg`
-- `PostCommit`
+`cli/src/services/setup/mod.rs` exposes hook-template access through `iter_required_hook_assets()` for deterministic full-set iteration; the per-hook lookup helper and `RequiredHookAsset` enum were removed as unused.
 
 ## Determinism and validation
 

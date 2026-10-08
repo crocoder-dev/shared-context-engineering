@@ -55,20 +55,6 @@ pub async fn resolve_agent_trace_storage(
     open_storage(repository_identity, db_path).await
 }
 
-/// Resolution core against an explicit state root, so tests can exercise the
-/// full path without touching the real user state directory.
-pub async fn resolve_agent_trace_storage_at_state_root(
-    context: &AgentTraceStorageContext<'_>,
-    state_root: &Path,
-) -> Result<ResolvedAgentTraceStorage> {
-    let repository_identity = resolve_identity(context)?;
-    let db_path = agent_trace_db_path_for_repository_at(
-        state_root,
-        &repository_identity.identity.repository_id,
-    )?;
-    open_storage(repository_identity, db_path).await
-}
-
 /// Resolves repository-scoped Agent Trace storage for high-frequency hook
 /// runtime callers using the canonical state root.
 ///

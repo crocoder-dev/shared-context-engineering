@@ -179,31 +179,6 @@ impl IntegrationGroupHealth {
     pub(super) const fn display_label(&self) -> &'static str {
         self.key.display_label()
     }
-
-    #[allow(dead_code)]
-    pub(super) fn display_node(&self) -> DoctorDisplayNode {
-        let children = self
-            .children
-            .iter()
-            .map(IntegrationChildHealth::display_node)
-            .collect::<Vec<_>>();
-        let status = children
-            .iter()
-            .fold(DoctorDisplayStatus::Pass, |status, child| {
-                status.worst(if child.status == DoctorDisplayStatus::Miss {
-                    DoctorDisplayStatus::Fail
-                } else {
-                    child.status
-                })
-            });
-        DoctorDisplayNode::branch_with_status(
-            DoctorDisplayNodeKind::Group,
-            self.display_label(),
-            status,
-            Vec::new(),
-            children,
-        )
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -247,7 +222,6 @@ pub(super) enum IntegrationContentState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-#[allow(dead_code)]
 pub(super) enum DoctorDisplayStatus {
     Pass,
     Warn,
@@ -256,7 +230,6 @@ pub(super) enum DoctorDisplayStatus {
 }
 
 impl DoctorDisplayStatus {
-    #[allow(dead_code)]
     pub(super) const fn worst(self, other: Self) -> Self {
         match (self, other) {
             (Self::Fail, _) | (_, Self::Fail) => Self::Fail,
@@ -268,7 +241,6 @@ impl DoctorDisplayStatus {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub(super) enum DoctorDisplayDetail {
     MissingPath(PathBuf),
     ContentMismatch {
@@ -309,7 +281,6 @@ pub(super) enum DoctorDisplayDetail {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub(super) enum DoctorDisplayNodeKind {
     Domain,
     Group,
@@ -317,7 +288,6 @@ pub(super) enum DoctorDisplayNodeKind {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub(super) struct DoctorDisplayNode {
     pub(super) kind: DoctorDisplayNodeKind,
     pub(super) label: String,
@@ -327,17 +297,6 @@ pub(super) struct DoctorDisplayNode {
 }
 
 impl DoctorDisplayNode {
-    #[allow(dead_code)]
-    pub(super) fn domain(label: impl Into<String>, children: Vec<Self>) -> Self {
-        Self::branch(DoctorDisplayNodeKind::Domain, label, children)
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn group(label: impl Into<String>, children: Vec<Self>) -> Self {
-        Self::branch(DoctorDisplayNodeKind::Group, label, children)
-    }
-
-    #[allow(dead_code)]
     fn asset(
         label: impl Into<String>,
         status: DoctorDisplayStatus,
@@ -350,11 +309,6 @@ impl DoctorDisplayNode {
             details: detail.into_iter().collect(),
             children: Vec::new(),
         }
-    }
-
-    #[allow(dead_code)]
-    fn branch(kind: DoctorDisplayNodeKind, label: impl Into<String>, children: Vec<Self>) -> Self {
-        Self::branch_with_status(kind, label, DoctorDisplayStatus::Pass, Vec::new(), children)
     }
 
     pub(super) fn branch_with_status(
@@ -388,7 +342,6 @@ impl DoctorDisplayNode {
 }
 
 impl IntegrationChildHealth {
-    #[allow(dead_code)]
     pub(super) fn display_node(&self) -> DoctorDisplayNode {
         let (status, detail) = match &self.content_state {
             IntegrationContentState::Match => (DoctorDisplayStatus::Pass, None),

@@ -8,7 +8,7 @@ use crate::services::db::{bootstrap_db_parent, collect_db_path_health, DbSpec};
 use crate::services::default_paths::agent_trace_db_path_for_repository;
 use crate::services::lifecycle::{
     FixOutcome, FixResultRecord, HealthCategory, HealthFixability, HealthProblem,
-    HealthProblemKind, HealthSeverity, LifecycleProviderId, ServiceLifecycle, SetupOutcome,
+    HealthProblemKind, HealthSeverity, ServiceLifecycle, SetupOutcome,
 };
 use crate::services::repository_identity::resolve::{
     resolve_repository_identity, RepositoryIdentitySource,
@@ -20,10 +20,6 @@ use super::repository::{RepositoryAgentTraceDb, RepositoryAgentTraceDbSpec};
 pub struct AgentTraceDbLifecycle;
 
 impl ServiceLifecycle for AgentTraceDbLifecycle {
-    fn id(&self) -> LifecycleProviderId {
-        LifecycleProviderId::AgentTraceDb
-    }
-
     async fn diagnose<C: HasRepoRoot>(&self, ctx: &C) -> Vec<HealthProblem> {
         diagnose_agent_trace_db_health(ctx.repo_root()).await
     }

@@ -34,7 +34,7 @@ pipeline all exist, with cross-module integration tests in `runtime/tests.rs`
 exercising the public API end to end. Only harness/command wiring remains.
 
 - `cli/src/services/mutation_trace/runtime/worktree_lock.rs` —
-  `WorktreeLock::acquire(git_dir: &Path, timeout: Duration) ->
+  `WorktreeLock::acquire_async(git_dir: &Path, timeout: Duration) ->
   Result<WorktreeLock, WorktreeLockError>` opens/creates
   `<git_dir>/sce/mutation-cursor.lock` and polls `std::fs::File::try_lock()`
   on a 100ms interval against the caller-supplied bounded `timeout`, rather

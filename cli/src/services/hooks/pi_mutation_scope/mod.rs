@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod events;
 pub(crate) mod health;
 mod lifecycle;

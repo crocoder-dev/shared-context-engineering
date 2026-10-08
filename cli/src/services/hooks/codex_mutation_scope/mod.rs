@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod events;
 pub(crate) mod health;
 mod lifecycle;
@@ -25,9 +23,8 @@ use serde_json::{json, Map, Value};
 #[allow(unused_imports)]
 pub(crate) use events::{
     classify_tool, codex_scope_close_event_id, codex_scope_start_event_id, format_codex_scope_id,
-    is_mcp_tool_name, parse_codex_hook_event, AttemptKey, CodexAgentIdentity, CodexHookEvent,
-    CodexSessionIdentity, CodexToolExecution, CodexToolIdentity, CodexTurnIdentity,
-    ToolClassification,
+    parse_codex_hook_event, AttemptKey, CodexAgentIdentity, CodexHookEvent, CodexSessionIdentity,
+    CodexToolExecution, CodexToolIdentity, CodexTurnIdentity, ToolClassification,
 };
 #[allow(unused_imports)]
 use events::{

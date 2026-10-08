@@ -57,21 +57,16 @@ pub(crate) trait HasLogger {
     fn logger(&self) -> &Self::Logger;
 }
 
-#[allow(dead_code)]
 pub(crate) trait HasTelemetry {
     type Telemetry: TelemetryTrait;
 
     fn telemetry(&self) -> &Self::Telemetry;
 }
 
-#[allow(dead_code)]
 pub(crate) trait HasFs {
     type Fs: services::capabilities::FsOps;
-
-    fn fs(&self) -> &Self::Fs;
 }
 
-#[allow(dead_code)]
 pub(crate) trait HasGit {
     type Git: services::capabilities::GitOps;
 
@@ -113,23 +108,12 @@ where
         HasLogger::logger(self)
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn fs(&self) -> &F {
-        HasFs::fs(self)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn git(&self) -> &G {
-        HasGit::git(self)
-    }
-
     fn telemetry(&self) -> &T {
         HasTelemetry::telemetry(self)
     }
 
     /// Returns a context for a command-scoped repository root while preserving
     /// the runtime logger, telemetry, and capability dependencies.
-    #[allow(dead_code)]
     pub(crate) fn with_repo_root(&self, repo_root: impl Into<PathBuf>) -> Self {
         Self {
             logger: self.logger,
@@ -138,15 +122,6 @@ where
             git: self.git,
             repo_root: Some(repo_root.into()),
         }
-    }
-
-    /// Returns the resolved repository root path when available.
-    ///
-    /// Lifecycle providers use this during setup to avoid re-resolving
-    /// the repository root independently.
-    #[allow(dead_code)]
-    pub fn repo_root(&self) -> Option<&Path> {
-        HasRepoRoot::repo_root(self)
     }
 }
 
@@ -186,10 +161,6 @@ where
     G: services::capabilities::GitOps,
 {
     type Fs = F;
-
-    fn fs(&self) -> &Self::Fs {
-        self.fs
-    }
 }
 
 impl<L, T, F, G> HasGit for AppContext<'_, L, T, F, G>

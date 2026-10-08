@@ -408,23 +408,6 @@ fn claude_model_state_observation_from_turso(
     })
 }
 
-#[allow(dead_code)]
-async fn insert_message_with<M: DbSpec>(
-    db: &TursoDb<M>,
-    input: InsertMessageInsert,
-) -> Result<u64> {
-    db.execute(
-        INSERT_MESSAGE_SQL,
-        (
-            input.session_id,
-            input.message_id,
-            input.role.to_string(),
-            input.generated_at_unix_ms,
-        ),
-    )
-    .await
-}
-
 async fn insert_messages_with<M: DbSpec>(
     db: &TursoDb<M>,
     inputs: Vec<InsertMessageInsert>,
@@ -451,21 +434,6 @@ async fn insert_messages_with<M: DbSpec>(
     );
 
     db.execute(&sql, params).await
-}
-
-#[allow(dead_code)]
-async fn insert_part_with<M: DbSpec>(db: &TursoDb<M>, input: InsertPartInsert) -> Result<u64> {
-    db.execute(
-        INSERT_PART_SQL,
-        (
-            input.part_type.to_string(),
-            input.text,
-            input.message_id,
-            input.session_id,
-            input.generated_at_unix_ms,
-        ),
-    )
-    .await
 }
 
 async fn insert_parts_with<M: DbSpec>(

@@ -50,10 +50,6 @@ impl CodexToolIdentity {
             tool_use_id: self.tool_use_id.clone(),
         }
     }
-
-    pub(crate) fn is_subagent(&self) -> bool {
-        self.agent_id.is_some()
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,12 +100,6 @@ pub(crate) enum ToolClassification {
 pub(super) const TRACKED_MUTATION_TOOL_NAMES: &[&str] = &["Bash", "apply_patch"];
 pub(super) const DELEGATION_TOOL_NAMES: &[&str] =
     &["collaborationspawn_agent", "collaborationwait_agent"];
-pub(super) const MCP_TOOL_NAME_PREFIX: &str = "mcp__";
-
-pub(crate) fn is_mcp_tool_name(tool_name: &str) -> bool {
-    tool_name.starts_with(MCP_TOOL_NAME_PREFIX)
-}
-
 pub(crate) fn classify_tool(tool_name: &str) -> ToolClassification {
     if TRACKED_MUTATION_TOOL_NAMES.contains(&tool_name) {
         ToolClassification::TrackedMutation
