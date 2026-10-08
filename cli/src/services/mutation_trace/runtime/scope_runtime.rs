@@ -149,7 +149,7 @@ where
         return Ok(outcome);
     }
 
-    match protected.complete() {
+    match protected.complete().await {
         Ok(()) => Ok(outcome),
         Err(source) => Err(AbandonScopeError::MarkerClearAfterCompletion {
             source,
@@ -314,6 +314,9 @@ fn protected_worktree_failure(error: ProtectedWorktreeError) -> AbandonScopeErro
         }
         ProtectedWorktreeError::ExternalTaintMarker { operation, source } => {
             AbandonScopeError::ExternalTaintMarker { operation, source }
+        }
+        error @ ProtectedWorktreeError::MarkerWorkerFailed(_) => {
+            AbandonScopeError::Other(anyhow::Error::new(error))
         }
     }
 }

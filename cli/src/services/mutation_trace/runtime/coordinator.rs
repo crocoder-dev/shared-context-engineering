@@ -218,7 +218,7 @@ where
     )
     .await?;
 
-    match protected.complete() {
+    match protected.complete().await {
         Ok(()) => Ok(outcome),
         Err(source) => Err(CoordinateError::MarkerClearAfterCommit {
             source,
@@ -297,6 +297,9 @@ fn protected_worktree_failure(error: ProtectedWorktreeError) -> CoordinateError 
         }
         ProtectedWorktreeError::ExternalTaintMarker { operation, source } => {
             CoordinateError::ExternalTaintMarker { operation, source }
+        }
+        error @ ProtectedWorktreeError::MarkerWorkerFailed(_) => {
+            CoordinateError::Other(anyhow::Error::new(error))
         }
     }
 }

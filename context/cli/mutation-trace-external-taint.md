@@ -73,8 +73,14 @@ resolve git_dir → acquire WorktreeLock            ┐
   → open_db()                                 ← DB acquired INSIDE the fence
   → GitSnapshotService::new
   → coordinate_boundary(&db, .., inherited_external_taint)
-  → ProtectedWorktree::complete()             ← clears; only on a successful outcome
+  → ProtectedWorktree::complete().await       ← clears; only on a successful outcome
 ```
+
+`exists()`/`persist()` run in an arming `spawn_blocking` worker that owns the
+already-acquired `WorktreeLock`, and `clear()` runs in a completion worker that
+owns the whole `ProtectedWorktree`. No marker I/O runs on a Tokio worker, and
+no marker operation can outlive the lock that protects it. See
+[`mutation-trace-protected-worktree.md`](mutation-trace-protected-worktree.md#blocking-worker-ownership).
 
 **Safety invariant:** no failure after the marker is armed — including a
 failure to open the Agent Trace DB, or to resolve the Git-derived worktree identity — can
