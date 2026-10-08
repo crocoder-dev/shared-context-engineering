@@ -1,0 +1,33 @@
+Index: hunks/fib.ts
+===================================================================
+--- hunks/fib.ts
++++ hunks/fib.ts
+@@ -15,21 +15,19 @@
+ 
+   return totalAge / users.length;
+ }
+ 
+-function fibonacci(n: number): number {
+-  if (n <= 1) return n;
++function fibonacciSequence(n: number): number[] {
++  if (n <= 0) return [];
++  if (n === 1) return [0];
+ 
+-  let prev = 0;
+-  let curr = 1;
++  const sequence: number[] = [0, 1];
+ 
+-  for (let i = 2; i <= n; i++) {
+-    const next = prev + curr;
+-    prev = curr;
+-    curr = next;
++  for (let i = 2; i < n; i++) {
++    sequence.push(sequence[i - 1] + sequence[i - 2]);
+   }
+ 
+-  return curr;
++  return sequence;
+ }
+ 
+ export function getAvarageAgeUnoptimized(users: User[]): number {
+   if (users.length === 0) {

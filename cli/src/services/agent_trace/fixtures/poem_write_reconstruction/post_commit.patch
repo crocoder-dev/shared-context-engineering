@@ -1,0 +1,30 @@
+diff --git a/poem.md b/poem.md
+new file mode 100644
+index 0000000..a930e11
+--- /dev/null
++++ b/poem.md
+@@ -0,0 +1,24 @@
++# A Moment of Code
++
++In circuits deep where logic flows,
++A thousand silent processes glow,
++Through paths of thought, both near and far,
++We build the world the way things are.
++
++Each line we write, each function named,
++A story told, a problem tamed,
++The compiler hums, the tests turn green,
++In spaces where the code is clean.
++
++We dream in loops of endless while,
++Yet find in bugs a reason to smile,
++Forth every error teaches true,
++The better paths to journey through.
++
++So let us craft with care and art,
++The systems that connect each heart,
++And in this dance of bit and byte,
++We shape tomorrow's morning light.
++
++---
++*Written with ❤️ and a touch of caffeine*

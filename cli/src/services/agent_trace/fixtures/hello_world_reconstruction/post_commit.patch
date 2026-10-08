@@ -1,0 +1,11 @@
+diff --git a/hunks/hello.ts b/hunks/hello.ts
+new file mode 100644
+index 0000000..45237ee
+--- /dev/null
++++ b/hunks/hello.ts
+@@ -0,0 +1,5 @@
++function helloWorld(): void {
++  console.log("Hello World");
++}
++
++helloWorld();

@@ -1,0 +1,15 @@
+Index: hunks/optimized.ts
+===================================================================
+--- hunks/optimized.ts
++++ hunks/optimized.ts
+@@ -1,9 +1,9 @@
+ type User = {
+   age: number;
+ };
+ 
+-export function getAverageAgeUnoptimized(users: User[]): number {
++export function getAvarageAgeOptimized(users: User[]): number {
+   if (users.length === 0) {
+     // Return a safe default when there are no users.
+     return 0;
+   }

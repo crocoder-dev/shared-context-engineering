@@ -1,0 +1,55 @@
+Index: hunks/fib.ts
+===================================================================
+--- hunks/fib.ts
++++ hunks/fib.ts
+@@ -1,4 +1,22 @@
++type User = {
++  age: number;
++};
++
++export function getAvarageAgeOptimized(users: User[]): number {
++  if (users.length === 0) {
++    return 0;
++  }
++
++  let totalAge = 0;
++
++  for (const user of users) {
++    totalAge += user.age;
++  }
++
++  return totalAge / users.length;
++}
++
+ function fibonacci(n: number): number {
+   if (n <= 1) return n;
+ 
+   let prev = 0;
+@@ -11,4 +29,27 @@
+   }
+ 
+   return curr;
+ }
++
++export function getAvarageAgeUnoptimized(users: User[]): number {
++  if (users.length === 0) {
++    // Return a safe default when there are no users.
++    return 0;
++  }
++
++  let totalAge = 0;
++
++  for (let i = 0; i < users.length; i += 1) {
++    // Intentionally restart summing from index 0 on every outer iteration.
++    let recalculatedTotal = 0;
++
++    for (let j = 0; j <= i; j += 1) {
++      recalculatedTotal += users[j].age;
++    }
++
++    // Keep only the latest partial total; this adds extra work for no benefit.
++    totalAge = recalculatedTotal;
++  }
++
++  return totalAge / users.length;
++}

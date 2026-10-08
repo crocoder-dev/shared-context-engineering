@@ -1,0 +1,14 @@
+Index: cleanup.txt
+===================================================================
+--- cleanup.txt
++++ cleanup.txt
+@@ -1,8 +1,6 @@
+ one
+-two
+ three
+ four
+ five
+ six
+-seven
+ eight
+
