@@ -14,7 +14,9 @@ use crate::services::repository_identity::resolve::{
     resolve_repository_identity, RepositoryIdentitySource,
 };
 
-use super::repository::{RepositoryAgentTraceDb, RepositoryAgentTraceDbSpec};
+use super::repository::{
+    ExistingRepositoryDbError, RepositoryAgentTraceDb, RepositoryAgentTraceDbSpec,
+};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AgentTraceDbLifecycle;
@@ -157,11 +159,24 @@ pub async fn diagnose_agent_trace_db_health(repo_root: Option<&Path>) -> Vec<Hea
         &mut problems,
     );
 
-    if db_path.exists() && db_path.is_file() {
-        match RepositoryAgentTraceDb::open_without_migrations_at(&db_path).await {
-            Ok(db) => {
-                if let Err(error) = db.ensure_schema_ready_for_hooks().await {
-                    problems.push(HealthProblem {
+    problems.extend(inspect_existing_db_schema(&db_path, || {}).await);
+    problems
+}
+
+async fn inspect_existing_db_schema(
+    db_path: &Path,
+    before_open: impl FnOnce(),
+) -> Vec<HealthProblem> {
+    let mut problems = Vec::new();
+    if db_path.exists() && !db_path.is_file() {
+        return problems;
+    }
+
+    match RepositoryAgentTraceDb::open_existing_schema_ready_at(db_path, before_open).await {
+        Ok(_db) => {}
+        Err(ExistingRepositoryDbError::Missing { .. }) => {}
+        Err(ExistingRepositoryDbError::IncompatibleSchema(error)) => {
+            problems.push(HealthProblem {
                         kind: HealthProblemKind::AgentTraceDbSchemaNotReady,
                         category: HealthCategory::GlobalState,
                         severity: HealthSeverity::Error,
@@ -175,10 +190,13 @@ pub async fn diagnose_agent_trace_db_health(repo_root: Option<&Path>) -> Vec<Hea
                         ),
                         next_action: "manual_steps",
                     });
-                }
-            }
-            Err(error) => {
-                problems.push(HealthProblem {
+        }
+        Err(error) => {
+            let error = match error {
+                ExistingRepositoryDbError::Unreadable(source) => source.to_string(),
+                other => other.to_string(),
+            };
+            problems.push(HealthProblem {
                     kind: HealthProblemKind::AgentTraceDbConnectionFailed,
                     category: HealthCategory::GlobalState,
                     severity: HealthSeverity::Error,
@@ -192,7 +210,6 @@ pub async fn diagnose_agent_trace_db_health(repo_root: Option<&Path>) -> Vec<Hea
                     ),
                     next_action: "manual_steps",
                 });
-            }
         }
     }
 
@@ -226,4 +243,164 @@ fn resolve_lifecycle_agent_trace_db_path(repo_root: Option<&Path>) -> Result<Pat
         "Agent Trace diagnostics require a Git repository; run 'sce doctor' inside a repository \
          or configure agent_trace.repository_id in .sce/config.json"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dir_entries(dir: &Path) -> Vec<String> {
+        let mut names = std::fs::read_dir(dir)
+            .expect("read dir")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    async fn schema_objects(path: &Path) -> Vec<String> {
+        let db = RepositoryAgentTraceDb::open_existing_without_migrations_at(path)
+            .await
+            .expect("read-only open");
+        let mut names = db
+            .query_map("SELECT name FROM sqlite_master ORDER BY name", (), |row| {
+                row.get::<String>(0).map_err(Into::into)
+            })
+            .await
+            .expect("schema query");
+        names.sort();
+        names
+    }
+
+    async fn count_rows(path: &Path, table: &str) -> i64 {
+        let db = RepositoryAgentTraceDb::open_existing_without_migrations_at(path)
+            .await
+            .expect("read-only open");
+        db.query_map(&format!("SELECT COUNT(*) FROM {table}"), (), |row| {
+            row.get::<i64>(0).map_err(Into::into)
+        })
+        .await
+        .expect("count query")[0]
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_database_is_not_created_and_leaves_no_parent_directory() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir
+            .path()
+            .join("state")
+            .join("repos")
+            .join("id")
+            .join("agent-trace.db");
+
+        let problems = inspect_existing_db_schema(&path, || {}).await;
+        let again = inspect_existing_db_schema(&path, || {}).await;
+
+        assert!(problems.is_empty());
+        assert!(again.is_empty());
+        assert!(!path.exists());
+        assert!(dir_entries(dir.path()).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn database_removed_immediately_before_open_is_not_recreated() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("agent-trace.db");
+        RepositoryAgentTraceDb::new_at(&path).await.expect("create");
+        assert!(path.is_file());
+
+        let problems = inspect_existing_db_schema(&path, || {
+            for entry in std::fs::read_dir(dir.path()).expect("read dir") {
+                std::fs::remove_file(entry.expect("entry").path()).expect("remove");
+            }
+        })
+        .await;
+
+        assert!(problems.is_empty());
+        assert!(dir_entries(dir.path()).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn valid_database_is_inspected_without_problems_or_logical_change() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("agent-trace.db");
+        let db = RepositoryAgentTraceDb::new_at(&path).await.expect("create");
+        db.verify_or_initialize_repository_metadata("repo")
+            .await
+            .expect("metadata");
+        drop(db);
+        let objects_before = schema_objects(&path).await;
+        let migrations_before = count_rows(&path, "__sce_migrations").await;
+        let metadata_before = count_rows(&path, "repository_metadata").await;
+
+        let problems = inspect_existing_db_schema(&path, || {}).await;
+        let first_files = dir_entries(dir.path());
+        let repeat = inspect_existing_db_schema(&path, || {}).await;
+
+        assert!(problems.is_empty());
+        assert!(repeat.is_empty());
+        assert_eq!(dir_entries(dir.path()), first_files);
+        assert_eq!(schema_objects(&path).await, objects_before);
+        assert_eq!(
+            count_rows(&path, "__sce_migrations").await,
+            migrations_before
+        );
+        assert_eq!(
+            count_rows(&path, "repository_metadata").await,
+            metadata_before
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn incompatible_schema_is_diagnosed_without_initializing_or_migrating() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("agent-trace.db");
+        let raw = RepositoryAgentTraceDb::open_without_migrations_at(&path)
+            .await
+            .expect("create empty");
+        raw.execute("CREATE TABLE unrelated (id INTEGER)", ())
+            .await
+            .expect("unrelated table");
+        drop(raw);
+        let objects_before = schema_objects(&path).await;
+
+        let problems = inspect_existing_db_schema(&path, || {}).await;
+
+        assert_eq!(problems.len(), 1);
+        assert_eq!(
+            problems[0].kind,
+            HealthProblemKind::AgentTraceDbSchemaNotReady
+        );
+        assert!(problems[0].summary.contains("is not ready"));
+        assert_eq!(schema_objects(&path).await, objects_before);
+        assert!(!objects_before.iter().any(|name| name == "__sce_migrations"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn non_database_file_is_unreadable_and_left_byte_identical() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("agent-trace.db");
+        std::fs::write(
+            &path,
+            b"this is not a sqlite database at all, just some text bytes....",
+        )
+        .expect("write");
+        let before = std::fs::read(&path).expect("read");
+
+        let problems = inspect_existing_db_schema(&path, || {}).await;
+
+        assert_eq!(problems.len(), 1);
+        assert_ne!(
+            problems[0].kind,
+            HealthProblemKind::AgentTraceDbSchemaNotReady
+        );
+        assert_eq!(std::fs::read(&path).expect("read"), before);
+        assert_eq!(dir_entries(dir.path()), vec!["agent-trace.db".to_string()]);
+    }
 }
