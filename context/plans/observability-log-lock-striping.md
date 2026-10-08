@@ -83,13 +83,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Replace the path registry with fixed lock striping and release the guard before fallback` (status:todo)
+- [x] T01: `Replace the path registry with fixed lock striping and release the guard before fallback` (status:done)
+  - Completed: 2026-10-08
+  - Files changed: `cli/src/services/observability.rs`
+  - Result: Replaced `file_log_lock` registry with `LOG_LOCK_STRIPES = 64` / `static LOG_LOCKS` and `log_lock_stripe_index`/`log_lock_stripe` (deterministic `DefaultHasher::new()`); `append_log_line_with_cleanup` scopes the primary guard in an inner block that returns on success and yields the persist error, so `attempt_v2_log_fallback` runs only after the guard is dropped and never after lock-acquisition failure; `append_log_line_once_with_cleanup` uses the stripe directly. Poisoned-lock error text unchanged; only the retention `cleanup` callback runs caller code under the guard.
+  - Verify: `observability` tests passed (8/8); `rg "BTreeMap|OnceLock|Arc<Mutex|dyn |unsafe|Box<|into_inner|clear_poison|PoisonError"` over `observability.rs` returned no hits.
+  - Context impact: important — `context/sce/cli-observability-contract.md` "serializes writes independently per path" is now inaccurate (handled by T03).
+  - Deviation: the plan's doc comment on same-process/poisoning semantics was not added in code, per the user's no-comments-in-code preference; the content is deferred to T03's contract doc.
   - Task ID: T01
   - Scope: In — in `observability.rs`, add `const LOG_LOCK_STRIPES: usize = 64` and `static LOG_LOCKS: [Mutex<()>; LOG_LOCK_STRIPES] = [const { Mutex::new(()) }; LOG_LOCK_STRIPES]`; a small `log_lock_stripe(path) -> &'static Mutex<()>` using a deterministic std hash modulo the stripe count; remove `file_log_lock`, the `BTreeMap`/`Arc`/`OnceLock` imports, and the registry; update `append_log_line_with_cleanup` so the primary guard is dropped before the v2 fallback is attempted on both success and failure paths (scope the guard in an inner block/helper covering lock + persist + retention, returning the persist result; call `attempt_v2_log_fallback` only after that scope ends, and never when lock acquisition itself failed) and `append_log_line_once_with_cleanup` takes the stripe directly; keep error strings, retention-inside-guard, and lock-failure-skips-fallback behavior; keep existing poisoned-lock error handling unchanged (no recovery, no new fallback) and confirm by inspection that only the cleanup callback can panic under the guard; add a doc comment stating same-process-only synchronization, no cross-process guarantee, that stripe collisions only add contention, and that a poisoned stripe now affects all paths on that stripe. Out — tests beyond keeping existing ones green, context docs, any other observability change.
   - Dependencies: none
   - Done when: the registry is gone, both append functions use the static stripes, the fallback cannot nest a lock on the same stripe (AC4a ordering holds), poisoned-lock handling is unchanged, no `dyn`/`Box`/`unsafe`/new dependency is introduced, and all existing `observability` tests pass unchanged.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml observability`; `nix shell nixpkgs#ripgrep -c rg -n "BTreeMap|OnceLock|Arc<Mutex" cli/src/services/observability.rs`; `rg -n "into_inner|clear_poison|PoisonError"` shows no new hits.
-  - Context synchronization: pending
+  - Context synchronization: synced
 
 - [ ] T02: `Add focused logging synchronization regression tests` (status:todo)
   - Task ID: T02
