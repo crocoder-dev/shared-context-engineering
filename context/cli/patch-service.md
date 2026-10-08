@@ -38,7 +38,6 @@ All types derive `Clone, Debug, Deserialize, Eq, PartialEq, Serialize` and suppo
 Storage-agnostic helpers for reconstructing `ParsedPatch` from serialized JSON content:
 
 - `load_patch_from_json(input: &str) -> Result<ParsedPatch, PatchLoadError>` — loads a `ParsedPatch` from a JSON string; callers who have already read JSON from a database or file can pass the string directly
-- `load_patch_from_json_bytes(input: &[u8]) -> Result<ParsedPatch, PatchLoadError>` — loads a `ParsedPatch` from JSON bytes; convenient when the caller has raw bytes (for example, from a database BLOB column or file read) rather than a UTF-8 string
 
 Both functions wrap `serde_json::from_str`/`serde_json::from_slice` and map serde errors to actionable `PatchLoadError` messages. `PatchLoadError` carries a `message` field describing why the JSON payload could not be reconstructed into a valid `ParsedPatch`.
 
@@ -96,7 +95,7 @@ builder, pending state, or schema migration is introduced.
 | Operation | Wired into | Notes |
 |-----------|-----------|-------|
 | `parse_patch` | Hook runtime, Agent Trace DB recent-row parsing, tests | Consumed by `post-commit` capture flow and `recent_diff_trace_patches` to parse stored raw `diff_traces.patch` text |
-| `load_patch_from_json` / `load_patch_from_json_bytes` | Storage-agnostic JSON reconstruction callers | Reconstructs serialized `ParsedPatch` JSON when callers already have JSON payloads; not used for raw `diff_traces.patch` text in `recent_diff_trace_patches` |
+| `load_patch_from_json` | Storage-agnostic JSON reconstruction callers | Reconstructs serialized `ParsedPatch` JSON when callers already have JSON payloads; not used for raw `diff_traces.patch` text in `recent_diff_trace_patches` |
 | `intersect_patches` | Post-commit hook runtime | Combines recent patches then intersects with current commit patch |
 | `combine_patches` | Post-commit hook runtime | Combines chronological recent patches before intersection |
 

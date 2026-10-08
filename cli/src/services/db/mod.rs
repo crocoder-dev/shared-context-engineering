@@ -12,7 +12,6 @@ use std::{
 
 use anyhow::{Context, Result};
 use rand::SeedableRng;
-use turso::Value as TursoValue;
 
 use crate::services::config::{AgentTraceDbRetryConfig, DatabaseRetryConfig};
 use crate::services::lifecycle::{
@@ -298,7 +297,6 @@ async fn execute_insert_pair_if_absent_body(
     Ok(true)
 }
 
-#[allow(dead_code)]
 pub struct TransactionStatement<'a> {
     sql: &'a str,
     params: turso::params::Params,
@@ -306,7 +304,6 @@ pub struct TransactionStatement<'a> {
 }
 
 impl<'a> TransactionStatement<'a> {
-    #[allow(dead_code)]
     pub fn new(sql: &'a str, params: impl turso::params::IntoParams) -> Result<Self> {
         let params = turso::params::IntoParams::into_params(params)
             .map_err(|e| anyhow::anyhow!("parameter conversion failed: {sql}: {e}"))?;
@@ -318,7 +315,6 @@ impl<'a> TransactionStatement<'a> {
         })
     }
 
-    #[allow(dead_code)]
     pub fn expect_rows_affected(mut self, expected: u64) -> Self {
         self.expected_rows_affected = Some(expected);
         self
@@ -470,13 +466,11 @@ fn classify_turso_error(db_name: &str, action: &str, error: &turso::Error) -> Wr
     }
 }
 
-#[allow(dead_code)]
 enum CasBatchAttemptOutcome {
     Settled(bool),
     Deterministic(anyhow::Error),
 }
 
-#[allow(dead_code)]
 fn cas_batch_failure_into_attempt_result(
     failure: WriteAttemptFailure,
 ) -> Result<CasBatchAttemptOutcome> {
@@ -486,7 +480,6 @@ fn cas_batch_failure_into_attempt_result(
     }
 }
 
-#[allow(dead_code)]
 async fn execute_cas_batch_body(
     tx: &turso::transaction::Transaction<'_>,
     db_name: &str,
@@ -813,15 +806,6 @@ pub struct TursoDb<M: DbSpec> {
     core: TursoConnectionCore<M>,
 }
 
-/// Fully fetched SQL query result for deterministic rendering outside the
-/// async Turso row iterator lifetime.
-#[derive(Clone, Debug, PartialEq)]
-#[allow(dead_code)]
-pub struct QueryRows {
-    pub columns: Vec<String>,
-    pub rows: Vec<Vec<TursoValue>>,
-}
-
 /// Generic encrypted Turso database adapter.
 ///
 /// Mirrors the structural seams of [`TursoDb`] while reserving encrypted local
@@ -984,96 +968,6 @@ impl<M: DbSpec> TursoDb<M> {
         .await
     }
 
-    /// Execute a SQL query that returns rows.
-    ///
-    /// # Arguments
-    /// * `sql` - SQL query, which may contain `?` placeholders.
-    /// * `params` - Parameter values implementing `IntoParams`.
-    ///
-    /// # Returns
-    /// A `turso::Rows` iterator over the result set.
-    #[allow(dead_code)]
-    pub async fn query(
-        &self,
-        sql: &str,
-        params: impl turso::params::IntoParams,
-    ) -> Result<turso::Rows> {
-        let params = turso::params::IntoParams::into_params(params).map_err(|e| {
-            anyhow::anyhow!("{} parameter conversion failed: {sql}: {e}", M::db_name())
-        })?;
-        let operation_name = format!("query {} database", M::db_name());
-
-        run_with_retry_elapsed(
-            resolve_query_retry_policy::<M>(),
-            &operation_name,
-            QUERY_RETRY_HINT,
-            async |_| {
-                async {
-                    self.core
-                        .conn
-                        .query(sql, params.clone())
-                        .await
-                        .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))
-                }
-                .await
-            },
-        )
-        .await
-    }
-
-    /// Execute a SQL query and synchronously fetch column names plus raw values.
-    #[allow(dead_code)]
-    pub async fn query_values(
-        &self,
-        sql: &str,
-        params: impl turso::params::IntoParams,
-    ) -> Result<QueryRows> {
-        let params = turso::params::IntoParams::into_params(params).map_err(|e| {
-            anyhow::anyhow!("{} parameter conversion failed: {sql}: {e}", M::db_name())
-        })?;
-        let operation_name = format!("query and fetch {} database values", M::db_name());
-
-        run_with_retry_elapsed(
-            resolve_query_retry_policy::<M>(),
-            &operation_name,
-            QUERY_RETRY_HINT,
-            async |_| {
-                async {
-                    let mut rows =
-                        self.core
-                            .conn
-                            .query(sql, params.clone())
-                            .await
-                            .map_err(|e| {
-                                anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name())
-                            })?;
-                    let columns = rows.column_names();
-                    let column_count = rows.column_count();
-                    let mut fetched_rows = Vec::new();
-
-                    while let Some(row) = rows.next().await.map_err(|e| {
-                        anyhow::anyhow!("{} row fetch failed: {sql}: {e}", M::db_name())
-                    })? {
-                        let mut values = Vec::with_capacity(column_count);
-                        for column_index in 0..column_count {
-                            values.push(row.get_value(column_index).map_err(|e| {
-                                anyhow::anyhow!("{} value fetch failed: {sql}: {e}", M::db_name())
-                            })?);
-                        }
-                        fetched_rows.push(values);
-                    }
-
-                    Ok(QueryRows {
-                        columns,
-                        rows: fetched_rows,
-                    })
-                }
-                .await
-            },
-        )
-        .await
-    }
-
     /// Run an "insert row pair if absent" write transaction.
     ///
     /// If `exists_sql` (bound to `exists_params`) finds a matching row, no
@@ -1210,7 +1104,6 @@ impl<M: DbSpec> TursoDb<M> {
     /// the whole transaction and no other operation on this adapter can run
     /// inside it. Dropping the future uncommitted schedules a rollback that
     /// runs on the connection's next use rather than immediately.
-    #[allow(dead_code)]
     pub async fn execute_transactional_cas_batch(
         &mut self,
         operation_name: &str,
@@ -1470,43 +1363,6 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
                         .execute(sql, params.clone())
                         .await
                         .map_err(|e| anyhow::anyhow!("{} execute failed: {sql}: {e}", M::db_name()))
-                }
-                .await
-            },
-        )
-        .await
-    }
-
-    /// Execute a SQL query that returns rows.
-    ///
-    /// # Arguments
-    /// * `sql` - SQL query, which may contain `?` placeholders.
-    /// * `params` - Parameter values implementing `IntoParams`.
-    ///
-    /// # Returns
-    /// A `turso::Rows` iterator over the result set.
-    #[allow(dead_code)]
-    pub async fn query(
-        &self,
-        sql: &str,
-        params: impl turso::params::IntoParams,
-    ) -> Result<turso::Rows> {
-        let params = turso::params::IntoParams::into_params(params).map_err(|e| {
-            anyhow::anyhow!("{} parameter conversion failed: {sql}: {e}", M::db_name())
-        })?;
-        let operation_name = format!("query encrypted {} database", M::db_name());
-
-        run_with_retry_elapsed(
-            resolve_query_retry_policy::<M>(),
-            &operation_name,
-            QUERY_RETRY_HINT,
-            async |_| {
-                async {
-                    self.core
-                        .conn
-                        .query(sql, params.clone())
-                        .await
-                        .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))
                 }
                 .await
             },

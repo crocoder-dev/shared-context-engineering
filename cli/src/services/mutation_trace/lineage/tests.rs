@@ -57,7 +57,6 @@ fn a_removed_line_loses_its_provenance_permanently() {
         lineage.provenance_at("f.rs", 2, "foo"),
         LineProvenance::Unknown
     );
-    assert_eq!(lineage.tracked_paths().count(), 1);
 }
 
 #[test]
@@ -158,34 +157,6 @@ fn duplicate_lines_do_not_let_provenance_jump_between_occurrences() {
     );
     assert_eq!(
         lineage.provenance_at("f.rs", 3, "foo"),
-        LineProvenance::Unknown
-    );
-}
-
-#[test]
-fn a_deleted_file_drops_out_of_the_lineage() {
-    let mut lineage = baseline(&[("f.rs", Some("a\nb\n"))]);
-    lineage
-        .apply(
-            &diff("diff --git a/f.rs b/f.rs\ndeleted file mode 100644\n--- a/f.rs\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-a\n-b\n"),
-            &TransitionOrigin::MutationNonAi,
-        )
-        .expect("delete");
-    assert_eq!(lineage.tracked_paths().count(), 0);
-}
-
-#[test]
-fn reset_file_returns_a_file_to_a_conservative_baseline() {
-    let mut lineage = baseline(&[("f.rs", Some("a\n"))]);
-    lineage
-        .apply(
-            &diff("diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1,1 +1,2 @@\n a\n+foo\n"),
-            &TransitionOrigin::MutationAi(scope("ai")),
-        )
-        .expect("add");
-    lineage.reset_file("f.rs", Some("a\nfoo\n"));
-    assert_eq!(
-        lineage.provenance_at("f.rs", 2, "foo"),
         LineProvenance::Unknown
     );
 }

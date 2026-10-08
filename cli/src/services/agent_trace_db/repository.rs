@@ -10,11 +10,10 @@ use crate::{
 
 use super::{
     insert_agent_trace_with, insert_conversation_text_event_with, insert_diff_trace_with,
-    insert_message_with, insert_messages_with, insert_part_with, insert_parts_with,
-    insert_post_commit_patch_intersection_with, recent_diff_trace_patches_with,
-    upsert_claude_model_state_with, AgentTraceInsert, ClaudeModelStateObservation, DiffTraceInsert,
-    InsertMessageInsert, InsertPartInsert, PostCommitPatchIntersectionInsert,
-    RecentDiffTracePatches,
+    insert_messages_with, insert_parts_with, insert_post_commit_patch_intersection_with,
+    recent_diff_trace_patches_with, upsert_claude_model_state_with, AgentTraceInsert,
+    ClaudeModelStateObservation, DiffTraceInsert, InsertMessageInsert, InsertPartInsert,
+    PostCommitPatchIntersectionInsert, RecentDiffTracePatches,
 };
 
 const REPOSITORY_AGENT_TRACE_SCHEMA_SETUP_GUIDANCE: &str = "Run 'sce setup'.";
@@ -286,23 +285,10 @@ impl RepositoryAgentTraceDb {
         recent_diff_trace_patches_with(self, cutoff_time_ms, end_time_ms).await
     }
 
-    /// Insert a message row, ignoring duplicate `(session_id, message_id)`
-    /// rows.
-    #[allow(dead_code)]
-    pub async fn insert_message(&self, input: InsertMessageInsert) -> Result<u64> {
-        insert_message_with(self, input).await
-    }
-
     /// Insert message rows with one multi-row statement, ignoring duplicate
     /// `(session_id, message_id)` rows.
     pub async fn insert_messages(&self, inputs: Vec<InsertMessageInsert>) -> Result<u64> {
         insert_messages_with(self, inputs).await
-    }
-
-    /// Append a part row (no upsert; multiple rows per message allowed).
-    #[allow(dead_code)]
-    pub async fn insert_part(&self, input: InsertPartInsert) -> Result<u64> {
-        insert_part_with(self, input).await
     }
 
     /// Append part rows with one multi-row statement.

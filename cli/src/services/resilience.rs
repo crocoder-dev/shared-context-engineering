@@ -98,7 +98,10 @@ where
     ))
 }
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "tracked for removal in cli-async-persistence-cleanup-pr3 T04"
+)]
 pub fn run_with_retry_sync<T, Op>(
     policy: RetryPolicy,
     operation_name: &str,

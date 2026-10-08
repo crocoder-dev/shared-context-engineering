@@ -97,14 +97,6 @@ pub struct EmbeddedAsset {
     pub sha256: [u8; 32],
 }
 
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RequiredHookAsset {
-    PreCommit,
-    CommitMsg,
-    PostCommit,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OptionalWorkflow {
     pub id: &'static str,
@@ -119,19 +111,6 @@ include!(concat!(env!("OUT_DIR"), "/optional_workflows.rs"));
 
 pub fn iter_required_hook_assets() -> std::slice::Iter<'static, EmbeddedAsset> {
     HOOK_EMBEDDED_ASSETS.iter()
-}
-
-#[allow(dead_code)]
-pub fn get_required_hook_asset(hook: RequiredHookAsset) -> Option<&'static EmbeddedAsset> {
-    let hook_name = match hook {
-        RequiredHookAsset::PreCommit => default_paths::hook_dir::PRE_COMMIT,
-        RequiredHookAsset::CommitMsg => default_paths::hook_dir::COMMIT_MSG,
-        RequiredHookAsset::PostCommit => default_paths::hook_dir::POST_COMMIT,
-    };
-
-    HOOK_EMBEDDED_ASSETS
-        .iter()
-        .find(|asset| asset.relative_path == hook_name)
 }
 
 fn embedded_assets_for_concrete_target(target: SetupTarget) -> &'static [EmbeddedAsset] {
@@ -950,19 +929,6 @@ impl std::fmt::Display for SetupPromptTarget {
 
 fn setup_prompt_target_label(target: SetupPromptTarget) -> String {
     prompt::setup_prompt_target_label(target)
-}
-
-#[allow(dead_code)]
-fn setup_prompt_target_label_with_color_policy(
-    target: SetupPromptTarget,
-    color_enabled: bool,
-) -> String {
-    prompt::setup_prompt_target_label_with_color_policy(target, color_enabled)
-}
-
-#[allow(dead_code)]
-fn setup_prompt_title_with_color_policy(color_enabled: bool) -> String {
-    prompt::setup_prompt_title_with_color_policy(color_enabled)
 }
 
 mod prompt;

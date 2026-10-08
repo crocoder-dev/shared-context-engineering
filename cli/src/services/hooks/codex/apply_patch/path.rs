@@ -32,17 +32,6 @@ pub(crate) fn resolve_codex_patch_paths(
     Ok(())
 }
 
-#[allow(dead_code)]
-pub(crate) fn resolve_codex_patch_path(
-    repository_root: &Path,
-    event_cwd: &str,
-    codex_path: &str,
-) -> Result<String> {
-    let git_root = resolve_git_root(repository_root)?;
-    let event_cwd = resolve_event_cwd(&git_root, event_cwd)?;
-    resolve_path_from_cwd(&git_root, &event_cwd, codex_path)
-}
-
 fn resolve_git_root(repository_root: &Path) -> Result<PathBuf> {
     let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])

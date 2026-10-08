@@ -43,12 +43,6 @@ pub(crate) enum RecoveryState {
     },
 }
 
-impl RecoveryState {
-    pub(crate) fn is_clear(&self) -> bool {
-        matches!(self, RecoveryState::Clear)
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct AdapterAttempt {
     pub scope_id: String,
@@ -366,22 +360,6 @@ pub(crate) async fn normalize_recovery_after_boundary_lock_acquired(git_dir: &Pa
     .await
 }
 
-pub(crate) async fn arm_recovery(git_dir: &Path) -> Result<u64> {
-    with_locked_state(git_dir, |state| {
-        let generation = match state.recovery {
-            RecoveryState::Pending { generation } => generation,
-            RecoveryState::Clear | RecoveryState::Flushing { .. } => {
-                let generation = state.next_recovery_generation;
-                state.next_recovery_generation += 1;
-                generation
-            }
-        };
-        state.recovery = RecoveryState::Pending { generation };
-        Ok(StateTransaction::Persist(generation))
-    })
-    .await
-}
-
 fn transition_to_pending_abandon_and_arm_flush(
     state: &mut AdapterState,
     scope_ids: &[String],
@@ -447,24 +425,6 @@ pub(crate) async fn reprove_dead_owner_pending_start_and_begin_repair(
 
         let generation = transition_to_pending_abandon_and_arm_flush(state, &dead_scope_ids);
         Ok(StateTransaction::Persist(Some(generation)))
-    })
-    .await
-}
-
-pub(crate) async fn arm_and_begin_recovery_flush(git_dir: &Path) -> Result<u64> {
-    with_locked_state(git_dir, |state| {
-        let generation = match state.recovery {
-            RecoveryState::Pending { generation } | RecoveryState::Flushing { generation } => {
-                generation
-            }
-            RecoveryState::Clear => {
-                let generation = state.next_recovery_generation;
-                state.next_recovery_generation += 1;
-                generation
-            }
-        };
-        state.recovery = RecoveryState::Flushing { generation };
-        Ok(StateTransaction::Persist(generation))
     })
     .await
 }

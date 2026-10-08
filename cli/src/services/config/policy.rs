@@ -33,7 +33,6 @@ pub(crate) struct BashPolicyConfig {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub(crate) struct RuntimeBashPolicyPreset {
     pub(crate) id: String,
     pub(crate) argv_prefixes: Vec<Vec<String>>,
@@ -121,7 +120,6 @@ fn builtin_bash_policy_catalog() -> &'static BuiltinBashPolicyCatalog {
     })
 }
 
-#[allow(dead_code)]
 pub(crate) fn runtime_bash_policy_presets() -> Vec<RuntimeBashPolicyPreset> {
     builtin_bash_policy_catalog()
         .presets

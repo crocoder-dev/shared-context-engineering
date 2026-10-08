@@ -392,6 +392,10 @@ impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
         self.post_batch(request).await
     }
 
+    #[allow(
+        dead_code,
+        reason = "diff_traces compatibility surface retained per context/decisions/2026-10-01-retire-diff-traces-remote-sync-compatibility-gate.md"
+    )]
     pub async fn ingest_diff_traces(
         &self,
         request: &AgentTraceIngestionBatchRequest<AgentTraceDiffTraceExportRow>,
