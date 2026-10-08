@@ -33,8 +33,10 @@ harness-wiring PR's).
 ## Status: retained and unwired (PR3)
 
 The `cli-async-persistence-cleanup-pr3` plan chose **retain and defer**: this
-pass and its helpers are kept, but nothing in production calls them and PR3 adds
-no caller, hook, command or doctor wiring. Accepted consequence: pins created
+pass and its helpers are kept, but nothing in production called them and PR3
+added no caller, hook, command or doctor wiring. `sce doctor --fix` is now the
+explicit caller (see [`doctor-ref-reconciliation.md`](doctor-ref-reconciliation.md));
+no automatic caller exists. Historical consequence under PR3: pins created
 by `pin_tree` in `coordinator.rs` are never deleted in production, so pins left
 by crashed or failed `coordinate()` paths accumulate until removed by hand
 (`git update-ref -d refs/sce/mutation-cursor/<worktree-id>/<tree-sha>`).
