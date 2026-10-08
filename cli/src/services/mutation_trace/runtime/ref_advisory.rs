@@ -8,26 +8,71 @@ use std::time::Duration;
 
 use super::maintenance_state::{
     derive_git_dir, plan_advisory, read_state, state_path, write_state_atomically,
-    AdvisoryDecision, MaintenanceState,
+    AdvisoryDecision, MaintenanceState, PersistFailure,
 };
 use super::worktree_lock::{acquire_inner, WorktreeLockError};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) const RECONCILIATION_RECOMMENDED_MESSAGE: &str =
+    "Reconciliation is recommended. Run sce doctor --fix.";
+
+#[derive(Debug)]
 pub(super) enum AdvisoryOutcome {
     Anchored,
     NoAction,
     Advised,
+    AdvisedDurabilityUncertain { warning: PersistFailure },
     Busy,
+    StateWriteFailed { warning: PersistFailure },
     StateUnavailable,
+}
+
+impl AdvisoryOutcome {
+    pub(super) fn recommendation(&self) -> Option<&'static str> {
+        match self {
+            AdvisoryOutcome::Advised | AdvisoryOutcome::AdvisedDurabilityUncertain { .. } => {
+                Some(RECONCILIATION_RECOMMENDED_MESSAGE)
+            }
+            AdvisoryOutcome::Anchored
+            | AdvisoryOutcome::NoAction
+            | AdvisoryOutcome::Busy
+            | AdvisoryOutcome::StateWriteFailed { .. }
+            | AdvisoryOutcome::StateUnavailable => None,
+        }
+    }
+
+    pub(super) fn persistence_warning(&self) -> Option<&PersistFailure> {
+        match self {
+            AdvisoryOutcome::AdvisedDurabilityUncertain { warning }
+            | AdvisoryOutcome::StateWriteFailed { warning } => Some(warning),
+            AdvisoryOutcome::Anchored
+            | AdvisoryOutcome::NoAction
+            | AdvisoryOutcome::Advised
+            | AdvisoryOutcome::Busy
+            | AdvisoryOutcome::StateUnavailable => None,
+        }
+    }
+}
+
+fn outcome_after_write(
+    decision: AdvisoryDecision,
+    write: Result<(), PersistFailure>,
+) -> AdvisoryOutcome {
+    match (decision, write) {
+        (AdvisoryDecision::Anchored, Ok(())) => AdvisoryOutcome::Anchored,
+        (AdvisoryDecision::NoAction, Ok(())) => AdvisoryOutcome::NoAction,
+        (AdvisoryDecision::Advised, Ok(())) => AdvisoryOutcome::Advised,
+        (AdvisoryDecision::Advised, Err(warning @ PersistFailure::DurabilityUncertain { .. })) => {
+            AdvisoryOutcome::AdvisedDurabilityUncertain { warning }
+        }
+        (_, Err(warning)) => AdvisoryOutcome::StateWriteFailed { warning },
+    }
 }
 
 pub(super) fn advise_if_due<C>(repository_root: &Path, now: C) -> AdvisoryOutcome
 where
     C: Fn() -> i64,
 {
-    advise_if_due_with(repository_root, now, |path, state| {
-        write_state_atomically(path, state, |from, to| std::fs::rename(from, to))
-    })
+    advise_if_due_with(repository_root, now, write_state_atomically)
 }
 
 pub(super) fn advise_if_due_with<C, W>(
@@ -37,7 +82,7 @@ pub(super) fn advise_if_due_with<C, W>(
 ) -> AdvisoryOutcome
 where
     C: Fn() -> i64,
-    W: Fn(&Path, &MaintenanceState) -> std::io::Result<()>,
+    W: Fn(&Path, &MaintenanceState) -> Result<(), PersistFailure>,
 {
     let Some(git_dir) = derive_git_dir(repository_root) else {
         return AdvisoryOutcome::StateUnavailable;
@@ -63,18 +108,10 @@ where
     };
     let now_ms = now();
     let (decision, pending) = plan_advisory(&locked, now_ms);
-    let outcome = match decision {
-        AdvisoryDecision::Anchored => AdvisoryOutcome::Anchored,
-        AdvisoryDecision::NoAction => AdvisoryOutcome::NoAction,
-        AdvisoryDecision::Advised => AdvisoryOutcome::Advised,
-    };
 
     let result = match pending {
-        Some(next) => match write_state(&path, &next) {
-            Ok(()) => outcome,
-            Err(_) => AdvisoryOutcome::StateUnavailable,
-        },
-        None => outcome,
+        Some(next) => outcome_after_write(decision, write_state(&path, &next)),
+        None => outcome_after_write(decision, Ok(())),
     };
     drop(lock);
     result
@@ -86,11 +123,13 @@ mod tests {
     use std::process::Command;
 
     use super::super::maintenance_state::{
-        evaluate_recommendation, read_state, state_path, write_state_atomically, MaintenanceState,
-        StateRead, FUTURE_SKEW_TOLERANCE_MS, RECONCILIATION_ADVISORY_AFTER_MS,
+        evaluate_recommendation, read_state, record_failure, record_success, state_path,
+        write_state_atomically, write_state_atomically_with, AttemptOutcome,
+        FaultInjectingFilesystem, MaintenanceState, PersistFailure, PersistPhase, StateRead,
+        StoredReport, FUTURE_SKEW_TOLERANCE_MS, RECONCILIATION_ADVISORY_AFTER_MS,
     };
     use super::super::worktree_lock::acquire_inner;
-    use super::{advise_if_due_with, AdvisoryOutcome};
+    use super::{advise_if_due_with, AdvisoryOutcome, RECONCILIATION_RECOMMENDED_MESSAGE};
 
     const NOW: i64 = 1_000_000_000_000;
 
@@ -104,8 +143,8 @@ mod tests {
         assert!(output.status.success());
     }
 
-    fn real_write(path: &Path, state: &MaintenanceState) -> std::io::Result<()> {
-        write_state_atomically(path, state, |from, to| std::fs::rename(from, to))
+    fn real_write(path: &Path, state: &MaintenanceState) -> Result<(), PersistFailure> {
+        write_state_atomically(path, state)
     }
 
     fn advise(root: &Path, now: i64) -> AdvisoryOutcome {
@@ -130,12 +169,15 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         init_repo(dir.path());
 
-        assert_eq!(advise(dir.path(), NOW), AdvisoryOutcome::Anchored);
+        assert!(matches!(advise(dir.path(), NOW), AdvisoryOutcome::Anchored));
         let path = state_path(&dir.path().join(".git"));
         let first = std::fs::read(&path).expect("state bytes");
         assert_eq!(stored(dir.path()).anchor, Some(NOW));
 
-        assert_eq!(advise(dir.path(), NOW + 1000), AdvisoryOutcome::NoAction);
+        assert!(matches!(
+            advise(dir.path(), NOW + 1000),
+            AdvisoryOutcome::NoAction
+        ));
         assert_eq!(std::fs::read(&path).expect("state bytes"), first);
     }
 
@@ -146,13 +188,16 @@ mod tests {
         advise(dir.path(), NOW);
 
         let due = NOW + RECONCILIATION_ADVISORY_AFTER_MS;
-        assert_eq!(advise(dir.path(), due), AdvisoryOutcome::Advised);
+        assert!(matches!(advise(dir.path(), due), AdvisoryOutcome::Advised));
         assert_eq!(stored(dir.path()).last_advised, Some(due));
-        assert_eq!(advise(dir.path(), due + 1000), AdvisoryOutcome::NoAction);
-        assert_eq!(
+        assert!(matches!(
+            advise(dir.path(), due + 1000),
+            AdvisoryOutcome::NoAction
+        ));
+        assert!(matches!(
             advise(dir.path(), due + RECONCILIATION_ADVISORY_AFTER_MS),
             AdvisoryOutcome::Advised
-        );
+        ));
     }
 
     #[test]
@@ -167,7 +212,7 @@ mod tests {
         let path = state_path(&dir.path().join(".git"));
         let before = std::fs::read(&path).expect("state bytes");
 
-        assert_eq!(advise(dir.path(), NOW), AdvisoryOutcome::NoAction);
+        assert!(matches!(advise(dir.path(), NOW), AdvisoryOutcome::NoAction));
         assert_eq!(std::fs::read(&path).expect("state bytes"), before);
     }
 
@@ -182,7 +227,7 @@ mod tests {
         };
         seed(dir.path(), &invalid);
 
-        assert_eq!(advise(dir.path(), NOW), AdvisoryOutcome::Advised);
+        assert!(matches!(advise(dir.path(), NOW), AdvisoryOutcome::Advised));
         let normalized = stored(dir.path());
         assert_eq!(normalized.last_advised, Some(NOW));
         assert_eq!(normalized.anchor, Some(NOW));
@@ -190,7 +235,7 @@ mod tests {
 
         let path = state_path(&dir.path().join(".git"));
         let bytes = std::fs::read(&path).expect("state bytes");
-        assert_eq!(advise(dir.path(), NOW), AdvisoryOutcome::NoAction);
+        assert!(matches!(advise(dir.path(), NOW), AdvisoryOutcome::NoAction));
         assert_eq!(std::fs::read(&path).expect("state bytes"), bytes);
     }
 
@@ -208,7 +253,7 @@ mod tests {
 
         let held = acquire_inner(&dir.path().join(".git"), std::time::Duration::ZERO, || {})
             .expect("hold lock");
-        assert_eq!(advise(dir.path(), NOW), AdvisoryOutcome::Busy);
+        assert!(matches!(advise(dir.path(), NOW), AdvisoryOutcome::Busy));
         assert_eq!(std::fs::read(&path).expect("state bytes"), before);
         drop(held);
 
@@ -217,8 +262,155 @@ mod tests {
         assert!(recommendation.invalid_timestamps);
     }
 
+    fn advise_with_fault(root: &Path, now: i64, phase: PersistPhase) -> AdvisoryOutcome {
+        advise_if_due_with(
+            root,
+            || now,
+            |path, state| {
+                write_state_atomically_with(
+                    &FaultInjectingFilesystem::failing_at(phase),
+                    path,
+                    state,
+                )
+            },
+        )
+    }
+
+    fn failed_state(now: i64) -> MaintenanceState {
+        record_failure(
+            &MaintenanceState::default(),
+            now,
+            "agent_trace_db_unavailable",
+            "agent trace database is missing",
+        )
+    }
+
     #[test]
-    fn maintenance_advisory_write_failure_emits_no_advice_and_keeps_previous_state() {
+    fn maintenance_first_failed_explicit_pass_without_anchor_is_recommended() {
+        let state = failed_state(NOW);
+        assert_eq!(state.anchor, None);
+        assert_eq!(state.last_success, None);
+
+        let recommendation = evaluate_recommendation(&state, NOW);
+        assert!(recommendation.recommended);
+        assert_eq!(
+            recommendation.last_attempt_outcome,
+            Some(AttemptOutcome::Failed)
+        );
+        assert_eq!(recommendation.consecutive_failures, 1);
+        assert!(!evaluate_recommendation(&MaintenanceState::default(), NOW).recommended);
+    }
+
+    #[test]
+    fn maintenance_failure_advisory_emits_once_and_doctor_still_recommends_repair() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        init_repo(dir.path());
+        seed(dir.path(), &failed_state(NOW));
+
+        let first = advise(dir.path(), NOW + 1000);
+        assert!(matches!(first, AdvisoryOutcome::Advised));
+        assert_eq!(
+            first.recommendation(),
+            Some(RECONCILIATION_RECOMMENDED_MESSAGE)
+        );
+        let persisted = stored(dir.path());
+        assert_eq!(persisted.last_advised, Some(NOW + 1000));
+        assert_eq!(persisted.consecutive_failures, 1);
+        assert_eq!(persisted.last_attempt_outcome, Some(AttemptOutcome::Failed));
+        assert_eq!(persisted.last_failure, failed_state(NOW).last_failure);
+
+        let path = state_path(&dir.path().join(".git"));
+        let bytes = std::fs::read(&path).expect("state bytes");
+        let second = advise(dir.path(), NOW + 2000);
+        assert!(matches!(second, AdvisoryOutcome::NoAction));
+        assert_eq!(second.recommendation(), None);
+        assert_eq!(std::fs::read(&path).expect("state bytes"), bytes);
+
+        let recommendation = evaluate_recommendation(&stored(dir.path()), NOW + 2000);
+        assert!(recommendation.recommended);
+        assert!(recommendation.last_advised_age_ms.is_some());
+    }
+
+    #[test]
+    fn maintenance_failure_advisory_repeats_after_the_cadence_window() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        init_repo(dir.path());
+        seed(dir.path(), &failed_state(NOW));
+
+        assert!(matches!(advise(dir.path(), NOW), AdvisoryOutcome::Advised));
+        let later = NOW + RECONCILIATION_ADVISORY_AFTER_MS;
+        assert!(matches!(
+            advise(dir.path(), later),
+            AdvisoryOutcome::Advised
+        ));
+        assert_eq!(stored(dir.path()).consecutive_failures, 1);
+    }
+
+    #[test]
+    fn maintenance_repeated_failed_passes_keep_recommendation_active() {
+        let first = failed_state(NOW);
+        let second = record_failure(&first, NOW + 10, "pin_inventory", "inventory failed");
+        let third = record_failure(&second, NOW + 20, "pin_inventory", "inventory failed");
+        assert_eq!(third.consecutive_failures, 3);
+        assert!(evaluate_recommendation(&first, NOW + 30).recommended);
+        assert!(evaluate_recommendation(&second, NOW + 30).recommended);
+        assert!(evaluate_recommendation(&third, NOW + 30).recommended);
+    }
+
+    #[test]
+    fn maintenance_successful_pass_clears_failure_streak_and_recommendation() {
+        let failed = record_failure(&failed_state(NOW), NOW + 10, "pin_inventory", "failed");
+        let healed = record_success(
+            &failed,
+            NOW + 20,
+            StoredReport {
+                retained: 1,
+                deleted: 0,
+                local_required: 0,
+            },
+        );
+        assert_eq!(healed.consecutive_failures, 0);
+        assert_eq!(healed.last_failure, None);
+        assert_eq!(healed.last_attempt_outcome, Some(AttemptOutcome::Completed));
+        assert!(!evaluate_recommendation(&healed, NOW + 30).recommended);
+    }
+
+    #[test]
+    fn maintenance_failure_after_recent_success_is_recommended_and_advised_despite_older_reminder()
+    {
+        let dir = tempfile::tempdir().expect("temp dir");
+        init_repo(dir.path());
+        let success = record_success(
+            &MaintenanceState::default(),
+            NOW,
+            StoredReport {
+                retained: 1,
+                deleted: 0,
+                local_required: 0,
+            },
+        );
+        let reminded = MaintenanceState {
+            last_advised: Some(NOW + 1000),
+            ..success
+        };
+        assert!(!evaluate_recommendation(&reminded, NOW + 1500).recommended);
+
+        let failed = record_failure(&reminded, NOW + 2000, "delete_transaction", "failed");
+        assert!(evaluate_recommendation(&failed, NOW + 2500).recommended);
+        seed(dir.path(), &failed);
+
+        assert!(matches!(
+            advise(dir.path(), NOW + 2500),
+            AdvisoryOutcome::Advised
+        ));
+        assert!(matches!(
+            advise(dir.path(), NOW + 3000),
+            AdvisoryOutcome::NoAction
+        ));
+    }
+
+    #[test]
+    fn maintenance_advisory_rename_failure_preserves_state_and_next_call_can_advise() {
         let dir = tempfile::tempdir().expect("temp dir");
         init_repo(dir.path());
         advise(dir.path(), NOW);
@@ -226,18 +418,92 @@ mod tests {
         let before = std::fs::read(&path).expect("state bytes");
 
         let due = NOW + RECONCILIATION_ADVISORY_AFTER_MS;
-        let outcome = advise_if_due_with(
-            dir.path(),
-            || due,
-            |path, state| {
-                write_state_atomically(path, state, |_, _| {
-                    Err(std::io::Error::other("rename interrupted"))
-                })
-            },
-        );
-        assert_eq!(outcome, AdvisoryOutcome::StateUnavailable);
+        let outcome = advise_with_fault(dir.path(), due, PersistPhase::Rename);
+        assert!(matches!(
+            outcome,
+            AdvisoryOutcome::StateWriteFailed {
+                warning: PersistFailure::NotApplied {
+                    phase: PersistPhase::Rename,
+                    ..
+                }
+            }
+        ));
+        assert_eq!(outcome.recommendation(), None);
+        assert!(outcome.persistence_warning().is_some());
         assert_eq!(std::fs::read(&path).expect("state bytes"), before);
-        assert_eq!(advise(dir.path(), due), AdvisoryOutcome::Advised);
+        assert!(evaluate_recommendation(&stored(dir.path()), due).recommended);
+        assert!(matches!(advise(dir.path(), due), AdvisoryOutcome::Advised));
+    }
+
+    fn assert_durability_uncertain_advisory(phase: PersistPhase) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        init_repo(dir.path());
+        advise(dir.path(), NOW);
+
+        let due = NOW + RECONCILIATION_ADVISORY_AFTER_MS;
+        let outcome = advise_with_fault(dir.path(), due, phase);
+        assert!(!matches!(outcome, AdvisoryOutcome::Advised));
+        let AdvisoryOutcome::AdvisedDurabilityUncertain { warning } = &outcome else {
+            panic!("expected AdvisedDurabilityUncertain for {phase:?}, got {outcome:?}");
+        };
+        assert!(matches!(
+            warning,
+            PersistFailure::DurabilityUncertain { phase: reported, .. } if *reported == phase
+        ));
+        assert_eq!(
+            outcome.recommendation(),
+            Some(RECONCILIATION_RECOMMENDED_MESSAGE)
+        );
+        assert!(outcome.persistence_warning().is_some());
+
+        let visible = stored(dir.path());
+        assert_eq!(visible.last_advised, Some(due));
+
+        assert!(matches!(
+            advise(dir.path(), due + 1000),
+            AdvisoryOutcome::NoAction
+        ));
+        let recommendation = evaluate_recommendation(&visible, due + 1000);
+        assert!(recommendation.recommended);
+        assert!(recommendation.last_advised_age_ms.is_some());
+    }
+
+    #[test]
+    fn maintenance_advisory_parent_directory_open_failure_is_durability_uncertain() {
+        assert_durability_uncertain_advisory(PersistPhase::OpenParentDirectory);
+    }
+
+    #[test]
+    fn maintenance_advisory_parent_directory_sync_failure_is_durability_uncertain() {
+        assert_durability_uncertain_advisory(PersistPhase::SyncParentDirectory);
+    }
+
+    #[test]
+    fn maintenance_advisory_durability_uncertain_failure_state_stays_recommended() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        init_repo(dir.path());
+        seed(dir.path(), &failed_state(NOW));
+
+        let outcome = advise_with_fault(dir.path(), NOW + 10, PersistPhase::SyncParentDirectory);
+        assert!(matches!(
+            outcome,
+            AdvisoryOutcome::AdvisedDurabilityUncertain { .. }
+        ));
+        let visible = stored(dir.path());
+        assert_eq!(visible.last_advised, Some(NOW + 10));
+        assert_eq!(visible.consecutive_failures, 1);
+        assert!(evaluate_recommendation(&visible, NOW + 20).recommended);
+    }
+
+    #[test]
+    fn maintenance_advisory_anchor_write_failure_reports_state_write_failed_without_advice() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        init_repo(dir.path());
+
+        let outcome = advise_with_fault(dir.path(), NOW, PersistPhase::Rename);
+        assert!(matches!(outcome, AdvisoryOutcome::StateWriteFailed { .. }));
+        assert_eq!(outcome.recommendation(), None);
+        assert!(matches!(advise(dir.path(), NOW), AdvisoryOutcome::Anchored));
     }
 
     #[test]
@@ -248,7 +514,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().expect("parent")).expect("runtime dir");
         std::fs::write(&path, b"not json").expect("corrupt state");
 
-        assert_eq!(advise(dir.path(), NOW), AdvisoryOutcome::Anchored);
+        assert!(matches!(advise(dir.path(), NOW), AdvisoryOutcome::Anchored));
         assert_eq!(stored(dir.path()).anchor, Some(NOW));
     }
 
@@ -283,7 +549,7 @@ mod tests {
             .expect("canonical");
 
         assert_eq!(super::derive_git_dir(&sub), Some(expected.clone()));
-        assert_eq!(advise(&sub, NOW), AdvisoryOutcome::Anchored);
+        assert!(matches!(advise(&sub, NOW), AdvisoryOutcome::Anchored));
         assert!(state_path(&expected).is_file());
     }
 }
