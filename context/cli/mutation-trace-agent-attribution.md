@@ -186,8 +186,6 @@ observable tree difference.
   committed `src/lib.rs` even with identical added text and line number; an
   exact nested path still attributes; multiple similar nested mutation paths
   stay independent of the target; a shared basename alone is not a match.
-- `runtime/tests.rs` — a still-relevant event behind 128 newer events is never
-  loaded or reconstructed.
 - `hooks/mod.rs` (`mutation_attribution_e2e`) — real Git/DB: mutation-only `ai`
   without provenance; direct+mutation completion; a newer non-exclusive event
   keeps a line non-AI; adversarial linked-worktree isolation; the three
