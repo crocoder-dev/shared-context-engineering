@@ -30,6 +30,24 @@ durable evidence.** False retention is acceptable; false deletion is not.
 no hook / command / `diff_traces` wiring yet (invocation timing is the
 harness-wiring PR's).
 
+## Status: retained and unwired (PR3)
+
+The `cli-async-persistence-cleanup-pr3` plan chose **retain and defer**: this
+pass and its helpers are kept, but nothing in production calls them and PR3 adds
+no caller, hook, command or doctor wiring. Accepted consequence: pins created
+by `pin_tree` in `coordinator.rs` are never deleted in production, so pins left
+by crashed or failed `coordinate()` paths accumulate until removed by hand
+(`git update-ref -d refs/sce/mutation-cursor/<worktree-id>/<tree-sha>`).
+
+The reconciliation-only cluster (`ref_reconciliation.rs`; `list_pins`,
+`delete_pins`, `PinnedRef`, `PinInventoryError` and their helpers in
+`git_snapshot.rs`; the durable-root readers, SQL constants and row mappers in
+`store.rs`) carries declaration-level `#[allow(dead_code, reason = ...)]`
+naming `context/plans/mutation-cursor-ref-reconciliation.md` as the integration
+path; the former module-wide allow on `mutation_trace` is gone. Wiring is
+future work (see also the `ref-rec` branch); deleting the cluster to shrink
+dead-code counts was rejected.
+
 ## Entry point and identity
 
 ```rust
@@ -221,32 +239,11 @@ objects on its own schedule.
 
 ## Testing boundary
 
-`ref_reconciliation.rs`'s inline `#[cfg(test)] mod tests` uses a RAII `Fixture`
-(`tempfile::TempDir`, real `git init` repo, checkout id via
-`get_or_create_checkout_id`, a schema `RepositoryAgentTraceDb` beside the
-worktree so it never perturbs a captured tree) with raw-SQL row seeders,
-following the filesystem-touching inline-test precedent (`context/patterns.md`).
-Coverage: orphan pin deleted (with/without a worktree row); current-cursor pin
-retained without a referencing event; historical `before`/`after` pins retained
-after the cursor advances; a pin another worktree durably requires retained
-(the `retained > local_required` case); `MissingRequiredPins` fail-closed; a
-malformed / symbolic ref fail-closed; idempotence; refs deleted without object
-reclamation; and the no-checkout-identity skip (`SkippedNoCheckoutIdentity`;
-`open_db` never called; the pin ref byte-identical across the skip).
-
-`runtime/tests.rs` holds the cross-module integration suite (T09), driven
-through the public `reconcile_worktree` (and, for setup, `coordinate`) against
-real Git and a real `RepositoryAgentTraceDb`: active-worktree orphan deletion;
-current-cursor retention with no referencing event; historical `before`/`after`
-retention through a real `A → B → C → D` `coordinate()` history; idempotence;
-linked-worktree isolation and cross-worktree degraded-tree retention
-(byte-identical pins); a missing required pin failing closed despite another
-worktree pinning the same tree; a malformed / symbolic ref failing closed; no
-protocol/DB/marker write; no object reclamation; the no-checkout-identity skip;
-and two deterministic lock-race regressions (no sleeps):
-`reconciliation_blocks_on_the_worktree_lock_and_retains_a_pin_that_becomes_durable_under_it`
-(the generic `WorktreeLock` happens-before edge) and
-`reconciliation_blocks_until_a_real_coordinate_cas_commits_the_pinned_tree`
-(the same edge across the real `coordinate()` `pin → store CAS` path, test-only).
+`ref_reconciliation.rs` has no inline tests and `runtime/tests.rs` no longer
+exists: the earlier fixtures and `reconcile_worktree` integration and lock-race
+suites were removed and are not restored while reconciliation is unwired. The
+rules above are the specification the future wiring PR must re-prove with
+focused tests. The pin helpers are still exercised by the `git_snapshot` pin
+tests.
 
 See also: [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md), [`mutation-trace-snapshot-service.md`](mutation-trace-snapshot-service.md) (`list_pins` / `delete_pins`), [`mutation-trace-store.md`](mutation-trace-store.md) (`load_tree_roots` / `load_all_tree_roots`), [`mutation-trace-protocol.md`](mutation-trace-protocol.md).
