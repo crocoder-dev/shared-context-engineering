@@ -27,7 +27,7 @@ composition rather than attributing the ambiguous interval to AI.
 ```text
 caller starts the hidden supervisor with {"operation":"arm"}
     -> acquire ProtectedWorktree (WorktreeLock + ExternalTaintMarker, write-ahead)
-    -> create a Unix pipe (atomically CLOEXEC via pipe2 on Linux): supervisor
+    -> create a Unix pipe (CLOEXEC set atomically via pipe2 on Linux only; pipe+fcntl elsewhere leaves an unresolved fork/exec window): supervisor
        owns both ends while waiting
     -> durably establish the lifetime-token infrastructure
     -> write and flush {"status":"armed"}
