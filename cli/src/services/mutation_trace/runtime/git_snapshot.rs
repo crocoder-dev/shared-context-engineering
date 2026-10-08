@@ -38,29 +38,45 @@ impl GitSnapshotService {
     }
 
     pub async fn capture_tree(&self) -> Result<TreeId> {
+        self.capture_tree_inner(|_| {}).await
+    }
+
+    async fn capture_tree_inner(&self, after_read_tree: impl FnOnce(&Path)) -> Result<TreeId> {
         let tmp_dir = self.git_dir.join(SCE_RUNTIME_DIR).join(TMP_INDEX_DIR);
-        std::fs::create_dir_all(&tmp_dir).with_context(|| {
+        tokio::fs::create_dir_all(&tmp_dir).await.with_context(|| {
             format!(
                 "Failed to create temporary index directory '{}'",
                 tmp_dir.display()
             )
         })?;
-        let index_guard = TempIndexGuard::reserve(&tmp_dir);
+        let mut index_guard = TempIndexGuard::reserve(&tmp_dir);
 
+        let result = self
+            .capture_tree_with_index(index_guard.path(), after_read_tree)
+            .await;
+        index_guard.cleanup().await;
+        result
+    }
+
+    async fn capture_tree_with_index(
+        &self,
+        index_file: &Path,
+        after_read_tree: impl FnOnce(&Path),
+    ) -> Result<TreeId> {
         if self.head_exists().await? {
-            self.run_git(&["read-tree", "HEAD"], Some(&index_guard.path))
+            self.run_git(&["read-tree", "HEAD"], Some(index_file))
                 .await?;
         } else {
-            self.run_git(&["read-tree", "--empty"], Some(&index_guard.path))
+            self.run_git(&["read-tree", "--empty"], Some(index_file))
                 .await?;
         }
 
-        self.run_git(&["add", "-A", "--", "."], Some(&index_guard.path))
+        after_read_tree(index_file);
+
+        self.run_git(&["add", "-A", "--", "."], Some(index_file))
             .await?;
 
-        let tree_sha = self
-            .run_git(&["write-tree"], Some(&index_guard.path))
-            .await?;
+        let tree_sha = self.run_git(&["write-tree"], Some(index_file)).await?;
         Ok(TreeId(tree_sha.trim().to_string()))
     }
 
@@ -588,13 +604,16 @@ pub(crate) async fn resolve_worktree_root(repository_root: &Path) -> Result<Path
         root_path.display()
     );
 
-    let canonical_root = std::fs::canonicalize(&root_path).with_context(|| {
+    let canonical_root = tokio::fs::canonicalize(&root_path).await.with_context(|| {
         format!(
             "failed to canonicalize the worktree root '{}'",
             root_path.display()
         )
     })?;
-    if !canonical_root.is_dir() {
+    let is_directory = tokio::fs::metadata(&canonical_root)
+        .await
+        .is_ok_and(|metadata| metadata.is_dir());
+    if !is_directory {
         bail!(
             "resolved worktree root '{}' is not a directory",
             canonical_root.display()
@@ -667,19 +686,42 @@ async fn run_rev_parse(repository_root: &Path, args: &[&str]) -> Result<String> 
 }
 
 struct TempIndexGuard {
-    path: PathBuf,
+    path: Option<PathBuf>,
 }
 
 impl TempIndexGuard {
     fn reserve(tmp_dir: &Path) -> TempIndexGuard {
         let path = tmp_dir.join(format!("index-{}", Uuid::new_v4()));
-        TempIndexGuard { path }
+        TempIndexGuard { path: Some(path) }
+    }
+
+    fn path(&self) -> &Path {
+        self.path
+            .as_deref()
+            .expect("temporary index guard is still armed")
+    }
+
+    async fn cleanup(&mut self) {
+        let Some(path) = self.path.as_deref() else {
+            return;
+        };
+        let _ = tokio::fs::remove_file(path).await;
+        self.path = None;
     }
 }
 
 impl Drop for TempIndexGuard {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        let Some(path) = self.path.take() else {
+            return;
+        };
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            drop(handle.spawn_blocking(move || {
+                let _ = std::fs::remove_file(path);
+            }));
+        } else {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -690,11 +732,15 @@ mod tests {
     use std::time::Duration;
 
     use super::super::worktree_lock::{WorktreeLock, WorktreeLockError};
-    use super::{resolve_git_dir, resolve_worktree_id, GitSnapshotService, PinnedRef};
+    use super::{
+        resolve_git_dir, resolve_worktree_id, GitSnapshotService, PinnedRef, TempIndexGuard,
+        SCE_RUNTIME_DIR, TMP_INDEX_DIR,
+    };
     use crate::services::mutation_trace::types::WorktreeId;
 
     const LOCK_CONTENDED_TIMEOUT: Duration = Duration::from_millis(300);
     const LOCK_RELEASE_TIMEOUT: Duration = Duration::from_secs(10);
+    const GUARD_DROP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(10);
 
     fn git(cwd: &Path, args: &[&str]) {
         let output = Command::new("git")
@@ -718,6 +764,121 @@ mod tests {
         std::fs::write(root.join("tracked.txt"), "tracked\n").expect("write tracked file");
         git(root, &["add", "tracked.txt"]);
         git(root, &["commit", "-q", "-m", "initial"]);
+    }
+
+    fn temp_index_files(git_dir: &Path) -> Vec<String> {
+        let tmp_dir = git_dir.join(SCE_RUNTIME_DIR).join(TMP_INDEX_DIR);
+        let mut names: Vec<String> = std::fs::read_dir(&tmp_dir)
+            .expect("read temporary index dir")
+            .map(|entry| {
+                entry
+                    .expect("temporary index dir entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[tokio::test]
+    async fn capture_tree_removes_temporary_index_before_returning_and_keeps_real_index() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repo_root = dir.path().join("repo");
+        init_committed_repository(&repo_root);
+        std::fs::write(repo_root.join("untracked.txt"), "untracked\n").expect("write file");
+
+        let git_dir = resolve_git_dir(&repo_root).await.expect("git dir");
+        let real_index_before = std::fs::read(git_dir.join("index")).expect("read real index");
+
+        let snapshot = GitSnapshotService::new(&repo_root)
+            .await
+            .expect("snapshot service");
+        let tree = snapshot.capture_tree().await.expect("capture tree");
+
+        assert!(temp_index_files(&git_dir).is_empty());
+        assert_eq!(
+            std::fs::read(git_dir.join("index")).expect("read real index after capture"),
+            real_index_before
+        );
+        assert_eq!(
+            snapshot
+                .file_at_tree(&tree, "tracked.txt")
+                .await
+                .expect("read tracked file"),
+            Some("tracked\n".to_string())
+        );
+        assert_eq!(
+            snapshot
+                .file_at_tree(&tree, "untracked.txt")
+                .await
+                .expect("read untracked file"),
+            Some("untracked\n".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn capture_tree_removes_temporary_index_and_keeps_original_git_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repo_root = dir.path().join("repo");
+        init_committed_repository(&repo_root);
+        std::fs::write(repo_root.join("untracked.txt"), "untracked\n").expect("write file");
+
+        let git_dir = resolve_git_dir(&repo_root).await.expect("git dir");
+        let snapshot = GitSnapshotService::new(&repo_root)
+            .await
+            .expect("snapshot service");
+        let mut index_name = None;
+
+        let error = snapshot
+            .capture_tree_inner(|index_file| {
+                assert!(index_file.is_file(), "read-tree should create the index");
+                let lock_file = index_file.with_file_name(format!(
+                    "{}.lock",
+                    index_file
+                        .file_name()
+                        .expect("index name")
+                        .to_string_lossy()
+                ));
+                std::fs::write(&lock_file, "").expect("hold temporary index lock");
+                index_name = Some(index_file.file_name().expect("index name").to_owned());
+            })
+            .await
+            .expect_err("git add must fail while the index lock is held");
+
+        let index_name = index_name.expect("hook ran").to_string_lossy().into_owned();
+        let message = format!("{error:#}");
+        assert!(
+            message.starts_with("git [\"add\", \"-A\", \"--\", \".\"] failed:"),
+            "unexpected error: {message}"
+        );
+        assert_eq!(
+            temp_index_files(&git_dir),
+            vec![format!("{index_name}.lock")]
+        );
+    }
+
+    #[tokio::test]
+    async fn dropped_temp_index_guard_schedules_cleanup_off_the_runtime_worker() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let guard = TempIndexGuard::reserve(dir.path());
+        let index_file = guard.path().to_path_buf();
+        std::fs::write(&index_file, "index").expect("create temporary index");
+
+        drop(guard);
+
+        assert_eq!(tokio::spawn(async { 7 }).await.expect("unrelated task"), 7);
+        tokio::time::timeout(GUARD_DROP_CLEANUP_TIMEOUT, async {
+            while tokio::fs::try_exists(&index_file)
+                .await
+                .expect("check temporary index")
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("dropped guard should remove the temporary index");
     }
 
     #[tokio::test]
