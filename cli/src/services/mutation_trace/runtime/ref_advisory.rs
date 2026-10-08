@@ -1,7 +1,3 @@
-#![allow(
-    dead_code,
-    reason = "maintenance entrypoints are wired by later tasks of context/plans/mutation-cursor-ref-reconciliation-wiring.md"
-)]
 
 use std::path::Path;
 use std::time::Duration;
@@ -14,6 +10,11 @@ use super::worktree_lock::{acquire_inner, WorktreeLockError};
 
 pub(super) const RECONCILIATION_RECOMMENDED_MESSAGE: &str =
     "Reconciliation is recommended. Run sce doctor --fix.";
+const DIAGNOSTIC_PREFIX: &str = "SCE: ";
+const DURABILITY_UNCERTAIN_DIAGNOSTIC: &str = "Advisory-state durability could not be confirmed";
+const STATE_WRITE_FAILED_DIAGNOSTIC: &str = "Reconciliation advisory state could not be written";
+const STATE_UNAVAILABLE_DIAGNOSTIC: &str = "Reconciliation advisory state is unavailable";
+const CHECK_DOCTOR_HINT: &str = "Run sce doctor to check reconciliation status.";
 
 #[derive(Debug)]
 pub(super) enum AdvisoryOutcome {
@@ -65,6 +66,7 @@ pub(crate) struct AdvisoryReport {
     pub(crate) severity: AdvisorySeverity,
     pub(crate) recommendation: Option<&'static str>,
     pub(crate) warning: Option<String>,
+    pub(crate) diagnostic: Option<String>,
 }
 
 impl AdvisoryOutcome {
@@ -87,6 +89,26 @@ impl AdvisoryOutcome {
             severity,
             recommendation: self.recommendation(),
             warning: self.persistence_warning().map(ToString::to_string),
+            diagnostic: self.diagnostic(),
+        }
+    }
+
+    fn diagnostic(&self) -> Option<String> {
+        match self {
+            AdvisoryOutcome::Advised => Some(format!(
+                "{DIAGNOSTIC_PREFIX}{RECONCILIATION_RECOMMENDED_MESSAGE}"
+            )),
+            AdvisoryOutcome::AdvisedDurabilityUncertain { warning } => Some(format!(
+                "{DIAGNOSTIC_PREFIX}{RECONCILIATION_RECOMMENDED_MESSAGE}\n\
+                 {DIAGNOSTIC_PREFIX}{DURABILITY_UNCERTAIN_DIAGNOSTIC}: {warning}."
+            )),
+            AdvisoryOutcome::StateWriteFailed { warning } => Some(format!(
+                "{DIAGNOSTIC_PREFIX}{STATE_WRITE_FAILED_DIAGNOSTIC}: {warning}. {CHECK_DOCTOR_HINT}"
+            )),
+            AdvisoryOutcome::StateUnavailable => Some(format!(
+                "{DIAGNOSTIC_PREFIX}{STATE_UNAVAILABLE_DIAGNOSTIC}. {CHECK_DOCTOR_HINT}"
+            )),
+            AdvisoryOutcome::Anchored | AdvisoryOutcome::NoAction | AdvisoryOutcome::Busy => None,
         }
     }
 }
@@ -179,9 +201,12 @@ mod tests {
         StoredReport, FUTURE_SKEW_TOLERANCE_MS, RECONCILIATION_ADVISORY_AFTER_MS,
     };
     use super::super::worktree_lock::acquire_inner;
-    use super::{advise_if_due_with, AdvisoryOutcome, RECONCILIATION_RECOMMENDED_MESSAGE};
+    use super::{
+        advise_if_due_with, AdvisoryOutcome, AdvisorySeverity, RECONCILIATION_RECOMMENDED_MESSAGE,
+    };
 
     const NOW: i64 = 1_000_000_000_000;
+    const RECOMMENDED: &str = RECONCILIATION_RECOMMENDED_MESSAGE;
 
     fn init_repo(root: &Path) {
         std::fs::create_dir_all(root).expect("repo dir");
@@ -212,6 +237,77 @@ mod tests {
         let path = state_path(&root.join(".git"));
         std::fs::create_dir_all(path.parent().expect("parent")).expect("runtime dir");
         real_write(&path, state).expect("seed state");
+    }
+
+    #[test]
+    fn maintenance_report_maps_every_outcome_to_severity_and_diagnostic() {
+        let uncertain = || PersistFailure::DurabilityUncertain {
+            phase: PersistPhase::SyncParentDirectory,
+            source: std::io::Error::other("sync failed"),
+        };
+        let not_applied = || PersistFailure::NotApplied {
+            phase: PersistPhase::Rename,
+            source: std::io::Error::other("rename failed"),
+            staging_cleanup: None,
+        };
+        let recommended = format!("SCE: {RECOMMENDED}");
+        let cases = [
+            (AdvisoryOutcome::Anchored, "anchored", AdvisorySeverity::Debug, None),
+            (AdvisoryOutcome::NoAction, "no_action", AdvisorySeverity::Debug, None),
+            (AdvisoryOutcome::Busy, "busy", AdvisorySeverity::Debug, None),
+            (
+                AdvisoryOutcome::Advised,
+                "advised",
+                AdvisorySeverity::Warn,
+                Some(recommended.clone()),
+            ),
+            (
+                AdvisoryOutcome::StateUnavailable,
+                "state_unavailable",
+                AdvisorySeverity::Warn,
+                Some(
+                    "SCE: Reconciliation advisory state is unavailable. Run sce doctor to check reconciliation status."
+                        .to_string(),
+                ),
+            ),
+        ];
+        for (outcome, name, severity, diagnostic) in cases {
+            let report = outcome.report();
+            assert_eq!(report.outcome, name);
+            assert_eq!(report.severity, severity);
+            assert_eq!(report.diagnostic, diagnostic, "{name}");
+            assert_eq!(report.warning, None, "{name}");
+        }
+
+        let report = AdvisoryOutcome::AdvisedDurabilityUncertain {
+            warning: uncertain(),
+        }
+        .report();
+        assert_eq!(report.outcome, "advised_durability_uncertain");
+        assert_eq!(report.severity, AdvisorySeverity::Warn);
+        assert_eq!(
+            report.recommendation,
+            Some(RECONCILIATION_RECOMMENDED_MESSAGE)
+        );
+        let warning = report.warning.expect("persistence warning");
+        let diagnostic = report.diagnostic.expect("diagnostic");
+        assert!(diagnostic.starts_with(&format!(
+            "{recommended}\nSCE: Advisory-state durability could not be confirmed: "
+        )));
+        assert!(diagnostic.contains(&warning));
+
+        let report = AdvisoryOutcome::StateWriteFailed {
+            warning: not_applied(),
+        }
+        .report();
+        assert_eq!(report.outcome, "state_write_failed");
+        assert_eq!(report.severity, AdvisorySeverity::Warn);
+        assert_eq!(report.recommendation, None);
+        let warning = report.warning.expect("persistence warning");
+        let diagnostic = report.diagnostic.expect("diagnostic");
+        assert!(diagnostic.starts_with("SCE: Reconciliation advisory state could not be written: "));
+        assert!(diagnostic.contains(&warning));
+        assert!(!diagnostic.contains(RECONCILIATION_RECOMMENDED_MESSAGE));
     }
 
     #[test]
