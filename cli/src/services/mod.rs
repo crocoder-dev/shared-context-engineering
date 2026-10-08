@@ -23,10 +23,6 @@ pub mod help;
 pub mod hooks;
 pub mod lifecycle;
 pub mod local_db;
-#[allow(
-    dead_code,
-    reason = "ref reconciliation stays retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-)]
 pub mod mutation_trace;
 pub mod observability;
 pub mod output_format;
