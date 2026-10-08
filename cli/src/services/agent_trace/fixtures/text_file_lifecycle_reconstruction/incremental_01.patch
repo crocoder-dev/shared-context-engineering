@@ -1,0 +1,10 @@
+Index: poem-one.txt
+===================================================================
+--- poem-one.txt
++++ poem-one.txt
+@@ -0,0 +1,4 @@
++Morning light spills on the floor.
++A quiet bird waits by the tree.
++Nothing asks for more today.
++The world is slow and clear.
+

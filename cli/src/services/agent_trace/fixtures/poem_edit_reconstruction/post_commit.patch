@@ -1,0 +1,31 @@
+diff --git a/poem.md b/poem.md
+index a930e11..d8cf41a 100644
+--- a/poem.md
++++ b/poem.md
+@@ -1,8 +1,8 @@
+-# A Moment of Code
++# Q Moment of Code
+ 
+ In circuits deep where logic flows,
+-A thousand silent processes glow,
+-Through paths of thought, both near and far,
++Q thousand silent processes glow,
++Through patho of thought, both near and far,
+ We build the world the way things are.
+ 
+ Each line we write, each function named,
+@@ -10,7 +10,7 @@ A story told, a problem tamed,
+ The compiler hums, the tests turn green,
+ In spaces where the code is clean.
+ 
+-We dream in loops of endless while,
++We dream in lowops of endless while,
+ Yet find in bugs a reason to smile,
+ Forth every error teaches true,
+ The better paths to journey through.
+@@ -21,4 +21,4 @@ And in this dance of bit and byte,
+ We shape tomorrow's morning light.
+ 
+ ---
+-*Written with ❤️ and a touch of caffeine*
++*Written with ❤️ and a touch of caffeinw*

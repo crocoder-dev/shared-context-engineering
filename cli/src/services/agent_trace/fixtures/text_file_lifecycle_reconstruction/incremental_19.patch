@@ -1,0 +1,10 @@
+Index: replace-me.txt
+===================================================================
+--- replace-me.txt
++++ replace-me.txt
+@@ -0,0 +1,4 @@
++Old line 1
++Old line 2
++Old line 3
++Old line 4
+
