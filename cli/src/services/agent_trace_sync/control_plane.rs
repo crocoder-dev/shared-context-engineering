@@ -6,6 +6,7 @@
 //! They perform no HTTP I/O and hold no cursor state themselves.
 
 use std::fmt;
+use std::future::Future;
 use std::sync::Arc;
 
 use anyhow::anyhow;
@@ -221,12 +222,12 @@ enum StateAttempt {
     Terminal(ControlPlaneError),
 }
 
-/// Seam over `token_storage::{load_tokens, save_tokens}` so tests can assert
-/// exactly when a token is (or is not) saved without touching the real,
-/// process-wide encrypted auth database.
-pub trait CredentialStore: Send + Sync {
-    async fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError>;
-    async fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError>;
+pub trait CredentialStore: Send + Sync + 'static {
+    fn load(&self) -> impl Future<Output = Result<Option<StoredTokens>, ControlPlaneError>> + Send;
+    fn save(
+        &self,
+        token: &TokenResponse,
+    ) -> impl Future<Output = Result<StoredTokens, ControlPlaneError>> + Send;
 }
 
 /// Production `CredentialStore` backed by the real encrypted auth database.
@@ -252,7 +253,7 @@ pub struct AuthenticatedControlPlaneClient<S = SystemCredentialStore> {
     base_url: String,
     workos_api_base_url: String,
     workos_client_id: String,
-    credential_store: S,
+    credential_store: Arc<S>,
     refresh_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -319,9 +320,13 @@ impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
             base_url: base_url.into(),
             workos_api_base_url: workos_api_base_url.into(),
             workos_client_id: workos_client_id.into(),
-            credential_store,
+            credential_store: Arc::new(credential_store),
             refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    pub(crate) async fn wait_for_pending_refresh(&self) {
+        let _guard = self.refresh_lock.lock().await;
     }
 
     /// Calls `POST /agent-trace/ingestion/state` with a single attempt and a
@@ -463,10 +468,6 @@ impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
         Ok(retried)
     }
 
-    /// Loads the stored token, reusing it as-is when still valid and
-    /// refreshing (and saving) it only when expired. Makes exactly one
-    /// expiry decision, so a token cannot be refreshed without also being
-    /// persisted.
     async fn resolve_access_token(&self) -> Result<String, ControlPlaneError> {
         let stored = self
             .load_credentials()
@@ -477,7 +478,7 @@ impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
             return Ok(stored.access_token);
         }
 
-        let _refresh_guard = self.refresh_lock.lock().await;
+        let refresh_guard = Arc::clone(&self.refresh_lock).lock_owned().await;
         let stored = self
             .load_credentials()
             .await?
@@ -487,17 +488,14 @@ impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
             return Ok(stored.access_token);
         }
 
-        self.refresh_and_save(&stored).await
+        self.refresh_and_save(refresh_guard, stored).await
     }
 
-    /// Refreshes the stored token while holding the client-wide single-flight
-    /// guard. Callers that observed the same rejected token can reuse a token
-    /// saved by an earlier caller instead of issuing another refresh.
     async fn force_refresh_access_token(
         &self,
         rejected_access_token: &str,
     ) -> Result<String, ControlPlaneError> {
-        let _refresh_guard = self.refresh_lock.lock().await;
+        let refresh_guard = Arc::clone(&self.refresh_lock).lock_owned().await;
         let stored = self
             .load_credentials()
             .await?
@@ -507,30 +505,41 @@ impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
             return Ok(stored.access_token);
         }
 
-        self.refresh_and_save(&stored).await
+        self.refresh_and_save(refresh_guard, stored).await
     }
 
-    async fn refresh_and_save(&self, stored: &StoredTokens) -> Result<String, ControlPlaneError> {
-        let token = auth::renew_stored_token_from_refresh_token(
-            &self.http,
-            &self.workos_api_base_url,
-            &self.workos_client_id,
-            &stored.refresh_token,
-        )
-        .await?;
-        self.save_credentials(&token).await?;
-        Ok(token.access_token)
+    async fn refresh_and_save(
+        &self,
+        refresh_guard: tokio::sync::OwnedMutexGuard<()>,
+        stored: StoredTokens,
+    ) -> Result<String, ControlPlaneError> {
+        let http = self.http.clone();
+        let workos_api_base_url = self.workos_api_base_url.clone();
+        let workos_client_id = self.workos_client_id.clone();
+        let credential_store = Arc::clone(&self.credential_store);
+
+        tokio::spawn(async move {
+            let _refresh_guard = refresh_guard;
+            let token = auth::renew_stored_token_from_refresh_token(
+                &http,
+                &workos_api_base_url,
+                &workos_client_id,
+                &stored.refresh_token,
+            )
+            .await?;
+            credential_store.save(&token).await?;
+            Ok(token.access_token)
+        })
+        .await
+        .map_err(|error| {
+            ControlPlaneError::AuthenticationFailed(format!(
+                "credential refresh task did not complete: {error}"
+            ))
+        })?
     }
 
     async fn load_credentials(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
         self.credential_store.load().await
-    }
-
-    async fn save_credentials(
-        &self,
-        token: &TokenResponse,
-    ) -> Result<StoredTokens, ControlPlaneError> {
-        self.credential_store.save(token).await
     }
 
     fn endpoint(&self, path: &str) -> String {
@@ -618,5 +627,231 @@ where
         status => Err(ControlPlaneError::InvalidResponse(format!(
             "unexpected status {status}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use tokio::sync::{Notify, Semaphore};
+
+    use super::{AuthenticatedControlPlaneClient, ControlPlaneError, CredentialStore};
+    use crate::services::auth::TokenResponse;
+    use crate::services::token_storage::StoredTokens;
+
+    const REPLACEMENT_ACCESS_TOKEN: &str = "replacement-access";
+    const REPLACEMENT_REFRESH_TOKEN: &str = "replacement-refresh";
+
+    struct HeldSaveStore {
+        stored: Mutex<StoredTokens>,
+        saves: AtomicUsize,
+        save_started: Notify,
+        release_save: Semaphore,
+    }
+
+    impl CredentialStore for HeldSaveStore {
+        async fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
+            Ok(Some(self.stored.lock().expect("stored lock").clone()))
+        }
+
+        async fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
+            self.save_started.notify_one();
+            self.release_save
+                .acquire()
+                .await
+                .expect("release semaphore open")
+                .forget();
+            let saved = StoredTokens {
+                access_token: token.access_token.clone(),
+                token_type: token.token_type.clone(),
+                expires_in: token.expires_in,
+                refresh_token: token.refresh_token.clone(),
+                scope: token.scope.clone(),
+                stored_at_unix_seconds: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("clock after epoch")
+                    .as_secs(),
+            };
+            *self.stored.lock().expect("stored lock") = saved.clone();
+            self.saves.fetch_add(1, Ordering::SeqCst);
+            Ok(saved)
+        }
+    }
+
+    fn start_refresh_server() -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind refresh server");
+        let base_url = format!("http://{}", listener.local_addr().expect("server addr"));
+        let hits = Arc::new(AtomicUsize::new(0));
+        let thread_hits = Arc::clone(&hits);
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else {
+                    continue;
+                };
+                let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    let line = line.trim_end_matches(['\r', '\n']);
+                    if line.is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            content_length = value.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut body);
+                thread_hits.fetch_add(1, Ordering::SeqCst);
+                let payload = format!(
+                    r#"{{"access_token":"{REPLACEMENT_ACCESS_TOKEN}","refresh_token":"{REPLACEMENT_REFRESH_TOKEN}","expires_in":3600}}"#
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                    payload.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        (base_url, hits)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_caller_does_not_lose_rotated_refresh_token() {
+        let (workos_url, workos_hits) = start_refresh_server();
+        let store = HeldSaveStore {
+            stored: Mutex::new(StoredTokens {
+                access_token: "expired-access".to_string(),
+                token_type: "Bearer".to_string(),
+                expires_in: 0,
+                refresh_token: "original-refresh".to_string(),
+                scope: None,
+                stored_at_unix_seconds: 0,
+            }),
+            saves: AtomicUsize::new(0),
+            save_started: Notify::new(),
+            release_save: Semaphore::new(0),
+        };
+        let client = Arc::new(AuthenticatedControlPlaneClient::with_credential_store(
+            reqwest::Client::builder()
+                .tls_certs_only(Vec::new())
+                .build()
+                .expect("test http client"),
+            "http://127.0.0.1:1",
+            workos_url,
+            "client",
+            store,
+        ));
+
+        let first = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.resolve_access_token().await })
+        };
+        client.credential_store.save_started.notified().await;
+        let second = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.resolve_access_token().await })
+        };
+
+        first.abort();
+        assert!(first
+            .await
+            .expect_err("first caller cancelled")
+            .is_cancelled());
+        assert_eq!(client.credential_store.saves.load(Ordering::SeqCst), 0);
+
+        client.credential_store.release_save.add_permits(1);
+        let second_token = second
+            .await
+            .expect("second caller joined")
+            .expect("second caller resolved a token");
+        let third_token = client
+            .resolve_access_token()
+            .await
+            .expect("third caller resolved a token");
+
+        assert_eq!(second_token, REPLACEMENT_ACCESS_TOKEN);
+        assert_eq!(third_token, REPLACEMENT_ACCESS_TOKEN);
+        assert_eq!(client.credential_store.saves.load(Ordering::SeqCst), 1);
+        assert_eq!(workos_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            client
+                .credential_store
+                .stored
+                .lock()
+                .expect("stored lock")
+                .refresh_token,
+            REPLACEMENT_REFRESH_TOKEN
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pending_refresh_drain_waits_for_cancelled_callers_save() {
+        let (workos_url, workos_hits) = start_refresh_server();
+        let store = HeldSaveStore {
+            stored: Mutex::new(StoredTokens {
+                access_token: "expired-access".to_string(),
+                token_type: "Bearer".to_string(),
+                expires_in: 0,
+                refresh_token: "original-refresh".to_string(),
+                scope: None,
+                stored_at_unix_seconds: 0,
+            }),
+            saves: AtomicUsize::new(0),
+            save_started: Notify::new(),
+            release_save: Semaphore::new(0),
+        };
+        let client = Arc::new(AuthenticatedControlPlaneClient::with_credential_store(
+            reqwest::Client::builder()
+                .tls_certs_only(Vec::new())
+                .build()
+                .expect("test http client"),
+            "http://127.0.0.1:1",
+            workos_url,
+            "client",
+            store,
+        ));
+
+        let caller = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.resolve_access_token().await })
+        };
+        client.credential_store.save_started.notified().await;
+        caller.abort();
+        assert!(caller.await.expect_err("caller cancelled").is_cancelled());
+
+        let mut drain = std::pin::pin!(client.wait_for_pending_refresh());
+        let probe =
+            tokio::time::timeout(std::time::Duration::from_millis(100), drain.as_mut()).await;
+        assert!(probe.is_err(), "drain returned before the save finished");
+        assert_eq!(client.credential_store.saves.load(Ordering::SeqCst), 0);
+
+        client.credential_store.release_save.add_permits(1);
+        tokio::time::timeout(std::time::Duration::from_secs(10), drain)
+            .await
+            .expect("drain completes after the save is released");
+
+        assert_eq!(client.credential_store.saves.load(Ordering::SeqCst), 1);
+        assert_eq!(workos_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            client
+                .credential_store
+                .stored
+                .lock()
+                .expect("stored lock")
+                .refresh_token,
+            REPLACEMENT_REFRESH_TOKEN
+        );
     }
 }
