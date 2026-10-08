@@ -847,17 +847,25 @@ impl<M: DbSpec> TursoDb<M> {
         Self::open_without_migrations_at(db_path).await
     }
 
-    /// Open or create the database at an explicit path without running embedded
-    /// migrations.
-    ///
-    /// Parent directories are created automatically and the connection-open
-    /// retry policy is preserved. Runtime callers that use this path are
-    /// responsible for verifying schema readiness before query/write work.
     pub async fn open_without_migrations_at(db_path: impl AsRef<Path>) -> Result<Self> {
-        let db_name = M::db_name();
-        let db_path = db_path.as_ref().to_path_buf();
+        Self::open_at_path(db_path.as_ref(), true).await
+    }
 
-        ensure_db_parent_dir(db_name, &db_path)?;
+    #[allow(
+        dead_code,
+        reason = "maintenance wiring lands in later tasks of context/plans/mutation-cursor-ref-reconciliation-wiring.md"
+    )]
+    pub async fn open_existing_without_migrations_at(db_path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_at_path(db_path.as_ref(), false).await
+    }
+
+    async fn open_at_path(db_path: &Path, create_parent_dir: bool) -> Result<Self> {
+        let db_name = M::db_name();
+        let db_path = db_path.to_path_buf();
+
+        if create_parent_dir {
+            ensure_db_parent_dir(db_name, &db_path)?;
+        }
 
         let retry_policy = resolve_connection_open_retry_policy::<M>();
         let busy_timeout = resolve_busy_timeout::<M>();

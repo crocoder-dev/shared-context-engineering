@@ -208,3 +208,35 @@ async fn open_repository_db_for_hook_runtime(
         .await?;
     Ok((db, metadata))
 }
+
+#[allow(
+    dead_code,
+    reason = "maintenance wiring lands in later tasks of context/plans/mutation-cursor-ref-reconciliation-wiring.md"
+)]
+pub async fn resolve_existing_agent_trace_storage_for_maintenance(
+    context: &AgentTraceStorageContext<'_>,
+) -> Result<ResolvedAgentTraceStorage> {
+    let repository_identity = resolve_identity(context)?;
+    let db_path = agent_trace_db_path_for_repository(&repository_identity.identity.repository_id)?;
+    open_existing_storage_for_maintenance(repository_identity, db_path).await
+}
+
+#[allow(
+    dead_code,
+    reason = "maintenance wiring lands in later tasks of context/plans/mutation-cursor-ref-reconciliation-wiring.md"
+)]
+async fn open_existing_storage_for_maintenance(
+    repository_identity: ResolvedRepositoryIdentity,
+    db_path: PathBuf,
+) -> Result<ResolvedAgentTraceStorage> {
+    let repository_id = &repository_identity.identity.repository_id;
+    let (db, metadata) =
+        RepositoryAgentTraceDb::open_verified_existing_at(&db_path, repository_id).await?;
+
+    Ok(ResolvedAgentTraceStorage {
+        repository_identity,
+        db_path,
+        db,
+        metadata,
+    })
+}
