@@ -583,7 +583,8 @@ static LOG_LOCKS: [Mutex<()>; LOG_LOCK_STRIPES] = [const { Mutex::new(()) }; LOG
 fn log_lock_stripe_index(path: &Path) -> usize {
     let mut hasher = DefaultHasher::new();
     path.hash(&mut hasher);
-    usize::try_from(hasher.finish() % LOG_LOCK_STRIPES as u64).unwrap_or_default()
+    usize::try_from(hasher.finish() % LOG_LOCK_STRIPES as u64)
+        .expect("log lock stripe index must fit usize")
 }
 
 fn log_lock_stripe(path: &Path) -> &'static Mutex<()> {

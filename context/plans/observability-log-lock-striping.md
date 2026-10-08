@@ -17,25 +17,25 @@ Investigation findings (recorded from the code before selecting the design; T01 
 
 ## Acceptance criteria
 
-- [ ] AC1: No path-keyed lock registry remains in `observability.rs`; synchronization storage is a fixed-size `[Mutex<()>; N]` static independent of the number of distinct log paths, with no per-path `Arc`/`Mutex` allocation, no `dyn`, no boxed callbacks, no `unsafe`, and no new dependency.
+- [x] AC1: No path-keyed lock registry remains in `observability.rs`; synchronization storage is a fixed-size `[Mutex<()>; N]` static independent of the number of distinct log paths, with no per-path `Arc`/`Mutex` allocation, no `dyn`, no boxed callbacks, no `unsafe`, and no new dependency.
   - Validate: `nix shell nixpkgs#ripgrep -c rg -n "BTreeMap|OnceLock|Arc<Mutex|dyn |unsafe|Box<" cli/src/services/observability.rs` shows no registry/lock-related hits, and `git diff main -- cli/Cargo.toml cli/Cargo.lock` is empty.
-- [ ] AC2: Concurrent writers (threads and independent `Logger` instances) to the same path produce exactly the expected number of complete, non-interleaved, non-duplicated lines.
+- [x] AC2: Concurrent writers (threads and independent `Logger` instances) to the same path produce exactly the expected number of complete, non-interleaved, non-duplicated lines.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml observability` passes.
-- [ ] AC3: Writing to thousands of distinct paths leaves synchronization storage constant and identical paths always select the same stripe.
+- [x] AC3: Writing to thousands of distinct paths leaves synchronization storage constant and identical paths always select the same stripe.
   - Validate: the same `observability` test run passes the stripe-selection and many-distinct-paths tests, which assert on the real stripe selection and never on elapsed time.
-- [ ] AC4: Primary/v2 fallback works, including when the primary and v2 paths map to the same stripe, without deadlock; the fallback error text and the no-fallback-on-lock-failure semantics are unchanged.
+- [x] AC4: Primary/v2 fallback works, including when the primary and v2 paths map to the same stripe, without deadlock; the fallback error text and the no-fallback-on-lock-failure semantics are unchanged.
   - Validate: the same-stripe fallback test (child process, bounded timeout) and the existing fallback tests pass under `observability`.
-- [ ] AC4a: Lock ordering contract holds: (1) acquire the primary path's stripe; (2) run primary persistence and its retention cleanup; (3) release the primary guard on both success and failure; (4) only then, if primary persistence failed, attempt the v2 fallback; (5) acquire the fallback stripe separately; (6) if both writes fail, the combined `primary log file persistence failed for ...; v2 fallback log file persistence failed for ...` message is byte-identical to today; (7) primary lock acquisition failure returns `failed to lock log file '<path>': ...` and does not attempt the fallback.
+- [x] AC4a: Lock ordering contract holds: (1) acquire the primary path's stripe; (2) run primary persistence and its retention cleanup; (3) release the primary guard on both success and failure; (4) only then, if primary persistence failed, attempt the v2 fallback; (5) acquire the fallback stripe separately; (6) if both writes fail, the combined `primary log file persistence failed for ...; v2 fallback log file persistence failed for ...` message is byte-identical to today; (7) primary lock acquisition failure returns `failed to lock log file '<path>': ...` and does not attempt the fallback.
   - Validate: code inspection of the guard scope in `append_log_line_with_cleanup` (guard dropped before `attempt_v2_log_fallback` is called, no guard live across it); the same-stripe fallback child test (steps 3-5); the existing combined-error test (step 6); the poisoned-lock test (step 7).
-- [ ] AC4b: Same-stripe fallback regression is deterministic and bounded: the test builds a primary path whose `v2_log_path` maps to the same stripe using the production `log_lock_stripe` selection, forces primary failure, and runs in an isolated child process with a finite parent-enforced timeout; the child is killed and reaped on timeout; timeout, unexpected termination, or wrong output fails the test; success requires the fallback file to exist with the expected content.
+- [x] AC4b: Same-stripe fallback regression is deterministic and bounded: the test builds a primary path whose `v2_log_path` maps to the same stripe using the production `log_lock_stripe` selection, forces primary failure, and runs in an isolated child process with a finite parent-enforced timeout; the child is killed and reaped on timeout; timeout, unexpected termination, or wrong output fails the test; success requires the fallback file to exist with the expected content.
   - Validate: the test passes under `observability`; temporarily holding the primary guard across the fallback makes it fail by timeout (not hang) and leaves no orphan child.
-- [ ] AC4c: Poisoning semantics are preserved and documented: a poisoned stripe still yields `failed to lock log file '<path>': ...` with no fallback and no silent recovery; no new recovery or fallback code is introduced; the enlarged (per-stripe rather than per-path) failure domain is stated in the plan assumptions and durable context.
+- [x] AC4c: Poisoning semantics are preserved and documented: a poisoned stripe still yields `failed to lock log file '<path>': ...` with no fallback and no silent recovery; no new recovery or fallback code is introduced; the enlarged (per-stripe rather than per-path) failure domain is stated in the plan assumptions and durable context.
   - Validate: focused poisoned-stripe test (if practical, see T02); `rg -n "into_inner|clear_poison|PoisonError" cli/src/services/observability.rs` shows no new recovery logic; inspection of `context/sce/cli-observability-contract.md`.
-- [ ] AC5: Retention-after-creation, owner-only Unix permissions, and redaction-before-persistence behave as before under the new locking.
+- [x] AC5: Retention-after-creation, owner-only Unix permissions, and redaction-before-persistence behave as before under the new locking.
   - Validate: `observability` tests covering retention, `0o600` permissions, and redaction pass; no existing test is removed or weakened (`git diff main` shows only additions to the test module).
-- [ ] AC6: Durable context states the ownership model, constant memory bound, same-process guarantee, absence of cross-process coordination, and stripe-collision contention trade-off.
+- [x] AC6: Durable context states the ownership model, constant memory bound, same-process guarantee, absence of cross-process coordination, and stripe-collision contention trade-off.
   - Validate: inspection of `context/sce/cli-observability-contract.md` (and `context/overview.md`/`context/glossary.md` only if they already describe per-path locking).
-- [ ] AC7: The concurrency tests are not flaky.
+- [x] AC7: The concurrency tests are not flaky.
   - Validate: the targeted logging concurrency tests pass on 20 consecutive runs.
 
 ### Full validation
@@ -120,14 +120,58 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml observability`; repeat the targeted concurrency and fallback tests 20 times in a loop to detect flakiness; temporarily mutate T01 to hold the primary guard across the fallback and confirm the child test fails by timeout, then revert.
   - Context synchronization: synced
 
-- [ ] T03: `Document the striped log-lock ownership model` (status:todo)
+- [x] T03: `Document the striped log-lock ownership model` (status:done)
+  - Completed: 2026-10-08
+  - Files changed: `context/sce/cli-observability-contract.md`
+  - Result: Replaced "serializes writes independently per path" with a pointer to a new lock-model bullet (64 static `Mutex<()>` stripes, deterministic hash, constant memory, same-process serialization across threads and `Logger` instances, collision contention only, one stripe held at a time with the primary guard released before the v2 fallback, enlarged poisoning domain with unchanged error text/no fallback/no recovery, no cross-process coordination); v2 sentence now says "striped serialization". `context/context-map.md` annotation does not mention per-path locking, so left unchanged.
+  - Verify: inspected changed lines; `git diff --check` clean.
+  - Context impact: none beyond this task (this task is the context update).
   - Task ID: T03
   - Scope: In — update `context/sce/cli-observability-contract.md` (and its `context/context-map.md` annotation only if inaccurate) to state: static 64-stripe `Mutex<()>` ownership, constant memory independent of path count, same-process serialization of identical paths across threads and independent `Logger` instances, stripe-collision contention trade-off, guard released before the v2 fallback (lock-ordering contract), the enlarged poisoning failure domain (a poisoned stripe fails every path on it, unchanged error text, no recovery), and the explicit absence of cross-process coordination. Out — broad documentation refactoring, other context files.
   - Dependencies: T01
   - Done when: the contract no longer says writes are serialized "independently per path" and contains the accurate model, the bound, the guarantee, the non-guarantee, and the trade-off, in current-state wording.
   - Verify: inspect the changed lines in `context/sce/cli-observability-contract.md`; `git diff --check`.
-  - Context synchronization: pending
+  - Context synchronization: synced
 
 ## Open questions
 
 None. The request fully specifies scope, design, and constraints; the one design hazard (same-stripe fallback deadlock) is handled inside T01 and proven by the bounded child-process test in T02.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-10-08
+
+### Commands run
+
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml observability` -> exit 0 (20/20 passed, incl. stripe selection, many-paths, same-stripe child, poisoned-stripe child, retention, 0o600, redaction)
+- `observability` test run repeated 20 consecutive times -> 0 failures
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` -> exit 0 (368 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets --all-features -- -D warnings` -> exit 0
+- `nix flake check` -> exit 0 (all checks passed)
+- `nix build .#ci-checks` -> exit 0
+- `git diff --check` -> exit 0
+- `rg -n "BTreeMap|OnceLock|Arc<Mutex|dyn |unsafe|Box<|into_inner|clear_poison|PoisonError" cli/src/services/observability.rs` -> no hits
+- `git diff d90415e0 -- cli/Cargo.toml cli/Cargo.lock` -> empty (plan commits only touch observability.rs and context)
+
+### Success-criteria verification
+
+- [x] AC1 -> registry removed; `static LOG_LOCKS: [Mutex<()>; 64]`; rg shows no BTreeMap/OnceLock/Arc/dyn/unsafe/Box hits; Cargo files unchanged by plan commits
+- [x] AC2 -> concurrent same-path and independent-Logger tests pass
+- [x] AC3 -> stripe-selection test (5000 paths, constant array length, stable index) passes
+- [x] AC4 -> same-stripe bounded child test, different-stripe fallback, and combined-error tests pass
+- [x] AC4a -> inspection of `append_log_line_with_cleanup` (observability.rs:343-363): guard scoped in an inner block, dropped before `attempt_v2_log_fallback`; lock failure returns via `?` without fallback; combined error text unchanged
+- [x] AC4b -> child test with finite deadline and kill+wait passes; T02 recorded the mutation check (guard held across fallback fails by bounded timeout, no orphan); not re-run in this validation
+- [x] AC4c -> poisoned-stripe child test passes; no into_inner/clear_poison/PoisonError in file; contract doc states the enlarged failure domain
+- [x] AC5 -> retention, 0o600, and redaction tests pass; diff removals contain no test code
+- [x] AC6 -> `context/sce/cli-observability-contract.md` lines 36-38 state ownership, constant bound, same-process guarantee, no cross-process coordination, collision contention
+- [x] AC7 -> 20 consecutive runs, 0 failures
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- A poisoned stripe fails all paths hashing to it (accepted and documented).
+- The guard-held-across-fallback mutation check relies on T02's recorded evidence rather than a fresh run.
