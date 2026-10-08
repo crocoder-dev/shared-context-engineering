@@ -231,15 +231,20 @@ caller:
   `Handle::try_current` + `spawn_blocking` (inline removal without a runtime).
   The task is fire-and-forget and holds no lock. A killed process can leave an
   orphaned `index-<uuid>.lock`/temporary index file behind; this is an accepted
-  limitation (a sweep is a PR3 candidate).
+  limitation. PR3 audited it and adds no automatic sweeper: the temporary
+  index has no ownership or lock record, and a file name or age alone is not
+  evidence of abandonment, so a sweep is deferred to a separate change that
+  first defines a safe ownership protocol.
 - The guarded-shell supervisor
   (`cli/src/services/mutation_trace/runtime/external_mutation_guard.rs`) runs the
   synchronous `Child::wait`/descriptor supervision. The worker owns the
   `ProtectedWorktree` and the guarded child, ends when the child exits or
   cancellation is observed, and keeps the protected lock until it returns. The
-  lifetime pipe is created close-on-exec atomically and the guarded child alone
-  receives the protected descriptors through `pre_exec`, so unrelated spawned
-  processes do not inherit them.
+  lifetime pipe is created close-on-exec atomically only where `pipe2` exists
+  (Linux); elsewhere it is `pipe` then `fcntl`, which leaves a small
+  fork/exec window that is an unresolved limitation (not fixed in PR3). The
+  guarded child alone clears close-on-exec on the protected descriptors in
+  `pre_exec`.
 
 Runtime shutdown waits for these workers; each is bounded by its lock timeout,
 file I/O or child process. No other production `spawn_blocking` or
