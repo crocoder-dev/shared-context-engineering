@@ -163,7 +163,7 @@ whole transition back (below); and a `clear()` failure returning
 
 A `pub(super) abandon_scope_inner(.., after_load)` seam (mirroring
 `coordinate_inner`) fires once per CAS attempt after the projection loads, so a
-test — in this module or in `runtime/tests.rs` — can land a competing write
+test in this module can land a competing write
 inside the CAS window. It is invisible outside `runtime`; production passes a
 no-op.
 
@@ -188,8 +188,8 @@ exists, and the external-taint marker is still armed — the general rule that
 
 ### Cross-runtime regressions
 
-`runtime/tests.rs` ([`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md#testing-boundary))
-drives `coordinate()` and `abandon_scope()` together over real `git init` /
+The former `runtime/tests.rs` cross-module suite was removed ([`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md#testing-boundary)); it
+drove `coordinate()` and `abandon_scope()` together over real `git init` /
 `git worktree add` repositories and one real repository-scoped Agent Trace DB,
 covering what a single-module test with no real Git cannot:
 
