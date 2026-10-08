@@ -97,7 +97,13 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml observability`; `nix shell nixpkgs#ripgrep -c rg -n "BTreeMap|OnceLock|Arc<Mutex" cli/src/services/observability.rs`; `rg -n "into_inner|clear_poison|PoisonError"` shows no new hits.
   - Context synchronization: synced
 
-- [ ] T02: `Add focused logging synchronization regression tests` (status:todo)
+- [x] T02: `Add focused logging synchronization regression tests` (status:done)
+  - Completed: 2026-10-08
+  - Files changed: `cli/src/services/observability.rs`
+  - Result: Added 12 focused tests to the inline test module: same-path multi-thread exact-line integrity, independent `Logger` instances on one path, stripe selection stable/in-range/constant over 5000 paths, in-process different-stripe fallback, combined primary+v2 error text, same-stripe fallback in a bounded child process (`run_bounded_child`: piped+drained stdout/stderr, `try_wait` polling to a 30s deadline, kill+wait on timeout, sentinel + v2 content + blocking-directory assertions), poisoned-stripe test in an isolated child (error `failed to lock log file '<path>': ...`, no v2 file, no recovery), retention-callback-runs-once under concurrent creation, `0o600` on Unix, redaction before persistence. No existing test changed. Also fixed a pedantic-clippy `cast_possible_truncation` in T01's `log_lock_stripe_index` (`usize::try_from(...).unwrap_or_default()`, same behavior on 64-bit).
+  - Verify: `observability` tests passed (20/20); 20 consecutive runs all passed; mutation holding the primary guard across the fallback made the same-stripe child test fail by 30s bounded timeout with the child killed and reaped (no orphan), then reverted; `clippy --all-targets --all-features -D warnings` passed; `git diff --check` clean.
+  - Context impact: none beyond T03 (tests only; the small stripe-index cast fix does not change documented behavior).
+  - Deviation: poisoned-stripe case runs in an isolated child so the shared static cannot be poisoned for other tests; the T01 cast fix was required for the clippy gate and is behavior-neutral.
   - Task ID: T02
   - Scope: In — inline tests in `observability.rs` that call the real `append_log_line_with_cleanup`/`Logger` paths: (a) same-path multi-thread writes with exact complete-line count and per-line integrity; (b) multiple independent `Logger` clones/instances writing one path; (c) many (thousands of) distinct paths asserting stripe selection is stable, always in range, and the stripe array length is the constant; (d) fallback coverage: (d1) in-process, primary failure forcing the v2 fallback (e.g. a directory occupying the primary file name) with paths on different stripes, plus the combined error text when both fail; (d2) **same-stripe fallback regression in an isolated child process** (see below); (d2a) a focused poisoned-stripe test, if practical: poison the stripe of a temp path by panicking inside the `cleanup` callback of a write that creates the file (caught with `std::panic::catch_unwind` or a joined thread), then assert the next write to that path returns `failed to lock log file '<path>': ...`, no `-v2` file is created, and nothing recovers the lock; use a path/stripe unique to the test so other tests are unaffected, and skip with a recorded rationale in the plan only if it cannot be isolated from the shared static; (e) retention under concurrent creation and `0o600` permissions on Unix (`#[cfg(unix)]`); (f) a secret in a logged record is redacted in the persisted file. Out — production behavior changes, correctness assertions on elapsed time, test-only copies of the locking logic, new dependencies, detached-thread-plus-`recv_timeout` harnesses, background workers.
   - Same-stripe child-process test (d2) requirements:
@@ -112,7 +118,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Dependencies: T01
   - Done when: each listed case has a deterministic test against the real implementation, all pass, the same-stripe child test fails by bounded timeout (not by hanging) if the guard were held across the fallback, no orphan child remains, and no existing test is removed or weakened.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml observability`; repeat the targeted concurrency and fallback tests 20 times in a loop to detect flakiness; temporarily mutate T01 to hold the primary guard across the fallback and confirm the child test fails by timeout, then revert.
-  - Context synchronization: pending
+  - Context synchronization: synced
 
 - [ ] T03: `Document the striped log-lock ownership model` (status:todo)
   - Task ID: T03
