@@ -37,15 +37,11 @@ use events::{
 };
 #[allow(unused_imports)]
 pub(crate) use health::{assess_repairability, Repairability};
-#[cfg(test)]
-pub(crate) use lifecycle::run_claude_mutation_scope_from_payload_at_state_root;
-#[cfg(test)]
-#[allow(unused_imports)]
-use lifecycle::ClaudeModelStateResolver;
+
 #[allow(unused_imports)]
 use lifecycle::{
     abandon_attempt, apply_recovery_barrier, cleanup_attempts_matching, BarrierOutcome,
-    GitDirResolver, IngressSeam, EXPLICIT_BACKGROUND_SHELL_DENY_REASON, FAIL_CLOSED_DENY_REASON,
+    EXPLICIT_BACKGROUND_SHELL_DENY_REASON, FAIL_CLOSED_DENY_REASON,
 };
 #[allow(unused_imports)]
 pub(crate) use lifecycle::{repair_blocked, RepairOutcome};
@@ -53,17 +49,9 @@ pub(crate) use lifecycle::{repair_blocked, RepairOutcome};
 pub(crate) use lifecycle::{
     run_claude_mutation_scope_from_payload, run_claude_mutation_scope_subcommand,
 };
-#[cfg(test)]
-#[allow(unused_imports)]
-use lifecycle::{
-    run_claude_mutation_scope_from_payload_with,
-    run_claude_mutation_scope_from_payload_with_resolver,
-};
+
 #[allow(unused_imports)]
 use payload::{
     abandon_payload, flush_payload, pre_tool_use_deny_json, scope_boundary_payload,
     scope_start_payload,
 };
-
-#[cfg(test)]
-mod tests;

@@ -5,15 +5,15 @@
 ## Current contract
 
 - `ServiceLifecycle: Send + Sync` exposes three default no-op generic methods against any context implementing the narrow repo-root accessor:
-  - `diagnose<C: HasRepoRoot>(&self, ctx: &C) -> Vec<HealthProblem>`
-  - `fix<C: HasRepoRoot>(&self, ctx: &C, problems: &[HealthProblem]) -> Vec<FixResultRecord>`
-  - `setup<C: HasRepoRoot>(&self, ctx: &C) -> anyhow::Result<SetupOutcome>`
+  - `async diagnose<C: HasRepoRoot>(&self, ctx: &C) -> Vec<HealthProblem>`
+  - `async fix<C: HasRepoRoot>(&self, ctx: &C, problems: &[HealthProblem]) -> Vec<FixResultRecord>`
+  - `async setup<C: HasRepoRoot>(&self, ctx: &C) -> anyhow::Result<SetupOutcome>`
 - `HealthProblem`, `HealthCategory`, `HealthSeverity`, `HealthFixability`, and `HealthProblemKind` are lifecycle-owned types that mirror the current doctor taxonomy without making the trait depend on `doctor` module types.
 - `FixResultRecord` and `FixOutcome` are lifecycle-owned fix result types.
 - `SetupOutcome` is a minimal lifecycle-owned carrier for current setup result shapes:
   - generic setup `messages`
   - optional lifecycle-owned `RequiredHooksInstallOutcome`
-- `LifecycleProvider` is a static enum over the concrete provider implementations, and `lifecycle_providers(include_hooks)` is the shared provider catalog/factory used by command orchestrators. The enum owns inherent generic `id`, `diagnose`, `fix`, and `setup` dispatch methods and does not allocate boxed provider trait objects or erase the lifecycle context to `&dyn HasRepoRoot`; provider dispatch remains compile-time typed over the narrow repo-root accessor.
+- `LifecycleProvider` is a static enum over the concrete provider implementations, and `lifecycle_providers(include_hooks)` is the shared provider catalog/factory used by command orchestrators. The enum owns inherent generic `id`, `diagnose`, `fix`, and `setup` dispatch methods; callers await the async lifecycle operations and does not allocate boxed provider trait objects or erase the lifecycle context to `&dyn HasRepoRoot`; provider dispatch remains compile-time typed over the narrow repo-root accessor.
 - Provider order is deterministic: `ConfigLifecycle` → `LocalDbLifecycle` → `AuthDbLifecycle` → `AgentTraceDbLifecycle` → `HooksLifecycle` when hooks are included.
 
 ## Current boundaries
@@ -34,7 +34,7 @@
 - `cli/src/services/agent_trace_db/lifecycle.rs` defines `AgentTraceDbLifecycle`, the Agent Trace DB-owned provider.
 - `AgentTraceDbLifecycle::diagnose` resolves repository identity from `ctx.repo_root()` plus `agent_trace.repository_id` / `agent_trace.repository_remote`, and emits repository-scoped Agent Trace DB path and parent-directory readiness lifecycle health problems. Outside repository context there is no global/checkout fallback path (removed by the `retire-legacy-agent-trace-db` plan); `resolve_lifecycle_agent_trace_db_path` returns an actionable "requires a Git repository" diagnostic, surfaced as a manual-only `UnableToResolveStateRoot` problem.
 - `AgentTraceDbLifecycle::fix` bootstraps the resolved repository Agent Trace DB parent directory for auto-fixable DB parent readiness problems; outside repository context it returns the same actionable no-repository diagnostic rather than probing a sentinel path.
-- `AgentTraceDbLifecycle::setup` resolves repository storage from `ctx.repo_root()` when available, resolves `<state_root>/sce/repos/<repository-id>/agent-trace.db`, opens/creates that database through `RepositoryAgentTraceDb` so the repository schema is applied and metadata is validated, and returns setup messaging with the repository ID and initialized DB path. Hook runtime uses the same repository storage resolver lazily when setup has not run or schema metadata is incomplete.
+- `AgentTraceDbLifecycle::setup` resolves repository storage from `ctx.repo_root()` when available, resolves `<state_root>/sce/repos/<repository-id>/agent-trace.db`, opens/creates that database through `RepositoryAgentTraceDb` so the repository schema is applied and metadata is validated, and returns setup messaging with the repository ID and initialized DB path. Hook runtime shares the storage identity/path resolution but opens through the separate no-migration path (`resolve_agent_trace_storage_for_hook_runtime`); it never runs migrations and surfaces `Run 'sce setup'.` guidance when the schema is missing or stale. See [agent-trace-storage.md](agent-trace-storage.md).
 - `doctor` runtime execution now aggregates lifecycle providers for diagnosis and repair:
   - `cli/src/services/doctor/command.rs` accepts any context implementing `ContextWithRepoRoot`.
   - `cli/src/services/doctor/mod.rs` resolves the repository root once, creates a repo-root-scoped borrowed context using `with_repo_root()`, and requests the full provider catalog with hooks included.

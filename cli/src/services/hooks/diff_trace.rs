@@ -10,7 +10,6 @@ use crate::services::agent_trace_db::{
     ClaudeModelStateObservation, DiffTraceInsert, ObservationKind, PAYLOAD_TYPE_PATCH,
     PAYLOAD_TYPE_STRUCTURED,
 };
-use crate::services::observability::traits::Logger;
 use crate::services::structured_patch::{
     derive_claude_structured_patch, ClaudeStructuredPatchDerivationResult,
 };
@@ -64,9 +63,9 @@ impl StdinPayloadKind {
         format!("Invalid {} payload from STDIN: {detail}.", self.label())
     }
 }
-pub(crate) fn run_diff_trace_subcommand(
+pub(crate) async fn run_diff_trace_subcommand<L: crate::services::observability::traits::Logger>(
     repository_root: &Path,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> String {
     let stdin_payload = match read_hook_stdin() {
         Ok(payload) => payload,
@@ -74,32 +73,30 @@ pub(crate) fn run_diff_trace_subcommand(
     };
     let session_id = diff_trace_fail_open_session_id(&stdin_payload);
 
-    match run_diff_trace_subcommand_from_payload(repository_root, &stdin_payload, logger) {
+    match run_diff_trace_subcommand_from_payload(repository_root, &stdin_payload, logger).await {
         Ok(output) => output,
         Err(error) => log_diff_trace_fail_open(&error, logger, session_id.as_deref()),
     }
 }
 
-pub(crate) fn run_diff_trace_subcommand_from_payload(
+pub(crate) async fn run_diff_trace_subcommand_from_payload<
+    L: crate::services::observability::traits::Logger,
+>(
     repository_root: &Path,
     stdin_payload: &str,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> Result<String> {
     let parse_result = parse_diff_trace_payload(stdin_payload)?;
     let payload = match parse_result {
         DiffTraceParseResult::Persist(payload) => payload,
         DiffTraceParseResult::NoOp(message) => return Ok(message),
     };
-    Ok(run_diff_trace_subcommand_from_payload_with(
-        repository_root,
-        &payload,
-        logger,
-    ))
+    Ok(run_diff_trace_subcommand_from_payload_with(repository_root, &payload, logger).await)
 }
 
-pub(crate) fn log_diff_trace_fail_open(
+pub(crate) fn log_diff_trace_fail_open<L: crate::services::observability::traits::Logger>(
     error: &anyhow::Error,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
     session_id: Option<&str>,
 ) -> String {
     if let Some(log) = logger {
@@ -114,10 +111,12 @@ pub(crate) fn log_diff_trace_fail_open(
     String::from("diff-trace hook intake failed open; error logged.")
 }
 
-pub(crate) fn run_diff_trace_subcommand_from_payload_with(
+pub(crate) async fn run_diff_trace_subcommand_from_payload_with<
+    L: crate::services::observability::traits::Logger,
+>(
     repository_root: &Path,
     payload: &DiffTracePayload,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> String {
     if let Err(error) = diff_trace_db_time_ms(payload.time) {
         if let Some(log) = logger {
@@ -129,21 +128,26 @@ pub(crate) fn run_diff_trace_subcommand_from_payload_with(
             );
         }
     }
-    let agent_trace_db_persisted =
-        match persist_diff_trace_payload_to_agent_trace_db(repository_root, payload, logger) {
-            Ok(persisted) => persisted,
-            Err(error) => {
-                if let Some(log) = logger {
-                    log.warn(
-                        "sce.hooks.diff_trace.agent_trace_db_write_failed",
-                        &error.to_string(),
-                        &[],
-                        Some(&payload.session_id),
-                    );
-                }
-                false
+    let agent_trace_db_persisted = match persist_diff_trace_payload_to_agent_trace_db(
+        repository_root,
+        payload,
+        logger,
+    )
+    .await
+    {
+        Ok(persisted) => persisted,
+        Err(error) => {
+            if let Some(log) = logger {
+                log.warn(
+                    "sce.hooks.diff_trace.agent_trace_db_write_failed",
+                    &error.to_string(),
+                    &[],
+                    Some(&payload.session_id),
+                );
             }
-        };
+            false
+        }
+    };
 
     if agent_trace_db_persisted {
         String::from("diff-trace hook intake persisted payload to AgentTraceDb.")
@@ -473,15 +477,19 @@ pub(crate) fn required_u64_millisecond_field(
     )))
 }
 
-pub(crate) fn persist_diff_trace_payload_to_agent_trace_db(
+pub(crate) async fn persist_diff_trace_payload_to_agent_trace_db<
+    L: crate::services::observability::traits::Logger,
+>(
     repository_root: &Path,
     payload: &DiffTracePayload,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> Result<bool> {
     let db = match open_agent_trace_db_for_hook_runtime(
         repository_root,
         "Failed to open Agent Trace DB for diff-trace persistence.",
-    ) {
+    )
+    .await
+    {
         Ok(db) => db,
         Err(error) => {
             if let Some(log) = logger {
@@ -497,15 +505,15 @@ pub(crate) fn persist_diff_trace_payload_to_agent_trace_db(
         }
     };
 
-    persist_diff_trace_payload_to_agent_trace_db_with_db(&db, payload)?;
+    persist_diff_trace_payload_to_agent_trace_db_with_db(&db, payload).await?;
     Ok(true)
 }
 
-pub(crate) fn persist_diff_trace_payload_to_agent_trace_db_with_db(
+pub(crate) async fn persist_diff_trace_payload_to_agent_trace_db_with_db(
     db: &RepositoryAgentTraceDb,
     payload: &DiffTracePayload,
 ) -> Result<()> {
-    let model_id = resolve_diff_trace_model_id(db, payload)?;
+    let model_id = resolve_diff_trace_model_id(db, payload).await?;
     db.insert_diff_trace(DiffTraceInsert {
         time_ms: diff_trace_db_time_ms(payload.time)?,
         session_id: &prefixed_diff_trace_session_id(&payload.tool_name, &payload.session_id),
@@ -515,12 +523,13 @@ pub(crate) fn persist_diff_trace_payload_to_agent_trace_db_with_db(
         tool_version: payload.tool_version.as_deref(),
         payload_type: &payload.payload_type,
     })
+    .await
     .context("Failed to persist diff-trace payload to Agent Trace DB.")?;
 
     Ok(())
 }
 
-pub(crate) fn resolve_diff_trace_model_id(
+pub(crate) async fn resolve_diff_trace_model_id(
     db: &RepositoryAgentTraceDb,
     payload: &DiffTracePayload,
 ) -> Result<Option<String>> {
@@ -533,19 +542,17 @@ pub(crate) fn resolve_diff_trace_model_id(
 
     let session_id = prefixed_diff_trace_session_id(CLAUDE_TOOL_NAME, &payload.session_id);
     let agent_id = payload.agent_id.as_deref().unwrap_or("");
-    if let Some(state) = db.claude_model_state_by_session_and_agent(&session_id, agent_id)? {
+    if let Some(state) = db
+        .claude_model_state_by_session_and_agent(&session_id, agent_id)
+        .await?
+    {
         return Ok(Some(state.model_id));
     }
 
-    Ok(seed_diff_trace_model_from_bridge_chain(
-        db,
-        payload,
-        &session_id,
-        agent_id,
-    ))
+    Ok(seed_diff_trace_model_from_bridge_chain(db, payload, &session_id, agent_id).await)
 }
 
-pub(crate) fn seed_diff_trace_model_from_bridge_chain(
+pub(crate) async fn seed_diff_trace_model_from_bridge_chain(
     db: &RepositoryAgentTraceDb,
     payload: &DiffTracePayload,
     session_id: &str,
@@ -556,44 +563,24 @@ pub(crate) fn seed_diff_trace_model_from_bridge_chain(
     }
 
     let transcript_path = payload.transcript_path.as_deref()?;
-    let model_id = claude_model_state::newest_bridge_chain_model(db, Path::new(transcript_path))?;
+    let model_id =
+        claude_model_state::newest_bridge_chain_model(db, Path::new(transcript_path)).await?;
 
     let observed_at_ms = current_unix_time_ms().ok()?;
-    match db.upsert_claude_model_state(ClaudeModelStateObservation {
-        session_id: session_id.to_string(),
-        agent_id: String::new(),
-        model_id: model_id.clone(),
-        observation_kind: ObservationKind::SessionStart,
-        source: String::from("bridge_inherited"),
-        observed_at_ms,
-    }) {
+    match db
+        .upsert_claude_model_state(ClaudeModelStateObservation {
+            session_id: session_id.to_string(),
+            agent_id: String::new(),
+            model_id: model_id.clone(),
+            observation_kind: ObservationKind::SessionStart,
+            source: String::from("bridge_inherited"),
+            observed_at_ms,
+        })
+        .await
+    {
         Ok(_) => Some(model_id),
         Err(_) => None,
     }
-}
-
-#[cfg(test)]
-pub(crate) fn persist_diff_trace_payload_to_agent_trace_db_with<F, T>(
-    payload: &DiffTracePayload,
-    model_id: Option<&str>,
-    tool_version: Option<&str>,
-    insert_fn: F,
-) -> Result<T>
-where
-    F: FnOnce(DiffTraceInsert<'_>) -> Result<T>,
-{
-    let time_ms = diff_trace_db_time_ms(payload.time)?;
-    let session_id = prefixed_diff_trace_session_id(&payload.tool_name, &payload.session_id);
-
-    insert_fn(DiffTraceInsert {
-        time_ms,
-        session_id: &session_id,
-        patch: &payload.diff,
-        model_id,
-        tool_name: &payload.tool_name,
-        tool_version,
-        payload_type: &payload.payload_type,
-    })
 }
 
 pub(crate) fn diff_trace_db_time_ms(time: u64) -> Result<i64> {

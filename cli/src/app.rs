@@ -590,12 +590,12 @@ mod tests {
             let fs = services::capabilities::StdFsOps;
             let git = services::capabilities::ProcessGitOps;
             let context = AppContext::new(&logger, &telemetry, &fs, &git, None);
-            let result = run_command_lifecycle_with_context(
+            let result = Box::pin(run_command_lifecycle_with_context(
                 args.into_iter().map(String::from),
                 &services::command_registry::CommandRegistry::default(),
                 &context,
                 &mut Vec::new(),
-            )
+            ))
             .await;
             if let Some(class) = expected_error {
                 let error = result.unwrap_err();
@@ -695,7 +695,7 @@ mod tests {
         stdout.clear();
         stderr.clear();
         let missing_config = std::env::current_dir().unwrap().join("missing-config.json");
-        let code = run_with_dependency_check_and_streams(
+        let code = Box::pin(run_with_dependency_check_and_streams(
             [
                 "sce",
                 "config",
@@ -707,7 +707,7 @@ mod tests {
             || Ok(()),
             &mut stdout,
             &mut stderr,
-        )
+        ))
         .await;
         assert_eq!(code, ExitCode::from(4));
         assert_eq!(stdout, b"");

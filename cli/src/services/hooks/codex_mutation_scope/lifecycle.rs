@@ -10,7 +10,6 @@ use crate::services::hooks::{
     normalize_codex_model_id, prefixed_diff_trace_session_id, CODEX_TOOL_NAME,
 };
 use crate::services::mutation_trace::runtime::resolve_git_dir;
-use crate::services::observability::traits::Logger;
 
 use super::events::CODEX_TRACKED_TOOL_BASH;
 use super::state;
@@ -19,13 +18,6 @@ use super::{
     flush_payload, parse_codex_hook_event, pre_tool_use_deny_json, scope_boundary_payload,
     scope_start_payload, AttemptKey, CodexHookEvent, CodexToolExecution, ToolClassification,
 };
-
-pub(super) type GitDirResolver<'a> = &'a dyn Fn(&str) -> Result<PathBuf>;
-
-pub(super) type IngressSeam<'a> = &'a dyn Fn(&Path, &str, Option<&dyn Logger>) -> Result<String>;
-
-pub(super) type BashPolicyEvaluator<'a> =
-    &'a dyn Fn(&Path, &str) -> Result<CodexBashPolicyDecision>;
 
 pub(super) const ACTOR_KIND_CODEX: &str = "codex";
 
@@ -51,8 +43,8 @@ pub(super) const FAIL_CLOSED_DENY_REASON: &str =
 pub(super) const PRE_TOOL_USE_FAIL_CLOSED_EVENT: &str =
     "sce.hooks.codex_mutation_scope.pre_tool_use_fail_closed";
 
-pub(super) fn log_pre_tool_use_fail_closed(
-    logger: Option<&dyn Logger>,
+pub(super) fn log_pre_tool_use_fail_closed<L: crate::services::observability::traits::Logger>(
+    logger: Option<&L>,
     context: &str,
     error: &anyhow::Error,
 ) {
@@ -66,18 +58,25 @@ pub(super) fn log_pre_tool_use_fail_closed(
     }
 }
 
-pub(crate) fn run_codex_mutation_scope_subcommand(logger: Option<&dyn Logger>) -> Result<String> {
+pub(crate) async fn run_codex_mutation_scope_subcommand<
+    L: crate::services::observability::traits::Logger,
+>(
+    logger: Option<&L>,
+) -> Result<String> {
     let stdin_payload = hooks::read_hook_stdin()?;
-    run_codex_mutation_scope_from_payload(&stdin_payload, logger)
+    run_codex_mutation_scope_from_payload(&stdin_payload, logger).await
 }
 
-pub(crate) fn run_codex_mutation_scope_from_payload(
+pub(crate) async fn run_codex_mutation_scope_from_payload<
+    L: crate::services::observability::traits::Logger,
+>(
     stdin_payload: &str,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> Result<String> {
-    let resolve_git_dir_fn = |cwd: &str| resolve_git_dir(Path::new(cwd));
-    let seam_fn = |repository_root: &Path, payload: &str, logger: Option<&dyn Logger>| {
+    let resolve_git_dir_fn = async |cwd: &str| resolve_git_dir(Path::new(cwd)).await;
+    let seam_fn = async |repository_root: &Path, payload: &str, logger: Option<&L>| {
         hooks::mutation_scope::run_mutation_scope_from_payload(repository_root, payload, logger)
+            .await
     };
     let bash_policy_fn = |repository_root: &Path, command: &str| {
         evaluate_codex_bash_policy(repository_root, command)
@@ -90,87 +89,28 @@ pub(crate) fn run_codex_mutation_scope_from_payload(
         &seam_fn,
         &bash_policy_fn,
     )
+    .await
 }
 
-#[cfg(test)]
-pub(crate) fn run_codex_mutation_scope_from_payload_at_state_root(
-    state_root: &Path,
+pub(super) async fn run_codex_mutation_scope_from_payload_with_seams<
+    L: crate::services::observability::traits::Logger,
+>(
     stdin_payload: &str,
-    logger: Option<&dyn Logger>,
-) -> Result<String> {
-    let resolve_git_dir_fn = |cwd: &str| resolve_git_dir(Path::new(cwd));
-    let seam_fn = |repository_root: &Path, payload: &str, logger: Option<&dyn Logger>| {
-        hooks::mutation_scope::run_mutation_scope_from_payload_at_state_root(
-            repository_root,
-            state_root,
-            payload,
-            logger,
-        )
-    };
-    let bash_policy_fn = |repository_root: &Path, command: &str| {
-        evaluate_codex_bash_policy(repository_root, command)
-    };
-
-    run_codex_mutation_scope_from_payload_with_seams(
-        stdin_payload,
-        logger,
-        &resolve_git_dir_fn,
-        &seam_fn,
-        &bash_policy_fn,
-    )
-}
-
-#[cfg(test)]
-pub(super) fn run_codex_mutation_scope_from_payload_with(
-    stdin_payload: &str,
-    logger: Option<&dyn Logger>,
-    resolve_git_dir: GitDirResolver,
-    seam: IngressSeam,
-) -> Result<String> {
-    let allow_all = |_repository_root: &Path, _command: &str| Ok(CodexBashPolicyDecision::Allowed);
-    run_codex_mutation_scope_from_payload_with_seams(
-        stdin_payload,
-        logger,
-        resolve_git_dir,
-        seam,
-        &allow_all,
-    )
-}
-
-#[cfg(test)]
-pub(super) fn run_codex_mutation_scope_from_payload_with_bash_policy(
-    stdin_payload: &str,
-    logger: Option<&dyn Logger>,
-    resolve_git_dir: GitDirResolver,
-    seam: IngressSeam,
-    evaluate_bash_policy: BashPolicyEvaluator,
-) -> Result<String> {
-    run_codex_mutation_scope_from_payload_with_seams(
-        stdin_payload,
-        logger,
-        resolve_git_dir,
-        seam,
-        evaluate_bash_policy,
-    )
-}
-
-pub(super) fn run_codex_mutation_scope_from_payload_with_seams(
-    stdin_payload: &str,
-    logger: Option<&dyn Logger>,
-    resolve_git_dir: GitDirResolver,
-    seam: IngressSeam,
-    evaluate_bash_policy: BashPolicyEvaluator,
+    logger: Option<&L>,
+    resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
+    seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
+    evaluate_bash_policy: &impl Fn(&Path, &str) -> Result<CodexBashPolicyDecision>,
 ) -> Result<String> {
     let event = parse_codex_hook_event(stdin_payload)?;
-    dispatch_codex_hook_event(event, logger, resolve_git_dir, seam, evaluate_bash_policy)
+    dispatch_codex_hook_event(event, logger, resolve_git_dir, seam, evaluate_bash_policy).await
 }
 
-pub(super) fn dispatch_codex_hook_event(
+pub(super) async fn dispatch_codex_hook_event<L: crate::services::observability::traits::Logger>(
     event: CodexHookEvent,
-    logger: Option<&dyn Logger>,
-    resolve_git_dir: GitDirResolver,
-    seam: IngressSeam,
-    evaluate_bash_policy: BashPolicyEvaluator,
+    logger: Option<&L>,
+    resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
+    seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
+    evaluate_bash_policy: &impl Fn(&Path, &str) -> Result<CodexBashPolicyDecision>,
 ) -> Result<String> {
     match event {
         CodexHookEvent::PreToolUse(execution) => Ok(handle_pre_tool_use(
@@ -179,7 +119,8 @@ pub(super) fn dispatch_codex_hook_event(
             resolve_git_dir,
             seam,
             evaluate_bash_policy,
-        )),
+        )
+        .await),
         CodexHookEvent::PostToolUse(identity) => {
             if !matches!(
                 classify_tool(&identity.tool_name),
@@ -188,9 +129,9 @@ pub(super) fn dispatch_codex_hook_event(
                 return Ok(String::new());
             }
 
-            let git_dir = resolve_git_dir(&identity.cwd)?;
+            let git_dir = resolve_git_dir(&identity.cwd).await?;
             let repository_root = Path::new(&identity.cwd);
-            with_boundary_lock(&git_dir, || {
+            with_boundary_lock(&git_dir, async || {
                 handle_close(
                     &git_dir,
                     repository_root,
@@ -198,67 +139,78 @@ pub(super) fn dispatch_codex_hook_event(
                     logger,
                     seam,
                 )
+                .await
             })
+            .await
         }
         CodexHookEvent::Stop(turn) => {
-            let git_dir = resolve_git_dir(&turn.cwd)?;
+            let git_dir = resolve_git_dir(&turn.cwd).await?;
             let repository_root = Path::new(&turn.cwd);
             let session_id = turn.session_id.clone();
-            with_boundary_lock(&git_dir, || {
+            with_boundary_lock(&git_dir, async || {
                 cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |attempt| {
                     attempt.session_id == session_id && attempt.agent_id.is_none()
                 })
+                .await
             })
+            .await
         }
         CodexHookEvent::Interrupt(turn) => {
-            let git_dir = resolve_git_dir(&turn.cwd)?;
+            let git_dir = resolve_git_dir(&turn.cwd).await?;
             let repository_root = Path::new(&turn.cwd);
             let session_id = turn.session_id.clone();
-            with_boundary_lock(&git_dir, || {
+            with_boundary_lock(&git_dir, async || {
                 cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |attempt| {
                     attempt.session_id == session_id
                 })
+                .await
             })
+            .await
         }
         CodexHookEvent::SubagentStop(agent) => {
-            let git_dir = resolve_git_dir(&agent.cwd)?;
+            let git_dir = resolve_git_dir(&agent.cwd).await?;
             let repository_root = Path::new(&agent.cwd);
             let session_id = agent.session_id.clone();
             let agent_id = agent.agent_id.clone();
-            with_boundary_lock(&git_dir, || {
+            with_boundary_lock(&git_dir, async || {
                 cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |attempt| {
                     attempt.session_id == session_id
                         && attempt.agent_id.as_deref() == Some(&agent_id)
                 })
+                .await
             })
+            .await
         }
         CodexHookEvent::SessionEnd(session) => {
-            let git_dir = resolve_git_dir(&session.cwd)?;
+            let git_dir = resolve_git_dir(&session.cwd).await?;
             let repository_root = Path::new(&session.cwd);
             let session_id = session.session_id.clone();
-            with_boundary_lock(&git_dir, || {
+            with_boundary_lock(&git_dir, async || {
                 cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |attempt| {
                     attempt.session_id == session_id
                 })
+                .await
             })
+            .await
         }
     }
 }
 
-pub(super) fn with_boundary_lock<T>(
+pub(super) async fn with_boundary_lock<T>(
     git_dir: &Path,
-    operation: impl FnOnce() -> Result<T>,
+    operation: impl std::ops::AsyncFnOnce() -> Result<T>,
 ) -> Result<T> {
-    let _boundary = state::BOUNDARY_LOCK.acquire(&state::adapter_state_dir(git_dir))?;
-    operation()
+    state::BOUNDARY_LOCK
+        .run_under_boundary(&state::adapter_state_dir(git_dir), operation)
+        .await
 }
 
-pub(super) fn handle_pre_tool_use(
+pub(super) async fn handle_pre_tool_use<L: crate::services::observability::traits::Logger>(
     execution: &CodexToolExecution,
-    logger: Option<&dyn Logger>,
-    resolve_git_dir: GitDirResolver,
-    seam: IngressSeam,
-    evaluate_bash_policy: BashPolicyEvaluator,
+    logger: Option<&L>,
+    resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
+    seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
+    evaluate_bash_policy: &impl Fn(&Path, &str) -> Result<CodexBashPolicyDecision>,
 ) -> String {
     let identity = &execution.identity;
 
@@ -282,7 +234,7 @@ pub(super) fn handle_pre_tool_use(
         }
     }
 
-    let git_dir = match resolve_git_dir(&identity.cwd) {
+    let git_dir = match resolve_git_dir(&identity.cwd).await {
         Ok(git_dir) => git_dir,
         Err(error) => {
             log_pre_tool_use_fail_closed(logger, "resolve_git_dir", &error);
@@ -293,10 +245,11 @@ pub(super) fn handle_pre_tool_use(
     let key = identity.attempt_key();
     let turn_id = identity.turn_id.as_str();
     let provenance = codex_scope_provenance(execution);
-    let outcome = with_boundary_lock(&git_dir, || {
-        state::normalize_recovery_after_boundary_lock_acquired(&git_dir)?;
+    let outcome = with_boundary_lock(&git_dir, async || {
+        state::normalize_recovery_after_boundary_lock_acquired(&git_dir).await?;
 
-        sweep_stale_lane_predecessors(&git_dir, repository_root, &key, turn_id, logger, seam)?;
+        sweep_stale_lane_predecessors(&git_dir, repository_root, &key, turn_id, logger, seam)
+            .await?;
 
         match admit_or_recover(
             &git_dir,
@@ -306,7 +259,9 @@ pub(super) fn handle_pre_tool_use(
             &identity.tool_name,
             logger,
             seam,
-        )? {
+        )
+        .await?
+        {
             Admission::Admitted(allocated) => {
                 establish_start(
                     &git_dir,
@@ -315,12 +270,14 @@ pub(super) fn handle_pre_tool_use(
                     &provenance,
                     logger,
                     seam,
-                )?;
+                )
+                .await?;
                 Ok(PreToolUseOutcome::Continue)
             }
             Admission::Denied => Ok(PreToolUseOutcome::Deny),
         }
-    });
+    })
+    .await;
 
     match outcome {
         Ok(PreToolUseOutcome::Continue) => String::new(),
@@ -346,7 +303,7 @@ pub(super) enum BashPolicyPreflight {
 pub(super) fn codex_bash_policy_preflight(
     repository_root: &Path,
     execution: &CodexToolExecution,
-    evaluate_bash_policy: BashPolicyEvaluator,
+    evaluate_bash_policy: &impl Fn(&Path, &str) -> Result<CodexBashPolicyDecision>,
 ) -> BashPolicyPreflight {
     let command = match bash_command_from_tool_input(execution.tool_input.as_ref()) {
         Ok(command) => command,
@@ -365,16 +322,18 @@ pub(super) enum Admission {
     Denied,
 }
 
-pub(super) fn sweep_stale_lane_predecessors(
+pub(super) async fn sweep_stale_lane_predecessors<
+    L: crate::services::observability::traits::Logger,
+>(
     git_dir: &Path,
     repository_root: &Path,
     key: &AttemptKey,
     turn_id: &str,
-    logger: Option<&dyn Logger>,
-    seam: IngressSeam,
+    logger: Option<&L>,
+    seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<()> {
     loop {
-        let current = state::read_state(git_dir)?;
+        let current = state::read_state(git_dir).await?;
         let Some(stale) = current
             .attempts
             .iter()
@@ -386,35 +345,35 @@ pub(super) fn sweep_stale_lane_predecessors(
         else {
             return Ok(());
         };
-        abandon_attempt(git_dir, repository_root, &stale, logger, seam)?;
+        abandon_attempt(git_dir, repository_root, &stale, logger, seam).await?;
     }
 }
 
-pub(super) fn admit_or_recover(
+pub(super) async fn admit_or_recover<L: crate::services::observability::traits::Logger>(
     git_dir: &Path,
     repository_root: &Path,
     key: &AttemptKey,
     turn_id: &str,
     tool_name: &str,
-    logger: Option<&dyn Logger>,
-    seam: IngressSeam,
+    logger: Option<&L>,
+    seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<Admission> {
-    match state::admit_tracked_attempt(git_dir, key, turn_id, tool_name)? {
+    match state::admit_tracked_attempt(git_dir, key, turn_id, tool_name).await? {
         state::AdmitDecision::Admitted(allocated) => Ok(Admission::Admitted(allocated)),
         state::AdmitDecision::RecoveryBlocked
         | state::AdmitDecision::UncertainAttemptBlocked
         | state::AdmitDecision::StalePredecessorBlocked => Ok(Admission::Denied),
         state::AdmitDecision::FlushClaimed { generation } => {
-            match seam(repository_root, &flush_payload(), logger) {
-                Ok(_) => match state::complete_recovery_flush(git_dir, generation)? {
+            match seam(repository_root, &flush_payload(), logger).await {
+                Ok(_) => match state::complete_recovery_flush(git_dir, generation).await? {
                     state::RecoveryFlushCompletion::Cleared => {
-                        readmit_after_flush(git_dir, key, turn_id, tool_name)
+                        readmit_after_flush(git_dir, key, turn_id, tool_name).await
                     }
                     state::RecoveryFlushCompletion::Superseded => Ok(Admission::Denied),
                 },
                 Err(error) => {
                     log_pre_tool_use_fail_closed(logger, "recovery_flush", &error);
-                    state::relinquish_recovery_flush(git_dir, generation)?;
+                    state::relinquish_recovery_flush(git_dir, generation).await?;
                     Ok(Admission::Denied)
                 }
             }
@@ -422,16 +381,16 @@ pub(super) fn admit_or_recover(
     }
 }
 
-pub(super) fn readmit_after_flush(
+pub(super) async fn readmit_after_flush(
     git_dir: &Path,
     key: &AttemptKey,
     turn_id: &str,
     tool_name: &str,
 ) -> Result<Admission> {
-    match state::admit_tracked_attempt(git_dir, key, turn_id, tool_name)? {
+    match state::admit_tracked_attempt(git_dir, key, turn_id, tool_name).await? {
         state::AdmitDecision::Admitted(allocated) => Ok(Admission::Admitted(allocated)),
         state::AdmitDecision::FlushClaimed { generation } => {
-            state::relinquish_recovery_flush(git_dir, generation)?;
+            state::relinquish_recovery_flush(git_dir, generation).await?;
             Ok(Admission::Denied)
         }
         state::AdmitDecision::RecoveryBlocked
@@ -440,13 +399,13 @@ pub(super) fn readmit_after_flush(
     }
 }
 
-pub(super) fn establish_start(
+pub(super) async fn establish_start<L: crate::services::observability::traits::Logger>(
     git_dir: &Path,
     repository_root: &Path,
     allocated: &state::AllocatedAttempt,
     provenance: &CodexScopeProvenance,
-    logger: Option<&dyn Logger>,
-    seam: IngressSeam,
+    logger: Option<&L>,
+    seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<()> {
     let scope_id = &allocated.attempt.scope_id;
 
@@ -457,19 +416,19 @@ pub(super) fn establish_start(
     let start_payload =
         scope_start_payload(scope_id, &codex_scope_start_event_id(scope_id), provenance);
 
-    seam(repository_root, &start_payload, logger)?;
-    state::mark_active(git_dir, scope_id)?;
+    seam(repository_root, &start_payload, logger).await?;
+    state::mark_active(git_dir, scope_id).await?;
     Ok(())
 }
 
-pub(super) fn handle_close(
+pub(super) async fn handle_close<L: crate::services::observability::traits::Logger>(
     git_dir: &Path,
     repository_root: &Path,
     key: &AttemptKey,
-    logger: Option<&dyn Logger>,
-    seam: IngressSeam,
+    logger: Option<&L>,
+    seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<String> {
-    let current = state::read_state(git_dir)?;
+    let current = state::read_state(git_dir).await?;
     let Some(attempt) = current
         .attempts
         .iter()
@@ -480,7 +439,7 @@ pub(super) fn handle_close(
     };
 
     if attempt.phase == state::AttemptPhase::PendingStart {
-        abandon_attempt(git_dir, repository_root, &attempt, logger, seam)?;
+        abandon_attempt(git_dir, repository_root, &attempt, logger, seam).await?;
         return Ok(String::new());
     }
 
@@ -490,22 +449,22 @@ pub(super) fn handle_close(
         &codex_scope_close_event_id(&attempt.scope_id),
     );
 
-    if seam(repository_root, &close_payload, logger).is_ok() {
-        state::remove_attempt(git_dir, &attempt.scope_id)?;
+    if seam(repository_root, &close_payload, logger).await.is_ok() {
+        state::remove_attempt(git_dir, &attempt.scope_id).await?;
     } else {
-        abandon_attempt(git_dir, repository_root, &attempt, logger, seam)?;
+        abandon_attempt(git_dir, repository_root, &attempt, logger, seam).await?;
     }
     Ok(String::new())
 }
 
-pub(super) fn cleanup_attempts_matching(
+pub(super) async fn cleanup_attempts_matching<L: crate::services::observability::traits::Logger>(
     git_dir: &Path,
     repository_root: &Path,
-    logger: Option<&dyn Logger>,
-    seam: IngressSeam,
+    logger: Option<&L>,
+    seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
     predicate: impl Fn(&state::AdapterAttempt) -> bool,
 ) -> Result<String> {
-    let current = state::read_state(git_dir)?;
+    let current = state::read_state(git_dir).await?;
     let stale: Vec<state::AdapterAttempt> = current
         .attempts
         .into_iter()
@@ -513,7 +472,7 @@ pub(super) fn cleanup_attempts_matching(
         .collect();
 
     for attempt in &stale {
-        abandon_attempt(git_dir, repository_root, attempt, logger, seam)?;
+        abandon_attempt(git_dir, repository_root, attempt, logger, seam).await?;
     }
 
     Ok(String::new())
@@ -525,16 +484,16 @@ pub(super) fn attempt_matches_key(attempt: &state::AdapterAttempt, key: &Attempt
         && attempt.tool_use_id == key.tool_use_id
 }
 
-pub(super) fn abandon_attempt(
+pub(super) async fn abandon_attempt<L: crate::services::observability::traits::Logger>(
     git_dir: &Path,
     repository_root: &Path,
     attempt: &state::AdapterAttempt,
-    logger: Option<&dyn Logger>,
-    seam: IngressSeam,
+    logger: Option<&L>,
+    seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<()> {
-    state::arm_recovery(git_dir)?;
+    state::arm_recovery(git_dir).await?;
 
-    seam(repository_root, &abandon_payload(&attempt.scope_id), logger)?;
-    state::remove_attempt(git_dir, &attempt.scope_id)?;
+    seam(repository_root, &abandon_payload(&attempt.scope_id), logger).await?;
+    state::remove_attempt(git_dir, &attempt.scope_id).await?;
     Ok(())
 }

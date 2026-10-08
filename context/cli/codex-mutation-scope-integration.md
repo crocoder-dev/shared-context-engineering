@@ -145,7 +145,7 @@ state-to-ingress-to-state across hook processes (boundary lock then state lock);
 file existence alone is never ownership. Both locks are `AdapterLockSpec`
 identities (`state::STATE_LOCK`, `state::BOUNDARY_LOCK`) over the single
 OS advisory-lock implementation in `cli/src/services/hooks/mutation_scope_lock.rs`,
-shared with the OpenCode and Pi adapters.
+shared with the OpenCode and Pi adapters. `BOUNDARY_LOCK` is held as a task-local lease (`run_under_boundary`) that `run_locked_blocking` workers clone, so a started state transition outlives caller cancellation under boundary protection.
 The persistence and recovery-bookkeeping contracts common to the Codex, OpenCode,
 and Pi state files (missing/malformed/wrong-version reads, durable replace,
 remove, normalize, complete, relinquish, single flush claimant) are asserted once

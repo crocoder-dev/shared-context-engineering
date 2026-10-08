@@ -27,8 +27,8 @@ composition rather than attributing the ambiguous interval to AI.
 ```text
 caller starts the hidden supervisor with {"operation":"arm"}
     -> acquire ProtectedWorktree (WorktreeLock + ExternalTaintMarker, write-ahead)
-    -> create a Unix pipe: supervisor owns the read end; the writer is
-       CLOEXEC-clear and remains supervisor-owned while waiting
+    -> create a Unix pipe (atomically CLOEXEC via pipe2 on Linux): supervisor
+       owns both ends while waiting
     -> durably establish the lifetime-token infrastructure
     -> write and flush {"status":"armed"}
     -> WAIT in ArmedWaitingForExec; no shell exists yet
@@ -91,7 +91,7 @@ therefore emits no `Armed` event and spawns no shell.
 The lifetime pipe is separate from the flock. The lock serializes runtime
 access for the whole protected interval; the pipe tells the still-live
 supervisor when ordinary shell descendants are gone. The pipe read end is
-CLOEXEC, the writer is explicitly CLOEXEC-clear before spawn, the supervisor
+CLOEXEC and so is the writer in the parent; only the guarded child clears CLOEXEC on the lock and writer descriptors in a `pre_exec` (`fcntl` only), so unrelated subprocesses never inherit them. The supervisor
 closes its writer immediately after successful spawn, and only the shell's
 inherited writer references remain. Normal Unix `fork`/`exec` fd inheritance
 passes that writer to ordinary descendants, so EOF means no ordinary
@@ -232,7 +232,7 @@ and its helpers:
 
 **The lifetime pipe proves ordinary descendant completion.** The supervisor
 creates a pipe before spawning. Its read end stays in the supervisor and its
-write end is explicitly made CLOEXEC-clear before `Command::spawn()`. The
+write end is created close-on-exec (`pipe2(O_CLOEXEC)` on Linux; elsewhere `pipe` then `fcntl`, leaving a small fork/exec window) and the child clears CLOEXEC on it in `pre_exec`. The
 supervisor closes its own writer after spawn. Because the shell inherits the
 writer across `exec`, and ordinary descendants inherit it under normal Unix
 fd inheritance, a readable EOF is equivalent to the kernel having closed the
