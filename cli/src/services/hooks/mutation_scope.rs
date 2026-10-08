@@ -263,6 +263,7 @@ pub(crate) async fn run_mutation_scope_from_payload<
         stdin_payload,
         logger,
         super::open_agent_trace_db_for_hook_runtime,
+        &mut std::io::stderr(),
     )
     .await
 }
@@ -270,14 +271,17 @@ pub(crate) async fn run_mutation_scope_from_payload<
 async fn run_mutation_scope_from_payload_with<
     L: crate::services::observability::traits::Logger,
     O,
+    E,
 >(
     repository_root: &Path,
     stdin_payload: &str,
     logger: Option<&L>,
     open_db: O,
+    diagnostics: &mut E,
 ) -> Result<String>
 where
     O: std::ops::AsyncFn(&Path, &'static str) -> Result<RepositoryAgentTraceDb> + Copy,
+    E: Write,
 {
     let payload = parse_mutation_scope_payload(stdin_payload)?;
 
@@ -285,6 +289,7 @@ where
         repository_root,
         payload,
         logger,
+        diagnostics,
         async |root, boundary| {
             coordinate(root, boundary, async || {
                 open_db(root, MUTATION_SCOPE_DB_CONTEXT).await
@@ -302,10 +307,17 @@ where
     .await
 }
 
-async fn drive_mutation_scope<L: crate::services::observability::traits::Logger, C, A, V>(
+async fn drive_mutation_scope<
+    L: crate::services::observability::traits::Logger,
+    E: Write,
+    C,
+    A,
+    V,
+>(
     repository_root: &Path,
     payload: MutationScopePayload,
     logger: Option<&L>,
+    diagnostics: &mut E,
     coordinate_boundary: C,
     abandon: A,
     advise: V,
@@ -369,10 +381,26 @@ where
     let classified = classify_coordinate(result, logger);
 
     if advisory_eligible && durably_completed {
-        log_advisory_report(logger, &advise(repository_root));
+        report_advisory(logger, diagnostics, &advise(repository_root));
     }
 
     classified
+}
+
+fn report_advisory<L: crate::services::observability::traits::Logger, E: Write>(
+    logger: Option<&L>,
+    diagnostics: &mut E,
+    report: &AdvisoryReport,
+) {
+    log_advisory_report(logger, report);
+    emit_advisory_diagnostic(diagnostics, report);
+}
+
+fn emit_advisory_diagnostic<E: Write>(diagnostics: &mut E, report: &AdvisoryReport) {
+    let Some(diagnostic) = report.diagnostic.as_deref() else {
+        return;
+    };
+    let _ = writeln!(diagnostics, "{diagnostic}").and_then(|()| diagnostics.flush());
 }
 
 fn log_advisory_report<L: crate::services::observability::traits::Logger>(
@@ -685,7 +713,9 @@ fn write_guard_line<W: Write>(writer: &mut W, line: &str) -> std::io::Result<()>
 #[cfg(test)]
 mod advisory_trigger_tests {
     use std::cell::Cell;
+    use std::io::Write;
     use std::path::Path;
+    use std::sync::Mutex;
 
     use anyhow::anyhow;
 
@@ -694,9 +724,71 @@ mod advisory_trigger_tests {
         AdvisorySeverity, CoordinateError, CoordinateOutcome, MutationScopePayload,
         RuntimeBoundary,
     };
+    use crate::services::error::CliError;
     use crate::services::mutation_trace::protocol::CommitEvaluation;
     use crate::services::mutation_trace::types::{ActorKind, ScopeId, TreeId, WorktreeId};
-    use crate::services::observability::traits::NoopLogger;
+    use crate::services::observability::traits::Logger;
+
+    const ADVISORY_EVENT_ID: &str = "sce.hooks.mutation_scope.ref_reconciliation_advisory";
+    const RECOMMENDED: &str = "Reconciliation is recommended. Run sce doctor --fix.";
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct LogRecord {
+        level: &'static str,
+        event_id: String,
+        message: String,
+        fields: Vec<(String, String)>,
+    }
+
+    #[derive(Default)]
+    struct RecordingLogger {
+        records: Mutex<Vec<LogRecord>>,
+    }
+
+    impl RecordingLogger {
+        fn record(&self, level: &'static str, event_id: &str, message: &str, f: &[(&str, &str)]) {
+            self.records.lock().unwrap().push(LogRecord {
+                level,
+                event_id: event_id.to_string(),
+                message: message.to_string(),
+                fields: f
+                    .iter()
+                    .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+                    .collect(),
+            });
+        }
+
+        fn take(&self) -> Vec<LogRecord> {
+            std::mem::take(&mut self.records.lock().unwrap())
+        }
+    }
+
+    impl Logger for RecordingLogger {
+        fn info(&self, event_id: &str, message: &str, fields: &[(&str, &str)], _: Option<&str>) {
+            self.record("info", event_id, message, fields);
+        }
+        fn debug(&self, event_id: &str, message: &str, fields: &[(&str, &str)], _: Option<&str>) {
+            self.record("debug", event_id, message, fields);
+        }
+        fn warn(&self, event_id: &str, message: &str, fields: &[(&str, &str)], _: Option<&str>) {
+            self.record("warn", event_id, message, fields);
+        }
+        fn error(&self, event_id: &str, message: &str, fields: &[(&str, &str)], _: Option<&str>) {
+            self.record("error", event_id, message, fields);
+        }
+        fn log_cli_error(&self, _error: &CliError, _session_id: Option<&str>) {}
+    }
+
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("stderr closed"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::other("stderr closed"))
+        }
+    }
 
     fn outcome() -> CoordinateOutcome {
         CoordinateOutcome {
@@ -714,6 +806,7 @@ mod advisory_trigger_tests {
             severity,
             recommendation: None,
             warning: None,
+            diagnostic: None,
         }
     }
 
@@ -742,19 +835,34 @@ mod advisory_trigger_tests {
         }
     }
 
-    async fn drive(
+    #[derive(Default)]
+    struct Calls {
+        coordinate: Cell<u32>,
+        abandon: Cell<u32>,
+        advise: Cell<u32>,
+    }
+
+    async fn drive_with<L: Logger, E: Write>(
         payload: MutationScopePayload,
         coordinated: Result<CoordinateOutcome, CoordinateError>,
-        calls: &Cell<u32>,
+        advised: AdvisoryReport,
+        logger: Option<&L>,
+        diagnostics: &mut E,
+        calls: &Calls,
     ) -> anyhow::Result<String> {
         drive_mutation_scope(
             Path::new("."),
             payload,
-            None::<&NoopLogger>,
-            async |_root: &Path, _boundary: &RuntimeBoundary| coordinated,
+            logger,
+            diagnostics,
+            async |_root: &Path, _boundary: &RuntimeBoundary| {
+                calls.coordinate.set(calls.coordinate.get() + 1);
+                coordinated
+            },
             async |_root: &Path,
                    _scope: &ScopeId|
                    -> Result<AbandonScopeOutcome, AbandonScopeError> {
+                calls.abandon.set(calls.abandon.get() + 1);
                 Ok(AbandonScopeOutcome::Abandoned {
                     worktree_id: WorktreeId("main".to_string()),
                     scope: ScopeId("scope".to_string()),
@@ -762,66 +870,299 @@ mod advisory_trigger_tests {
                 })
             },
             |_root: &Path| {
-                calls.set(calls.get() + 1);
-                report("no_action", AdvisorySeverity::Debug)
+                calls.advise.set(calls.advise.get() + 1);
+                advised
             },
         )
         .await
     }
 
+    async fn drive(
+        payload: MutationScopePayload,
+        coordinated: Result<CoordinateOutcome, CoordinateError>,
+        calls: &Calls,
+    ) -> anyhow::Result<String> {
+        drive_with(
+            payload,
+            coordinated,
+            report("no_action", AdvisorySeverity::Debug),
+            None::<&RecordingLogger>,
+            &mut Vec::new(),
+            calls,
+        )
+        .await
+    }
+
+    async fn deliver(advised: AdvisoryReport) -> (Vec<LogRecord>, String) {
+        let logger = RecordingLogger::default();
+        let mut sink = Vec::new();
+        let result = drive_with(
+            close(),
+            Ok(outcome()),
+            advised,
+            Some(&logger),
+            &mut sink,
+            &Calls::default(),
+        )
+        .await;
+        assert_eq!(result.unwrap(), "");
+        (logger.take(), String::from_utf8(sink).unwrap())
+    }
+
+    fn field<'a>(record: &'a LogRecord, key: &str) -> Option<&'a str> {
+        record
+            .fields
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.as_str())
+    }
+
     #[tokio::test]
     async fn advisory_runs_once_after_completed_close_and_flush() {
-        let calls = Cell::new(0);
+        let calls = Calls::default();
         assert_eq!(drive(close(), Ok(outcome()), &calls).await.unwrap(), "");
-        assert_eq!(calls.get(), 1);
+        assert_eq!(calls.advise.get(), 1);
         assert_eq!(
             drive(MutationScopePayload::Flush, Ok(outcome()), &calls)
                 .await
                 .unwrap(),
             ""
         );
-        assert_eq!(calls.get(), 2);
+        assert_eq!(calls.advise.get(), 2);
+        assert_eq!(calls.coordinate.get(), 2);
+        assert_eq!(calls.abandon.get(), 0);
     }
 
     #[tokio::test]
     async fn advisory_runs_after_marker_clear_after_commit_with_success_result() {
-        let calls = Cell::new(0);
+        let calls = Calls::default();
         let error = CoordinateError::MarkerClearAfterCommit {
             source: anyhow!("clear failed"),
             committed: Box::new(outcome()),
         };
         assert_eq!(drive(close(), Err(error), &calls).await.unwrap(), "");
-        assert_eq!(calls.get(), 1);
+        assert_eq!(calls.advise.get(), 1);
     }
 
     #[tokio::test]
     async fn advisory_never_runs_for_start_or_advance() {
-        let calls = Cell::new(0);
+        let calls = Calls::default();
         drive(start(), Ok(outcome()), &calls).await.unwrap();
         drive(advance(), Ok(outcome()), &calls).await.unwrap();
-        assert_eq!(calls.get(), 0);
+        assert_eq!(calls.advise.get(), 0);
     }
 
     #[tokio::test]
     async fn advisory_never_runs_after_failed_coordinate() {
-        let calls = Cell::new(0);
-        let result = drive(
+        let calls = Calls::default();
+        let logger = RecordingLogger::default();
+        let mut sink = Vec::new();
+        let result = drive_with(
             close(),
             Err(CoordinateError::Other(anyhow!("boom"))),
+            AdvisoryReport {
+                diagnostic: Some(format!("SCE: {RECOMMENDED}")),
+                ..report("advised", AdvisorySeverity::Warn)
+            },
+            Some(&logger),
+            &mut sink,
             &calls,
         )
         .await;
         assert!(result.is_err());
-        assert_eq!(calls.get(), 0);
+        assert_eq!(calls.advise.get(), 0);
+        assert!(sink.is_empty());
+        assert!(logger.take().is_empty());
     }
 
     #[tokio::test]
     async fn advisory_never_runs_for_abandon() {
-        let calls = Cell::new(0);
+        let calls = Calls::default();
         let payload = MutationScopePayload::Abandon {
             scope_id: "scope".to_string(),
         };
         drive(payload, Ok(outcome()), &calls).await.unwrap();
-        assert_eq!(calls.get(), 0);
+        assert_eq!(calls.advise.get(), 0);
+        assert_eq!(calls.abandon.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn quiet_outcomes_log_debug_and_emit_no_diagnostic() {
+        for name in ["anchored", "no_action", "busy"] {
+            let (records, stderr) = deliver(report(name, AdvisorySeverity::Debug)).await;
+            assert_eq!(stderr, "", "{name}");
+            assert_eq!(records.len(), 1, "{name}");
+            assert_eq!(records[0].level, "debug", "{name}");
+            assert_eq!(records[0].event_id, ADVISORY_EVENT_ID);
+            assert_eq!(field(&records[0], "outcome"), Some(name));
+            assert_eq!(field(&records[0], "persistence_warning"), None);
+        }
+    }
+
+    #[tokio::test]
+    async fn advised_logs_warn_and_writes_recommendation_to_diagnostics() {
+        let diagnostic = format!("SCE: {RECOMMENDED}");
+        let (records, stderr) = deliver(AdvisoryReport {
+            recommendation: Some(RECOMMENDED),
+            diagnostic: Some(diagnostic.clone()),
+            ..report("advised", AdvisorySeverity::Warn)
+        })
+        .await;
+        assert_eq!(stderr, format!("{diagnostic}\n"));
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].level, "warn");
+        assert_eq!(records[0].event_id, ADVISORY_EVENT_ID);
+        assert_eq!(records[0].message, RECOMMENDED);
+        assert_eq!(field(&records[0], "outcome"), Some("advised"));
+        assert_eq!(field(&records[0], "persistence_warning"), None);
+    }
+
+    #[tokio::test]
+    async fn durability_uncertain_keeps_persistence_warning_in_log_and_diagnostics() {
+        let diagnostic = format!(
+            "SCE: {RECOMMENDED}\nSCE: Advisory-state durability could not be confirmed: sync failed."
+        );
+        let (records, stderr) = deliver(AdvisoryReport {
+            recommendation: Some(RECOMMENDED),
+            warning: Some("sync failed".to_string()),
+            diagnostic: Some(diagnostic.clone()),
+            ..report("advised_durability_uncertain", AdvisorySeverity::Warn)
+        })
+        .await;
+        assert_eq!(stderr, format!("{diagnostic}\n"));
+        assert_eq!(records[0].level, "warn");
+        assert_eq!(
+            field(&records[0], "outcome"),
+            Some("advised_durability_uncertain")
+        );
+        assert_eq!(
+            field(&records[0], "persistence_warning"),
+            Some("sync failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn state_failures_log_warn_and_write_diagnostic_without_claiming_advice() {
+        for (name, warning, diagnostic) in [
+            (
+                "state_write_failed",
+                Some("rename failed"),
+                "SCE: Reconciliation advisory state could not be written: rename failed. Run sce doctor to check reconciliation status.",
+            ),
+            (
+                "state_unavailable",
+                None,
+                "SCE: Reconciliation advisory state is unavailable. Run sce doctor to check reconciliation status.",
+            ),
+        ] {
+            let (records, stderr) = deliver(AdvisoryReport {
+                warning: warning.map(str::to_string),
+                diagnostic: Some(diagnostic.to_string()),
+                ..report(name, AdvisorySeverity::Warn)
+            })
+            .await;
+            assert_eq!(stderr, format!("{diagnostic}\n"), "{name}");
+            assert!(!stderr.contains(RECOMMENDED), "{name}");
+            assert_eq!(records[0].level, "warn", "{name}");
+            assert_eq!(field(&records[0], "outcome"), Some(name));
+            assert_eq!(field(&records[0], "persistence_warning"), warning);
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_logger_still_delivers_actionable_diagnostic() {
+        let mut sink = Vec::new();
+        let result = drive_with(
+            close(),
+            Ok(outcome()),
+            AdvisoryReport {
+                recommendation: Some(RECOMMENDED),
+                diagnostic: Some(format!("SCE: {RECOMMENDED}")),
+                ..report("advised", AdvisorySeverity::Warn)
+            },
+            None::<&RecordingLogger>,
+            &mut sink,
+            &Calls::default(),
+        )
+        .await;
+        assert_eq!(result.unwrap(), "");
+        assert_eq!(
+            String::from_utf8(sink).unwrap(),
+            format!("SCE: {RECOMMENDED}\n")
+        );
+    }
+
+    #[tokio::test]
+    async fn diagnostic_write_failure_does_not_change_mutation_result() {
+        let calls = Calls::default();
+        let advised = AdvisoryReport {
+            recommendation: Some(RECOMMENDED),
+            diagnostic: Some(format!("SCE: {RECOMMENDED}")),
+            ..report("advised", AdvisorySeverity::Warn)
+        };
+        let logger = RecordingLogger::default();
+        let result = drive_with(
+            close(),
+            Ok(outcome()),
+            advised.clone(),
+            Some(&logger),
+            &mut FailingWriter,
+            &calls,
+        )
+        .await;
+        assert_eq!(result.unwrap(), "");
+        assert_eq!(logger.take().len(), 1);
+
+        let marker_clear = CoordinateError::MarkerClearAfterCommit {
+            source: anyhow!("clear failed"),
+            committed: Box::new(outcome()),
+        };
+        let result = drive_with(
+            MutationScopePayload::Flush,
+            Err(marker_clear),
+            advised,
+            None::<&RecordingLogger>,
+            &mut FailingWriter,
+            &calls,
+        )
+        .await;
+        assert_eq!(result.unwrap(), "");
+    }
+
+    #[tokio::test]
+    async fn marker_clear_after_commit_logs_taint_warning_and_still_advises_once() {
+        let logger = RecordingLogger::default();
+        let mut sink = Vec::new();
+        let calls = Calls::default();
+        let error = CoordinateError::MarkerClearAfterCommit {
+            source: anyhow!("clear failed"),
+            committed: Box::new(outcome()),
+        };
+        let result = drive_with(
+            close(),
+            Err(error),
+            AdvisoryReport {
+                recommendation: Some(RECOMMENDED),
+                diagnostic: Some(format!("SCE: {RECOMMENDED}")),
+                ..report("advised", AdvisorySeverity::Warn)
+            },
+            Some(&logger),
+            &mut sink,
+            &calls,
+        )
+        .await;
+        assert_eq!(result.unwrap(), "");
+        let records = logger.take();
+        assert_eq!(records.len(), 2);
+        assert_eq!(
+            records[0].event_id,
+            "sce.hooks.mutation_scope.marker_clear_after_durable_completion"
+        );
+        assert_eq!(records[1].event_id, ADVISORY_EVENT_ID);
+        assert_eq!(
+            String::from_utf8(sink).unwrap(),
+            format!("SCE: {RECOMMENDED}\n")
+        );
+        assert_eq!((calls.coordinate.get(), calls.advise.get()), (1, 1));
     }
 }
