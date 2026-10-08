@@ -175,16 +175,42 @@ impl RepositoryAgentTraceDb {
         path: impl AsRef<std::path::Path>,
         repository_id: &str,
     ) -> std::result::Result<(Self, RepositoryMetadata), ExistingRepositoryDbError> {
-        let path = path.as_ref();
-        if !path.is_file() {
-            return Err(ExistingRepositoryDbError::Missing {
-                path: path.to_path_buf(),
-            });
-        }
+        Self::open_verified_existing_with(path.as_ref(), repository_id, || {}, || {}).await
+    }
 
-        let db = TursoDb::<RepositoryAgentTraceDbSpec>::open_existing_without_migrations_at(path)
-            .await
-            .map_err(ExistingRepositoryDbError::Unreadable)?;
+    #[cfg(test)]
+    pub(crate) async fn open_verified_existing_at_with_hooks(
+        path: &std::path::Path,
+        repository_id: &str,
+        before_open: impl FnOnce(),
+        after_open: impl FnOnce(),
+    ) -> std::result::Result<(Self, RepositoryMetadata), ExistingRepositoryDbError> {
+        Self::open_verified_existing_with(path, repository_id, before_open, after_open).await
+    }
+
+    async fn open_verified_existing_with(
+        path: &std::path::Path,
+        repository_id: &str,
+        before_open: impl FnOnce(),
+        after_open: impl FnOnce(),
+    ) -> std::result::Result<(Self, RepositoryMetadata), ExistingRepositoryDbError> {
+        before_open();
+        let opened =
+            TursoDb::<RepositoryAgentTraceDbSpec>::open_existing_without_migrations_at(path).await;
+        after_open();
+        let db = match opened {
+            Ok(db) => db,
+            Err(source) => {
+                return Err(match std::fs::symlink_metadata(path) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        ExistingRepositoryDbError::Missing {
+                            path: path.to_path_buf(),
+                        }
+                    }
+                    Ok(_) | Err(_) => ExistingRepositoryDbError::Unreadable(source),
+                });
+            }
+        };
         db.ensure_schema_ready_for_hooks()
             .await
             .map_err(ExistingRepositoryDbError::IncompatibleSchema)?;

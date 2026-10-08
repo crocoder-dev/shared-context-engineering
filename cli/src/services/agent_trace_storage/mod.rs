@@ -240,3 +240,16 @@ async fn open_existing_storage_for_maintenance(
         metadata,
     })
 }
+
+#[cfg(test)]
+pub(crate) async fn resolve_existing_agent_trace_storage_for_maintenance_at_state_root(
+    context: &AgentTraceStorageContext<'_>,
+    state_root: &Path,
+) -> Result<ResolvedAgentTraceStorage> {
+    let repository_identity = resolve_identity(context)?;
+    let db_path = agent_trace_db_path_for_repository_at(
+        state_root,
+        &repository_identity.identity.repository_id,
+    )?;
+    open_existing_storage_for_maintenance(repository_identity, db_path).await
+}
