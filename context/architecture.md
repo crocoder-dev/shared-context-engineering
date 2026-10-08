@@ -210,6 +210,12 @@ caller:
   runs the synchronous mutation-trace `WorktreeLock` polling loop used by
   `ProtectedWorktree`, coordinate, abandon-scope, ref reconciliation, the
   revision cut, and the external mutation guard.
+- `arm_marker_with_lock` and `ProtectedWorktree::complete`
+  (`cli/src/services/mutation_trace/runtime/protected_worktree.rs`) run the
+  synchronous external-taint marker inspect/persist and clear `fsync` I/O.
+  Each worker owns the worktree lock (arming) or the whole `ProtectedWorktree`
+  (completion) until its marker I/O finishes. Cancelling the caller cannot
+  release the lock while a marker operation is still in flight.
 
 Lock workers return the acquired guard. The async caller holds it across its
 protected awaited work and drops it when that work ends. Lock timeouts (10 s)
