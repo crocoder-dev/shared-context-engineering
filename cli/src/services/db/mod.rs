@@ -192,29 +192,24 @@ async fn run_embedded_migrations(
 
     Ok(())
 }
-
 async fn ensure_migrations_table(conn: &turso::Connection, db_name: &str) -> Result<()> {
-    async {
-        conn.execute(MIGRATIONS_TABLE_SQL, ())
-            .await
-            .map_err(|e| anyhow::anyhow!("{db_name} migration metadata setup failed: {e}"))
-    }
-    .await?;
+    conn.execute(MIGRATIONS_TABLE_SQL, ())
+        .await
+        .map_err(|e| anyhow::anyhow!("{db_name} migration metadata setup failed: {e}"))?;
 
     Ok(())
 }
 
 async fn is_migration_applied(conn: &turso::Connection, db_name: &str, id: &str) -> Result<bool> {
-    async {
-        let mut rows = conn.query(SELECT_MIGRATION_SQL, (id,)).await.map_err(|e| {
-            anyhow::anyhow!("{db_name} migration metadata query failed for {id}: {e}")
-        })?;
+    let mut rows = conn
+        .query(SELECT_MIGRATION_SQL, (id,))
+        .await
+        .map_err(|e| anyhow::anyhow!("{db_name} migration metadata query failed for {id}: {e}"))?;
 
-        rows.next().await.map(|row| row.is_some()).map_err(|e| {
-            anyhow::anyhow!("{db_name} migration metadata row fetch failed for {id}: {e}")
-        })
-    }
-    .await
+    rows.next()
+        .await
+        .map(|row| row.is_some())
+        .map_err(|e| anyhow::anyhow!("{db_name} migration metadata row fetch failed for {id}: {e}"))
 }
 
 async fn apply_migration(
@@ -223,23 +218,18 @@ async fn apply_migration(
     id: &str,
     sql: &str,
 ) -> Result<()> {
-    async {
-        // Migration files may contain multiple statements (the repository
-        // Agent Trace baseline is one multi-statement schema file), so batch
-        // execution is required; `execute` would stop after the first
-        // statement.
-        conn.execute_batch(sql)
-            .await
-            .map_err(|e| anyhow::anyhow!("{db_name} migration {id} failed: {e}"))?;
-        conn.execute(INSERT_MIGRATION_SQL, (id,))
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!("{db_name} migration metadata record failed for {id}: {e}")
-            })?;
+    // Migration files may contain multiple statements (the repository
+    // Agent Trace baseline is one multi-statement schema file), so batch
+    // execution is required; `execute` would stop after the first
+    // statement.
+    conn.execute_batch(sql)
+        .await
+        .map_err(|e| anyhow::anyhow!("{db_name} migration {id} failed: {e}"))?;
+    conn.execute(INSERT_MIGRATION_SQL, (id,))
+        .await
+        .map_err(|e| anyhow::anyhow!("{db_name} migration metadata record failed for {id}: {e}"))?;
 
-        Ok(())
-    }
-    .await
+    Ok(())
 }
 
 /// Body of [`TursoDb::execute_transactional_insert_pair_if_absent`], run
