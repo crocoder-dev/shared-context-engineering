@@ -695,7 +695,7 @@ mod tests {
         stdout.clear();
         stderr.clear();
         let missing_config = std::env::current_dir().unwrap().join("missing-config.json");
-        let code = run_with_dependency_check_and_streams(
+        let code = Box::pin(run_with_dependency_check_and_streams(
             [
                 "sce",
                 "config",
@@ -707,7 +707,7 @@ mod tests {
             || Ok(()),
             &mut stdout,
             &mut stderr,
-        )
+        ))
         .await;
         assert_eq!(code, ExitCode::from(4));
         assert_eq!(stdout, b"");

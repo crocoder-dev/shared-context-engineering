@@ -48,7 +48,23 @@ public on `TursoDb<M>` only (not `EncryptedTursoDb<M>`). Each attempt runs the
 whole `BEGIN IMMEDIATE` → `COMMIT` unit and classifies every `turso::Error`
 as retryable (`Busy`/`BusySnapshot`) or deterministic. On the Agent Trace DB
 the unit runs under the write-contention retry above; on other databases it
-runs under the generic async `run_with_retry` query retry:
+runs under the generic async `run_with_retry` query retry.
+
+Both primitives take `&mut self` and begin the transaction with the checked
+`Transaction::new(&mut Connection, Immediate)`, so the exclusive borrow spans
+the whole transaction and no other operation on the same adapter can run
+inside it (a compile-time guarantee; `Transaction::new_unchecked` is not used).
+Retry helpers accept the narrow native-async `RetryOperation` / `WriteAttempt`
+traits (blanket-implemented for plain closures) because an `FnMut` closure
+cannot return a future that borrows its own captured `&mut`. Turso 0.8.1
+limits cancellation guarantees: dropping a transaction uncommitted only
+schedules a rollback that runs on the next use of that connection, and the
+writer lock stays held until then, so other writers get `Busy` meanwhile; a
+commit that already completed may be durable when its caller is cancelled.
+Local Turso futures complete without yielding, so no mid-transaction await
+point exists today. Tests: `db::transaction_cancellation_tests` (abandoned
+transaction) and `agent_trace_db::transaction_tests` (whole-transaction retry
+and bounded contention exhaustion on independent connections).
 
 - `execute_transactional_insert_pair_if_absent(operation_name, retry_hint,
   exists_sql, exists_params, first_sql, first_params, second_sql,

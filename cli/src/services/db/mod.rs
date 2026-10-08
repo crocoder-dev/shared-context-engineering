@@ -18,7 +18,7 @@ use crate::services::config::{AgentTraceDbRetryConfig, DatabaseRetryConfig};
 use crate::services::lifecycle::{
     HealthCategory, HealthFixability, HealthProblem, HealthProblemKind, HealthSeverity,
 };
-use crate::services::resilience::{run_with_retry_elapsed, RetryPolicy};
+use crate::services::resilience::{run_with_retry_elapsed, RetryOperation, RetryPolicy};
 
 const MIGRATIONS_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS __sce_migrations (
     id TEXT PRIMARY KEY,
@@ -334,6 +334,124 @@ enum WriteAttemptFailure {
     Deterministic(anyhow::Error),
 }
 
+trait WriteAttempt<T> {
+    async fn run(&mut self, attempt: u32) -> std::result::Result<T, WriteAttemptFailure>;
+}
+
+impl<T, F, Fut> WriteAttempt<T> for F
+where
+    F: FnMut(u32) -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, WriteAttemptFailure>>,
+{
+    async fn run(&mut self, attempt: u32) -> std::result::Result<T, WriteAttemptFailure> {
+        self(attempt).await
+    }
+}
+
+struct PlainWriteAttempt<A>(A);
+
+impl<T, A: WriteAttempt<T>> RetryOperation<T> for PlainWriteAttempt<A> {
+    async fn run(&mut self, attempt: u32) -> Result<T> {
+        self.0
+            .run(attempt)
+            .await
+            .map_err(WriteAttemptFailure::into_error)
+    }
+}
+
+struct CasPlainAttempt<A>(A);
+
+impl<A: WriteAttempt<bool>> RetryOperation<CasBatchAttemptOutcome> for CasPlainAttempt<A> {
+    async fn run(&mut self, attempt: u32) -> Result<CasBatchAttemptOutcome> {
+        match self.0.run(attempt).await {
+            Ok(applied) => Ok(CasBatchAttemptOutcome::Settled(applied)),
+            Err(failure) => cas_batch_failure_into_attempt_result(failure),
+        }
+    }
+}
+
+struct InsertPairAttempt<'a> {
+    conn: &'a mut turso::Connection,
+    db_name: &'a str,
+    exists_sql: &'a str,
+    exists_params: turso::params::Params,
+    first_sql: &'a str,
+    first_params: turso::params::Params,
+    second_sql: &'a str,
+    second_params: turso::params::Params,
+    fail_before_second: bool,
+}
+
+impl WriteAttempt<bool> for InsertPairAttempt<'_> {
+    async fn run(&mut self, _attempt: u32) -> std::result::Result<bool, WriteAttemptFailure> {
+        let db_name = self.db_name;
+        let tx = turso::transaction::Transaction::new(
+            &mut *self.conn,
+            turso::transaction::TransactionBehavior::Immediate,
+        )
+        .await
+        .map_err(|e| classify_turso_error(db_name, "failed to begin transaction", &e))?;
+
+        let outcome = execute_insert_pair_if_absent_body(
+            &tx,
+            db_name,
+            self.exists_sql,
+            self.exists_params.clone(),
+            self.first_sql,
+            self.first_params.clone(),
+            self.second_sql,
+            self.second_params.clone(),
+            self.fail_before_second,
+        )
+        .await;
+
+        match outcome {
+            Ok(inserted) => {
+                tx.commit().await.map_err(|e| {
+                    classify_turso_error(db_name, "failed to commit transaction", &e)
+                })?;
+                Ok(inserted)
+            }
+            Err(failure) => {
+                let _ = tx.rollback().await;
+                Err(failure)
+            }
+        }
+    }
+}
+
+struct CasBatchAttempt<'a, 'b> {
+    conn: &'a mut turso::Connection,
+    db_name: &'a str,
+    guard: &'a TransactionStatement<'b>,
+    statements: &'a [TransactionStatement<'b>],
+}
+
+impl WriteAttempt<bool> for CasBatchAttempt<'_, '_> {
+    async fn run(&mut self, _attempt: u32) -> std::result::Result<bool, WriteAttemptFailure> {
+        let db_name = self.db_name;
+        let tx = turso::transaction::Transaction::new(
+            &mut *self.conn,
+            turso::transaction::TransactionBehavior::Immediate,
+        )
+        .await
+        .map_err(|e| classify_turso_error(db_name, "failed to begin transaction", &e))?;
+
+        match execute_cas_batch_body(&tx, db_name, self.guard, self.statements).await {
+            Ok(applied) => {
+                tx.commit().await.map_err(|e| {
+                    classify_turso_error(db_name, "failed to commit transaction", &e)
+                })?;
+                Ok(applied)
+            }
+            Err(failure) => {
+                let _ = tx.rollback().await;
+                Err(failure)
+            }
+        }
+    }
+}
+
 impl WriteAttemptFailure {
     fn into_error(self) -> anyhow::Error {
         match self {
@@ -472,7 +590,7 @@ fn resolve_query_retry_policy<M: DbSpec>() -> RetryPolicy {
 /// not wait for a contended lock. The busy timeout is Turso's own wait policy
 /// for a `Busy` result: while another process holds the write lock, Turso
 /// sleeps in short phases until the lock clears or the timeout elapses, and
-/// only then returns `Busy`. Because `Transaction::new_unchecked(.., Immediate)`
+/// only then returns `Busy`. Because `Transaction::new(.., Immediate)`
 /// runs `BEGIN IMMEDIATE` through `Connection::execute` on the same connection,
 /// the wait also covers writer-lock acquisition. The timeout is connection-wide.
 ///
@@ -578,14 +696,11 @@ fn write_contention_retry_may_start_now(
     write_contention_retry_may_sleep(policy, elapsed, std::time::Duration::ZERO)
 }
 
-async fn run_with_write_contention_retry<
-    T,
-    Fut: std::future::Future<Output = std::result::Result<T, WriteAttemptFailure>>,
->(
+async fn run_with_write_contention_retry<T>(
     policy: WriteContentionPolicy,
     operation_name: &str,
     retry_hint: &str,
-    attempt: impl FnMut(u32) -> Fut,
+    attempt: impl WriteAttempt<T>,
 ) -> Result<T> {
     let mut jitter = rand::rngs::StdRng::from_entropy();
     let started_at = std::time::Instant::now();
@@ -601,25 +716,21 @@ async fn run_with_write_contention_retry<
     .await
 }
 
-async fn run_with_write_contention_retry_using<
-    T,
-    Fut: std::future::Future<Output = std::result::Result<T, WriteAttemptFailure>>,
-    Sleep: std::future::Future<Output = ()>,
->(
+async fn run_with_write_contention_retry_using<T, Sleep: std::future::Future<Output = ()>>(
     policy: WriteContentionPolicy,
     draw_backoff: &mut impl FnMut() -> std::time::Duration,
     sleep: &mut impl FnMut(std::time::Duration) -> Sleep,
     elapsed: &mut impl FnMut() -> std::time::Duration,
     operation_name: &str,
     retry_hint: &str,
-    mut attempt: impl FnMut(u32) -> Fut,
+    mut attempt: impl WriteAttempt<T>,
 ) -> Result<T> {
     let mut attempt_number = 0;
 
     loop {
         attempt_number += 1;
 
-        let outcome = attempt(attempt_number).await;
+        let outcome = attempt.run(attempt_number).await;
 
         let error = match outcome {
             Ok(value) => return Ok(value),
@@ -979,9 +1090,15 @@ impl<M: DbSpec> TursoDb<M> {
     /// runs or the transaction commits, so callers can prove the whole
     /// transaction — including the already-executed `first_sql` — rolls
     /// back together.
+    ///
+    /// Takes `&mut self` and begins the transaction with the checked
+    /// `Transaction::new(&mut Connection, ..)`, so the exclusive borrow spans
+    /// the whole transaction and no other operation on this adapter can run
+    /// inside it. Dropping the future uncommitted schedules a rollback that
+    /// runs on the connection's next use rather than immediately.
     #[allow(clippy::too_many_arguments)]
     pub async fn execute_transactional_insert_pair_if_absent(
-        &self,
+        &mut self,
         operation_name: &str,
         retry_hint: &str,
         exists_sql: &str,
@@ -1003,56 +1120,28 @@ impl<M: DbSpec> TursoDb<M> {
             anyhow::anyhow!("{db_name} parameter conversion failed: {second_sql}: {e}")
         })?;
 
-        let run_attempt = async || {
-            async {
-                let tx = turso::transaction::Transaction::new_unchecked(
-                    &self.core.conn,
-                    turso::transaction::TransactionBehavior::Immediate,
-                )
-                .await
-                .map_err(|e| classify_turso_error(db_name, "failed to begin transaction", &e))?;
-
-                let outcome = execute_insert_pair_if_absent_body(
-                    &tx,
-                    db_name,
-                    exists_sql,
-                    exists_params.clone(),
-                    first_sql,
-                    first_params.clone(),
-                    second_sql,
-                    second_params.clone(),
-                    fail_before_second,
-                )
-                .await;
-
-                match outcome {
-                    Ok(inserted) => {
-                        tx.commit().await.map_err(|e| {
-                            classify_turso_error(db_name, "failed to commit transaction", &e)
-                        })?;
-                        Ok(inserted)
-                    }
-                    Err(failure) => {
-                        let _ = tx.rollback().await;
-                        Err(failure)
-                    }
-                }
-            }
-            .await
+        let attempt = InsertPairAttempt {
+            conn: &mut self.core.conn,
+            db_name,
+            exists_sql,
+            exists_params,
+            first_sql,
+            first_params,
+            second_sql,
+            second_params,
+            fail_before_second,
         };
 
         if let Some(policy) = write_contention_policy::<M>() {
-            return run_with_write_contention_retry(policy, operation_name, retry_hint, |_| {
-                run_attempt()
-            })
-            .await;
+            return run_with_write_contention_retry(policy, operation_name, retry_hint, attempt)
+                .await;
         }
 
         run_with_retry_elapsed(
             resolve_query_retry_policy::<M>(),
             operation_name,
             retry_hint,
-            async |_| run_attempt().await.map_err(WriteAttemptFailure::into_error),
+            PlainWriteAttempt(attempt),
         )
         .await
     }
@@ -1113,9 +1202,17 @@ impl<M: DbSpec> TursoDb<M> {
         Ok(results)
     }
 
+    /// Run a compare-and-swap guard plus ordered statements in one
+    /// `BEGIN IMMEDIATE` transaction.
+    ///
+    /// Takes `&mut self` and begins the transaction with the checked
+    /// `Transaction::new(&mut Connection, ..)`, so the exclusive borrow spans
+    /// the whole transaction and no other operation on this adapter can run
+    /// inside it. Dropping the future uncommitted schedules a rollback that
+    /// runs on the connection's next use rather than immediately.
     #[allow(dead_code)]
     pub async fn execute_transactional_cas_batch(
-        &self,
+        &mut self,
         operation_name: &str,
         retry_hint: &str,
         guard: &TransactionStatement<'_>,
@@ -1123,46 +1220,23 @@ impl<M: DbSpec> TursoDb<M> {
     ) -> Result<bool> {
         let db_name = M::db_name();
 
-        let run_attempt = async || {
-            async {
-                let tx = turso::transaction::Transaction::new_unchecked(
-                    &self.core.conn,
-                    turso::transaction::TransactionBehavior::Immediate,
-                )
-                .await
-                .map_err(|e| classify_turso_error(db_name, "failed to begin transaction", &e))?;
-
-                match execute_cas_batch_body(&tx, db_name, guard, statements).await {
-                    Ok(applied) => {
-                        tx.commit().await.map_err(|e| {
-                            classify_turso_error(db_name, "failed to commit transaction", &e)
-                        })?;
-                        Ok(applied)
-                    }
-                    Err(failure) => {
-                        let _ = tx.rollback().await;
-                        Err(failure)
-                    }
-                }
-            }
-            .await
+        let attempt = CasBatchAttempt {
+            conn: &mut self.core.conn,
+            db_name,
+            guard,
+            statements,
         };
 
         if let Some(policy) = write_contention_policy::<M>() {
-            return run_with_write_contention_retry(policy, operation_name, retry_hint, |_| {
-                run_attempt()
-            })
-            .await;
+            return run_with_write_contention_retry(policy, operation_name, retry_hint, attempt)
+                .await;
         }
 
         let outcome = run_with_retry_elapsed(
             resolve_query_retry_policy::<M>(),
             operation_name,
             retry_hint,
-            async |_| match run_attempt().await {
-                Ok(applied) => Ok(CasBatchAttemptOutcome::Settled(applied)),
-                Err(failure) => cas_batch_failure_into_attempt_result(failure),
-            },
+            CasPlainAttempt(attempt),
         )
         .await?;
 
@@ -1506,3 +1580,6 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
         self.core.run_migrations().await
     }
 }
+
+#[cfg(test)]
+mod transaction_cancellation_tests;

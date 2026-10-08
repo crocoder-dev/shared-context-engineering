@@ -33,14 +33,14 @@ where
 
     let generated_at_unix_ms = now()?;
 
-    let db = open_agent_trace_db_for_hook_runtime(
+    let mut db = open_agent_trace_db_for_hook_runtime(
         repository_root,
         "Failed to open Agent Trace DB for Codex Stop persistence.",
     )
     .await?;
 
     persist_with(
-        &db,
+        &mut db,
         &validated,
         last_assistant_message,
         generated_at_unix_ms,
@@ -76,7 +76,7 @@ fn validate_stop_event(event: &CodexHookEvent) -> Result<ValidatedStop<'_>> {
 }
 
 async fn persist_with(
-    db: &RepositoryAgentTraceDb,
+    db: &mut RepositoryAgentTraceDb,
     validated: &ValidatedStop<'_>,
     last_assistant_message: &str,
     generated_at_unix_ms: i64,

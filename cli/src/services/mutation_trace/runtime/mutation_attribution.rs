@@ -434,7 +434,7 @@ where
 
 pub(crate) async fn resolve_post_commit_mutation_ai_patch(
     repository_root: &Path,
-    db: &RepositoryAgentTraceDb,
+    db: &mut RepositoryAgentTraceDb,
     direct_coverage: &ParsedPatch,
     committed_patch: &ParsedPatch,
 ) -> ParsedPatch {
