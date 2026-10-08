@@ -12,6 +12,10 @@ use crate::services::mutation_trace::types::TreeId;
 use super::git_snapshot::{resolve_git_dir, GitSnapshotService, PinInventoryError, PinnedRef};
 use super::worktree_lock::{acquire_inner_async, WorktreeLockError};
 
+#[allow(
+    dead_code,
+    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+)]
 const RECONCILIATION_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Outcome counts of one successful reconciliation pass.
@@ -32,6 +36,10 @@ const RECONCILIATION_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 /// `ReconciliationOutcome::SkippedNoCheckoutIdentity` carries no report, so no
 /// report invariant applies to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+)]
 pub struct ReconciliationReport {
     pub local_required: usize,
     pub retained: usize,
@@ -42,6 +50,10 @@ pub struct ReconciliationReport {
 /// [`ReconciliationReport`], versus a skip because no current checkout identity
 /// could be derived (an `Ok`, never an `Err`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+)]
 pub enum ReconciliationOutcome {
     Reconciled(ReconciliationReport),
     SkippedNoCheckoutIdentity,
@@ -52,6 +64,10 @@ pub enum ReconciliationOutcome {
 /// non-`Ok` outcome leaves the SCE ref namespace in a consistent state: either
 /// untouched, or (only on `Ok`) with exactly the stale refs gone.
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+)]
 pub enum ReconcileError {
     /// `resolve_git_dir` failed.
     GitDir(anyhow::Error),
@@ -122,6 +138,10 @@ impl std::error::Error for ReconcileError {}
 /// Module-private to `runtime`, exactly like `coordinate` — never re-exported
 /// outside mutation-trace `runtime`. It is a one-line delegation to
 /// [`reconcile_worktree_inner`] with a no-op lock-contention closure.
+#[allow(
+    dead_code,
+    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+)]
 pub async fn reconcile_worktree<P>(
     repository_root: &Path,
     open_db: P,
@@ -132,6 +152,10 @@ where
     reconcile_worktree_inner(repository_root, open_db, || {}).await
 }
 
+#[allow(
+    dead_code,
+    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+)]
 pub(super) async fn reconcile_worktree_inner<P, F>(
     repository_root: &Path,
     open_db: P,

@@ -443,6 +443,10 @@ pub struct ModelState {
 /// variables are still accepted, but only via an explicit [`IgnoredAny`]
 /// field — modeling a new Quint variable here as `IgnoredAny` is a
 /// deliberate "not semantic state" decision, not an oversight.
+#[allow(
+    dead_code,
+    reason = "verification-only Quint variables are deserialized to satisfy deny_unknown_fields and never read"
+)]
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WireModelState {

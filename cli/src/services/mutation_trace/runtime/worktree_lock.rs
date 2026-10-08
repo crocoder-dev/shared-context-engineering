@@ -15,7 +15,6 @@ const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(100);
 #[derive(Debug)]
 struct WorktreeLockInner {
     file: File,
-    path: PathBuf,
     unlock_on_drop: AtomicBool,
 }
 
@@ -117,7 +116,6 @@ where
                 return Ok(WorktreeLock {
                     inner: Arc::new(WorktreeLockInner {
                         file,
-                        path: lock_path,
                         unlock_on_drop: AtomicBool::new(true),
                     }),
                 });
