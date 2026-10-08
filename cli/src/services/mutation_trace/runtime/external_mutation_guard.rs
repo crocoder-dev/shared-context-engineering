@@ -149,6 +149,8 @@ mod unix_impl {
     const F_GETFD: i32 = 1;
     const F_SETFD: i32 = 2;
     const FD_CLOEXEC: i32 = 1;
+    #[cfg(target_os = "linux")]
+    const O_CLOEXEC: i32 = 0o200_0000;
     const POLLIN: i16 = 0x001;
     const POLLERR: i16 = 0x008;
     const POLLHUP: i16 = 0x010;
@@ -235,25 +237,23 @@ mod unix_impl {
 
     mod raw {
         unsafe extern "C" {
-            pub(super) fn dup(fd: i32) -> i32;
             pub(super) fn fcntl(fd: i32, command: i32, ...) -> i32;
             pub(super) fn kill(pid: i32, sig: i32) -> i32;
+            #[cfg(target_os = "linux")]
+            pub(super) fn pipe2(fds: *mut i32, flags: i32) -> i32;
+            #[cfg(not(target_os = "linux"))]
             pub(super) fn pipe(fds: *mut i32) -> i32;
             pub(super) fn poll(fds: *mut super::PollFd, count: usize, timeout: i32) -> i32;
         }
     }
 
-    fn set_cloexec(fd: RawFd, enabled: bool) -> io::Result<()> {
+    #[cfg(not(target_os = "linux"))]
+    fn set_cloexec(fd: RawFd) -> io::Result<()> {
         let flags = unsafe { raw::fcntl(fd, F_GETFD, 0) };
         if flags < 0 {
             return Err(io::Error::last_os_error());
         }
-        let updated = if enabled {
-            flags | FD_CLOEXEC
-        } else {
-            flags & !FD_CLOEXEC
-        };
-        if unsafe { raw::fcntl(fd, F_SETFD, updated) } < 0 {
+        if unsafe { raw::fcntl(fd, F_SETFD, flags | FD_CLOEXEC) } < 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(())
@@ -268,14 +268,22 @@ mod unix_impl {
     impl LifetimeToken {
         pub(super) fn new() -> io::Result<Self> {
             let mut fds = [-1_i32; 2];
+            #[cfg(target_os = "linux")]
+            if unsafe { raw::pipe2(fds.as_mut_ptr(), O_CLOEXEC) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            #[cfg(not(target_os = "linux"))]
             if unsafe { raw::pipe(fds.as_mut_ptr()) } < 0 {
                 return Err(io::Error::last_os_error());
             }
 
             let reader = unsafe { File::from_raw_fd(fds[0]) };
             let writer = unsafe { File::from_raw_fd(fds[1]) };
-            set_cloexec(reader.as_raw_fd(), true)?;
-            set_cloexec(writer.as_raw_fd(), false)?;
+            #[cfg(not(target_os = "linux"))]
+            {
+                set_cloexec(reader.as_raw_fd())?;
+                set_cloexec(writer.as_raw_fd())?;
+            }
 
             Ok(Self {
                 reader,
@@ -309,14 +317,6 @@ mod unix_impl {
         lock_fd: RawFd,
         lifetime_fd: RawFd,
     ) -> std::io::Result<Child> {
-        let duplicated_lock_fd = unsafe { raw::dup(lock_fd) };
-        if duplicated_lock_fd < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let duplicated_lock_fd_guard = unsafe { File::from_raw_fd(duplicated_lock_fd) };
-        set_cloexec(duplicated_lock_fd_guard.as_raw_fd(), false)?;
-        set_cloexec(lifetime_fd, false)?;
-
         let mut command = Command::new(resolve_shell_executable());
         command
             .arg("-c")
@@ -328,9 +328,24 @@ mod unix_impl {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let result = command.spawn();
-        drop(duplicated_lock_fd_guard);
-        result
+        unsafe {
+            command.pre_exec(move || inherit_across_exec(&[lock_fd, lifetime_fd]));
+        }
+
+        command.spawn()
+    }
+
+    fn inherit_across_exec(fds: &[RawFd]) -> io::Result<()> {
+        for &fd in fds {
+            let flags = unsafe { raw::fcntl(fd, F_GETFD, 0) };
+            if flags < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if unsafe { raw::fcntl(fd, F_SETFD, flags & !FD_CLOEXEC) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(())
     }
 
     fn poll_fds(fds: &mut [PollFd], timeout: Duration) -> io::Result<()> {
@@ -883,6 +898,70 @@ mod unix_impl {
                 cwd: None,
                 env: Vec::new(),
             }
+        }
+
+        #[cfg(target_os = "linux")]
+        fn parse_targets(stdout: &[u8]) -> Vec<String> {
+            String::from_utf8_lossy(stdout)
+                .lines()
+                .map(str::to_string)
+                .collect()
+        }
+
+        #[cfg(target_os = "linux")]
+        fn descriptor_target(fd: i32) -> String {
+            std::fs::read_link(format!("/proc/self/fd/{fd}"))
+                .expect("descriptor target")
+                .display()
+                .to_string()
+        }
+
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn guard_descriptors_are_inherited_only_by_the_guarded_child() {
+            use std::os::fd::AsRawFd;
+
+            const LIST_TARGETS: &str = "for fd in /proc/self/fd/*; do readlink \"$fd\"; done";
+
+            let dir = tempfile::tempdir().expect("temp dir");
+            let lock_file = std::fs::File::create(dir.path().join("lock")).expect("lock file");
+            let lock_fd = lock_file.as_raw_fd();
+            let mut lifetime = super::LifetimeToken::new().expect("lifetime token");
+            let lifetime_fd = lifetime.writer_fd();
+
+            let flags = unsafe { super::raw::fcntl(lifetime_fd, super::F_GETFD, 0) };
+            assert_ne!(flags & super::FD_CLOEXEC, 0, "writer is close-on-exec");
+
+            let unrelated = Command::new("sh")
+                .arg("-c")
+                .arg(LIST_TARGETS)
+                .output()
+                .expect("unrelated listing should run");
+            let lock_target = descriptor_target(lock_fd);
+            let lifetime_target = descriptor_target(lifetime_fd);
+            let unrelated_targets = parse_targets(&unrelated.stdout);
+            assert!(!unrelated_targets.contains(&lifetime_target));
+            assert!(!unrelated_targets.contains(&lock_target));
+
+            let child = super::spawn_guarded_shell(
+                dir.path(),
+                &guard_request(LIST_TARGETS),
+                lock_fd,
+                lifetime_fd,
+            )
+            .expect("guarded shell should spawn");
+            let output = child.wait_with_output().expect("guarded shell output");
+            let guarded_targets = parse_targets(&output.stdout);
+            assert!(guarded_targets.contains(&lifetime_target));
+            assert!(guarded_targets.contains(&lock_target));
+
+            let flags = unsafe { super::raw::fcntl(lock_fd, super::F_GETFD, 0) };
+            assert_ne!(
+                flags & super::FD_CLOEXEC,
+                0,
+                "parent lock stays close-on-exec"
+            );
+            lifetime.close_writer();
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

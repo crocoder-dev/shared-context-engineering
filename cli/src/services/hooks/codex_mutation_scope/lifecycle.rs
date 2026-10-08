@@ -200,10 +200,9 @@ pub(super) async fn with_boundary_lock<T>(
     git_dir: &Path,
     operation: impl std::ops::AsyncFnOnce() -> Result<T>,
 ) -> Result<T> {
-    let _boundary = state::BOUNDARY_LOCK
-        .acquire_async(&state::adapter_state_dir(git_dir))
-        .await?;
-    operation().await
+    state::BOUNDARY_LOCK
+        .run_under_boundary(&state::adapter_state_dir(git_dir), operation)
+        .await
 }
 
 pub(super) async fn handle_pre_tool_use<L: crate::services::observability::traits::Logger>(

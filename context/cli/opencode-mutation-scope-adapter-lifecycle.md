@@ -9,7 +9,7 @@ identity encoding, wire contract, plugin, and attribution boundary, see
 
 The adapter processes one hook event at a time under a per-`git-dir` boundary
 lock (`opencode-mutation-scope-boundary.lock`), serialising boundary work across
-concurrent OpenCode processes.
+concurrent OpenCode processes. The lock is a lease (`AdapterLockSpec::run_under_boundary`): a state transition already started in `spawn_blocking` keeps it until the worker finishes, so a cancelled boundary cannot be overtaken.
 
 - **Attempt phases.** An attempt is `PendingStart` → `Active` → `PendingAbandon`.
   `PendingAbandon` means exact terminal evidence has been observed, the OpenCode
