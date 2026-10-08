@@ -730,8 +730,10 @@ mod unix_impl {
             } = joined.map_err(GuardError::SupervisorWorker)??;
 
             let worktree_id = ownership.protected().worktree_id().clone();
+            let pin_lease = ownership.protected().lock_lease();
             if let Err(source) = coordinate_on_held_worktree(
                 &repository_root,
+                pin_lease,
                 &worktree_id,
                 &RuntimeBoundary::Flush,
                 open_db.expect("the guard database opener must be available before exec"),

@@ -145,7 +145,7 @@ where
         .await
         .map_err(ReconcileError::GitDir)?;
 
-    let _lock = acquire_inner_async(&git_dir, RECONCILIATION_LOCK_TIMEOUT, on_lock_contention)
+    let lock = acquire_inner_async(&git_dir, RECONCILIATION_LOCK_TIMEOUT, on_lock_contention)
         .await
         .map_err(ReconcileError::Lock)?;
 
@@ -206,7 +206,7 @@ where
 
     if !stale.is_empty() {
         snapshot
-            .delete_pins(&stale)
+            .delete_pins(lock.lease(), &stale)
             .await
             .map_err(ReconcileError::DeleteTransaction)?;
     }

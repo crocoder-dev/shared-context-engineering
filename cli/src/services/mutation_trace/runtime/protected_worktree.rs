@@ -5,7 +5,9 @@ use crate::services::mutation_trace::types::WorktreeId;
 
 use super::external_taint::ExternalTaintMarker;
 use super::git_snapshot::{resolve_git_dir, resolve_worktree_id};
-use super::worktree_lock::{acquire_inner_async, WorktreeLock, WorktreeLockError};
+use super::worktree_lock::{
+    acquire_inner_async, WorktreeLock, WorktreeLockError, WorktreeLockLease,
+};
 
 pub const WORKTREE_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -117,6 +119,11 @@ impl ProtectedWorktree {
     #[must_use]
     pub fn inherited_external_taint(&self) -> bool {
         self.inherited_external_taint
+    }
+
+    #[must_use]
+    pub(super) fn lock_lease(&self) -> WorktreeLockLease {
+        self.lock.lease()
     }
 
     #[cfg(unix)]
