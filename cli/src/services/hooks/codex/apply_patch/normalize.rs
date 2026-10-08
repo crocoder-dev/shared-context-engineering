@@ -29,7 +29,6 @@ fn normalize_error(message: impl Into<String>) -> CodexPatchNormalizeError {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn normalize_codex_patch(
     patch: &CodexPatch,
     tool_use_id: &str,

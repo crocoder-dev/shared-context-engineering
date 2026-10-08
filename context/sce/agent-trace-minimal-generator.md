@@ -25,7 +25,6 @@ Given a `constructed_patch` (AI candidate) and a `post_commit_patch` (canonical 
 
 Per hunk, a `post_commit_patch` touched line is covered when it pairs one-to-one on `(kind, line_number, content)` with a line in the direct intersection hunk or the mutation-AI hunk at the same `old_start`; the covered fraction drives `ai` / `mixed` / `unknown` as in the Contract above. `line_changes` buckets follow that combined classification.
 
-`build_agent_trace(constructed_patch, post_commit_patch, metadata)` is retained unchanged and delegates to `build_agent_trace_from_evidence` with an empty `mutation_ai_patch`. Wiring the mutation-AI patch in at post-commit is owned by [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md).
 
 ## Domain types
 
@@ -58,7 +57,7 @@ the boundary that mutation protocol attribution is not itself scope provenance.
 Current output includes top-level metadata fields with this contract:
 
 - `version` is fixed to `"0.1.0"` and remains the Agent Trace payload/schema version
-- `id` is generated per `build_agent_trace(...)` call as a UUIDv7 string derived from the same commit-time moment used for `timestamp`
+- `id` is generated per `build_agent_trace_from_evidence(...)` call as a UUIDv7 string derived from the same commit-time moment used for `timestamp`
 - `timestamp` is sourced from explicit commit metadata input (`AgentTraceMetadataInput.commit_timestamp`) and must be RFC 3339
 - `vcs` is emitted only when explicit commit metadata input includes `AgentTraceMetadataInput.vcs_type`
 - when `vcs` is emitted, `vcs.type` is sourced from the schema-aligned enum (`git | jj | hg | svn`) and `vcs.revision` is sourced from `AgentTraceMetadataInput.commit_revision`
@@ -109,15 +108,13 @@ Current output includes top-level metadata fields with this contract:
 
 ## Public API
 
-- `classify_hunk(post_commit_hunk, intersection_hunks) -> HunkContributor` — the direct-only slot rule, retained as a primitive; the builder itself now classifies through the internal combined direct+mutation line-coverage rule.
 - `range_content_hash(hunk) -> String` — internal helper that computes the serialized range-level `murmur3:<lowercase-hex>` content fingerprint from `PatchHunk.lines` using versioned, length-delimited touched-line serialization in patch order. The hash input includes touched-line kind and content, and excludes hunk positions, line numbers, file paths, trace metadata, contributor/model metadata, VCS metadata, tool metadata, and database IDs.
-- `build_agent_trace(constructed_patch, post_commit_patch, metadata) -> Result<AgentTrace>` — direct-only entrypoint, retained unchanged; delegates to `build_agent_trace_from_evidence` with an empty `mutation_ai_patch`. It validates `metadata.commit_timestamp` as RFC 3339, uses it as top-level `timestamp`, derives a UUIDv7 `id` from that same commit-time moment, derives one conversation URL from that `id`, conditionally emits `vcs` only when `metadata.vcs_type` is present (mapping `vcs.type` from metadata and `vcs.revision` from `metadata.commit_revision`), carries optional tool metadata inputs (`metadata.tool_name`, `metadata.tool_version`) for top-level `tool` mapping, and always emits `metadata.sce.version` from the compiled package version. When the direct `intersection_patch.files` is empty, `tool` is always `None` regardless of metadata values.
 - `build_agent_trace_from_evidence(evidence: AgentTraceEvidence, post_commit_patch, metadata) -> Result<AgentTrace>` — separated-evidence entrypoint (see [Separated direct/mutation evidence](#separated-directmutation-evidence)): identical top-level metadata behavior, classifies each hunk from the union of direct and mutation-derived AI coverage, unions direct/mutation related sessions, and emits a model only when the present evidence sources agree under the combined rule; top-level `tool` remains bound to the direct intersection.
 
 ## Test fixture contract
 
 - Golden fixtures under `cli/src/services/agent_trace/fixtures/**/golden.json` pin deterministic literal values for top-level `id`, `timestamp`, optional `vcs`, `metadata.sce.version`, `metadata.sce.line_changes`, per-conversation `url`, range-level `content_hash`, and expected file/conversation shapes.
-- Reconstruction fixtures pair `incremental_*.patch` inputs with a `post_commit.patch` and drive `build_agent_trace`. Evidence fixtures (`direct_only`, `exclusive_without_direct`, `direct_plus_mutation`, `partial_combined`, `newer_nonexclusive_blocks`, `mutation_only_no_provenance`) instead pair `direct.patch` + `mutation_ai.patch` + `post_commit.patch` and drive `build_agent_trace_from_evidence`, pinning mutation-only coverage with and without resolved provenance, the combined model-agreement and session-union rules, the absence of fabricated metadata when provenance is unknown, and the empty-mutation path's byte identity with `build_agent_trace`.
+- Evidence fixtures (`direct_only`, `exclusive_without_direct`, `direct_plus_mutation`, `partial_combined`, `newer_nonexclusive_blocks`, `mutation_only_no_provenance`) pair `direct.patch` + `mutation_ai.patch` + `post_commit.patch` and drive `build_agent_trace_from_evidence`, pinning mutation-only coverage with and without resolved provenance, the combined model-agreement and session-union rules, the absence of fabricated metadata when provenance is unknown, and the empty-mutation path's byte identity with `build_agent_trace`.
 - Tests validate golden fixtures and built payloads against the embedded schema, assert core runtime metadata directly (`version`, `timestamp`, optional `vcs`, and `metadata.sce.version`), and compare `vcs`, optional `tool`, `metadata.sce.line_changes`, and normalized `files` against fixture truth. Expected fixture URLs are normalized to the runtime `AgentTrace.id` before the existing file-shape comparison because UUIDv7 generation includes non-deterministic bits.
 
 ## Relationship to existing patch service

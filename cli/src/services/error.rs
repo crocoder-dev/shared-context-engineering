@@ -71,7 +71,6 @@ impl UserError {
         }
     }
 
-    #[allow(dead_code)]
     pub fn key(&self) -> &'static str {
         match self {
             Self::NotAuthenticated => "auth.not_authenticated",
@@ -114,7 +113,6 @@ impl std::fmt::Display for UserError {
 /// observability and diagnostic rendering.
 #[derive(Debug)]
 pub enum CliError {
-    #[allow(dead_code)]
     User {
         error: UserError,
         source: Option<anyhow::Error>,
@@ -126,15 +124,6 @@ pub enum CliError {
 }
 
 impl CliError {
-    #[allow(dead_code)]
-    pub fn user(error: UserError) -> Self {
-        Self::User {
-            error,
-            source: None,
-        }
-    }
-
-    #[allow(dead_code)]
     pub fn user_with_source(error: UserError, source: impl Into<anyhow::Error>) -> Self {
         Self::User {
             error,
@@ -206,7 +195,10 @@ mod tests {
 
     #[test]
     fn user_error_not_authenticated_classifies_as_runtime() {
-        let error = CliError::user(UserError::NotAuthenticated);
+        let error = CliError::User {
+            error: UserError::NotAuthenticated,
+            source: None,
+        };
 
         assert_eq!(error.class(), FailureClass::Runtime);
         assert_eq!(error.code(), "SCE-ERR-RUNTIME");
@@ -216,7 +208,10 @@ mod tests {
 
     #[test]
     fn not_git_repository_has_stable_runtime_catalog_mapping() {
-        let error = CliError::user(UserError::NotGitRepository);
+        let error = CliError::User {
+            error: UserError::NotGitRepository,
+            source: None,
+        };
 
         assert_eq!(error.class(), FailureClass::Runtime);
         assert_eq!(error.code(), "SCE-ERR-RUNTIME");
@@ -229,7 +224,10 @@ mod tests {
 
     #[test]
     fn unexpected_failure_has_stable_runtime_catalog_mapping() {
-        let error = CliError::user(UserError::UnexpectedFailure);
+        let error = CliError::User {
+            error: UserError::UnexpectedFailure,
+            source: None,
+        };
 
         assert_eq!(error.class(), FailureClass::Runtime);
         assert_eq!(error.code(), "SCE-ERR-RUNTIME");

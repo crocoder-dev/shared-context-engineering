@@ -1,50 +1,17 @@
-#![allow(dead_code)]
-
-use std::fs::{self, Metadata};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
 
-pub trait FsOps: Send + Sync {
-    fn read_file(&self, path: &Path) -> Result<String>;
-
-    fn write_file(&self, path: &Path, content: &str) -> Result<()>;
-
-    fn metadata(&self, path: &Path) -> Result<Metadata>;
-
-    fn exists(&self, path: &Path) -> bool;
-}
+pub trait FsOps: Send + Sync {}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct StdFsOps;
 
-impl FsOps for StdFsOps {
-    fn read_file(&self, path: &Path) -> Result<String> {
-        fs::read_to_string(path)
-            .with_context(|| format!("Failed to read file '{}'", path.display()))
-    }
-
-    fn write_file(&self, path: &Path, content: &str) -> Result<()> {
-        fs::write(path, content)
-            .with_context(|| format!("Failed to write file '{}'", path.display()))
-    }
-
-    fn metadata(&self, path: &Path) -> Result<Metadata> {
-        fs::metadata(path).with_context(|| format!("Failed to inspect path '{}'", path.display()))
-    }
-
-    fn exists(&self, path: &Path) -> bool {
-        path.exists()
-    }
-}
+impl FsOps for StdFsOps {}
 
 pub trait GitOps: Send + Sync {
     fn run_command(&self, repo: &Path, args: &[&str]) -> Result<String>;
-
-    fn resolve_repository_root(&self, dir: &Path) -> Result<PathBuf>;
-
-    fn resolve_hooks_directory(&self, repo: &Path) -> Result<PathBuf>;
 
     fn is_available(&self) -> bool;
 }
@@ -55,22 +22,6 @@ pub struct ProcessGitOps;
 impl GitOps for ProcessGitOps {
     fn run_command(&self, repo: &Path, args: &[&str]) -> Result<String> {
         run_git_command(repo, args)
-    }
-
-    fn resolve_repository_root(&self, dir: &Path) -> Result<PathBuf> {
-        let output = run_git_command(dir, &["rev-parse", "--show-toplevel"])?;
-        Ok(PathBuf::from(output.trim()))
-    }
-
-    fn resolve_hooks_directory(&self, repo: &Path) -> Result<PathBuf> {
-        let output = run_git_command(repo, &["rev-parse", "--git-path", "hooks"])?;
-        let hooks_path = PathBuf::from(output.trim());
-
-        if hooks_path.is_absolute() {
-            Ok(hooks_path)
-        } else {
-            Ok(repo.join(hooks_path))
-        }
     }
 
     fn is_available(&self) -> bool {

@@ -46,7 +46,6 @@ pub trait Telemetry: Send + Sync {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-#[allow(dead_code)]
 pub struct NoopLogger;
 
 impl Logger for NoopLogger {

@@ -76,6 +76,10 @@ pub struct AgentTracePartExportRow {
 }
 
 /// Owned, wire-compatible export row for the `diff_traces` capture stream.
+#[allow(
+    dead_code,
+    reason = "diff_traces compatibility surface retained per context/decisions/2026-10-01-retire-diff-traces-remote-sync-compatibility-gate.md"
+)]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTraceDiffTraceExportRow {
@@ -116,6 +120,10 @@ WHERE id > ?1
 ORDER BY id ASC
 LIMIT ?2";
 
+#[allow(
+    dead_code,
+    reason = "diff_traces compatibility surface retained per context/decisions/2026-10-01-retire-diff-traces-remote-sync-compatibility-gate.md"
+)]
 const SELECT_DIFF_TRACES_AFTER_SQL: &str =
     "SELECT id, session_id, time_ms, patch, model_id, tool_name, tool_version, payload_type
 FROM diff_traces
@@ -200,6 +208,10 @@ impl<'a> AgentTraceExportReader<'a> {
     /// Read `diff_traces` rows with `id > cursor`, ordered by `id ASC`,
     /// capped at `limit`. `patch` and `payload_type` are returned raw and
     /// unmodified: no patch parsing or normalization is performed.
+    #[allow(
+        dead_code,
+        reason = "diff_traces compatibility surface retained per context/decisions/2026-10-01-retire-diff-traces-remote-sync-compatibility-gate.md"
+    )]
     pub async fn read_diff_traces_after(
         &self,
         cursor: i64,
@@ -283,6 +295,10 @@ fn part_export_row_from_turso(row: &turso::Row) -> Result<AgentTracePartExportRo
     })
 }
 
+#[allow(
+    dead_code,
+    reason = "diff_traces compatibility surface retained per context/decisions/2026-10-01-retire-diff-traces-remote-sync-compatibility-gate.md"
+)]
 fn diff_trace_export_row_from_turso(row: &turso::Row) -> Result<AgentTraceDiffTraceExportRow> {
     Ok(AgentTraceDiffTraceExportRow {
         source_row_id: row.get(0).context("failed to read diff_traces.id")?,

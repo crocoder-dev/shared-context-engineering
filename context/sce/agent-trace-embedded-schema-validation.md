@@ -13,7 +13,6 @@ Current internal validation seam for Agent Trace JSON in the Rust CLI.
 - The canonical schema remains at `config/schema/agent-trace.schema.json`. For repository builds, `cli/build.rs` copies it to `OUT_DIR/static/schema/agent-trace.schema.json`, and the CLI embeds that staged file at compile time via `include_str!`. Validation does not read the schema from disk at runtime; channel-specific package fallback preparation remains a distribution concern.
 - `agent_trace_schema_validator()` compiles the embedded schema once and caches the `jsonschema::Validator` in a `OnceLock`.
 - `validate_agent_trace_value(&serde_json::Value)` validates already-parsed JSON values against the embedded schema.
-- `validate_agent_trace_json(&str)` parses a JSON string and then validates it against the embedded schema.
 - Top-level `version` must match strict numeric `x.y.z` (`^[0-9]+\.[0-9]+\.[0-9]+$`); two-part values like `x.y` are rejected.
 - Top-level `vcs` is optional at schema level; payloads without `vcs` validate, and payloads that include `vcs` must still provide both `type` and `revision`.
 - Validation failures use `AgentTraceValidationError` to distinguish:
@@ -24,7 +23,7 @@ Current internal validation seam for Agent Trace JSON in the Rust CLI.
 ## Boundaries
 
 - This seam is internal-only; no user-facing `sce` command currently exposes Agent Trace validation.
-- The existing minimal `build_agent_trace(...)` output remains unchanged by this validation seam.
+- The `build_agent_trace_from_evidence(...)` output remains unchanged by this validation seam.
 - File-path loading and validation entrypoints are not part of the current implemented slice.
 
 ## Verification

@@ -39,12 +39,6 @@ pub(crate) enum RecoveryState {
     },
 }
 
-impl RecoveryState {
-    pub(crate) fn is_clear(&self) -> bool {
-        matches!(self, RecoveryState::Clear)
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct AdapterAttempt {
     pub attempt_seq: u64,

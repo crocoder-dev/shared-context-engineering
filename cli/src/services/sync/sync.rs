@@ -25,7 +25,7 @@ use crate::services::agent_trace_sync::{
 };
 use crate::services::auth;
 use crate::services::config;
-use crate::services::sync::progress::{NoopProgressReporter, ProgressReporter};
+use crate::services::sync::progress::ProgressReporter;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentTraceSyncReport {
@@ -127,7 +127,6 @@ impl TraceSyncError {
     /// (`ControlPlane`) or from a stream's batch/refresh path (`Stream`).
     /// `Runtime` never carries a `ControlPlaneError` and is never an
     /// authentication failure.
-    #[allow(dead_code)]
     pub fn is_authentication_failure(&self) -> bool {
         match self {
             Self::Runtime(_) => false,
@@ -146,24 +145,6 @@ impl TraceSyncError {
             Self::Runtime(_) => false,
         }
     }
-}
-
-#[allow(dead_code)]
-pub async fn run_current_sync(repo_root: &Path) -> Result<AgentTraceSyncReport, TraceSyncError> {
-    let mut progress = NoopProgressReporter;
-    run_current_sync_with_progress(repo_root, &mut progress).await
-}
-
-/// Production entry point with an injectable progress sink.
-pub async fn run_current_sync_with_progress<S>(
-    repo_root: &Path,
-    progress: &mut S,
-) -> Result<AgentTraceSyncReport, TraceSyncError>
-where
-    S: ProgressReporter<SyncProgressEvent>,
-{
-    let clock = SystemSyncProgressClock;
-    run_current_sync_with_progress_and_clock(repo_root, progress, &clock).await
 }
 
 /// Production sync entry point with injectable progress sink and clock.

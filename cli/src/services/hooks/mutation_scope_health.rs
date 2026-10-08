@@ -1,7 +1,6 @@
 use crate::services::mutation_trace::types::ActorKind;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub(crate) enum MutationScopeHealthStatus {
     Healthy,
     Recovering,
@@ -10,14 +9,12 @@ pub(crate) enum MutationScopeHealthStatus {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub(crate) enum Repairability {
     AutoFixable,
     ManualOnly,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub(crate) struct MutationScopeAdapterHealth {
     pub(crate) adapter: ActorKind,
     pub(crate) status: MutationScopeHealthStatus,
@@ -25,7 +22,6 @@ pub(crate) struct MutationScopeAdapterHealth {
     pub(crate) detail: Option<String>,
 }
 
-#[allow(dead_code)]
 impl MutationScopeAdapterHealth {
     pub(crate) fn new(
         adapter: ActorKind,
