@@ -153,7 +153,7 @@ where
         .await
         .map_err(ReconcileError::CheckoutIdentity)?;
 
-    let db = open_db()
+    let mut db = open_db()
         .await
         .map_err(ReconcileError::AgentTraceDbUnavailable)?;
 
@@ -174,7 +174,7 @@ where
         })?;
     let pinned_trees: BTreeSet<TreeId> = actual.iter().map(|pin| pin.tree.clone()).collect();
 
-    let store = MutationTraceStore::new(&db);
+    let store = MutationTraceStore::new(&mut db);
 
     // Local consistency invariant (a strictly per-worktree check): every tree
     // the target worktree's own durable evidence references must still have a

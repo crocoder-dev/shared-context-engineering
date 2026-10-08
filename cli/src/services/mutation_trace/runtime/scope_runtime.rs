@@ -195,10 +195,10 @@ where
     P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
     L: FnMut(u32),
 {
-    let db = open_db()
+    let mut db = open_db()
         .await
         .map_err(AbandonScopeError::AgentTraceDbUnavailable)?;
-    let store = MutationTraceStore::new(&db);
+    let mut store = MutationTraceStore::new(&mut db);
 
     for attempt_index in 0..MAX_CAS_RETRY_ATTEMPTS {
         let Some(scope_state) = store

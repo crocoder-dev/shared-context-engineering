@@ -318,7 +318,7 @@ impl RepositoryAgentTraceDb {
     /// of separate `insert_messages`/`insert_parts` calls, so a replayed or
     /// concurrent duplicate delivery never produces an orphaned `parts` row.
     pub async fn insert_conversation_text_event(
-        &self,
+        &mut self,
         message: InsertMessageInsert,
         part: InsertPartInsert,
     ) -> Result<bool> {

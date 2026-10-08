@@ -243,7 +243,7 @@ where
     L: FnMut(u32),
     R: FnMut(u32) -> Result<()>,
 {
-    let db = open_db()
+    let mut db = open_db()
         .await
         .map_err(CoordinateError::AgentTraceDbUnavailable)?;
 
@@ -252,7 +252,7 @@ where
         .map_err(CoordinateError::Other)?;
 
     coordinate_boundary_inner(
-        &db,
+        &mut db,
         &snapshot,
         pin_lease,
         worktree_id,
@@ -319,7 +319,7 @@ where
 
 #[allow(clippy::too_many_arguments)]
 async fn coordinate_boundary_inner<C, AfterLoad, AfterRecovery>(
-    db: &RepositoryAgentTraceDb,
+    db: &mut RepositoryAgentTraceDb,
     capture: &C,
     pin_lease: WorktreeLockLease,
     worktree_id: &WorktreeId,
@@ -333,11 +333,11 @@ where
     AfterLoad: FnMut(u32),
     AfterRecovery: FnMut(u32) -> Result<()>,
 {
-    let store = MutationTraceStore::new(db);
+    let mut store = MutationTraceStore::new(db);
 
     let observed_tree = match capture_and_pin(capture, pin_lease, worktree_id).await {
         Ok(tree) => tree,
-        Err(source) => return Err(handle_snapshot_failure(&store, worktree_id, source).await),
+        Err(source) => return Err(handle_snapshot_failure(&mut store, worktree_id, source).await),
     };
 
     store
@@ -566,7 +566,7 @@ fn hook_identity(boundary: &RuntimeBoundary) -> Option<(&ScopeId, ActorKind)> {
 }
 
 async fn handle_snapshot_failure(
-    store: &MutationTraceStore<'_>,
+    store: &mut MutationTraceStore<'_>,
     worktree_id: &WorktreeId,
     source: anyhow::Error,
 ) -> CoordinateError {
@@ -580,14 +580,14 @@ async fn handle_snapshot_failure(
 }
 
 async fn run_taint_retry_loop(
-    store: &MutationTraceStore<'_>,
+    store: &mut MutationTraceStore<'_>,
     worktree_id: &WorktreeId,
 ) -> Result<bool> {
     run_taint_retry_loop_inner(store, worktree_id, |_attempt| {}).await
 }
 
 async fn run_taint_retry_loop_inner<F>(
-    store: &MutationTraceStore<'_>,
+    store: &mut MutationTraceStore<'_>,
     worktree_id: &WorktreeId,
     mut after_load: F,
 ) -> Result<bool>

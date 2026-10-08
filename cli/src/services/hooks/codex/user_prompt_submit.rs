@@ -29,13 +29,13 @@ where
 
     let generated_at_unix_ms = now()?;
 
-    let db = open_agent_trace_db_for_hook_runtime(
+    let mut db = open_agent_trace_db_for_hook_runtime(
         repository_root,
         "Failed to open Agent Trace DB for Codex UserPromptSubmit persistence.",
     )
     .await?;
 
-    persist_with(&db, &validated, generated_at_unix_ms).await
+    persist_with(&mut db, &validated, generated_at_unix_ms).await
 }
 
 struct ValidatedUserPromptSubmit<'a> {
@@ -59,7 +59,7 @@ fn validate_user_prompt_submit_event(
 }
 
 async fn persist_with(
-    db: &RepositoryAgentTraceDb,
+    db: &mut RepositoryAgentTraceDb,
     validated: &ValidatedUserPromptSubmit<'_>,
     generated_at_unix_ms: i64,
 ) -> Result<String> {
