@@ -184,31 +184,24 @@ where
     let storage = resolve_agent_trace_storage(&context)
         .await
         .map_err(|error| TraceSyncError::Runtime(format!("{error:#}")))?;
-    let result = async {
-        let storage = &storage;
+    let auth_config = config::resolve_auth_runtime_config(repo_root)
+        .map_err(|error| TraceSyncError::Runtime(format!("{error:#}")))?;
+    let client = AuthenticatedControlPlaneClient::new(
+        reqwest::Client::new(),
+        auth_config.control_plane_base_url.value.unwrap_or_default(),
+        auth::WORKOS_DEFAULT_BASE_URL,
+        auth_config.workos_client_id.value.unwrap_or_default(),
+    );
 
-        let auth_config = config::resolve_auth_runtime_config(repo_root)
-            .map_err(|error| TraceSyncError::Runtime(format!("{error:#}")))?;
-        let client = AuthenticatedControlPlaneClient::new(
-            reqwest::Client::new(),
-            auth_config.control_plane_base_url.value.unwrap_or_default(),
-            auth::WORKOS_DEFAULT_BASE_URL,
-            auth_config.workos_client_id.value.unwrap_or_default(),
-        );
-
-        let result = run_sync_against_without_progress(
-            &storage.metadata.repository_id,
-            &storage.metadata.source_instance_id,
-            &storage.db,
-            &client,
-            progress,
-        )
-        .await;
-        client.wait_for_pending_refresh().await;
-        result
-    }
+    let result = run_sync_against_without_progress(
+        &storage.metadata.repository_id,
+        &storage.metadata.source_instance_id,
+        &storage.db,
+        &client,
+        progress,
+    )
     .await;
-    drop(storage);
+    client.wait_for_pending_refresh().await;
     result
 }
 
@@ -264,7 +257,7 @@ where
             state.cursors.messages,
             "messages",
             async |cursor, limit| reader.read_messages_after(cursor, limit).await,
-            async |request| async move { client.ingest_messages(&request).await }.await,
+            async |request| client.ingest_messages(&request).await,
             Rc::clone(&progress),
             &terminated,
         ),
@@ -276,7 +269,7 @@ where
             state.cursors.parts,
             "parts",
             async |cursor, limit| reader.read_parts_after(cursor, limit).await,
-            async |request| async move { client.ingest_parts(&request).await }.await,
+            async |request| client.ingest_parts(&request).await,
             Rc::clone(&progress),
             &terminated,
         ),
@@ -288,7 +281,7 @@ where
             state.cursors.agent_traces,
             "agent_traces",
             async |cursor, limit| reader.read_agent_traces_after(cursor, limit).await,
-            async |request| async move { client.ingest_agent_traces(&request).await }.await,
+            async |request| client.ingest_agent_traces(&request).await,
             Rc::clone(&progress),
             &terminated,
         ),
