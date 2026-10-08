@@ -1,11 +1,12 @@
 use std::{
     cmp::Ordering,
-    collections::BTreeMap,
+    collections::hash_map::DefaultHasher,
     fmt::Write as FmtWrite,
     fs::{self, OpenOptions},
+    hash::{Hash, Hasher},
     io::{self, ErrorKind, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock},
+    sync::Mutex,
     time::SystemTime,
 };
 
@@ -339,23 +340,26 @@ where
             .with_context(|| format!("failed to create log directory '{}'", parent.display()))?;
     }
 
-    let lock = file_log_lock(path);
-    let _guard = lock.lock().map_err(|error| {
-        anyhow::anyhow!("failed to lock log file '{}': {error}", path.display())
-    })?;
+    let primary_error = {
+        let _guard = log_lock_stripe(path).lock().map_err(|error| {
+            anyhow::anyhow!("failed to lock log file '{}': {error}", path.display())
+        })?;
 
-    match persist_log_line(path, redacted_line) {
-        Ok(write_target) => {
-            run_log_retention_after_creation(path, write_target, cleanup);
-            Ok(())
+        match persist_log_line(path, redacted_line) {
+            Ok(write_target) => {
+                run_log_retention_after_creation(path, write_target, cleanup);
+                return Ok(());
+            }
+            Err(primary_error) => primary_error,
         }
-        Err(primary_error) => attempt_v2_log_fallback(
-            path,
-            redacted_line,
-            &primary_error,
-            |fallback_path, line| append_log_line_once_with_cleanup(fallback_path, line, cleanup),
-        ),
-    }
+    };
+
+    attempt_v2_log_fallback(
+        path,
+        redacted_line,
+        &primary_error,
+        |fallback_path, line| append_log_line_once_with_cleanup(fallback_path, line, cleanup),
+    )
 }
 
 fn attempt_v2_log_fallback<F>(
@@ -386,8 +390,7 @@ where
             .with_context(|| format!("failed to create log directory '{}'", parent.display()))?;
     }
 
-    let lock = file_log_lock(path);
-    let _guard = lock.lock().map_err(|error| {
+    let _guard = log_lock_stripe(path).lock().map_err(|error| {
         anyhow::anyhow!("failed to lock log file '{}': {error}", path.display())
     })?;
 
@@ -573,17 +576,18 @@ fn collect_managed_log_files(log_dir: &Path) -> Result<(Vec<ManagedLogFile>, Vec
     Ok((managed_files, errors))
 }
 
-fn file_log_lock(path: &Path) -> Arc<Mutex<()>> {
-    static FILE_LOG_LOCKS: OnceLock<Mutex<BTreeMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
-    let locks = FILE_LOG_LOCKS.get_or_init(|| Mutex::new(BTreeMap::new()));
-    let mut locks = locks
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    Arc::clone(
-        locks
-            .entry(path.to_path_buf())
-            .or_insert_with(|| Arc::new(Mutex::new(()))),
-    )
+const LOG_LOCK_STRIPES: usize = 64;
+
+static LOG_LOCKS: [Mutex<()>; LOG_LOCK_STRIPES] = [const { Mutex::new(()) }; LOG_LOCK_STRIPES];
+
+fn log_lock_stripe_index(path: &Path) -> usize {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    (hasher.finish() % LOG_LOCK_STRIPES as u64) as usize
+}
+
+fn log_lock_stripe(path: &Path) -> &'static Mutex<()> {
+    &LOG_LOCKS[log_lock_stripe_index(path)]
 }
 
 #[cfg(unix)]
