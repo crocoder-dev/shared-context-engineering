@@ -188,34 +188,22 @@ fn parse_commit_timestamp(commit_timestamp: &str) -> Result<DateTime<FixedOffset
     })
 }
 
-#[allow(dead_code)]
 const AGENT_TRACE_SCHEMA_PATH: &str = "config/schema/agent-trace.schema.json";
-#[allow(dead_code)]
 pub(crate) const AGENT_TRACE_SCHEMA_JSON: &str = include_str!(concat!(
     env!("OUT_DIR"),
     "/static/schema/agent-trace.schema.json"
 ));
 
-#[allow(dead_code)]
 static AGENT_TRACE_SCHEMA_VALIDATOR: OnceLock<Validator> = OnceLock::new();
 
 #[derive(Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub(crate) enum AgentTraceValidationError {
-    FileRead { path: String, message: String },
-    InvalidJson { message: String },
     SchemaValidation { errors: Vec<String> },
 }
 
 impl fmt::Display for AgentTraceValidationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::FileRead { path, message } => {
-                write!(f, "Agent Trace JSON file could not be read at '{path}': {message}")
-            }
-            Self::InvalidJson { message } => {
-                write!(f, "Agent Trace JSON must be valid JSON: {message}")
-            }
             Self::SchemaValidation { errors } => write!(
                 f,
                 "Agent Trace JSON failed schema validation against embedded schema '{AGENT_TRACE_SCHEMA_PATH}': {}",
@@ -227,7 +215,6 @@ impl fmt::Display for AgentTraceValidationError {
 
 impl Error for AgentTraceValidationError {}
 
-#[allow(dead_code)]
 fn agent_trace_schema_validator() -> &'static Validator {
     AGENT_TRACE_SCHEMA_VALIDATOR.get_or_init(|| {
         let schema: Value = serde_json::from_str(AGENT_TRACE_SCHEMA_JSON)
@@ -236,7 +223,6 @@ fn agent_trace_schema_validator() -> &'static Validator {
     })
 }
 
-#[allow(dead_code)]
 pub(crate) fn validate_agent_trace_value(value: &Value) -> Result<(), AgentTraceValidationError> {
     let mut errors = agent_trace_schema_validator()
         .iter_errors(value)
@@ -252,26 +238,6 @@ pub(crate) fn validate_agent_trace_value(value: &Value) -> Result<(), AgentTrace
     Err(AgentTraceValidationError::SchemaValidation { errors })
 }
 
-#[allow(dead_code)]
-pub(crate) fn validate_agent_trace_json(raw: &str) -> Result<(), AgentTraceValidationError> {
-    let value: Value =
-        serde_json::from_str(raw).map_err(|error| AgentTraceValidationError::InvalidJson {
-            message: error.to_string(),
-        })?;
-
-    validate_agent_trace_value(&value)
-}
-
-#[allow(dead_code)]
-pub(crate) fn validate_agent_trace_file(path: &Path) -> Result<(), AgentTraceValidationError> {
-    let raw =
-        std::fs::read_to_string(path).map_err(|error| AgentTraceValidationError::FileRead {
-            path: path.display().to_string(),
-            message: error.to_string(),
-        })?;
-
-    validate_agent_trace_json(&raw)
-}
 /// Classification of a single hunk's origin relative to the AI candidate patch.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -305,7 +271,6 @@ pub struct Conversation {
 /// A related resource for a conversation entry.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
 pub struct ConversationRelated {
     /// Free-form related resource type.
     #[serde(rename = "type")]
@@ -369,40 +334,6 @@ pub struct AgentTrace {
     pub metadata: AgentTraceMetadata,
     /// File-level trace entries, one per file present in `post_commit_patch`.
     pub files: Vec<TraceFile>,
-}
-
-/// Classify a single `post_commit_patch` hunk against the corresponding
-/// `intersection_patch` hunk (if any).
-///
-/// Two hunks correspond when they share the same `old_start` value within the
-/// same file. This is the slot-matching rule that aligns `intersection_patch`
-/// hunks to `post_commit_patch` hunks for comparison.
-///
-/// Returns:
-/// - `HunkContributor::Ai` when the `intersection_patch` hunk exists and its
-///   touched lines match the `post_commit_patch` hunk's touched lines exactly
-///   (same count, same kind, same `line_number`, same content, in the same order).
-/// - `HunkContributor::Mixed` when the `intersection_patch` hunk exists but its
-///   touched lines differ from the `post_commit_patch` hunk's touched lines.
-/// - `HunkContributor::Unknown` when no `intersection_patch` hunk with the same
-///   `old_start` exists for this `post_commit_patch` hunk.
-#[allow(dead_code)]
-pub fn classify_hunk(
-    post_commit_hunk: &PatchHunk,
-    intersection_hunks: &[PatchHunk],
-) -> HunkContributor {
-    let Some(intersection_hunk) = intersection_hunks
-        .iter()
-        .find(|h| h.old_start == post_commit_hunk.old_start)
-    else {
-        return HunkContributor::Unknown;
-    };
-
-    if hunks_match_exactly(post_commit_hunk, intersection_hunk) {
-        HunkContributor::Ai
-    } else {
-        HunkContributor::Mixed
-    }
 }
 
 type CoverageLineKey<'a> = (TouchedLineKind, u64, &'a str);
@@ -473,7 +404,6 @@ fn combined_model_id(
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn patches_have_overlap(
     candidate_patch: &ParsedPatch,
     target_patch: &ParsedPatch,
@@ -490,17 +420,6 @@ pub(crate) fn patch_has_touched_lines(patch: &ParsedPatch) -> bool {
         .any(|file| file.hunks.iter().any(|hunk| !hunk.lines.is_empty()))
 }
 
-/// Check whether two hunks have identical touched lines in the same order.
-fn hunks_match_exactly(left: &PatchHunk, right: &PatchHunk) -> bool {
-    if left.lines.len() != right.lines.len() {
-        return false;
-    }
-    left.lines.iter().zip(right.lines.iter()).all(|(ll, rl)| {
-        ll.kind == rl.kind && ll.line_number == rl.line_number && ll.content == rl.content
-    })
-}
-
-#[allow(dead_code)]
 pub(crate) fn range_content_hash(hunk: &PatchHunk) -> String {
     let mut input = Vec::new();
     input.extend_from_slice(RANGE_CONTENT_HASH_INPUT_VERSION);
@@ -650,25 +569,6 @@ fn build_trace_file(
     })
 }
 
-#[allow(dead_code)]
-pub fn build_agent_trace(
-    constructed_patch: &ParsedPatch,
-    post_commit_patch: &ParsedPatch,
-    metadata: AgentTraceMetadataInput<'_>,
-) -> Result<AgentTrace> {
-    let empty_mutation_ai_patch = ParsedPatch { files: Vec::new() };
-
-    build_agent_trace_from_evidence(
-        AgentTraceEvidence {
-            direct_patch: constructed_patch,
-            mutation_ai_patch: &empty_mutation_ai_patch,
-        },
-        post_commit_patch,
-        metadata,
-    )
-}
-
-#[allow(dead_code)]
 pub fn build_agent_trace_from_evidence(
     evidence: AgentTraceEvidence<'_>,
     post_commit_patch: &ParsedPatch,

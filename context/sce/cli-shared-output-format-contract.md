@@ -6,7 +6,7 @@
 
 - Canonical type lives at `cli/src/services/output_format.rs` as `OutputFormat`.
 - Allowed values are `text` and `json`.
-- Parsing is command-context aware via `OutputFormat::parse(raw, help_command)` so invalid values include command-specific help guidance.
+- `OutputFormat` derives clap `ValueEnum` for parsing; the former `OutputFormat::parse(raw, help_command)` helper was removed as unused.
 
 ## Current command integration
 

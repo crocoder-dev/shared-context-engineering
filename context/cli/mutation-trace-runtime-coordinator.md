@@ -30,11 +30,11 @@ The per-worktree runtime lock, the isolated Git snapshot service (which also
 derives `WorktreeId` from Git topology), the coordinator's internal
 protocol-integration pipeline, and the public, lock-wrapped `coordinate()`
 entrypoint that owns the external-taint fence and DB provider around that
-pipeline all exist, with cross-module integration tests in `runtime/tests.rs`
-exercising the public API end to end. Only harness/command wiring remains.
+pipeline all exist (the former cross-module integration tests in `runtime/tests.rs` were removed;
+see Testing boundary). Only harness/command wiring remains.
 
 - `cli/src/services/mutation_trace/runtime/worktree_lock.rs` —
-  `WorktreeLock::acquire(git_dir: &Path, timeout: Duration) ->
+  `WorktreeLock::acquire_async(git_dir: &Path, timeout: Duration) ->
   Result<WorktreeLock, WorktreeLockError>` opens/creates
   `<git_dir>/sce/mutation-cursor.lock` and polls `std::fs::File::try_lock()`
   on a 100ms interval against the caller-supplied bounded `timeout`, rather
@@ -289,28 +289,15 @@ durable, the boundary unprocessed with no `MutationEvent`, the marker still
 present, and a later `coordinate()` re-recovering off it; another proves an
 attributable `Advance` that commits then fails its trailing `marker.clear()`
 surfaces `MarkerClearAfterCommit` with the matching committed outcome. The
-`after_load` seam is exercised by the reconciliation pin→CAS lock-race regression
-([`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md)), pausing a real `coordinate()` between `pin` and CAS.
+The `after_load` seam was used by the removed reconciliation pin→CAS lock-race regression and is unused while that suite is gone.
 
-`runtime/tests.rs` is `runtime`'s own `#[cfg(test)] mod tests`, holding
-cross-module integration tests that drive the public `coordinate()` and
-`abandon_scope()` APIs against real Git repositories (`git init`, `git worktree
-add`) and real temp-file `RepositoryAgentTraceDb`s, following the same
-unique-temp-path precedent: two linked worktrees of one repository (different
-`git_dir` → different lock paths → different `WorktreeId`s) are proven
-independently locked by holding one worktree's `WorktreeLock` across a
-synchronous `coordinate()` call for the other and observing that call return
-`Ok` before the held guard is dropped — a shared lock could not be acquired
-while the guard is alive, and no wall-clock timing is used. Each call is handed
-a provider closure that opens the one shared repository-scoped DB path
-(`coordinate()` never resolves the DB), and both distinct worktree rows then
-coexist in it. A full failure/recovery cycle and the cross-runtime abandonment
-regressions also run through the public entrypoints. The same module covers the
-public `reconcile_worktree` integration suite and the
-`coordinate_inner` / `reconcile_worktree_inner` / `abandon_scope_inner`
-lock-race seams, including orphan reclamation, durable-root retention,
-missing-pin fail-closed behavior, malformed refs, linked-worktree scoping, and
-the real coordinator and abandonment CAS races.
+There is no `runtime/tests.rs` cross-module integration suite: the ordinary
+coordinator, abandonment and reconciliation test suites were removed during the
+async-persistence work and are deliberately not restored (PR3 does not restore
+tests). Coverage of `coordinate()` / `abandon_scope()` now rests on the Quint
+MBT suite in `mutation_trace/mbt`, the `mutation_trace` unit tests and the
+inline `worktree_lock.rs` / `git_snapshot.rs` tests; `reconcile_worktree` has no
+test coverage while it remains unwired.
 
 ## Status
 
@@ -319,7 +306,7 @@ pipeline, the public `coordinate()` entrypoint (prefix → DB provider → pipel
 → `complete()` on success), and the second `abandon_scope()` entrypoint sharing
 that prefix are all implemented and both `pub(crate)` re-exported from
 `runtime/mod.rs` ([`mutation-scope-runtime.md`](mutation-scope-runtime.md)),
-with `runtime/tests.rs` covering `coordinate()` end to end and both entrypoints
+with the former `runtime/tests.rs` end-to-end coverage removed (see Testing boundary) and both entrypoints
 driven together; an inherited external-taint marker is overlaid onto
 `database_failure` recovery on the next invocation. The generic
 `sce hooks mutation-scope` CLI ingress now drives both entrypoints

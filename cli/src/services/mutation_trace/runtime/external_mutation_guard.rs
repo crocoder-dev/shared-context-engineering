@@ -40,6 +40,7 @@ pub(crate) enum GuardError {
     Wait(std::io::Error),
     Finish(CoordinateError),
     SupervisorWorker(tokio::task::JoinError),
+    #[allow(dead_code, reason = "constructed only under cfg(not(unix))")]
     UnsupportedPlatform,
 }
 
@@ -100,21 +101,6 @@ pub(crate) async fn arm_external_mutation_guard<P, A>(
 where
     P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
     A: FnOnce() -> std::io::Result<()>,
-{
-    Err(GuardError::UnsupportedPlatform)
-}
-
-#[cfg(not(unix))]
-pub(crate) fn run_external_mutation_guard<P, E>(
-    _repository_root: &Path,
-    _request: &GuardRequest,
-    _open_db: P,
-    _on_event: E,
-    _cancel_rx: mpsc::Receiver<()>,
-) -> Result<GuardOutcome, GuardError>
-where
-    P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
-    E: FnMut(GuardEvent),
 {
     Err(GuardError::UnsupportedPlatform)
 }
@@ -824,30 +810,6 @@ mod unix_impl {
         .await
     }
 
-    pub(crate) async fn run_external_mutation_guard<P, E>(
-        repository_root: &Path,
-        request: &GuardRequest,
-        open_db: P,
-        mut on_event: E,
-        cancel_rx: mpsc::Receiver<()>,
-    ) -> Result<GuardOutcome, GuardError>
-    where
-        P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
-        E: FnMut(GuardEvent),
-    {
-        let guard = arm_external_mutation_guard(
-            repository_root,
-            open_db,
-            || {
-                on_event(GuardEvent::Armed);
-                Ok(())
-            },
-            cancel_rx,
-        )
-        .await?;
-        guard.exec(request, on_event).await
-    }
-
     #[cfg(test)]
     mod tests {
         use std::path::{Path, PathBuf};
@@ -857,10 +819,36 @@ mod unix_impl {
 
         use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 
-        use super::{run_external_mutation_guard, GuardEvent, GuardRequest};
+        use super::{
+            arm_external_mutation_guard, GuardError, GuardEvent, GuardOutcome, GuardRequest,
+        };
 
         const WORKER_PROGRESS_LIMIT: Duration = Duration::from_millis(500);
         const READY_TIMEOUT: Duration = Duration::from_secs(30);
+
+        async fn arm_and_exec_guard<P, E>(
+            repository_root: &Path,
+            request: &GuardRequest,
+            open_db: P,
+            mut on_event: E,
+            cancel_rx: mpsc::Receiver<()>,
+        ) -> Result<GuardOutcome, GuardError>
+        where
+            P: std::ops::AsyncFnOnce() -> anyhow::Result<RepositoryAgentTraceDb>,
+            E: FnMut(GuardEvent),
+        {
+            let guard = arm_external_mutation_guard(
+                repository_root,
+                open_db,
+                || {
+                    on_event(GuardEvent::Armed);
+                    Ok(())
+                },
+                cancel_rx,
+            )
+            .await?;
+            guard.exec(request, on_event).await
+        }
 
         fn git(repo_root: &Path, args: &[&str]) {
             let output = Command::new("git")
@@ -972,7 +960,7 @@ mod unix_impl {
 
             let guard_task = tokio::spawn(async move {
                 let mut ready_tx = Some(ready_tx);
-                run_external_mutation_guard(
+                arm_and_exec_guard(
                     &repo_root,
                     &guard_request("printf ready; sleep 2"),
                     async || RepositoryAgentTraceDb::new_at(&db_path).await,
@@ -1018,7 +1006,7 @@ mod unix_impl {
             let (_cancel_tx, cancel_rx) = mpsc::channel();
             let mut events = Vec::new();
 
-            let outcome = run_external_mutation_guard(
+            let outcome = arm_and_exec_guard(
                 &repo_root,
                 &guard_request("printf out; printf err >&2; exit 7"),
                 async || RepositoryAgentTraceDb::new_at(&db_path).await,
@@ -1042,6 +1030,4 @@ mod unix_impl {
 }
 
 #[cfg(unix)]
-pub(crate) use unix_impl::{
-    arm_external_mutation_guard, run_external_mutation_guard, ArmedExternalMutationGuard,
-};
+pub(crate) use unix_impl::{arm_external_mutation_guard, ArmedExternalMutationGuard};

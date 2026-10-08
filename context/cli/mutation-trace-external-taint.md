@@ -176,7 +176,7 @@ window: the recovery is durable (cursor rebaselined, scope abandoned, revision
 advanced), the triggering boundary is unprocessed with no `MutationEvent`, the
 on-disk marker survives, and a later `coordinate()` inherits it and recovers
 conservatively again without resurrecting the abandoned scope.
-`runtime/tests.rs`'s
+The former `runtime/tests.rs` test
 `a_marker_clear_failure_after_a_durable_boundary_keeps_the_marker_for_a_later_recovery`
 proves an attributable `Advance` commits durably, the returned
 `MarkerClearAfterCommit` carries the matching `committed` outcome

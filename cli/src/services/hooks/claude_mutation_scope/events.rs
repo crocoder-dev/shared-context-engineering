@@ -59,10 +59,6 @@ impl ClaudeToolIdentity {
             tool_use_id: self.tool_use_id.clone(),
         }
     }
-
-    pub(crate) fn is_subagent(&self) -> bool {
-        self.agent_id.is_some()
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

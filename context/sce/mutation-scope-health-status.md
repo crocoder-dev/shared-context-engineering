@@ -62,7 +62,7 @@ four-way status each adapter module already computed.
 Doctor is a read-only snapshot: a currently executing hook process can, in a
 narrow window, hold a state shape mid-transition (for example Claude's
 `recovery_pending = true` with non-empty `attempts` between
-`mark_recovery_pending()` and `remove_attempt()` inside one still-running
+`mark_recovery_pending_and_pending_abandon()` and `remove_attempt()` inside one still-running
 hook call). Health classifies the durable state observed at inspection time
 against whether normal future adapter lifecycle events can recover it,
 assuming the operation that produced it has stopped progressing; it is not a

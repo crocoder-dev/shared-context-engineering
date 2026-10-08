@@ -5,7 +5,7 @@ use crate::services::db::{bootstrap_db_parent, collect_db_path_health, DbSpec};
 use crate::services::default_paths::auth_db_path;
 use crate::services::lifecycle::{
     FixOutcome, FixResultRecord, HealthCategory, HealthFixability, HealthProblem,
-    HealthProblemKind, HealthSeverity, LifecycleProviderId, ServiceLifecycle, SetupOutcome,
+    HealthProblemKind, HealthSeverity, ServiceLifecycle, SetupOutcome,
 };
 
 use super::{AuthDb, AuthDbSpec};
@@ -14,10 +14,6 @@ use super::{AuthDb, AuthDbSpec};
 pub struct AuthDbLifecycle;
 
 impl ServiceLifecycle for AuthDbLifecycle {
-    fn id(&self) -> LifecycleProviderId {
-        LifecycleProviderId::AuthDb
-    }
-
     async fn diagnose<C: HasRepoRoot>(&self, _ctx: &C) -> Vec<HealthProblem> {
         diagnose_auth_db_health()
     }

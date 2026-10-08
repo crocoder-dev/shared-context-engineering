@@ -50,10 +50,30 @@ pub enum RuntimeBoundary {
 
 #[derive(Debug)]
 pub struct CoordinateOutcome {
+    #[allow(
+        dead_code,
+        reason = "outcome payload carried but never read; suspected defect recorded in context/plans/cli-async-persistence-cleanup-pr3.md"
+    )]
     pub worktree_id: WorktreeId,
+    #[allow(
+        dead_code,
+        reason = "outcome payload carried but never read; suspected defect recorded in context/plans/cli-async-persistence-cleanup-pr3.md"
+    )]
     pub observed_tree: TreeId,
+    #[allow(
+        dead_code,
+        reason = "outcome payload carried but never read; suspected defect recorded in context/plans/cli-async-persistence-cleanup-pr3.md"
+    )]
     pub revision: u64,
+    #[allow(
+        dead_code,
+        reason = "outcome payload carried but never read; suspected defect recorded in context/plans/cli-async-persistence-cleanup-pr3.md"
+    )]
     pub evaluation: protocol::CommitEvaluation,
+    #[allow(
+        dead_code,
+        reason = "outcome payload carried but never read; suspected defect recorded in context/plans/cli-async-persistence-cleanup-pr3.md"
+    )]
     pub mutation_event: Option<MutationEvent>,
 }
 
@@ -90,6 +110,10 @@ pub enum CoordinateError {
     /// next invocation conservatively recovers.
     MarkerClearAfterCommit {
         source: anyhow::Error,
+        #[allow(
+            dead_code,
+            reason = "outcome payload carried but never read; suspected defect recorded in context/plans/cli-async-persistence-cleanup-pr3.md"
+        )]
         committed: Box<CoordinateOutcome>,
     },
     /// The caller-supplied Agent Trace DB provider returned `Err` after the

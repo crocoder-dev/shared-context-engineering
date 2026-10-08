@@ -95,7 +95,6 @@ pub enum TouchedLineKind {
     Removed,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParseError {
     pub message: String,
@@ -115,7 +114,6 @@ impl std::error::Error for ParseError {}
 /// payload could not be reconstructed into a valid `ParsedPatch`. Common
 /// causes include malformed JSON syntax, missing required fields, or type
 /// mismatches in the serialized structure.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PatchLoadError {
     pub message: String,
@@ -143,24 +141,6 @@ impl std::error::Error for PatchLoadError {}
 /// not valid JSON or does not match the expected `ParsedPatch` structure.
 pub fn load_patch_from_json(input: &str) -> Result<ParsedPatch, PatchLoadError> {
     serde_json::from_str(input).map_err(|e| PatchLoadError {
-        message: format!("invalid patch JSON: {e}"),
-    })
-}
-
-/// Load a `ParsedPatch` from JSON bytes previously produced by serializing
-/// a `ParsedPatch`.
-///
-/// This is the bytes-oriented counterpart to [`load_patch_from_json`],
-/// convenient when the caller has raw bytes (for example, from a database
-/// BLOB column or a file read) rather than a UTF-8 string.
-///
-/// # Errors
-///
-/// Returns `PatchLoadError` with an actionable message when the input is
-/// not valid JSON or does not match the expected `ParsedPatch` structure.
-#[allow(dead_code)]
-pub fn load_patch_from_json_bytes(input: &[u8]) -> Result<ParsedPatch, PatchLoadError> {
-    serde_json::from_slice(input).map_err(|e| PatchLoadError {
         message: format!("invalid patch JSON: {e}"),
     })
 }
@@ -196,7 +176,6 @@ pub fn load_patch_from_json_bytes(input: &[u8]) -> Result<ParsedPatch, PatchLoad
 /// let post_commit_patch = parse_patch("...", None)?;
 /// let overlap = intersect_patches(&constructed_patch, &post_commit_patch);
 /// ```
-#[allow(dead_code)]
 pub fn intersect_patches(
     constructed_patch: &ParsedPatch,
     post_commit_patch: &ParsedPatch,
@@ -392,7 +371,6 @@ fn path_has_relative_suffix<'a>(full_path: &[&'a str], suffix_candidate: &[&'a s
 ///
 /// let combined = combine_patches(&[patch_a, patch_b]);
 /// ```
-#[allow(dead_code)]
 pub fn combine_patches(patches: &[ParsedPatch]) -> ParsedPatch {
     use std::collections::HashMap;
 
@@ -514,7 +492,6 @@ pub fn combine_patches(patches: &[ParsedPatch]) -> ParsedPatch {
 ///
 /// Returns `ParseError` with an actionable message when the input is malformed,
 /// such as an invalid hunk header or a `---`/`+++` line that cannot be parsed.
-#[allow(dead_code)]
 pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch, ParseError> {
     let mut files: Vec<PatchFileChange> = Vec::new();
     let mut current_file: Option<FileBuilder> = None;
