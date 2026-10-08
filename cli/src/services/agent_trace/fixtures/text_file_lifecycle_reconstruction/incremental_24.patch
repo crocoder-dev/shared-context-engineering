@@ -1,0 +1,8 @@
+Index: single-letter.txt
+===================================================================
+--- single-letter.txt
++++ single-letter.txt
+@@ -1,1 +1,1 @@
+-color
++colour
+

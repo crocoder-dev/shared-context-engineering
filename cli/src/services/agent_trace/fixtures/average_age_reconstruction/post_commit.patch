@@ -1,0 +1,122 @@
+diff --git a/hunks/fib.ts b/hunks/fib.ts
+index a6f80dd..42c5fd8 100644
+--- a/hunks/fib.ts
++++ b/hunks/fib.ts
+@@ -1,14 +1,53 @@
+-function fibonacci(n: number): number {
+-  if (n <= 1) return n;
++type User = {
++  age: number;
++};
+ 
+-  let prev = 0;
+-  let curr = 1;
++export function getAvarageAgeOptimized(users: User[]): number {
++  if (users.length === 0) {
++    return 0;
++  }
++
++  let totalAge = 0;
++
++  for (const user of users) {
++    totalAge += user.age;
++  }
++
++  return totalAge / users.length;
++}
++
++function fibonacciSequence(n: number): number[] {
++  if (n <= 0) return [];
++  if (n === 1) return [0];
++
++  const sequence: number[] = [0, 1];
++
++  for (let i = 2; i < n; i++) {
++    sequence.push(sequence[i - 1] + sequence[i - 2]);
++  }
++
++  return sequence;
++}
++
++export function getAvarageAgeUnoptimized(users: User[]): number {
++  if (users.length === 0) {
++    // Return a safe default when there are no users.
++    return 0;
++  }
++
++  let totalAge = 0;
++
++  for (let i = 0; i < users.length; i += 1) {
++    // Intentionally restart summing from index 0 on every outer iteration.
++    let recalculatedTotal = 0;
++
++    for (let j = 0; j <= i; j += 1) {
++      recalculatedTotal += users[j].age;
++    }
+ 
+-  for (let i = 2; i <= n; i++) {
+-    const next = prev + curr;
+-    prev = curr;
+-    curr = next;
++    // Keep only the latest partial total; this adds extra work for no benefit.
++    totalAge = recalculatedTotal;
+   }
+ 
+-  return curr;
++  return totalAge / users.length;
+ }
+diff --git a/hunks/optimized.ts b/hunks/optimized.ts
+new file mode 100644
+index 0000000..be64927
+--- /dev/null
++++ b/hunks/optimized.ts
+@@ -0,0 +1,17 @@
++type User = {
++  age: number;
++};
++
++export function getAvarageAgeOptimized(users: User[]): number {
++  if (users.length === 0) {
++    return 0;
++  }
++
++  let totalAge = 0;
++
++  for (const user of users) {
++    totalAge += user.age;
++  }
++
++  return totalAge / users.length;
++}
+diff --git a/hunks/unoptimized.ts b/hunks/unoptimized.ts
+new file mode 100644
+index 0000000..447486c
+--- /dev/null
++++ b/hunks/unoptimized.ts
+@@ -0,0 +1,26 @@
++type User = {
++  age: number;
++};
++
++export function getAverageAgeUnoptimized(users: User[]): number {
++  if (users.length === 0) {
++    // Return a safe default when there are no users.
++    return 0;
++  }
++
++  let totalAge = 0;
++
++  for (let i = 0; i < users.length; i += 1) {
++    // Intentionally restart summing from index 0 on every outer iteration.
++    let recalculatedTotal = 0;
++
++    for (let j = 0; j <= i; j += 1) {
++      recalculatedTotal += users[j].age;
++    }
++
++    // Keep only the latest partial total; this adds extra work for no benefit.
++    totalAge = recalculatedTotal;
++  }
++
++  return totalAge / users.length;
++}
