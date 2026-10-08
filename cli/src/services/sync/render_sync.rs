@@ -56,3 +56,55 @@ fn stream_json(stream: &StreamSyncReport) -> serde_json::Value {
         "batches": stream.batches,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{json, Value};
+
+    use super::render;
+    use crate::services::output_format::OutputFormat;
+    use crate::services::sync::sync::{AgentTraceSyncReport, StreamSyncReport, StreamSyncReports};
+
+    const DIFF_TRACES_CURSOR: i64 = 42;
+
+    fn stream(uploaded: usize) -> StreamSyncReport {
+        StreamSyncReport {
+            uploaded,
+            initial_cursor: 0,
+            final_cursor: i64::try_from(uploaded).expect("small count"),
+            batches: usize::from(uploaded > 0),
+        }
+    }
+
+    #[test]
+    fn json_report_keeps_zero_upload_diff_traces_stream() {
+        let report = AgentTraceSyncReport {
+            repository_id: "repo".to_string(),
+            source_instance_id: "source".to_string(),
+            streams: StreamSyncReports {
+                messages: stream(3),
+                parts: stream(0),
+                diff_traces: StreamSyncReport {
+                    uploaded: 0,
+                    initial_cursor: DIFF_TRACES_CURSOR,
+                    final_cursor: DIFF_TRACES_CURSOR,
+                    batches: 0,
+                },
+                agent_traces: stream(0),
+            },
+        };
+
+        let rendered = render(&report, OutputFormat::Json).expect("render json");
+        let rendered: Value = serde_json::from_str(&rendered).expect("valid json");
+
+        assert_eq!(
+            rendered["streams"]["diffTraces"],
+            json!({
+                "uploaded": 0,
+                "initialCursor": DIFF_TRACES_CURSOR,
+                "finalCursor": DIFF_TRACES_CURSOR,
+                "batches": 0,
+            })
+        );
+    }
+}

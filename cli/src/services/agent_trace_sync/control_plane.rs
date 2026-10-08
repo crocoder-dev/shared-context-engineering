@@ -645,7 +645,10 @@ mod tests {
 
     use tokio::sync::{Notify, Semaphore};
 
-    use super::{AuthenticatedControlPlaneClient, ControlPlaneError, CredentialStore};
+    use super::{
+        AgentTraceIngestionStateRequest, AgentTraceIngestionStateResponse,
+        AuthenticatedControlPlaneClient, ControlPlaneError, CredentialStore,
+    };
     use crate::services::auth::TokenResponse;
     use crate::services::token_storage::StoredTokens;
 
@@ -856,6 +859,123 @@ mod tests {
                 .expect("stored lock")
                 .refresh_token,
             REPLACEMENT_REFRESH_TOKEN
+        );
+    }
+
+    struct FixedStore;
+
+    impl CredentialStore for FixedStore {
+        async fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
+            Ok(Some(StoredTokens {
+                access_token: "access".to_string(),
+                token_type: "Bearer".to_string(),
+                expires_in: 3600,
+                refresh_token: "refresh".to_string(),
+                scope: None,
+                stored_at_unix_seconds: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("clock after epoch")
+                    .as_secs(),
+            }))
+        }
+
+        async fn save(&self, _token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
+            unreachable!("fixed credentials never refresh")
+        }
+    }
+
+    fn start_state_server(payload: &str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind state server");
+        let base_url = format!("http://{}", listener.local_addr().expect("server addr"));
+        let payload = payload.to_string();
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else {
+                    continue;
+                };
+                let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    let line = line.trim_end_matches(['\r', '\n']);
+                    if line.is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            content_length = value.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut body);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                    payload.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        base_url
+    }
+
+    async fn request_state(
+        payload: &str,
+    ) -> Result<AgentTraceIngestionStateResponse, ControlPlaneError> {
+        let client = AuthenticatedControlPlaneClient::with_credential_store(
+            reqwest::Client::builder()
+                .tls_certs_only(Vec::new())
+                .build()
+                .expect("test http client"),
+            start_state_server(payload),
+            "http://127.0.0.1:1",
+            "client",
+            FixedStore,
+        );
+        client
+            .ingestion_state(&AgentTraceIngestionStateRequest {
+                repository_id: "repo".to_string(),
+                source_instance_id: "source".to_string(),
+            })
+            .await
+    }
+
+    #[tokio::test]
+    async fn state_response_decodes_required_diff_traces_cursor() {
+        let state =
+            request_state(r#"{"cursors":{"messages":1,"parts":2,"diffTraces":7,"agentTraces":4}}"#)
+                .await
+                .expect("valid state");
+
+        assert_eq!(state.cursors.diff_traces, 7);
+    }
+
+    #[tokio::test]
+    async fn state_response_rejects_missing_diff_traces_cursor() {
+        let error = request_state(r#"{"cursors":{"messages":1,"parts":2,"agentTraces":4}}"#)
+            .await
+            .expect_err("missing diffTraces");
+
+        assert!(
+            matches!(&error, ControlPlaneError::InvalidResponse(_)),
+            "{error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn state_response_rejects_out_of_range_diff_traces_cursor() {
+        let error = request_state(
+            r#"{"cursors":{"messages":1,"parts":2,"diffTraces":-1,"agentTraces":4}}"#,
+        )
+        .await
+        .expect_err("negative diffTraces");
+
+        assert!(
+            matches!(&error, ControlPlaneError::InvalidResponse(reason) if reason.contains("cursors.diffTraces")),
+            "{error:?}"
         );
     }
 }

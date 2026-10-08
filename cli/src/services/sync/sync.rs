@@ -18,7 +18,7 @@ use crate::services::agent_trace_storage::{resolve_agent_trace_storage, AgentTra
 use crate::services::agent_trace_sync::control_plane::{
     AgentTraceCursors, AgentTraceIngestionBatchRequest, AgentTraceIngestionBatchResponse,
     AgentTraceIngestionStateRequest, AuthenticatedControlPlaneClient, ControlPlaneError,
-    IngestionStream,
+    CredentialStore, IngestionStream,
 };
 use crate::services::agent_trace_sync::{
     sync_stream, AgentTraceExportRow, BatchAttemptOutcome, StreamSyncError,
@@ -220,15 +220,16 @@ where
     run_sync_async(repository_id, source_instance_id, &reader, client, progress).await
 }
 
-async fn run_sync_async<'a, S>(
+async fn run_sync_async<'a, S, K>(
     repository_id: &'a str,
     source_instance_id: &'a str,
     reader: &'a AgentTraceExportReader<'a>,
-    client: &'a AuthenticatedControlPlaneClient,
+    client: &'a AuthenticatedControlPlaneClient<K>,
     progress: &'a mut S,
 ) -> Result<AgentTraceSyncReport, TraceSyncError>
 where
     S: ProgressReporter<SyncProgressEvent> + 'a,
+    K: CredentialStore,
 {
     let state_request = AgentTraceIngestionStateRequest {
         repository_id: repository_id.to_string(),
@@ -382,8 +383,8 @@ impl<O> JoinSlot<O> {
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-async fn sync_one_stream<'a, T, ReadFn, IngestFn, S>(
-    client: &'a AuthenticatedControlPlaneClient,
+async fn sync_one_stream<'a, T, ReadFn, IngestFn, S, K>(
+    client: &'a AuthenticatedControlPlaneClient<K>,
     repository_id: &'a str,
     source_instance_id: &'a str,
     stream: IngestionStream,
@@ -397,6 +398,7 @@ async fn sync_one_stream<'a, T, ReadFn, IngestFn, S>(
 where
     T: AgentTraceExportRow + Clone + 'a,
     S: ProgressReporter<SyncProgressEvent> + 'a,
+    K: CredentialStore,
     ReadFn: std::ops::AsyncFnMut(i64, usize) -> anyhow::Result<Vec<T>> + 'a,
     IngestFn: std::ops::AsyncFnMut(
             AgentTraceIngestionBatchRequest<T>,
@@ -764,5 +766,189 @@ mod tests {
         ));
         assert!(terminated.get());
         assert_eq!(sibling_ingests.get(), 0);
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use serde_json::{json, Value};
+
+    use super::run_sync_async;
+    use crate::services::agent_trace_db::transaction_tests::{message, open, part};
+    use crate::services::agent_trace_db::{AgentTraceInsert, DiffTraceInsert};
+    use crate::services::agent_trace_export::AgentTraceExportReader;
+    use crate::services::agent_trace_sync::control_plane::{
+        AuthenticatedControlPlaneClient, ControlPlaneError, CredentialStore,
+    };
+    use crate::services::auth::TokenResponse;
+    use crate::services::sync::progress::NoopProgressReporter;
+    use crate::services::token_storage::StoredTokens;
+
+    const DIFF_TRACES_CURSOR: i64 = 7;
+
+    struct FixedCredentialStore;
+
+    impl CredentialStore for FixedCredentialStore {
+        async fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
+            Ok(Some(StoredTokens {
+                access_token: "access".to_string(),
+                token_type: "Bearer".to_string(),
+                expires_in: 3600,
+                refresh_token: "refresh".to_string(),
+                scope: None,
+                stored_at_unix_seconds: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("clock after epoch")
+                    .as_secs(),
+            }))
+        }
+
+        async fn save(&self, _token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
+            unreachable!("fixed credentials never refresh")
+        }
+    }
+
+    type CapturedRequests = Arc<Mutex<Vec<(String, Value)>>>;
+
+    fn start_control_plane() -> (String, CapturedRequests) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind control plane");
+        let base_url = format!("http://{}", listener.local_addr().expect("server addr"));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let thread_requests = Arc::clone(&requests);
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else {
+                    continue;
+                };
+                let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+                let mut request_line = String::new();
+                let _ = reader.read_line(&mut request_line);
+                let path = request_line
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_string();
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    let line = line.trim_end_matches(['\r', '\n']);
+                    if line.is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            content_length = value.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut body);
+                let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+
+                let payload = if path.ends_with("/state") {
+                    json!({"cursors": {
+                        "messages": 0,
+                        "parts": 0,
+                        "diffTraces": DIFF_TRACES_CURSOR,
+                        "agentTraces": 0,
+                    }})
+                } else {
+                    let rows = body["rows"].as_array().cloned().unwrap_or_default();
+                    let cursor = rows
+                        .last()
+                        .and_then(|row| row["sourceRowId"].as_i64())
+                        .unwrap_or(0);
+                    json!({"accepted": rows.len(), "cursor": cursor})
+                };
+                thread_requests
+                    .lock()
+                    .expect("requests lock")
+                    .push((path, body));
+                let payload = payload.to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                    payload.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        (base_url, requests)
+    }
+
+    #[tokio::test]
+    async fn sync_uploads_only_three_streams_and_reports_zero_upload_diff_traces() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut db = open(&dir.path().join("agent-trace.db")).await;
+        db.insert_conversation_text_event(message("m1"), part("m1"))
+            .await
+            .expect("insert message and part");
+        db.insert_agent_trace(AgentTraceInsert {
+            commit_id: "commit",
+            commit_time_ms: 1,
+            trace_json: "{}",
+            agent_trace_id: "trace",
+            url: "https://example.test/trace",
+            remote_url: "https://example.test/repo.git",
+        })
+        .await
+        .expect("insert agent trace");
+        db.insert_diff_trace(DiffTraceInsert {
+            time_ms: 1,
+            session_id: "session",
+            patch: "patch",
+            model_id: None,
+            tool_name: "tool",
+            tool_version: None,
+            payload_type: "patch",
+        })
+        .await
+        .expect("insert diff trace");
+
+        let (base_url, requests) = start_control_plane();
+        let client = AuthenticatedControlPlaneClient::with_credential_store(
+            reqwest::Client::builder()
+                .tls_certs_only(Vec::new())
+                .build()
+                .expect("test http client"),
+            base_url,
+            "http://127.0.0.1:1",
+            "client",
+            FixedCredentialStore,
+        );
+        let reader = AgentTraceExportReader::new(&db);
+        let mut reporter = NoopProgressReporter;
+
+        let report = run_sync_async("repo", "source", &reader, &client, &mut reporter)
+            .await
+            .expect("sync converges");
+
+        let requests = requests.lock().expect("requests lock").clone();
+        let mut streams: Vec<&str> = requests
+            .iter()
+            .filter(|(path, _)| path.ends_with("/batch"))
+            .map(|(_, body)| body["stream"].as_str().expect("stream field"))
+            .collect();
+        streams.sort_unstable();
+        assert_eq!(streams, ["agent_traces", "messages", "parts"]);
+
+        assert_eq!(report.streams.messages.uploaded, 1);
+        assert_eq!(report.streams.parts.uploaded, 1);
+        assert_eq!(report.streams.agent_traces.uploaded, 1);
+        assert_eq!(report.streams.diff_traces.uploaded, 0);
+        assert_eq!(report.streams.diff_traces.batches, 0);
+        assert_eq!(
+            report.streams.diff_traces.initial_cursor,
+            DIFF_TRACES_CURSOR
+        );
+        assert_eq!(report.streams.diff_traces.final_cursor, DIFF_TRACES_CURSOR);
     }
 }
