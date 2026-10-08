@@ -190,12 +190,18 @@ impl RepositoryAgentTraceDb {
         Self::open_verified_existing_with(path, repository_id, before_open, after_open).await
     }
 
-    async fn open_verified_existing_with(
+    pub async fn open_existing_schema_ready_at(
         path: &std::path::Path,
-        repository_id: &str,
+        before_open: impl FnOnce(),
+    ) -> std::result::Result<Self, ExistingRepositoryDbError> {
+        Self::open_existing_schema_ready_with(path, before_open, || {}).await
+    }
+
+    async fn open_existing_schema_ready_with(
+        path: &std::path::Path,
         before_open: impl FnOnce(),
         after_open: impl FnOnce(),
-    ) -> std::result::Result<(Self, RepositoryMetadata), ExistingRepositoryDbError> {
+    ) -> std::result::Result<Self, ExistingRepositoryDbError> {
         before_open();
         let opened =
             TursoDb::<RepositoryAgentTraceDbSpec>::open_existing_without_migrations_at(path).await;
@@ -216,6 +222,16 @@ impl RepositoryAgentTraceDb {
         db.ensure_schema_ready_for_hooks()
             .await
             .map_err(ExistingRepositoryDbError::IncompatibleSchema)?;
+        Ok(db)
+    }
+
+    async fn open_verified_existing_with(
+        path: &std::path::Path,
+        repository_id: &str,
+        before_open: impl FnOnce(),
+        after_open: impl FnOnce(),
+    ) -> std::result::Result<(Self, RepositoryMetadata), ExistingRepositoryDbError> {
+        let db = Self::open_existing_schema_ready_with(path, before_open, after_open).await?;
         let metadata = db
             .verify_existing_repository_metadata(repository_id)
             .await?;

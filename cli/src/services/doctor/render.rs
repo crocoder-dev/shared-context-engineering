@@ -13,6 +13,9 @@ use super::types::{
     PostCommitAutoSyncState, ProblemKind, ProblemSeverity, Readiness,
 };
 use super::{DoctorExecution, DoctorFormat, DoctorMode, DoctorRequest, NAME};
+use crate::services::mutation_trace::runtime::{
+    ReconciliationCounts, ReconciliationFix, ReconciliationRecommendation, StateWarning,
+};
 
 /// Guidance message rendered in the Integrations section when no integration
 /// targets are configured, detected, or both.
@@ -48,7 +51,56 @@ fn format_execution(execution: &DoctorExecution) -> String {
         }
     }
 
+    if let Some(recommendation) = &execution.ref_reconciliation {
+        lines.push(format!("\n{}:", heading("Snapshot ref reconciliation")));
+        lines.push(format!(
+            "  [{}] {}",
+            value("recommended"),
+            value(&recommendation_text(recommendation))
+        ));
+    }
+
     lines.join("\n")
+}
+
+fn recommendation_text(recommendation: &ReconciliationRecommendation) -> String {
+    let mut parts = vec!["Reconciliation is recommended. Run `sce doctor --fix`.".to_string()];
+    if recommendation.last_attempt_failed {
+        parts.push(format!(
+            "The latest reconciliation attempt failed ({} consecutive failure(s)).",
+            recommendation.consecutive_failures
+        ));
+    }
+    if let Some(age) = recommendation.last_attempt_age_ms {
+        parts.push(format!(
+            "Last reconciliation attempt {} ago.",
+            format_age(age)
+        ));
+    }
+    if recommendation.state_unusable {
+        parts.push("Maintenance state is unreadable or invalid.".to_string());
+    }
+    if recommendation.invalid_timestamps {
+        parts.push("Maintenance state has invalid timestamps.".to_string());
+    }
+    if let Some(age) = recommendation.last_success_age_ms {
+        parts.push(format!("Last success {} ago.", format_age(age)));
+    }
+    if let Some(age) = recommendation.last_advised_age_ms {
+        parts.push(format!("Last reminder {} ago.", format_age(age)));
+    }
+    parts.join(" ")
+}
+
+fn format_age(age_ms: i64) -> String {
+    let minutes = age_ms / 60_000;
+    if minutes < 60 {
+        format!("{minutes}m")
+    } else if minutes < 60 * 24 {
+        format!("{}h", minutes / 60)
+    } else {
+        format!("{}d", minutes / (60 * 24))
+    }
 }
 
 fn format_report(report: &HookDoctorReport) -> String {
@@ -887,6 +939,8 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
         } else {
             Vec::new()
         },
+        "ref_reconciliation": execution.ref_reconciliation.as_ref().map(ref_reconciliation_json),
+        "ref_reconciliation_fix": execution.ref_reconciliation_fix.as_ref().map(ref_reconciliation_fix_json),
     });
 
     serde_json::to_string_pretty(&payload).context("failed to serialize doctor report to JSON")
@@ -919,5 +973,228 @@ fn hook_content_state(state: HookContentState) -> &'static str {
         HookContentState::Stale => "stale",
         HookContentState::Missing => "missing",
         HookContentState::Unknown => "unknown",
+    }
+}
+
+fn ref_reconciliation_json(recommendation: &ReconciliationRecommendation) -> serde_json::Value {
+    json!({
+        "recommended": true,
+        "last_attempt_failed": recommendation.last_attempt_failed,
+        "consecutive_failures": recommendation.consecutive_failures,
+        "state_unusable": recommendation.state_unusable,
+        "invalid_timestamps": recommendation.invalid_timestamps,
+        "last_success_age_ms": recommendation.last_success_age_ms,
+        "last_attempt_age_ms": recommendation.last_attempt_age_ms,
+        "last_advised_age_ms": recommendation.last_advised_age_ms,
+        "text": recommendation_text(recommendation),
+    })
+}
+
+fn ref_reconciliation_fix_json(fix: &ReconciliationFix) -> serde_json::Value {
+    match fix {
+        ReconciliationFix::Completed(counts) => json!({
+            "outcome": "completed",
+            "counts": reconciliation_counts_json(counts),
+            "failure": null,
+            "state_warning": null,
+        }),
+        ReconciliationFix::CompletedStatePersistFailed { counts, warning } => json!({
+            "outcome": "completed_state_persist_failed",
+            "counts": reconciliation_counts_json(counts),
+            "failure": null,
+            "state_warning": state_warning_json(warning),
+        }),
+        ReconciliationFix::Failed {
+            kind,
+            message,
+            state_warning,
+        } => json!({
+            "outcome": "failed",
+            "counts": null,
+            "failure": { "kind": kind, "message": message },
+            "state_warning": state_warning.as_ref().map(state_warning_json),
+        }),
+        ReconciliationFix::Busy => json!({
+            "outcome": "busy",
+            "counts": null,
+            "failure": null,
+            "state_warning": null,
+        }),
+    }
+}
+
+fn reconciliation_counts_json(counts: &ReconciliationCounts) -> serde_json::Value {
+    json!({
+        "deleted": counts.deleted,
+        "retained": counts.retained,
+        "local_required": counts.local_required,
+    })
+}
+
+fn state_warning_json(warning: &StateWarning) -> serde_json::Value {
+    json!({
+        "kind": warning.kind(),
+        "phase": warning.phase(),
+        "message": warning.message(),
+        "cause": warning.cause(),
+    })
+}
+
+#[cfg(test)]
+mod reconciliation_render_tests {
+    use serde_json::json;
+
+    use super::{recommendation_text, ref_reconciliation_fix_json};
+    use crate::services::mutation_trace::runtime::{
+        ReconciliationCounts, ReconciliationFix, ReconciliationRecommendation, StateWarning,
+    };
+
+    const COUNTS: ReconciliationCounts = ReconciliationCounts {
+        deleted: 3,
+        retained: 2,
+        local_required: 1,
+    };
+
+    fn recommendation(last_attempt_age_ms: Option<i64>) -> ReconciliationRecommendation {
+        ReconciliationRecommendation {
+            invalid_timestamps: false,
+            state_unusable: false,
+            last_success_age_ms: Some(3_600_000 * 30),
+            last_attempt_age_ms,
+            last_advised_age_ms: Some(120_000),
+            last_attempt_failed: last_attempt_age_ms.is_some(),
+            consecutive_failures: 2,
+        }
+    }
+
+    #[test]
+    fn recommendation_shows_last_attempt_age_for_failed_recent_attempt() {
+        let text = recommendation_text(&recommendation(Some(12 * 60_000)));
+        assert!(text.contains("Last reconciliation attempt 12m ago."));
+        assert!(
+            text.contains("The latest reconciliation attempt failed (2 consecutive failure(s)).")
+        );
+        assert!(text.contains("Last success 1d ago."));
+        assert!(text.contains("Last reminder 2m ago."));
+    }
+
+    #[test]
+    fn recommendation_omits_last_attempt_age_when_no_attempt_exists() {
+        let text = recommendation_text(&recommendation(None));
+        assert!(!text.contains("Last reconciliation attempt"));
+        assert!(text.contains("Reconciliation is recommended."));
+    }
+
+    #[test]
+    fn json_completed_outcome() {
+        assert_eq!(
+            ref_reconciliation_fix_json(&ReconciliationFix::Completed(COUNTS)),
+            json!({
+                "outcome": "completed",
+                "counts": { "deleted": 3, "retained": 2, "local_required": 1 },
+                "failure": null,
+                "state_warning": null,
+            })
+        );
+    }
+
+    #[test]
+    fn json_completed_state_persist_failed_distinguishes_warning_kinds() {
+        let not_applied =
+            ref_reconciliation_fix_json(&ReconciliationFix::CompletedStatePersistFailed {
+                counts: COUNTS,
+                warning: StateWarning::NotApplied {
+                    phase: "rename",
+                    cause: "denied".to_string(),
+                },
+            });
+        assert_eq!(
+            not_applied,
+            json!({
+                "outcome": "completed_state_persist_failed",
+                "counts": { "deleted": 3, "retained": 2, "local_required": 1 },
+                "failure": null,
+                "state_warning": {
+                    "kind": "not_applied",
+                    "phase": "rename",
+                    "message": "Maintenance-state update was not applied.",
+                    "cause": "denied",
+                },
+            })
+        );
+
+        let uncertain =
+            ref_reconciliation_fix_json(&ReconciliationFix::CompletedStatePersistFailed {
+                counts: COUNTS,
+                warning: StateWarning::DurabilityUncertain {
+                    phase: "sync_parent_directory",
+                    cause: "eio".to_string(),
+                },
+            });
+        assert_eq!(uncertain["state_warning"]["kind"], "durability_uncertain");
+        assert_eq!(uncertain["state_warning"]["phase"], "sync_parent_directory");
+        assert_eq!(
+            uncertain["state_warning"]["message"],
+            "Maintenance-state durability could not be confirmed."
+        );
+
+        let unreadable =
+            ref_reconciliation_fix_json(&ReconciliationFix::CompletedStatePersistFailed {
+                counts: COUNTS,
+                warning: StateWarning::PreviousStateUnreadable {
+                    cause: "eacces".to_string(),
+                },
+            });
+        assert_eq!(
+            unreadable["state_warning"]["kind"],
+            "previous_state_unreadable"
+        );
+        assert_eq!(
+            unreadable["state_warning"]["phase"],
+            serde_json::Value::Null
+        );
+    }
+
+    #[test]
+    fn json_failed_outcome_carries_failure_and_optional_warning() {
+        let without_warning = ref_reconciliation_fix_json(&ReconciliationFix::Failed {
+            kind: "agent_trace_db_missing",
+            message: "db missing".to_string(),
+            state_warning: None,
+        });
+        assert_eq!(
+            without_warning,
+            json!({
+                "outcome": "failed",
+                "counts": null,
+                "failure": { "kind": "agent_trace_db_missing", "message": "db missing" },
+                "state_warning": null,
+            })
+        );
+
+        let with_warning = ref_reconciliation_fix_json(&ReconciliationFix::Failed {
+            kind: "missing_required_pins",
+            message: "pins".to_string(),
+            state_warning: Some(StateWarning::NotApplied {
+                phase: "write_staging",
+                cause: "full".to_string(),
+            }),
+        });
+        assert_eq!(with_warning["failure"]["kind"], "missing_required_pins");
+        assert_eq!(with_warning["state_warning"]["kind"], "not_applied");
+        assert_eq!(with_warning["state_warning"]["phase"], "write_staging");
+    }
+
+    #[test]
+    fn json_busy_outcome() {
+        assert_eq!(
+            ref_reconciliation_fix_json(&ReconciliationFix::Busy),
+            json!({
+                "outcome": "busy",
+                "counts": null,
+                "failure": null,
+                "state_warning": null,
+            })
+        );
     }
 }

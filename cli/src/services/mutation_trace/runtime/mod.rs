@@ -6,6 +6,7 @@ mod maintenance_state;
 mod mutation_attribution;
 mod protected_worktree;
 mod ref_advisory;
+mod ref_doctor;
 mod ref_maintenance;
 mod ref_reconciliation;
 mod scope_runtime;
@@ -30,6 +31,10 @@ pub(crate) use mutation_attribution::{
     TreeReadSource, MAX_MUTATION_ATTRIBUTION_EVENTS,
 };
 pub(crate) use ref_advisory::{advise_after_completed_boundary, AdvisoryReport, AdvisorySeverity};
+pub(crate) use ref_doctor::{
+    inspect_reconciliation_recommendation, run_explicit_reconciliation, ReconciliationCounts,
+    ReconciliationFix, ReconciliationRecommendation, StateWarning,
+};
 #[allow(unused_imports)]
 pub(crate) use scope_runtime::{
     abandon_scope, AbandonRecoveryReason, AbandonScopeError, AbandonScopeOutcome,
