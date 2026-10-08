@@ -6,12 +6,12 @@
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use super::git_snapshot::resolve_git_dir;
 use super::maintenance_state::{
     read_state, record_failure, record_success, state_path, system_now_ms, write_state_atomically,
-    MaintenanceState, StateRead, StoredReport,
+    MaintenanceState, PersistFailure, StateRead, StoredReport,
 };
 use super::ref_reconciliation::{
     reconcile_with_held_lock, ReconcileError, ReconcilePhase, ReconciliationOutcome,
@@ -19,6 +19,13 @@ use super::ref_reconciliation::{
 };
 use super::worktree_lock::{acquire_inner_async, WorktreeLockError};
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
+use crate::services::agent_trace_storage::{
+    resolve_existing_agent_trace_storage_for_maintenance, AgentTraceStorageContext,
+};
+use crate::services::config;
+
+#[cfg(test)]
+mod tests;
 
 const EXPLICIT_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -28,32 +35,62 @@ pub(super) enum SkipReason {
 }
 
 #[derive(Debug)]
+pub(super) enum StatePersistWarning {
+    PreviousStateUnreadable(std::io::Error),
+    WriteFailed(PersistFailure),
+}
+
+impl std::fmt::Display for StatePersistWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StatePersistWarning::PreviousStateUnreadable(error) => {
+                write!(f, "maintenance state could not be read: {error}")
+            }
+            StatePersistWarning::WriteFailed(failure) => write!(f, "{failure}"),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub(super) enum ExplicitOutcome {
     Completed(ReconciliationReport),
     CompletedStatePersistFailed {
         report: ReconciliationReport,
-        warning: String,
+        warning: StatePersistWarning,
     },
-    Failed(ReconcileError),
+    Failed {
+        error: ReconcileError,
+        state_warning: Option<StatePersistWarning>,
+    },
     Skipped(SkipReason),
 }
 
-pub(super) async fn reconcile_explicit<P>(repository_root: &Path, open_db: P) -> ExplicitOutcome
-where
-    P: std::ops::AsyncFnOnce() -> Result<RepositoryAgentTraceDb>,
-{
+pub(super) async fn reconcile_explicit(repository_root: &Path) -> ExplicitOutcome {
     reconcile_explicit_with(
         repository_root,
-        open_db,
+        async || open_authoritative_db(repository_root).await,
         system_now_ms,
-        |path, state| write_state_atomically(path, state, |from, to| std::fs::rename(from, to)),
+        write_state_atomically,
         |_| {},
         EXPLICIT_LOCK_TIMEOUT,
     )
     .await
 }
 
-pub(super) async fn reconcile_explicit_with<P, C, W, H>(
+async fn open_authoritative_db(repository_root: &Path) -> Result<RepositoryAgentTraceDb> {
+    let storage_config = config::resolve_agent_trace_storage_runtime_config(repository_root)
+        .context("Failed to resolve Agent Trace repository storage config.")?;
+    let context = AgentTraceStorageContext {
+        repository_root,
+        explicit_repository_id: storage_config.repository_id.as_deref(),
+        repository_remote: &storage_config.repository_remote,
+    };
+    resolve_existing_agent_trace_storage_for_maintenance(&context)
+        .await
+        .map(|storage| storage.db)
+}
+
+async fn reconcile_explicit_with<P, C, W, H>(
     repository_root: &Path,
     open_db: P,
     now: C,
@@ -64,12 +101,17 @@ pub(super) async fn reconcile_explicit_with<P, C, W, H>(
 where
     P: std::ops::AsyncFnOnce() -> Result<RepositoryAgentTraceDb>,
     C: Fn() -> i64,
-    W: Fn(&Path, &MaintenanceState) -> std::io::Result<()>,
+    W: Fn(&Path, &MaintenanceState) -> std::result::Result<(), PersistFailure>,
     H: FnMut(ReconcilePhase),
 {
     let git_dir = match resolve_git_dir(repository_root).await {
         Ok(git_dir) => git_dir,
-        Err(source) => return ExplicitOutcome::Failed(ReconcileError::GitDir(source)),
+        Err(source) => {
+            return ExplicitOutcome::Failed {
+                error: ReconcileError::GitDir(source),
+                state_warning: None,
+            };
+        }
     };
 
     let lock = match acquire_inner_async(&git_dir, lock_timeout, || {}).await {
@@ -77,7 +119,12 @@ where
         Err(WorktreeLockError::TimedOut { .. }) => {
             return ExplicitOutcome::Skipped(SkipReason::Busy);
         }
-        Err(error) => return ExplicitOutcome::Failed(ReconcileError::Lock(error)),
+        Err(error) => {
+            return ExplicitOutcome::Failed {
+                error: ReconcileError::Lock(error),
+                state_warning: None,
+            };
+        }
     };
 
     let result = reconcile_with_held_lock(repository_root, &lock, open_db, on_phase).await;
@@ -105,13 +152,9 @@ where
             let error = ReconcileError::CheckoutIdentity(anyhow::anyhow!(
                 "no checkout identity could be derived"
             ));
-            record_failed_pass(&previous, &write_state, &path, now_ms, &error);
-            ExplicitOutcome::Failed(error)
+            record_failed_pass(&previous, &write_state, &path, now_ms, error)
         }
-        Err(error) => {
-            record_failed_pass(&previous, &write_state, &path, now_ms, &error);
-            ExplicitOutcome::Failed(error)
-        }
+        Err(error) => record_failed_pass(&previous, &write_state, &path, now_ms, error),
     };
 
     drop(lock);
@@ -130,14 +173,16 @@ fn persist<W>(
     write_state: &W,
     path: &Path,
     next: &MaintenanceState,
-) -> std::result::Result<(), String>
+) -> std::result::Result<(), StatePersistWarning>
 where
-    W: Fn(&Path, &MaintenanceState) -> std::io::Result<()>,
+    W: Fn(&Path, &MaintenanceState) -> std::result::Result<(), PersistFailure>,
 {
     if let Err(error) = previous {
-        return Err(format!("maintenance state could not be read: {error}"));
+        return Err(StatePersistWarning::PreviousStateUnreadable(
+            std::io::Error::new(error.kind(), error.to_string()),
+        ));
     }
-    write_state(path, next).map_err(|error| format!("maintenance state was not recorded: {error}"))
+    write_state(path, next).map_err(StatePersistWarning::WriteFailed)
 }
 
 fn record_failed_pass<W>(
@@ -145,17 +190,22 @@ fn record_failed_pass<W>(
     write_state: &W,
     path: &Path,
     now_ms: i64,
-    error: &ReconcileError,
-) where
-    W: Fn(&Path, &MaintenanceState) -> std::io::Result<()>,
+    error: ReconcileError,
+) -> ExplicitOutcome
+where
+    W: Fn(&Path, &MaintenanceState) -> std::result::Result<(), PersistFailure>,
 {
     let next = record_failure(
         &previous_state(previous),
         now_ms,
-        failure_kind(error),
+        failure_kind(&error),
         &error.to_string(),
     );
-    let _ = persist(previous, write_state, path, &next);
+    let state_warning = persist(previous, write_state, path, &next).err();
+    ExplicitOutcome::Failed {
+        error,
+        state_warning,
+    }
 }
 
 fn failure_kind(error: &ReconcileError) -> &'static str {
@@ -171,4 +221,22 @@ fn failure_kind(error: &ReconcileError) -> &'static str {
         ReconcileError::MissingRequiredPins { .. } => "missing_required_pins",
         ReconcileError::DeleteTransaction(_) => "delete_transaction",
     }
+}
+
+#[cfg(test)]
+async fn open_authoritative_db_at_state_root(
+    repository_root: &Path,
+    state_root: &Path,
+) -> Result<RepositoryAgentTraceDb> {
+    let context = AgentTraceStorageContext {
+        repository_root,
+        explicit_repository_id: None,
+        repository_remote: "origin",
+    };
+    crate::services::agent_trace_storage::resolve_existing_agent_trace_storage_for_maintenance_at_state_root(
+        &context,
+        state_root,
+    )
+    .await
+    .map(|storage| storage.db)
 }
