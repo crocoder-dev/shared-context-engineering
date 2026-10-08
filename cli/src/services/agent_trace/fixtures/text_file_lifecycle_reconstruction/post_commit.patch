@@ -1,0 +1,164 @@
+diff --git a/animals.txt b/animals.txt
+new file mode 100644
+index 0000000..4eb7e8d
+--- /dev/null
++++ b/animals.txt
+@@ -0,0 +1,3 @@
++fox
++lynx
++bear
+diff --git a/cleanup.txt b/cleanup.txt
+new file mode 100644
+index 0000000..22d09ae
+--- /dev/null
++++ b/cleanup.txt
+@@ -0,0 +1,6 @@
++one
++three
++four
++five
++six
++eight
+diff --git a/colors.txt b/colors.txt
+new file mode 100644
+index 0000000..7dcf88e
+--- /dev/null
++++ b/colors.txt
+@@ -0,0 +1,4 @@
++red
++emerald
++blue
++yellow
+diff --git a/final-poem.txt b/final-poem.txt
+new file mode 100644
+index 0000000..9fd1feb
+--- /dev/null
++++ b/final-poem.txt
+@@ -0,0 +1,4 @@
++A lamp is glowing in the hall.
++A shadow leans against the wall.
++No one stirs behind the door.
++Evening waits beside the door.
+diff --git a/flowers.txt b/flowers.txt
+new file mode 100644
+index 0000000..6b7eda2
+--- /dev/null
++++ b/flowers.txt
+@@ -0,0 +1,3 @@
++rose
++orchid
++tulip
+diff --git a/list.txt b/list.txt
+new file mode 100644
+index 0000000..2794901
+--- /dev/null
++++ b/list.txt
+@@ -0,0 +1,6 @@
++alpha
++beta-updated
++gamma
++delta-updated
++epsilon
++zeta-updated
+diff --git a/notes.txt b/notes.txt
+new file mode 100644
+index 0000000..ad9e0b0
+--- /dev/null
++++ b/notes.txt
+@@ -0,0 +1,7 @@
++Line 1: apples
++Line 2: pears
++Line 3: plums
++Line 4: grapes
++Line 5: oranges
++Line 6: bananas
++Line 7: cherries
+diff --git a/poem-one.txt b/poem-one.txt
+new file mode 100644
+index 0000000..fd17f47
+--- /dev/null
++++ b/poem-one.txt
+@@ -0,0 +1,4 @@
++Morning light spills on the floor.
++A quiet bird waits by the tree.
++Nothing asks for more today.
++The world is slow and clear.
+diff --git a/rain.txt b/rain.txt
+new file mode 100644
+index 0000000..f0f762d
+--- /dev/null
++++ b/rain.txt
+@@ -0,0 +1,4 @@
++Rain taps softly on the glass.
++Clouds erase the distant hill.
++Every road becomes a mirror.
++Everything is calm and still.
+diff --git a/replace-me.txt b/replace-me.txt
+new file mode 100644
+index 0000000..1f62a56
+--- /dev/null
++++ b/replace-me.txt
+@@ -0,0 +1,3 @@
++New line A
++New line B
++New line C
+diff --git a/sentence.txt b/sentence.txt
+new file mode 100644
+index 0000000..6bd3c5f
+--- /dev/null
++++ b/sentence.txt
+@@ -0,0 +1 @@
++The striped cat sleeps near the window.
+diff --git a/single-letter.txt b/single-letter.txt
+new file mode 100644
+index 0000000..b0d95fa
+--- /dev/null
++++ b/single-letter.txt
+@@ -0,0 +1 @@
++colour
+diff --git a/story.txt b/story.txt
+new file mode 100644
+index 0000000..7ddfb18
+--- /dev/null
++++ b/story.txt
+@@ -0,0 +1,11 @@
++Chapter 1
++The road was silent.
++The sun was low.
++
++Chapter 2
++A cart moved slowly.
++The horses were tired.
++
++Chapter 3
++Night came early.
++The village kept its lamps lit.
+diff --git a/sun.txt b/sun.txt
+new file mode 100644
+index 0000000..6277a80
+--- /dev/null
++++ b/sun.txt
+@@ -0,0 +1,4 @@
++Sun above the empty street.
++Warmth arrives before the sound.
++Windows open one by one.
++Morning settles on the town.
+diff --git a/tasks.txt b/tasks.txt
+new file mode 100644
+index 0000000..1e39e1e
+--- /dev/null
++++ b/tasks.txt
+@@ -0,0 +1,3 @@
++task-a
++task-b
++task-d
+diff --git a/wind.txt b/wind.txt
+new file mode 100644
+index 0000000..5bce757
+--- /dev/null
++++ b/wind.txt
+@@ -0,0 +1,4 @@
++Wind moves lightly through the leaves.
++Branches bend but do not break.
++Air carries the scent of evening.
++Day prepares to fade away.

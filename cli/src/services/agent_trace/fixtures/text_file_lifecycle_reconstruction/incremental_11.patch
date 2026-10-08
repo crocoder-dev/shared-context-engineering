@@ -1,0 +1,18 @@
+Index: animals.txt
+===================================================================
+--- animals.txt
++++ animals.txt
+@@ -0,0 +1,3 @@
++fox
++wolf
++bear
+
+Index: flowers.txt
+===================================================================
+--- flowers.txt
++++ flowers.txt
+@@ -0,0 +1,3 @@
++rose
++lily
++tulip
+

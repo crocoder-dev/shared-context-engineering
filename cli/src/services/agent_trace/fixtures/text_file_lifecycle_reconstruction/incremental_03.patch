@@ -1,0 +1,10 @@
+Index: notes.txt
+===================================================================
+--- notes.txt
++++ notes.txt
+@@ -0,0 +1,4 @@
++Line 1: apples
++Line 2: pears
++Line 3: plums
++Line 4: grapes
+

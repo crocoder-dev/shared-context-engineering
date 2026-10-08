@@ -1,0 +1,112 @@
+{
+  "$schema": "https://agent-trace.dev/schemas/v1/trace-record.json",
+  "version": "0.1.0",
+  "id": "01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
+  "timestamp": "2026-04-23T10:20:30Z",
+  "vcs": {
+    "type": "git",
+    "revision": "a0b1c2d3e4f5a6b7c8d9e0f11223344556677889"
+  },
+  "metadata": {
+    "sce": {
+      "version": "0.2.0",
+      "line_changes": {
+        "ai": { "added": 5, "removed": 2 },
+        "mixed": { "added": 0, "removed": 0 },
+        "unknown": { "added": 1, "removed": 15 }
+      }
+    }
+  },
+  "files": [
+    {
+      "path": ".version",
+      "conversations": [
+        {
+          "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 1,
+              "content_hash": "murmur3:bae67384"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "poem.md",
+      "conversations": [
+        {
+          "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
+          "contributor": {
+            "type": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 8,
+              "content_hash": "murmur3:66792e88"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "poem_life.md",
+      "conversations": [
+        {
+          "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 4,
+              "content_hash": "murmur3:9a75f476"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "poem_nature.md",
+      "conversations": [
+        {
+          "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
+          "contributor": {
+            "type": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 4,
+              "content_hash": "murmur3:13e28dae"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "poem_people.md",
+      "conversations": [
+        {
+          "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 4,
+              "content_hash": "murmur3:eeb8e8f1"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
