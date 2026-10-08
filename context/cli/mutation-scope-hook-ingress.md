@@ -258,4 +258,5 @@ The Codex mapping and partial coverage are in [`codex-mutation-scope-integration
 - [Mutation-trace scope abandonment](mutation-trace-scope-abandonment.md)
 - [Mutation-trace protected worktree](mutation-trace-protected-worktree.md)
 - [Mutation-scope provenance](mutation-scope-provenance.md)
+- [Mutation-scope ref-reconciliation advisory](mutation-scope-ref-advisory.md)
 - [Agent Trace hooks command routing](../sce/agent-trace-hooks-command-routing.md)

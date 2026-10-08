@@ -29,6 +29,7 @@ pub(crate) use mutation_attribution::{
     BoundedMutationAttribution, MutationAttributionBarrier, MutationEventPageSource,
     TreeReadSource, MAX_MUTATION_ATTRIBUTION_EVENTS,
 };
+pub(crate) use ref_advisory::{advise_after_completed_boundary, AdvisoryReport, AdvisorySeverity};
 #[allow(unused_imports)]
 pub(crate) use scope_runtime::{
     abandon_scope, AbandonRecoveryReason, AbandonScopeError, AbandonScopeOutcome,
