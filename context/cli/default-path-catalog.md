@@ -25,13 +25,12 @@
 - `.opencode/`, `.opencode/opencode.json`
 - `.claude/`
 - `.pi/`
-- `.git/`, `.git/hooks/`, `.git/COMMIT_EDITMSG`
 - `context/`, `context/plans/`, `context/decisions/`, `context/handovers/`, `context/tmp/`, `context/tmp/.gitignore` via `RepoPaths::context_tmp_gitignore_file()`
 
 ### Install paths
 
 - OpenCode plugin/catalog targets under `.opencode/`
-- required git hook install targets under `.git/hooks/`
+- required git hook install targets are resolved from git truth by the setup service, not by this catalog (the former `.git/`, hooks and `COMMIT_EDITMSG` path helpers were removed as unused)
 
 Compile-time payload locations are build-script-owned `OUT_DIR` paths rather than default runtime paths and are intentionally absent from this catalog.
 
@@ -41,7 +40,7 @@ Compile-time payload locations are build-script-owned `OUT_DIR` paths rather tha
 - `cli/src/services/config/mod.rs` now resolves the default repo-local config path through `RepoPaths::sce_config_file()` during config discovery.
 - `cli/src/services/doctor/inspect.rs` now resolves the repo-local config path through `RepoPaths::sce_config_file()` for local-config health reporting and validation.
 - `cli/src/services/doctor/inspect.rs` also resolves OpenCode manifest/plugin/preset locations through shared `RepoPaths` and `InstallTargetPaths` accessors instead of owning those paths locally.
-- `cli/src/services/setup/mod.rs` now resolves setup target directory names and required hook identifiers through `default_paths.rs` constants/accessors instead of owning those path literals locally.
+- `cli/src/services/setup/mod.rs` now resolves setup target directory names through `default_paths.rs` constants/accessors instead of owning those path literals locally.
 - `cli/src/services/default_paths.rs` includes a regression test that scans non-test Rust source under `cli/src/` and fails when new centralized production path literals appear outside the default-path service.
 - Active hook runtime no longer resolves or writes collision-safe JSON artifacts under `context/tmp/`; `context/tmp/` remains a repo-relative scratch/session path owned by the default path catalog.
 - Active hook runtime and `cli/src/services/agent_trace_db/lifecycle.rs` resolve repository-scoped Agent Trace DB files through `agent_trace_storage` and `agent_trace_db_path_for_repository(repository_id)`. Outside a Git repository, lifecycle code returns an actionable "requires a Git repository" diagnostic instead of resolving any sentinel path.

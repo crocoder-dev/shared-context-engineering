@@ -50,11 +50,10 @@ pub struct DoctorRequest {
     pub format: DoctorFormat,
 }
 
-struct DoctorDependencies<'a, G, S, C, V, P> {
+struct DoctorDependencies<'a, G, S, C, P> {
     git: &'a G,
     resolve_state_root: &'a S,
     resolve_global_config_path: &'a C,
-    validate_config_file: &'a V,
     probe_codex_hook_policy: &'a P,
 }
 
@@ -111,7 +110,6 @@ async fn execute_doctor_with_context(
             resolve_global_config_path: &|| {
                 Ok(resolve_sce_default_locations()?.global_config_file())
             },
-            validate_config_file: &crate::services::config::validate_config_file,
             probe_codex_hook_policy: &codex_hook_policy::probe_default,
         },
         mutation_scope_seam,
@@ -128,7 +126,6 @@ async fn execute_doctor_with_lifecycle_providers(
         impl crate::services::capabilities::GitOps,
         impl Fn() -> Result<PathBuf>,
         impl Fn() -> Result<PathBuf>,
-        impl Fn(&Path) -> Result<()>,
         impl Fn() -> crate::services::codex_hook_policy::CodexHookPolicyReadiness,
     >,
     mutation_scope_seam: &impl std::ops::AsyncFn(

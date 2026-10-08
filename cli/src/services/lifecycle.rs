@@ -132,9 +132,6 @@ pub struct SetupOutcome {
 }
 
 pub(crate) trait ServiceLifecycle: Send + Sync {
-    #[allow(dead_code)]
-    fn id(&self) -> LifecycleProviderId;
-
     async fn diagnose<C: HasRepoRoot>(&self, _ctx: &C) -> Vec<HealthProblem> {
         Vec::new()
     }

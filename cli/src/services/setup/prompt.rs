@@ -1,9 +1,7 @@
 use anyhow::{bail, Result};
 use inquire::{Confirm, InquireError, MultiSelect, Select};
 
-use crate::services::style::{
-    prompt_label, prompt_label_with_color_policy, prompt_value_with_color_policy,
-};
+use crate::services::style::{prompt_label, prompt_value_with_color_policy};
 
 use super::{OptionalWorkflow, SetupDispatch, SetupMode, SetupPromptTarget, SetupTarget};
 
@@ -181,9 +179,4 @@ pub(super) fn setup_prompt_target_label_with_color_policy(
     };
 
     prompt_value_with_color_policy(label, color_enabled)
-}
-
-#[allow(dead_code)]
-pub(super) fn setup_prompt_title_with_color_policy(color_enabled: bool) -> String {
-    prompt_label_with_color_policy("Select setup target", color_enabled)
 }

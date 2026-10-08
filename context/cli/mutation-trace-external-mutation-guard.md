@@ -1,6 +1,6 @@
 # External-mutation guard
 
-`run_external_mutation_guard`, in
+`arm_external_mutation_guard` (which yields an `ArmedExternalMutationGuard` whose `exec` runs the shell), in
 `cli/src/services/mutation_trace/runtime/external_mutation_guard.rs`, is a
 harness-neutral runtime primitive — **not** Pi-specific, despite being built
 alongside the Pi adapter to back Pi's `!`/`!!` `user_bash` — that lets a
@@ -268,7 +268,7 @@ eventual explicit unlock.
   wrapper around the existing (still-private) `coordinate_protected`, plus
   ordinary OS process/fd mechanics.
 - No Windows support: the guard is Unix-only; a non-Unix build's
-  `run_external_mutation_guard` unconditionally returns
+  `arm_external_mutation_guard` unconditionally returns
   `GuardError::UnsupportedPlatform`.
 - No recovery beyond the guard's own crash semantics above — a stale,
   never-armed marker left by some other failure mode is out of scope here.

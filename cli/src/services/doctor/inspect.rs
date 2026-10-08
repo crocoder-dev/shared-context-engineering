@@ -50,7 +50,6 @@ pub(super) async fn build_report_with_lifecycle_problems(
         impl crate::services::capabilities::GitOps,
         impl Fn() -> anyhow::Result<PathBuf>,
         impl Fn() -> anyhow::Result<PathBuf>,
-        impl Fn(&Path) -> anyhow::Result<()>,
         impl Fn() -> crate::services::codex_hook_policy::CodexHookPolicyReadiness,
     >,
     lifecycle_problems: Vec<DoctorProblem>,
@@ -78,7 +77,6 @@ async fn build_report_without_service_owned_problem_checks(
         impl crate::services::capabilities::GitOps,
         impl Fn() -> anyhow::Result<PathBuf>,
         impl Fn() -> anyhow::Result<PathBuf>,
-        impl Fn(&Path) -> anyhow::Result<()>,
         impl Fn() -> crate::services::codex_hook_policy::CodexHookPolicyReadiness,
     >,
     mut problems: Vec<DoctorProblem>,
@@ -566,7 +564,6 @@ fn collect_global_state_locations(
         impl crate::services::capabilities::GitOps,
         impl Fn() -> anyhow::Result<PathBuf>,
         impl Fn() -> anyhow::Result<PathBuf>,
-        impl Fn(&Path) -> anyhow::Result<()>,
         impl Fn() -> crate::services::codex_hook_policy::CodexHookPolicyReadiness,
     >,
 ) -> GlobalStateHealth {
@@ -742,81 +739,6 @@ fn hook_managed_block_content_state(
         Ok(merge) if merge.bytes == bytes => HookContentState::Current,
         Ok(_) | Err(_) => HookContentState::Stale,
     }
-}
-
-#[allow(dead_code)]
-fn inspect_repository_hooks(
-    repository_root: &Path,
-    git_available: bool,
-    bare_repository: bool,
-    detected_repository_root: Option<&Path>,
-    hooks_directory: Option<&Path>,
-    problems: &mut Vec<DoctorProblem>,
-) -> Vec<HookFileHealth> {
-    if !git_available {
-        problems.push(DoctorProblem {
-            kind: ProblemKind::GitUnavailable,
-            category: ProblemCategory::RepositoryTargeting,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: String::from("Git is not available on this machine."),
-            remediation: String::from("Install an accessible 'git' binary and ensure it is on PATH before rerunning 'sce doctor'."),
-            next_action: "manual_steps",
-            scope: None,
-            mutation_scope_target: None,
-        });
-        return Vec::new();
-    }
-
-    if bare_repository {
-        problems.push(DoctorProblem {
-            kind: ProblemKind::BareRepository,
-            category: ProblemCategory::RepositoryTargeting,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: String::from(
-                "The current repository is bare and does not support local SCE hook rollout.",
-            ),
-            remediation: String::from("Run 'sce doctor' from a non-bare working tree clone to inspect repo-scoped SCE hook health."),
-            next_action: "manual_steps",
-            scope: None,
-            mutation_scope_target: None,
-        });
-        return Vec::new();
-    }
-
-    if detected_repository_root.is_none() {
-        problems.push(DoctorProblem {
-            kind: ProblemKind::NotInsideGitRepository,
-            category: ProblemCategory::RepositoryTargeting,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: String::from("The current directory is not inside a git repository."),
-            remediation: String::from("Run 'sce doctor' from inside the target repository working tree to inspect repo-scoped SCE hook health."),
-            next_action: "manual_steps",
-            scope: None,
-            mutation_scope_target: None,
-        });
-        return Vec::new();
-    }
-
-    if let Some(directory) = hooks_directory {
-        return collect_hook_health(directory, problems);
-    }
-
-    let _ = repository_root;
-    problems.push(DoctorProblem {
-        kind: ProblemKind::UnableToResolveGitHooksDirectory,
-        category: ProblemCategory::RepositoryTargeting,
-        severity: ProblemSeverity::Error,
-        fixability: ProblemFixability::ManualOnly,
-        summary: String::from("Unable to resolve git hooks directory."),
-        remediation: String::from("Verify that git repository inspection succeeds and rerun 'sce doctor' inside a non-bare git repository."),
-        next_action: "manual_steps",
-        scope: None,
-        mutation_scope_target: None,
-    });
-    Vec::new()
 }
 
 /// Returns `true` when the doctor was able to check for integration targets
@@ -1107,235 +1029,6 @@ fn repair_merge_target_if_mismatched(
             },
         },
     )
-}
-
-#[allow(dead_code)]
-fn collect_global_state_health(
-    repository_root: &Path,
-    problems: &mut Vec<DoctorProblem>,
-    dependencies: &DoctorDependencies<
-        '_,
-        impl crate::services::capabilities::GitOps,
-        impl Fn() -> anyhow::Result<PathBuf>,
-        impl Fn() -> anyhow::Result<PathBuf>,
-        impl Fn(&Path) -> anyhow::Result<()>,
-        impl Fn() -> crate::services::codex_hook_policy::CodexHookPolicyReadiness,
-    >,
-) -> GlobalStateHealth {
-    let mut state_root_health = None;
-    let mut config_locations = Vec::new();
-
-    match (dependencies.resolve_state_root)() {
-        Ok(state_root) => {
-            state_root_health = Some(FileLocationHealth {
-                label: "State root",
-                state: if state_root.exists() { "present" } else { "expected" },
-                path: state_root.clone(),
-            });
-        }
-        Err(error) => problems.push(DoctorProblem {
-            kind: ProblemKind::UnableToResolveStateRoot,
-            category: ProblemCategory::GlobalState,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: format!("Unable to resolve expected state root: {error}"),
-            remediation: String::from("Verify that the current platform exposes a writable SCE state directory before rerunning 'sce doctor'."),
-            next_action: "manual_steps",
-            scope: None,
-            mutation_scope_target: None,
-        }),
-    }
-
-    match (dependencies.resolve_global_config_path)() {
-        Ok(global_path) => {
-            if global_path.exists() {
-                if let Err(error) = (dependencies.validate_config_file)(&global_path) {
-                    problems.push(DoctorProblem {
-                        kind: ProblemKind::GlobalConfigValidationFailed,
-                        category: ProblemCategory::GlobalState,
-                        severity: ProblemSeverity::Error,
-                        fixability: ProblemFixability::ManualOnly,
-                        summary: format!(
-                            "Global config file '{}' failed validation: {error}",
-                            global_path.display()
-                        ),
-                        remediation: format!(
-                            "Repair or remove the invalid global config file at '{}' and rerun 'sce doctor'.",
-                            global_path.display()
-                        ),
-                        next_action: "manual_steps",
-                        scope: None,
-                        mutation_scope_target: None,
-                    });
-                }
-            }
-            config_locations.push(FileLocationHealth {
-                label: "Global config",
-                state: if global_path.exists() { "present" } else { "expected" },
-                path: global_path,
-            });
-        }
-        Err(error) => problems.push(DoctorProblem {
-            kind: ProblemKind::UnableToResolveGlobalConfigPath,
-            category: ProblemCategory::GlobalState,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: format!("Unable to resolve expected global config path: {error}"),
-            remediation: String::from("Verify that the current platform exposes a writable SCE config directory before rerunning 'sce doctor'."),
-            next_action: "manual_steps",
-            scope: None,
-            mutation_scope_target: None,
-        }),
-    }
-
-    let local_path = RepoPaths::new(repository_root).sce_config_file();
-    if local_path.exists() {
-        if let Err(error) = (dependencies.validate_config_file)(&local_path) {
-            problems.push(DoctorProblem {
-                kind: ProblemKind::LocalConfigValidationFailed,
-                category: ProblemCategory::GlobalState,
-                severity: ProblemSeverity::Error,
-                fixability: ProblemFixability::ManualOnly,
-            summary: format!(
-                    "Local config file '{}' failed validation: {error}",
-                    local_path.display()
-                ),
-                remediation: format!(
-                    "Repair or remove the invalid local config file at '{}' and rerun 'sce doctor'.",
-                    local_path.display()
-                ),
-                next_action: "manual_steps",
-                scope: None,
-                mutation_scope_target: None,
-            });
-        }
-    }
-    config_locations.push(FileLocationHealth {
-        label: "Local config",
-        state: if local_path.exists() {
-            "present"
-        } else {
-            "expected"
-        },
-        path: local_path,
-    });
-
-    GlobalStateHealth {
-        state_root: state_root_health,
-        config_locations,
-    }
-}
-
-#[allow(dead_code)]
-#[allow(clippy::too_many_lines)]
-fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> Vec<HookFileHealth> {
-    if !directory.exists() {
-        problems.push(DoctorProblem {
-            kind: ProblemKind::HooksDirectoryMissing,
-            category: ProblemCategory::HookRollout,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::AutoFixable,
-            summary: format!("Hooks directory '{}' does not exist.", directory.display()),
-            remediation: format!(
-                "Run 'sce doctor --fix' to install the canonical SCE-managed hooks into '{}', or run 'sce setup --hooks' directly.",
-                directory.display()
-            ),
-            next_action: "doctor_fix",
-            scope: None,
-            mutation_scope_target: None,
-        });
-    } else if !directory.is_dir() {
-        problems.push(DoctorProblem {
-            kind: ProblemKind::HooksPathNotDirectory,
-            category: ProblemCategory::HookRollout,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: format!("Hooks path '{}' is not a directory.", directory.display()),
-            remediation: format!(
-                "Replace '{}' with a writable hooks directory, then rerun 'sce doctor' or 'sce setup --hooks'.",
-                directory.display()
-            ),
-            next_action: "manual_steps",
-            scope: None,
-            mutation_scope_target: None,
-        });
-    }
-
-    REQUIRED_HOOKS
-        .iter()
-        .map(|hook_name| {
-            let hook_path = directory.join(hook_name);
-            let metadata = fs::metadata(&hook_path).ok();
-            let exists = metadata.is_some();
-            let executable = metadata
-                .as_ref()
-                .is_some_and(|entry| entry.is_file() && is_executable(entry));
-            let content_state = inspect_hook_content_state(hook_name, &hook_path, exists, problems);
-
-            if !exists {
-                problems.push(DoctorProblem {
-                    kind: ProblemKind::RequiredHookMissing,
-                    category: ProblemCategory::HookRollout,
-                    severity: ProblemSeverity::Error,
-                    fixability: ProblemFixability::AutoFixable,
-                    summary: format!(
-                        "Missing required hook '{}' at '{}'.",
-                        hook_name,
-                        hook_path.display()
-                    ),
-                    remediation: format!(
-                        "Run 'sce doctor --fix' to install the canonical '{hook_name}' hook, or run 'sce setup --hooks' directly."
-                    ),
-                    next_action: "doctor_fix",
-                    scope: None,
-                    mutation_scope_target: None,
-                });
-            } else if !executable {
-                problems.push(DoctorProblem {
-                    kind: ProblemKind::HookNotExecutable,
-                    category: ProblemCategory::HookRollout,
-                    severity: ProblemSeverity::Error,
-                    fixability: ProblemFixability::AutoFixable,
-                    summary: format!("Hook '{hook_name}' exists but is not executable."),
-                    remediation: format!(
-                        "Run 'sce doctor --fix' to restore the canonical executable hook, or run 'sce setup --hooks' / 'chmod +x {}' manually.",
-                        hook_path.display()
-                    ),
-                    next_action: "doctor_fix",
-                    scope: None,
-                    mutation_scope_target: None,
-                });
-            }
-
-            if content_state == HookContentState::Stale {
-                problems.push(DoctorProblem {
-                    kind: ProblemKind::HookContentStale,
-                    category: ProblemCategory::HookRollout,
-                    severity: ProblemSeverity::Error,
-                    fixability: ProblemFixability::AutoFixable,
-                    summary: format!(
-                        "Hook '{}' at '{}' differs from the canonical SCE-managed content.",
-                        hook_name,
-                        hook_path.display()
-                    ),
-                    remediation: format!(
-                        "Run 'sce doctor --fix' to reinstall the canonical '{hook_name}' hook content, or run 'sce setup --hooks' directly."
-                    ),
-                    next_action: "doctor_fix",
-                    scope: None,
-                    mutation_scope_target: None,
-                });
-            }
-
-            HookFileHealth {
-                name: hook_name,
-                path: hook_path,
-                exists,
-                executable,
-                content_state,
-            }
-        })
-        .collect()
 }
 
 fn inspect_opencode_integration_health(
@@ -2706,49 +2399,6 @@ fn inspect_integration_asset_state(
 
 fn path_is_file(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
-}
-
-#[allow(dead_code)]
-fn inspect_hook_content_state(
-    hook_name: &str,
-    hook_path: &Path,
-    exists: bool,
-    problems: &mut Vec<DoctorProblem>,
-) -> HookContentState {
-    if !exists {
-        return HookContentState::Missing;
-    }
-
-    let Some(expected_hook) =
-        iter_required_hook_assets().find(|asset| asset.relative_path == hook_name)
-    else {
-        return HookContentState::Unknown;
-    };
-
-    match fs::read(hook_path) {
-        Ok(bytes) => hook_managed_block_content_state(hook_name, &bytes, expected_hook.bytes),
-        Err(error) => {
-            problems.push(DoctorProblem {
-                kind: ProblemKind::HookReadFailed,
-                category: ProblemCategory::FilesystemPermissions,
-                severity: ProblemSeverity::Error,
-                fixability: ProblemFixability::ManualOnly,
-                summary: format!(
-                    "Unable to read hook '{}' at '{}': {error}",
-                    hook_name,
-                    hook_path.display()
-                ),
-                remediation: format!(
-                    "Verify that '{}' is readable before rerunning 'sce doctor'.",
-                    hook_path.display()
-                ),
-                next_action: "manual_steps",
-                scope: None,
-                mutation_scope_target: None,
-            });
-            HookContentState::Unknown
-        }
-    }
 }
 
 fn doctor_git_output(git: &impl GitOps, repository_root: &Path, args: &[&str]) -> Option<String> {

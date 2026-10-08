@@ -55,10 +55,6 @@ impl std::fmt::Display for WorktreeLockError {
 impl std::error::Error for WorktreeLockError {}
 
 impl WorktreeLock {
-    pub fn acquire(git_dir: &Path, timeout: Duration) -> Result<WorktreeLock, WorktreeLockError> {
-        acquire_inner(git_dir, timeout, || {})
-    }
-
     pub async fn acquire_async(
         git_dir: &Path,
         timeout: Duration,
