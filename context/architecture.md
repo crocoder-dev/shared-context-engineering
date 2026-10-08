@@ -190,8 +190,11 @@ flowchart TD
     F --> G[Turso futures]
 ```
 
-Pure parsing, rendering, filesystem, and process operations remain synchronous
-where they do not await persistence. The adapter layer owns connection and
+Pure parsing, rendering and unrelated service logic remain synchronous. PR2 as
+implemented also moved Git snapshot subprocesses, protected-worktree marker I/O,
+worktree/adapter lock acquisition, Git ref mutation and guarded-shell supervision
+off the async workers (listed below) so cancellation cannot release a protected
+resource early. The adapter layer owns connection and
 migration policy, not an executor; retry classification, transaction SQL,
 encryption, WAL, and migration boundaries remain unchanged by async execution.
 
@@ -203,9 +206,13 @@ caller:
 - `EncryptedTursoDb::new` resolves the encryption key through the synchronous OS
   credential store (`cli/src/services/db/mod.rs`); AuthDb construction and Turso
   work stay on the async side.
-- `AdapterLockSpec::acquire_async` (`cli/src/services/hooks/mutation_scope_lock.rs`)
-  runs the synchronous adapter boundary/state advisory-lock `try_lock` polling
-  loop for the Claude, Codex, OpenCode, and Pi mutation-scope adapters.
+- `acquire_with_timeout_async` and `run_locked_blocking`
+  (`cli/src/services/hooks/mutation_scope_lock.rs`) run the synchronous adapter
+  boundary/state advisory-lock polling and the state-file transitions for the
+  Claude, Codex, OpenCode, and Pi mutation-scope adapters. A started transition
+  owns the state lock plus a clone of the boundary lease until it finishes, so a
+  cancelled boundary caller cannot be overtaken by a later boundary. The adapters'
+  `state.rs` `read_state` runs a read-only synchronous file read in a worker.
 - `acquire_inner_async` (`cli/src/services/mutation_trace/runtime/worktree_lock.rs`)
   runs the synchronous mutation-trace `WorktreeLock` polling loop used by
   `ProtectedWorktree`, coordinate, abandon-scope, ref reconciliation, the
@@ -216,12 +223,37 @@ caller:
   Each worker owns the worktree lock (arming) or the whole `ProtectedWorktree`
   (completion) until its marker I/O finishes. Cancelling the caller cannot
   release the lock while a marker operation is still in flight.
+- `run_ref_mutation_inner`
+  (`cli/src/services/mutation_trace/runtime/git_snapshot.rs`) runs the blocking
+  Git ref-mutation subprocess. The worker owns the `WorktreeLockLease`, so the
+  worktree lock stays held until Git exits even if the caller is cancelled.
+- `TempIndexGuard::drop` (same file) removes a temporary Git index through
+  `Handle::try_current` + `spawn_blocking` (inline removal without a runtime).
+  The task is fire-and-forget and holds no lock. A killed process can leave an
+  orphaned `index-<uuid>.lock`/temporary index file behind; this is an accepted
+  limitation (a sweep is a PR3 candidate).
+- The guarded-shell supervisor
+  (`cli/src/services/mutation_trace/runtime/external_mutation_guard.rs`) runs the
+  synchronous `Child::wait`/descriptor supervision. The worker owns the
+  `ProtectedWorktree` and the guarded child, ends when the child exits or
+  cancellation is observed, and keeps the protected lock until it returns. The
+  lifetime pipe is created close-on-exec atomically and the guarded child alone
+  receives the protected descriptors through `pre_exec`, so unrelated spawned
+  processes do not inherit them.
+
+Runtime shutdown waits for these workers; each is bounded by its lock timeout,
+file I/O or child process. No other production `spawn_blocking` or
+`block_in_place` exists, and `build_current_thread_runtime`, `block_on_isolated`,
+`SyncStorageGuard`, `run_credential_operation` and the command-registry
+Setup/Doctor/Hooks blocking scopes are deleted.
 
 Lock workers return the acquired guard. The async caller holds it across its
 protected awaited work and drops it when that work ends. Lock timeouts (10 s)
 and poll intervals are unchanged. A cancelled caller leaves its worker polling
 only until acquisition or timeout; a guard acquired after cancellation drops
 with the abandoned join result and releases the lock.
+
+Verified guarantees, limits and PR1–PR4 staging: [async persistence guarantees](cli/async-persistence-guarantees.md).
 
 ## Build / devShell / CI performance (flake-speedup)
 
