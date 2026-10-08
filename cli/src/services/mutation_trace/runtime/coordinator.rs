@@ -15,6 +15,7 @@ use crate::services::mutation_trace::types::{
 
 use super::git_snapshot::GitSnapshotService;
 use super::protected_worktree::{ProtectedWorktree, ProtectedWorktreeError};
+use super::worktree_lock::WorktreeLockLease;
 
 pub use super::protected_worktree::ExternalTaintOperation;
 
@@ -145,7 +146,12 @@ impl std::error::Error for CoordinateError {}
 
 pub trait SnapshotCapture {
     async fn capture(&self) -> Result<TreeId>;
-    async fn pin(&self, worktree_id: &WorktreeId, tree: &TreeId) -> Result<()>;
+    async fn pin(
+        &self,
+        lease: WorktreeLockLease,
+        worktree_id: &WorktreeId,
+        tree: &TreeId,
+    ) -> Result<()>;
 }
 
 impl SnapshotCapture for GitSnapshotService {
@@ -153,8 +159,13 @@ impl SnapshotCapture for GitSnapshotService {
         self.capture_tree().await
     }
 
-    async fn pin(&self, worktree_id: &WorktreeId, tree: &TreeId) -> Result<()> {
-        self.pin_tree(worktree_id, tree).await
+    async fn pin(
+        &self,
+        lease: WorktreeLockLease,
+        worktree_id: &WorktreeId,
+        tree: &TreeId,
+    ) -> Result<()> {
+        self.pin_tree(lease, worktree_id, tree).await
     }
 }
 
@@ -197,6 +208,7 @@ where
 
     let outcome = coordinate_protected(
         repository_root,
+        protected.lock_lease(),
         protected.worktree_id(),
         boundary,
         open_db,
@@ -215,8 +227,10 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn coordinate_protected<P, L, R>(
     repository_root: &Path,
+    pin_lease: WorktreeLockLease,
     worktree_id: &WorktreeId,
     boundary: &RuntimeBoundary,
     open_db: P,
@@ -240,6 +254,7 @@ where
     coordinate_boundary_inner(
         &db,
         &snapshot,
+        pin_lease,
         worktree_id,
         boundary,
         inherited_external_taint,
@@ -251,6 +266,7 @@ where
 
 pub(super) async fn coordinate_on_held_worktree<P>(
     repository_root: &Path,
+    pin_lease: WorktreeLockLease,
     worktree_id: &WorktreeId,
     boundary: &RuntimeBoundary,
     open_db: P,
@@ -261,6 +277,7 @@ where
 {
     coordinate_protected(
         repository_root,
+        pin_lease,
         worktree_id,
         boundary,
         open_db,
@@ -284,9 +301,24 @@ fn protected_worktree_failure(error: ProtectedWorktreeError) -> CoordinateError 
     }
 }
 
+async fn capture_and_pin<C>(
+    capture: &C,
+    pin_lease: WorktreeLockLease,
+    worktree_id: &WorktreeId,
+) -> Result<TreeId>
+where
+    C: SnapshotCapture,
+{
+    let tree = capture.capture().await?;
+    capture.pin(pin_lease, worktree_id, &tree).await?;
+    Ok(tree)
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn coordinate_boundary_inner<C, AfterLoad, AfterRecovery>(
     db: &RepositoryAgentTraceDb,
     capture: &C,
+    pin_lease: WorktreeLockLease,
     worktree_id: &WorktreeId,
     boundary: &RuntimeBoundary,
     inherited_external_taint: bool,
@@ -300,11 +332,7 @@ where
 {
     let store = MutationTraceStore::new(db);
 
-    let captured = match capture.capture().await {
-        Ok(tree) => capture.pin(worktree_id, &tree).await.map(|()| tree),
-        Err(source) => Err(source),
-    };
-    let observed_tree = match captured {
+    let observed_tree = match capture_and_pin(capture, pin_lease, worktree_id).await {
         Ok(tree) => tree,
         Err(source) => return Err(handle_snapshot_failure(&store, worktree_id, source).await),
     };
