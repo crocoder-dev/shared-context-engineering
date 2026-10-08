@@ -194,6 +194,10 @@ pub fn encode_boundary_kind(kind: BoundaryKind) -> &'static str {
 }
 
 /// Decodes a [`BoundaryKind`] from `mutation_trace_events.boundary_kind`.
+#[allow(
+    dead_code,
+    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+)]
 pub fn decode_boundary_kind(value: &str) -> Result<BoundaryKind> {
     match value {
         "start" => Ok(BoundaryKind::Start),
@@ -216,6 +220,10 @@ const SELECT_SCOPE_PROVENANCE_SQL: &str =
     "SELECT scope_id, session_id, model_id FROM mutation_trace_scope_provenance WHERE scope_id = ?1";
 const SELECT_PROCESSED_EVENT_SQL: &str =
     "SELECT 1 FROM mutation_trace_processed_events WHERE scope_id = ?1 AND event_id = ?2";
+#[allow(
+    dead_code,
+    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+)]
 const SELECT_MUTATION_EVENT_SQL: &str = "SELECT before_tree, after_tree, tainted, failure_kind,
             attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id
      FROM mutation_trace_events WHERE worktree_id = ?1 AND revision = ?2";
@@ -236,12 +244,20 @@ const SELECT_LATEST_MUTATION_EVENT_REVISION_SQL: &str = "SELECT revision FROM mu
      WHERE worktree_id = ?1
      ORDER BY revision DESC
      LIMIT 1";
+#[allow(
+    dead_code,
+    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+)]
 const SELECT_MUTATION_EVENT_ACTIVE_SCOPES_SQL: &str =
     "SELECT scope_id FROM mutation_trace_event_active_scopes WHERE worktree_id = ?1 AND revision = ?2";
 /// One worktree's complete durable tree root set — its cursor tree plus the
 /// `before_tree` / `after_tree` of every historical `mutation_trace_events`
 /// row — as a single `UNION` statement so the whole set is read from one
 /// database snapshot, never assembled from independent `SELECT`s.
+#[allow(
+    dead_code,
+    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+)]
 const SELECT_TREE_ROOTS_BY_WORKTREE_SQL: &str =
     "SELECT cursor_tree AS tree FROM mutation_trace_worktrees WHERE worktree_id = ?1
      UNION
@@ -251,6 +267,10 @@ const SELECT_TREE_ROOTS_BY_WORKTREE_SQL: &str =
 /// The same three `TreeId` columns unioned across **every** worktree in the
 /// repository, in one statement / one snapshot — the reconciler's
 /// repository-wide retention set.
+#[allow(
+    dead_code,
+    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+)]
 const SELECT_ALL_TREE_ROOTS_SQL: &str = "SELECT cursor_tree AS tree FROM mutation_trace_worktrees
      UNION
      SELECT before_tree AS tree FROM mutation_trace_events
@@ -688,6 +708,10 @@ impl<'a> MutationTraceStore<'a> {
     /// revision)`, decoding its full `Attribution` and `Boundary`, or `None`
     /// when no such row exists. Never called from `load_worktree` or from
     /// any hook-boundary path.
+    #[allow(
+        dead_code,
+        reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+    )]
     pub async fn load_mutation_event(
         &self,
         worktree: &WorktreeId,
@@ -815,6 +839,10 @@ impl<'a> MutationTraceStore<'a> {
     /// the single statement observes either the pre-commit snapshot
     /// (`cursor_tree` still contains `T`) or the post-commit snapshot
     /// (`before_tree` contains `T`).
+    #[allow(
+        dead_code,
+        reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+    )]
     pub async fn load_tree_roots(&self, worktree: &WorktreeId) -> Result<BTreeSet<TreeId>> {
         let rows = self
             .db
@@ -841,6 +869,10 @@ impl<'a> MutationTraceStore<'a> {
     /// statement through one `query_map` call, so it cannot tear across a
     /// concurrent atomic `cursor T -> X` + `event T -> X` commit on another
     /// worktree.
+    #[allow(
+        dead_code,
+        reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+    )]
     pub async fn load_all_tree_roots(&self) -> Result<BTreeSet<TreeId>> {
         let rows = self
             .db
@@ -985,6 +1017,10 @@ impl<'a> MutationTraceStore<'a> {
         Ok(!rows.is_empty())
     }
 
+    #[allow(
+        dead_code,
+        reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+    )]
     async fn load_mutation_event_active_scopes(
         &self,
         worktree: &WorktreeId,
@@ -1154,6 +1190,10 @@ fn validate_health_encoding(tainted: bool, failure_kind: FailureKind) -> Result<
     Ok(())
 }
 
+#[allow(
+    dead_code,
+    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+)]
 fn tree_root_row_from_turso(row: &turso::Row) -> Result<TreeId> {
     let tree: String = row
         .get(0)
@@ -1275,6 +1315,10 @@ fn mutation_event_page_row_from_turso(row: &turso::Row) -> Result<MutationEventP
 /// Raw decoded `mutation_trace_events` row fields, prior to reconstructing
 /// the full `Attribution`/`Boundary`/`active_scopes` a [`MutationEvent`]
 /// carries.
+#[allow(
+    dead_code,
+    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+)]
 struct MutationEventRow {
     before_tree: String,
     after_tree: String,
@@ -1287,6 +1331,10 @@ struct MutationEventRow {
     boundary_event_id: Option<String>,
 }
 
+#[allow(
+    dead_code,
+    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+)]
 fn mutation_event_row_from_turso(row: &turso::Row) -> Result<MutationEventRow> {
     let before_tree: String = row
         .get(0)
@@ -1346,6 +1394,10 @@ fn reconstruct_attribution(kind: AttributionKind, scope_id: Option<String>) -> R
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+)]
 fn reconstruct_boundary(
     kind: BoundaryKind,
     worktree: &WorktreeId,

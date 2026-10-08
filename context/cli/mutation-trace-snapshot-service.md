@@ -119,8 +119,8 @@ second, read-only caller: the bounded mutation-history attribution consumer
 transition and reads baseline file content through its own `TreeReadSource`
 trait (see
 [`mutation-trace-agent-attribution.md`](mutation-trace-agent-attribution.md)).
-`list_pins` / `delete_pins` are consumed by the per-worktree
-ref-reconciliation maintenance pass.
+`list_pins` / `delete_pins` are consumed only by the per-worktree
+ref-reconciliation maintenance pass, which is retained but unwired (PR3 retain-and-defer): no production code deletes pins, so pins orphaned by crashed or failed `coordinate()` paths accumulate until removed by hand. Their declarations carry `#[allow(dead_code, reason = ...)]` pointing at `context/plans/mutation-cursor-ref-reconciliation.md`. See [`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md).
 
 ## Testing boundary
 
