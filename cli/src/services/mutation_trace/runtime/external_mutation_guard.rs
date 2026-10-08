@@ -745,7 +745,7 @@ mod unix_impl {
             }
 
             let protected = ownership.take_protected();
-            let marker_clear_failed = protected.complete().is_err();
+            let marker_clear_failed = protected.complete().await.is_err();
 
             Ok(GuardOutcome {
                 exit_code: status.code(),
