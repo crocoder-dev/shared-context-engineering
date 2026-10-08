@@ -523,11 +523,11 @@ pub struct ScopeProvenance {
 }
 
 pub struct MutationTraceStore<'a> {
-    db: &'a RepositoryAgentTraceDb,
+    db: &'a mut RepositoryAgentTraceDb,
 }
 
 impl<'a> MutationTraceStore<'a> {
-    pub fn new(db: &'a RepositoryAgentTraceDb) -> Self {
+    pub fn new(db: &'a mut RepositoryAgentTraceDb) -> Self {
         Self { db }
     }
 
@@ -1002,7 +1002,7 @@ impl<'a> MutationTraceStore<'a> {
         Ok(rows.into_iter().collect())
     }
 
-    pub async fn commit(&self, transition: &DurableTransition) -> Result<CasResult> {
+    pub async fn commit(&mut self, transition: &DurableTransition) -> Result<CasResult> {
         let expected_revision_blob = encode_revision(transition.expected_revision);
         let next_revision_blob = encode_revision(transition.next_worktree_state.revision);
 

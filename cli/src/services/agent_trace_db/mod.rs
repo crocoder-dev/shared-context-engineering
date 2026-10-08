@@ -15,6 +15,9 @@ pub mod lifecycle;
 
 pub mod repository;
 
+#[cfg(test)]
+pub(crate) mod transaction_tests;
+
 /// Payload type discriminator for diff trace source payloads.
 ///
 /// `OpenCode` normalized diff-trace payloads use [`PAYLOAD_TYPE_PATCH`].
@@ -501,7 +504,7 @@ async fn insert_parts_with<M: DbSpec>(
 /// forcing the transaction to fail after the message insert and before the
 /// part insert, to prove both roll back together.
 async fn insert_conversation_text_event_with<M: DbSpec>(
-    db: &TursoDb<M>,
+    db: &mut TursoDb<M>,
     message: InsertMessageInsert,
     part: InsertPartInsert,
     fail_before_part_insert: bool,

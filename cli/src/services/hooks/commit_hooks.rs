@@ -210,7 +210,7 @@ pub(crate) async fn run_post_commit_agent_trace_flow(
     vcs_type: Option<AgentTraceVcsType>,
     remote_url: &str,
 ) -> Result<AgentTrace> {
-    let db = open_agent_trace_db_for_hook_runtime(
+    let mut db = open_agent_trace_db_for_hook_runtime(
         repository_root,
         "Failed to open Agent Trace DB for post-commit trace.",
     )
@@ -223,7 +223,7 @@ pub(crate) async fn run_post_commit_agent_trace_flow(
     let mutation_ai_patch =
         crate::services::mutation_trace::runtime::resolve_post_commit_mutation_ai_patch(
             repository_root,
-            &db,
+            &mut db,
             &direct_intersection,
             &flow_result.post_commit_data.parsed_patch,
         )

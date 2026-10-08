@@ -170,15 +170,32 @@ where
     ))
 }
 
-pub async fn run_with_retry_elapsed<T, Op, Fut>(
+/// One retryable attempt. Closures returning a future implement it directly;
+/// operations that must lend an exclusive borrow (such as a transaction on a
+/// single connection) implement it on a struct, because an `FnMut` closure
+/// cannot return a future that borrows its own captured `&mut` state.
+pub trait RetryOperation<T> {
+    async fn run(&mut self, attempt: u32) -> Result<T>;
+}
+
+impl<T, F, Fut> RetryOperation<T> for F
+where
+    F: FnMut(u32) -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    async fn run(&mut self, attempt: u32) -> Result<T> {
+        self(attempt).await
+    }
+}
+
+pub async fn run_with_retry_elapsed<T, Op>(
     policy: RetryPolicy,
     operation_name: &str,
     retry_hint: &str,
     mut operation: Op,
 ) -> Result<T>
 where
-    Op: FnMut(u32) -> Fut,
-    Fut: Future<Output = Result<T>>,
+    Op: RetryOperation<T>,
 {
     ensure!(
         policy.max_attempts > 0,
@@ -197,7 +214,7 @@ where
 
     for attempt in 1..=policy.max_attempts {
         let started_at = Instant::now();
-        let outcome = operation(attempt).await;
+        let outcome = operation.run(attempt).await;
 
         match outcome {
             Ok(value) => return Ok(value),

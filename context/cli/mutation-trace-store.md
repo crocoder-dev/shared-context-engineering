@@ -174,8 +174,8 @@ These are pure reads: no schema change, no migration, no write path.
 
 ## Write path
 
-`MutationTraceStore::commit(transition: &DurableTransition) -> Result<CasResult>`
-translates the transition into one worktree CAS `UPDATE`, zero or more scope
+`MutationTraceStore::commit(&mut self, transition: &DurableTransition) -> Result<CasResult>`
+(the store holds an exclusive `&mut` to the DB) translates the transition into one worktree CAS `UPDATE`, zero or more scope
 status `UPDATE`s, an optional processed-event `INSERT`, and an optional
 mutation-event `INSERT` plus its active-scope `INSERT`s — all run through
 `TursoDb::execute_transactional_cas_batch` inside exactly one
