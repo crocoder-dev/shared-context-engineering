@@ -1,5 +1,7 @@
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -11,10 +13,20 @@ const WORKTREE_LOCK_FILE: &str = "mutation-cursor.lock";
 const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
-pub struct WorktreeLock {
+struct WorktreeLockInner {
     file: File,
     path: PathBuf,
-    unlock_on_drop: bool,
+    unlock_on_drop: AtomicBool,
+}
+
+#[derive(Debug)]
+pub struct WorktreeLock {
+    inner: Arc<WorktreeLockInner>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WorktreeLockLease {
+    _inner: Arc<WorktreeLockInner>,
 }
 
 #[derive(Debug)]
@@ -107,9 +119,11 @@ where
         match file.try_lock() {
             Ok(()) => {
                 return Ok(WorktreeLock {
-                    file,
-                    path: lock_path,
-                    unlock_on_drop: true,
+                    inner: Arc::new(WorktreeLockInner {
+                        file,
+                        path: lock_path,
+                        unlock_on_drop: AtomicBool::new(true),
+                    }),
                 });
             }
             Err(TryLockError::WouldBlock) => {
@@ -135,14 +149,21 @@ where
 }
 
 impl WorktreeLock {
-    pub(super) fn close_without_unlock(mut self) {
-        self.unlock_on_drop = false;
+    #[must_use]
+    pub(super) fn lease(&self) -> WorktreeLockLease {
+        WorktreeLockLease {
+            _inner: Arc::clone(&self.inner),
+        }
+    }
+
+    pub(super) fn close_without_unlock(self) {
+        self.inner.unlock_on_drop.store(false, Ordering::Release);
     }
 }
 
-impl Drop for WorktreeLock {
+impl Drop for WorktreeLockInner {
     fn drop(&mut self) {
-        if self.unlock_on_drop {
+        if self.unlock_on_drop.load(Ordering::Acquire) {
             let _ = self.file.unlock();
         }
     }
@@ -153,6 +174,6 @@ impl WorktreeLock {
     #[must_use]
     pub(crate) fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
         use std::os::unix::io::AsRawFd;
-        self.file.as_raw_fd()
+        self.inner.file.as_raw_fd()
     }
 }

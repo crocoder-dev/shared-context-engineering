@@ -1,12 +1,14 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{anyhow, bail, Context, Result};
-use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use uuid::Uuid;
 
 use crate::services::mutation_trace::types::{TreeId, WorktreeId};
+
+use super::worktree_lock::WorktreeLockLease;
 
 const SCE_RUNTIME_DIR: &str = "sce";
 const TMP_INDEX_DIR: &str = "tmp";
@@ -62,10 +64,30 @@ impl GitSnapshotService {
         Ok(TreeId(tree_sha.trim().to_string()))
     }
 
-    pub async fn pin_tree(&self, worktree_id: &WorktreeId, tree: &TreeId) -> Result<()> {
+    pub async fn pin_tree(
+        &self,
+        lease: WorktreeLockLease,
+        worktree_id: &WorktreeId,
+        tree: &TreeId,
+    ) -> Result<()> {
+        self.pin_tree_inner(lease, worktree_id, tree, || {}).await
+    }
+
+    async fn pin_tree_inner(
+        &self,
+        lease: WorktreeLockLease,
+        worktree_id: &WorktreeId,
+        tree: &TreeId,
+        on_worker_entered: impl FnOnce() + Send + 'static,
+    ) -> Result<()> {
         let ref_name = pin_ref_name(worktree_id, tree);
-        self.run_git(&["update-ref", &ref_name, &tree.0], None)
-            .await?;
+        self.run_ref_mutation_inner(
+            lease,
+            vec!["update-ref".to_string(), ref_name, tree.0.clone()],
+            None,
+            on_worker_entered,
+        )
+        .await?;
         Ok(())
     }
 
@@ -93,7 +115,7 @@ impl GitSnapshotService {
     pub async fn file_at_tree(&self, tree: &TreeId, path: &str) -> Result<Option<String>> {
         let spec = format!("{}:{}", tree.0, path);
         let output = self
-            .git_command(&["cat-file", "blob", &spec], None)
+            .cancellable_git_command(&["cat-file", "blob", &spec], None)
             .output()
             .await
             .with_context(|| {
@@ -161,8 +183,8 @@ impl GitSnapshotService {
     /// into a symbolic ref — this returns `Err` and deletes nothing, preferring
     /// failure over acting on unexpected namespace state. An empty slice is a
     /// successful no-op.
-    pub async fn delete_pins(&self, pins: &[PinnedRef]) -> Result<()> {
-        self.delete_pins_inner(pins, || {}).await
+    pub async fn delete_pins(&self, lease: WorktreeLockLease, pins: &[PinnedRef]) -> Result<()> {
+        self.delete_pins_inner(lease, pins, || {}).await
     }
 
     /// Body of [`delete_pins`] with a deterministic test seam that fires
@@ -176,6 +198,7 @@ impl GitSnapshotService {
     /// property (unexpected ref state before the transaction is even attempted).
     async fn delete_pins_inner(
         &self,
+        lease: WorktreeLockLease,
         pins: &[PinnedRef],
         after_preflight: impl FnOnce(),
     ) -> Result<()> {
@@ -196,46 +219,46 @@ impl GitSnapshotService {
             stdin_payload.push('\n');
         }
 
-        let mut child = self
-            .git_command(&["update-ref", "--no-deref", "--stdin"], None)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "Failed to run git update-ref --no-deref --stdin in '{}'",
-                    self.repository_root.display()
-                )
-            })?;
-
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow!("Failed to open stdin for git update-ref --no-deref --stdin"))?;
-        stdin
-            .write_all(stdin_payload.as_bytes())
-            .await
-            .with_context(|| {
-                "Failed to write the delete transaction to git update-ref --no-deref --stdin"
-            })?;
-        drop(stdin);
-
-        let output = child
-            .wait_with_output()
-            .await
-            .with_context(|| "Failed to wait for git update-ref --no-deref --stdin")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let detail = if stderr.is_empty() { stdout } else { stderr };
-            return Err(anyhow!(
-                "git update-ref --no-deref --stdin failed: {detail}"
-            ));
-        }
+        self.run_ref_mutation(
+            lease,
+            vec![
+                "update-ref".to_string(),
+                "--no-deref".to_string(),
+                "--stdin".to_string(),
+            ],
+            Some(stdin_payload.into_bytes()),
+        )
+        .await?;
 
         Ok(())
+    }
+
+    async fn run_ref_mutation(
+        &self,
+        lease: WorktreeLockLease,
+        args: Vec<String>,
+        stdin: Option<Vec<u8>>,
+    ) -> Result<String> {
+        self.run_ref_mutation_inner(lease, args, stdin, || {}).await
+    }
+
+    async fn run_ref_mutation_inner(
+        &self,
+        lease: WorktreeLockLease,
+        args: Vec<String>,
+        stdin: Option<Vec<u8>>,
+        on_worker_entered: impl FnOnce() + Send + 'static,
+    ) -> Result<String> {
+        let repository_root = self.repository_root.clone();
+        let git_dir = self.git_dir.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let _lease = lease;
+            on_worker_entered();
+            run_ref_mutation_blocking(&repository_root, &git_dir, &args, stdin.as_deref())
+        })
+        .await
+        .map_err(|source| anyhow!("Git ref mutation worker failed: {source}"))?
     }
 
     /// Fail closed unless every supplied pin is still exactly the direct ref
@@ -300,7 +323,7 @@ impl GitSnapshotService {
 
     async fn head_exists(&self) -> Result<bool> {
         let output = self
-            .git_command(&["rev-parse", "--verify", "--quiet", "HEAD"], None)
+            .cancellable_git_command(&["rev-parse", "--verify", "--quiet", "HEAD"], None)
             .output()
             .await
             .with_context(|| {
@@ -325,7 +348,7 @@ impl GitSnapshotService {
         }
     }
 
-    fn git_command(&self, args: &[&str], index_file: Option<&Path>) -> Command {
+    fn cancellable_git_command(&self, args: &[&str], index_file: Option<&Path>) -> Command {
         let mut command = Command::new("git");
         command
             .args(args)
@@ -340,7 +363,7 @@ impl GitSnapshotService {
 
     async fn run_git(&self, args: &[&str], index_file: Option<&Path>) -> Result<String> {
         let output = self
-            .git_command(args, index_file)
+            .cancellable_git_command(args, index_file)
             .output()
             .await
             .with_context(|| {
@@ -465,6 +488,59 @@ fn pin_ref_prefix(worktree_id: &WorktreeId) -> String {
 
 fn pin_ref_name(worktree_id: &WorktreeId, tree: &TreeId) -> String {
     format!("{REF_NAMESPACE}/{}/{}", worktree_id.0, tree.0)
+}
+
+fn run_ref_mutation_blocking(
+    repository_root: &Path,
+    git_dir: &Path,
+    args: &[String],
+    stdin: Option<&[u8]>,
+) -> Result<String> {
+    let mut command = std::process::Command::new("git");
+    command
+        .args(args)
+        .current_dir(repository_root)
+        .env("GIT_DIR", git_dir);
+
+    let output = match stdin {
+        None => command.output().with_context(|| {
+            format!(
+                "Failed to run git command {args:?} in '{}'",
+                repository_root.display()
+            )
+        })?,
+        Some(payload) => {
+            let mut child = command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .with_context(|| {
+                    format!(
+                        "Failed to run git command {args:?} in '{}'",
+                        repository_root.display()
+                    )
+                })?;
+
+            let write_result = match child.stdin.take() {
+                Some(mut child_stdin) => child_stdin.write_all(payload),
+                None => Err(std::io::Error::other("child stdin was not piped")),
+            };
+            let output = child.wait_with_output();
+
+            write_result.with_context(|| format!("Failed to write stdin to git {args:?}"))?;
+            output.with_context(|| format!("Failed to wait for git {args:?}"))?
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if stderr.is_empty() { stdout } else { stderr };
+        return Err(anyhow!("git {args:?} failed: {detail}"));
+    }
+
+    String::from_utf8(output.stdout).with_context(|| format!("git {args:?} emitted invalid UTF-8"))
 }
 
 pub(crate) async fn resolve_git_dir(repository_root: &Path) -> Result<PathBuf> {
@@ -611,9 +687,14 @@ impl Drop for TempIndexGuard {
 mod tests {
     use std::path::Path;
     use std::process::Command;
+    use std::time::Duration;
 
+    use super::super::worktree_lock::{WorktreeLock, WorktreeLockError};
     use super::{resolve_git_dir, resolve_worktree_id, GitSnapshotService, PinnedRef};
     use crate::services::mutation_trace::types::WorktreeId;
+
+    const LOCK_CONTENDED_TIMEOUT: Duration = Duration::from_millis(300);
+    const LOCK_RELEASE_TIMEOUT: Duration = Duration::from_secs(10);
 
     fn git(cwd: &Path, args: &[&str]) {
         let output = Command::new("git")
@@ -660,8 +741,13 @@ mod tests {
             Some("untracked\n".to_string())
         );
 
+        let git_dir = resolve_git_dir(&repo_root).await.expect("git dir");
+        let lock = WorktreeLock::acquire_async(&git_dir, LOCK_RELEASE_TIMEOUT)
+            .await
+            .expect("worktree lock");
+
         snapshot
-            .pin_tree(&worktree_id, &tree)
+            .pin_tree(lock.lease(), &worktree_id, &tree)
             .await
             .expect("pin tree");
         let pins = snapshot.list_pins(&worktree_id).await.expect("list pins");
@@ -673,7 +759,98 @@ mod tests {
             }]
         );
 
-        snapshot.delete_pins(&pins).await.expect("delete pins");
+        snapshot
+            .delete_pins(lock.lease(), &pins)
+            .await
+            .expect("delete pins");
+        assert!(snapshot
+            .list_pins(&worktree_id)
+            .await
+            .expect("list pins after delete")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelled_pin_keeps_worktree_lock_until_git_ref_mutation_completes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repo_root = dir.path().join("repo");
+        init_committed_repository(&repo_root);
+        std::fs::write(repo_root.join("untracked.txt"), "untracked\n").expect("write file");
+
+        let git_dir = resolve_git_dir(&repo_root).await.expect("git dir");
+        let worktree_id = WorktreeId("main".to_string());
+        let snapshot = GitSnapshotService::new(&repo_root)
+            .await
+            .expect("snapshot service");
+        let tree = snapshot.capture_tree().await.expect("capture tree");
+        let pin_ref = format!("refs/sce/mutation-cursor/main/{}", tree.0);
+
+        let lock_a = WorktreeLock::acquire_async(&git_dir, LOCK_RELEASE_TIMEOUT)
+            .await
+            .expect("worktree lock A");
+        let lease = lock_a.lease();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+
+        let caller = tokio::spawn({
+            let repo_root = repo_root.clone();
+            let worktree_id = worktree_id.clone();
+            let tree = tree.clone();
+            async move {
+                let _lock_a = lock_a;
+                let snapshot = GitSnapshotService::new(&repo_root)
+                    .await
+                    .expect("caller snapshot service");
+                snapshot
+                    .pin_tree_inner(lease, &worktree_id, &tree, move || {
+                        entered_tx.send(()).expect("signal worker entered");
+                        release_rx.recv().expect("release worker");
+                    })
+                    .await
+            }
+        });
+
+        entered_rx.await.expect("ref mutation worker entered");
+        caller.abort();
+        assert!(caller
+            .await
+            .expect_err("caller must be cancelled")
+            .is_cancelled());
+
+        assert!(matches!(
+            WorktreeLock::acquire_async(&git_dir, LOCK_CONTENDED_TIMEOUT).await,
+            Err(WorktreeLockError::TimedOut { .. })
+        ));
+        assert!(snapshot
+            .list_pins(&worktree_id)
+            .await
+            .expect("list pins before release")
+            .is_empty());
+
+        release_tx.send(()).expect("release worker");
+
+        let lock_b = WorktreeLock::acquire_async(&git_dir, LOCK_RELEASE_TIMEOUT)
+            .await
+            .expect("worktree lock B after the ref mutation completes");
+        let pins = snapshot.list_pins(&worktree_id).await.expect("list pins");
+        assert_eq!(
+            pins,
+            vec![PinnedRef {
+                ref_name: pin_ref.clone(),
+                tree: tree.clone(),
+            }]
+        );
+        assert!(!git_dir.join(format!("{pin_ref}.lock")).exists());
+        assert!(!git_dir.join("packed-refs.lock").exists());
+
+        git(
+            &repo_root,
+            &["update-ref", "refs/sce-test/after-cancelled-pin", "HEAD"],
+        );
+        snapshot
+            .delete_pins(lock_b.lease(), &pins)
+            .await
+            .expect("delete pins after cancelled pin");
         assert!(snapshot
             .list_pins(&worktree_id)
             .await
