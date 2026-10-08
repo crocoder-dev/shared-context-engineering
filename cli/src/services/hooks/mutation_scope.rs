@@ -6,8 +6,9 @@ use serde_json::{json, Map, Value};
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::mutation_trace::runtime::{
-    abandon_scope, arm_external_mutation_guard, coordinate, AbandonScopeError, AbandonScopeOutcome,
-    CoordinateError, CoordinateOutcome, GuardEvent, GuardRequest, RuntimeBoundary, StartProvenance,
+    abandon_scope, advise_after_completed_boundary, arm_external_mutation_guard, coordinate,
+    AbandonScopeError, AbandonScopeOutcome, AdvisoryReport, AdvisorySeverity, CoordinateError,
+    CoordinateOutcome, GuardEvent, GuardRequest, RuntimeBoundary, StartProvenance,
 };
 use crate::services::mutation_trace::types::{ActorKind, EventId, ScopeId};
 
@@ -296,18 +297,21 @@ where
             })
             .await
         },
+        advise_after_completed_boundary,
     )
     .await
 }
 
-async fn drive_mutation_scope<L: crate::services::observability::traits::Logger, C, A>(
+async fn drive_mutation_scope<L: crate::services::observability::traits::Logger, C, A, V>(
     repository_root: &Path,
     payload: MutationScopePayload,
     logger: Option<&L>,
     coordinate_boundary: C,
     abandon: A,
+    advise: V,
 ) -> Result<String>
 where
+    V: FnOnce(&Path) -> AdvisoryReport,
     C: std::ops::AsyncFnOnce(
         &Path,
         &RuntimeBoundary,
@@ -353,10 +357,53 @@ where
         }
     };
 
-    classify_coordinate(
-        coordinate_boundary(repository_root, &boundary).await,
-        logger,
-    )
+    let advisory_eligible = matches!(
+        boundary,
+        RuntimeBoundary::Close { .. } | RuntimeBoundary::Flush
+    );
+    let result = coordinate_boundary(repository_root, &boundary).await;
+    let durably_completed = matches!(
+        result,
+        Ok(_) | Err(CoordinateError::MarkerClearAfterCommit { .. })
+    );
+    let classified = classify_coordinate(result, logger);
+
+    if advisory_eligible && durably_completed {
+        log_advisory_report(logger, &advise(repository_root));
+    }
+
+    classified
+}
+
+fn log_advisory_report<L: crate::services::observability::traits::Logger>(
+    logger: Option<&L>,
+    report: &AdvisoryReport,
+) {
+    let Some(log) = logger else {
+        return;
+    };
+    let message = report
+        .recommendation
+        .unwrap_or("Reconciliation advisory check.");
+    let warning = report.warning.as_deref().unwrap_or("");
+    let mut fields = vec![("outcome", report.outcome)];
+    if !warning.is_empty() {
+        fields.push(("persistence_warning", warning));
+    }
+    match report.severity {
+        AdvisorySeverity::Warn => log.warn(
+            "sce.hooks.mutation_scope.ref_reconciliation_advisory",
+            message,
+            &fields,
+            None,
+        ),
+        AdvisorySeverity::Debug => log.debug(
+            "sce.hooks.mutation_scope.ref_reconciliation_advisory",
+            message,
+            &fields,
+            None,
+        ),
+    }
 }
 
 fn classify_coordinate<L: crate::services::observability::traits::Logger>(
@@ -633,4 +680,148 @@ fn write_guard_event<W: Write>(writer: &mut W, event: &GuardEvent) -> std::io::R
 fn write_guard_line<W: Write>(writer: &mut W, line: &str) -> std::io::Result<()> {
     writeln!(writer, "{line}")?;
     writer.flush()
+}
+
+#[cfg(test)]
+mod advisory_trigger_tests {
+    use std::cell::Cell;
+    use std::path::Path;
+
+    use anyhow::anyhow;
+
+    use super::{
+        drive_mutation_scope, AbandonScopeError, AbandonScopeOutcome, AdvisoryReport,
+        AdvisorySeverity, CoordinateError, CoordinateOutcome, MutationScopePayload,
+        RuntimeBoundary,
+    };
+    use crate::services::mutation_trace::protocol::CommitEvaluation;
+    use crate::services::mutation_trace::types::{ActorKind, ScopeId, TreeId, WorktreeId};
+    use crate::services::observability::traits::NoopLogger;
+
+    fn outcome() -> CoordinateOutcome {
+        CoordinateOutcome {
+            worktree_id: WorktreeId("main".to_string()),
+            observed_tree: TreeId("tree".to_string()),
+            revision: 1,
+            evaluation: CommitEvaluation::default(),
+            mutation_event: None,
+        }
+    }
+
+    fn report(outcome: &'static str, severity: AdvisorySeverity) -> AdvisoryReport {
+        AdvisoryReport {
+            outcome,
+            severity,
+            recommendation: None,
+            warning: None,
+        }
+    }
+
+    fn close() -> MutationScopePayload {
+        MutationScopePayload::Close {
+            scope_id: "scope".to_string(),
+            event_id: "event".to_string(),
+            actor_kind: ActorKind::Codex,
+        }
+    }
+
+    fn start() -> MutationScopePayload {
+        MutationScopePayload::Start {
+            scope_id: "scope".to_string(),
+            event_id: "event".to_string(),
+            actor_kind: ActorKind::Codex,
+            provenance: None,
+        }
+    }
+
+    fn advance() -> MutationScopePayload {
+        MutationScopePayload::Advance {
+            scope_id: "scope".to_string(),
+            event_id: "event".to_string(),
+            actor_kind: ActorKind::Codex,
+        }
+    }
+
+    async fn drive(
+        payload: MutationScopePayload,
+        coordinated: Result<CoordinateOutcome, CoordinateError>,
+        calls: &Cell<u32>,
+    ) -> anyhow::Result<String> {
+        drive_mutation_scope(
+            Path::new("."),
+            payload,
+            None::<&NoopLogger>,
+            async |_root: &Path, _boundary: &RuntimeBoundary| coordinated,
+            async |_root: &Path,
+                   _scope: &ScopeId|
+                   -> Result<AbandonScopeOutcome, AbandonScopeError> {
+                Ok(AbandonScopeOutcome::Abandoned {
+                    worktree_id: WorktreeId("main".to_string()),
+                    scope: ScopeId("scope".to_string()),
+                    revision: 1,
+                })
+            },
+            |_root: &Path| {
+                calls.set(calls.get() + 1);
+                report("no_action", AdvisorySeverity::Debug)
+            },
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn advisory_runs_once_after_completed_close_and_flush() {
+        let calls = Cell::new(0);
+        assert_eq!(drive(close(), Ok(outcome()), &calls).await.unwrap(), "");
+        assert_eq!(calls.get(), 1);
+        assert_eq!(
+            drive(MutationScopePayload::Flush, Ok(outcome()), &calls)
+                .await
+                .unwrap(),
+            ""
+        );
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[tokio::test]
+    async fn advisory_runs_after_marker_clear_after_commit_with_success_result() {
+        let calls = Cell::new(0);
+        let error = CoordinateError::MarkerClearAfterCommit {
+            source: anyhow!("clear failed"),
+            committed: Box::new(outcome()),
+        };
+        assert_eq!(drive(close(), Err(error), &calls).await.unwrap(), "");
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn advisory_never_runs_for_start_or_advance() {
+        let calls = Cell::new(0);
+        drive(start(), Ok(outcome()), &calls).await.unwrap();
+        drive(advance(), Ok(outcome()), &calls).await.unwrap();
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn advisory_never_runs_after_failed_coordinate() {
+        let calls = Cell::new(0);
+        let result = drive(
+            close(),
+            Err(CoordinateError::Other(anyhow!("boom"))),
+            &calls,
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn advisory_never_runs_for_abandon() {
+        let calls = Cell::new(0);
+        let payload = MutationScopePayload::Abandon {
+            scope_id: "scope".to_string(),
+        };
+        drive(payload, Ok(outcome()), &calls).await.unwrap();
+        assert_eq!(calls.get(), 0);
+    }
 }

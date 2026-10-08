@@ -53,6 +53,56 @@ impl AdvisoryOutcome {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AdvisorySeverity {
+    Debug,
+    Warn,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AdvisoryReport {
+    pub(crate) outcome: &'static str,
+    pub(crate) severity: AdvisorySeverity,
+    pub(crate) recommendation: Option<&'static str>,
+    pub(crate) warning: Option<String>,
+}
+
+impl AdvisoryOutcome {
+    pub(crate) fn report(&self) -> AdvisoryReport {
+        let (outcome, severity) = match self {
+            AdvisoryOutcome::Anchored => ("anchored", AdvisorySeverity::Debug),
+            AdvisoryOutcome::NoAction => ("no_action", AdvisorySeverity::Debug),
+            AdvisoryOutcome::Busy => ("busy", AdvisorySeverity::Debug),
+            AdvisoryOutcome::Advised => ("advised", AdvisorySeverity::Warn),
+            AdvisoryOutcome::AdvisedDurabilityUncertain { .. } => {
+                ("advised_durability_uncertain", AdvisorySeverity::Warn)
+            }
+            AdvisoryOutcome::StateWriteFailed { .. } => {
+                ("state_write_failed", AdvisorySeverity::Warn)
+            }
+            AdvisoryOutcome::StateUnavailable => ("state_unavailable", AdvisorySeverity::Warn),
+        };
+        AdvisoryReport {
+            outcome,
+            severity,
+            recommendation: self.recommendation(),
+            warning: self.persistence_warning().map(ToString::to_string),
+        }
+    }
+}
+
+fn system_unix_time_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
+        .unwrap_or(0)
+}
+
+pub(crate) fn advise_after_completed_boundary(repository_root: &Path) -> AdvisoryReport {
+    advise_if_due(repository_root, system_unix_time_ms).report()
+}
+
 fn outcome_after_write(
     decision: AdvisoryDecision,
     write: Result<(), PersistFailure>,
