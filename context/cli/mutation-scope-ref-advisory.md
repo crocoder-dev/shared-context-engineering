@@ -38,8 +38,16 @@ writer. Stdout stays empty and never carries advisory text.
 | `Busy` | debug | none |
 | `Advised` | warn | `SCE: Reconciliation is recommended. Run sce doctor --fix.` |
 | `AdvisedDurabilityUncertain` | warn, with `persistence_warning` | the line above, then `SCE: Advisory-state durability could not be confirmed: <warning>.` |
-| `StateWriteFailed` | warn, with `persistence_warning` | `SCE: Reconciliation advisory state could not be written: <warning>. Run sce doctor to check reconciliation status.` (does not claim advice was persisted) |
+| `StateWriteFailed` + `NotApplied` | warn, with `persistence_warning` | `SCE: Reconciliation advisory state could not be written: <warning>. Run sce doctor to check reconciliation status.` (replacement did not occur; previous state preserved; no advice) |
+| `StateWriteFailed` + `DurabilityUncertain` | warn, with `persistence_warning` | `SCE: Reconciliation advisory-state durability could not be confirmed: <warning>. Run sce doctor to check reconciliation status.` (anchor or normalization write; replacement occurred, new state may be visible, crash durability unconfirmed; no advice) |
 | `StateUnavailable` | warn | `SCE: Reconciliation advisory state is unavailable. Run sce doctor to check reconciliation status.` |
+
+`StateWriteFailed` means no confirmed successful advisory-state update, not
+necessarily that atomic replacement failed; it carries the `PersistFailure` so the
+two phases stay distinguishable. `AdvisedDurabilityUncertain` is reserved for a
+due recommendation whose advice-state replacement occurred with uncertain
+durability (the recommendation is still emitted). `StateUnavailable` means the
+state could not be accessed or evaluated and is not a persistence-write outcome.
 
 The diagnostic does not depend on the logger (it is emitted with `logger = None`),
 and `Logger::warn` and the observability defaults are unchanged: observability
