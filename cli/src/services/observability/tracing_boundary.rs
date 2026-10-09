@@ -8,6 +8,9 @@ use tracing_subscriber::{Layer, Registry};
 
 use crate::services::config::LogLevel;
 use crate::services::error::{CliError, FailureClass};
+use crate::services::observability::otel_policy::{
+    CommandName, ErrorCategory, Outcome, OTEL_TARGET,
+};
 
 #[cfg(test)]
 mod audit;
@@ -311,6 +314,44 @@ impl ScopedDispatch {
     }
 }
 
+#[derive(Clone)]
+pub struct CommandSpan(tracing::Span);
+
+impl CommandSpan {
+    pub fn start(command: Option<CommandName>) -> Self {
+        let span = tracing::span!(
+            target: OTEL_TARGET,
+            Level::INFO,
+            "sce.command",
+            "sce.command.name" = tracing::field::Empty,
+            "sce.outcome" = tracing::field::Empty,
+            "sce.error.category" = tracing::field::Empty,
+            "otel.status_code" = tracing::field::Empty
+        );
+        if let Some(command) = command {
+            span.record("sce.command.name", command.as_str());
+        }
+        Self(span)
+    }
+
+    pub fn scope<F: Future>(&self, future: F) -> impl Future<Output = F::Output> {
+        future.instrument(self.0.clone())
+    }
+
+    pub fn finish(&self, failure: Option<ErrorCategory>) {
+        match failure {
+            None => {
+                self.0.record("sce.outcome", Outcome::Success.as_str());
+            }
+            Some(category) => {
+                self.0.record("sce.outcome", Outcome::Failure.as_str());
+                self.0.record("sce.error.category", category.as_str());
+                self.0.record("otel.status_code", "error");
+            }
+        }
+    }
+}
+
 pub fn spawn_in_current_scope<F>(future: F) -> tokio::task::JoinHandle<F::Output>
 where
     F: Future + Send + 'static,
@@ -428,6 +469,7 @@ pub(crate) mod test_spans {
     use tracing::instrument::Instrument;
     use tracing::Level;
 
+    use crate::services::config::LogLevel;
     use crate::services::observability::otel_policy::{OtelName, OTEL_TARGET};
 
     pub fn in_otel_span<F: Future>(name: OtelName, future: F) -> impl Future<Output = F::Output> {
@@ -476,6 +518,22 @@ pub(crate) mod test_spans {
         drop(tracing::span!(target: OTEL_TARGET, Level::INFO, "sce.command", "otel.name" = secret));
         drop(tracing::span!(target: "sce", Level::INFO, "sce.command", "sce.outcome" = "success"));
         drop(tracing::span!(target: "sce::services::other", Level::INFO, "sce.command"));
+    }
+
+    pub fn emit_target_matrix() {
+        drop(
+            tracing::span!(target: OTEL_TARGET, Level::INFO, "sce.command", "sce.outcome" = "success"),
+        );
+        drop(tracing::span!(target: "sce", Level::INFO, "sce.command", "sce.outcome" = "failure"));
+        drop(
+            tracing::span!(target: "sce::services::other", Level::INFO, "sce.command", "sce.outcome" = "timeout"),
+        );
+        drop(
+            tracing::span!(target: OTEL_TARGET, Level::INFO, "sce.not_enumerated", "sce.outcome" = "cancelled"),
+        );
+        tracing::event!(target: "sce", Level::INFO, event_id = "sce.command", "sce.command");
+        tracing::event!(target: OTEL_TARGET, Level::INFO, event_id = "sce.command", "sce.command");
+        super::emit_logger_event(LogLevel::Info, super::EventId::classify("sce.app.start"));
     }
 
     pub fn thread_default_is_none() -> bool {

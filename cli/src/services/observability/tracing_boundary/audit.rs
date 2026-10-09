@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::{fs, path::Path};
 
+use crate::services::observability::otel_policy::OtelName;
 use proc_macro2::{TokenStream, TokenTree};
 use syn::visit::{self, Visit};
 use syn::{
@@ -19,6 +20,15 @@ const BOUNDARY_ALLOWED_USES: [&str; 4] = [
     "tracing::instrument::WithSubscriber",
 ];
 const TARGET_CONSTANT: &str = "SCE_TRACING_TARGET";
+const SPAN_TARGET_TOKENS: &str = "target:OTEL_TARGET";
+const SPAN_LEVEL_TOKENS: &str = "Level::INFO";
+const SPAN_EMPTY_VALUE_TOKENS: &str = "tracing::field::Empty";
+const SPAN_FIELDS: [&str; 4] = [
+    "sce.command.name",
+    "sce.outcome",
+    "sce.error.category",
+    "otel.status_code",
+];
 const APPROVED_CONSTANTS: [&str; 1] = ["CONTENTION_EXHAUSTED_CAUSE"];
 const NUMERIC_TYPES: [&str; 2] = ["u32", "u64"];
 const CLOSED_TYPES: [&str; 4] = ["LogLevel", "EventId", "OperationClass", "DbName"];
@@ -276,10 +286,44 @@ impl Audit {
         }
         match last {
             "enabled" => {}
+            "span" => self.check_boundary_span(tokens),
             name if BOUNDARY_EVENT_MACROS.contains(&name) => {
                 self.check_boundary_event(name, tokens);
             }
             _ => self.violation(&format!("`tracing::{last}!` is not permitted")),
+        }
+    }
+
+    fn check_boundary_span(&mut self, tokens: &TokenStream) {
+        if self.scopes.last().is_none() {
+            self.violation("`span!` outside a function");
+            return;
+        }
+        let segments = split_arguments(tokens);
+        let render =
+            |trees: &[TokenTree]| trees.iter().map(ToString::to_string).collect::<String>();
+        let name_is_enumerated = segments.get(2).is_some_and(|name| {
+            syn::parse2::<syn::LitStr>(name.iter().cloned().collect())
+                .is_ok_and(|literal| OtelName::parse(&literal.value()).is_some())
+        });
+        let head_is_typed = segments.len() >= 3
+            && render(&segments[0]) == SPAN_TARGET_TOKENS
+            && render(&segments[1]) == SPAN_LEVEL_TOKENS
+            && name_is_enumerated;
+        if !head_is_typed {
+            self.violation("`tracing::span!` must use the `OTEL_TARGET`, `Level::INFO` and an enumerated span name");
+            return;
+        }
+        for field in &segments[3..] {
+            let rendered = render(field);
+            let allowed = rendered
+                .strip_suffix(SPAN_EMPTY_VALUE_TOKENS)
+                .and_then(|key| key.strip_suffix('='))
+                .map(|key| key.trim_matches('"'))
+                .is_some_and(|key| SPAN_FIELDS.contains(&key));
+            if !allowed {
+                self.violation(&format!("`tracing::span!` field `{rendered}` must be an allowlisted key recorded as `Empty`"));
+            }
         }
     }
 
@@ -737,4 +781,34 @@ fn tracing_boundary_a_audit_rejects_non_constant_target_and_missing_static_messa
         const FN_FREE: () = { tracing::warn!("x"); };
     "#;
     assert!(violations(source, Zone::Trusted).len() >= 5);
+}
+
+#[test]
+fn tracing_boundary_a_audit_accepts_only_typed_otel_span_in_the_boundary() {
+    let conforming = r#"
+        pub fn start() {
+            let _ = tracing::span!(
+                target: OTEL_TARGET,
+                Level::INFO,
+                "sce.command",
+                "sce.outcome" = tracing::field::Empty,
+                "otel.status_code" = tracing::field::Empty
+            );
+        }
+    "#;
+    assert!(violations(conforming, Zone::Trusted).is_empty());
+    assert!(!violations(conforming, Zone::Untrusted).is_empty());
+
+    for rejected in [
+        r#"pub fn s(v: &str) { let _ = tracing::span!(target: OTEL_TARGET, Level::INFO, "sce.command", "sce.outcome" = v); }"#,
+        r#"pub fn s() { let _ = tracing::span!(target: "sce", Level::INFO, "sce.command"); }"#,
+        r#"pub fn s() { let _ = tracing::span!(target: OTEL_TARGET, Level::INFO, "sce.arbitrary"); }"#,
+        r#"pub fn s() { let _ = tracing::span!(target: OTEL_TARGET, Level::INFO, "sce.command", "password" = tracing::field::Empty); }"#,
+        r#"pub fn s() { let _ = tracing::span!(target: OTEL_TARGET, Level::DEBUG, "sce.command"); }"#,
+    ] {
+        assert!(
+            !violations(rejected, Zone::Trusted).is_empty(),
+            "{rejected}"
+        );
+    }
 }

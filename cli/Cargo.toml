@@ -25,6 +25,9 @@ categories = ["command-line-utilities", "development-tools"]
 name = "sce"
 path = "src/main.rs"
 
+[features]
+telemetry-test-receiver = []
+
 [dependencies]
 anyhow = "1"
 chrono = "0.4"

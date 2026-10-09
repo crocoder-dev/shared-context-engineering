@@ -5,7 +5,7 @@ mod commit_hooks;
 mod conversation_trace;
 mod diff_trace;
 
-mod mutation_scope_lock;
+pub(crate) mod mutation_scope_lock;
 
 mod runtime;
 

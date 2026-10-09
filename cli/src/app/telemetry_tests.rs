@@ -8,12 +8,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::*;
+use opentelemetry::trace::{SpanId, Status};
 use services::command_registry::build_default_registry;
 use services::observability::otel_policy::OtelName;
+use services::observability::otel_runtime::test_support::{attributes, Capture};
 use services::observability::otel_runtime::{
-    resolve_telemetry_mode, RuntimeTelemetry, TelemetryMode, SCE_TELEMETRY_ENV,
+    provider_with_exporter, resolve_telemetry_mode, OtelTelemetry, RuntimeTelemetry,
+    ShutdownOutcome, TelemetryMode, SCE_TELEMETRY_ENV,
 };
 use services::observability::tracing_boundary::test_spans::in_otel_span;
+use services::observability::traits::NoopLogger;
 use services::parse::command_runtime::parse_runtime_command;
 
 const CHILD_MARKER: &str = "SCE_TELEMETRY_TEST_CHILD";
@@ -423,4 +427,128 @@ fn telemetry_hook_export_gated_unreachable_receiver_preserves_hook_behavior() {
         );
     }
     assert_eq!(blackhole.connections(), 0);
+}
+
+async fn lifecycle_spans(
+    args: &[&str],
+) -> (
+    Result<String, CliError>,
+    Vec<opentelemetry_sdk::trace::SpanData>,
+) {
+    let capture = Capture::default();
+    let telemetry = OtelTelemetry::from_provider_with_budget(
+        provider_with_exporter(capture.clone()),
+        Duration::from_secs(5),
+    );
+    let registry = build_default_registry();
+    let mut stderr = Vec::new();
+    let result = {
+        let context = AppContext::new(
+            &NoopLogger,
+            &telemetry,
+            &services::capabilities::StdFsOps,
+            &services::capabilities::ProcessGitOps,
+            None,
+        );
+        Box::pin(run_command_lifecycle_with_context(
+            args.iter().map(|arg| (*arg).to_string()),
+            &registry,
+            &context,
+            &mut stderr,
+        ))
+        .await
+    };
+    assert_eq!(telemetry.shutdown().await, ShutdownOutcome::Completed);
+    assert_eq!(capture.shutdown_calls(), 1);
+    assert_eq!(capture.exports_after_shutdown(), 0);
+    (result, capture.spans())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn telemetry_command_span_success_records_one_root_with_typed_attributes() {
+    let (result, spans) = lifecycle_spans(&["sce", "version"]).await;
+    assert!(result.is_ok());
+    assert_eq!(spans.len(), 1, "{spans:?}");
+    let span = &spans[0];
+    assert_eq!(span.name, "sce.command");
+    assert_eq!(span.parent_span_id, SpanId::INVALID);
+    assert_ne!(
+        span.span_context.trace_id(),
+        opentelemetry::trace::TraceId::INVALID
+    );
+    assert_eq!(
+        attributes(span),
+        vec![
+            ("sce.command.name".to_string(), "version".to_string()),
+            ("sce.outcome".to_string(), "success".to_string()),
+        ]
+    );
+    assert_eq!(span.status, Status::Unset);
+    assert!(span.events.is_empty());
+    assert!(span.links.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn telemetry_command_span_failure_records_category_without_error_text() {
+    let (result, spans) = lifecycle_spans(&[
+        "sce",
+        "config",
+        "validate",
+        "--config",
+        "/nonexistent-SECRETPATH-sce-config.json",
+    ])
+    .await;
+    assert_eq!(
+        result.unwrap_err().class(),
+        services::error::FailureClass::Runtime
+    );
+    assert_eq!(spans.len(), 1, "{spans:?}");
+    let span = &spans[0];
+    assert_eq!(
+        attributes(span),
+        vec![
+            ("sce.command.name".to_string(), "config".to_string()),
+            ("sce.error.category".to_string(), "runtime".to_string()),
+            ("sce.outcome".to_string(), "failure".to_string()),
+        ]
+    );
+    assert_eq!(span.status, Status::error(""));
+    assert!(span.events.is_empty());
+    let rendered = format!("{spans:?}");
+    for leaked in [
+        "SECRETPATH",
+        "nonexistent",
+        "No such file",
+        "stack",
+        "exception",
+    ] {
+        assert!(!rendered.contains(leaked), "{leaked}: {rendered}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn telemetry_command_span_is_not_emitted_when_parsing_fails() {
+    let (result, spans) = lifecycle_spans(&["sce", "--invalid-boundary-option"]).await;
+    assert_eq!(
+        result.unwrap_err().class(),
+        services::error::FailureClass::Parse
+    );
+    assert!(spans.is_empty(), "{spans:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn telemetry_command_span_dispatches_once_per_command_across_commands() {
+    for args in [&["sce", "help"][..], &["sce", "version"][..]] {
+        let (result, spans) = lifecycle_spans(args).await;
+        assert!(result.is_ok(), "{args:?}");
+        assert_eq!(
+            spans
+                .iter()
+                .filter(|span| span.name == "sce.command")
+                .count(),
+            1,
+            "{args:?}"
+        );
+        assert_eq!(spans.len(), 1, "{args:?}");
+    }
 }

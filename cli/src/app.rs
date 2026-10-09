@@ -5,7 +5,10 @@ use std::process::ExitCode;
 use crate::services;
 use services::app_support::{self, RunOutcome};
 use services::error::CliError;
+use services::observability::otel_policy::{CommandName, ErrorCategory};
+use services::observability::otel_runtime::lifecycle_markers::{mark, LifecycleMarker};
 use services::observability::otel_runtime::{select_runtime_telemetry, RuntimeTelemetry};
+use services::observability::tracing_boundary::CommandSpan;
 use services::observability::traits::{Logger as LoggerTrait, Telemetry as TelemetryTrait};
 
 const REPEATED_COMMAND_DISPATCH_ERROR: &str =
@@ -235,18 +238,25 @@ where
     StdoutW: Write,
     StderrW: Write,
 {
-    app_support::render_run_outcome(
-        try_run_with_dependency_check(args, dependency_check, stderr).await,
-        stdout,
-        stderr,
-    )
+    let (outcome, telemetry) = try_run_with_dependency_check(args, dependency_check, stderr).await;
+    let code = app_support::render_run_outcome(outcome, stdout, stderr);
+    let _ = stdout.flush();
+    let _ = stderr.flush();
+    mark(LifecycleMarker::ShutdownBegin);
+    telemetry.shutdown().await;
+    mark(LifecycleMarker::ShutdownEnd);
+    mark(LifecycleMarker::ProcessExitRequested);
+    code
 }
 
 async fn try_run_with_dependency_check<I, F, StderrW>(
     args: I,
     dependency_check: F,
     stderr: &mut StderrW,
-) -> RunOutcome<services::observability::Logger>
+) -> (
+    RunOutcome<services::observability::Logger>,
+    RuntimeTelemetry,
+)
 where
     I: IntoIterator<Item = String>,
     F: FnOnce() -> anyhow::Result<()>,
@@ -262,17 +272,24 @@ where
             runtime.telemetry = select_runtime_telemetry(&args, &runtime.registry, &process_env);
             let startup_diagnostic = runtime.startup_diagnostic.clone();
             let result = run_command_lifecycle(args, &runtime, stderr).await;
-            RunOutcome {
-                logger: Some(runtime.logger),
-                startup_diagnostic,
-                result,
-            }
+            mark(LifecycleMarker::CommandComplete);
+            (
+                RunOutcome {
+                    logger: Some(runtime.logger),
+                    startup_diagnostic,
+                    result,
+                },
+                runtime.telemetry,
+            )
         }
-        Err(error) => RunOutcome {
-            result: Err(error),
-            logger: None,
-            startup_diagnostic: None,
-        },
+        Err(error) => (
+            RunOutcome {
+                result: Err(error),
+                logger: None,
+                startup_diagnostic: None,
+            },
+            RuntimeTelemetry::disabled(),
+        ),
     }
 }
 
@@ -365,7 +382,19 @@ where
                     )));
                 };
                 let command = parse_command_phase(command_args, registry, context)?;
-                app_support::execute_command_phase(&command, context, stderr).await
+                let span = CommandSpan::start(CommandName::parse(command.name().as_ref()));
+                let result = span
+                    .scope(app_support::execute_command_phase(
+                        &command, context, stderr,
+                    ))
+                    .await;
+                span.finish(
+                    result
+                        .as_ref()
+                        .err()
+                        .map(|error| ErrorCategory::from(error.class())),
+                );
+                result
             }
         })
         .await

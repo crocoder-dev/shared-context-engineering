@@ -390,6 +390,110 @@
 
         cargoArtifacts = craneLib.buildDepsOnly cargoDepsArgs;
 
+        telemetryCountScript = ./scripts/check-cargo-test-count.sh;
+
+        mkCountedCargoTestPass =
+          {
+            pname,
+            featureArgs,
+            passes,
+          }:
+          craneLib.mkCargoDerivation (
+            commonCargoArgs
+            // {
+              inherit pname cargoArtifacts;
+              pnameSuffix = "";
+              doCheck = true;
+              buildPhaseCargoCommand = "";
+              nativeCheckInputs = [ pkgs.git ];
+              checkPhaseCargoCommand = ''
+                export CARGO_PROFILE="''${CARGO_PROFILE:-}"
+                export -f cargoWithProfile
+              ''
+              + pkgs.lib.concatMapStringsSep "\n" (
+                pass:
+                "bash ${telemetryCountScript} ${toString pass.minimum} cargoWithProfile test --locked ${featureArgs} ${pass.filter}"
+              ) passes;
+            }
+          );
+
+        telemetryDefaultFeaturePasses = [
+          { filter = "tracing_boundary_a"; minimum = 23; }
+          { filter = "tracing_boundary_b"; minimum = 17; }
+          { filter = "telemetry_async_scope"; minimum = 5; }
+          { filter = "telemetry_hook_export_gated"; minimum = 5; }
+          { filter = "telemetry_shutdown"; minimum = 4; }
+          { filter = "telemetry_command_span"; minimum = 4; }
+          { filter = "telemetry_exporter_cannot_block_locks"; minimum = 1; }
+          { filter = "telemetry_test_receiver_inert"; minimum = 1; }
+          { filter = "telemetry_offline_parity"; minimum = 4; }
+          { filter = "telemetry_disabled_baseline"; minimum = 2; }
+          { filter = "sce_command_span"; minimum = 2; }
+        ];
+
+        telemetryTestReceiverPasses = [
+          { filter = "telemetry_test_receiver"; minimum = 8; }
+          { filter = "telemetry_hook_export_gated"; minimum = 6; }
+          { filter = "telemetry_shutdown_subprocess"; minimum = 5; }
+          { filter = "telemetry_exporter_cannot_block_locks"; minimum = 1; }
+        ];
+
+        cargoTestCountGuardCheck = pkgs.runCommand "cargo-test-count-guard" { } ''
+          set -euo pipefail
+          cp ${./scripts/check-cargo-test-count.sh} ./check-cargo-test-count.sh
+          cp ${./scripts/test-check-cargo-test-count.sh} ./test-check-cargo-test-count.sh
+          chmod +x ./check-cargo-test-count.sh ./test-check-cargo-test-count.sh
+          ${pkgs.bash}/bin/bash ./test-check-cargo-test-count.sh
+          mkdir -p "$out"
+        '';
+
+        packagedBinaryTestReceiverExclusionCheck =
+          pkgs.runCommand "packaged-binary-excludes-test-receiver"
+            {
+              nativeBuildInputs = [ pkgs.python3 pkgs.gnugrep ];
+            }
+            ''
+              set -euo pipefail
+              binary=${scePackage}/bin/sce
+
+              for marker in \
+                SCE_TELEMETRY_TEST_RECEIVER_ENDPOINT \
+                SCE_TELEMETRY_TEST_LIFECYCLE_FILE; do
+                if grep -aq "$marker" "$binary"; then
+                  echo "packaged-binary-excludes-test-receiver: $marker is compiled into .#default" >&2
+                  exit 1
+                fi
+              done
+
+              export HOME="$TMPDIR/home"
+              mkdir -p "$HOME"
+              python3 - "$binary" <<'PY'
+              import os, socket, subprocess, sys
+              listener = socket.socket()
+              listener.bind(("127.0.0.1", 0))
+              listener.listen(8)
+              listener.settimeout(0.5)
+              port = listener.getsockname()[1]
+              env = {
+                  "PATH": os.environ["PATH"],
+                  "HOME": os.environ["HOME"],
+                  "SCE_TELEMETRY": "test-receiver",
+                  "SCE_TELEMETRY_TEST_RECEIVER_ENDPOINT": f"http://127.0.0.1:{port}",
+                  "SCE_TELEMETRY_TEST_LIFECYCLE_FILE": os.path.join(os.environ["HOME"], "lifecycle"),
+              }
+              result = subprocess.run([sys.argv[1], "version"], env=env, capture_output=True, timeout=30)
+              assert result.returncode == 0, result.stderr
+              try:
+                  listener.accept()
+              except socket.timeout:
+                  pass
+              else:
+                  raise SystemExit("packaged .#default connected to the D6 loopback receiver")
+              assert not os.path.exists(env["SCE_TELEMETRY_TEST_LIFECYCLE_FILE"]), "lifecycle markers written"
+              PY
+              mkdir -p "$out"
+            '';
+
         scePackage = craneLib.buildPackage (
           commonCargoArgs
           // {
@@ -1573,6 +1677,21 @@
                 nativeCheckInputs = [ pkgs.git pkgs.quint ];
               }
             );
+
+            cli-telemetry-default-features = mkCountedCargoTestPass {
+              pname = "sce-cli-telemetry-default-features";
+              featureArgs = "";
+              passes = telemetryDefaultFeaturePasses;
+            };
+
+            cli-telemetry-test-receiver = mkCountedCargoTestPass {
+              pname = "sce-cli-telemetry-test-receiver";
+              featureArgs = "--features telemetry-test-receiver";
+              passes = telemetryTestReceiverPasses;
+            };
+
+            cargo-test-count-guard = cargoTestCountGuardCheck;
+            packaged-binary-excludes-test-receiver = packagedBinaryTestReceiverExclusionCheck;
 
             cli-clippy = craneLib.cargoClippy (
               commonCargoArgs

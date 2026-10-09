@@ -1,11 +1,15 @@
 use std::future::Future;
+use std::sync::mpsc::{sync_channel, Receiver, SendError};
 use std::time::Duration;
 
 use opentelemetry::trace::{Status, TracerProvider};
 use opentelemetry::{KeyValue, Value};
-use opentelemetry_otlp::{Protocol, WithExportConfig, WithHttpConfig};
+use opentelemetry_otlp::{Protocol, RetryPolicy, WithExportConfig, WithHttpConfig};
 use opentelemetry_sdk::error::OTelSdkResult;
-use opentelemetry_sdk::trace::{SdkTracerProvider, SpanData, SpanEvents, SpanExporter, SpanLinks};
+use opentelemetry_sdk::trace::{
+    BatchConfigBuilder, BatchSpanProcessor, SdkTracerProvider, SpanData, SpanEvents, SpanExporter,
+    SpanLinks,
+};
 use opentelemetry_sdk::Resource;
 use tracing_subscriber::filter::filter_fn;
 use tracing_subscriber::Layer;
@@ -24,7 +28,40 @@ pub const STANDALONE_MODE: &str = "standalone";
 const OTLP_ENDPOINT_ENV: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
 const OTLP_TRACES_ENDPOINT_ENV: &str = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT";
 pub const SERVICE_NAME: &str = "sce";
+pub const FLUSH_TIMEOUT_ENV: &str = "SCE_TELEMETRY_FLUSH_TIMEOUT_MS";
+pub const DEFAULT_FLUSH_BUDGET: Duration = Duration::from_secs(1);
+pub const MAX_FLUSH_BUDGET: Duration = Duration::from_secs(5);
 const EXPORT_TIMEOUT: Duration = Duration::from_millis(750);
+const SHUTDOWN_THREAD_NAME: &str = "sce-otel-shutdown";
+const INIT_THREAD_NAME: &str = "sce-otel-init";
+
+#[cfg(feature = "telemetry-test-receiver")]
+pub mod test_receiver;
+
+pub mod lifecycle_markers;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BatchSettings {
+    pub queue_size: usize,
+    pub batch_size: usize,
+    pub scheduled_delay: Duration,
+}
+
+impl BatchSettings {
+    pub const PRODUCTION: Self = Self {
+        queue_size: 256,
+        batch_size: 64,
+        scheduled_delay: Duration::from_secs(2),
+    };
+}
+
+pub fn resolve_flush_budget(env: &impl Fn(&str) -> Option<String>) -> Duration {
+    let max_millis = u64::try_from(MAX_FLUSH_BUDGET.as_millis()).unwrap_or(u64::MAX);
+    env(FLUSH_TIMEOUT_ENV)
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|millis| (1..=max_millis).contains(millis))
+        .map_or(DEFAULT_FLUSH_BUDGET, Duration::from_millis)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TelemetryMode {
@@ -146,9 +183,24 @@ fn resource() -> Resource {
 }
 
 pub fn provider_with_exporter<E: SpanExporter + 'static>(exporter: E) -> SdkTracerProvider {
+    provider_with_settings(exporter, BatchSettings::PRODUCTION)
+}
+
+pub fn provider_with_settings<E: SpanExporter + 'static>(
+    exporter: E,
+    settings: BatchSettings,
+) -> SdkTracerProvider {
+    let config = BatchConfigBuilder::default()
+        .with_max_queue_size(settings.queue_size)
+        .with_max_export_batch_size(settings.batch_size)
+        .with_scheduled_delay(settings.scheduled_delay)
+        .build();
+    let processor = BatchSpanProcessor::builder(BoundaryBExporter::new(exporter))
+        .with_batch_config(config)
+        .build();
     SdkTracerProvider::builder()
         .with_resource(resource())
-        .with_batch_exporter(BoundaryBExporter::new(exporter))
+        .with_span_processor(processor)
         .build()
 }
 
@@ -178,13 +230,14 @@ fn http_client() -> anyhow::Result<reqwest::blocking::Client> {
         .map_err(Into::into)
 }
 
-fn build_standalone_provider(endpoint: Option<String>) -> anyhow::Result<SdkTracerProvider> {
+fn build_provider(traces_endpoint: Option<String>) -> anyhow::Result<SdkTracerProvider> {
     let builder = opentelemetry_otlp::SpanExporter::builder()
         .with_http()
         .with_http_client(http_client()?)
         .with_protocol(Protocol::HttpBinary)
+        .with_retry_policy(RetryPolicy::disabled())
         .with_timeout(EXPORT_TIMEOUT);
-    let exporter = match endpoint {
+    let exporter = match traces_endpoint {
         Some(endpoint) => builder.with_endpoint(endpoint),
         None => builder,
     }
@@ -192,27 +245,158 @@ fn build_standalone_provider(endpoint: Option<String>) -> anyhow::Result<SdkTrac
     Ok(provider_with_exporter(exporter))
 }
 
-pub struct OtelTelemetry {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShutdownOutcome {
+    Completed,
+    Incomplete,
+    Unavailable,
+}
+
+struct Teardown {
     dispatch: ScopedDispatch,
-    _provider: SdkTracerProvider,
+    provider: SdkTracerProvider,
+}
+
+impl Teardown {
+    /// Last-resort path when no shutdown thread can take ownership. Dropping
+    /// the final `SdkTracerProvider` reference runs the SDK's synchronous
+    /// shutdown, and `shutdown_with_timeout(Duration::ZERO)` is not guaranteed
+    /// to return immediately, so neither may run on the caller. Forgetting
+    /// skips both destructors: no SDK code runs, nothing is exported or
+    /// written, and the provider, dispatch and batch worker stay allocated
+    /// until the short-lived CLI process exits. Memory is not reclaimed before
+    /// then; the tradeoff is accepted because this path needs thread creation
+    /// or handoff to have failed.
+    fn abandon(self) {
+        std::mem::forget(self);
+    }
+}
+
+struct ShutdownWorker {
+    handoff: Receiver<Teardown>,
+    done: tokio::sync::oneshot::Sender<ShutdownOutcome>,
+    budget: Duration,
+}
+
+impl ShutdownWorker {
+    fn run(self) {
+        let outcome = match self.handoff.recv() {
+            Ok(Teardown { dispatch, provider }) => {
+                let outcome = match provider.shutdown_with_timeout(self.budget) {
+                    Ok(()) => ShutdownOutcome::Completed,
+                    Err(_) => ShutdownOutcome::Incomplete,
+                };
+                drop(dispatch);
+                drop(provider);
+                outcome
+            }
+            Err(_) => ShutdownOutcome::Unavailable,
+        };
+        let _ = self.done.send(outcome);
+    }
+}
+
+fn spawn_shutdown_thread(worker: ShutdownWorker) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name(SHUTDOWN_THREAD_NAME.to_string())
+        .spawn(move || worker.run())
+        .map(drop)
+}
+
+fn spawn_teardown<S>(
+    teardown: Teardown,
+    budget: Duration,
+    spawn_worker: S,
+) -> Option<tokio::sync::oneshot::Receiver<ShutdownOutcome>>
+where
+    S: FnOnce(ShutdownWorker) -> std::io::Result<()>,
+{
+    let (done, done_receiver) = tokio::sync::oneshot::channel();
+    let (handoff_sender, handoff) = sync_channel::<Teardown>(1);
+    let worker = ShutdownWorker {
+        handoff,
+        done,
+        budget,
+    };
+    if spawn_worker(worker).is_err() {
+        teardown.abandon();
+        return None;
+    }
+    if let Err(SendError(teardown)) = handoff_sender.send(teardown) {
+        teardown.abandon();
+        return None;
+    }
+    Some(done_receiver)
+}
+
+pub struct OtelTelemetry {
+    teardown: Option<Teardown>,
+    flush_budget: Duration,
 }
 
 impl OtelTelemetry {
-    pub fn from_provider(provider: SdkTracerProvider) -> Self {
+    pub fn from_provider_with_budget(provider: SdkTracerProvider, flush_budget: Duration) -> Self {
         Self {
-            dispatch: scoped_dispatch(&provider),
-            _provider: provider,
+            teardown: Some(Teardown {
+                dispatch: scoped_dispatch(&provider),
+                provider,
+            }),
+            flush_budget,
         }
     }
 
     pub fn standalone(env: &impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
-        let endpoint = standalone_traces_endpoint(env);
+        Self::with_endpoint(standalone_traces_endpoint(env), resolve_flush_budget(env))
+    }
+
+    pub fn with_endpoint(
+        traces_endpoint: Option<String>,
+        flush_budget: Duration,
+    ) -> anyhow::Result<Self> {
         let provider = std::thread::Builder::new()
-            .name("sce-otel-init".to_string())
-            .spawn(move || build_standalone_provider(endpoint))?
+            .name(INIT_THREAD_NAME.to_string())
+            .spawn(move || build_provider(traces_endpoint))?
             .join()
             .map_err(|_| anyhow::anyhow!("telemetry initialization panicked"))??;
-        Ok(Self::from_provider(provider))
+        Ok(Self::from_provider_with_budget(provider, flush_budget))
+    }
+
+    pub async fn shutdown(self) -> ShutdownOutcome {
+        self.shutdown_with(spawn_shutdown_thread).await
+    }
+
+    async fn shutdown_with<S>(mut self, spawn_worker: S) -> ShutdownOutcome
+    where
+        S: FnOnce(ShutdownWorker) -> std::io::Result<()>,
+    {
+        let Some(teardown) = self.teardown.take() else {
+            return ShutdownOutcome::Unavailable;
+        };
+        let budget = self.flush_budget;
+        let Some(done) = spawn_teardown(teardown, budget, spawn_worker) else {
+            return ShutdownOutcome::Unavailable;
+        };
+        match tokio::time::timeout(budget, done).await {
+            Ok(Ok(outcome)) => outcome,
+            Ok(Err(_)) | Err(_) => ShutdownOutcome::Incomplete,
+        }
+    }
+}
+
+impl OtelTelemetry {
+    fn release_with<S>(&mut self, spawn_worker: S)
+    where
+        S: FnOnce(ShutdownWorker) -> std::io::Result<()>,
+    {
+        if let Some(teardown) = self.teardown.take() {
+            drop(spawn_teardown(teardown, self.flush_budget, spawn_worker));
+        }
+    }
+}
+
+impl Drop for OtelTelemetry {
+    fn drop(&mut self) {
+        self.release_with(spawn_shutdown_thread);
     }
 }
 
@@ -222,7 +406,10 @@ impl Telemetry for OtelTelemetry {
         F: FnMut() -> Fut,
         Fut: Future<Output = Result<String, CliError>>,
     {
-        self.dispatch.scope(action()).await
+        match &self.teardown {
+            Some(teardown) => teardown.dispatch.scope(action()).await,
+            None => action().await,
+        }
     }
 }
 
@@ -234,6 +421,12 @@ pub enum RuntimeTelemetry {
 impl RuntimeTelemetry {
     pub fn disabled() -> Self {
         Self::Noop(NoopTelemetry)
+    }
+
+    pub async fn shutdown(self) {
+        if let Self::Otel(telemetry) = self {
+            telemetry.shutdown().await;
+        }
     }
 }
 
@@ -255,6 +448,11 @@ pub fn select_runtime_telemetry(
     registry: &CommandRegistry,
     env: &impl Fn(&str) -> Option<String>,
 ) -> RuntimeTelemetry {
+    #[cfg(feature = "telemetry-test-receiver")]
+    if let Some(config) = test_receiver::resolve(env) {
+        return OtelTelemetry::with_endpoint(Some(config.traces_endpoint()), config.flush_budget)
+            .map_or_else(|_| RuntimeTelemetry::disabled(), RuntimeTelemetry::Otel);
+    }
     let mode = resolve_telemetry_mode(env, || {
         parse_runtime_command(args.iter().cloned(), registry, None)
             .is_ok_and(|command| !command.is_hook_invocation())
@@ -265,6 +463,9 @@ pub fn select_runtime_telemetry(
             .map_or_else(|_| RuntimeTelemetry::disabled(), RuntimeTelemetry::Otel),
     }
 }
+
+#[cfg(test)]
+pub(crate) mod test_support;
 
 #[cfg(test)]
 mod tests;
