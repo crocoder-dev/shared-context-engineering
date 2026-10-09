@@ -641,6 +641,148 @@ mod tests {
     }
 
     #[test]
+    fn maintenance_advisory_treats_timestamps_at_or_just_ahead_of_now_as_valid_age_zero() {
+        for ahead in [0, 60_000] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            init_repo(dir.path());
+            let state = MaintenanceState {
+                last_success: Some(NOW + ahead),
+                ..MaintenanceState::default()
+            };
+            seed(dir.path(), &state);
+            let path = state_path(&dir.path().join(".git"));
+            let before = std::fs::read(&path).expect("state bytes");
+
+            assert!(matches!(advise(dir.path(), NOW), AdvisoryOutcome::NoAction));
+            assert_eq!(std::fs::read(&path).expect("state bytes"), before);
+            assert!(!evaluate_recommendation(&state, NOW).recommended);
+        }
+    }
+
+    #[test]
+    fn maintenance_advisory_clock_rollback_beyond_tolerance_normalizes_while_within_it_does_not() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        init_repo(dir.path());
+        advise(dir.path(), NOW);
+        let path = state_path(&dir.path().join(".git"));
+        let before = std::fs::read(&path).expect("state bytes");
+
+        assert!(matches!(
+            advise(dir.path(), NOW - FUTURE_SKEW_TOLERANCE_MS),
+            AdvisoryOutcome::NoAction
+        ));
+        assert_eq!(std::fs::read(&path).expect("state bytes"), before);
+
+        let rolled_back = NOW - FUTURE_SKEW_TOLERANCE_MS - 1;
+        assert!(matches!(
+            advise(dir.path(), rolled_back),
+            AdvisoryOutcome::Advised
+        ));
+        let normalized = stored(dir.path());
+        assert_within_skew_tolerance(&normalized, rolled_back);
+        assert_eq!(normalized.last_advised, Some(rolled_back));
+    }
+
+    #[test]
+    fn maintenance_advisory_recovers_wrong_version_and_oversized_state_by_anchoring() {
+        let oversized = vec![b' '; 5000];
+        let wrong_version = br#"{"version":9999}"#.to_vec();
+        for bytes in [oversized, wrong_version] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            init_repo(dir.path());
+            let path = state_path(&dir.path().join(".git"));
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("runtime dir");
+            std::fs::write(&path, &bytes).expect("unusable state");
+
+            assert!(matches!(
+                super::read_state(&path).expect("read"),
+                StateRead::Unusable
+            ));
+            assert!(matches!(advise(dir.path(), NOW), AdvisoryOutcome::Anchored));
+            assert_eq!(stored(dir.path()).anchor, Some(NOW));
+        }
+    }
+
+    fn invalid_future_state() -> MaintenanceState {
+        MaintenanceState {
+            anchor: Some(NOW + 10 * RECONCILIATION_ADVISORY_AFTER_MS),
+            last_success: Some(NOW + FUTURE_SKEW_TOLERANCE_MS + 1),
+            ..MaintenanceState::default()
+        }
+    }
+
+    fn assert_within_skew_tolerance(state: &MaintenanceState, now: i64) {
+        for timestamp in [
+            state.anchor,
+            state.last_success,
+            state.last_attempt,
+            state.last_advised,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            assert!(timestamp <= now + FUTURE_SKEW_TOLERANCE_MS);
+        }
+    }
+
+    #[test]
+    fn maintenance_normalization_pre_rename_failure_keeps_previous_bytes_and_recovers_later() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        init_repo(dir.path());
+        seed(dir.path(), &invalid_future_state());
+        let path = state_path(&dir.path().join(".git"));
+        let before = std::fs::read(&path).expect("state bytes");
+
+        let outcome = advise_with_fault(dir.path(), NOW, PersistPhase::Rename);
+
+        assert!(matches!(
+            outcome,
+            AdvisoryOutcome::StateWriteFailed {
+                warning: PersistFailure::NotApplied {
+                    phase: PersistPhase::Rename,
+                    ..
+                }
+            }
+        ));
+        assert_eq!(outcome.recommendation(), None);
+        assert_eq!(std::fs::read(&path).expect("state bytes"), before);
+        assert!(evaluate_recommendation(&stored(dir.path()), NOW).invalid_timestamps);
+
+        assert!(matches!(advise(dir.path(), NOW), AdvisoryOutcome::Advised));
+        let normalized = stored(dir.path());
+        assert_within_skew_tolerance(&normalized, NOW);
+        assert_eq!(normalized.last_advised, Some(NOW));
+    }
+
+    #[test]
+    fn maintenance_normalization_post_rename_failure_is_visible_but_durability_is_uncertain() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        init_repo(dir.path());
+        seed(dir.path(), &invalid_future_state());
+
+        let outcome = advise_with_fault(dir.path(), NOW, PersistPhase::SyncParentDirectory);
+
+        assert!(matches!(
+            &outcome,
+            AdvisoryOutcome::AdvisedDurabilityUncertain {
+                warning: PersistFailure::DurabilityUncertain {
+                    phase: PersistPhase::SyncParentDirectory,
+                    ..
+                }
+            }
+        ));
+        assert!(outcome.persistence_warning().is_some());
+        assert!(outcome.report().diagnostic.is_some());
+        let visible = stored(dir.path());
+        assert_within_skew_tolerance(&visible, NOW);
+
+        let path = state_path(&dir.path().join(".git"));
+        let bytes = std::fs::read(&path).expect("state bytes");
+        assert!(matches!(advise(dir.path(), NOW), AdvisoryOutcome::NoAction));
+        assert_eq!(std::fs::read(&path).expect("state bytes"), bytes);
+    }
+
+    #[test]
     fn maintenance_advisory_anchor_write_failure_reports_state_write_failed_without_advice() {
         let dir = tempfile::tempdir().expect("temp dir");
         init_repo(dir.path());

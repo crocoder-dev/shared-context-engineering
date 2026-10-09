@@ -28,8 +28,15 @@ use crate::services::repository_identity::resolve::resolve_repository_identity;
 const NOW: i64 = 1_000_000_000_000;
 const OTHER_REPOSITORY_ID: &str = "some-other-repository";
 
+mod coordination;
+mod cross_process;
+mod fail_closed;
+mod state_recovery;
+mod support;
+mod worktrees;
+
 struct Fixture {
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
     root: PathBuf,
     state_root: PathBuf,
     repository_id: String,
@@ -46,7 +53,7 @@ impl Fixture {
             .repository_id;
         let state_root = dir.path().join("state");
         Self {
-            _dir: dir,
+            dir,
             root,
             state_root,
             repository_id,
