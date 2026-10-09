@@ -216,7 +216,7 @@ tests, `hooks::mutation_scope::advisory_trigger_tests`, and
 `app::doctor_reconciliation_cli_tests`. Race and ordering scenarios use
 deterministic coordination (barriers, parked phase hooks via `ReconcilePhase`,
 the worker-entered seam, injected clocks), not sleeps. The plan's coverage map
-records which scenarios are verified and which are only partially verified.
+records each scenario's verification status and the guard-removal results.
 
 ## Deferred follow-ups
 
