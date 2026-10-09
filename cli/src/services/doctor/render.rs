@@ -1086,115 +1086,141 @@ mod reconciliation_render_tests {
     }
 
     #[test]
-    fn json_completed_outcome() {
-        assert_eq!(
-            ref_reconciliation_fix_json(&ReconciliationFix::Completed(COUNTS)),
-            json!({
-                "outcome": "completed",
-                "counts": { "deleted": 3, "retained": 2, "local_required": 1 },
-                "failure": null,
-                "state_warning": null,
-            })
-        );
+    fn json_ref_reconciliation_fix_results_match_contract() {
+        let counts = json!({ "deleted": 3, "retained": 2, "local_required": 1 });
+        let cases = [
+            (
+                "completed",
+                ReconciliationFix::Completed(COUNTS),
+                json!({
+                    "outcome": "completed",
+                    "counts": counts,
+                    "failure": null,
+                    "state_warning": null,
+                }),
+            ),
+            (
+                "failed without warning",
+                ReconciliationFix::Failed {
+                    kind: "agent_trace_db_missing",
+                    message: "db missing".to_string(),
+                    state_warning: None,
+                },
+                json!({
+                    "outcome": "failed",
+                    "counts": null,
+                    "failure": { "kind": "agent_trace_db_missing", "message": "db missing" },
+                    "state_warning": null,
+                }),
+            ),
+            (
+                "failed with warning",
+                ReconciliationFix::Failed {
+                    kind: "missing_required_pins",
+                    message: "pins".to_string(),
+                    state_warning: Some(StateWarning::NotApplied {
+                        phase: "write_staging",
+                        cause: "full".to_string(),
+                    }),
+                },
+                json!({
+                    "outcome": "failed",
+                    "counts": null,
+                    "failure": { "kind": "missing_required_pins", "message": "pins" },
+                    "state_warning": {
+                        "kind": "not_applied",
+                        "phase": "write_staging",
+                        "message": "Maintenance-state update was not applied.",
+                        "cause": "full",
+                    },
+                }),
+            ),
+            (
+                "busy",
+                ReconciliationFix::Busy,
+                json!({
+                    "outcome": "busy",
+                    "counts": null,
+                    "failure": null,
+                    "state_warning": null,
+                }),
+            ),
+        ];
+        for (label, fix, expected) in cases {
+            assert_eq!(ref_reconciliation_fix_json(&fix), expected, "{label}");
+        }
     }
 
     #[test]
-    fn json_completed_state_persist_failed_distinguishes_warning_kinds() {
-        let not_applied =
-            ref_reconciliation_fix_json(&ReconciliationFix::CompletedStatePersistFailed {
-                counts: COUNTS,
-                warning: StateWarning::NotApplied {
-                    phase: "rename",
-                    cause: "denied".to_string(),
+    fn json_completed_state_persist_failed_results_match_contract() {
+        let counts = json!({ "deleted": 3, "retained": 2, "local_required": 1 });
+        let cases = [
+            (
+                "completed + not applied",
+                ReconciliationFix::CompletedStatePersistFailed {
+                    counts: COUNTS,
+                    warning: StateWarning::NotApplied {
+                        phase: "rename",
+                        cause: "denied".to_string(),
+                    },
                 },
-            });
-        assert_eq!(
-            not_applied,
-            json!({
-                "outcome": "completed_state_persist_failed",
-                "counts": { "deleted": 3, "retained": 2, "local_required": 1 },
-                "failure": null,
-                "state_warning": {
-                    "kind": "not_applied",
-                    "phase": "rename",
-                    "message": "Maintenance-state update was not applied.",
-                    "cause": "denied",
+                json!({
+                    "outcome": "completed_state_persist_failed",
+                    "counts": counts,
+                    "failure": null,
+                    "state_warning": {
+                        "kind": "not_applied",
+                        "phase": "rename",
+                        "message": "Maintenance-state update was not applied.",
+                        "cause": "denied",
+                    },
+                }),
+            ),
+            (
+                "completed + durability uncertain",
+                ReconciliationFix::CompletedStatePersistFailed {
+                    counts: COUNTS,
+                    warning: StateWarning::DurabilityUncertain {
+                        phase: "sync_parent_directory",
+                        cause: "eio".to_string(),
+                    },
                 },
-            })
-        );
-
-        let uncertain =
-            ref_reconciliation_fix_json(&ReconciliationFix::CompletedStatePersistFailed {
-                counts: COUNTS,
-                warning: StateWarning::DurabilityUncertain {
-                    phase: "sync_parent_directory",
-                    cause: "eio".to_string(),
+                json!({
+                    "outcome": "completed_state_persist_failed",
+                    "counts": counts,
+                    "failure": null,
+                    "state_warning": {
+                        "kind": "durability_uncertain",
+                        "phase": "sync_parent_directory",
+                        "message": "Maintenance-state durability could not be confirmed.",
+                        "cause": "eio",
+                    },
+                }),
+            ),
+            (
+                "completed + previous state unreadable",
+                ReconciliationFix::CompletedStatePersistFailed {
+                    counts: COUNTS,
+                    warning: StateWarning::PreviousStateUnreadable {
+                        cause: "eacces".to_string(),
+                    },
                 },
-            });
-        assert_eq!(uncertain["state_warning"]["kind"], "durability_uncertain");
-        assert_eq!(uncertain["state_warning"]["phase"], "sync_parent_directory");
-        assert_eq!(
-            uncertain["state_warning"]["message"],
-            "Maintenance-state durability could not be confirmed."
-        );
-
-        let unreadable =
-            ref_reconciliation_fix_json(&ReconciliationFix::CompletedStatePersistFailed {
-                counts: COUNTS,
-                warning: StateWarning::PreviousStateUnreadable {
-                    cause: "eacces".to_string(),
-                },
-            });
-        assert_eq!(
-            unreadable["state_warning"]["kind"],
-            "previous_state_unreadable"
-        );
-        assert_eq!(
-            unreadable["state_warning"]["phase"],
-            serde_json::Value::Null
-        );
-    }
-
-    #[test]
-    fn json_failed_outcome_carries_failure_and_optional_warning() {
-        let without_warning = ref_reconciliation_fix_json(&ReconciliationFix::Failed {
-            kind: "agent_trace_db_missing",
-            message: "db missing".to_string(),
-            state_warning: None,
-        });
-        assert_eq!(
-            without_warning,
-            json!({
-                "outcome": "failed",
-                "counts": null,
-                "failure": { "kind": "agent_trace_db_missing", "message": "db missing" },
-                "state_warning": null,
-            })
-        );
-
-        let with_warning = ref_reconciliation_fix_json(&ReconciliationFix::Failed {
-            kind: "missing_required_pins",
-            message: "pins".to_string(),
-            state_warning: Some(StateWarning::NotApplied {
-                phase: "write_staging",
-                cause: "full".to_string(),
-            }),
-        });
-        assert_eq!(with_warning["failure"]["kind"], "missing_required_pins");
-        assert_eq!(with_warning["state_warning"]["kind"], "not_applied");
-        assert_eq!(with_warning["state_warning"]["phase"], "write_staging");
-    }
-
-    #[test]
-    fn json_busy_outcome() {
-        assert_eq!(
-            ref_reconciliation_fix_json(&ReconciliationFix::Busy),
-            json!({
-                "outcome": "busy",
-                "counts": null,
-                "failure": null,
-                "state_warning": null,
-            })
-        );
+                json!({
+                    "outcome": "completed_state_persist_failed",
+                    "counts": counts,
+                    "failure": null,
+                    "state_warning": {
+                        "kind": "previous_state_unreadable",
+                        "phase": null,
+                        "message":
+                            "Maintenance state could not be read; the update was not attempted.",
+                        "cause": "eacces",
+                    },
+                }),
+            ),
+        ];
+        for (label, fix, expected) in cases {
+            assert_eq!(ref_reconciliation_fix_json(&fix), expected, "{label}");
+        }
     }
 }

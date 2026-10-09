@@ -396,9 +396,9 @@ mod tests {
         let problems = inspect_existing_db_schema(&path, || {}).await;
 
         assert_eq!(problems.len(), 1);
-        assert_ne!(
+        assert_eq!(
             problems[0].kind,
-            HealthProblemKind::AgentTraceDbSchemaNotReady
+            HealthProblemKind::AgentTraceDbConnectionFailed
         );
         assert_eq!(std::fs::read(&path).expect("read"), before);
         assert_eq!(dir_entries(dir.path()), vec!["agent-trace.db".to_string()]);
