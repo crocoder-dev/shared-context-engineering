@@ -106,7 +106,7 @@ impl ProtectedWorktree {
         Self::acquire_with_timeout(repository_root, WORKTREE_LOCK_TIMEOUT, on_lock_contention).await
     }
 
-    async fn acquire_with_timeout<F>(
+    pub(super) async fn acquire_with_timeout<F>(
         repository_root: &Path,
         lock_timeout: Duration,
         on_lock_contention: F,

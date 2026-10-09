@@ -307,7 +307,7 @@ where
     .await
 }
 
-async fn drive_mutation_scope<
+pub(crate) async fn drive_mutation_scope<
     L: crate::services::observability::traits::Logger,
     E: Write,
     C,
