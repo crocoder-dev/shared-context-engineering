@@ -12,6 +12,8 @@ pub(super) const RECONCILIATION_RECOMMENDED_MESSAGE: &str =
 const DIAGNOSTIC_PREFIX: &str = "SCE: ";
 const DURABILITY_UNCERTAIN_DIAGNOSTIC: &str = "Advisory-state durability could not be confirmed";
 const STATE_WRITE_FAILED_DIAGNOSTIC: &str = "Reconciliation advisory state could not be written";
+const STATE_DURABILITY_UNCONFIRMED_DIAGNOSTIC: &str =
+    "Reconciliation advisory-state durability could not be confirmed";
 const STATE_UNAVAILABLE_DIAGNOSTIC: &str = "Reconciliation advisory state is unavailable";
 const CHECK_DOCTOR_HINT: &str = "Run sce doctor to check reconciliation status.";
 
@@ -101,8 +103,15 @@ impl AdvisoryOutcome {
                 "{DIAGNOSTIC_PREFIX}{RECONCILIATION_RECOMMENDED_MESSAGE}\n\
                  {DIAGNOSTIC_PREFIX}{DURABILITY_UNCERTAIN_DIAGNOSTIC}: {warning}."
             )),
-            AdvisoryOutcome::StateWriteFailed { warning } => Some(format!(
+            AdvisoryOutcome::StateWriteFailed {
+                warning: warning @ PersistFailure::NotApplied { .. },
+            } => Some(format!(
                 "{DIAGNOSTIC_PREFIX}{STATE_WRITE_FAILED_DIAGNOSTIC}: {warning}. {CHECK_DOCTOR_HINT}"
+            )),
+            AdvisoryOutcome::StateWriteFailed {
+                warning: warning @ PersistFailure::DurabilityUncertain { .. },
+            } => Some(format!(
+                "{DIAGNOSTIC_PREFIX}{STATE_DURABILITY_UNCONFIRMED_DIAGNOSTIC}: {warning}. {CHECK_DOCTOR_HINT}"
             )),
             AdvisoryOutcome::StateUnavailable => Some(format!(
                 "{DIAGNOSTIC_PREFIX}{STATE_UNAVAILABLE_DIAGNOSTIC}. {CHECK_DOCTOR_HINT}"
@@ -194,7 +203,7 @@ mod tests {
     use std::process::Command;
 
     use super::super::maintenance_state::{
-        evaluate_recommendation, read_state, record_failure, record_success, state_path,
+        evaluate, evaluate_recommendation, read_state, record_failure, record_success, state_path,
         write_state_atomically, write_state_atomically_with, AttemptOutcome,
         FaultInjectingFilesystem, MaintenanceState, PersistFailure, PersistPhase, StateRead,
         StoredReport, FUTURE_SKEW_TOLERANCE_MS, RECONCILIATION_ADVISORY_AFTER_MS,
@@ -306,6 +315,22 @@ mod tests {
         let diagnostic = report.diagnostic.expect("diagnostic");
         assert!(diagnostic.starts_with("SCE: Reconciliation advisory state could not be written: "));
         assert!(diagnostic.contains(&warning));
+        assert!(!diagnostic.contains(RECONCILIATION_RECOMMENDED_MESSAGE));
+
+        let report = AdvisoryOutcome::StateWriteFailed {
+            warning: uncertain(),
+        }
+        .report();
+        assert_eq!(report.outcome, "state_write_failed");
+        assert_eq!(report.severity, AdvisorySeverity::Warn);
+        assert_eq!(report.recommendation, None);
+        let warning = report.warning.expect("persistence warning");
+        let diagnostic = report.diagnostic.expect("diagnostic");
+        assert!(diagnostic
+            .starts_with("SCE: Reconciliation advisory-state durability could not be confirmed: "));
+        assert!(diagnostic.ends_with("Run sce doctor to check reconciliation status."));
+        assert!(diagnostic.contains(&warning));
+        assert!(!diagnostic.contains("could not be written"));
         assert!(!diagnostic.contains(RECONCILIATION_RECOMMENDED_MESSAGE));
     }
 
@@ -575,6 +600,9 @@ mod tests {
         ));
         assert_eq!(outcome.recommendation(), None);
         assert!(outcome.persistence_warning().is_some());
+        let diagnostic = outcome.report().diagnostic.expect("diagnostic");
+        assert!(diagnostic.starts_with("SCE: Reconciliation advisory state could not be written: "));
+        assert!(!diagnostic.contains("durability"));
         assert_eq!(std::fs::read(&path).expect("state bytes"), before);
         assert!(evaluate_recommendation(&stored(dir.path()), due).recommended);
         assert!(matches!(advise(dir.path(), due), AdvisoryOutcome::Advised));
@@ -600,6 +628,16 @@ mod tests {
             Some(RECONCILIATION_RECOMMENDED_MESSAGE)
         );
         assert!(outcome.persistence_warning().is_some());
+        let report = outcome.report();
+        assert_eq!(
+            report.recommendation,
+            Some(RECONCILIATION_RECOMMENDED_MESSAGE)
+        );
+        let diagnostic = report.diagnostic.expect("diagnostic");
+        assert!(diagnostic.starts_with(&format!(
+            "SCE: {RECOMMENDED}\nSCE: Advisory-state durability could not be confirmed: "
+        )));
+        assert!(!diagnostic.contains("could not be written"));
 
         let visible = stored(dir.path());
         assert_eq!(visible.last_advised, Some(due));
@@ -791,6 +829,74 @@ mod tests {
         assert!(matches!(outcome, AdvisoryOutcome::StateWriteFailed { .. }));
         assert_eq!(outcome.recommendation(), None);
         assert!(matches!(advise(dir.path(), NOW), AdvisoryOutcome::Anchored));
+    }
+
+    #[test]
+    fn maintenance_anchor_post_rename_failure_is_state_write_failed_with_visible_anchor() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        init_repo(dir.path());
+
+        let outcome = advise_with_fault(dir.path(), NOW, PersistPhase::SyncParentDirectory);
+
+        assert!(matches!(
+            &outcome,
+            AdvisoryOutcome::StateWriteFailed {
+                warning: PersistFailure::DurabilityUncertain {
+                    phase: PersistPhase::SyncParentDirectory,
+                    ..
+                }
+            }
+        ));
+        assert_eq!(outcome.recommendation(), None);
+        let report = outcome.report();
+        assert!(report.warning.is_some());
+        let diagnostic = report.diagnostic.expect("diagnostic");
+        assert!(diagnostic
+            .starts_with("SCE: Reconciliation advisory-state durability could not be confirmed: "));
+        assert!(!diagnostic.contains("could not be written"));
+        assert_eq!(stored(dir.path()).anchor, Some(NOW));
+
+        let path = state_path(&dir.path().join(".git"));
+        let bytes = std::fs::read(&path).expect("state bytes");
+        assert!(matches!(advise(dir.path(), NOW), AdvisoryOutcome::NoAction));
+        assert_eq!(std::fs::read(&path).expect("state bytes"), bytes);
+    }
+
+    #[test]
+    fn maintenance_no_action_normalization_post_rename_failure_is_state_write_failed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        init_repo(dir.path());
+        let invalid = MaintenanceState {
+            anchor: Some(NOW),
+            last_advised: Some(NOW + 10 * RECONCILIATION_ADVISORY_AFTER_MS),
+            ..MaintenanceState::default()
+        };
+        seed(dir.path(), &invalid);
+        assert!(!evaluate(&invalid, NOW).advise);
+
+        let outcome = advise_with_fault(dir.path(), NOW, PersistPhase::SyncParentDirectory);
+
+        assert!(matches!(
+            &outcome,
+            AdvisoryOutcome::StateWriteFailed {
+                warning: PersistFailure::DurabilityUncertain {
+                    phase: PersistPhase::SyncParentDirectory,
+                    ..
+                }
+            }
+        ));
+        assert_eq!(outcome.recommendation(), None);
+        let diagnostic = outcome.report().diagnostic.expect("diagnostic");
+        assert!(diagnostic.contains("durability could not be confirmed"));
+        let visible = stored(dir.path());
+        assert_eq!(visible.anchor, Some(NOW));
+        assert_eq!(visible.last_advised, None);
+        assert_within_skew_tolerance(&visible, NOW);
+
+        let path = state_path(&dir.path().join(".git"));
+        let bytes = std::fs::read(&path).expect("state bytes");
+        assert!(matches!(advise(dir.path(), NOW), AdvisoryOutcome::NoAction));
+        assert_eq!(std::fs::read(&path).expect("state bytes"), bytes);
     }
 
     #[test]
