@@ -570,9 +570,7 @@ async fn ref_reconciliation_lock_held_implementation_never_reacquires_the_lock()
     .expect("reconcile");
     drop(lock);
 
-    let ReconciliationOutcome::Reconciled(report) = outcome else {
-        panic!("expected reconciled outcome");
-    };
+    let ReconciliationOutcome::Reconciled(report) = outcome;
     assert_eq!(report.deleted, 1);
 }
 
