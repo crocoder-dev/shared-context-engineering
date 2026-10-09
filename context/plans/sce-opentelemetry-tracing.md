@@ -1,0 +1,255 @@
+# Plan: sce-opentelemetry-tracing
+
+## Change summary
+
+Reintroduce opt-in OpenTelemetry tracing to the Rust CLI in five sequenced PR-sized phases, after first making the existing tracing path safe to attach a subscriber to. Today `Logger::log_forced` (`cli/src/services/observability.rs`) calls `emit_tracing_event` with the raw `message` and serialized `fields` before `redact_sensitive_text` (`cli/src/services/security.rs`) runs, and `log_cli_error` puts `error_source` (the full technical error chain) into those fields. Two further raw `tracing::warn!` sites carry free-form error text on the `sce` target: `sce.resilience.retry` (`error = %last_error`, `cli/src/services/resilience.rs`) and `sce.agent_trace_db.contention_exhausted` (`last_error = %last_error`, `cli/src/services/db/mod.rs`). `redact_sensitive_text` is key-name based and does not redact paths, so even a redacted line is not a safe export format. The logger API also accepts `event_id: &str` from arbitrary callers (including dynamically formatted identifiers such as `sce.error.{code}`), and the raw events carry caller-supplied strings such as `operation` and `db_name`; none of these are safe merely because they are short. Any subscriber attached to the process, not only an OTel exporter, can read this content.
+
+Phase 0 therefore establishes two independent security boundaries (A: existing events never carry free-form content to any subscriber; B: OTel export accepts only a dedicated, typed, allowlisted instrumentation surface). Phases 1-2 add a standalone OTLP/HTTP runtime (`sce.command` root span, bounded shutdown) and W3C `TRACEPARENT`/`TRACESTATE` propagation. Phase 3 adds managed Control Plane tracing with a pinned collector and a telemetry-only credential. Phase 4 adds operation spans. Phase 5 (Codex/Pi/OpenCode propagation, metrics, sampling controls, local forwarder) is deferred.
+
+Why reintroduction is justified despite `remove-cli-otel`: that plan removed an exporter that had no trustworthy sink and no consumer, and it explicitly scoped "do not introduce replacement telemetry/export libraries" to itself. This plan supersedes that constraint for the following reasons: a Control Plane collector and Dash0 pipeline now exist, Claude Code emits W3C trace context SCE can join, and the leak that made export unsafe is fixed first (T01) rather than inherited. The repository-level `otel` config key stays removed (see Configuration ownership).
+
+### Architecture decisions
+
+**D1 — Event surfaces.** Boundary A is allowlist-by-construction, not redaction. Existing `sce`-target logger/raw events remain for local logging semantics, but a tracing event may carry only values that are static, enumerated, typed, or demonstrably safe:
+
+- `event_id`: only members of a closed, static registry of known identifiers (`TracingEventId`, a sorted constant list validated by a unit test for uniqueness and an `[a-z0-9_.]{1,64}` shape) reach tracing. `Logger` keeps accepting `&str`; a classification function maps it to a registry member, and any unknown, dynamically constructed, or test-only identifier becomes the fixed classification `sce.unclassified`, never its raw string. The dynamic `sce.error.{code}` identifier is mapped from the typed error class, not from the formatted string. `redact_sensitive_text` is not relied on for any tracing value.
+- Other preserved attributes: `level` (typed), numeric counters and durations (`u64`), `cause` (existing constant), and string-like attributes such as `operation` and `db_name` only after classification into enumerated types (`OperationClass`, `DbName`) with an `unclassified` fallback. Message arguments of every tracing macro on these paths are static literals. No other `&str`/`Display` value is recorded.
+- Never reaching tracing: `event_message`, free-form `fields` JSON, `error_source`, `error`, `last_error`, paths, hook payloads.
+- Local file/stderr logging keeps its existing format and raw event identifiers unchanged; Boundary A changes only what is handed to `tracing`.
+
+The OTel exporter reads only target `sce::otel` through a typed API (enumerated span/event names, enumerated attribute keys, typed/bounded values) and drops everything else (Boundary B). Exception messages and stack traces are never recorded on spans; only an enumerated error category is.
+
+**D2 — Subscriber scoping strategy.** The OTel runtime builds a private `tracing::Dispatch` (`tracing_subscriber::Registry` + OTel layer, never installed globally) and attaches it to the command future with `tracing::instrument::WithSubscriber::with_subscriber`, so the dispatcher is re-entered on every poll regardless of Tokio worker migration. This matches the contract already recorded in `context/sce/cli-observability-contract.md` (thread-local `with_default`/`set_default` guards held across `.await` are insufficient on multi-thread Tokio). Bauk's global-init pattern (`davidabram/bauk/src/telemetry/mod.rs`) is reused only for crate versions, provider and exporter construction, not for installation. Spawned tasks do not inherit the dispatcher: every `tokio::spawn` that must be traced in the audited call paths uses `.with_current_subscriber()` plus `.in_current_span()`; untraced spawns are listed and justified.
+
+**D3 — Configuration ownership.**
+
+- *Standalone/unmanaged mode:* explicit opt-in through an SCE-specific environment switch (`SCE_TELEMETRY=standalone`); standard `OTEL_EXPORTER_OTLP_*` variables configure a local or user-selected receiver. No managed token is ever attached in this mode, and the mode has no repository-level enablement.
+- *Managed mode:* enabled only by a foreground setup action (`sce auth telemetry`, final subcommand wording confirmed in T09 against `cli-command-surface.md`) that persists enablement and credential in the user-owned encrypted auth DB under SCE's platform state/config roots (`cli/src/services/default_paths.rs`). Repository-local `.sce/config.json` cannot enable managed export or override its destination. The managed collector endpoint is a trusted, pinned compile-time constant (HTTPS only), not configurable by env or file outside test builds.
+- *Precedence:* when managed mode is active, `OTEL_EXPORTER_OTLP_ENDPOINT`, `*_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `*_TRACES_HEADERS`, and protocol/certificate overrides are ignored (not merged), and `sce doctor` reports that they were ignored. Managed mode wins over `SCE_TELEMETRY=standalone`. The managed exporter uses a dedicated HTTP client with redirects disabled so credentials are never forwarded.
+- *Config keys:* no repository-level or global `otel` key is reintroduced; `remove-cli-otel` made it an unknown key and this plan keeps that.
+
+**D4 — Bounded shutdown and exporter concurrency.** Telemetry failures never change exit codes, stdout, hook permission decisions, durable state, lock ordering, or cancellation behavior. The SDK `BatchSpanProcessor` is kept; no custom buffer is built to force post-command-only networking. Its contract is explicit:
+
+- *Span end never performs network I/O.* It enqueues into a bounded in-memory queue; a full queue drops spans and never blocks or applies backpressure to the caller.
+- *Background batch export may run concurrently with command processing*, including while mutation, Git, adapter-state, or DB locks are held, because the batch timer or batch-size threshold can fire at any time. This is permitted precisely because exporter activity is isolated: it runs on the SDK's own background thread (T03 confirms this against the pinned SDK version and ensures it never occupies the command runtime's workers), shares no lock with any protected critical section, and nothing in a critical section waits on it.
+- *Must not run while those locks are held:* credential issuance, exporter initialization that needs network access, explicit `force_flush()`, and shutdown. Exporter construction is lazy or offline; flush and shutdown happen only after the command future has completed and locks are released.
+- *No correctness-sensitive code waits for successful export or reads exporter state.* Export failure, delay, or blockage cannot alter results or durable state.
+- Final flush/shutdown runs on a dedicated thread; the main thread waits at most the flush budget on a channel, then proceeds to process exit without joining, so a hung connection cannot extend process lifetime. HTTP connect and total timeouts are set below the budget so the thread normally finishes on its own. A timeout around a blocking call is not relied on; the process-lifetime bound is the contract.
+- Budgets: foreground commands default 1000 ms, configurable via `SCE_TELEMETRY_FLUSH_TIMEOUT_MS`; hook invocations default to **no remote export** until T05 selects a budget from benchmark evidence and the regression tests pass. Strict post-command-only export is not required and not claimed; if it later becomes a requirement it needs a different architecture and a new plan.
+
+**D5 — Production-verification decoupling.** T01 precedes any exporter activation. T03/T04/T06/T07/T08 use a local OTLP receiver and an offline Control Plane fixture and never need production access. T02 (public collector and Dash0 evidence) and the T09 combined-trace evidence gate only managed-mode production acceptance.
+
+**D6 — Controlled local-receiver test mechanism.** Production hook export stays disabled until the T05 gate passes, yet T05 and T07 need real exporting hooks. T04 therefore delivers a test-only implementation boundary, defined here so no implementer invents one:
+
+- *Compile-time gate:* Cargo feature `telemetry-test-receiver`, off by default and excluded from `.#default`, crates.io, and Flatpak builds. Without the feature, the code path does not exist and the environment variables below are ignored (proved by a `cfg(not(feature))` test `telemetry_test_receiver_inert` run in the default-feature test pass). T04 wires the feature into the test and benchmark builds only (`nix flake check` test derivation and an explicit benchmark build command recorded by T05).
+- *Runtime opt-in (both required):* `SCE_TELEMETRY=test-receiver` and `SCE_TELEMETRY_TEST_RECEIVER_ENDPOINT=http://<loopback-literal>:<port>`. The endpoint must parse as plain HTTP to a loopback IP literal (`127.0.0.0/8` or `::1`); anything else (hostname, non-loopback, HTTPS) is rejected and telemetry stays disabled.
+- *Isolation:* resolution is a pure function over an injected environment source returning a `TelemetryConfig` variant `TestReceiver { endpoint, flush_budget }` that has no credential field. That variant never opens the auth DB, never calls the credential API, ignores `OTEL_*` endpoint/header overrides, and cannot construct the managed exporter or its pinned endpoint. It is exclusive: it wins over standalone and is rejected rather than merged when managed enablement is present.
+- *Hook behavior:* in this mode hook-style invocations export to the receiver regardless of the production hook gate. Hook stdout, exit code, permission decisions, and mutation semantics are unchanged (asserted by comparison with a telemetry-disabled run).
+- *Lifecycle markers:* with the feature, `SCE_TELEMETRY_TEST_LIFECYCLE_FILE=<path>` makes the process append monotonic-clock lines `command_complete`, `shutdown_begin`, `shutdown_end` (and `process_exit_requested`) to that file only, never stdout/stderr. This is the observable boundary for shutdown measurement (AC5).
+- Ordinary execution (no feature, or feature without both variables) is byte-for-byte the disabled baseline.
+
+## Acceptance criteria
+
+How this plan is proven complete. Each criterion is observable and names the check that proves it. `/validate` runs these checks; no task in the stack performs final validation.
+
+- [ ] AC1 (Boundary A — existing events): With an arbitrary capturing `tracing` subscriber (not only the OTel exporter) attached, no `Logger` record, `log_cli_error` record, `sce.resilience.retry`, or `sce.agent_trace_db.contention_exhausted` event exposes any free-form message, field value, event identifier outside the static registry, filesystem path, error chain, credential, or hook payload; unknown or dynamic event IDs and string-valued attributes appear only as fixed safe classifications; local file/stderr log output and its event identifiers remain the existing output. (T01; `cli/src/services/observability.rs`, `observability/traits.rs`, `security.rs`, `resilience.rs`, `db/mod.rs`)
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml tracing_boundary_a` with injected (1) a secret-bearing event ID, (2) an event ID containing a filesystem path, (3) an unknown event ID, (4) a valid event ID with a malicious string-valued attribute (`operation`/`db_name`/field value), plus secret-bearing messages, fields, paths, and multi-level error chains; the test fails if any injected sensitive value, or `event_message`, `fields`, `error_source`, `error`, `last_error`, appears in any captured event, and asserts file/stderr output is unchanged.
+- [ ] AC2 (Boundary B — OTel export): The exporter layer passes only target `sce::otel`, only enumerated span/event names and attribute keys, only typed bounded values, and never exception messages or stack traces; general `sce` target events are excluded. (T01 policy, T03 enforcement)
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml tracing_boundary_b` (capturing exporter fed disallowed names, keys, oversized strings, and `sce`-target events; asserts all dropped or truncated)
+- [ ] AC3 (disabled and offline behavior): With telemetry disabled, command stdout, stderr, exit codes, and timing are the baseline; with telemetry enabled but the collector unreachable, stdout and exit codes are still unchanged and only bounded overhead (see AC5) is added.
+  - Validate: `nix flake check` (existing CLI tests unchanged) plus the actual-subprocess tests `telemetry_disabled_baseline` and `telemetry_offline_parity` from T03/T04. Overhead bounds are those of AC5.
+- [ ] AC4 (async semantics): The telemetry subscriber is active on every poll of the command future, across multiple yields, Tokio worker-thread migration, nested spans, and concurrent command executions, with correct parent-child relationships, and without global subscriber initialization or `Box<dyn Telemetry>`. (T03; `cli/src/services/observability/traits.rs`, `cli/src/app.rs`)
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_async_scope` (multi-yield, multi-thread, nested span, concurrent-command, and spawned-task cases) and the existing `telemetry_scopes_every_poll_of_yielding_work` test unchanged.
+- [ ] AC5 (bounded shutdown and exporter isolation): Overhead is defined as `telemetry overhead = enabled process duration - disabled process duration` for the same command, and two bounds are required. (a) Post-command: using the D6 lifecycle markers, `process_exit_requested - command_complete` is at most flush budget + slack, so ordinary long-running commands are never required to finish within the budget. (b) End-to-end: the delta against the telemetry-disabled baseline stays within the recorded bounds below. Protocol (T04): workload `sce version` and `sce doctor` (command names confirmed against `cli-command-surface.md`); 5 warmup runs then 30 measured runs per receiver mode, interleaved with disabled runs on the same build; modes reachable, connection-refused, non-routable address, and accept-but-never-respond; flush budget 1000 ms; slack 250 ms for (a). For (b), blackhole and non-routable modes must satisfy p50/p95 overhead ≤ budget + 250 ms and max ≤ budget + 500 ms (budget-derived); reachable and connection-refused p50/p95/max overhead bounds are measured in T04, recorded in the T04 note, and fixed as constants in the test before T04 completes. Every subprocess runs under a 5 s hard timeout whose expiry fails the test, proving no hang after command completion. Stdout and exit code are unchanged. Separately, no credential issuance, exporter initialization needing network access, `force_flush()`, or shutdown occurs while a mutation, Git, adapter-state, or DB lock is held; background batch export may run concurrently with lock holders but must not block them (see `telemetry_exporter_cannot_block_locks`). Hook budget gate: production hook export remains disabled until T05 records a budget chosen from its benchmark and `telemetry_shutdown_subprocess` passes configured with it.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_shutdown_subprocess` (real subprocess, D6 markers, protocol above); `... telemetry_exporter_cannot_block_locks` (negative regression: exporter pointed at a blackhole with batch size/delay forced low so export starts mid-command, exporter additionally delayed/blocked; a real mutation-scope/worktree-lock operation still releases its locks, completes, and a second contender acquires the lock within a bound independent of the exporter timeout; command result and durable state identical to the telemetry-disabled run); inspection of the T05 benchmark record.
+- [ ] AC6 (standalone trace): With `SCE_TELEMETRY=standalone` and a local OTLP/HTTP protobuf receiver, `sce doctor` emits one root `sce.command` trace with a typed outcome and no managed credential header.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml sce_command_span`
+- [ ] AC7 (trace context): Valid `TRACEPARENT`/`TRACESTATE` set the remote parent of `sce.command` with exact trace ID, parent span ID, and sampled flag; malformed or absent context yields an independent root; unsampled parents are honored.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml trace_context`
+- [ ] AC8 (Claude Code connectivity): A real Claude Code smoke test records, for Bash, PowerShell, and lifecycle-hook subprocesses separately, whether `TRACEPARENT` reached SCE, the exact trace ID and remote parent span ID observed on both sides, span hierarchy, and sampling behavior; SCE configuration works when Claude does not propagate `OTEL_*`. Lifecycle-hook parenting is claimed only if demonstrated; otherwise independent-root behavior is documented. Hook subprocess runs export through the D6 local-receiver mechanism, with no managed credential and no production access.
+  - Validate: inspect the T07 evidence note under `context/sce/` (Claude Code version, flags verbatim, captured IDs, per-subprocess table).
+- [ ] AC9 (credential identity and lifecycle): `/me` stable `user.id` and `workspace.id` are decoded; the telemetry credential record (`token`, `accessor`, `expiresAt`, binding) is stored encrypted in a record separate from WorkOS tokens; mismatched, expired, or stale credentials are rejected; logout clears the cache; concurrent provisioning does not corrupt the cache; hooks never mint credentials; tokens, authorization headers, and raw credential responses are never logged. Documentation states that local deletion does not revoke an already issued OpenBao token.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_credential`
+- [ ] AC10 (managed exfiltration safety): A malicious repository-local `.sce/config.json` (and malicious `OTEL_*`/header/endpoint env) cannot enable managed export, change its destination, or cause the managed token to be sent anywhere except the pinned endpoint; redirects carrying the token are not followed.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_managed_exfiltration` (local listeners record any request received; assert none receives the token, redirect target receives no request)
+- [ ] AC11 (production ingestion evidence): The T02 note records, each with timestamp, environment, and evidence source: public receiver authentication test, public trace acceptance test, workspace dataset routing, actual Dash0 ingestion, and the internal exporter failure investigation with disposition. Unavailable checks are marked blocked with exact reason and retry condition; no evidence is fabricated.
+  - Validate: inspect the T02 context note and its `context-map.md` link.
+- [ ] AC12 (doctor readiness): `sce doctor` reports telemetry mode and readiness (credential presence, binding validity, expiry, ignored override variables) in stable text and JSON, never printing credentials.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor_telemetry`
+- [ ] AC13 (operation spans): Traces explain where mutation and reconciliation operations spend time and where they fail, exporting only duration, operation type, typed outcome, error category, and safe counts; existing mutation-scope, reconciliation, and DB tests pass unchanged, proving durability and lock ordering are unchanged.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml operation_span` plus the existing `mutation_scope`, `reconciliation`, and DB test selections unchanged.
+- [ ] AC14 (dependency impact recorded): Dependency count, release binary size, and clean build time deltas introduced by the OTel crates are measured in T03 and recorded.
+  - Validate: inspect the T03 note for before/after `cargo tree` crate counts, release binary size, and clean-build time with methodology.
+- [ ] AC15 (combined production trace): For managed-mode rollout acceptance, one distributed trace is demonstrated end to end in the intended Dash0 workspace dataset: (1) Claude Code emits an upstream span with a known trace ID; (2) SCE receives valid W3C context from an actual supported Claude Code subprocess (per T07); (3) SCE emits a child span with the identical trace ID and the correct parent span ID; (4) both export successfully through their own configured authentication paths; (5) both spans arrive in the same assigned Dash0 dataset; (6) a Dash0 trace query returns both spans and their parent-child relationship; (7) neither is routed to the internal collector dataset or another workspace's dataset. The evidence note records trace ID, span IDs, dataset, Claude Code version, timestamps, and the query result, never credentials. If Claude Code's export cannot authenticate or route to the same dataset, this criterion is recorded as blocked (Blocker, Required action, Retry condition) and T09 production acceptance is not complete. Local tests stay independent of Dash0.
+  - Validate: inspect the T09 combined-trace evidence note and its `context-map.md` link.
+- [ ] AC16 (controlled local-receiver mechanism): The D6 mechanism exports real hook traces only to a loopback receiver under explicit opt-in in feature-enabled builds, cannot load or send a managed credential, cannot activate the managed exporter, leaves hook output/permission decisions/mutation semantics unchanged, and is inert in default builds and ordinary execution. (T04)
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_test_receiver` (loopback-only endpoint validation, no auth DB access, no managed header, hook parity with disabled run) and `... telemetry_test_receiver_inert` (default features).
+
+### Full validation
+
+Repository-wide checks `/validate` runs after the last task, regardless of which criterion they map to.
+
+- `nix flake check`
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml tracing_boundary` (focused observability/security)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml trace_context` (propagation)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_credential` and `telemetry_managed_exfiltration` (credential boundary)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_shutdown_subprocess`, `telemetry_exporter_cannot_block_locks`, `telemetry_test_receiver`, and `telemetry_test_receiver_inert` (actual-process timeout, lock isolation, controlled receiver)
+- Existing `mutation_scope` and `reconciliation` regression selections, unmodified
+- `nix run .#pkl-check-generated` if any Pkl/schema/generated input changes
+
+Existing tests are not rebaselined or deleted; only tests that assert the removed tracing payload shape (`event_message`, `fields`) are updated, and each such change is listed in the owning task's completion record.
+
+### Context sync
+
+- `context/sce/cli-observability-contract.md` (two-boundary contract, event-ID registry, `sce::otel` surface, modes, bounded shutdown and background-export concurrency, D6 test mechanism, supersession of the "no production sink" statements)
+- `context/overview.md`, `context/architecture.md`, `context/glossary.md` (OTel runtime, `sce.command`, Boundary A/B, standalone vs managed, trace-context propagation, telemetry credential)
+- `context/cli/cli-command-surface.md`, `context/cli/config-precedence-contract.md`, `context/cli/default-path-catalog.md` (setup action, env switches, managed state location)
+- `context/sce/auth-db.md` (telemetry credential record, separation from WorkOS tokens, logout clearing)
+- Doctor context file for telemetry readiness
+- `context/context-map.md` entries for new context notes (T02, T05, T07, T09 combined-trace evidence)
+- Supersession note relative to `remove-cli-otel`
+
+## Task context synchronization lifecycle
+
+Persist this field in every plan; this is durable plan state, not chat state:
+
+- **Task context synchronization:** every task carries `pending | synced | blocked`. A completed task must be `synced` before another task can start or the plan can finish.
+- For `blocked`, record **Blocker**, **Required action**, and **Retry condition** beside the status. Never infer `synced` from conversation history; write every lifecycle transition to the plan file.
+
+## Constraints and non-goals
+
+- **In scope:** `cli/src/services/observability*`, `cli/src/services/security.rs`, `cli/src/services/resilience.rs` and `cli/src/services/db/mod.rs` (tracing call sites only), `cli/src/app.rs` telemetry wiring, `cli/Cargo.toml`/`Cargo.lock`, `cli/src/services/agent_trace_sync/control_plane.rs` (`/me` decoding and credential client), auth DB credential storage (`cli/src/services/auth_db/`), `cli/src/services/auth_command/mod.rs` (logout), `sce doctor`, the foreground setup action, instrumentation call sites listed in Phase 4, and matching context files.
+- **Out of scope:** Phase 5 items; changes to durability, lock ordering, or mutation-trace semantics; changes to local logging formats and file routing; Control Plane server code; server-side token revocation.
+- **Constraints:** static dispatch through the generic `Telemetry` trait with `NoopTelemetry` default and no `Box<dyn Telemetry>`; no global subscriber initialization; OTLP/HTTP protobuf only; crate versions pinned exactly and matching Bauk's; no comments in code; export is allowlist-only; managed credentials are never minted from a hook or while locks are held; exporter activity never blocks or is awaited by protected critical sections, and telemetry errors never change mutation outcomes; run Cargo and tests via Nix; local tests never require production Dash0 access.
+- **Non-goal:** exporting free-form log messages, command arguments, paths, hook payloads, SQL text, or error text as span attributes.
+- **Non-goal:** claiming trace parenting for any harness or subprocess type that was not demonstrated.
+- **Non-goal:** guaranteeing that all network traffic occurs after command completion; the batch exporter may export concurrently.
+- **Non-goal:** a production bypass flag for hook export; only the feature-gated D6 mechanism exists.
+- **Non-goal:** promising revocation of issued telemetry tokens.
+
+## Assumptions
+
+- Bauk reference is `davidabram/bauk/src/telemetry/mod.rs` and its `Cargo.toml`; the repository is not checked out on this machine, so T03 reads the exact crate versions from it before pinning them and records them in the task.
+- Control Plane contract is fixed by `control-plane/context/api/telemetry-credential.md`: `POST /auth/telemetry/credential` takes no payload, is protected by the WorkOS bearer, returns exactly `{ token, accessor, expiresAt }` (non-renewable ~90-day OpenBao token), and returns 403 without a workspace, 503 when not configured/unavailable, and 500 on issuance failure. Control Plane `GET /me` returns stable `user.id` and `workspace.id` (nullable workspace) that SCE's current `MeUser`/`MeWorkspace` types do not yet decode.
+- Control Plane does not persist or cache issued credentials and its issuer cannot revoke; SCE therefore documents local-cache deletion as non-revoking.
+- Standalone opt-in uses an SCE-specific switch rather than a bare `OTEL_*` variable, because `OTEL_*` may be inherited from an unrelated process environment.
+- Claude Code propagation behavior (which subprocess types receive `TRACEPARENT`) is unknown until T07 measures it.
+- Phase 4 spans are grouped into three tasks by subsystem to keep each commit atomic.
+
+## Task stack
+
+- [ ] T01: `Enforce Boundary A and define the Boundary B export policy` (status:todo)
+  - Task ID: T01
+  - Scope: In — stop `Logger::log_forced`/`emit_tracing_event` and the `sce.resilience.retry` and `sce.agent_trace_db.contention_exhausted` raw events from carrying `event_message`, serialized `fields`, `error_source`, `error`, or `last_error` to tracing; introduce the closed `TracingEventId` registry and classification (unknown or dynamic IDs, including test-only and `sce.error.{code}` string forms, become `sce.unclassified`; `sce.error.*` derives from the typed error class); classify `operation` and `db_name` into enumerated types with an `unclassified` fallback; keep only level, typed numerics, and existing constants; inventory every `tracing::` macro site under `cli/src` with a test that fails on a new site recording an unclassified field; define the `sce::otel` target constants, enumerated span/event names, enumerated attribute keys, and typed bounded value types with no exception-message/stack-trace recording; arbitrary-subscriber capture tests for both boundaries. Out — OTel crates, exporter wiring, local file/stderr log rendering (format and raw event IDs unchanged), changing `redact_sensitive_text` behavior.
+  - Dependencies: none
+  - Done when: with an arbitrary capturing subscriber, the four injected cases of AC1 (secret-bearing event ID, path-bearing event ID, unknown event ID, valid event with malicious string attribute) plus secret-bearing messages, fields, paths, and error chains never reach any captured `sce`-target event; the `sce::otel` policy types reject disallowed names/keys and truncate or reject unbounded strings; file/stderr log output is byte-identical to before; existing tests asserting the old tracing payload shape are updated and listed. Boundary A is fully enforced here, before any OTel exporter exists.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml tracing_boundary_a`; `... tracing_boundary_b`; `... observability`; `... resilience`
+  - Context synchronization: pending
+
+- [ ] T02: `Record public collector and Dash0 ingestion verification` (status:todo)
+  - Task ID: T02
+  - Scope: In — independently run and record, each with timestamp, environment, and evidence source: public receiver authentication test, public trace acceptance test, workspace dataset routing, actual Dash0 ingestion, and the internal exporter failure investigation with disposition; write the note under `context/sce/` and link it from `context/context-map.md`. Checks that cannot be run are recorded as blocked with exact reason and retry condition; evidence is never fabricated. Out — Control Plane code changes, SCE runtime changes.
+  - Dependencies: none
+  - Done when: the note exists, every listed check has a result or an explicit blocked entry with reason and retry condition, and internal exporter failures are tracked separately from public pipeline readiness.
+  - Verify: inspect the note and its `context-map.md` link; no SCE tests required.
+  - Context synchronization: pending
+
+- [ ] T03: `Add opt-in standalone OpenTelemetry runtime with async-correct subscriber scoping` (status:todo)
+  - Task ID: T03
+  - Scope: In — exact-pinned OTel crates matching Bauk (`davidabram/bauk/src/telemetry/mod.rs` and its `Cargo.toml`), provider and OTLP/HTTP protobuf exporter, a statically dispatched `Telemetry` implementation that builds a private `Dispatch` and attaches it with `WithSubscriber::with_subscriber` (D2), no global init, exporter layer enforcing Boundary B (target `sce::otel`, name/key allowlist), standalone-mode configuration (`SCE_TELEMETRY=standalone`, `OTEL_EXPORTER_OTLP_*` for a local receiver, no managed token), `.with_current_subscriber()` on audited spawn sites, and the AC14 dependency-impact measurement. Out — `sce.command` span content, flush policy, trace-context extraction, managed mode.
+  - Dependencies: T01
+  - Done when: telemetry unset uses `NoopTelemetry` with identical behavior; the runtime installs without global subscriber state; tests prove the subscriber is active on every poll across multiple yields, worker-thread migration, nested spans with correct parents, concurrent commands, and spawned tasks; repository-local config cannot enable standalone mode; the exporter layer enforces Boundary B independently of T01's Boundary A work; the batch export thread is confirmed not to run on command runtime workers; dependency/binary-size/build-time deltas are recorded.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_async_scope`; `... telemetry_disabled_baseline`; existing `telemetry_scopes_every_poll_of_yielding_work` unchanged; `nix flake check`
+  - Context synchronization: pending
+
+- [ ] T04: `Emit sce.command root span with bounded best-effort shutdown and the controlled test receiver` (status:todo)
+  - Task ID: T04
+  - Scope: In — `sce.command` span with command name and typed outcome/error category only; SDK batch processor with a bounded drop-on-full queue so span end performs no I/O and never blocks (D4); background export explicitly permitted to run concurrently with command processing and lock holders; `force_flush()`/shutdown only after the command future completes and locks are released, on a dedicated thread with the main thread waiting at most the flush budget (default 1000 ms, `SCE_TELEMETRY_FLUSH_TIMEOUT_MS`) and exiting without joining; HTTP connect/total timeouts below the budget; the D6 `telemetry-test-receiver` feature, loopback validation, injected-env config resolution, and lifecycle markers; real-subprocess tests per the AC5 protocol (workload, warmup, sample count, four receiver modes, bounds, 5 s hard timeout) and the `telemetry_exporter_cannot_block_locks` negative regression. Out — production hook export enablement, hook benchmark methodology and budget selection, context propagation.
+  - Dependencies: T03
+  - Done when: `sce doctor` against a local receiver emits one root `sce.command` trace with typed outcome; the AC5 (a) and (b) bounds hold across all four receiver modes with unchanged stdout and exit code; the lock-isolation regression passes with a delayed/blocked exporter; no credential issuance, network-requiring exporter initialization, flush, or shutdown happens before the command future completes (background batch export may); D6 isolation tests pass (AC16); reachable/refused bounds are recorded in the T04 note and fixed in the tests.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml sce_command_span`; `... telemetry_shutdown_subprocess`; `... telemetry_offline_parity`; `... telemetry_exporter_cannot_block_locks`; `... telemetry_test_receiver`; `... telemetry_test_receiver_inert`
+  - Context synchronization: pending
+
+- [ ] T05: `Benchmark hook latency and record the hook export decision gate` (status:todo)
+  - Task ID: T05
+  - Scope: In — benchmark real hook-style `sce` subprocess invocations, built with the D6 `telemetry-test-receiver` feature and exporting to the loopback receiver (the only way a hook exports before the gate passes; record the build command and that the feature adds only a config branch), with `nix shell nixpkgs#hyperfine -c hyperfine` under four modes: disabled, enabled with reachable local receiver, enabled with blackhole listener, enabled with connection refused; fixed warmup and at least 30 runs each; record p50, p95, and max end-to-end overhead (`enabled - disabled`) and the post-command shutdown duration from the D6 lifecycle markers, host and build profile; select and record the hook flush budget from this evidence (none is pre-chosen) or the decision to keep hook export disabled; if no budget is justified, hooks stay export-disabled and a local forwarder is recorded as a separate follow-up. Out — implementing a forwarder, enabling production hook export.
+  - Dependencies: T04 (provides D6 mechanism and shutdown tests)
+  - Done when: the note records methodology, raw results, selected budget (or disable decision), and states that production hook export is blocked until the recorded budget is met by `telemetry_shutdown_subprocess` configured with that budget.
+  - Verify: inspect the recorded benchmark note; re-run the recorded hyperfine command to confirm reproducibility.
+  - Context synchronization: pending
+
+- [ ] T06: `Extract W3C trace context as parent of sce.command` (status:todo)
+  - Task ID: T06
+  - Scope: In — parse `TRACEPARENT`/`TRACESTATE` from the environment, set the remote parent on `sce.command`, harness-neutral fixtures (direct invocation, malformed context, sampled, unsampled, absent) reusable for future harnesses. Out — real Claude Code verification, other harnesses, proxy-specific propagation.
+  - Dependencies: T04
+  - Done when: valid context yields a child with the exact trace ID, parent span ID, and sampled flag; malformed or absent context yields an independent root; unsampled parents are honored; no parent relationship is invented.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml trace_context`
+  - Context synchronization: pending
+
+- [ ] T07: `Verify Claude Code to SCE trace propagation per subprocess type` (status:todo)
+  - Task ID: T07
+  - Scope: In — real Claude Code smoke test with the relevant enhanced-telemetry flags recorded verbatim for the tested version, covering standalone SCE execution, Bash, PowerShell, and lifecycle-hook subprocesses; verify exact trace ID, exact remote parent span ID, span hierarchy, sampling behavior, whether `TRACEPARENT` reaches each subprocess type, that SCE configuration works when Claude does not propagate `OTEL_*`, and any proxy-specific traceparent setting before it is required anywhere; record independent-root behavior where propagation is absent. Hook-subprocess runs export through the D6 loopback receiver and the CLI is built with the D6 feature, so the test needs no managed credential and no production hook export. Out — Codex/Pi/OpenCode, production Dash0 access.
+  - Dependencies: T04, T06
+  - Done when: the evidence note has one row per subprocess type with observed propagation, IDs on both sides, and a conclusion; lifecycle-hook parenting is claimed only if demonstrated.
+  - Verify: inspect the note against the local receiver's captured traces.
+  - Context synchronization: pending
+
+- [ ] T08: `Add identity-bound telemetry credential client and encrypted storage` (status:todo)
+  - Task ID: T08
+  - Scope: In — extend `MeUser`/`MeWorkspace` in `control_plane.rs` to decode stable `user.id` and `workspace.id`; client for `POST /auth/telemetry/credential` returning `{ token, accessor, expiresAt }` with secrets redacted from `Debug` and errors; a separate encrypted auth-DB record (new migration through the existing auth DB mechanism in `cli/src/services/auth_db/`) storing `token`, `accessor`, `expiresAt`, bound `user_id` and `workspace_id`, distinct from WorkOS tokens; reject expired, stale, and mismatched records; clear the record on logout (`auth_command/mod.rs`); safe concurrent provisioning (single-flight via DB transaction or cross-process lock, no cache corruption); tests use a local API fixture, no production access. Out — setup flow, exporter wiring, doctor, server-side revocation.
+  - Dependencies: none
+  - Done when: credentials are readable only under a matching user and workspace; workspace or account switch yields "no credential" and requires foreground re-provisioning; expired credentials are rejected; logout deletes the record; two concurrent provisioning attempts leave one valid record; failures never log tokens, authorization headers, or raw responses; docs state that local deletion does not revoke already issued tokens.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_credential` (identity mismatch, expiry, logout, concurrent provisioning, safe failure, WorkOS record untouched)
+  - Context synchronization: pending
+
+- [ ] T09: `Wire managed mode with pinned collector and exfiltration guards` (status:todo)
+  - Task ID: T09
+  - Scope: In — foreground setup action that provisions via T08 and persists managed enablement in the auth DB; managed exporter using the pinned HTTPS collector constant, a dedicated HTTP client with redirects disabled, token attached only by SCE and only to the pinned endpoint; ignore `OTEL_EXPORTER_OTLP_*` endpoint, header, protocol, and certificate overrides in managed mode; managed wins over standalone; hooks never contact the credential API or mint tokens; no provisioning while locks are held; tests with local listeners including a malicious repository-local `.sce/config.json`, malicious env endpoints/headers, and a redirecting server; credential provisioning never occurs under a lock; production acceptance including the AC15 combined Claude Code + SCE trace verified in the assigned Dash0 dataset, with the evidence note (trace ID, span IDs, dataset, Claude Code version, timestamps, query result, no credentials) linked from `context-map.md`. Out — doctor check, hook export if the T05 gate is unmet.
+  - Dependencies: T02, T03, T04, T05, T07, T08
+  - Done when: a configured installation exports to the user's assigned Dash0 dataset without manual exporter-token handling per the T02 evidence; the exfiltration tests prove no listener receives the managed token and the redirect target receives no request; hook export stays disabled unless the T05 gate passed; if T02 recorded blocked checks, or the AC15 combined trace cannot be produced in the same dataset, production acceptance is recorded as blocked (Blocker, Required action, Retry condition) rather than passed.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_managed_exfiltration`; `... telemetry_managed`; manual production check recorded per T02 method; combined-trace evidence note (AC15).
+  - Context synchronization: pending
+
+- [ ] T10: `Add telemetry readiness check to sce doctor` (status:todo)
+  - Task ID: T10
+  - Scope: In — doctor diagnostic for mode, credential presence, identity/workspace binding validity, expiry, pinned endpoint configuration, and a note when `OTEL_*` overrides are being ignored, with stable text and JSON output. Out — remediation automation, network calls to the Control Plane.
+  - Dependencies: T09
+  - Done when: `sce doctor` reports ready/not-ready with a concrete reason in text and JSON and never prints credentials; output is deterministic.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor_telemetry`
+  - Context synchronization: pending
+
+- [ ] T11: `Instrument mutation scope coordination and worktree lock spans` (status:todo)
+  - Task ID: T11
+  - Scope: In — `sce.mutation_scope.coordinate` and `sce.worktree.lock` spans via the `sce::otel` typed API exporting duration, operation type, typed outcome, error category, and safe counts only; spans end without I/O and nothing in a critical section waits on the exporter; re-run `telemetry_exporter_cannot_block_locks` with the real spans. Out — any change to lock ordering, durability, or scope semantics; new attributes beyond the allowlist.
+  - Dependencies: T04
+  - Done when: both spans appear under `sce.command` with allowlisted attributes only; existing mutation-scope tests pass unchanged; the lock-isolation regression still passes with a blocked exporter.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml operation_span`; existing `mutation_scope` selection unchanged
+  - Context synchronization: pending
+
+- [ ] T12: `Instrument reconciliation and git snapshot spans` (status:todo)
+  - Task ID: T12
+  - Scope: In — `sce.reconciliation` and `sce.git.snapshot` spans with allowlisted attributes, ending without I/O or exporter waits. Out — reconciliation or snapshot behavior changes.
+  - Dependencies: T11
+  - Done when: spans show duration and typed outcome, including failure category; existing reconciliation tests pass unchanged.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml operation_span`; existing `reconciliation` selection unchanged
+  - Context synchronization: pending
+
+- [ ] T13: `Instrument database operation and sync spans` (status:todo)
+  - Task ID: T13
+  - Scope: In — `sce.db.operation` and `sce.sync` spans with allowlisted attributes; no SQL text, row content, or paths exported; no exporter waits inside DB transactions or lock sections. Out — persistence semantics changes.
+  - Dependencies: T12
+  - Done when: spans carry operation type, outcome, and safe counts only; capture tests prove no SQL or payload content is exported; existing DB tests pass unchanged.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml operation_span`
+  - Context synchronization: pending
+
+## Open questions
+
+Resolved and recorded above, so no longer open: Bauk reference, Control Plane credential contract, configuration ownership and precedence, justification relative to `remove-cli-otel`, and measurement of dependency growth (T03).
+
+Genuinely unresolved, each needing new experimental evidence:
+
+- Which Claude Code subprocess types (Bash, PowerShell, lifecycle hooks) actually receive `TRACEPARENT`, and whether a proxy-specific traceparent setting exists and is required? Answered by T07 for the tested version.
+- What numeric hook flush budget is justified, or must hooks remain export-disabled? Answered by T05 from D6-mode benchmarks; production hook export stays blocked until then.
+- Can Claude Code's own OTLP export authenticate and route to the same Dash0 dataset as SCE's managed export (AC15)? Answered by T09; if not, combined-trace acceptance is blocked.
+- Reachable and connection-refused overhead bounds (AC5b) are set from T04 measurements, not guessed here.
+- Does the public collector accept authenticated traces and route them to the correct Dash0 dataset, and what is the disposition of the observed internal exporter failures? Answered by T02; gates T09 production acceptance only.
