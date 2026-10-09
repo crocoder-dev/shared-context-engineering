@@ -136,7 +136,7 @@ worktree is still an `Err` there.
 cold-path, read-only queries — siblings of `load_mutation_event`, never
 reached from `load_worktree` or a hook-boundary path — that expose the set of
 Git tree SHAs the mutation-cursor protocol still durably depends on, for the
-per-worktree ref-reconciliation pass, which is retained but unwired (PR3 retain-and-defer; these readers, `load_mutation_event` and their SQL/row-mapping helpers carry declaration-level `dead_code` allows citing `context/plans/mutation-cursor-ref-reconciliation.md`; see
+per-worktree ref-reconciliation pass, which runs only through `sce doctor --fix` (the single-event loaders `load_mutation_event` / `load_mutation_event_active_scopes` and their SQL/row-mapping helpers have no production reader and carry declaration-level `dead_code` allows saying so; attribution history uses `load_mutation_event_page`; see
 [`mutation-trace-runtime-coordinator.md`](mutation-trace-runtime-coordinator.md)).
 
 - `load_tree_roots(worktree) -> BTreeSet<TreeId>` returns one worktree's roots:
