@@ -215,13 +215,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: minor — new context note plus `context-map.md` link; no behavior or contract change.
   - Context synchronization: synced
 
-- [ ] T06: `Extract W3C trace context as parent of sce.command` (status:todo)
+- [x] T06: `Extract W3C trace context as parent of sce.command` (status:done)
   - Task ID: T06
   - Scope: In — parse `TRACEPARENT`/`TRACESTATE` from the environment, set the remote parent on `sce.command`, harness-neutral fixtures (direct invocation, malformed context, sampled, unsampled, absent) reusable for future harnesses. Out — real Claude Code verification, other harnesses, proxy-specific propagation.
   - Dependencies: T04
   - Done when: valid context yields a child with the exact trace ID, parent span ID, and sampled flag; malformed or absent context yields an independent root; unsampled parents are honored; no parent relationship is invented.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml trace_context`
-  - Context synchronization: pending
+  - Completed: 2026-10-09
+  - Files changed: `cli/src/app.rs`, `cli/src/app/telemetry_tests.rs`, `cli/src/services/observability.rs`, `cli/src/services/observability/trace_context.rs` (new), `cli/src/services/observability/trace_context/tests.rs` (new), `cli/src/services/observability/tracing_boundary.rs`
+  - Result: `extract_remote_parent` (pure, injected env source) feeds `TRACEPARENT`/`TRACESTATE` to the SDK `TraceContextPropagator` and returns a context only when the span context is valid and remote. `CommandSpan::start` now takes `Option<Context>` and applies it with `OpenTelemetrySpanExt::set_parent`; `app.rs` passes `extract_remote_parent(&process_env)`. Valid context yields a child with the exact trace ID, parent span ID, sampled flag and `tracestate`; malformed or absent context yields an independent root (no parent, fresh trace ID, empty trace state); an unsampled parent is honored by the provider's parent-based sampler (nothing exported). No attributes were added, so Boundary B is unchanged, and hook gating is untouched.
+  - Verify results: `trace_context` passed (6 tests); `tracing_boundary` passed (40); `sce_command_span` passed (2); `telemetry_command_span` passed (4) with and without an ambient `TRACEPARENT`; `nix flake check` passed (first attempt was OOM-killed, exit 137; rerun with `--max-jobs 1` passed).
+  - Deviations and assumptions: `telemetry_command_span_success_records_one_root_with_typed_attributes` read the process environment through the real lifecycle and failed when the shell exported `TRACEPARENT` (Claude Code does); it now expects the parent derived from the same ambient environment instead of a hard-coded invalid parent. `tracestate` is propagated on the span context per W3C but never recorded as an attribute.
+  - Context impact: important — `context/sce/cli-observability-contract.md` (trace-context extraction and `CommandSpan::start` remote parent), `context/glossary.md` (trace-context propagation), `context/cli/config-precedence-contract.md` (`TRACEPARENT`/`TRACESTATE` read from the process environment).
+  - Context synchronization: synced
 
 - [ ] T07: `Verify Claude Code to SCE trace propagation per subprocess type` (status:todo)
   - Task ID: T07

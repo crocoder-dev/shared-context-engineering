@@ -1,8 +1,10 @@
 use std::future::Future;
 
+use opentelemetry::Context;
 use tracing::instrument::{Instrument, WithSubscriber};
 use tracing::Dispatch;
 use tracing::Level;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{Layer, Registry};
 
@@ -318,7 +320,7 @@ impl ScopedDispatch {
 pub struct CommandSpan(tracing::Span);
 
 impl CommandSpan {
-    pub fn start(command: Option<CommandName>) -> Self {
+    pub fn start(command: Option<CommandName>, remote_parent: Option<Context>) -> Self {
         let span = tracing::span!(
             target: OTEL_TARGET,
             Level::INFO,
@@ -330,6 +332,9 @@ impl CommandSpan {
         );
         if let Some(command) = command {
             span.record("sce.command.name", command.as_str());
+        }
+        if let Some(parent) = remote_parent {
+            let _ = span.set_parent(parent);
         }
         Self(span)
     }

@@ -8,6 +8,7 @@ use services::error::CliError;
 use services::observability::otel_policy::{CommandName, ErrorCategory};
 use services::observability::otel_runtime::lifecycle_markers::{mark, LifecycleMarker};
 use services::observability::otel_runtime::{select_runtime_telemetry, RuntimeTelemetry};
+use services::observability::trace_context::extract_remote_parent;
 use services::observability::tracing_boundary::CommandSpan;
 use services::observability::traits::{Logger as LoggerTrait, Telemetry as TelemetryTrait};
 
@@ -382,7 +383,10 @@ where
                     )));
                 };
                 let command = parse_command_phase(command_args, registry, context)?;
-                let span = CommandSpan::start(CommandName::parse(command.name().as_ref()));
+                let span = CommandSpan::start(
+                    CommandName::parse(command.name().as_ref()),
+                    extract_remote_parent(&process_env),
+                );
                 let result = span
                     .scope(app_support::execute_command_phase(
                         &command, context, stderr,

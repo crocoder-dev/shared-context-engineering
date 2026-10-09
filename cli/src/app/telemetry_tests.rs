@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::*;
-use opentelemetry::trace::{SpanId, Status};
+use opentelemetry::trace::{SpanId, Status, TraceContextExt};
 use services::command_registry::build_default_registry;
 use services::observability::otel_policy::OtelName;
 use services::observability::otel_runtime::test_support::{attributes, Capture};
@@ -471,7 +471,12 @@ async fn telemetry_command_span_success_records_one_root_with_typed_attributes()
     assert_eq!(spans.len(), 1, "{spans:?}");
     let span = &spans[0];
     assert_eq!(span.name, "sce.command");
-    assert_eq!(span.parent_span_id, SpanId::INVALID);
+    let ambient_parent =
+        services::observability::trace_context::extract_remote_parent(&process_env)
+            .map_or(SpanId::INVALID, |context| {
+                context.span().span_context().span_id()
+            });
+    assert_eq!(span.parent_span_id, ambient_parent);
     assert_ne!(
         span.span_context.trace_id(),
         opentelemetry::trace::TraceId::INVALID

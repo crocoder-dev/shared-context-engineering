@@ -19,6 +19,7 @@ use serde_json::json;
 
 pub mod otel_policy;
 pub mod otel_runtime;
+pub mod trace_context;
 pub mod tracing_boundary;
 pub mod traits;
 
