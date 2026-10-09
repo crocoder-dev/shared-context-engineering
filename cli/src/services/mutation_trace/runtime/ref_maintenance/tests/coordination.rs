@@ -174,15 +174,38 @@ async fn ref_reconciliation_real_coordinate_waits_for_a_pass_parked_after_pin_in
     assert_coordinate_blocked_until_pass_releases(ReconcilePhase::PinsInventoried).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn ref_reconciliation_coordinate_lock_timeout_under_maintenance_commits_nothing_and_retries()
-{
+#[derive(Clone, Copy)]
+enum Boundary {
+    Close,
+    Flush,
+}
+
+impl Boundary {
+    fn payload(self) -> MutationScopePayload {
+        match self {
+            Boundary::Close => close_payload(SCOPE, "close-1"),
+            Boundary::Flush => MutationScopePayload::Flush,
+        }
+    }
+
+    fn scope_after_success(self) -> ScopeStatus {
+        match self {
+            Boundary::Close => ScopeStatus::Closed,
+            Boundary::Flush => ScopeStatus::Active,
+        }
+    }
+}
+
+async fn assert_coordinate_lock_timeout_under_maintenance_commits_nothing_and_retries(
+    boundary: Boundary,
+) {
     let fixture = started_fixture().await;
     let git_dir = git_dir_of(&fixture).await;
     let marker = ExternalTaintMarker::new(&git_dir);
     super::support::write_file(&fixture.root, "work.txt", "work\n");
     let before = durable_snapshot(&fixture.db_path(), &main_worktree(), SCOPE).await;
     let refs_before = sce_refs(&fixture.root);
+    let pins_before = pinned_trees(&fixture.root, "main");
     assert_eq!(before.scope, Some(ScopeStatus::Active));
 
     let mut pass = spawn_parked_pass(&fixture, ReconcilePhase::DbOpened);
@@ -190,10 +213,17 @@ async fn ref_reconciliation_coordinate_lock_timeout_under_maintenance_commits_no
 
     let advisories = Arc::new(AtomicU32::new(0));
     let contended = Arc::new(AtomicU32::new(0));
+    let counting = |advisories: &Arc<AtomicU32>| {
+        let advisories = Arc::clone(advisories);
+        move |root: &Path| {
+            advisories.fetch_add(1, Ordering::SeqCst);
+            no_advice(root)
+        }
+    };
     let failed = run_hook(
         &fixture.root,
         &fixture.db_path(),
-        close_payload(SCOPE, "close-1"),
+        boundary.payload(),
         Duration::from_millis(300),
         {
             let contended = Arc::clone(&contended);
@@ -202,13 +232,7 @@ async fn ref_reconciliation_coordinate_lock_timeout_under_maintenance_commits_no
             }
         },
         || {},
-        {
-            let advisories = Arc::clone(&advisories);
-            move |root| {
-                advisories.fetch_add(1, Ordering::SeqCst);
-                no_advice(root)
-            }
-        },
+        counting(&advisories),
     )
     .await
     .expect_err("the lock cannot be acquired while the pass holds it");
@@ -227,6 +251,7 @@ async fn ref_reconciliation_coordinate_lock_timeout_under_maintenance_commits_no
         before
     );
     assert_eq!(sce_refs(&fixture.root), refs_before);
+    assert_eq!(pinned_trees(&fixture.root, "main"), pins_before);
     assert!(!marker.exists().expect("marker"));
     assert_eq!(state_bytes(&git_dir), None);
 
@@ -237,17 +262,11 @@ async fn ref_reconciliation_coordinate_lock_timeout_under_maintenance_commits_no
     let output = run_hook(
         &fixture.root,
         &fixture.db_path(),
-        close_payload(SCOPE, "close-1"),
+        boundary.payload(),
         WORKTREE_LOCK_TIMEOUT,
         || {},
         || {},
-        {
-            let advisories = Arc::clone(&advisories);
-            move |root| {
-                advisories.fetch_add(1, Ordering::SeqCst);
-                no_advice(root)
-            }
-        },
+        counting(&advisories),
     )
     .await
     .expect("the same boundary succeeds once the maintenance pass released the lock");
@@ -256,7 +275,7 @@ async fn ref_reconciliation_coordinate_lock_timeout_under_maintenance_commits_no
     assert_eq!(state_bytes(&git_dir), after_pass_state);
 
     let after = durable_snapshot(&fixture.db_path(), &main_worktree(), SCOPE).await;
-    assert_eq!(after.scope, Some(ScopeStatus::Closed));
+    assert_eq!(after.scope, Some(boundary.scope_after_success()));
     assert_eq!(after.worktree.revision, before.worktree.revision + 1);
     assert_ne!(after.worktree.cursor_tree, before.worktree.cursor_tree);
     assert!(pinned_trees(&fixture.root, "main").contains(&after.worktree.cursor_tree.0));
@@ -265,66 +284,16 @@ async fn ref_reconciliation_coordinate_lock_timeout_under_maintenance_commits_no
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ref_reconciliation_coordinate_lock_timeout_under_maintenance_commits_nothing_and_retries()
+{
+    assert_coordinate_lock_timeout_under_maintenance_commits_nothing_and_retries(Boundary::Close)
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ref_reconciliation_flush_lock_timeout_under_maintenance_commits_nothing_and_retries() {
-    let fixture = started_fixture().await;
-    let git_dir = git_dir_of(&fixture).await;
-    let marker = ExternalTaintMarker::new(&git_dir);
-    super::support::write_file(&fixture.root, "work.txt", "work\n");
-    let before = durable_snapshot(&fixture.db_path(), &main_worktree(), SCOPE).await;
-    let refs_before = sce_refs(&fixture.root);
-
-    let mut pass = spawn_parked_pass(&fixture, ReconcilePhase::DbOpened);
-    await_signal(&mut pass.parked).await;
-
-    let advisories = Arc::new(AtomicU32::new(0));
-    let counting = |advisories: &Arc<AtomicU32>| {
-        let advisories = Arc::clone(advisories);
-        move |root: &Path| {
-            advisories.fetch_add(1, Ordering::SeqCst);
-            no_advice(root)
-        }
-    };
-    let failed = run_hook(
-        &fixture.root,
-        &fixture.db_path(),
-        MutationScopePayload::Flush,
-        Duration::from_millis(300),
-        || {},
-        || {},
-        counting(&advisories),
-    )
-    .await
-    .expect_err("the lock cannot be acquired while the pass holds it");
-    assert!(format!("{failed:#}").contains("Timed out after"));
-    assert_eq!(advisories.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        durable_snapshot(&fixture.db_path(), &main_worktree(), SCOPE).await,
-        before
-    );
-    assert_eq!(sce_refs(&fixture.root), refs_before);
-    assert!(!marker.exists().expect("marker"));
-    assert_eq!(state_bytes(&git_dir), None);
-
-    assert!(matches!(pass.finish().await, ExplicitOutcome::Completed(_)));
-
-    let output = run_hook(
-        &fixture.root,
-        &fixture.db_path(),
-        MutationScopePayload::Flush,
-        WORKTREE_LOCK_TIMEOUT,
-        || {},
-        || {},
-        counting(&advisories),
-    )
-    .await
-    .expect("the same flush succeeds once the maintenance pass released the lock");
-    assert_eq!(output, "");
-    assert_eq!(advisories.load(Ordering::SeqCst), 1);
-    let after = durable_snapshot(&fixture.db_path(), &main_worktree(), SCOPE).await;
-    assert_eq!(after.worktree.revision, before.worktree.revision + 1);
-    assert_ne!(after.worktree.cursor_tree, before.worktree.cursor_tree);
-    assert!(pinned_trees(&fixture.root, "main").contains(&after.worktree.cursor_tree.0));
-    assert!(!marker.exists().expect("marker"));
+    assert_coordinate_lock_timeout_under_maintenance_commits_nothing_and_retries(Boundary::Flush)
+        .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
