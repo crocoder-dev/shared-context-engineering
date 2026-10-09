@@ -253,3 +253,44 @@ pub(crate) async fn resolve_existing_agent_trace_storage_for_maintenance_at_stat
     )?;
     open_existing_storage_for_maintenance(repository_identity, db_path).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        resolve_existing_agent_trace_storage_for_maintenance_at_state_root,
+        AgentTraceStorageContext,
+    };
+    use crate::services::agent_trace_db::repository::ExistingRepositoryDbError;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_trace_storage_maintenance_open_of_missing_db_creates_nothing() {
+        let repository = tempfile::tempdir().expect("repository dir");
+        let state_root = tempfile::tempdir().expect("state root");
+        let context = AgentTraceStorageContext {
+            repository_root: repository.path(),
+            explicit_repository_id: Some("maintenance-open-missing"),
+            repository_remote: "origin",
+        };
+
+        let Err(error) = resolve_existing_agent_trace_storage_for_maintenance_at_state_root(
+            &context,
+            state_root.path(),
+        )
+        .await
+        else {
+            panic!("a missing database must not open");
+        };
+
+        assert!(matches!(
+            error.downcast_ref::<ExistingRepositoryDbError>(),
+            Some(ExistingRepositoryDbError::Missing { .. })
+        ));
+        let entries: Vec<_> = std::fs::read_dir(state_root.path())
+            .expect("state root listing")
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "state root must stay empty: {entries:?}"
+        );
+    }
+}
