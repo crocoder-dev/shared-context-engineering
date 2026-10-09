@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitCode};
 
 use serde_json::Value;
 
@@ -15,12 +15,24 @@ const STATE_FILE: &str = "ref-maintenance.json";
 const LOCK_FILE: &str = "mutation-cursor.lock";
 const RECONCILIATION_DETAIL_PREFIX: &str = "Snapshot ref reconciliation";
 
+const EXIT_SUCCESS: &str = "success";
+const EXIT_FAILURE: &str = "failure";
+
 struct CliRun {
     stdout: String,
     stderr: String,
+    exit: String,
 }
 
 impl CliRun {
+    fn assert_exit_success(&self) {
+        assert_eq!(
+            self.exit, EXIT_SUCCESS,
+            "doctor exit status:\n{}\n{}",
+            self.stdout, self.stderr
+        );
+    }
+
     fn json(&self) -> Value {
         serde_json::from_str(&self.stdout)
             .unwrap_or_else(|error| panic!("doctor stdout is not JSON ({error}):\n{}", self.stdout))
@@ -155,6 +167,7 @@ impl Sandbox {
         CliRun {
             stdout: std::fs::read_to_string(out.join("stdout")).expect("stdout"),
             stderr: std::fs::read_to_string(out.join("stderr")).expect("stderr"),
+            exit: std::fs::read_to_string(out.join("exit")).expect("exit"),
         }
     }
 }
@@ -217,13 +230,19 @@ async fn doctor_reconciliation_cli_child() {
     );
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    let _ = Box::pin(run_with_dependency_check_and_streams(
+    let exit_code = Box::pin(run_with_dependency_check_and_streams(
         command_line,
         || Ok(()),
         &mut stdout,
         &mut stderr,
     ))
     .await;
+    let exit = if format!("{exit_code:?}") == format!("{:?}", ExitCode::SUCCESS) {
+        EXIT_SUCCESS
+    } else {
+        EXIT_FAILURE
+    };
+    std::fs::write(out.join("exit"), exit).expect("exit");
     std::fs::write(out.join("stdout"), stdout).expect("stdout");
     std::fs::write(out.join("stderr"), stderr).expect("stderr");
 }
@@ -237,6 +256,7 @@ async fn doctor_inspection_is_read_only_and_fix_reconciles_the_orphan_pin_once()
     assert!(refs_before.contains(&tree));
 
     let inspection = sandbox.run(&["doctor", "--format", "json"]);
+    inspection.assert_exit_success();
     let report = inspection.json();
     assert!(
         report["ref_reconciliation_fix"].is_null(),
@@ -247,6 +267,7 @@ async fn doctor_inspection_is_read_only_and_fix_reconciles_the_orphan_pin_once()
     assert_eq!(sandbox.state_bytes(), None);
 
     let fix = sandbox.run(&["doctor", "--fix", "--format", "json"]);
+    fix.assert_exit_success();
     let report = fix.json();
     let reconciliation = &report["ref_reconciliation_fix"];
     assert_eq!(reconciliation["outcome"], "completed", "{}", fix.stdout);
@@ -282,6 +303,7 @@ async fn doctor_fix_reports_missing_database_without_creating_it_or_deleting_ref
     let db_path = sandbox.db_path();
 
     let fix = sandbox.run(&["doctor", "--fix", "--format", "json"]);
+    fix.assert_exit_success();
     let report = fix.json();
     let reconciliation = &report["ref_reconciliation_fix"];
     assert_eq!(reconciliation["outcome"], "failed", "{}", fix.stdout);
@@ -327,6 +349,7 @@ async fn doctor_fix_reports_repository_mismatch_without_touching_the_database_or
     let refs_before = sandbox.refs();
 
     let fix = sandbox.run(&["doctor", "--fix", "--format", "json"]);
+    fix.assert_exit_success();
     let report = fix.json();
     let reconciliation = &report["ref_reconciliation_fix"];
     assert_eq!(reconciliation["outcome"], "failed", "{}", fix.stdout);
@@ -371,6 +394,7 @@ async fn doctor_fix_reports_busy_when_the_worktree_lock_is_held_and_keeps_other_
     held.try_lock().expect("hold the worktree lock externally");
 
     let fix = sandbox.run(&["doctor", "--fix", "--format", "json"]);
+    fix.assert_exit_success();
     let report = fix.json();
     drop(held);
 
@@ -392,4 +416,192 @@ async fn doctor_fix_reports_busy_when_the_worktree_lock_is_held_and_keeps_other_
         non_reconciliation_fix_results(&reference_report, reference.dir.path()),
         "independent doctor repairs are preserved"
     );
+}
+
+const FUTURE_SKEW_TOLERANCE_MS: i64 = 5 * 60 * 1000;
+const STATE_TIMESTAMP_FIELDS: [&str; 4] =
+    ["anchor", "last_success", "last_attempt", "last_advised"];
+
+fn now_ms() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_millis(),
+    )
+    .expect("unix ms")
+}
+
+impl Sandbox {
+    fn seed_state(&self, bytes: &[u8]) {
+        std::fs::create_dir_all(self.sce_dir()).expect("sce dir");
+        std::fs::write(self.state_file(), bytes).expect("seed state");
+    }
+
+    fn make_state_unreadable(&self) {
+        std::fs::create_dir_all(self.state_file()).expect("directory in place of the state file");
+    }
+}
+
+fn assert_unreadable_state_outcome(fix: &CliRun, sandbox: &Sandbox, label: &str) {
+    fix.assert_exit_success();
+    let report = fix.json();
+    let reconciliation = &report["ref_reconciliation_fix"];
+    assert_eq!(
+        reconciliation["outcome"], "completed_state_persist_failed",
+        "{label}: {}",
+        fix.stdout
+    );
+    assert_eq!(reconciliation["counts"]["deleted"], 1, "{label}");
+    assert_eq!(reconciliation["counts"]["retained"], 0, "{label}");
+    assert_eq!(reconciliation["counts"]["local_required"], 0, "{label}");
+    assert!(reconciliation["failure"].is_null(), "{label}");
+    let warning = &reconciliation["state_warning"];
+    assert_eq!(warning["kind"], "previous_state_unreadable", "{label}");
+    assert!(warning["phase"].is_null(), "{label}");
+    assert_eq!(
+        warning["message"], "Maintenance state could not be read; the update was not attempted.",
+        "{label}"
+    );
+    assert!(
+        !warning["cause"].as_str().expect("cause").is_empty(),
+        "{label}"
+    );
+
+    let entry = reconciliation_fix_result(&report);
+    assert_eq!(entry["outcome"], "fixed", "{label}");
+    let detail = entry["detail"].as_str().expect("detail");
+    assert!(
+        detail.starts_with(
+            "Snapshot ref reconciliation completed: deleted 1, retained 0, locally required 0. Warning: Maintenance state could not be read; the update was not attempted. Cause: "
+        ),
+        "{label}: {detail}"
+    );
+    assert!(!detail.contains("failed"), "{label}: {detail}");
+
+    assert_eq!(sandbox.refs(), "", "{label}: orphan pin must be deleted");
+    assert!(
+        sandbox.state_file().is_dir(),
+        "{label}: the state path must stay a directory"
+    );
+    assert_eq!(
+        std::fs::read_dir(sandbox.state_file())
+            .expect("state directory")
+            .count(),
+        0,
+        "{label}: the state directory must stay untouched"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_fix_reports_state_persist_failure_when_maintenance_state_is_unreadable() {
+    let sandbox = Sandbox::new("https://example.invalid/org/repo-a.git");
+    sandbox.create_db(&sandbox.repository_id).await;
+    sandbox.orphan_pin();
+    sandbox.make_state_unreadable();
+
+    let fix = sandbox.run(&["doctor", "--fix", "--format", "json"]);
+
+    assert_unreadable_state_outcome(&fix, &sandbox, "unreadable");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_fix_recovers_from_every_initial_maintenance_state_condition() {
+    let now = now_ms();
+    let day_ms = 24 * 60 * 60 * 1000;
+    let year_ms = 365 * day_ms;
+    let failed_streak = serde_json::json!({
+        "version": 1,
+        "anchor": now - 10 * day_ms,
+        "last_attempt": now - 60_000,
+        "last_attempt_outcome": "failed",
+        "consecutive_failures": 3,
+        "last_failure": {"kind": "agent_trace_db_missing", "message": "seeded failure"},
+    });
+    let expired_advisory = serde_json::json!({
+        "version": 1,
+        "anchor": now - 90 * day_ms,
+        "last_success": now - 60 * day_ms,
+        "last_advised": now - 30 * day_ms,
+    });
+    let invalid_timestamps = serde_json::json!({
+        "version": 1,
+        "anchor": now + 10 * year_ms,
+        "last_success": now + 10 * year_ms,
+        "last_attempt": now + 10 * year_ms,
+        "last_advised": now + 10 * year_ms,
+        "last_attempt_outcome": "failed",
+        "consecutive_failures": 2,
+    });
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        ("failed_streak", failed_streak.to_string().into_bytes()),
+        (
+            "expired_advisory",
+            expired_advisory.to_string().into_bytes(),
+        ),
+        (
+            "invalid_timestamps",
+            invalid_timestamps.to_string().into_bytes(),
+        ),
+        ("corrupt", b"not json".to_vec()),
+        ("oversized", vec![b' '; 5000]),
+    ];
+
+    for (label, bytes) in cases {
+        let sandbox = Sandbox::new("https://example.invalid/org/repo-a.git");
+        sandbox.create_db(&sandbox.repository_id).await;
+        sandbox.orphan_pin();
+        sandbox.seed_state(&bytes);
+
+        let fix = sandbox.run(&["doctor", "--fix", "--format", "json"]);
+
+        fix.assert_exit_success();
+        let report = fix.json();
+        let reconciliation = &report["ref_reconciliation_fix"];
+        assert_eq!(
+            reconciliation["outcome"], "completed",
+            "{label}: {}",
+            fix.stdout
+        );
+        assert_eq!(reconciliation["counts"]["deleted"], 1, "{label}");
+        assert!(reconciliation["failure"].is_null(), "{label}");
+        assert!(reconciliation["state_warning"].is_null(), "{label}");
+        assert_eq!(sandbox.refs(), "", "{label}: orphan pin must be reclaimed");
+
+        let after = now_ms();
+        let state = sandbox.state_json();
+        assert_eq!(state["version"], 1, "{label}");
+        assert!(state["last_success"].is_number(), "{label}");
+        assert_eq!(state["last_attempt_outcome"], "completed", "{label}");
+        assert!(
+            state.get("consecutive_failures").is_none_or(|v| v == 0),
+            "{label}: failure streak must be cleared"
+        );
+        assert!(state.get("last_failure").is_none(), "{label}");
+        assert_eq!(state["last_report"]["deleted"], 1, "{label}");
+        for field in STATE_TIMESTAMP_FIELDS {
+            if let Some(value) = state.get(field) {
+                let timestamp = value.as_i64().expect("timestamp");
+                assert!(
+                    timestamp <= after + FUTURE_SKEW_TOLERANCE_MS,
+                    "{label}: {field} must be normalized, got {timestamp}"
+                );
+            }
+        }
+
+        let again = sandbox.run(&["doctor", "--fix", "--format", "json"]);
+        again.assert_exit_success();
+        assert_eq!(
+            again.json()["ref_reconciliation_fix"]["outcome"],
+            "completed",
+            "{label}: the rewritten state is readable"
+        );
+    }
+
+    let sandbox = Sandbox::new("https://example.invalid/org/repo-a.git");
+    sandbox.create_db(&sandbox.repository_id).await;
+    sandbox.orphan_pin();
+    sandbox.make_state_unreadable();
+    let fix = sandbox.run(&["doctor", "--fix", "--format", "json"]);
+    assert_unreadable_state_outcome(&fix, &sandbox, "unreadable_state_file");
 }
