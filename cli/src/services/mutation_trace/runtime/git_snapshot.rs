@@ -185,45 +185,14 @@ impl GitSnapshotService {
             .collect()
     }
 
-    /// Delete exactly `pins` in one atomic, no-dereference
-    /// `git update-ref --no-deref --stdin` transaction, each `delete`
-    /// conditioned on the tree SHA recorded in the [`PinnedRef`].
-    ///
-    /// Two independent safety properties:
-    ///
-    /// - **Atomic** — `git update-ref --stdin` commits every command together
-    ///   at end of input; if any command fails (including a failed old-value
-    ///   check) the whole transaction aborts and no ref is changed.
-    /// - **No dereference** — `--no-deref` makes every `delete` operate on the
-    ///   exact ref name given, never on a ref reached by resolving a symbolic
-    ///   ref. Combined with a fail-closed re-check (below), a
-    ///   direct-ref → symbolic-ref race between inventory and deletion can
-    ///   never cause this call to touch the symref's target (for example a ref
-    ///   owned by another worktree).
-    ///
-    /// Before issuing the transaction, each supplied ref is re-inventoried: it
-    /// must still exist, still be a direct ref to a tree, and still point at
-    /// the inventoried SHA. If any has changed — deleted, retargeted, or turned
-    /// into a symbolic ref — this returns `Err` and deletes nothing, preferring
-    /// failure over acting on unexpected namespace state. An empty slice is a
-    /// successful no-op.
     #[allow(
         dead_code,
         reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
     )]
     pub async fn delete_pins(&self, lease: WorktreeLockLease, pins: &[PinnedRef]) -> Result<()> {
-        self.delete_pins_inner(lease, pins, || {}).await
+        self.delete_pins_inner(lease, pins, || {}, || {}).await
     }
 
-    /// Body of [`delete_pins`] with a deterministic test seam that fires
-    /// **after** the fail-closed preflight re-inventory and **before** the
-    /// `git update-ref --no-deref --stdin` transaction is spawned. Production
-    /// calls it with a no-op hook; the inline atomicity test uses the hook to
-    /// mutate a ref *after* it has passed preflight, so the transaction is
-    /// actually issued and the per-`delete` expected-old-value check — not the
-    /// preflight — is what aborts the batch. This is the only proof that the
-    /// Git transaction itself is atomic; the preflight proves a different
-    /// property (unexpected ref state before the transaction is even attempted).
     #[allow(
         dead_code,
         reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
@@ -233,6 +202,7 @@ impl GitSnapshotService {
         lease: WorktreeLockLease,
         pins: &[PinnedRef],
         after_preflight: impl FnOnce(),
+        on_worker_entered: impl FnOnce() + Send + 'static,
     ) -> Result<()> {
         if pins.is_empty() {
             return Ok(());
@@ -251,7 +221,7 @@ impl GitSnapshotService {
             stdin_payload.push('\n');
         }
 
-        self.run_ref_mutation(
+        self.run_ref_mutation_inner(
             lease,
             vec![
                 "update-ref".to_string(),
@@ -259,23 +229,11 @@ impl GitSnapshotService {
                 "--stdin".to_string(),
             ],
             Some(stdin_payload.into_bytes()),
+            on_worker_entered,
         )
         .await?;
 
         Ok(())
-    }
-
-    #[allow(
-        dead_code,
-        reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-    )]
-    async fn run_ref_mutation(
-        &self,
-        lease: WorktreeLockLease,
-        args: Vec<String>,
-        stdin: Option<Vec<u8>>,
-    ) -> Result<String> {
-        self.run_ref_mutation_inner(lease, args, stdin, || {}).await
     }
 
     async fn run_ref_mutation_inner(
@@ -1057,6 +1015,120 @@ mod tests {
             .await
             .expect("list pins after delete")
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelled_delete_keeps_worktree_lock_until_git_ref_deletion_completes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repo_root = dir.path().join("repo");
+        init_committed_repository(&repo_root);
+        std::fs::write(repo_root.join("untracked.txt"), "untracked\n").expect("write file");
+
+        let git_dir = resolve_git_dir(&repo_root).await.expect("git dir");
+        let worktree_id = WorktreeId("main".to_string());
+        let snapshot = GitSnapshotService::new(&repo_root)
+            .await
+            .expect("snapshot service");
+        let tree = snapshot.capture_tree().await.expect("capture tree");
+        let pin_ref = format!("refs/sce/mutation-cursor/main/{}", tree.0);
+
+        let pin_lock = WorktreeLock::acquire_async(&git_dir, LOCK_RELEASE_TIMEOUT)
+            .await
+            .expect("pin lock");
+        snapshot
+            .pin_tree(pin_lock.lease(), &worktree_id, &tree)
+            .await
+            .expect("pin orphan tree");
+        drop(pin_lock);
+        let pins = snapshot.list_pins(&worktree_id).await.expect("list pins");
+        assert_eq!(
+            pins,
+            vec![PinnedRef {
+                ref_name: pin_ref.clone(),
+                tree: tree.clone(),
+            }]
+        );
+
+        let lock_a = WorktreeLock::acquire_async(&git_dir, LOCK_RELEASE_TIMEOUT)
+            .await
+            .expect("worktree lock A");
+        let lease = lock_a.lease();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+
+        let caller = tokio::spawn({
+            let repo_root = repo_root.clone();
+            let pins = pins.clone();
+            async move {
+                let _lock_a = lock_a;
+                let snapshot = GitSnapshotService::new(&repo_root)
+                    .await
+                    .expect("caller snapshot service");
+                snapshot
+                    .delete_pins_inner(
+                        lease,
+                        &pins,
+                        || {},
+                        move || {
+                            entered_tx.send(()).expect("signal worker entered");
+                            release_rx
+                                .recv_timeout(LOCK_RELEASE_TIMEOUT)
+                                .expect("release worker");
+                        },
+                    )
+                    .await
+            }
+        });
+
+        entered_rx.await.expect("ref deletion worker entered");
+        assert_eq!(
+            snapshot.list_pins(&worktree_id).await.expect("list pins"),
+            pins,
+            "the parked worker must not have deleted the pin yet"
+        );
+
+        caller.abort();
+        assert!(caller
+            .await
+            .expect_err("caller must be cancelled")
+            .is_cancelled());
+
+        assert!(matches!(
+            WorktreeLock::acquire_async(&git_dir, LOCK_CONTENDED_TIMEOUT).await,
+            Err(WorktreeLockError::TimedOut { .. })
+        ));
+        assert_eq!(
+            snapshot
+                .list_pins(&worktree_id)
+                .await
+                .expect("list pins while the worker is still parked"),
+            pins
+        );
+
+        release_tx.send(()).expect("release worker");
+
+        let lock_b = WorktreeLock::acquire_async(&git_dir, LOCK_RELEASE_TIMEOUT)
+            .await
+            .expect("worktree lock B after the ref deletion completes");
+        assert!(snapshot
+            .list_pins(&worktree_id)
+            .await
+            .expect("list pins after the released worker finished")
+            .is_empty());
+        assert!(!git_dir.join(format!("{pin_ref}.lock")).exists());
+        assert!(!git_dir.join("packed-refs.lock").exists());
+
+        snapshot
+            .pin_tree(lock_b.lease(), &worktree_id, &tree)
+            .await
+            .expect("a legitimate pin proceeds after the cancelled deletion");
+        assert_eq!(
+            snapshot
+                .list_pins(&worktree_id)
+                .await
+                .expect("list pins after re-pin"),
+            pins
+        );
     }
 
     #[tokio::test]
