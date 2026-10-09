@@ -89,12 +89,17 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Scaffold the standalone skaza crate and CLI contract` (status:todo)
+- [x] T01: `Scaffold the standalone skaza crate and CLI contract` (status:done)
   - Task ID: T01
   - Scope: In — `crates/skaza/Cargo.toml`, `Cargo.lock`, `src/lib.rs`, `src/main.rs`, empty-but-compiling `src/source.rs`, `src/mutation.rs`, `src/rust.rs`, `src/report.rs`, `queries/rust/`, `tests/` directories; clap derive `Args` with exactly `--src` (repeatable `Vec<PathBuf>`, default `.`), `--limit` (`NonZeroUsize`/validated, default `10`, actionable error on `0`), `--format` (`text`|`json` value enum, default `text`); root `.gitignore` entry `crates/skaza/target/`. Out — discovery, operators, reporting, Nix wiring.
   - Dependencies: none
   - Done when: crate builds with the minimal dependency set and its own lockfile; argument-parsing unit tests cover defaults, repeated `--src`, zero limit rejection, and invalid format; no root workspace is introduced and `cli/` is untouched.
   - Verify: `nix develop -c cargo build --manifest-path crates/skaza/Cargo.toml`; `nix develop -c cargo run --manifest-path crates/skaza/Cargo.toml -- --help`; `... -- --limit 0` exits non-zero; `git check-ignore crates/skaza/target/x`.
+  - Completed: 2026-10-09
+  - Files changed: `.gitignore`, `crates/skaza/Cargo.toml`, `crates/skaza/Cargo.lock`, `crates/skaza/src/lib.rs`, `crates/skaza/src/main.rs`, `crates/skaza/src/source.rs`, `crates/skaza/src/mutation.rs`, `crates/skaza/src/rust.rs`, `crates/skaza/src/report.rs`, `crates/skaza/queries/rust/.gitkeep`, `crates/skaza/tests/.gitkeep`
+  - Result: Added standalone `skaza` package (lib + bin, edition 2021, own lockfile, deps anyhow/clap/ignore/serde/serde_json/thiserror/tree-sitter 0.25/tree-sitter-rust 0.23, dev-dep tempfile). `skaza::Args` (clap derive) exposes `--src` (`Vec<PathBuf>`, default `.`), `--limit` (`NonZeroUsize`, default `10`, custom parser with actionable error), `--format` (`Format::{Text,Json}`, default `text`); no subcommands. `main.rs` parses args only. Four empty modules compile. Seven argument-parsing unit tests in `src/lib.rs` (defaults, repeated `--src`, explicit limit/json, zero limit, non-numeric limit, invalid format, subcommand rejection). `.gitignore` gains `crates/skaza/target/`. No root `Cargo.toml`; `cli/` untouched.
+  - Verify outcome: `cargo build` passed; `--help` lists only `--src`, `--limit`, `--format`, `-h`, `-V`; `--limit 0` exit 2 with `limit must be at least 1; pass a positive value such as \`--limit 10\``; `--format xml` exit 2; `git check-ignore crates/skaza/target/x` matched; `cargo build --tests` and `cargo clippy --all-targets -- -D warnings` passed. Deviation: unit tests compiled but were not executed because the repo bash policy blocks `cargo test` and the `skaza-tests` flake check arrives in T02; T02 runs them.
+  - Context impact: none at T01 (scaffold only; durable Skaza context is scheduled under **Context sync** once behavior exists).
   - Context synchronization: pending
 
 - [ ] T02: `Add independent Skaza checks to the Nix flake` (status:todo)

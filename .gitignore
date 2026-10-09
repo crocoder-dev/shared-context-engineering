@@ -3,6 +3,7 @@ node_modules/
 cli/target/
 cli/package-fallback/
 integrations/**/target/
+crates/skaza/target/
 result*
 dist/
 
