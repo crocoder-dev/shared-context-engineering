@@ -5,9 +5,12 @@ use std::process::ExitCode;
 use crate::services;
 use services::app_support::{self, RunOutcome};
 use services::error::CliError;
-use services::observability::traits::{
-    Logger as LoggerTrait, NoopTelemetry, Telemetry as TelemetryTrait,
-};
+use services::observability::otel_policy::{CommandName, ErrorCategory};
+use services::observability::otel_runtime::lifecycle_markers::{mark, LifecycleMarker};
+use services::observability::otel_runtime::{select_runtime_telemetry, RuntimeTelemetry};
+use services::observability::trace_context::extract_remote_parent;
+use services::observability::tracing_boundary::CommandSpan;
+use services::observability::traits::{Logger as LoggerTrait, Telemetry as TelemetryTrait};
 
 const REPEATED_COMMAND_DISPATCH_ERROR: &str =
     "Command lifecycle telemetry attempted to execute command dispatch more than once";
@@ -19,7 +22,7 @@ struct StartupContext {
 
 struct AppRuntime {
     logger: services::observability::Logger,
-    telemetry: NoopTelemetry,
+    telemetry: RuntimeTelemetry,
     fs: services::capabilities::StdFsOps,
     git: services::capabilities::ProcessGitOps,
     registry: services::command_registry::CommandRegistry,
@@ -32,7 +35,7 @@ struct AppRuntime {
 pub struct AppContext<
     'a,
     L: LoggerTrait = services::observability::Logger,
-    T: TelemetryTrait = NoopTelemetry,
+    T: TelemetryTrait = RuntimeTelemetry,
     F: services::capabilities::FsOps = services::capabilities::StdFsOps,
     G: services::capabilities::GitOps = services::capabilities::ProcessGitOps,
 > {
@@ -46,7 +49,7 @@ pub struct AppContext<
 type ProductionAppContext<'a> = AppContext<
     'a,
     services::observability::Logger,
-    NoopTelemetry,
+    RuntimeTelemetry,
     services::capabilities::StdFsOps,
     services::capabilities::ProcessGitOps,
 >;
@@ -236,18 +239,25 @@ where
     StdoutW: Write,
     StderrW: Write,
 {
-    app_support::render_run_outcome(
-        try_run_with_dependency_check(args, dependency_check, stderr).await,
-        stdout,
-        stderr,
-    )
+    let (outcome, telemetry) = try_run_with_dependency_check(args, dependency_check, stderr).await;
+    let code = app_support::render_run_outcome(outcome, stdout, stderr);
+    let _ = stdout.flush();
+    let _ = stderr.flush();
+    mark(LifecycleMarker::ShutdownBegin);
+    telemetry.shutdown().await;
+    mark(LifecycleMarker::ShutdownEnd);
+    mark(LifecycleMarker::ProcessExitRequested);
+    code
 }
 
 async fn try_run_with_dependency_check<I, F, StderrW>(
     args: I,
     dependency_check: F,
     stderr: &mut StderrW,
-) -> RunOutcome<services::observability::Logger>
+) -> (
+    RunOutcome<services::observability::Logger>,
+    RuntimeTelemetry,
+)
 where
     I: IntoIterator<Item = String>,
     F: FnOnce() -> anyhow::Result<()>,
@@ -257,22 +267,35 @@ where
         .and_then(|()| build_startup_context())
         .and_then(initialize_runtime);
 
+    let args = args.into_iter().collect::<Vec<_>>();
     match result {
-        Ok(runtime) => {
+        Ok(mut runtime) => {
+            runtime.telemetry = select_runtime_telemetry(&args, &runtime.registry, &process_env);
             let startup_diagnostic = runtime.startup_diagnostic.clone();
             let result = run_command_lifecycle(args, &runtime, stderr).await;
-            RunOutcome {
-                logger: Some(runtime.logger),
-                startup_diagnostic,
-                result,
-            }
+            mark(LifecycleMarker::CommandComplete);
+            (
+                RunOutcome {
+                    logger: Some(runtime.logger),
+                    startup_diagnostic,
+                    result,
+                },
+                runtime.telemetry,
+            )
         }
-        Err(error) => RunOutcome {
-            result: Err(error),
-            logger: None,
-            startup_diagnostic: None,
-        },
+        Err(error) => (
+            RunOutcome {
+                result: Err(error),
+                logger: None,
+                startup_diagnostic: None,
+            },
+            RuntimeTelemetry::disabled(),
+        ),
     }
+}
+
+fn process_env(key: &str) -> Option<String> {
+    std::env::var(key).ok()
 }
 
 fn perform_dependency_check<F: FnOnce() -> anyhow::Result<()>>(
@@ -308,7 +331,7 @@ fn initialize_runtime(startup: StartupContext) -> Result<AppRuntime, CliError> {
     app_support::log_startup_configuration(&logger, &startup.observability_config);
     Ok(AppRuntime {
         logger,
-        telemetry: NoopTelemetry,
+        telemetry: RuntimeTelemetry::disabled(),
         fs: services::capabilities::StdFsOps,
         git: services::capabilities::ProcessGitOps,
         registry: services::command_registry::build_default_registry(),
@@ -360,7 +383,22 @@ where
                     )));
                 };
                 let command = parse_command_phase(command_args, registry, context)?;
-                app_support::execute_command_phase(&command, context, stderr).await
+                let span = CommandSpan::start(
+                    CommandName::parse(command.name().as_ref()),
+                    extract_remote_parent(&process_env),
+                );
+                let result = span
+                    .scope(app_support::execute_command_phase(
+                        &command, context, stderr,
+                    ))
+                    .await;
+                span.finish(
+                    result
+                        .as_ref()
+                        .err()
+                        .map(|error| ErrorCategory::from(error.class())),
+                );
+                result
             }
         })
         .await
@@ -388,6 +426,8 @@ where
 
 #[cfg(test)]
 mod doctor_reconciliation_cli_tests;
+#[cfg(test)]
+mod telemetry_tests;
 
 #[cfg(test)]
 mod tests {
@@ -395,6 +435,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use services::observability::traits::NoopTelemetry;
 
     #[derive(Default)]
     struct RecordingScope {

@@ -54,6 +54,21 @@ impl RuntimeCommand {
         }
     }
 
+    pub fn is_hook_invocation(&self) -> bool {
+        match self {
+            Self::Hooks(_) | Self::Policy(_) => true,
+            Self::Help(_)
+            | Self::HelpText(_)
+            | Self::Auth(_)
+            | Self::Config(_)
+            | Self::Setup(_)
+            | Self::Doctor(_)
+            | Self::Version(_)
+            | Self::Completion(_)
+            | Self::Sync(_) => false,
+        }
+    }
+
     pub async fn execute_with_stderr<C, W>(
         &self,
         context: &C,

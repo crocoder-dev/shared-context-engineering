@@ -18,6 +18,7 @@ use crate::services::agent_trace_export::{
     AgentTracePartExportRow,
 };
 use crate::services::auth::{self, AuthError, TokenResponse};
+use crate::services::observability::tracing_boundary::spawn_in_current_scope;
 use crate::services::resilience::{run_with_retry, RetryPolicy};
 use crate::services::token_storage::{self, StoredTokens, TokenStorageError};
 
@@ -522,7 +523,7 @@ impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
         let workos_client_id = self.workos_client_id.clone();
         let credential_store = Arc::clone(&self.credential_store);
 
-        tokio::spawn(async move {
+        spawn_in_current_scope(async move {
             let _refresh_guard = refresh_guard;
             let token = auth::renew_stored_token_from_refresh_token(
                 &http,
