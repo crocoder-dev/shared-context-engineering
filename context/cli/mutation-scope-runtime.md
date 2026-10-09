@@ -33,7 +33,7 @@ The mechanics live in [`mutation-trace-runtime-coordinator.md`](mutation-trace-r
 
 `ExternalTaintOperation` crosses the boundary because it is part of `CoordinateError`'s public shape. It lives in `protected_worktree.rs` and is re-exported by `coordinator.rs` without making that module public.
 
-Every runtime `mod` stays private, including `ProtectedWorktree`, its error, `WORKTREE_LOCK_TIMEOUT`, and `reconcile_worktree`. Adapters drive only the two entrypoints and never assemble the safety prefix.
+Every runtime `mod` stays private, including `ProtectedWorktree`, its error, `WORKTREE_LOCK_TIMEOUT`, and `reconcile_explicit`. Adapters drive only the two entrypoints and never assemble the safety prefix.
 
 The re-exports are the intentional crate-visible seam consumed by the generic ingress; runtime internals stay private. The two re-export statements retain `#[allow(unused_imports)]` because no consumer names the completing types yet.
 

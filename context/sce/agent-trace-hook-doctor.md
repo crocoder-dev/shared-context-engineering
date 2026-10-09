@@ -132,6 +132,10 @@ The broadened contract for `sce doctor` must cover the following problem invento
 - Agent Trace DB file exists but cannot be opened (connection failure) or has incomplete schema (missing/unapplied migrations) — reported as `AgentTraceDbConnectionFailed` / `AgentTraceDbSchemaNotReady` with manual-only remediation directing to `sce setup`
 - Repository-scoped DB path/health remains in the complete report and JSON; human text summarizes it under `Environment` → `Repository identity` without exposing healthy identity metadata. Repository DB records include repository ID, identity source, safe canonical identity, configured remote name, and never raw remote URLs. Checkout identity was removed by the `remove-checkout-id` plan and is no longer reported (see `context/cli/checkout-identity.md`)
 
+### Snapshot-ref reconciliation
+
+- `sce doctor --fix` always runs one explicit snapshot-ref reconciliation pass and reports its true typed result; plain `sce doctor` stays read-only (no ref or maintenance-state write) and reports a recommendation only when one is due. Details in [../cli/doctor-ref-reconciliation.md](../cli/doctor-ref-reconciliation.md). Reconciliation is never automatic.
+
 ### Repository targeting and git readiness
 
 - repo-scoped checks are required but `sce doctor` is run outside a git repository
