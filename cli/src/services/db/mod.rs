@@ -17,6 +17,9 @@ use crate::services::config::{AgentTraceDbRetryConfig, DatabaseRetryConfig};
 use crate::services::lifecycle::{
     HealthCategory, HealthFixability, HealthProblem, HealthProblemKind, HealthSeverity,
 };
+use crate::services::observability::tracing_boundary::{
+    DbName, OperationClass, CONTENTION_EXHAUSTED_EVENT_ID,
+};
 use crate::services::resilience::{run_with_retry_elapsed, RetryOperation, RetryPolicy};
 
 const MIGRATIONS_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS __sce_migrations (
@@ -749,7 +752,6 @@ async fn run_with_write_contention_retry_using<T, Sleep: std::future::Future<Out
     }
 }
 
-const CONTENTION_EXHAUSTED_EVENT_ID: &str = "sce.agent_trace_db.contention_exhausted";
 const CONTENTION_EXHAUSTED_CAUSE: &str = "database busy (busy timeout exhausted)";
 
 fn contention_exhausted_error(
@@ -768,14 +770,13 @@ fn contention_exhausted_error(
     tracing::warn!(
         target: "sce",
         event_id = CONTENTION_EXHAUSTED_EVENT_ID,
-        db_name = policy.db_name,
-        operation = operation_name,
+        db_name = DbName::classify(policy.db_name).as_str(),
+        operation = OperationClass::classify(operation_name).as_str(),
         attempts,
         busy_timeout_ms,
         contention_deadline_ms,
         elapsed_ms,
         cause = CONTENTION_EXHAUSTED_CAUSE,
-        last_error = %last_error,
         "Agent Trace DB write contention retries exhausted"
     );
 
@@ -1441,3 +1442,6 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
 
 #[cfg(test)]
 mod transaction_cancellation_tests;
+
+#[cfg(test)]
+mod tracing_boundary_tests;

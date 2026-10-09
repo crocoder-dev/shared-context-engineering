@@ -3,6 +3,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, ensure, Result};
 
+use crate::services::observability::tracing_boundary::{OperationClass, RESILIENCE_RETRY_EVENT_ID};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RetryPolicy {
     pub max_attempts: u32,
@@ -74,13 +76,12 @@ where
 
         let backoff = policy.backoff_for_attempt(attempt + 1);
         tracing::warn!(
-            event_id = "sce.resilience.retry",
-            operation = operation_name,
+            event_id = RESILIENCE_RETRY_EVENT_ID,
+            operation = OperationClass::classify(operation_name).as_str(),
             attempt,
             max_attempts = policy.max_attempts,
             timeout_ms = policy.timeout_ms,
             backoff_ms = u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX),
-            error = %last_error,
             "Retrying operation after transient failure"
         );
         tokio::time::sleep(backoff).await;
@@ -163,13 +164,12 @@ where
 
         let backoff = policy.backoff_for_attempt(attempt + 1);
         tracing::warn!(
-            event_id = "sce.resilience.retry",
-            operation = operation_name,
+            event_id = RESILIENCE_RETRY_EVENT_ID,
+            operation = OperationClass::classify(operation_name).as_str(),
             attempt,
             max_attempts = policy.max_attempts,
             timeout_ms = policy.timeout_ms,
             backoff_ms = u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX),
-            error = %last_error,
             "Retrying operation after transient failure"
         );
         tokio::time::sleep(backoff).await;
@@ -184,4 +184,52 @@ where
         last_error,
         retry_hint
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::observability::tracing_boundary::test_capture::CapturingSubscriber;
+
+    const SECRET: &str = "sk-live-SECRET-TOKEN-9f8e7d";
+    const SENSITIVE_PATH: &str = "/home/victim/.config/sce/auth.json";
+
+    #[test]
+    fn tracing_boundary_a_retry_event_omits_error_text_and_classifies_operation() {
+        let policy = RetryPolicy {
+            max_attempts: 2,
+            timeout_ms: 1_000,
+            initial_backoff_ms: 1,
+            max_backoff_ms: 1,
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime");
+
+        let events = CapturingSubscriber::capture(|| {
+            runtime.block_on(async {
+                let _ = run_with_retry(policy, SENSITIVE_PATH, "retry later", |_| async {
+                    Err::<(), _>(anyhow!("open {SENSITIVE_PATH} with {SECRET}"))
+                })
+                .await;
+                let _ = run_with_retry(policy, "auth.refresh_token", "retry later", |_| async {
+                    Err::<(), _>(anyhow!("denied {SECRET}"))
+                })
+                .await;
+            });
+        });
+
+        assert_eq!(events.len(), 2);
+        for event in &events {
+            let rendered = event.rendered();
+            for needle in [SECRET, SENSITIVE_PATH] {
+                assert!(!rendered.contains(needle), "leaked {needle}: {rendered}");
+            }
+            assert!(event.field("error").is_none());
+            assert_eq!(event.field("event_id"), Some("sce.resilience.retry"));
+        }
+        assert_eq!(events[0].field("operation"), Some("unclassified"));
+        assert_eq!(events[1].field("operation"), Some("auth.refresh_token"));
+    }
 }

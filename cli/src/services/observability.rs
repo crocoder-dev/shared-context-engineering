@@ -19,7 +19,11 @@ use crate::services::config::{self, LogFormat, LogLevel, ENV_LOG_DIR};
 use crate::services::error::CliError;
 use crate::services::security::redact_sensitive_text;
 
+pub mod otel_policy;
+pub mod tracing_boundary;
 pub mod traits;
+
+use tracing_boundary::{classify_event_id, cli_error_tracing_event_id, SCE_TRACING_TARGET};
 
 pub const NAME: &str = "observability";
 const LOG_FILE_PREFIX: &str = "sce";
@@ -122,9 +126,14 @@ impl Logger {
             .map(|(key, value)| (*key, value.as_str()))
             .collect();
 
-        self.log(
+        if !self.enabled(LogLevel::Error) {
+            return;
+        }
+
+        self.log_classified(
             LogLevel::Error,
             &event_id,
+            cli_error_tracing_event_id(error),
             &message,
             &field_refs,
             session_id,
@@ -154,7 +163,26 @@ impl Logger {
         fields: &[(&str, &str)],
         session_id: Option<&str>,
     ) {
-        emit_tracing_event(level, event_id, message, fields);
+        self.log_classified(
+            level,
+            event_id,
+            classify_event_id(event_id),
+            message,
+            fields,
+            session_id,
+        );
+    }
+
+    fn log_classified(
+        &self,
+        level: LogLevel,
+        event_id: &str,
+        tracing_event_id: &'static str,
+        message: &str,
+        fields: &[(&str, &str)],
+        session_id: Option<&str>,
+    ) {
+        emit_tracing_event(level, tracing_event_id);
 
         let line = self.render_line(level, event_id, message, fields);
         let redacted_line = redact_sensitive_text(&line);
@@ -607,8 +635,38 @@ fn emit_stderr_line(line: &str) {
     let _ = stderr.flush();
 }
 
-fn emit_tracing_event(level: LogLevel, event_id: &str, message: &str, fields: &[(&str, &str)]) {
-    emit_tracing_event_with_fields_json(level, event_id, message, || tracing_fields_json(fields));
+fn emit_tracing_event(level: LogLevel, tracing_event_id: &'static str) {
+    if !tracing_event_enabled(level) {
+        return;
+    }
+
+    let log_level = level.as_str();
+    match level {
+        LogLevel::Error => tracing::error!(
+            target: SCE_TRACING_TARGET,
+            event_id = tracing_event_id,
+            log_level = log_level,
+            "sce log event"
+        ),
+        LogLevel::Warn => tracing::warn!(
+            target: SCE_TRACING_TARGET,
+            event_id = tracing_event_id,
+            log_level = log_level,
+            "sce log event"
+        ),
+        LogLevel::Info => tracing::info!(
+            target: SCE_TRACING_TARGET,
+            event_id = tracing_event_id,
+            log_level = log_level,
+            "sce log event"
+        ),
+        LogLevel::Debug => tracing::debug!(
+            target: SCE_TRACING_TARGET,
+            event_id = tracing_event_id,
+            log_level = log_level,
+            "sce log event"
+        ),
+    }
 }
 
 fn tracing_event_enabled(level: LogLevel) -> bool {
@@ -617,61 +675,6 @@ fn tracing_event_enabled(level: LogLevel) -> bool {
         LogLevel::Warn => tracing::enabled!(target: "sce", Level::WARN),
         LogLevel::Info => tracing::enabled!(target: "sce", Level::INFO),
         LogLevel::Debug => tracing::enabled!(target: "sce", Level::DEBUG),
-    }
-}
-
-fn tracing_fields_json(fields: &[(&str, &str)]) -> String {
-    let detail_fields = fields
-        .iter()
-        .map(|(key, value)| {
-            (
-                (*key).to_string(),
-                serde_json::Value::String((*value).to_string()),
-            )
-        })
-        .collect::<serde_json::Map<String, serde_json::Value>>();
-    serde_json::Value::Object(detail_fields).to_string()
-}
-
-fn emit_tracing_event_with_fields_json<F>(
-    level: LogLevel,
-    event_id: &str,
-    message: &str,
-    fields_json: F,
-) where
-    F: FnOnce() -> String,
-{
-    if !tracing_event_enabled(level) {
-        return;
-    }
-
-    let fields_json = fields_json();
-
-    match level {
-        LogLevel::Error => tracing::error!(
-            target: "sce",
-            event_id = event_id,
-            event_message = message,
-            fields = %fields_json
-        ),
-        LogLevel::Warn => tracing::warn!(
-            target: "sce",
-            event_id = event_id,
-            event_message = message,
-            fields = %fields_json
-        ),
-        LogLevel::Info => tracing::info!(
-            target: "sce",
-            event_id = event_id,
-            event_message = message,
-            fields = %fields_json
-        ),
-        LogLevel::Debug => tracing::debug!(
-            target: "sce",
-            event_id = event_id,
-            event_message = message,
-            fields = %fields_json
-        ),
     }
 }
 
