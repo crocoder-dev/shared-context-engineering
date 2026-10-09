@@ -21,18 +21,9 @@ const EXIT_FAILURE: &str = "failure";
 struct CliRun {
     stdout: String,
     stderr: String,
-    exit: String,
 }
 
 impl CliRun {
-    fn assert_exit_success(&self) {
-        assert_eq!(
-            self.exit, EXIT_SUCCESS,
-            "doctor exit status:\n{}\n{}",
-            self.stdout, self.stderr
-        );
-    }
-
     fn json(&self) -> Value {
         serde_json::from_str(&self.stdout)
             .unwrap_or_else(|error| panic!("doctor stdout is not JSON ({error}):\n{}", self.stdout))
@@ -168,11 +159,20 @@ impl Sandbox {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        CliRun {
+        let run = CliRun {
             stdout: std::fs::read_to_string(out.join("stdout")).expect("stdout"),
             stderr: std::fs::read_to_string(out.join("stderr")).expect("stderr"),
-            exit: std::fs::read_to_string(out.join("exit")).expect("exit"),
-        }
+        };
+        let exit = std::fs::read_to_string(out.join("exit")).expect("exit");
+        assert_eq!(
+            exit,
+            EXIT_SUCCESS,
+            "sce {} exit status:\n{}\n{}",
+            args.join(" "),
+            run.stdout,
+            run.stderr
+        );
+        run
     }
 }
 
@@ -241,7 +241,7 @@ async fn doctor_reconciliation_cli_child() {
         &mut stderr,
     ))
     .await;
-    let exit = if format!("{exit_code:?}") == format!("{:?}", ExitCode::SUCCESS) {
+    let exit = if exit_code == ExitCode::SUCCESS {
         EXIT_SUCCESS
     } else {
         EXIT_FAILURE
@@ -260,7 +260,6 @@ async fn doctor_inspection_is_read_only_and_fix_reconciles_the_orphan_pin_once()
     assert!(refs_before.contains(&tree));
 
     let inspection = sandbox.run(&["doctor", "--format", "json"]);
-    inspection.assert_exit_success();
     let report = inspection.json();
     assert!(
         report["ref_reconciliation_fix"].is_null(),
@@ -271,7 +270,6 @@ async fn doctor_inspection_is_read_only_and_fix_reconciles_the_orphan_pin_once()
     assert_eq!(sandbox.state_bytes(), None);
 
     let fix = sandbox.run(&["doctor", "--fix", "--format", "json"]);
-    fix.assert_exit_success();
     let report = fix.json();
     let reconciliation = &report["ref_reconciliation_fix"];
     assert_eq!(reconciliation["outcome"], "completed", "{}", fix.stdout);
@@ -307,7 +305,6 @@ async fn doctor_fix_reports_missing_database_without_creating_it_or_deleting_ref
     let db_path = sandbox.db_path();
 
     let fix = sandbox.run(&["doctor", "--fix", "--format", "json"]);
-    fix.assert_exit_success();
     let report = fix.json();
     let reconciliation = &report["ref_reconciliation_fix"];
     assert_eq!(reconciliation["outcome"], "failed", "{}", fix.stdout);
@@ -353,7 +350,6 @@ async fn doctor_fix_reports_repository_mismatch_without_touching_the_database_or
     let refs_before = sandbox.refs();
 
     let fix = sandbox.run(&["doctor", "--fix", "--format", "json"]);
-    fix.assert_exit_success();
     let report = fix.json();
     let reconciliation = &report["ref_reconciliation_fix"];
     assert_eq!(reconciliation["outcome"], "failed", "{}", fix.stdout);
@@ -398,7 +394,6 @@ async fn doctor_fix_reports_busy_when_the_worktree_lock_is_held_and_keeps_other_
     held.try_lock().expect("hold the worktree lock externally");
 
     let fix = sandbox.run(&["doctor", "--fix", "--format", "json"]);
-    fix.assert_exit_success();
     let report = fix.json();
     drop(held);
 
@@ -448,7 +443,6 @@ impl Sandbox {
 }
 
 fn assert_unreadable_state_outcome(fix: &CliRun, sandbox: &Sandbox, label: &str) {
-    fix.assert_exit_success();
     let report = fix.json();
     let reconciliation = &report["ref_reconciliation_fix"];
     assert_eq!(
@@ -559,7 +553,6 @@ async fn doctor_fix_recovers_from_every_initial_maintenance_state_condition() {
 
         let fix = sandbox.run(&["doctor", "--fix", "--format", "json"]);
 
-        fix.assert_exit_success();
         let report = fix.json();
         let reconciliation = &report["ref_reconciliation_fix"];
         assert_eq!(
@@ -594,18 +587,10 @@ async fn doctor_fix_recovers_from_every_initial_maintenance_state_condition() {
         }
 
         let again = sandbox.run(&["doctor", "--fix", "--format", "json"]);
-        again.assert_exit_success();
         assert_eq!(
             again.json()["ref_reconciliation_fix"]["outcome"],
             "completed",
             "{label}: the rewritten state is readable"
         );
     }
-
-    let sandbox = Sandbox::new("https://example.invalid/org/repo-a.git");
-    sandbox.create_db(&sandbox.repository_id).await;
-    sandbox.orphan_pin();
-    sandbox.make_state_unreadable();
-    let fix = sandbox.run(&["doctor", "--fix", "--format", "json"]);
-    assert_unreadable_state_outcome(&fix, &sandbox, "unreadable_state_file");
 }

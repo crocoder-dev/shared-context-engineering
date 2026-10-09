@@ -1,7 +1,5 @@
 use std::collections::BTreeSet;
 use std::path::Path;
-#[cfg(test)]
-use std::time::Duration;
 
 use anyhow::Result;
 
@@ -10,15 +8,8 @@ use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::mutation_trace::store::MutationTraceStore;
 use crate::services::mutation_trace::types::TreeId;
 
-#[cfg(test)]
-use super::git_snapshot::resolve_git_dir;
 use super::git_snapshot::{GitSnapshotService, PinInventoryError, PinnedRef};
-#[cfg(test)]
-use super::worktree_lock::acquire_inner_async;
 use super::worktree_lock::{WorktreeLock, WorktreeLockError};
-
-#[cfg(test)]
-const RECONCILIATION_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReconciliationReport {
@@ -75,38 +66,6 @@ impl std::fmt::Display for ReconcileError {
 }
 
 impl std::error::Error for ReconcileError {}
-
-#[cfg(test)]
-pub async fn reconcile_worktree<P>(
-    repository_root: &Path,
-    open_db: P,
-) -> std::result::Result<ReconciliationOutcome, ReconcileError>
-where
-    P: std::ops::AsyncFnOnce() -> Result<RepositoryAgentTraceDb>,
-{
-    reconcile_worktree_inner(repository_root, open_db, || {}).await
-}
-
-#[cfg(test)]
-pub(super) async fn reconcile_worktree_inner<P, F>(
-    repository_root: &Path,
-    open_db: P,
-    on_lock_contention: F,
-) -> std::result::Result<ReconciliationOutcome, ReconcileError>
-where
-    P: std::ops::AsyncFnOnce() -> Result<RepositoryAgentTraceDb>,
-    F: FnOnce() + Send + 'static,
-{
-    let git_dir = resolve_git_dir(repository_root)
-        .await
-        .map_err(ReconcileError::GitDir)?;
-
-    let lock = acquire_inner_async(&git_dir, RECONCILIATION_LOCK_TIMEOUT, on_lock_contention)
-        .await
-        .map_err(ReconcileError::Lock)?;
-
-    reconcile_with_held_lock(repository_root, &lock, open_db, |_| {}).await
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ReconcilePhase {

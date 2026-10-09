@@ -626,15 +626,13 @@ mod tests {
             .count()
     }
 
-    fn assert_not_applied(
-        phase: PersistPhase,
-        previous_marker: Option<usize>,
-    ) -> (tempfile::TempDir, PathBuf) {
+    fn assert_not_applied(phase: PersistPhase, previous_marker: Option<usize>) {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = state_file(dir.path());
         if let Some(marker) = previous_marker {
             write_state_atomically(&path, &state(marker)).expect("seed");
         }
+        let previous_bytes = std::fs::read(&path).ok();
 
         let fs = FaultInjectingFilesystem::failing_at(phase);
         let failure =
@@ -649,9 +647,14 @@ mod tests {
         };
         assert_eq!(reported, phase);
         assert!(staging_cleanup.is_none());
+        assert_eq!(std::fs::read(&path).ok(), previous_bytes);
+        assert_eq!(path.exists(), previous_marker.is_some());
         assert_eq!(stored_marker(&path), previous_marker);
         assert_eq!(staging_leftovers(dir.path()), 0);
-        (dir, path)
+
+        write_state_atomically(&path, &state(100)).expect("recovery write");
+        assert_eq!(stored_marker(&path), Some(100));
+        assert_eq!(staging_leftovers(dir.path()), 0);
     }
 
     #[test]
@@ -665,71 +668,49 @@ mod tests {
     }
 
     #[test]
-    fn maintenance_state_staging_creation_failure_preserves_previous_state() {
-        assert_not_applied(PersistPhase::CreateStaging, Some(1));
+    fn maintenance_state_pre_rename_failures_preserve_previous_state() {
+        for (phase, previous_marker) in [
+            (PersistPhase::CreateStaging, Some(1)),
+            (PersistPhase::WriteStaging, Some(1)),
+            (PersistPhase::SyncStaging, Some(1)),
+            (PersistPhase::Rename, Some(1)),
+            (PersistPhase::Rename, None),
+        ] {
+            assert_not_applied(phase, previous_marker);
+        }
     }
 
     #[test]
-    fn maintenance_state_staging_write_failure_preserves_previous_state_and_cleans_up() {
-        assert_not_applied(PersistPhase::WriteStaging, Some(1));
-    }
+    fn maintenance_state_post_rename_failures_report_uncertain_durability() {
+        for phase in [
+            PersistPhase::OpenParentDirectory,
+            PersistPhase::SyncParentDirectory,
+        ] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = state_file(dir.path());
+            write_state_atomically(&path, &state(1)).expect("seed");
 
-    #[test]
-    fn maintenance_state_staging_sync_failure_preserves_previous_state_and_cleans_up() {
-        assert_not_applied(PersistPhase::SyncStaging, Some(1));
-    }
+            let fs = FaultInjectingFilesystem::failing_at(phase);
+            let failure = write_state_atomically_with(&fs, &path, &state(2)).expect_err("failure");
+            let PersistFailure::DurabilityUncertain {
+                phase: reported, ..
+            } = failure
+            else {
+                panic!("expected DurabilityUncertain for {phase:?}, got {failure:?}");
+            };
+            assert_eq!(reported, phase);
+            let rendered = failure.to_string();
+            assert!(rendered.contains("may be visible"), "{phase:?}: {rendered}");
+            assert!(
+                !rendered.contains("previous state preserved"),
+                "{phase:?}: {rendered}"
+            );
+            assert_eq!(stored_marker(&path), Some(2), "{phase:?}");
+            assert_eq!(staging_leftovers(dir.path()), 0, "{phase:?}");
 
-    #[test]
-    fn maintenance_state_rename_failure_preserves_previous_state_and_cleans_up() {
-        assert_not_applied(PersistPhase::Rename, Some(1));
-    }
-
-    #[test]
-    fn maintenance_state_rename_failure_without_previous_state_leaves_no_state() {
-        assert_not_applied(PersistPhase::Rename, None);
-    }
-
-    #[test]
-    fn maintenance_state_parent_directory_open_failure_is_durability_uncertain() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = state_file(dir.path());
-        write_state_atomically(&path, &state(1)).expect("seed");
-
-        let fs = FaultInjectingFilesystem::failing_at(PersistPhase::OpenParentDirectory);
-        let failure = write_state_atomically_with(&fs, &path, &state(2)).expect_err("failure");
-        assert!(matches!(
-            failure,
-            PersistFailure::DurabilityUncertain {
-                phase: PersistPhase::OpenParentDirectory,
-                ..
-            }
-        ));
-        assert!(failure.to_string().contains("may be visible"));
-        assert_eq!(stored_marker(&path), Some(2));
-        assert_eq!(staging_leftovers(dir.path()), 0);
-    }
-
-    #[test]
-    fn maintenance_state_parent_directory_sync_failure_distinguishes_visibility_from_durability() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = state_file(dir.path());
-        write_state_atomically(&path, &state(1)).expect("seed");
-
-        let fs = FaultInjectingFilesystem::failing_at(PersistPhase::SyncParentDirectory);
-        let failure = write_state_atomically_with(&fs, &path, &state(2)).expect_err("failure");
-        assert!(matches!(
-            failure,
-            PersistFailure::DurabilityUncertain {
-                phase: PersistPhase::SyncParentDirectory,
-                ..
-            }
-        ));
-        assert!(!failure.to_string().contains("previous state preserved"));
-        assert_eq!(stored_marker(&path), Some(2));
-        assert_eq!(staging_leftovers(dir.path()), 0);
-
-        write_state_atomically(&path, &state(3)).expect("recovery write");
-        assert_eq!(stored_marker(&path), Some(3));
+            write_state_atomically(&path, &state(3)).expect("recovery write");
+            assert_eq!(stored_marker(&path), Some(3), "{phase:?}");
+        }
     }
 
     #[test]

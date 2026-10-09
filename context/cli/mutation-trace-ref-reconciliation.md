@@ -67,9 +67,8 @@ each maintenance operation acquires it **exactly once**:
   no opener parameter; the injection seam is private to `ref_maintenance`.
 - `advise_if_due` takes one zero-wait `try_lock`, has no Git/DB/store
   parameters, and never reaches reconciliation.
-- The lock-acquiring wrappers `reconcile_worktree` and `reconcile_worktree_inner`
-  (`acquire_inner_async` with `RECONCILIATION_LOCK_TIMEOUT`, then delegate) are
-  `#[cfg(test)]` only; production uses `reconcile_explicit`.
+- `reconcile_with_held_lock` is the only reconciliation entrypoint; it never
+  acquires the lock. The former test-only lock-acquiring wrappers were removed.
 
 Mutating Git work receives `lock.lease()` and moves it into the `spawn_blocking`
 worker, so dropping the caller future cannot release the file lock while a ref
