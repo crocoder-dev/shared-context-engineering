@@ -1,6 +1,13 @@
+use tracing::Level;
+
+use crate::services::config::LogLevel;
 use crate::services::error::{CliError, FailureClass};
 
+#[cfg(test)]
+mod audit;
+
 pub const SCE_TRACING_TARGET: &str = "sce";
+pub const CONTENTION_EXHAUSTED_CAUSE: &str = "database busy (busy timeout exhausted)";
 pub const UNCLASSIFIED_EVENT_ID: &str = "sce.unclassified";
 pub const UNCLASSIFIED_LABEL: &str = "unclassified";
 pub const RESILIENCE_RETRY_EVENT_ID: &str = "sce.resilience.retry";
@@ -65,6 +72,26 @@ pub fn cli_error_tracing_event_id(error: &CliError) -> &'static str {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EventId(&'static str);
+
+impl EventId {
+    pub const RESILIENCE_RETRY: Self = Self(RESILIENCE_RETRY_EVENT_ID);
+    pub const CONTENTION_EXHAUSTED: Self = Self(CONTENTION_EXHAUSTED_EVENT_ID);
+
+    pub fn classify(event_id: &str) -> Self {
+        Self(classify_event_id(event_id))
+    }
+
+    pub fn from_cli_error(error: &CliError) -> Self {
+        Self(cli_error_tracing_event_id(error))
+    }
+
+    pub fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperationClass {
     AuthRefreshToken,
     AgentTraceSyncIngestionState,
@@ -79,6 +106,25 @@ pub enum OperationClass {
 }
 
 impl OperationClass {
+    pub const ALL: [Self; 10] = [
+        Self::AuthRefreshToken,
+        Self::AgentTraceSyncIngestionState,
+        Self::DbOpenConnection,
+        Self::DbOpenEncryptedConnection,
+        Self::DbExecuteQuery,
+        Self::DbExecuteEncryptedQuery,
+        Self::DbQueryRows,
+        Self::DbQueryEncryptedRows,
+        Self::DbCheckpointWal,
+        Self::Unclassified,
+    ];
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|candidate| candidate.as_str() == value)
+    }
+
     pub fn classify(operation: &str) -> Self {
         match operation {
             "auth.refresh_token" => return Self::AuthRefreshToken,
@@ -153,6 +199,94 @@ impl DbName {
             Self::Unclassified => UNCLASSIFIED_LABEL,
         }
     }
+}
+
+pub fn emit_logger_event(level: LogLevel, event_id: EventId) {
+    let enabled = match level {
+        LogLevel::Error => tracing::enabled!(target: SCE_TRACING_TARGET, Level::ERROR),
+        LogLevel::Warn => tracing::enabled!(target: SCE_TRACING_TARGET, Level::WARN),
+        LogLevel::Info => tracing::enabled!(target: SCE_TRACING_TARGET, Level::INFO),
+        LogLevel::Debug => tracing::enabled!(target: SCE_TRACING_TARGET, Level::DEBUG),
+    };
+    if !enabled {
+        return;
+    }
+
+    let event_id = event_id.as_str();
+    let log_level = level.as_str();
+    match level {
+        LogLevel::Error => tracing::error!(
+            target: SCE_TRACING_TARGET,
+            event_id,
+            log_level,
+            "sce log event"
+        ),
+        LogLevel::Warn => tracing::warn!(
+            target: SCE_TRACING_TARGET,
+            event_id,
+            log_level,
+            "sce log event"
+        ),
+        LogLevel::Info => tracing::info!(
+            target: SCE_TRACING_TARGET,
+            event_id,
+            log_level,
+            "sce log event"
+        ),
+        LogLevel::Debug => tracing::debug!(
+            target: SCE_TRACING_TARGET,
+            event_id,
+            log_level,
+            "sce log event"
+        ),
+    }
+}
+
+pub fn emit_retry_event(
+    operation: OperationClass,
+    attempt: u32,
+    max_attempts: u32,
+    timeout_ms: u64,
+    backoff_ms: u64,
+) {
+    let event_id = EventId::RESILIENCE_RETRY.as_str();
+    let operation = operation.as_str();
+    tracing::warn!(
+        target: SCE_TRACING_TARGET,
+        event_id,
+        operation,
+        attempt,
+        max_attempts,
+        timeout_ms,
+        backoff_ms,
+        "Retrying operation after transient failure"
+    );
+}
+
+pub fn emit_contention_event(
+    database: DbName,
+    operation: OperationClass,
+    attempts: u32,
+    busy_timeout_ms: u64,
+    contention_deadline_ms: u64,
+    elapsed_ms: u64,
+) {
+    let event_id = EventId::CONTENTION_EXHAUSTED.as_str();
+    let db_name = database.as_str();
+    let operation = operation.as_str();
+    let cause = CONTENTION_EXHAUSTED_CAUSE;
+    tracing::warn!(
+        target: SCE_TRACING_TARGET,
+        event_id,
+        db_name,
+        operation,
+        attempts,
+        busy_timeout_ms,
+        contention_deadline_ms,
+        elapsed_ms,
+        cause,
+        "Agent Trace DB write contention retries exhausted"
+    );
 }
 
 #[cfg(test)]
@@ -259,8 +393,6 @@ pub(crate) mod test_capture {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path};
-
     use super::test_capture::CapturingSubscriber;
     use super::*;
     use crate::services::config::{LogFormat, LogLevel};
@@ -422,162 +554,174 @@ mod tests {
         );
     }
 
-    const ALLOWED_TRACING_FIELDS: &[&str] = &[
-        "target",
-        "event_id",
-        "log_level",
-        "operation",
-        "attempt",
-        "max_attempts",
-        "timeout_ms",
-        "backoff_ms",
-        "db_name",
-        "attempts",
-        "busy_timeout_ms",
-        "contention_deadline_ms",
-        "elapsed_ms",
-        "cause",
-    ];
-
-    const EXPECTED_TRACING_SITES: &[(&str, usize)] = &[
-        ("services/db/mod.rs", 1),
-        ("services/observability.rs", 4),
-        ("services/resilience.rs", 2),
-    ];
-
-    fn collect_rust_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
-        for entry in fs::read_dir(dir).expect("read src dir") {
-            let path = entry.expect("dir entry").path();
-            if path.is_dir() {
-                collect_rust_files(&path, out);
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
-                out.push(path);
-            }
-        }
-    }
-
-    fn macro_invocation_bodies(source: &str) -> Vec<String> {
-        let mut bodies = Vec::new();
-        for level in ["error", "warn", "info", "debug", "trace", "event", "span"] {
-            let needle = format!("{}::{level}!(", "tracing");
-            let mut offset = 0;
-            while let Some(found) = source[offset..].find(&needle) {
-                let start = offset + found + needle.len();
-                let mut depth = 1;
-                let mut end = start;
-                for (index, ch) in source[start..].char_indices() {
-                    match ch {
-                        '(' => depth += 1,
-                        ')' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                end = start + index;
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                bodies.push(source[start..end].to_string());
-                offset = end;
-            }
-        }
-        bodies
-    }
-
-    fn top_level_arguments(body: &str) -> Vec<String> {
-        let mut arguments = Vec::new();
-        let mut current = String::new();
-        let mut depth = 0_i32;
-        let mut in_string = false;
-        let mut previous = '\0';
-        for ch in body.chars() {
-            if in_string {
-                current.push(ch);
-                if ch == '"' && previous != '\\' {
-                    in_string = false;
-                }
-            } else {
-                match ch {
-                    '"' => {
-                        in_string = true;
-                        current.push(ch);
-                    }
-                    '(' | '[' | '{' => {
-                        depth += 1;
-                        current.push(ch);
-                    }
-                    ')' | ']' | '}' => {
-                        depth -= 1;
-                        current.push(ch);
-                    }
-                    ',' if depth == 0 => arguments.push(std::mem::take(&mut current)),
-                    _ => current.push(ch),
-                }
-            }
-            previous = ch;
-        }
-        if !current.trim().is_empty() {
-            arguments.push(current);
-        }
-        arguments
-            .into_iter()
-            .map(|argument| argument.trim().to_string())
-            .filter(|argument| !argument.is_empty())
-            .collect()
+    #[test]
+    fn tracing_boundary_a_emission_functions_accept_only_closed_types() {
+        let _: fn(LogLevel, EventId) = emit_logger_event;
+        let _: fn(OperationClass, u32, u32, u64, u64) = emit_retry_event;
+        let _: fn(DbName, OperationClass, u32, u64, u64, u64) = emit_contention_event;
     }
 
     #[test]
-    fn tracing_boundary_a_every_tracing_macro_site_records_only_classified_fields() {
-        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut files = Vec::new();
-        collect_rust_files(&src, &mut files);
-        files.sort();
+    fn tracing_boundary_a_event_ids_only_come_from_the_classified_registry() {
+        assert_eq!(EventId::classify("sce.app.start").as_str(), "sce.app.start");
+        assert_eq!(EventId::classify(SECRET).as_str(), UNCLASSIFIED_EVENT_ID);
+        assert_eq!(
+            EventId::classify(SENSITIVE_PATH).as_str(),
+            UNCLASSIFIED_EVENT_ID
+        );
+        assert_eq!(
+            EventId::classify("sce.unknown.event").as_str(),
+            UNCLASSIFIED_EVENT_ID
+        );
+        assert_eq!(
+            EventId::RESILIENCE_RETRY.as_str(),
+            RESILIENCE_RETRY_EVENT_ID
+        );
+        assert_eq!(
+            EventId::CONTENTION_EXHAUSTED.as_str(),
+            CONTENTION_EXHAUSTED_EVENT_ID
+        );
+        let error = CliError::user_with_source(UserError::NotAuthenticated, anyhow::anyhow!("x"));
+        assert_eq!(
+            EventId::from_cli_error(&error).as_str(),
+            "sce.error.runtime"
+        );
+    }
 
-        let mut inventory: Vec<(String, usize)> = Vec::new();
-        for file in files {
-            let relative = file
-                .strip_prefix(&src)
-                .expect("relative path")
-                .to_string_lossy()
-                .replace('\\', "/");
-            if relative == "services/observability/tracing_boundary.rs" {
-                continue;
+    #[test]
+    fn tracing_boundary_a_logger_emitter_records_exact_target_and_closed_fields() {
+        let events = CapturingSubscriber::capture(|| {
+            for level in [
+                LogLevel::Error,
+                LogLevel::Warn,
+                LogLevel::Info,
+                LogLevel::Debug,
+            ] {
+                emit_logger_event(level, EventId::classify("sce.app.start"));
             }
-            let source = fs::read_to_string(&file).expect("read source");
-            let bodies = macro_invocation_bodies(&source);
-            if bodies.is_empty() {
-                continue;
-            }
+        });
 
-            for body in &bodies {
-                let arguments = top_level_arguments(body);
-                let (message, fields) = arguments.split_last().expect("macro arguments");
-                assert!(
-                    message.starts_with('"'),
-                    "{relative}: message argument must be a static literal, got {message}"
-                );
-                for field in fields.iter().filter(|field| !field.starts_with("target:")) {
-                    let (name, value) = field.split_once('=').unwrap_or((field.as_str(), ""));
-                    let name = name.trim();
-                    assert!(
-                        ALLOWED_TRACING_FIELDS.contains(&name),
-                        "{relative}: tracing field {name:?} is not classified"
-                    );
-                    let value = value.trim();
-                    assert!(
-                        !value.starts_with('%') && !value.starts_with('?'),
-                        "{relative}: tracing field {name:?} uses Display/Debug capture"
-                    );
+        assert_eq!(events.len(), 4);
+        for (event, level) in events.iter().zip(["error", "warn", "info", "debug"]) {
+            assert_eq!(event.target, SCE_TRACING_TARGET);
+            let names: Vec<_> = event.fields.iter().map(|(key, _)| key.as_str()).collect();
+            assert_eq!(names, vec!["message", "event_id", "log_level"]);
+            assert_eq!(event.field("event_id"), Some("sce.app.start"));
+            assert_eq!(event.field("log_level"), Some(level));
+            assert_eq!(event.field("message"), Some("sce log event"));
+        }
+    }
+
+    #[test]
+    fn tracing_boundary_a_retry_and_contention_emitters_record_exact_closed_fields() {
+        let events = CapturingSubscriber::capture(|| {
+            emit_retry_event(OperationClass::DbQueryRows, 2, 5, 1_500, 40);
+            emit_contention_event(
+                DbName::RepositoryAgentTraceDb,
+                OperationClass::DbCheckpointWal,
+                3,
+                5_000,
+                30_000,
+                12_345,
+            );
+        });
+
+        assert_eq!(events.len(), 2);
+        let retry = &events[0];
+        assert_eq!(retry.target, SCE_TRACING_TARGET);
+        let names: Vec<_> = retry.fields.iter().map(|(key, _)| key.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "message",
+                "event_id",
+                "operation",
+                "attempt",
+                "max_attempts",
+                "timeout_ms",
+                "backoff_ms"
+            ]
+        );
+        assert_eq!(retry.field("event_id"), Some("sce.resilience.retry"));
+        assert_eq!(retry.field("operation"), Some("db.query_rows"));
+        assert_eq!(retry.field("attempt"), Some("2"));
+        assert_eq!(retry.field("max_attempts"), Some("5"));
+        assert_eq!(retry.field("timeout_ms"), Some("1500"));
+        assert_eq!(retry.field("backoff_ms"), Some("40"));
+        assert_eq!(
+            retry.field("message"),
+            Some("Retrying operation after transient failure")
+        );
+
+        let contention = &events[1];
+        assert_eq!(contention.target, SCE_TRACING_TARGET);
+        let names: Vec<_> = contention
+            .fields
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "message",
+                "event_id",
+                "db_name",
+                "operation",
+                "attempts",
+                "busy_timeout_ms",
+                "contention_deadline_ms",
+                "elapsed_ms",
+                "cause"
+            ]
+        );
+        assert_eq!(
+            contention.field("event_id"),
+            Some("sce.agent_trace_db.contention_exhausted")
+        );
+        assert_eq!(
+            contention.field("db_name"),
+            Some("repository_agent_trace_db")
+        );
+        assert_eq!(contention.field("operation"), Some("db.checkpoint_wal"));
+        assert_eq!(contention.field("attempts"), Some("3"));
+        assert_eq!(contention.field("busy_timeout_ms"), Some("5000"));
+        assert_eq!(contention.field("contention_deadline_ms"), Some("30000"));
+        assert_eq!(contention.field("elapsed_ms"), Some("12345"));
+        assert_eq!(
+            contention.field("cause"),
+            Some("database busy (busy timeout exhausted)")
+        );
+    }
+
+    #[test]
+    fn tracing_boundary_a_emitters_only_export_values_from_closed_sets() {
+        let events = CapturingSubscriber::capture(|| {
+            for operation in OperationClass::ALL {
+                emit_retry_event(operation, 1, 2, 3, 4);
+                for database in [
+                    DbName::LocalDb,
+                    DbName::AuthDb,
+                    DbName::RepositoryAgentTraceDb,
+                    DbName::Unclassified,
+                ] {
+                    emit_contention_event(database, operation, 1, 2, 3, 4);
                 }
             }
-            inventory.push((relative, bodies.len()));
-        }
+        });
 
-        let expected: Vec<(String, usize)> = EXPECTED_TRACING_SITES
-            .iter()
-            .map(|(path, count)| ((*path).to_string(), *count))
-            .collect();
-        assert_eq!(inventory, expected);
+        let operations: Vec<_> = OperationClass::ALL.iter().map(|o| o.as_str()).collect();
+        let databases = [
+            "local_db",
+            "auth_db",
+            "repository_agent_trace_db",
+            UNCLASSIFIED_LABEL,
+        ];
+        assert_eq!(events.len(), OperationClass::ALL.len() * 5);
+        for event in &events {
+            assert!(operations.contains(&event.field("operation").expect("operation")));
+            if let Some(database) = event.field("db_name") {
+                assert!(databases.contains(&database));
+            }
+        }
     }
 }

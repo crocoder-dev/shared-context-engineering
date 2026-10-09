@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, ensure, Result};
 
-use crate::services::observability::tracing_boundary::{OperationClass, RESILIENCE_RETRY_EVENT_ID};
+use crate::services::observability::tracing_boundary::{emit_retry_event, OperationClass};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RetryPolicy {
@@ -75,14 +75,12 @@ where
         }
 
         let backoff = policy.backoff_for_attempt(attempt + 1);
-        tracing::warn!(
-            event_id = RESILIENCE_RETRY_EVENT_ID,
-            operation = OperationClass::classify(operation_name).as_str(),
+        emit_retry_event(
+            OperationClass::classify(operation_name),
             attempt,
-            max_attempts = policy.max_attempts,
-            timeout_ms = policy.timeout_ms,
-            backoff_ms = u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX),
-            "Retrying operation after transient failure"
+            policy.max_attempts,
+            policy.timeout_ms,
+            u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX),
         );
         tokio::time::sleep(backoff).await;
     }
@@ -163,14 +161,12 @@ where
         }
 
         let backoff = policy.backoff_for_attempt(attempt + 1);
-        tracing::warn!(
-            event_id = RESILIENCE_RETRY_EVENT_ID,
-            operation = OperationClass::classify(operation_name).as_str(),
+        emit_retry_event(
+            OperationClass::classify(operation_name),
             attempt,
-            max_attempts = policy.max_attempts,
-            timeout_ms = policy.timeout_ms,
-            backoff_ms = u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX),
-            "Retrying operation after transient failure"
+            policy.max_attempts,
+            policy.timeout_ms,
+            u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX),
         );
         tokio::time::sleep(backoff).await;
     }

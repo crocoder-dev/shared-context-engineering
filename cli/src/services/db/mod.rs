@@ -18,7 +18,7 @@ use crate::services::lifecycle::{
     HealthCategory, HealthFixability, HealthProblem, HealthProblemKind, HealthSeverity,
 };
 use crate::services::observability::tracing_boundary::{
-    DbName, OperationClass, CONTENTION_EXHAUSTED_EVENT_ID,
+    emit_contention_event, DbName, OperationClass, CONTENTION_EXHAUSTED_CAUSE,
 };
 use crate::services::resilience::{run_with_retry_elapsed, RetryOperation, RetryPolicy};
 
@@ -752,8 +752,6 @@ async fn run_with_write_contention_retry_using<T, Sleep: std::future::Future<Out
     }
 }
 
-const CONTENTION_EXHAUSTED_CAUSE: &str = "database busy (busy timeout exhausted)";
-
 fn contention_exhausted_error(
     policy: WriteContentionPolicy,
     operation_name: &str,
@@ -767,17 +765,13 @@ fn contention_exhausted_error(
         u64::try_from(policy.contention_deadline.as_millis()).unwrap_or(u64::MAX);
     let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
 
-    tracing::warn!(
-        target: "sce",
-        event_id = CONTENTION_EXHAUSTED_EVENT_ID,
-        db_name = DbName::classify(policy.db_name).as_str(),
-        operation = OperationClass::classify(operation_name).as_str(),
+    emit_contention_event(
+        DbName::classify(policy.db_name),
+        OperationClass::classify(operation_name),
         attempts,
         busy_timeout_ms,
         contention_deadline_ms,
         elapsed_ms,
-        cause = CONTENTION_EXHAUSTED_CAUSE,
-        "Agent Trace DB write contention retries exhausted"
     );
 
     anyhow::anyhow!(

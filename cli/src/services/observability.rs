@@ -10,20 +10,18 @@ use std::{
     time::SystemTime,
 };
 
-use anyhow::{bail, Context, Result};
-use chrono::{Local, NaiveDate, Utc};
-use serde_json::json;
-use tracing::Level;
-
 use crate::services::config::{self, LogFormat, LogLevel, ENV_LOG_DIR};
 use crate::services::error::CliError;
 use crate::services::security::redact_sensitive_text;
+use anyhow::{bail, Context, Result};
+use chrono::{Local, NaiveDate, Utc};
+use serde_json::json;
 
 pub mod otel_policy;
 pub mod tracing_boundary;
 pub mod traits;
 
-use tracing_boundary::{classify_event_id, cli_error_tracing_event_id, SCE_TRACING_TARGET};
+use tracing_boundary::{emit_logger_event, EventId};
 
 pub const NAME: &str = "observability";
 const LOG_FILE_PREFIX: &str = "sce";
@@ -133,7 +131,7 @@ impl Logger {
         self.log_classified(
             LogLevel::Error,
             &event_id,
-            cli_error_tracing_event_id(error),
+            EventId::from_cli_error(error),
             &message,
             &field_refs,
             session_id,
@@ -166,7 +164,7 @@ impl Logger {
         self.log_classified(
             level,
             event_id,
-            classify_event_id(event_id),
+            EventId::classify(event_id),
             message,
             fields,
             session_id,
@@ -177,12 +175,12 @@ impl Logger {
         &self,
         level: LogLevel,
         event_id: &str,
-        tracing_event_id: &'static str,
+        tracing_event_id: EventId,
         message: &str,
         fields: &[(&str, &str)],
         session_id: Option<&str>,
     ) {
-        emit_tracing_event(level, tracing_event_id);
+        emit_logger_event(level, tracing_event_id);
 
         let line = self.render_line(level, event_id, message, fields);
         let redacted_line = redact_sensitive_text(&line);
@@ -633,49 +631,6 @@ fn emit_stderr_line(line: &str) {
     let mut stderr = io::stderr().lock();
     let _ = writeln!(stderr, "{line}");
     let _ = stderr.flush();
-}
-
-fn emit_tracing_event(level: LogLevel, tracing_event_id: &'static str) {
-    if !tracing_event_enabled(level) {
-        return;
-    }
-
-    let log_level = level.as_str();
-    match level {
-        LogLevel::Error => tracing::error!(
-            target: SCE_TRACING_TARGET,
-            event_id = tracing_event_id,
-            log_level = log_level,
-            "sce log event"
-        ),
-        LogLevel::Warn => tracing::warn!(
-            target: SCE_TRACING_TARGET,
-            event_id = tracing_event_id,
-            log_level = log_level,
-            "sce log event"
-        ),
-        LogLevel::Info => tracing::info!(
-            target: SCE_TRACING_TARGET,
-            event_id = tracing_event_id,
-            log_level = log_level,
-            "sce log event"
-        ),
-        LogLevel::Debug => tracing::debug!(
-            target: SCE_TRACING_TARGET,
-            event_id = tracing_event_id,
-            log_level = log_level,
-            "sce log event"
-        ),
-    }
-}
-
-fn tracing_event_enabled(level: LogLevel) -> bool {
-    match level {
-        LogLevel::Error => tracing::enabled!(target: "sce", Level::ERROR),
-        LogLevel::Warn => tracing::enabled!(target: "sce", Level::WARN),
-        LogLevel::Info => tracing::enabled!(target: "sce", Level::INFO),
-        LogLevel::Debug => tracing::enabled!(target: "sce", Level::DEBUG),
-    }
 }
 
 #[cfg(test)]
