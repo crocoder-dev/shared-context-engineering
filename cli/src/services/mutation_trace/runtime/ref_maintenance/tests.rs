@@ -8,6 +8,7 @@ use super::super::maintenance_state::{
     write_state_atomically_with, FaultInjectingFilesystem, MaintenanceState, PersistFailure,
     PersistPhase, StateRead,
 };
+use super::super::ref_advisory::{advise_if_due, AdvisoryOutcome};
 use super::super::ref_reconciliation::{
     reconcile_with_held_lock, reconcile_worktree, ReconcileError, ReconcilePhase,
     ReconciliationOutcome, ReconciliationReport,
@@ -142,14 +143,18 @@ async fn pin_orphan(root: &Path) -> String {
 }
 
 async fn seed_durable_root(db_path: &Path, tree: &str) {
+    seed_durable_root_for(db_path, "main", tree).await;
+}
+
+async fn seed_durable_root_for(db_path: &Path, worktree: &str, tree: &str) {
     let db = RepositoryAgentTraceDb::open_without_migrations_at(db_path)
         .await
         .expect("writer");
     db.execute(
         "INSERT INTO mutation_trace_worktrees
             (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline)
-         VALUES ('main', ?1, x'0000000000000000', 0, 'healthy', 0)",
-        (tree,),
+         VALUES (?1, ?2, x'0000000000000000', 0, 'healthy', 0)",
+        (worktree, tree),
     )
     .await
     .expect("seed durable root");
@@ -813,4 +818,131 @@ async fn ref_reconciliation_verified_open_coexists_with_a_live_multiprocess_wal_
         .expect("reader sees committed writer data");
     assert_eq!(rows, vec!["tree-after-open".to_string()]);
     assert!(with_suffix(&path, "-tshm").exists());
+}
+
+async fn pin_distinct(root: &Path, content: &str) -> String {
+    std::fs::write(root.join("distinct.txt"), content).expect("write distinct file");
+    pin_orphan(root).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ref_reconciliation_retains_every_repository_wide_durable_root_and_never_repairs_other_worktrees(
+) {
+    let fixture = Fixture::new("https://example.invalid/org/repo-a.git");
+    fixture.create_db().await;
+    let local = pin_distinct(&fixture.root, "local\n").await;
+    let other = pin_distinct(&fixture.root, "other\n").await;
+    let orphan_one = pin_distinct(&fixture.root, "orphan-one\n").await;
+    let orphan_two = pin_distinct(&fixture.root, "orphan-two\n").await;
+    let unpinned_elsewhere = "e".repeat(40);
+    seed_durable_root(&fixture.db_path(), &local).await;
+    seed_durable_root_for(&fixture.db_path(), "worktrees/other", &other).await;
+    seed_durable_root_for(&fixture.db_path(), "worktrees/ghost", &unpinned_elsewhere).await;
+
+    let (outcome, _) = fixture.run().await;
+
+    let ExplicitOutcome::Completed(report) = outcome else {
+        panic!("expected completed pass, got {outcome:?}");
+    };
+    assert_eq!(
+        report,
+        ReconciliationReport {
+            local_required: 1,
+            retained: 2,
+            deleted: 2,
+        }
+    );
+    let mut remaining: Vec<String> = fixture
+        .pins()
+        .await
+        .into_iter()
+        .map(|pin| pin.tree.0)
+        .collect();
+    remaining.sort();
+    let mut expected = vec![local, other];
+    expected.sort();
+    assert_eq!(remaining, expected);
+    assert!(!remaining.contains(&orphan_one) && !remaining.contains(&orphan_two));
+    assert!(!remaining.contains(&unpinned_elsewhere));
+
+    let (second, _) = fixture.run().await;
+    let ExplicitOutcome::Completed(second) = second else {
+        panic!("expected idempotent completed pass");
+    };
+    assert_eq!((second.retained, second.deleted), (2, 0));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ref_reconciliation_malformed_namespace_ref_deletes_nothing_and_records_failure() {
+    let fixture = Fixture::new("https://example.invalid/org/repo-a.git");
+    fixture.create_db().await;
+    pin_orphan(&fixture.root).await;
+    git(
+        &fixture.root,
+        &[
+            "symbolic-ref",
+            "refs/sce/mutation-cursor/main/not-a-tree",
+            "HEAD",
+        ],
+    );
+
+    let (outcome, _) = fixture.run().await;
+
+    let ExplicitOutcome::Failed { error, .. } = outcome else {
+        panic!("expected failure, got {outcome:?}");
+    };
+    assert!(matches!(error, ReconcileError::MalformedPin { .. }));
+    let output = Command::new("git")
+        .args(["for-each-ref", "refs/sce/mutation-cursor/main/"])
+        .current_dir(&fixture.root)
+        .output()
+        .expect("for-each-ref");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).lines().count(),
+        2,
+        "no ref may be deleted"
+    );
+    let StateRead::Valid(state) = fixture.stored_state().await else {
+        panic!("expected recorded state");
+    };
+    assert_eq!(state.consecutive_failures, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ref_reconciliation_advisory_is_busy_while_an_explicit_pass_holds_the_lock() {
+    let fixture = Fixture::new("https://example.invalid/org/repo-a.git");
+    fixture.create_db().await;
+    pin_orphan(&fixture.root).await;
+    let git_dir = resolve_git_dir(&fixture.root).await.expect("git dir");
+    let path = state_path(&git_dir);
+
+    let mut observed = Vec::new();
+    let result = reconcile_explicit_with(
+        &fixture.root,
+        async || open_authoritative_db_at_state_root(&fixture.root, &fixture.state_root).await,
+        || NOW,
+        write_state_atomically,
+        |phase| {
+            observed.push((phase, advise_if_due(&fixture.root, || NOW), path.exists()));
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    assert!(matches!(result, ExplicitOutcome::Completed(_)));
+    assert_eq!(
+        observed
+            .iter()
+            .map(|(phase, _, _)| *phase)
+            .collect::<Vec<_>>(),
+        vec![ReconcilePhase::DbOpened, ReconcilePhase::PinsInventoried]
+    );
+    assert!(observed
+        .iter()
+        .all(|(_, advice, present)| matches!(advice, AdvisoryOutcome::Busy) && !present));
+    assert!(fixture.pins().await.is_empty());
+    assert!(matches!(
+        advise_if_due(&fixture.root, || NOW),
+        AdvisoryOutcome::NoAction
+    ));
 }
