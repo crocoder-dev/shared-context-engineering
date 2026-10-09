@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::path::Path;
+#[cfg(test)]
 use std::time::Duration;
 
 use anyhow::Result;
@@ -9,20 +10,17 @@ use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::mutation_trace::store::MutationTraceStore;
 use crate::services::mutation_trace::types::TreeId;
 
-use super::git_snapshot::{resolve_git_dir, GitSnapshotService, PinInventoryError, PinnedRef};
-use super::worktree_lock::{acquire_inner_async, WorktreeLock, WorktreeLockError};
+#[cfg(test)]
+use super::git_snapshot::resolve_git_dir;
+use super::git_snapshot::{GitSnapshotService, PinInventoryError, PinnedRef};
+#[cfg(test)]
+use super::worktree_lock::acquire_inner_async;
+use super::worktree_lock::{WorktreeLock, WorktreeLockError};
 
-#[allow(
-    dead_code,
-    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-)]
+#[cfg(test)]
 const RECONCILIATION_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(
-    dead_code,
-    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-)]
 pub struct ReconciliationReport {
     pub local_required: usize,
     pub retained: usize,
@@ -30,20 +28,11 @@ pub struct ReconciliationReport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(
-    dead_code,
-    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-)]
 pub enum ReconciliationOutcome {
     Reconciled(ReconciliationReport),
-    SkippedNoCheckoutIdentity,
 }
 
 #[derive(Debug)]
-#[allow(
-    dead_code,
-    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-)]
 pub enum ReconcileError {
     GitDir(anyhow::Error),
     Lock(WorktreeLockError),
@@ -87,10 +76,7 @@ impl std::fmt::Display for ReconcileError {
 
 impl std::error::Error for ReconcileError {}
 
-#[allow(
-    dead_code,
-    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-)]
+#[cfg(test)]
 pub async fn reconcile_worktree<P>(
     repository_root: &Path,
     open_db: P,
@@ -101,10 +87,7 @@ where
     reconcile_worktree_inner(repository_root, open_db, || {}).await
 }
 
-#[allow(
-    dead_code,
-    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-)]
+#[cfg(test)]
 pub(super) async fn reconcile_worktree_inner<P, F>(
     repository_root: &Path,
     open_db: P,

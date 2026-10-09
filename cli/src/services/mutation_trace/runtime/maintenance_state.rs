@@ -1,8 +1,3 @@
-#![allow(
-    dead_code,
-    reason = "maintenance entrypoints are wired by later tasks of context/plans/mutation-cursor-ref-reconciliation-wiring.md"
-)]
-
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};

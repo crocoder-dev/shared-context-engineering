@@ -1,8 +1,3 @@
-#![allow(
-    dead_code,
-    reason = "maintenance entrypoints are wired by later tasks of context/plans/mutation-cursor-ref-reconciliation-wiring.md"
-)]
-
 use std::path::Path;
 use std::time::Duration;
 
@@ -147,12 +142,6 @@ where
                 Ok(()) => ExplicitOutcome::Completed(report),
                 Err(warning) => ExplicitOutcome::CompletedStatePersistFailed { report, warning },
             }
-        }
-        Ok(ReconciliationOutcome::SkippedNoCheckoutIdentity) => {
-            let error = ReconcileError::CheckoutIdentity(anyhow::anyhow!(
-                "no checkout identity could be derived"
-            ));
-            record_failed_pass(&previous, &write_state, &path, now_ms, error)
         }
         Err(error) => record_failed_pass(&previous, &write_state, &path, now_ms, error),
     };
