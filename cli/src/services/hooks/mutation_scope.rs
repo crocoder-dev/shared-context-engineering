@@ -934,17 +934,6 @@ mod advisory_trigger_tests {
     }
 
     #[tokio::test]
-    async fn advisory_runs_after_marker_clear_after_commit_with_success_result() {
-        let calls = Calls::default();
-        let error = CoordinateError::MarkerClearAfterCommit {
-            source: anyhow!("clear failed"),
-            committed: Box::new(outcome()),
-        };
-        assert_eq!(drive(close(), Err(error), &calls).await.unwrap(), "");
-        assert_eq!(calls.advise.get(), 1);
-    }
-
-    #[tokio::test]
     async fn advisory_never_runs_for_start_or_advance() {
         let calls = Calls::default();
         drive(start(), Ok(outcome()), &calls).await.unwrap();

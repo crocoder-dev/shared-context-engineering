@@ -581,76 +581,106 @@ mod reconciliation_fix_tests {
     }
 
     #[test]
-    fn completed_pass_reports_counts_as_fixed() {
-        let record = reconciliation_fix_result(&ReconciliationFix::Completed(COUNTS));
-        assert_eq!(record.outcome, FixResult::Fixed);
-        assert_eq!(
-            record.detail,
-            "Snapshot ref reconciliation completed: deleted 3, retained 2, locally required 1."
-        );
-    }
-
-    #[test]
-    fn completed_pass_with_pre_rename_failure_says_update_was_not_applied() {
-        let record = reconciliation_fix_result(&ReconciliationFix::CompletedStatePersistFailed {
-            counts: COUNTS,
-            warning: not_applied(),
-        });
-        assert_eq!(record.outcome, FixResult::Fixed);
-        assert!(record.detail.contains("deleted 3"));
-        assert!(record
-            .detail
-            .contains("Maintenance-state update was not applied."));
-        assert!(record.detail.contains("disk full"));
-        assert!(!record.detail.contains("were not recorded"));
-    }
-
-    #[test]
-    fn completed_pass_with_post_rename_failure_says_durability_unconfirmed() {
-        let record = reconciliation_fix_result(&ReconciliationFix::CompletedStatePersistFailed {
-            counts: COUNTS,
-            warning: durability_uncertain(),
-        });
-        assert_eq!(record.outcome, FixResult::Fixed);
-        assert!(record
-            .detail
-            .contains("Maintenance-state durability could not be confirmed."));
-        assert!(!record.detail.contains("not applied"));
-        assert!(!record.detail.contains("were not recorded"));
-    }
-
-    #[test]
-    fn unreadable_previous_state_does_not_claim_nothing_was_recorded() {
-        let record = reconciliation_fix_result(&ReconciliationFix::CompletedStatePersistFailed {
-            counts: COUNTS,
-            warning: StateWarning::PreviousStateUnreadable {
-                cause: "permission denied".to_string(),
+    fn reconciliation_fix_results_render_expected_text() {
+        struct Case {
+            label: &'static str,
+            fix: ReconciliationFix,
+            outcome: FixResult,
+            required: Vec<&'static str>,
+            forbidden: Vec<&'static str>,
+        }
+        let cases = [
+            Case {
+                label: "completed",
+                fix: ReconciliationFix::Completed(COUNTS),
+                outcome: FixResult::Fixed,
+                required: vec![
+                    "Snapshot ref reconciliation completed: deleted 3, retained 2, locally required 1.",
+                ],
+                forbidden: vec!["Warning", "failed"],
             },
-        });
-        assert!(record.detail.contains("could not be read"));
-        assert!(record.detail.contains("permission denied"));
-        assert!(!record.detail.contains("were not recorded"));
-    }
-
-    #[test]
-    fn failed_pass_is_never_reported_as_success() {
-        let record = reconciliation_fix_result(&ReconciliationFix::Failed {
-            kind: "agent_trace_db_missing",
-            message: "db missing".to_string(),
-            state_warning: Some(not_applied()),
-        });
-        assert_eq!(record.outcome, FixResult::Failed);
-        assert!(record.detail.contains("agent_trace_db_missing"));
-        assert!(record.detail.contains("db missing"));
-        assert!(record
-            .detail
-            .contains("Maintenance-state update was not applied."));
-    }
-
-    #[test]
-    fn busy_pass_is_skipped_not_fixed() {
-        let record = reconciliation_fix_result(&ReconciliationFix::Busy);
-        assert_eq!(record.outcome, FixResult::Skipped);
-        assert!(record.detail.contains("skipped"));
+            Case {
+                label: "pre-rename persistence failure",
+                fix: ReconciliationFix::CompletedStatePersistFailed {
+                    counts: COUNTS,
+                    warning: not_applied(),
+                },
+                outcome: FixResult::Fixed,
+                required: vec![
+                    "deleted 3",
+                    "Maintenance-state update was not applied.",
+                    "disk full",
+                ],
+                forbidden: vec!["were not recorded", "failed"],
+            },
+            Case {
+                label: "post-rename persistence failure",
+                fix: ReconciliationFix::CompletedStatePersistFailed {
+                    counts: COUNTS,
+                    warning: durability_uncertain(),
+                },
+                outcome: FixResult::Fixed,
+                required: vec![
+                    "deleted 3",
+                    "Maintenance-state durability could not be confirmed.",
+                    "io error",
+                ],
+                forbidden: vec!["not applied", "were not recorded", "failed"],
+            },
+            Case {
+                label: "unreadable previous state",
+                fix: ReconciliationFix::CompletedStatePersistFailed {
+                    counts: COUNTS,
+                    warning: StateWarning::PreviousStateUnreadable {
+                        cause: "permission denied".to_string(),
+                    },
+                },
+                outcome: FixResult::Fixed,
+                required: vec!["deleted 3", "could not be read", "permission denied"],
+                forbidden: vec!["were not recorded", "failed"],
+            },
+            Case {
+                label: "failed pass",
+                fix: ReconciliationFix::Failed {
+                    kind: "agent_trace_db_missing",
+                    message: "db missing".to_string(),
+                    state_warning: Some(not_applied()),
+                },
+                outcome: FixResult::Failed,
+                required: vec![
+                    "agent_trace_db_missing",
+                    "db missing",
+                    "Maintenance-state update was not applied.",
+                ],
+                forbidden: vec!["completed"],
+            },
+            Case {
+                label: "busy pass",
+                fix: ReconciliationFix::Busy,
+                outcome: FixResult::Skipped,
+                required: vec!["skipped"],
+                forbidden: vec!["completed", "deleted"],
+            },
+        ];
+        for case in cases {
+            let record = reconciliation_fix_result(&case.fix);
+            assert_eq!(record.outcome, case.outcome, "{}", case.label);
+            for fragment in case.required {
+                assert!(
+                    record.detail.contains(fragment),
+                    "{}: missing {fragment:?} in {:?}",
+                    case.label,
+                    record.detail
+                );
+            }
+            for fragment in case.forbidden {
+                assert!(
+                    !record.detail.contains(fragment),
+                    "{}: unexpected {fragment:?} in {:?}",
+                    case.label,
+                    record.detail
+                );
+            }
+        }
     }
 }

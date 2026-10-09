@@ -8,15 +8,14 @@ use super::super::maintenance_state::{
     write_state_atomically_with, FaultInjectingFilesystem, MaintenanceState, PersistFailure,
     PersistPhase, StateRead,
 };
-use super::super::ref_advisory::{advise_if_due, AdvisoryOutcome};
 use super::super::ref_reconciliation::{
-    reconcile_with_held_lock, reconcile_worktree, ReconcileError, ReconcilePhase,
-    ReconciliationOutcome, ReconciliationReport,
+    reconcile_with_held_lock, ReconcileError, ReconcilePhase, ReconciliationOutcome,
+    ReconciliationReport,
 };
 use super::super::worktree_lock::acquire_inner_async;
 use super::{
-    open_authoritative_db_at_state_root, reconcile_explicit, reconcile_explicit_with,
-    ExplicitOutcome, SkipReason, StatePersistWarning,
+    open_authoritative_db_at_state_root, reconcile_explicit_with, ExplicitOutcome, SkipReason,
+    StatePersistWarning,
 };
 use crate::services::agent_trace_db::repository::{
     ExistingRepositoryDbError, RepositoryAgentTraceDb,
@@ -135,6 +134,25 @@ async fn create_db(path: &Path, repository_id: &str) {
         .expect("initialize metadata");
 }
 
+fn ref_inventory(root: &Path) -> Vec<String> {
+    let output = Command::new("git")
+        .args([
+            "for-each-ref",
+            "--format=%(refname) %(objectname) %(symref)",
+            "refs/sce/",
+        ])
+        .current_dir(root)
+        .output()
+        .expect("for-each-ref");
+    assert!(output.status.success(), "for-each-ref failed");
+    let mut lines: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    lines.sort();
+    lines
+}
+
 async fn pin_orphan(root: &Path) -> String {
     let snapshot = GitSnapshotService::new(root).await.expect("snapshot");
     let tree = snapshot.capture_tree().await.expect("tree");
@@ -190,12 +208,6 @@ fn staging_leftovers(dir: &Path) -> usize {
         .filter_map(Result::ok)
         .filter(|entry| entry.file_name().to_string_lossy().contains("staging"))
         .count()
-}
-
-#[test]
-fn ref_reconciliation_production_entrypoint_accepts_only_a_repository_root() {
-    fn assert_signature<F: for<'a> AsyncFn(&'a Path) -> ExplicitOutcome>(_: F) {}
-    assert_signature(reconcile_explicit);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -534,16 +546,29 @@ async fn ref_reconciliation_unreadable_previous_state_is_reported_without_overwr
     let path = state_path(&git_dir);
     std::fs::create_dir_all(&path).expect("directory in place of state file");
 
+    let pins_before = fixture.pins().await;
+    assert_eq!(pins_before.len(), 1);
+
     let (outcome, _) = fixture.run().await;
 
-    let ExplicitOutcome::Failed { state_warning, .. } = outcome else {
+    let ExplicitOutcome::Failed {
+        error,
+        state_warning,
+    } = outcome
+    else {
         panic!("expected failure, got {outcome:?}");
     };
+    assert!(matches!(
+        unavailable_cause(&error),
+        ExistingRepositoryDbError::Missing { .. }
+    ));
     assert!(matches!(
         state_warning,
         Some(StatePersistWarning::PreviousStateUnreadable(_))
     ));
     assert!(path.is_dir());
+    assert_eq!(std::fs::read_dir(&path).expect("read state dir").count(), 0);
+    assert_eq!(fixture.pins().await, pins_before);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -572,27 +597,6 @@ async fn ref_reconciliation_lock_held_implementation_never_reacquires_the_lock()
 
     let ReconciliationOutcome::Reconciled(report) = outcome;
     assert_eq!(report.deleted, 1);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn ref_reconciliation_worktree_wrapper_acquires_once_and_releases() {
-    let fixture = Fixture::new("https://example.invalid/org/repo-a.git");
-    fixture.create_db().await;
-    pin_orphan(&fixture.root).await;
-
-    let outcome = reconcile_worktree(&fixture.root, async || {
-        open_authoritative_db_at_state_root(&fixture.root, &fixture.state_root).await
-    })
-    .await
-    .expect("reconcile");
-    assert!(matches!(outcome, ReconciliationOutcome::Reconciled(_)));
-
-    let git_dir = resolve_git_dir(&fixture.root).await.expect("git dir");
-    drop(
-        acquire_inner_async(&git_dir, Duration::ZERO, || {})
-            .await
-            .expect("lock released after wrapper returns"),
-    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -770,23 +774,45 @@ async fn ref_reconciliation_verified_open_never_recreates_a_database_removed_aft
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ref_reconciliation_verified_open_is_read_only() {
+    const INSERT_WORKTREE: &str = "INSERT INTO mutation_trace_worktrees
+            (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline)
+         VALUES ('main', 'tree', x'0000000000000000', 0, 'healthy', 0)";
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("agent-trace.db");
     create_db(&path, "repo").await;
 
+    let writer = RepositoryAgentTraceDb::new_at(&path).await.expect("writer");
+    writer.execute("BEGIN", ()).await.expect("begin");
+    writer
+        .execute(INSERT_WORKTREE, ())
+        .await
+        .expect("the statement is valid on a writable connection");
+    writer.execute("ROLLBACK", ()).await.expect("rollback");
+    drop(writer);
+
     let (db, _) = RepositoryAgentTraceDb::open_verified_existing_at(&path, "repo")
         .await
         .expect("verified open");
+    let error = db
+        .execute(INSERT_WORKTREE, ())
+        .await
+        .expect_err("verified connection must reject writes");
+    let rendered = format!("{error:#}");
+    assert!(rendered.contains("database is readonly"), "{rendered}");
+    drop(db);
 
-    assert!(db
-        .execute(
-            "INSERT INTO mutation_trace_worktrees
-                (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline)
-             VALUES ('main', 'tree', x'0000000000000000', 0, 'healthy', 0)",
+    let inspector = RepositoryAgentTraceDb::new_at(&path)
+        .await
+        .expect("inspector");
+    let rows = inspector
+        .query_map(
+            "SELECT worktree_id FROM mutation_trace_worktrees",
             (),
+            |row| row.get::<String>(0).map_err(Into::into),
         )
         .await
-        .is_err());
+        .expect("rows");
+    assert!(rows.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -890,64 +916,25 @@ async fn ref_reconciliation_malformed_namespace_ref_deletes_nothing_and_records_
             "HEAD",
         ],
     );
+    let inventory_before = ref_inventory(&fixture.root);
+    assert_eq!(inventory_before.len(), 2);
 
     let (outcome, _) = fixture.run().await;
 
     let ExplicitOutcome::Failed { error, .. } = outcome else {
         panic!("expected failure, got {outcome:?}");
     };
-    assert!(matches!(error, ReconcileError::MalformedPin { .. }));
-    let output = Command::new("git")
-        .args(["for-each-ref", "refs/sce/mutation-cursor/main/"])
-        .current_dir(&fixture.root)
-        .output()
-        .expect("for-each-ref");
+    let ReconcileError::MalformedPin { ref_name, .. } = &error else {
+        panic!("expected MalformedPin, got {error:?}");
+    };
+    assert_eq!(ref_name, "refs/sce/mutation-cursor/main/not-a-tree");
     assert_eq!(
-        String::from_utf8_lossy(&output.stdout).lines().count(),
-        2,
-        "no ref may be deleted"
+        ref_inventory(&fixture.root),
+        inventory_before,
+        "no ref may be deleted, replaced or retargeted"
     );
     let StateRead::Valid(state) = fixture.stored_state().await else {
         panic!("expected recorded state");
     };
     assert_eq!(state.consecutive_failures, 1);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn ref_reconciliation_advisory_is_busy_while_an_explicit_pass_holds_the_lock() {
-    let fixture = Fixture::new("https://example.invalid/org/repo-a.git");
-    fixture.create_db().await;
-    pin_orphan(&fixture.root).await;
-    let git_dir = resolve_git_dir(&fixture.root).await.expect("git dir");
-    let path = state_path(&git_dir);
-
-    let mut observed = Vec::new();
-    let result = reconcile_explicit_with(
-        &fixture.root,
-        async || open_authoritative_db_at_state_root(&fixture.root, &fixture.state_root).await,
-        || NOW,
-        write_state_atomically,
-        |phase| {
-            observed.push((phase, advise_if_due(&fixture.root, || NOW), path.exists()));
-        },
-        Duration::from_secs(10),
-    )
-    .await;
-
-    assert!(matches!(result, ExplicitOutcome::Completed(_)));
-    assert_eq!(
-        observed
-            .iter()
-            .map(|(phase, _, _)| *phase)
-            .collect::<Vec<_>>(),
-        vec![ReconcilePhase::DbOpened, ReconcilePhase::PinsInventoried]
-    );
-    assert!(observed
-        .iter()
-        .all(|(_, advice, present)| matches!(advice, AdvisoryOutcome::Busy) && !present));
-    assert!(fixture.pins().await.is_empty());
-    assert!(matches!(
-        advise_if_due(&fixture.root, || NOW),
-        AdvisoryOutcome::NoAction
-    ));
 }

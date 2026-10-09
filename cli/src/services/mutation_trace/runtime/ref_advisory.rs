@@ -371,22 +371,6 @@ mod tests {
     }
 
     #[test]
-    fn maintenance_advisory_preserves_timestamps_within_skew_tolerance() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        init_repo(dir.path());
-        let near_future = MaintenanceState {
-            last_success: Some(NOW + FUTURE_SKEW_TOLERANCE_MS),
-            ..MaintenanceState::default()
-        };
-        seed(dir.path(), &near_future);
-        let path = state_path(&dir.path().join(".git"));
-        let before = std::fs::read(&path).expect("state bytes");
-
-        assert!(matches!(advise(dir.path(), NOW), AdvisoryOutcome::NoAction));
-        assert_eq!(std::fs::read(&path).expect("state bytes"), before);
-    }
-
-    #[test]
     fn maintenance_advisory_normalizes_far_future_timestamps_and_advises_immediately() {
         let dir = tempfile::tempdir().expect("temp dir");
         init_repo(dir.path());
@@ -679,8 +663,8 @@ mod tests {
     }
 
     #[test]
-    fn maintenance_advisory_treats_timestamps_at_or_just_ahead_of_now_as_valid_age_zero() {
-        for ahead in [0, 60_000] {
+    fn maintenance_advisory_accepts_valid_timestamp_offsets_without_rewrite() {
+        for ahead in [0, 60_000, FUTURE_SKEW_TOLERANCE_MS] {
             let dir = tempfile::tempdir().expect("temp dir");
             init_repo(dir.path());
             let state = MaintenanceState {
@@ -691,9 +675,15 @@ mod tests {
             let path = state_path(&dir.path().join(".git"));
             let before = std::fs::read(&path).expect("state bytes");
 
-            assert!(matches!(advise(dir.path(), NOW), AdvisoryOutcome::NoAction));
+            assert!(
+                matches!(advise(dir.path(), NOW), AdvisoryOutcome::NoAction),
+                "offset {ahead}"
+            );
             assert_eq!(std::fs::read(&path).expect("state bytes"), before);
-            assert!(!evaluate_recommendation(&state, NOW).recommended);
+            assert!(
+                !evaluate_recommendation(&state, NOW).recommended,
+                "offset {ahead}"
+            );
         }
     }
 
@@ -722,22 +712,46 @@ mod tests {
     }
 
     #[test]
-    fn maintenance_advisory_recovers_wrong_version_and_oversized_state_by_anchoring() {
-        let oversized = vec![b' '; 5000];
-        let wrong_version = br#"{"version":9999}"#.to_vec();
-        for bytes in [oversized, wrong_version] {
+    fn maintenance_advisory_reanchors_unusable_state_variants() {
+        let cases: [(&str, Vec<u8>); 3] = [
+            ("wrong schema version", br#"{"version":9999}"#.to_vec()),
+            ("oversized state file", vec![b' '; 5000]),
+            ("corrupt JSON", b"not json".to_vec()),
+        ];
+        for (label, bytes) in cases {
             let dir = tempfile::tempdir().expect("temp dir");
             init_repo(dir.path());
             let path = state_path(&dir.path().join(".git"));
             std::fs::create_dir_all(path.parent().expect("parent")).expect("runtime dir");
             std::fs::write(&path, &bytes).expect("unusable state");
 
-            assert!(matches!(
-                super::read_state(&path).expect("read"),
-                StateRead::Unusable
-            ));
-            assert!(matches!(advise(dir.path(), NOW), AdvisoryOutcome::Anchored));
-            assert_eq!(stored(dir.path()).anchor, Some(NOW));
+            assert!(
+                matches!(read_state(&path).expect("read"), StateRead::Unusable),
+                "{label}"
+            );
+            let outcome = advise(dir.path(), NOW);
+            assert!(
+                matches!(outcome, AdvisoryOutcome::Anchored),
+                "{label}: {outcome:?}"
+            );
+            assert_eq!(outcome.recommendation(), None, "{label}");
+            let anchored = stored(dir.path());
+            assert_eq!(anchored.anchor, Some(NOW), "{label}");
+            assert!(
+                !evaluate_recommendation(&anchored, NOW).recommended,
+                "{label}"
+            );
+
+            let anchored_bytes = std::fs::read(&path).expect("state bytes");
+            assert!(
+                matches!(advise(dir.path(), NOW), AdvisoryOutcome::NoAction),
+                "{label}"
+            );
+            assert_eq!(
+                std::fs::read(&path).expect("state bytes"),
+                anchored_bytes,
+                "{label}"
+            );
         }
     }
 
@@ -897,18 +911,6 @@ mod tests {
         let bytes = std::fs::read(&path).expect("state bytes");
         assert!(matches!(advise(dir.path(), NOW), AdvisoryOutcome::NoAction));
         assert_eq!(std::fs::read(&path).expect("state bytes"), bytes);
-    }
-
-    #[test]
-    fn maintenance_advisory_recovers_corrupt_state_by_anchoring() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        init_repo(dir.path());
-        let path = state_path(&dir.path().join(".git"));
-        std::fs::create_dir_all(path.parent().expect("parent")).expect("runtime dir");
-        std::fs::write(&path, b"not json").expect("corrupt state");
-
-        assert!(matches!(advise(dir.path(), NOW), AdvisoryOutcome::Anchored));
-        assert_eq!(stored(dir.path()).anchor, Some(NOW));
     }
 
     #[test]
