@@ -84,7 +84,11 @@ impl Sandbox {
     }
 
     fn state_root(&self) -> PathBuf {
-        self.dir.path().join("state")
+        if cfg!(target_os = "macos") {
+            self.dir.path().join("Library").join("Application Support")
+        } else {
+            self.dir.path().join("state")
+        }
     }
 
     fn db_path(&self) -> PathBuf {
