@@ -1,4 +1,10 @@
+use std::future::Future;
+
+use tracing::instrument::{Instrument, WithSubscriber};
+use tracing::Dispatch;
 use tracing::Level;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::{Layer, Registry};
 
 use crate::services::config::LogLevel;
 use crate::services::error::{CliError, FailureClass};
@@ -289,6 +295,30 @@ pub fn emit_contention_event(
     );
 }
 
+#[derive(Clone)]
+pub struct ScopedDispatch(Dispatch);
+
+impl ScopedDispatch {
+    pub fn from_layer<L>(layer: L) -> Self
+    where
+        L: Layer<Registry> + Send + Sync + 'static,
+    {
+        Self(Dispatch::new(Registry::default().with(layer)))
+    }
+
+    pub fn scope<F: Future>(&self, future: F) -> impl Future<Output = F::Output> {
+        future.with_subscriber(self.0.clone())
+    }
+}
+
+pub fn spawn_in_current_scope<F>(future: F) -> tokio::task::JoinHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    tokio::spawn(future.with_current_subscriber().in_current_span())
+}
+
 #[cfg(test)]
 pub(crate) mod test_capture {
     use std::sync::{
@@ -388,6 +418,70 @@ pub(crate) mod test_capture {
         fn enter(&self, _span: &span::Id) {}
 
         fn exit(&self, _span: &span::Id) {}
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_spans {
+    use std::future::Future;
+
+    use tracing::instrument::Instrument;
+    use tracing::Level;
+
+    use crate::services::observability::otel_policy::{OtelName, OTEL_TARGET};
+
+    pub fn in_otel_span<F: Future>(name: OtelName, future: F) -> impl Future<Output = F::Output> {
+        let span = match name {
+            OtelName::Command => tracing::span!(target: OTEL_TARGET, Level::INFO, "sce.command"),
+            OtelName::MutationScopeCoordinate => {
+                tracing::span!(target: OTEL_TARGET, Level::INFO, "sce.mutation_scope.coordinate")
+            }
+            OtelName::WorktreeLock => {
+                tracing::span!(target: OTEL_TARGET, Level::INFO, "sce.worktree.lock")
+            }
+            OtelName::Reconciliation => {
+                tracing::span!(target: OTEL_TARGET, Level::INFO, "sce.reconciliation")
+            }
+            OtelName::GitSnapshot => {
+                tracing::span!(target: OTEL_TARGET, Level::INFO, "sce.git.snapshot")
+            }
+            OtelName::DbOperation => {
+                tracing::span!(target: OTEL_TARGET, Level::INFO, "sce.db.operation")
+            }
+            OtelName::Sync => tracing::span!(target: OTEL_TARGET, Level::INFO, "sce.sync"),
+        };
+        future.instrument(span)
+    }
+
+    pub fn emit_raw_boundary_b_inputs(secret: &'static str) {
+        let allowed = tracing::span!(
+            target: OTEL_TARGET,
+            Level::INFO,
+            "sce.command",
+            "sce.outcome" = "success",
+            "sce.duration_ms" = 5u64,
+            "sce.command.name" = secret,
+            "sce.error.category" = "parse",
+            "sce.arbitrary_key" = secret,
+            password = secret,
+            "otel.status_code" = "error",
+            "otel.status_description" = secret
+        );
+        {
+            let _entered = allowed.enter();
+            tracing::event!(target: OTEL_TARGET, Level::ERROR, exception = secret, "exception message");
+        }
+        drop(allowed);
+        drop(tracing::span!(target: OTEL_TARGET, Level::INFO, "sce.arbitrary"));
+        drop(tracing::span!(target: OTEL_TARGET, Level::INFO, "sce.command", "otel.name" = secret));
+        drop(tracing::span!(target: "sce", Level::INFO, "sce.command", "sce.outcome" = "success"));
+        drop(tracing::span!(target: "sce::services::other", Level::INFO, "sce.command"));
+    }
+
+    pub fn thread_default_is_none() -> bool {
+        tracing::dispatcher::get_default(|dispatch| {
+            dispatch.is::<tracing::subscriber::NoSubscriber>()
+        })
     }
 }
 

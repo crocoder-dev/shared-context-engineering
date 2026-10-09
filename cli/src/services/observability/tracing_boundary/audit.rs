@@ -12,7 +12,12 @@ const TRUSTED_RELATIVE_PATH: &str = "services/observability/tracing_boundary.rs"
 const TRACING_ROOT: &str = "tracing";
 const EVENT_MACROS: [&str; 6] = ["error", "warn", "info", "debug", "trace", "event"];
 const BOUNDARY_EVENT_MACROS: [&str; 4] = ["error", "warn", "info", "debug"];
-const BOUNDARY_ALLOWED_USES: [&str; 1] = ["tracing::Level"];
+const BOUNDARY_ALLOWED_USES: [&str; 4] = [
+    "tracing::Level",
+    "tracing::Dispatch",
+    "tracing::instrument::Instrument",
+    "tracing::instrument::WithSubscriber",
+];
 const TARGET_CONSTANT: &str = "SCE_TRACING_TARGET";
 const APPROVED_CONSTANTS: [&str; 1] = ["CONTENTION_EXHAUSTED_CAUSE"];
 const NUMERIC_TYPES: [&str; 2] = ["u32", "u64"];

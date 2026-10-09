@@ -18,6 +18,7 @@ use chrono::{Local, NaiveDate, Utc};
 use serde_json::json;
 
 pub mod otel_policy;
+pub mod otel_runtime;
 pub mod tracing_boundary;
 pub mod traits;
 

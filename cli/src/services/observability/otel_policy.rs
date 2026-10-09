@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::services::error::FailureClass;
 use crate::services::observability::tracing_boundary::OperationClass;
 use crate::services::{
@@ -206,6 +204,7 @@ pub enum OtelAttribute {
 }
 
 impl OtelAttribute {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub const KEYS: [&'static str; 7] = [
         KEY_COMMAND_NAME,
         KEY_OUTCOME,
@@ -261,11 +260,13 @@ impl OtelAttribute {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct OtelRecord {
     pub name: OtelName,
     pub attributes: Vec<OtelAttribute>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn admit_otel_record(
     target: &str,
     name: &str,

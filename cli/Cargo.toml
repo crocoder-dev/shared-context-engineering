@@ -46,6 +46,11 @@ sha2 = "0.11"
 tokio = { version = "1", default-features = false, features = ["rt", "io-util", "sync", "time", "macros", "rt-multi-thread", "process", "fs"] }
 toml = "0.9"
 tracing = "0.1"
+opentelemetry = { version = "=0.33.0", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "=0.33.0", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "=0.33.0", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"] }
+tracing-opentelemetry = { version = "=0.34.0", default-features = false }
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["registry", "std"] }
 
 uuid = { version = "1", features = ["v4", "v7"] }
 murmur3 = "0.5.2"
