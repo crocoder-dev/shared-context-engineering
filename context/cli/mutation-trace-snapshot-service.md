@@ -120,7 +120,7 @@ transition and reads baseline file content through its own `TreeReadSource`
 trait (see
 [`mutation-trace-agent-attribution.md`](mutation-trace-agent-attribution.md)).
 `list_pins` / `delete_pins` are consumed only by the per-worktree
-ref-reconciliation maintenance pass, which is retained but unwired (PR3 retain-and-defer): no production code deletes pins, so pins orphaned by crashed or failed `coordinate()` paths accumulate until removed by hand. Their declarations carry `#[allow(dead_code, reason = ...)]` pointing at `context/plans/mutation-cursor-ref-reconciliation.md`. See [`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md).
+ref-reconciliation maintenance pass, which runs only through `sce doctor --fix`: pins orphaned by crashed or failed `coordinate()` paths are reclaimed when an operator runs it, and automatic reclamation does not exist. `delete_pins` is the only ref-deletion path and moves the `WorktreeLockLease` into its blocking worker, so dropping the caller future cannot release the lock while `git update-ref` runs. See [`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md).
 
 ## Testing boundary
 

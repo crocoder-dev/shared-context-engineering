@@ -196,7 +196,7 @@ pub fn encode_boundary_kind(kind: BoundaryKind) -> &'static str {
 /// Decodes a [`BoundaryKind`] from `mutation_trace_events.boundary_kind`.
 #[allow(
     dead_code,
-    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+    reason = "single-event loader has no production reader; attribution history uses load_mutation_event_page"
 )]
 pub fn decode_boundary_kind(value: &str) -> Result<BoundaryKind> {
     match value {
@@ -222,7 +222,7 @@ const SELECT_PROCESSED_EVENT_SQL: &str =
     "SELECT 1 FROM mutation_trace_processed_events WHERE scope_id = ?1 AND event_id = ?2";
 #[allow(
     dead_code,
-    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+    reason = "single-event loader has no production reader; attribution history uses load_mutation_event_page"
 )]
 const SELECT_MUTATION_EVENT_SQL: &str = "SELECT before_tree, after_tree, tainted, failure_kind,
             attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id
@@ -246,31 +246,16 @@ const SELECT_LATEST_MUTATION_EVENT_REVISION_SQL: &str = "SELECT revision FROM mu
      LIMIT 1";
 #[allow(
     dead_code,
-    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+    reason = "single-event loader has no production reader; attribution history uses load_mutation_event_page"
 )]
 const SELECT_MUTATION_EVENT_ACTIVE_SCOPES_SQL: &str =
     "SELECT scope_id FROM mutation_trace_event_active_scopes WHERE worktree_id = ?1 AND revision = ?2";
-/// One worktree's complete durable tree root set — its cursor tree plus the
-/// `before_tree` / `after_tree` of every historical `mutation_trace_events`
-/// row — as a single `UNION` statement so the whole set is read from one
-/// database snapshot, never assembled from independent `SELECT`s.
-#[allow(
-    dead_code,
-    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-)]
 const SELECT_TREE_ROOTS_BY_WORKTREE_SQL: &str =
     "SELECT cursor_tree AS tree FROM mutation_trace_worktrees WHERE worktree_id = ?1
      UNION
      SELECT before_tree AS tree FROM mutation_trace_events    WHERE worktree_id = ?1
      UNION
      SELECT after_tree  AS tree FROM mutation_trace_events    WHERE worktree_id = ?1";
-/// The same three `TreeId` columns unioned across **every** worktree in the
-/// repository, in one statement / one snapshot — the reconciler's
-/// repository-wide retention set.
-#[allow(
-    dead_code,
-    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-)]
 const SELECT_ALL_TREE_ROOTS_SQL: &str = "SELECT cursor_tree AS tree FROM mutation_trace_worktrees
      UNION
      SELECT before_tree AS tree FROM mutation_trace_events
@@ -710,7 +695,7 @@ impl<'a> MutationTraceStore<'a> {
     /// any hook-boundary path.
     #[allow(
         dead_code,
-        reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+        reason = "single-event loader has no production reader; attribution history uses load_mutation_event_page"
     )]
     pub async fn load_mutation_event(
         &self,
@@ -818,31 +803,6 @@ impl<'a> MutationTraceStore<'a> {
         Ok(rows.into_iter().next())
     }
 
-    /// Reads `worktree`'s complete durable tree root set: its
-    /// `mutation_trace_worktrees.cursor_tree`, plus the `before_tree` and
-    /// `after_tree` of every `mutation_trace_events` row for `worktree`,
-    /// deduplicated. Returns an empty set (not an error) when `worktree` has
-    /// no durable row at all.
-    ///
-    /// Read-only, cold path — never called from `load_worktree` or any
-    /// hook-boundary path, exactly like [`MutationTraceStore::load_mutation_event`].
-    /// It reads only the three `TreeId` columns above: never
-    /// `mutation_trace_scopes` / `mutation_trace_processed_events` /
-    /// `mutation_trace_event_active_scopes`, never another worktree's trees,
-    /// and never transient `AttemptState` / `external_taint`.
-    ///
-    /// The whole set is produced by **one** SQL statement (a `UNION` of the
-    /// three columns) through **one** `query_map` call, so a concurrent
-    /// mutation-cursor commit — which atomically moves `cursor_tree` from `T`
-    /// to `X` and inserts `MutationEvent { before_tree = T, after_tree = X }`
-    /// in the same transaction — cannot expose a torn root set that omits `T`:
-    /// the single statement observes either the pre-commit snapshot
-    /// (`cursor_tree` still contains `T`) or the post-commit snapshot
-    /// (`before_tree` contains `T`).
-    #[allow(
-        dead_code,
-        reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-    )]
     pub async fn load_tree_roots(&self, worktree: &WorktreeId) -> Result<BTreeSet<TreeId>> {
         let rows = self
             .db
@@ -856,23 +816,6 @@ impl<'a> MutationTraceStore<'a> {
         Ok(rows.into_iter().collect())
     }
 
-    /// Reads the repository-wide durable tree root set: the union of
-    /// `mutation_trace_worktrees.cursor_tree`, `mutation_trace_events.before_tree`,
-    /// and `mutation_trace_events.after_tree` across **every** worktree,
-    /// deduplicated. Returns an empty set (not an error) for a repository with
-    /// no mutation-cursor rows.
-    ///
-    /// This is the reconciler's retention set: linked worktrees share one Git
-    /// object database, so a ref owned by worktree `A` may be the last SCE ref
-    /// protecting a tree that only worktree `B` durably requires. Read-only,
-    /// cold path, and — like [`MutationTraceStore::load_tree_roots`] — one SQL
-    /// statement through one `query_map` call, so it cannot tear across a
-    /// concurrent atomic `cursor T -> X` + `event T -> X` commit on another
-    /// worktree.
-    #[allow(
-        dead_code,
-        reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-    )]
     pub async fn load_all_tree_roots(&self) -> Result<BTreeSet<TreeId>> {
         let rows = self
             .db
@@ -1019,7 +962,7 @@ impl<'a> MutationTraceStore<'a> {
 
     #[allow(
         dead_code,
-        reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+        reason = "single-event loader has no production reader; attribution history uses load_mutation_event_page"
     )]
     async fn load_mutation_event_active_scopes(
         &self,
@@ -1190,10 +1133,6 @@ fn validate_health_encoding(tainted: bool, failure_kind: FailureKind) -> Result<
     Ok(())
 }
 
-#[allow(
-    dead_code,
-    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-)]
 fn tree_root_row_from_turso(row: &turso::Row) -> Result<TreeId> {
     let tree: String = row
         .get(0)
@@ -1317,7 +1256,7 @@ fn mutation_event_page_row_from_turso(row: &turso::Row) -> Result<MutationEventP
 /// carries.
 #[allow(
     dead_code,
-    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+    reason = "single-event loader has no production reader; attribution history uses load_mutation_event_page"
 )]
 struct MutationEventRow {
     before_tree: String,
@@ -1333,7 +1272,7 @@ struct MutationEventRow {
 
 #[allow(
     dead_code,
-    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+    reason = "single-event loader has no production reader; attribution history uses load_mutation_event_page"
 )]
 fn mutation_event_row_from_turso(row: &turso::Row) -> Result<MutationEventRow> {
     let before_tree: String = row
@@ -1396,7 +1335,7 @@ fn reconstruct_attribution(kind: AttributionKind, scope_id: Option<String>) -> R
 
 #[allow(
     dead_code,
-    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+    reason = "single-event loader has no production reader; attribution history uses load_mutation_event_page"
 )]
 fn reconstruct_boundary(
     kind: BoundaryKind,

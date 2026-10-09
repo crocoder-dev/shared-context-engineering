@@ -14,15 +14,6 @@ const SCE_RUNTIME_DIR: &str = "sce";
 const TMP_INDEX_DIR: &str = "tmp";
 const REF_NAMESPACE: &str = "refs/sce/mutation-cursor";
 
-/// `git for-each-ref` format for pin inventory: four `%00`-separated fields —
-/// refname, target object name, target object type, and the symbolic-ref
-/// target (empty for a direct ref). NUL-separated so no field can be split or
-/// trimmed ambiguously; the trailing symref field is always present (possibly
-/// empty), so every well-formed line has exactly four fields.
-#[allow(
-    dead_code,
-    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-)]
 const FOR_EACH_REF_PIN_FORMAT: &str =
     "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)";
 
@@ -151,23 +142,6 @@ impl GitSnapshotService {
         Ok(String::from_utf8(output.stdout).ok())
     }
 
-    /// Inventory every SCE snapshot pin owned by `worktree_id`.
-    ///
-    /// Runs `git for-each-ref` constrained to the single path prefix
-    /// `refs/sce/mutation-cursor/<worktree_id>/`, so a ref owned by any other
-    /// worktree or in an unrelated namespace is never returned. Each line is
-    /// validated against the shape `pin_tree` produces: a **direct** ref (never
-    /// a symbolic ref) whose target is a tree object and whose final path
-    /// component equals the target SHA. A symbolic ref anywhere in the
-    /// namespace is malformed state — it would let one worktree's pin resolve
-    /// through another worktree's ref — and is rejected rather than followed. A
-    /// `git for-each-ref` execution or exit failure is
-    /// [`PinInventoryError::Git`]; anything malformed inside the namespace is
-    /// [`PinInventoryError::MalformedRef`], matchable separately.
-    #[allow(
-        dead_code,
-        reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-    )]
     pub async fn list_pins(
         &self,
         worktree_id: &WorktreeId,
@@ -185,54 +159,16 @@ impl GitSnapshotService {
             .collect()
     }
 
-    /// Delete exactly `pins` in one atomic, no-dereference
-    /// `git update-ref --no-deref --stdin` transaction, each `delete`
-    /// conditioned on the tree SHA recorded in the [`PinnedRef`].
-    ///
-    /// Two independent safety properties:
-    ///
-    /// - **Atomic** — `git update-ref --stdin` commits every command together
-    ///   at end of input; if any command fails (including a failed old-value
-    ///   check) the whole transaction aborts and no ref is changed.
-    /// - **No dereference** — `--no-deref` makes every `delete` operate on the
-    ///   exact ref name given, never on a ref reached by resolving a symbolic
-    ///   ref. Combined with a fail-closed re-check (below), a
-    ///   direct-ref → symbolic-ref race between inventory and deletion can
-    ///   never cause this call to touch the symref's target (for example a ref
-    ///   owned by another worktree).
-    ///
-    /// Before issuing the transaction, each supplied ref is re-inventoried: it
-    /// must still exist, still be a direct ref to a tree, and still point at
-    /// the inventoried SHA. If any has changed — deleted, retargeted, or turned
-    /// into a symbolic ref — this returns `Err` and deletes nothing, preferring
-    /// failure over acting on unexpected namespace state. An empty slice is a
-    /// successful no-op.
-    #[allow(
-        dead_code,
-        reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-    )]
     pub async fn delete_pins(&self, lease: WorktreeLockLease, pins: &[PinnedRef]) -> Result<()> {
-        self.delete_pins_inner(lease, pins, || {}).await
+        self.delete_pins_inner(lease, pins, || {}, || {}).await
     }
 
-    /// Body of [`delete_pins`] with a deterministic test seam that fires
-    /// **after** the fail-closed preflight re-inventory and **before** the
-    /// `git update-ref --no-deref --stdin` transaction is spawned. Production
-    /// calls it with a no-op hook; the inline atomicity test uses the hook to
-    /// mutate a ref *after* it has passed preflight, so the transaction is
-    /// actually issued and the per-`delete` expected-old-value check — not the
-    /// preflight — is what aborts the batch. This is the only proof that the
-    /// Git transaction itself is atomic; the preflight proves a different
-    /// property (unexpected ref state before the transaction is even attempted).
-    #[allow(
-        dead_code,
-        reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-    )]
     async fn delete_pins_inner(
         &self,
         lease: WorktreeLockLease,
         pins: &[PinnedRef],
         after_preflight: impl FnOnce(),
+        on_worker_entered: impl FnOnce() + Send + 'static,
     ) -> Result<()> {
         if pins.is_empty() {
             return Ok(());
@@ -251,7 +187,7 @@ impl GitSnapshotService {
             stdin_payload.push('\n');
         }
 
-        self.run_ref_mutation(
+        self.run_ref_mutation_inner(
             lease,
             vec![
                 "update-ref".to_string(),
@@ -259,23 +195,11 @@ impl GitSnapshotService {
                 "--stdin".to_string(),
             ],
             Some(stdin_payload.into_bytes()),
+            on_worker_entered,
         )
         .await?;
 
         Ok(())
-    }
-
-    #[allow(
-        dead_code,
-        reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-    )]
-    async fn run_ref_mutation(
-        &self,
-        lease: WorktreeLockLease,
-        args: Vec<String>,
-        stdin: Option<Vec<u8>>,
-    ) -> Result<String> {
-        self.run_ref_mutation_inner(lease, args, stdin, || {}).await
     }
 
     async fn run_ref_mutation_inner(
@@ -297,18 +221,6 @@ impl GitSnapshotService {
         .map_err(|source| anyhow!("Git ref mutation worker failed: {source}"))?
     }
 
-    /// Fail closed unless every supplied pin is still exactly the direct ref
-    /// that was inventoried: present, a direct (non-symbolic) ref, targeting a
-    /// tree, and pointing at the recorded SHA. Re-inventoried in a single
-    /// `git for-each-ref` over the exact ref names, so no enumeration order is
-    /// relied on. This closes the common inventory→delete race cleanly; the
-    /// residual sub-transaction race is still contained by `--no-deref` plus
-    /// the per-`delete` old-value condition, which together cannot follow a
-    /// symbolic ref or mutate a ref the caller did not name.
-    #[allow(
-        dead_code,
-        reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-    )]
     async fn assert_pins_are_unchanged_direct_refs(&self, pins: &[PinnedRef]) -> Result<()> {
         let mut args: Vec<&str> = vec!["for-each-ref", FOR_EACH_REF_PIN_FORMAT];
         args.extend(pins.iter().map(|pin| pin.ref_name.as_str()));
@@ -426,24 +338,13 @@ impl GitSnapshotService {
     }
 }
 
-/// One SCE-owned snapshot pin: a ref under
-/// `refs/sce/mutation-cursor/<worktree-id>/` and the tree object it protects.
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[allow(
-    dead_code,
-    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-)]
 pub struct PinnedRef {
     pub ref_name: String,
     pub tree: TreeId,
 }
 
-/// Why a worktree's pin inventory could not be produced.
 #[derive(Debug)]
-#[allow(
-    dead_code,
-    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-)]
 pub enum PinInventoryError {
     /// `git for-each-ref` itself failed to execute or exited non-zero.
     Git(anyhow::Error),
@@ -468,10 +369,6 @@ impl std::fmt::Display for PinInventoryError {
 
 impl std::error::Error for PinInventoryError {}
 
-#[allow(
-    dead_code,
-    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-)]
 fn parse_pin_line(line: &str, prefix: &str) -> std::result::Result<PinnedRef, PinInventoryError> {
     let fields: Vec<&str> = line.split('\0').collect();
     let [ref_name, object_name, object_type, symref] = fields.as_slice() else {
@@ -534,10 +431,6 @@ fn parse_pin_line(line: &str, prefix: &str) -> std::result::Result<PinnedRef, Pi
     })
 }
 
-#[allow(
-    dead_code,
-    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
-)]
 fn pin_ref_prefix(worktree_id: &WorktreeId) -> String {
     format!("{REF_NAMESPACE}/{}/", worktree_id.0)
 }
@@ -1057,6 +950,120 @@ mod tests {
             .await
             .expect("list pins after delete")
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelled_delete_keeps_worktree_lock_until_git_ref_deletion_completes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repo_root = dir.path().join("repo");
+        init_committed_repository(&repo_root);
+        std::fs::write(repo_root.join("untracked.txt"), "untracked\n").expect("write file");
+
+        let git_dir = resolve_git_dir(&repo_root).await.expect("git dir");
+        let worktree_id = WorktreeId("main".to_string());
+        let snapshot = GitSnapshotService::new(&repo_root)
+            .await
+            .expect("snapshot service");
+        let tree = snapshot.capture_tree().await.expect("capture tree");
+        let pin_ref = format!("refs/sce/mutation-cursor/main/{}", tree.0);
+
+        let pin_lock = WorktreeLock::acquire_async(&git_dir, LOCK_RELEASE_TIMEOUT)
+            .await
+            .expect("pin lock");
+        snapshot
+            .pin_tree(pin_lock.lease(), &worktree_id, &tree)
+            .await
+            .expect("pin orphan tree");
+        drop(pin_lock);
+        let pins = snapshot.list_pins(&worktree_id).await.expect("list pins");
+        assert_eq!(
+            pins,
+            vec![PinnedRef {
+                ref_name: pin_ref.clone(),
+                tree: tree.clone(),
+            }]
+        );
+
+        let lock_a = WorktreeLock::acquire_async(&git_dir, LOCK_RELEASE_TIMEOUT)
+            .await
+            .expect("worktree lock A");
+        let lease = lock_a.lease();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+
+        let caller = tokio::spawn({
+            let repo_root = repo_root.clone();
+            let pins = pins.clone();
+            async move {
+                let _lock_a = lock_a;
+                let snapshot = GitSnapshotService::new(&repo_root)
+                    .await
+                    .expect("caller snapshot service");
+                snapshot
+                    .delete_pins_inner(
+                        lease,
+                        &pins,
+                        || {},
+                        move || {
+                            entered_tx.send(()).expect("signal worker entered");
+                            release_rx
+                                .recv_timeout(LOCK_RELEASE_TIMEOUT)
+                                .expect("release worker");
+                        },
+                    )
+                    .await
+            }
+        });
+
+        entered_rx.await.expect("ref deletion worker entered");
+        assert_eq!(
+            snapshot.list_pins(&worktree_id).await.expect("list pins"),
+            pins,
+            "the parked worker must not have deleted the pin yet"
+        );
+
+        caller.abort();
+        assert!(caller
+            .await
+            .expect_err("caller must be cancelled")
+            .is_cancelled());
+
+        assert!(matches!(
+            WorktreeLock::acquire_async(&git_dir, LOCK_CONTENDED_TIMEOUT).await,
+            Err(WorktreeLockError::TimedOut { .. })
+        ));
+        assert_eq!(
+            snapshot
+                .list_pins(&worktree_id)
+                .await
+                .expect("list pins while the worker is still parked"),
+            pins
+        );
+
+        release_tx.send(()).expect("release worker");
+
+        let lock_b = WorktreeLock::acquire_async(&git_dir, LOCK_RELEASE_TIMEOUT)
+            .await
+            .expect("worktree lock B after the ref deletion completes");
+        assert!(snapshot
+            .list_pins(&worktree_id)
+            .await
+            .expect("list pins after the released worker finished")
+            .is_empty());
+        assert!(!git_dir.join(format!("{pin_ref}.lock")).exists());
+        assert!(!git_dir.join("packed-refs.lock").exists());
+
+        snapshot
+            .pin_tree(lock_b.lease(), &worktree_id, &tree)
+            .await
+            .expect("a legitimate pin proceeds after the cancelled deletion");
+        assert_eq!(
+            snapshot
+                .list_pins(&worktree_id)
+                .await
+                .expect("list pins after re-pin"),
+            pins
+        );
     }
 
     #[tokio::test]

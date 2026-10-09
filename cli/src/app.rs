@@ -387,6 +387,9 @@ where
 }
 
 #[cfg(test)]
+mod doctor_reconciliation_cli_tests;
+
+#[cfg(test)]
 mod tests {
     use std::future::{poll_fn, Future};
     use std::sync::{Arc, Mutex};

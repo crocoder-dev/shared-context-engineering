@@ -16,6 +16,12 @@ The `Environment` domain contains `State`, `Configuration`, and `Repository
 identity`. The `Repository` domain contains `Git repository`, `Post-commit Agent
 Trace auto-sync`, and `Git hooks`.
 
+When snapshot-ref reconciliation is recommended (or its maintenance state is
+unusable), plain `sce doctor` additionally renders an additive `Snapshot ref
+reconciliation` section; it is omitted otherwise. `sce doctor --fix` appends one
+`mutation_scope_health` fix-result row for its reconciliation pass. Details in
+[../cli/doctor-ref-reconciliation.md](../cli/doctor-ref-reconciliation.md).
+
 ## Header and status vocabulary
 
 - Diagnose mode renders `SCE doctor`.

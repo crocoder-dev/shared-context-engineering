@@ -13,8 +13,8 @@ submodule is declared privately in `runtime/mod.rs`, which re-exports
 `coordinate` and `abandon_scope` at `pub(crate)` — reachable crate-wide, contract
 in [`mutation-scope-runtime.md`](mutation-scope-runtime.md). `coordinate()` and
 `abandon_scope()` are now driven by the generic `sce hooks mutation-scope` CLI
-ingress. `reconcile_worktree` stays `runtime`-internal and unwired, and the
-mutation runtime does not itself insert into `diff_traces`. Concrete Claude Code,
+ingress. Snapshot-ref reconciliation stays `runtime`-internal and runs only through
+`sce doctor --fix`, and the mutation runtime does not itself insert into `diff_traces`. Concrete Claude Code,
 Codex, and OpenCode adapters are wired to the seam (OpenCode reachable in
 production via a generated plugin installed by `sce setup`); Pi remains future work.
 
@@ -106,16 +106,16 @@ see Testing boundary). Only harness/command wiring remains.
   `refs/sce/mutation-cursor/<worktree-id>/...` ref. This derivation reads
   only Git's own state — no file is created or read under `<git-dir>/sce/`,
   and no identity is generated or persisted anywhere.
-- `cli/src/services/mutation_trace/runtime/ref_reconciliation.rs` — the
-  conservative per-worktree snapshot-ref maintenance pass — `reconcile_worktree`
-  / `pub(super) reconcile_worktree_inner` return `Result<ReconciliationOutcome,
-  ReconcileError>` (`ReconciliationOutcome` = `Reconciled(ReconciliationReport)`
-  | `SkippedNoCheckoutIdentity`). Under the worktree's `WorktreeLock` it deletes
-  only pins whose tree is a durable root of **no** worktree, fails closed if any
-  local root lacks a pin, and writes no `mutation_trace_*` row or taint marker
-  (only the namespace of a checkout id a current worktree still derives — a
-  namespace no current worktree owns, via a deleted worktree or checkout-id
-  metadata loss/recreation, is future repository-scoped work). Full contract in
+- `cli/src/services/mutation_trace/runtime/ref_reconciliation.rs` and
+  `ref_maintenance.rs` — the conservative per-worktree snapshot-ref maintenance
+  pass. `reconcile_with_held_lock` is the single lock-held algorithm and
+  `reconcile_explicit` (single `WorktreeLock` acquisition, verified-existing
+  Agent Trace DB, state recorded under the same lock) is its only production
+  entrypoint, called by `sce doctor --fix`. It deletes only pins whose tree is a
+  durable root of **no** worktree, fails closed if any local root lacks a pin,
+  and writes no `mutation_trace_*` row or taint marker. Only the namespace of the
+  currently resolvable worktree is inventoried; refs owned by removed linked
+  worktrees survive (deferred follow-up). Full contract in
   [`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md).
 - `cli/src/services/mutation_trace/runtime/protected_worktree.rs` — the shared
   safety prefix every runtime entrypoint runs behind (`ProtectedWorktree`:
@@ -199,9 +199,12 @@ The runtime lock guards every runtime entrypoint's critical section
 (external-taint marker arming/clearing, snapshot capture where applicable,
 worktree/scope materialization, recovery, and the CAS retry loop):
 `coordinate()` and `abandon_scope()` acquire it before their protected work and
-hold it until the call returns. The separate `ref_reconciliation::reconcile_worktree`
-pass acquires this same lock before inventorying pins, reading durable roots,
-or deleting refs, with its own bounded timeout. `<git-dir>/sce/mutation-cursor.lock`
+hold it until the call returns. The separate `ref_maintenance::reconcile_explicit`
+pass acquires this same lock exactly once, before inventorying pins, reading
+durable roots, or deleting refs, with a bounded 10 s wait; a boundary arriving
+meanwhile waits up to `WORKTREE_LOCK_TIMEOUT` and then fails before durable
+completion. The hook-path advisory takes the lock with a zero-wait `try_lock`
+only after `coordinate()` has returned. `<git-dir>/sce/mutation-cursor.lock`
 remains worktree-specific because `git_dir` itself is worktree-specific for linked
 worktrees (`resolve_git_dir` resolves each worktree's own
 `--absolute-git-dir`), so each worktree has an independent critical section.
@@ -217,7 +220,7 @@ On-disk layout so far:
 
 <repository's normal, shared object database>       (runtime::git_snapshot writes here directly)
 <repository's normal, shared refs namespace>
-└── refs/sce/mutation-cursor/<worktree-id>/<tree-sha>   (runtime::git_snapshot, create-only per invocation; orphan/unreferenced pins reclaimed by runtime::ref_reconciliation only for a checkout id a current worktree still derives, every pin for a current or historical durable mutation-cursor root retained; a namespace no current worktree owns — deleted worktree or checkout-id metadata loss/recreation — is unreachable, future repository-scoped work)
+└── refs/sce/mutation-cursor/<worktree-id>/<tree-sha>   (runtime::git_snapshot, create-only per invocation; orphan/unreferenced pins reclaimed by runtime::ref_maintenance only through sce doctor --fix and only for the namespace of a currently resolvable worktree, every pin for a current or historical durable mutation-cursor root retained; refs owned by removed linked worktrees are unreachable, future repository-scoped work)
 ```
 
 ## Testing boundary
@@ -291,13 +294,13 @@ attributable `Advance` that commits then fails its trailing `marker.clear()`
 surfaces `MarkerClearAfterCommit` with the matching committed outcome. The
 The `after_load` seam was used by the removed reconciliation pin→CAS lock-race regression and is unused while that suite is gone.
 
-There is no `runtime/tests.rs` cross-module integration suite: the ordinary
-coordinator, abandonment and reconciliation test suites were removed during the
-async-persistence work and are deliberately not restored (PR3 does not restore
-tests). Coverage of `coordinate()` / `abandon_scope()` now rests on the Quint
-MBT suite in `mutation_trace/mbt`, the `mutation_trace` unit tests and the
-inline `worktree_lock.rs` / `git_snapshot.rs` tests; `reconcile_worktree` has no
-test coverage while it remains unwired.
+There is no `runtime/tests.rs` cross-module integration suite. Coverage of
+`coordinate()` / `abandon_scope()` rests on the Quint MBT suite in
+`mutation_trace/mbt`, the `mutation_trace` unit tests and the inline
+`worktree_lock.rs` / `git_snapshot.rs` tests. Reconciliation has its own
+production-path and concurrency suite under `ref_maintenance/tests/` (see
+[`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md)),
+including tests that drive the real coordinator against a parked pass.
 
 ## Status
 

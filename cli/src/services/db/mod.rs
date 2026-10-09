@@ -162,6 +162,12 @@ fn sentence_case(value: &str) -> String {
     first.to_uppercase().collect::<String>() + chars.as_str()
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OpenMode {
+    CreateIfMissing,
+    ExistingReadOnly,
+}
+
 fn ensure_db_parent_dir(db_name: &str, db_path: &Path) -> Result<()> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
@@ -847,17 +853,22 @@ impl<M: DbSpec> TursoDb<M> {
         Self::open_without_migrations_at(db_path).await
     }
 
-    /// Open or create the database at an explicit path without running embedded
-    /// migrations.
-    ///
-    /// Parent directories are created automatically and the connection-open
-    /// retry policy is preserved. Runtime callers that use this path are
-    /// responsible for verifying schema readiness before query/write work.
     pub async fn open_without_migrations_at(db_path: impl AsRef<Path>) -> Result<Self> {
-        let db_name = M::db_name();
-        let db_path = db_path.as_ref().to_path_buf();
+        Self::open_at_path(db_path.as_ref(), OpenMode::CreateIfMissing).await
+    }
 
-        ensure_db_parent_dir(db_name, &db_path)?;
+    pub async fn open_existing_without_migrations_at(db_path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_at_path(db_path.as_ref(), OpenMode::ExistingReadOnly).await
+    }
+
+    async fn open_at_path(db_path: &Path, mode: OpenMode) -> Result<Self> {
+        let db_name = M::db_name();
+        let db_path = db_path.to_path_buf();
+
+        if mode == OpenMode::CreateIfMissing {
+            ensure_db_parent_dir(db_name, &db_path)?;
+        }
+        let read_only = mode == OpenMode::ExistingReadOnly;
 
         let retry_policy = resolve_connection_open_retry_policy::<M>();
         let busy_timeout = resolve_busy_timeout::<M>();
@@ -874,6 +885,7 @@ impl<M: DbSpec> TursoDb<M> {
                     })?;
                     let db = turso::Builder::new_local(path_str)
                         .experimental_multiprocess_wal(true)
+                        .read_only(read_only)
                         .build()
                         .await
                         .map_err(|e| {

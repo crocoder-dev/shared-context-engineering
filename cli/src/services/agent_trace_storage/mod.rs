@@ -208,3 +208,89 @@ async fn open_repository_db_for_hook_runtime(
         .await?;
     Ok((db, metadata))
 }
+
+#[allow(
+    dead_code,
+    reason = "maintenance wiring lands in later tasks of context/plans/mutation-cursor-ref-reconciliation-wiring.md"
+)]
+pub async fn resolve_existing_agent_trace_storage_for_maintenance(
+    context: &AgentTraceStorageContext<'_>,
+) -> Result<ResolvedAgentTraceStorage> {
+    let repository_identity = resolve_identity(context)?;
+    let db_path = agent_trace_db_path_for_repository(&repository_identity.identity.repository_id)?;
+    open_existing_storage_for_maintenance(repository_identity, db_path).await
+}
+
+#[allow(
+    dead_code,
+    reason = "maintenance wiring lands in later tasks of context/plans/mutation-cursor-ref-reconciliation-wiring.md"
+)]
+async fn open_existing_storage_for_maintenance(
+    repository_identity: ResolvedRepositoryIdentity,
+    db_path: PathBuf,
+) -> Result<ResolvedAgentTraceStorage> {
+    let repository_id = &repository_identity.identity.repository_id;
+    let (db, metadata) =
+        RepositoryAgentTraceDb::open_verified_existing_at(&db_path, repository_id).await?;
+
+    Ok(ResolvedAgentTraceStorage {
+        repository_identity,
+        db_path,
+        db,
+        metadata,
+    })
+}
+
+#[cfg(test)]
+pub(crate) async fn resolve_existing_agent_trace_storage_for_maintenance_at_state_root(
+    context: &AgentTraceStorageContext<'_>,
+    state_root: &Path,
+) -> Result<ResolvedAgentTraceStorage> {
+    let repository_identity = resolve_identity(context)?;
+    let db_path = agent_trace_db_path_for_repository_at(
+        state_root,
+        &repository_identity.identity.repository_id,
+    )?;
+    open_existing_storage_for_maintenance(repository_identity, db_path).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        resolve_existing_agent_trace_storage_for_maintenance_at_state_root,
+        AgentTraceStorageContext,
+    };
+    use crate::services::agent_trace_db::repository::ExistingRepositoryDbError;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_trace_storage_maintenance_open_of_missing_db_creates_nothing() {
+        let repository = tempfile::tempdir().expect("repository dir");
+        let state_root = tempfile::tempdir().expect("state root");
+        let context = AgentTraceStorageContext {
+            repository_root: repository.path(),
+            explicit_repository_id: Some("maintenance-open-missing"),
+            repository_remote: "origin",
+        };
+
+        let Err(error) = resolve_existing_agent_trace_storage_for_maintenance_at_state_root(
+            &context,
+            state_root.path(),
+        )
+        .await
+        else {
+            panic!("a missing database must not open");
+        };
+
+        assert!(matches!(
+            error.downcast_ref::<ExistingRepositoryDbError>(),
+            Some(ExistingRepositoryDbError::Missing { .. })
+        ));
+        let entries: Vec<_> = std::fs::read_dir(state_root.path())
+            .expect("state root listing")
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "state root must stay empty: {entries:?}"
+        );
+    }
+}

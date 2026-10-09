@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::Result;
 use uuid::Uuid;
@@ -14,7 +15,7 @@ use crate::services::mutation_trace::types::{
 };
 
 use super::git_snapshot::GitSnapshotService;
-use super::protected_worktree::{ProtectedWorktree, ProtectedWorktreeError};
+use super::protected_worktree::{ProtectedWorktree, ProtectedWorktreeError, WORKTREE_LOCK_TIMEOUT};
 use super::worktree_lock::WorktreeLockLease;
 
 pub use super::protected_worktree::ExternalTaintOperation;
@@ -205,6 +206,7 @@ where
         repository_root,
         boundary,
         open_db,
+        WORKTREE_LOCK_TIMEOUT,
         || {},
         |_attempt| {},
         |_attempt| Ok(()),
@@ -216,6 +218,7 @@ pub(super) async fn coordinate_inner<P, F, L, R>(
     repository_root: &Path,
     boundary: &RuntimeBoundary,
     open_db: P,
+    lock_timeout: Duration,
     on_lock_contention: F,
     after_load: L,
     after_recovery: R,
@@ -226,9 +229,10 @@ where
     L: FnMut(u32),
     R: FnMut(u32) -> Result<()>,
 {
-    let protected = ProtectedWorktree::acquire_inner(repository_root, on_lock_contention)
-        .await
-        .map_err(protected_worktree_failure)?;
+    let protected =
+        ProtectedWorktree::acquire_with_timeout(repository_root, lock_timeout, on_lock_contention)
+            .await
+            .map_err(protected_worktree_failure)?;
 
     let outcome = coordinate_protected(
         repository_root,
