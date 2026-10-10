@@ -390,6 +390,26 @@
 
         cargoArtifacts = craneLib.buildDepsOnly cargoDepsArgs;
 
+        # Keep production artifacts on Crane's release profile. The test and
+        # Clippy derivations use the unoptimized Cargo test profile with a
+        # separate dependency cache, so changing CLI sources does not require
+        # repeatedly optimizing the entire Rust test binary.
+        testProfileArgs = {
+          CARGO_PROFILE = "test";
+          # Preserve useful file/line backtraces without full DWARF debug info.
+          CARGO_PROFILE_TEST_DEBUG = "line-tables-only";
+        };
+
+        cargoArtifactsTest = craneLib.buildDepsOnly (
+          cargoDepsArgs
+          // testProfileArgs
+          // { pname = "sce-test-deps"; }
+        );
+
+        testCargoArgs = commonCargoArgs // testProfileArgs // {
+          cargoArtifacts = cargoArtifactsTest;
+        };
+
         scePackage = craneLib.buildPackage (
           commonCargoArgs
           // {
@@ -1529,6 +1549,24 @@
               ''}
             '';
 
+        # The dedicated MBT runner is opt-in as a package, not a flake check:
+        # cli-tests already executes the same mutation_trace::mbt test module.
+        # Quint CI still invokes this focused runner independently.
+        mutationTraceQuintConnectCheck = craneLib.cargoTest (
+          testCargoArgs
+          // {
+            pname = "sce-mutation-trace-quint-connect";
+            doCheck = true;
+            cargoTestExtraArgs = "mutation_trace::mbt";
+            nativeCheckInputs = [ pkgs.git pkgs.quint ];
+            preCheck = ''
+              rustc --version
+              cargo --version
+              quint --version
+            '';
+          }
+        );
+
         sceApp = {
           type = "app";
           program = "${scePackage}/bin/sce";
@@ -1552,6 +1590,7 @@
           ci-checks = ciChecks;
           bun = bunPackage;
           quint = pkgs.quint;
+          mutation-trace-quint-connect = mutationTraceQuintConnectCheck;
           quint-language-server = quintLanguageServerPackage;
           turso = tursoPackage;
           default = scePackage;
@@ -1562,23 +1601,21 @@
             # `mutation_trace::mbt` (the Quint Connect model-based-testing
             # harness) is an ordinary `#[cfg(test)]` module reached by the
             # full `cargo test` this check runs, so the pinned Quint binary
-            # must be on PATH here too, not only in the dedicated
-            # `mutation-trace-quint-connect` check below.
+            # must be on PATH for this check. The focused MBT runner is
+            # available separately as .#mutation-trace-quint-connect.
             cli-tests = craneLib.cargoTest (
-              commonCargoArgs
+              testCargoArgs
               // {
                 pname = "sce-cli-tests";
-                inherit cargoArtifacts;
                 doCheck = true;
                 nativeCheckInputs = [ pkgs.git pkgs.quint ];
               }
             );
 
             cli-clippy = craneLib.cargoClippy (
-              commonCargoArgs
+              testCargoArgs
               // {
                 pname = "sce-cli-clippy";
-                inherit cargoArtifacts;
                 cargoClippyExtraArgs = "--all-targets --all-features";
               }
             );
@@ -1587,27 +1624,6 @@
               cargoDepsArgs
               // {
                 pname = "sce-cli-fmt";
-              }
-            );
-
-            # Focused Quint Connect model-based-testing check: runs only
-            # `mutation_trace::mbt` under the repository's pinned Rust
-            # toolchain and pinned Quint binary, reusing the same
-            # `cargoArtifacts`/`commonCargoArgs` pipeline as `cli-tests`
-            # rather than a bespoke Rust+Quint environment.
-            mutation-trace-quint-connect = craneLib.cargoTest (
-              commonCargoArgs
-              // {
-                pname = "sce-mutation-trace-quint-connect";
-                inherit cargoArtifacts;
-                doCheck = true;
-                cargoTestExtraArgs = "mutation_trace::mbt";
-                nativeCheckInputs = [ pkgs.git pkgs.quint ];
-                preCheck = ''
-                  rustc --version
-                  cargo --version
-                  quint --version
-                '';
               }
             );
 
