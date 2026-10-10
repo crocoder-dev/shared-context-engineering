@@ -11,7 +11,7 @@
 use std::path::Path;
 use std::sync::OnceLock;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use jsonschema::{validator_for, Validator};
 use serde::Deserialize;
 use serde_json::Value;
@@ -22,7 +22,7 @@ use super::types::{
     IntegrationTargetId, IntegrationsConfig, LogFormat, LogLevel, PerDbRetryConfig,
     AGENT_TRACE_DB_BUSY_TIMEOUT_MAX_MS, AGENT_TRACE_DB_CONTENTION_DEADLINE_MAX_MS,
 };
-use crate::services::resilience::RetryPolicy;
+use crate::services::resilience::{RetryPolicy, RetryPolicyError};
 
 pub(crate) const SCE_CONFIG_SCHEMA_JSON: &str = include_str!(concat!(
     env!("OUT_DIR"),
@@ -531,31 +531,29 @@ pub(crate) fn map_database_retry_config(
                 )
             })?;
 
-            if max_attempts == 0 {
-                bail!(
-                    "Config key '{context}.max_attempts' in '{}' must be >= 1.",
-                    path.display()
-                );
-            }
-            if timeout_ms == 0 {
-                bail!(
-                    "Config key '{context}.timeout_ms' in '{}' must be >= 1.",
-                    path.display()
-                );
-            }
-            if max_backoff_ms < initial_backoff_ms {
-                bail!(
-                    "Config key '{context}.max_backoff_ms' in '{}' must be >= initial_backoff_ms.",
-                    path.display()
-                );
-            }
-
-            Ok(RetryPolicy {
-                max_attempts,
-                timeout_ms,
-                initial_backoff_ms,
-                max_backoff_ms,
-            })
+            RetryPolicy::new(max_attempts, timeout_ms, initial_backoff_ms, max_backoff_ms).map_err(
+                |error| {
+                    let message = match error {
+                        RetryPolicyError::ZeroMaxAttempts => {
+                            format!(
+                                "'{context}.max_attempts' in '{}' must be >= 1.",
+                                path.display()
+                            )
+                        }
+                        RetryPolicyError::ZeroTimeout => {
+                            format!(
+                                "'{context}.timeout_ms' in '{}' must be >= 1.",
+                                path.display()
+                            )
+                        }
+                        RetryPolicyError::MaxBackoffBelowInitial => format!(
+                            "'{context}.max_backoff_ms' in '{}' must be >= initial_backoff_ms.",
+                            path.display()
+                        ),
+                    };
+                    anyhow!("Config key {message}")
+                },
+            )
         };
 
     let per_db_object = |db_key: &str,
@@ -1139,21 +1137,11 @@ mod database_retry_config_tests {
         let database_retry = config.database_retry.unwrap().value;
         assert_eq!(
             database_retry.local_db.unwrap().query,
-            Some(RetryPolicy {
-                max_attempts: 4,
-                timeout_ms: 300,
-                initial_backoff_ms: 20,
-                max_backoff_ms: 80,
-            })
+            Some(RetryPolicy::new(4, 300, 20, 80).unwrap())
         );
         assert_eq!(
             database_retry.agent_trace_db.unwrap().retry.query,
-            Some(RetryPolicy {
-                max_attempts: 3,
-                timeout_ms: 150,
-                initial_backoff_ms: 10,
-                max_backoff_ms: 50,
-            })
+            Some(RetryPolicy::new(3, 150, 10, 50).unwrap())
         );
 
         let error = parse_error(

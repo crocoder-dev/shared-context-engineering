@@ -109,10 +109,7 @@ const STATE_PATH: &str = "agent-trace/ingestion/state";
 const BATCH_PATH: &str = "agent-trace/ingestion/batch";
 const ME_PATH: &str = "me";
 
-const STATE_RETRY_MAX_ATTEMPTS: u32 = 1;
-const STATE_RETRY_TIMEOUT_MS: u64 = 60_000;
-const STATE_RETRY_INITIAL_BACKOFF_MS: u64 = 250;
-const STATE_RETRY_MAX_BACKOFF_MS: u64 = 2_000;
+const STATE_RETRY_POLICY: RetryPolicy = RetryPolicy::builtin(1, 60_000, 250, 2_000);
 
 /// Typed failure classification for control-plane HTTP interactions, kept
 /// separate from `CliError` so the sync engine and CLI wiring can
@@ -337,12 +334,7 @@ impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
         request: &AgentTraceIngestionStateRequest,
     ) -> Result<AgentTraceIngestionStateResponse, ControlPlaneError> {
         let url = self.endpoint(STATE_PATH);
-        let policy = RetryPolicy {
-            max_attempts: STATE_RETRY_MAX_ATTEMPTS,
-            timeout_ms: STATE_RETRY_TIMEOUT_MS,
-            initial_backoff_ms: STATE_RETRY_INITIAL_BACKOFF_MS,
-            max_backoff_ms: STATE_RETRY_MAX_BACKOFF_MS,
-        };
+        let policy = STATE_RETRY_POLICY;
 
         let outcome = run_with_retry(
             policy,
