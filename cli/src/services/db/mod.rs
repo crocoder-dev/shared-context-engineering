@@ -27,27 +27,23 @@ const MIGRATIONS_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS __sce_migrations 
 const SELECT_MIGRATION_SQL: &str = "SELECT id FROM __sce_migrations WHERE id = ?1 LIMIT 1";
 const INSERT_MIGRATION_SQL: &str = "INSERT INTO __sce_migrations (id) VALUES (?1)";
 const ENCRYPTION_CIPHER_AEGIS256: &str = "aegis256";
-const CONNECTION_OPEN_RETRY_POLICY: RetryPolicy = RetryPolicy {
-    max_attempts: 3,
-    timeout_ms: 1_000,
-    initial_backoff_ms: 25,
-    max_backoff_ms: 200,
-};
+const CONNECTION_OPEN_RETRY_POLICY: RetryPolicy = RetryPolicy::builtin(3, 1_000, 25, 200);
 const CONNECTION_OPEN_RETRY_HINT: &str = "retry after the database lock clears; if the issue persists, stop other SCE processes using this database and rerun the command";
-const QUERY_RETRY_POLICY: RetryPolicy = RetryPolicy {
-    max_attempts: 5,
-    timeout_ms: 200,
-    initial_backoff_ms: 25,
-    max_backoff_ms: 100,
-};
+const QUERY_RETRY_POLICY: RetryPolicy = RetryPolicy::builtin(5, 200, 25, 100);
 const QUERY_RETRY_HINT: &str = "retry after the database lock clears; if the issue persists, stop other SCE processes using this database and rerun the command";
-const AGENT_TRACE_DB_CONFIG_KEY: &str = "agent_trace_db";
 const AGENT_TRACE_DB_BUSY_TIMEOUT_MS: u64 = 1_000;
 const AGENT_TRACE_DB_CONTENTION_DEADLINE_MS: u64 = 2_250;
 const AGENT_TRACE_DB_WRITE_CONTENTION_MAX_ATTEMPTS: u32 = 2;
 const AGENT_TRACE_DB_WRITE_CONTENTION_BACKOFF_CAP_MS: u64 = 100;
 
 pub mod encryption_key;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DatabaseKind {
+    Local,
+    AgentTrace,
+    Auth,
+}
 
 /// Service-specific Turso database configuration.
 pub trait DbSpec {
@@ -60,9 +56,8 @@ pub trait DbSpec {
     /// Ordered embedded migration SQL files as `(id, sql)` pairs.
     fn migrations() -> &'static [(&'static str, &'static str)];
 
-    /// Config-file lookup key under `policies.database_retry`.
-    /// One of `"local_db"`, `"agent_trace_db"`, `"auth_db"`.
-    fn db_config_key() -> &'static str;
+    /// Closed database identity selecting retry configuration and contention policy.
+    const KIND: DatabaseKind;
 }
 
 /// Collect common filesystem health problems for a Turso database path.
@@ -552,11 +547,10 @@ impl<M: DbSpec> TursoConnectionCore<M> {
 
 fn resolve_connection_open_retry_policy<M: DbSpec>() -> RetryPolicy {
     if let Some(config) = crate::services::config::get_database_retry_config() {
-        let per_db = match M::db_config_key() {
-            "local_db" => config.local_db.as_ref(),
-            "agent_trace_db" => config.agent_trace_db.as_ref().map(|db| &db.retry),
-            "auth_db" => config.auth_db.as_ref(),
-            _ => None,
+        let per_db = match M::KIND {
+            DatabaseKind::Local => config.local_db.as_ref(),
+            DatabaseKind::AgentTrace => config.agent_trace_db.as_ref().map(|db| &db.retry),
+            DatabaseKind::Auth => config.auth_db.as_ref(),
         };
         if let Some(per_db) = per_db {
             if let Some(policy) = per_db.connection_open {
@@ -569,11 +563,10 @@ fn resolve_connection_open_retry_policy<M: DbSpec>() -> RetryPolicy {
 
 fn resolve_query_retry_policy<M: DbSpec>() -> RetryPolicy {
     if let Some(config) = crate::services::config::get_database_retry_config() {
-        let per_db = match M::db_config_key() {
-            "local_db" => config.local_db.as_ref(),
-            "agent_trace_db" => config.agent_trace_db.as_ref().map(|db| &db.retry),
-            "auth_db" => config.auth_db.as_ref(),
-            _ => None,
+        let per_db = match M::KIND {
+            DatabaseKind::Local => config.local_db.as_ref(),
+            DatabaseKind::AgentTrace => config.agent_trace_db.as_ref().map(|db| &db.retry),
+            DatabaseKind::Auth => config.auth_db.as_ref(),
         };
         if let Some(per_db) = per_db {
             if let Some(policy) = per_db.query {
@@ -637,7 +630,7 @@ fn agent_trace_db_millis<M: DbSpec>(
     select: impl Fn(&AgentTraceDbRetryConfig) -> Option<u64>,
     default_ms: u64,
 ) -> std::time::Duration {
-    if M::db_config_key() != AGENT_TRACE_DB_CONFIG_KEY {
+    if M::KIND != DatabaseKind::AgentTrace {
         return std::time::Duration::ZERO;
     }
     let configured = config
@@ -656,7 +649,7 @@ struct WriteContentionPolicy {
 }
 
 fn write_contention_policy<M: DbSpec>() -> Option<WriteContentionPolicy> {
-    if M::db_config_key() != AGENT_TRACE_DB_CONFIG_KEY {
+    if M::KIND != DatabaseKind::AgentTrace {
         return None;
     }
     Some(WriteContentionPolicy {
@@ -1583,3 +1576,37 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
 
 #[cfg(test)]
 mod transaction_cancellation_tests;
+
+#[cfg(test)]
+mod database_kind_tests {
+    use std::time::Duration;
+
+    use super::{busy_timeout_from_config, write_contention_policy, DatabaseKind, DbSpec};
+    use crate::services::{
+        agent_trace_db::repository::RepositoryAgentTraceDbSpec, auth_db::AuthDbSpec,
+        local_db::LocalDbSpec,
+    };
+
+    #[test]
+    fn database_kinds_match_their_specs() {
+        assert_eq!(LocalDbSpec::KIND, DatabaseKind::Local);
+        assert_eq!(RepositoryAgentTraceDbSpec::KIND, DatabaseKind::AgentTrace);
+        assert_eq!(AuthDbSpec::KIND, DatabaseKind::Auth);
+    }
+
+    #[test]
+    fn contention_policy_is_agent_trace_only() {
+        assert!(write_contention_policy::<RepositoryAgentTraceDbSpec>().is_some());
+        assert!(write_contention_policy::<LocalDbSpec>().is_none());
+        assert!(write_contention_policy::<AuthDbSpec>().is_none());
+        assert_eq!(
+            busy_timeout_from_config::<LocalDbSpec>(None),
+            Duration::ZERO
+        );
+        assert_eq!(busy_timeout_from_config::<AuthDbSpec>(None), Duration::ZERO);
+        assert_eq!(
+            busy_timeout_from_config::<RepositoryAgentTraceDbSpec>(None),
+            Duration::from_secs(1)
+        );
+    }
+}

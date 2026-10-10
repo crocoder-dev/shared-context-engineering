@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::{
     generated_migrations,
-    services::db::{DbSpec, TursoDb},
+    services::db::{DatabaseKind, DbSpec, TursoDb},
 };
 
 use super::{
@@ -105,9 +105,7 @@ impl DbSpec for RepositoryAgentTraceDbSpec {
         generated_migrations::AGENT_TRACE_REPOSITORY_MIGRATIONS
     }
 
-    fn db_config_key() -> &'static str {
-        "agent_trace_db"
-    }
+    const KIND: DatabaseKind = DatabaseKind::AgentTrace;
 }
 
 /// Repository-scoped Agent Trace Turso database adapter.

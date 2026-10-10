@@ -13,7 +13,7 @@ use control_plane::ControlPlaneError;
 
 /// Bound on consecutive `409`/ambiguous-batch-failure reconciliation attempts
 /// for one stream, matching the order of magnitude of existing retry
-/// constants (`TOKEN_REFRESH_MAX_ATTEMPTS = 3` in `auth.rs`). Exhausting it
+/// constants (`TOKEN_REFRESH_RETRY_POLICY` in `auth.rs`, 3 attempts). Exhausting it
 /// fails the stream rather than looping unboundedly.
 pub const RECONCILIATION_MAX_ATTEMPTS: u32 = 5;
 

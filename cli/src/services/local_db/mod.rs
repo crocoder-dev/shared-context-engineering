@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 use crate::services::{
-    db::{DbSpec, TursoDb},
+    db::{DatabaseKind, DbSpec, TursoDb},
     default_paths::local_db_path,
 };
 
@@ -27,9 +27,7 @@ impl DbSpec for LocalDbSpec {
         &[]
     }
 
-    fn db_config_key() -> &'static str {
-        "local_db"
-    }
+    const KIND: DatabaseKind = DatabaseKind::Local;
 }
 
 /// Local Turso database adapter.
