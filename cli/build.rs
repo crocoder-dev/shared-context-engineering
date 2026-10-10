@@ -187,7 +187,11 @@ fn stage_generated_input(
 
     let output_root = out_dir.join(PKL_OUTPUT_DIR);
     remove_path_if_exists(&output_root)?;
-    copy_tree(&generated_input_root.join(PKL_OUTPUT_DIR), &output_root, true)?;
+    copy_tree(
+        &generated_input_root.join(PKL_OUTPUT_DIR),
+        &output_root,
+        true,
+    )?;
 
     Ok(())
 }
