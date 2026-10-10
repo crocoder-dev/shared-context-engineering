@@ -49,14 +49,46 @@ has two isolated sets of dependency artifacts:
 
 The existing `checks.cli-tests` already includes `mutation_trace::mbt`.
 Therefore `nix flake check` runs this suite once rather than also building a
-second focused MBT check. The focused runner is available independently at
-`nix build .#mutation-trace-quint-connect -L`, and the Quint workflow calls
-that package when targeted testing is useful.
+second focused MBT check. The focused runner remains available on demand at
+`nix build .#mutation-trace-quint-connect -L`. The Quint GitHub Actions
+workflow is spec-only: it typechecks the spec, runs named spec tests, and
+checks randomized invariants, without recompiling or rerunning the Rust MBT
+suite. This avoids overlapping execution with the Nix CI `cli-tests` check.
 
 **Cold-cache trade-off:** test and release dependency profiles produce
 different Cargo artifacts, so the first build may compile both sets. Subsequent
 test and Clippy runs reuse the test-profile cache. Benchmark cold and warm runs
 on both Linux and macOS before claiming a measured speedup.
+
+## Build optimization backlog after the #311 CI stack
+
+Already completed; **do not schedule duplicate Quint MBT execution removal again**:
+
+- PR #308 removed the separate focused MBT derivation from default
+  `nix flake check`. The Rust `cli-tests` suite still runs the 16 MBT tests
+  once; the targeted `mutation-trace-quint-connect` package is opt-in.
+- PR #309 removed the separate Rust MBT compile/run from the Quint workflow
+  while keeping specification verification and the required workflow gate.
+- PR #308 also introduced test-profile dependency artifacts reused by
+  `cli-tests` and `cli-clippy`.
+
+Remaining optimization priorities from a single, local x86_64-linux
+source-change profile (24 cores, Nix 2.34.7; **preliminary, not CI-validated**):
+
+1. **Rust test-binary compilation.** Approx. 115 s derived from a 163.7 s
+   `cli-tests` check phase minus 48.6 s of test execution. Measure rustc and
+   linker time directly before choosing code or build changes.
+2. **Test execution.** About 48.6 s. Optimize only after build-phase work.
+3. **Dependency compilation on cache misses.** `sce-test-deps` took 73.5 s
+   and was correctly built once and shared by tests and Clippy.
+4. **Other checks and operating systems.** Pkl, JS, and parity checks were
+   cached in this run; profile cold and macOS scenarios before prioritizing.
+
+The observed build wall time was 270.3 s, almost entirely explained by the
+269.8 s dependency chain `sce-test-deps` -> `sce-cli-tests`. Clippy took
+116.9 s but ran in parallel, so reducing Clippy duration alone would not
+improve that run's wall time. The ~115 s compilation estimate is not a direct
+per-crate timing measurement.
 
 ## Benchmark method
 
