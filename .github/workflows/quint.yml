@@ -55,8 +55,8 @@ jobs:
     needs: detect
     if: needs.detect.outputs.quint == 'true'
     runs-on: ubuntu-latest
-    # The focused Quint Connect Nix package compiles the CLI crate, so this needs more
-    # headroom than the pure-Quint steps alone required.
+    # The Rust/Quint Connect MBT suite already runs in the Nix CI cli-tests
+    # check on both Linux and macOS. Keep this workflow spec-only.
     timeout-minutes: 30
     steps:
       - name: Harden the runner (Audit all outbound calls)
@@ -69,12 +69,6 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-
-      - name: Enable Magic Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-        with:
-          use-flakehub: false
-          use-gha-cache: true
 
       - name: Typecheck Quint spec
         run: nix run .#quint -- typecheck spec/mutation_cursor.qnt
@@ -94,13 +88,6 @@ jobs:
           --invariants SafetyCore SafetyAttribution SafetyHistory
           --max-samples=5000
           --max-steps=20
-
-      - name: Quint Connect model-based tests (Nix-pinned Rust + Quint)
-        # The entire MBT invocation goes through this opt-in Nix package rather than
-        # `cargo test` on the runner's own Cargo, so both the Rust toolchain
-        # and the Quint binary come from the repository's pinned flake
-        # inputs, never a second, unpinned Rust installation.
-        run: nix build .#mutation-trace-quint-connect --print-build-logs
 
   gate:
     name: Quint gate
