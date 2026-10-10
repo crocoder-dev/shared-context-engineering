@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use std::fmt;
 
-use anyhow::{anyhow, ensure, Result};
+use anyhow::{anyhow, Result};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RetryPolicyError {
