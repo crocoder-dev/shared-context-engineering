@@ -42,16 +42,22 @@ jobs:
 
       - name: Run flake checks
         run: |
-          time nix flake check --fallback --print-build-logs
+          start="$SECONDS"
+          nix flake check --fallback --print-build-logs
+          elapsed="$((SECONDS - start))"
+          printf 'Nix flake check: %dm %02ds\n' "$((elapsed / 60))" "$((elapsed % 60))" | tee -a "$GITHUB_STEP_SUMMARY"
 
       # On macOS release validation builds the same native CLI dependency
       # closure, so run its smoke test there rather than building it twice.
       - name: Build and smoke-test native CLI
         if: matrix.os == 'ubuntu-latest'
         run: |
-          time nix build .#sce --fallback --out-link result --print-build-logs
+          start="$SECONDS"
+          nix build .#sce --fallback --out-link result --print-build-logs
           ./result/bin/sce --help
           ./result/bin/sce version
+          elapsed="$((SECONDS - start))"
+          printf 'Native CLI build + smoke: %dm %02ds\n' "$((elapsed / 60))" "$((elapsed % 60))" | tee -a "$GITHUB_STEP_SUMMARY"
 
   release-validation:
     name: Release validation (${{ matrix.os }})
@@ -81,13 +87,19 @@ jobs:
 
       - name: Build release package and audit portability
         run: |
-          time nix build .#ci-checks --fallback --out-link result-ci-checks --print-build-logs
+          start="$SECONDS"
+          nix build .#ci-checks --fallback --out-link result-ci-checks --print-build-logs
+          elapsed="$((SECONDS - start))"
+          printf 'Release validation: %dm %02ds\n' "$((elapsed / 60))" "$((elapsed % 60))" | tee -a "$GITHUB_STEP_SUMMARY"
 
       # On Darwin, .#sce-release is the native CLI with commit metadata.
       # Smoke-test that exact binary, which is already built by .#ci-checks.
       - name: Smoke-test macOS release CLI
         if: matrix.os == 'macos-latest'
         run: |
+          start="$SECONDS"
           ./result-ci-checks/sce-release/bin/sce --help
           ./result-ci-checks/sce-release/bin/sce version
+          elapsed="$((SECONDS - start))"
+          printf 'macOS release CLI smoke: %dm %02ds\n' "$((elapsed / 60))" "$((elapsed % 60))" | tee -a "$GITHUB_STEP_SUMMARY"
 
