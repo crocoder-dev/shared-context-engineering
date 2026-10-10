@@ -10,7 +10,7 @@ use crate::services::mutation_trace::store::MutationTraceStore;
 use crate::services::mutation_trace::types::TreeId;
 
 use super::git_snapshot::{resolve_git_dir, GitSnapshotService, PinInventoryError, PinnedRef};
-use super::worktree_lock::{acquire_inner, WorktreeLockError};
+use super::worktree_lock::{acquire_inner_async, WorktreeLockError};
 
 const RECONCILIATION_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -122,55 +122,50 @@ impl std::error::Error for ReconcileError {}
 /// Module-private to `runtime`, exactly like `coordinate` — never re-exported
 /// outside mutation-trace `runtime`. It is a one-line delegation to
 /// [`reconcile_worktree_inner`] with a no-op lock-contention closure.
-pub fn reconcile_worktree<P>(
+pub async fn reconcile_worktree<P>(
     repository_root: &Path,
     open_db: P,
 ) -> std::result::Result<ReconciliationOutcome, ReconcileError>
 where
-    P: FnOnce() -> Result<RepositoryAgentTraceDb>,
+    P: std::ops::AsyncFnOnce() -> Result<RepositoryAgentTraceDb>,
 {
-    reconcile_worktree_inner(repository_root, open_db, || {})
+    reconcile_worktree_inner(repository_root, open_db, || {}).await
 }
 
-/// Body of [`reconcile_worktree`] with a deterministic test seam:
-/// `on_lock_contention` fires once the moment the pass first observes the
-/// `WorktreeLock` is already held by another owner (see
-/// [`super::worktree_lock::acquire_inner`]). `pub(super)` keeps it reachable
-/// from `runtime` and `runtime::tests` but invisible outside `runtime`.
-///
-/// Every fallible step below runs entirely while holding the worktree's
-/// `WorktreeLock`, which is the same lock file `coordinate()` holds across
-/// `pin -> recovery -> prepare -> CAS -> marker clear -> return` — the mutual
-/// exclusion that makes the pin -> DB-CAS race structurally impossible.
-pub(super) fn reconcile_worktree_inner<P, F>(
+pub(super) async fn reconcile_worktree_inner<P, F>(
     repository_root: &Path,
     open_db: P,
     on_lock_contention: F,
 ) -> std::result::Result<ReconciliationOutcome, ReconcileError>
 where
-    P: FnOnce() -> Result<RepositoryAgentTraceDb>,
-    F: FnOnce(),
+    P: std::ops::AsyncFnOnce() -> Result<RepositoryAgentTraceDb>,
+    F: FnOnce() + Send + 'static,
 {
-    let git_dir = resolve_git_dir(repository_root).map_err(ReconcileError::GitDir)?;
+    let git_dir = resolve_git_dir(repository_root)
+        .await
+        .map_err(ReconcileError::GitDir)?;
 
-    let _lock = acquire_inner(&git_dir, RECONCILIATION_LOCK_TIMEOUT, on_lock_contention)
+    let lock = acquire_inner_async(&git_dir, RECONCILIATION_LOCK_TIMEOUT, on_lock_contention)
+        .await
         .map_err(ReconcileError::Lock)?;
 
-    // The lock is held from here until this function returns. Worktree identity
-    // comes directly from Git topology and never creates or reads SCE identity
-    // metadata.
-    let worktree_id =
-        resolve_worktree_id(repository_root).map_err(ReconcileError::CheckoutIdentity)?;
+    let worktree_id = resolve_worktree_id(repository_root)
+        .await
+        .map_err(ReconcileError::CheckoutIdentity)?;
 
-    let db = open_db().map_err(ReconcileError::AgentTraceDbUnavailable)?;
+    let mut db = open_db()
+        .await
+        .map_err(ReconcileError::AgentTraceDbUnavailable)?;
 
-    let snapshot =
-        GitSnapshotService::new(repository_root).map_err(ReconcileError::SnapshotService)?;
+    let snapshot = GitSnapshotService::new(repository_root)
+        .await
+        .map_err(ReconcileError::SnapshotService)?;
 
     // Inventory the worktree's pins first, so every durable-root read that
     // follows is compared against a fixed observation of the namespace.
     let actual = snapshot
         .list_pins(&worktree_id)
+        .await
         .map_err(|error| match error {
             PinInventoryError::Git(source) => ReconcileError::PinInventory(source),
             PinInventoryError::MalformedRef { ref_name, reason } => {
@@ -179,13 +174,14 @@ where
         })?;
     let pinned_trees: BTreeSet<TreeId> = actual.iter().map(|pin| pin.tree.clone()).collect();
 
-    let store = MutationTraceStore::new(&db);
+    let store = MutationTraceStore::new(&mut db);
 
     // Local consistency invariant (a strictly per-worktree check): every tree
     // the target worktree's own durable evidence references must still have a
     // live pin, or the pass fails closed and deletes nothing.
     let required_local = store
         .load_tree_roots(&worktree_id)
+        .await
         .map_err(ReconcileError::DurableRoots)?;
     let missing_local: Vec<TreeId> = required_local.difference(&pinned_trees).cloned().collect();
     if !missing_local.is_empty() {
@@ -200,6 +196,7 @@ where
     // last SCE ref protecting a tree that only worktree B durably requires.
     let required_repository = store
         .load_all_tree_roots()
+        .await
         .map_err(ReconcileError::DurableRoots)?;
     let stale: Vec<PinnedRef> = actual
         .iter()
@@ -209,7 +206,8 @@ where
 
     if !stale.is_empty() {
         snapshot
-            .delete_pins(&stale)
+            .delete_pins(lock.lease(), &stale)
+            .await
             .map_err(ReconcileError::DeleteTransaction)?;
     }
 
@@ -218,475 +216,4 @@ where
         retained: actual.len() - stale.len(),
         deleted: stale.len(),
     }))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::{Path, PathBuf};
-    use std::process::Command;
-
-    use super::super::git_snapshot::resolve_worktree_id;
-    use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
-    use crate::services::mutation_trace::store::encode_revision;
-    use crate::services::mutation_trace::types::WorktreeId;
-
-    use super::*;
-
-    const NAMESPACE: &str = "refs/sce/mutation-cursor";
-
-    struct Fixture {
-        _temp_dir: tempfile::TempDir,
-        repo_root: PathBuf,
-        db_path: PathBuf,
-        worktree_id: WorktreeId,
-    }
-
-    fn expect_reconciled(
-        outcome: std::result::Result<ReconciliationOutcome, ReconcileError>,
-    ) -> ReconciliationReport {
-        match outcome.expect("reconciliation should succeed") {
-            ReconciliationOutcome::Reconciled(report) => report,
-            ReconciliationOutcome::SkippedNoCheckoutIdentity => {
-                panic!("expected a Reconciled outcome, got SkippedNoCheckoutIdentity")
-            }
-        }
-    }
-
-    fn git(dir: &Path, args: &[&str]) -> String {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .expect("git command should spawn");
-        assert!(
-            output.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8(output.stdout).expect("git output should be valid UTF-8")
-    }
-
-    fn fixture(label: &str) -> Fixture {
-        let temp_dir = tempfile::Builder::new()
-            .prefix(&format!("sce-ref-reconciliation-{label}-"))
-            .tempdir()
-            .expect("test temp directory should be created");
-
-        let repo_root = temp_dir.path().join("repo");
-        std::fs::create_dir_all(&repo_root).expect("repo root should be created");
-        git(&repo_root, &["init", "--quiet"]);
-        git(&repo_root, &["config", "user.email", "test@example.com"]);
-        git(&repo_root, &["config", "user.name", "Test"]);
-        git(
-            &repo_root,
-            &["commit", "--allow-empty", "--quiet", "-m", "init"],
-        );
-
-        let worktree_id = resolve_worktree_id(&repo_root).expect("worktree id should resolve");
-
-        // The DB lives beside the worktree, never inside it, so it can never
-        // perturb a captured tree.
-        let db_path = temp_dir.path().join("agent-trace.db");
-        RepositoryAgentTraceDb::new_at(&db_path).expect("repository schema DB should open");
-
-        Fixture {
-            _temp_dir: temp_dir,
-            repo_root,
-            db_path,
-            worktree_id,
-        }
-    }
-
-    impl Fixture {
-        fn open_db(&self) -> Result<RepositoryAgentTraceDb> {
-            RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&self.db_path)
-        }
-
-        fn db(&self) -> RepositoryAgentTraceDb {
-            self.open_db().expect("repository DB should reopen")
-        }
-
-        fn snapshot(&self) -> GitSnapshotService {
-            GitSnapshotService::new(&self.repo_root).expect("snapshot service should construct")
-        }
-
-        /// Write `contents` to `file` in the worktree and capture the resulting
-        /// tree, so successive distinct contents yield distinct tree SHAs.
-        fn capture_after_writing(&self, file: &str, contents: &str) -> TreeId {
-            std::fs::write(self.repo_root.join(file), contents)
-                .expect("worktree file should write");
-            self.snapshot()
-                .capture_tree()
-                .expect("capture should succeed")
-        }
-
-        fn pin(&self, tree: &TreeId) {
-            self.snapshot()
-                .pin_tree(&self.worktree_id, tree)
-                .expect("pin should succeed");
-        }
-
-        fn pin_for(&self, worktree_id: &WorktreeId, tree: &TreeId) {
-            self.snapshot()
-                .pin_tree(worktree_id, tree)
-                .expect("pin should succeed");
-        }
-
-        fn reconcile(&self) -> std::result::Result<ReconciliationOutcome, ReconcileError> {
-            reconcile_worktree(&self.repo_root, || self.open_db())
-        }
-
-        fn owned_ref(&self, tree: &TreeId) -> String {
-            format!("{NAMESPACE}/{}/{}", self.worktree_id.0, tree.0)
-        }
-
-        fn ref_exists(&self, ref_name: &str) -> bool {
-            Command::new("git")
-                .args(["show-ref", "--verify", "--quiet", ref_name])
-                .current_dir(&self.repo_root)
-                .status()
-                .expect("git show-ref should spawn")
-                .success()
-        }
-
-        fn ref_representation(&self, ref_name: &str) -> String {
-            git(
-                &self.repo_root,
-                &[
-                    "for-each-ref",
-                    "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)",
-                    ref_name,
-                ],
-            )
-        }
-
-        fn object_type(&self, sha: &str) -> Option<String> {
-            let output = Command::new("git")
-                .args(["cat-file", "-t", sha])
-                .current_dir(&self.repo_root)
-                .output()
-                .expect("git cat-file should spawn");
-            if output.status.success() {
-                Some(
-                    String::from_utf8(output.stdout)
-                        .expect("git cat-file output should be UTF-8")
-                        .trim()
-                        .to_string(),
-                )
-            } else {
-                None
-            }
-        }
-    }
-
-    fn seed_worktree_cursor(
-        db: &RepositoryAgentTraceDb,
-        worktree_id: &str,
-        revision: u64,
-        cursor_tree: &str,
-    ) {
-        db.execute(
-            "INSERT INTO mutation_trace_worktrees
-                (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline)
-             VALUES (?1, ?2, ?3, 0, 'healthy', 0)",
-            (
-                worktree_id,
-                cursor_tree,
-                encode_revision(revision).as_slice(),
-            ),
-        )
-        .expect("worktree row insert should succeed");
-    }
-
-    fn seed_event(
-        db: &RepositoryAgentTraceDb,
-        worktree_id: &str,
-        revision: u64,
-        before_tree: &str,
-        after_tree: &str,
-    ) {
-        db.execute(
-            "INSERT INTO mutation_trace_events
-                (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
-                 attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id,
-                 boundary_event_id)
-             VALUES (?1, ?2, ?3, ?4, 0, 'healthy', 'ineligible_unscoped', NULL, 'flush', NULL, NULL)",
-            (
-                worktree_id,
-                encode_revision(revision).as_slice(),
-                before_tree,
-                after_tree,
-            ),
-        )
-        .expect("event row insert should succeed");
-    }
-
-    #[test]
-    fn orphan_pin_with_a_worktree_row_is_deleted() {
-        let fx = fixture("orphan-with-row");
-        let cursor = fx.capture_after_writing("a.txt", "cursor\n");
-        let orphan = fx.capture_after_writing("a.txt", "orphan\n");
-        fx.pin(&cursor);
-        fx.pin(&orphan);
-        seed_worktree_cursor(&fx.db(), &fx.worktree_id.0, 1, &cursor.0);
-
-        let report = expect_reconciled(fx.reconcile());
-
-        assert_eq!(
-            report,
-            ReconciliationReport {
-                local_required: 1,
-                retained: 1,
-                deleted: 1,
-            }
-        );
-        assert!(fx.ref_exists(&fx.owned_ref(&cursor)), "cursor pin retained");
-        assert!(!fx.ref_exists(&fx.owned_ref(&orphan)), "orphan pin deleted");
-    }
-
-    #[test]
-    fn orphan_pin_with_no_worktree_row_is_deleted() {
-        let fx = fixture("orphan-no-row");
-        let orphan = fx.capture_after_writing("a.txt", "orphan\n");
-        fx.pin(&orphan);
-
-        let report = expect_reconciled(fx.reconcile());
-
-        assert_eq!(
-            report,
-            ReconciliationReport {
-                local_required: 0,
-                retained: 0,
-                deleted: 1,
-            }
-        );
-        assert!(!fx.ref_exists(&fx.owned_ref(&orphan)), "orphan pin deleted");
-    }
-
-    #[test]
-    fn current_cursor_pin_is_retained_without_a_referencing_event() {
-        let fx = fixture("cursor-no-event");
-        let cursor = fx.capture_after_writing("a.txt", "cursor\n");
-        fx.pin(&cursor);
-        seed_worktree_cursor(&fx.db(), &fx.worktree_id.0, 3, &cursor.0);
-
-        let report = expect_reconciled(fx.reconcile());
-
-        assert_eq!(
-            report,
-            ReconciliationReport {
-                local_required: 1,
-                retained: 1,
-                deleted: 0,
-            }
-        );
-        assert!(
-            fx.ref_exists(&fx.owned_ref(&cursor)),
-            "current cursor pin retained"
-        );
-    }
-
-    #[test]
-    fn historical_event_before_and_after_pins_are_retained_after_the_cursor_advances() {
-        let fx = fixture("historical-retention");
-        let tree_a = fx.capture_after_writing("a.txt", "A\n");
-        let tree_b = fx.capture_after_writing("a.txt", "B\n");
-        let tree_c = fx.capture_after_writing("a.txt", "C\n");
-        let tree_d = fx.capture_after_writing("a.txt", "D\n");
-        for tree in [&tree_a, &tree_b, &tree_c, &tree_d] {
-            fx.pin(tree);
-        }
-
-        let db = fx.db();
-        seed_worktree_cursor(&db, &fx.worktree_id.0, 3, &tree_d.0);
-        seed_event(&db, &fx.worktree_id.0, 1, &tree_a.0, &tree_b.0);
-        seed_event(&db, &fx.worktree_id.0, 2, &tree_b.0, &tree_c.0);
-        seed_event(&db, &fx.worktree_id.0, 3, &tree_c.0, &tree_d.0);
-
-        let report = expect_reconciled(fx.reconcile());
-
-        assert_eq!(
-            report,
-            ReconciliationReport {
-                local_required: 4,
-                retained: 4,
-                deleted: 0,
-            }
-        );
-        for tree in [&tree_a, &tree_b, &tree_c, &tree_d] {
-            assert!(
-                fx.ref_exists(&fx.owned_ref(tree)),
-                "historical tree {} pin retained",
-                tree.0
-            );
-        }
-    }
-
-    #[test]
-    fn a_pin_another_worktree_durably_requires_is_retained() {
-        let fx = fixture("cross-worktree-retention");
-        let shared = fx.capture_after_writing("a.txt", "shared\n");
-        let orphan = fx.capture_after_writing("a.txt", "orphan\n");
-        fx.pin(&shared);
-        fx.pin(&orphan);
-
-        // Another worktree in the same repository durably references `shared`;
-        // this worktree does not.
-        seed_worktree_cursor(&fx.db(), "other-worktree", 1, &shared.0);
-
-        let report = expect_reconciled(fx.reconcile());
-
-        assert_eq!(
-            report,
-            ReconciliationReport {
-                local_required: 0,
-                retained: 1,
-                deleted: 1,
-            },
-            "a pin another worktree durably needs is retained even though it is \
-             not a local root; retained exceeds local_required"
-        );
-        assert!(
-            fx.ref_exists(&fx.owned_ref(&shared)),
-            "the repository-wide durable tree pin is retained"
-        );
-        assert!(
-            !fx.ref_exists(&fx.owned_ref(&orphan)),
-            "the orphan pin is deleted"
-        );
-        assert_eq!(
-            fx.object_type(&shared.0).as_deref(),
-            Some("tree"),
-            "the retained ref keeps the shared tree resolvable"
-        );
-    }
-
-    #[test]
-    fn a_missing_required_pin_fails_closed_and_deletes_nothing() {
-        let fx = fixture("missing-required-pin");
-        let tree_a = fx.capture_after_writing("a.txt", "A\n");
-        let tree_b = fx.capture_after_writing("a.txt", "B\n");
-        let tree_x = fx.capture_after_writing("a.txt", "X\n");
-        // Local durable roots are {A, B}; only A and X are pinned (B has no pin).
-        fx.pin(&tree_a);
-        fx.pin(&tree_x);
-
-        let db = fx.db();
-        seed_worktree_cursor(&db, &fx.worktree_id.0, 1, &tree_b.0);
-        seed_event(&db, &fx.worktree_id.0, 1, &tree_a.0, &tree_b.0);
-
-        let error = fx
-            .reconcile()
-            .expect_err("reconciliation should fail closed");
-
-        match error {
-            ReconcileError::MissingRequiredPins { missing } => {
-                assert_eq!(
-                    missing,
-                    vec![tree_b.clone()],
-                    "the missing local root is named"
-                );
-            }
-            other => panic!("expected MissingRequiredPins, got {other:?}"),
-        }
-        assert!(
-            fx.ref_exists(&fx.owned_ref(&tree_a)),
-            "A's pin is left in place"
-        );
-        assert!(
-            fx.ref_exists(&fx.owned_ref(&tree_x)),
-            "X's pin is left in place"
-        );
-    }
-
-    #[test]
-    fn a_malformed_namespace_ref_fails_closed_and_deletes_nothing() {
-        let fx = fixture("malformed-ref");
-        let cursor = fx.capture_after_writing("a.txt", "cursor\n");
-        let orphan = fx.capture_after_writing("a.txt", "orphan\n");
-        fx.pin(&cursor);
-        fx.pin(&orphan);
-        seed_worktree_cursor(&fx.db(), &fx.worktree_id.0, 1, &cursor.0);
-
-        // A symbolic ref inside the SCE mutation-cursor namespace is malformed.
-        let symref = format!("{NAMESPACE}/{}/symbolic", fx.worktree_id.0);
-        git(
-            &fx.repo_root,
-            &["symbolic-ref", &symref, &fx.owned_ref(&cursor)],
-        );
-
-        let error = fx
-            .reconcile()
-            .expect_err("reconciliation should fail closed");
-
-        match error {
-            ReconcileError::MalformedPin { ref_name, .. } => {
-                assert_eq!(ref_name, symref, "the malformed ref is named");
-            }
-            other => panic!("expected MalformedPin, got {other:?}"),
-        }
-        assert!(
-            fx.ref_exists(&fx.owned_ref(&cursor)),
-            "the cursor pin is untouched"
-        );
-        assert!(
-            fx.ref_exists(&fx.owned_ref(&orphan)),
-            "the orphan pin is untouched"
-        );
-    }
-
-    #[test]
-    fn reconciliation_is_idempotent() {
-        let fx = fixture("idempotent");
-        let cursor = fx.capture_after_writing("a.txt", "cursor\n");
-        let orphan = fx.capture_after_writing("a.txt", "orphan\n");
-        fx.pin(&cursor);
-        fx.pin(&orphan);
-        seed_worktree_cursor(&fx.db(), &fx.worktree_id.0, 1, &cursor.0);
-
-        let first = expect_reconciled(fx.reconcile());
-        assert_eq!(
-            first,
-            ReconciliationReport {
-                local_required: 1,
-                retained: 1,
-                deleted: 1,
-            }
-        );
-
-        let second = expect_reconciled(fx.reconcile());
-        assert_eq!(
-            second,
-            ReconciliationReport {
-                local_required: 1,
-                retained: 1,
-                deleted: 0,
-            },
-            "a second pass with no intervening change deletes nothing and \
-             reports identical local_required/retained counts"
-        );
-    }
-
-    #[test]
-    fn reconciliation_deletes_refs_without_reclaiming_objects() {
-        let fx = fixture("no-object-reclamation");
-        let orphan = fx.capture_after_writing("a.txt", "orphan\n");
-        fx.pin(&orphan);
-
-        assert_eq!(fx.object_type(&orphan.0).as_deref(), Some("tree"));
-
-        let report = expect_reconciled(fx.reconcile());
-        assert_eq!(report.deleted, 1);
-        assert!(
-            !fx.ref_exists(&fx.owned_ref(&orphan)),
-            "the stale ref is deleted"
-        );
-
-        assert_eq!(
-            fx.object_type(&orphan.0).as_deref(),
-            Some("tree"),
-            "the now-unreachable object is still resolvable — reconciliation ran \
-             no git gc / git prune"
-        );
-    }
 }

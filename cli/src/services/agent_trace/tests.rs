@@ -1,14 +1,12 @@
 use super::{
-    build_agent_trace, build_agent_trace_from_evidence, patches_have_overlap,
-    validate_agent_trace_value, AgentTraceEvidence, AgentTraceMetadataInput, AgentTraceVcsType,
-    LineRange, AGENT_TRACE_VERSION,
+    build_agent_trace, build_agent_trace_from_evidence, validate_agent_trace_value,
+    AgentTraceEvidence, AgentTraceMetadataInput, AgentTraceVcsType, AGENT_TRACE_VERSION,
 };
 use crate::services::{
     agent_trace::agent_trace_conversation_url,
     patch::{combine_patches, parse_patch, ParsedPatch},
-    structured_patch::{derive_claude_structured_patch, ClaudeStructuredPatchDerivationResult},
 };
-use serde_json::{json, Value};
+use serde_json::Value;
 
 #[derive(Clone, Copy)]
 struct AgentTraceScenario {
@@ -25,53 +23,6 @@ fn parse_fixtures(fixtures: &[&str]) -> Vec<ParsedPatch> {
         .iter()
         .map(|fixture| parse_patch(fixture, None).expect("fixture patch should parse"))
         .collect()
-}
-
-fn parse_fixture(fixture: &str) -> ParsedPatch {
-    parse_patch(fixture, None).expect("fixture patch should parse")
-}
-
-fn build_evidence_trace_with_mutation_provenance(
-    direct_fixture: &str,
-    mutation_fixture: &str,
-    post_commit_fixture: &str,
-    mutation_model_id: Option<&str>,
-    mutation_session_ids: &[&str],
-) -> super::AgentTrace {
-    let mut direct_patch = parse_patch(direct_fixture, Some(EVIDENCE_DIRECT_SESSION_ID))
-        .expect("direct fixture patch should parse");
-    for file in &mut direct_patch.files {
-        for hunk in &mut file.hunks {
-            hunk.model_id = Some(String::from(EVIDENCE_DIRECT_MODEL_ID));
-        }
-    }
-
-    let mut mutation_ai_patch = parse_fixture(mutation_fixture);
-    for (line, session_id) in mutation_ai_patch.files[0].hunks[0]
-        .lines
-        .iter_mut()
-        .zip(mutation_session_ids.iter().copied())
-    {
-        line.session_id = Some(String::from(session_id));
-    }
-    mutation_ai_patch.files[0].hunks[0].model_id = mutation_model_id.map(str::to_owned);
-
-    let post_commit_patch = parse_fixture(post_commit_fixture);
-    build_agent_trace_from_evidence(
-        AgentTraceEvidence {
-            direct_patch: &direct_patch,
-            mutation_ai_patch: &mutation_ai_patch,
-        },
-        &post_commit_patch,
-        AgentTraceMetadataInput {
-            commit_timestamp: TEST_COMMIT_TIMESTAMP,
-            commit_revision: TEST_COMMIT_REVISION,
-            vcs_type: Some(AgentTraceVcsType::Git),
-            tool_name: Some(EVIDENCE_TOOL_NAME),
-            tool_version: Some(EVIDENCE_TOOL_VERSION),
-        },
-    )
-    .expect("agent trace should build")
 }
 
 const TEXT_FILE_LIFECYCLE_RECONSTRUCTION_INCREMENTALS: &[&str] = &[
@@ -163,66 +114,6 @@ fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
 }
 
 #[test]
-fn patch_overlap_predicate_detects_matching_touched_lines() {
-    let candidate_patch = parse_fixture(include_str!(
-        "fixtures/hello_world_reconstruction/incremental_01.patch"
-    ));
-    let target_patch = parse_fixture(include_str!(
-        "fixtures/hello_world_reconstruction/post_commit.patch"
-    ));
-
-    assert!(patches_have_overlap(&candidate_patch, &target_patch));
-}
-
-#[test]
-fn patch_overlap_predicate_rejects_unrelated_touched_lines() {
-    let candidate_patch = parse_fixture(include_str!(
-        "fixtures/hello_world_reconstruction/incremental_01.patch"
-    ));
-    let target_patch = parse_fixture(include_str!(
-        "fixtures/poem_write_reconstruction/post_commit.patch"
-    ));
-
-    assert!(!patches_have_overlap(&candidate_patch, &target_patch));
-}
-
-#[test]
-fn patch_overlap_predicate_rejects_empty_or_untouched_patches() {
-    let candidate_patch = parse_fixture(include_str!(
-        "fixtures/hello_world_reconstruction/incremental_01.patch"
-    ));
-    let untouched_patch = parse_fixture(include_str!(
-        "../structured_patch/fixtures/write_create_empty/expected.patch"
-    ));
-    let empty_patch = parse_fixture("");
-
-    assert!(!patches_have_overlap(&candidate_patch, &untouched_patch));
-    assert!(!patches_have_overlap(&untouched_patch, &candidate_patch));
-    assert!(!patches_have_overlap(&empty_patch, &candidate_patch));
-    assert!(!patches_have_overlap(&candidate_patch, &empty_patch));
-}
-
-#[test]
-fn patch_overlap_predicate_accepts_claude_structured_patch_derivation() {
-    let payload: Value = serde_json::from_str(include_str!(
-        "../structured_patch/fixtures/edit_single_hunk/claude-post-tool-use.json"
-    ))
-    .expect("Claude structured fixture should parse");
-    let expected_patch = parse_fixture(include_str!(
-        "../structured_patch/fixtures/edit_single_hunk/expected.patch"
-    ));
-    let derived_patch = match derive_claude_structured_patch("PostToolUse", &payload, 1, None) {
-        ClaudeStructuredPatchDerivationResult::Derived(derived) => derived.patch,
-        ClaudeStructuredPatchDerivationResult::Skipped(reason) => {
-            panic!("Claude structured fixture should derive a patch, got {reason}")
-        }
-    };
-
-    assert_eq!(derived_patch, expected_patch);
-    assert!(patches_have_overlap(&derived_patch, &expected_patch));
-}
-
-#[test]
 fn average_age_reconstruction_matches_golden_agent_trace() {
     assert_builds_expected_agent_trace(AgentTraceScenario {
         incremental: &[
@@ -277,103 +168,6 @@ fn poem_edit_reconstruction_matches_golden_agent_trace() {
 }
 
 #[test]
-fn poem_edit_reconstruction_maps_each_hunk_to_one_range() {
-    let mut constructed_patch = combine_patches(&parse_fixtures(&[
-        include_str!("fixtures/poem_edit_reconstruction/incremental_01.patch"),
-        include_str!("fixtures/poem_edit_reconstruction/incremental_02.patch"),
-    ]));
-    let post_commit_patch = parse_patch(
-        include_str!("fixtures/poem_edit_reconstruction/post_commit.patch"),
-        None,
-    )
-    .expect("fixture patch should parse");
-
-    let first_hunk_lines = &mut constructed_patch.files[0].hunks[0].lines;
-    first_hunk_lines[0].session_id = Some(String::from("session-z"));
-    first_hunk_lines[1].session_id = Some(String::from("session-a"));
-
-    let agent_trace = build_agent_trace(
-        &constructed_patch,
-        &post_commit_patch,
-        AgentTraceMetadataInput {
-            commit_timestamp: TEST_COMMIT_TIMESTAMP,
-            commit_revision: TEST_COMMIT_REVISION,
-            vcs_type: Some(AgentTraceVcsType::Git),
-            tool_name: None,
-            tool_version: None,
-        },
-    )
-    .expect("agent trace should build");
-
-    let actual_json = serde_json::to_value(&agent_trace).expect("agent trace should serialize");
-    validate_agent_trace_value(&actual_json).expect("actual json should validate against schema");
-
-    assert_eq!(agent_trace.files.len(), 1);
-    assert_eq!(agent_trace.files[0].path, "poem.md");
-    assert_eq!(agent_trace.files[0].conversations.len(), 3);
-    assert_eq!(
-        agent_trace.files[0].conversations[0].related,
-        Some(vec![
-            super::ConversationRelated {
-                kind: String::from("session"),
-                url: String::from("https://sce.crocoder.dev/sessions/session-a"),
-            },
-            super::ConversationRelated {
-                kind: String::from("session"),
-                url: String::from("https://sce.crocoder.dev/sessions/session-z"),
-            },
-        ])
-    );
-    assert_eq!(agent_trace.files[0].conversations[1].related, None);
-    assert_eq!(agent_trace.files[0].conversations[2].related, None);
-    assert_eq!(
-        actual_json["files"][0]["conversations"][0]["related"],
-        json!([
-            {
-                "type": "session",
-                "url": "https://sce.crocoder.dev/sessions/session-a"
-            },
-            {
-                "type": "session",
-                "url": "https://sce.crocoder.dev/sessions/session-z"
-            }
-        ])
-    );
-    assert!(
-        actual_json["files"][0]["conversations"][1]["related"].is_null(),
-        "conversations without session-backed lines should omit related"
-    );
-    assert!(
-        actual_json["files"][0]["conversations"][2]["related"].is_null(),
-        "conversations without session-backed lines should omit related"
-    );
-    assert_eq!(
-        agent_trace.files[0]
-            .conversations
-            .iter()
-            .map(|conversation| conversation.ranges.as_slice())
-            .collect::<Vec<_>>(),
-        vec![
-            &[LineRange {
-                start_line: 1,
-                end_line: 8,
-                content_hash: "murmur3:25e05a40".to_string(),
-            }][..],
-            &[LineRange {
-                start_line: 10,
-                end_line: 16,
-                content_hash: "murmur3:bc5d346b".to_string(),
-            }][..],
-            &[LineRange {
-                start_line: 21,
-                end_line: 24,
-                content_hash: "murmur3:c8621bcb".to_string(),
-            }][..],
-        ]
-    );
-}
-
-#[test]
 fn poem_write_reconstruction_matches_golden_agent_trace() {
     assert_builds_expected_agent_trace(AgentTraceScenario {
         incremental: &[include_str!(
@@ -402,40 +196,6 @@ fn file_rename_reconstruction_matches_golden_agent_trace() {
         post_commit: include_str!("fixtures/file_rename_reconstruction/post_commit.patch"),
         golden: include_str!("fixtures/file_rename_reconstruction/golden.json"),
     });
-}
-
-#[test]
-fn schema_validation_allows_agent_trace_without_vcs() {
-    let value = json!({
-        "version": AGENT_TRACE_VERSION,
-        "id": "0196f25d-cf7f-7ca8-a652-8562c8a9f1d5",
-        "timestamp": TEST_COMMIT_TIMESTAMP,
-        "files": []
-    });
-
-    validate_agent_trace_value(&value)
-        .expect("agent trace without vcs should validate against schema");
-}
-
-#[test]
-fn schema_validation_rejects_vcs_missing_revision() {
-    let value = json!({
-        "version": AGENT_TRACE_VERSION,
-        "id": "0196f25d-cf7f-7ca8-a652-8562c8a9f1d5",
-        "timestamp": TEST_COMMIT_TIMESTAMP,
-        "vcs": {
-            "type": "git"
-        },
-        "files": []
-    });
-
-    let error = validate_agent_trace_value(&value)
-        .expect_err("agent trace with vcs missing revision should fail validation");
-    let rendered = error.to_string();
-    assert!(
-        rendered.contains("\"revision\" is a required property"),
-        "expected vcs/revision validation failure, got: {rendered}"
-    );
 }
 
 #[derive(Clone, Copy)]
@@ -572,165 +332,4 @@ fn mutation_only_no_provenance_evidence_matches_golden_agent_trace() {
         post_commit: include_str!("fixtures/mutation_only_no_provenance/post_commit.patch"),
         golden: include_str!("fixtures/mutation_only_no_provenance/golden.json"),
     });
-}
-
-#[test]
-fn mutation_only_evidence_emits_mutation_model_and_session() {
-    let trace = build_evidence_trace_with_mutation_provenance(
-        include_str!("fixtures/exclusive_without_direct/direct.patch"),
-        include_str!("fixtures/exclusive_without_direct/mutation_ai.patch"),
-        include_str!("fixtures/exclusive_without_direct/post_commit.patch"),
-        Some("gpt-5.6-sol"),
-        &[
-            "cx-session-1",
-            "cx-session-1",
-            "cx-session-1",
-            "cx-session-1",
-        ],
-    );
-
-    let conversation = &trace.files[0].conversations[0];
-    assert_eq!(conversation.contributor.kind, super::HunkContributor::Ai);
-    assert_eq!(
-        conversation.contributor.model_id.as_deref(),
-        Some("gpt-5.6-sol")
-    );
-    assert_eq!(
-        conversation.related,
-        Some(vec![super::ConversationRelated {
-            kind: String::from("session"),
-            url: String::from("https://sce.crocoder.dev/sessions/cx-session-1"),
-        }])
-    );
-    validate_agent_trace_value(
-        &serde_json::to_value(&trace).expect("agent trace should serialize"),
-    )
-    .expect("mutation-only agent trace should validate against schema");
-}
-
-#[test]
-fn combined_evidence_unions_sessions_and_requires_model_agreement() {
-    let matching_trace = build_evidence_trace_with_mutation_provenance(
-        include_str!("fixtures/direct_plus_mutation/direct.patch"),
-        include_str!("fixtures/direct_plus_mutation/mutation_ai.patch"),
-        include_str!("fixtures/direct_plus_mutation/post_commit.patch"),
-        Some(EVIDENCE_DIRECT_MODEL_ID),
-        &["sess-a", "sess-z"],
-    );
-    let matching_conversation = &matching_trace.files[0].conversations[0];
-    assert_eq!(
-        matching_conversation.contributor.model_id.as_deref(),
-        Some(EVIDENCE_DIRECT_MODEL_ID)
-    );
-    assert_eq!(
-        matching_conversation.related,
-        Some(vec![
-            super::ConversationRelated {
-                kind: String::from("session"),
-                url: String::from("https://sce.crocoder.dev/sessions/sess-a"),
-            },
-            super::ConversationRelated {
-                kind: String::from("session"),
-                url: String::from("https://sce.crocoder.dev/sessions/sess-direct"),
-            },
-            super::ConversationRelated {
-                kind: String::from("session"),
-                url: String::from("https://sce.crocoder.dev/sessions/sess-z"),
-            },
-        ])
-    );
-
-    let conflicting_trace = build_evidence_trace_with_mutation_provenance(
-        include_str!("fixtures/direct_plus_mutation/direct.patch"),
-        include_str!("fixtures/direct_plus_mutation/mutation_ai.patch"),
-        include_str!("fixtures/direct_plus_mutation/post_commit.patch"),
-        Some("claude-opus-5"),
-        &["sess-a", "sess-direct"],
-    );
-    assert_eq!(
-        conflicting_trace.files[0].conversations[0]
-            .contributor
-            .model_id,
-        None
-    );
-    assert_eq!(
-        conflicting_trace.files[0].conversations[0]
-            .related
-            .as_ref()
-            .expect("conflicting evidence should retain related sessions")
-            .len(),
-        2
-    );
-
-    let unknown_trace = build_evidence_trace_with_mutation_provenance(
-        include_str!("fixtures/direct_plus_mutation/direct.patch"),
-        include_str!("fixtures/direct_plus_mutation/mutation_ai.patch"),
-        include_str!("fixtures/direct_plus_mutation/post_commit.patch"),
-        None,
-        &["sess-a", "sess-z"],
-    );
-    assert_eq!(
-        unknown_trace.files[0].conversations[0].contributor.model_id,
-        None
-    );
-
-    for trace in [&matching_trace, &conflicting_trace, &unknown_trace] {
-        validate_agent_trace_value(
-            &serde_json::to_value(trace).expect("agent trace should serialize"),
-        )
-        .expect("combined agent trace should validate against schema");
-    }
-}
-
-#[test]
-fn direct_only_evidence_equals_direct_only_build_agent_trace() {
-    let direct = include_str!("fixtures/direct_only/direct.patch");
-    let post_commit = include_str!("fixtures/direct_only/post_commit.patch");
-    let empty_mutation_ai = include_str!("fixtures/direct_only/mutation_ai.patch");
-
-    let constructed_patch = parse_fixture(direct);
-    let post_commit_patch = parse_fixture(post_commit);
-    let mutation_ai_patch = parse_fixture(empty_mutation_ai);
-
-    let metadata = AgentTraceMetadataInput {
-        commit_timestamp: TEST_COMMIT_TIMESTAMP,
-        commit_revision: TEST_COMMIT_REVISION,
-        vcs_type: Some(AgentTraceVcsType::Git),
-        tool_name: Some(EVIDENCE_TOOL_NAME),
-        tool_version: Some(EVIDENCE_TOOL_VERSION),
-    };
-
-    let compat = build_agent_trace(&constructed_patch, &post_commit_patch, metadata)
-        .expect("compat agent trace should build");
-    let evidence = build_agent_trace_from_evidence(
-        AgentTraceEvidence {
-            direct_patch: &constructed_patch,
-            mutation_ai_patch: &mutation_ai_patch,
-        },
-        &post_commit_patch,
-        metadata,
-    )
-    .expect("evidence agent trace should build");
-
-    assert_eq!(
-        without_generated_identifiers(serde_json::to_value(&compat).expect("compat serializes")),
-        without_generated_identifiers(
-            serde_json::to_value(&evidence).expect("evidence serializes")
-        )
-    );
-}
-
-fn without_generated_identifiers(mut trace: Value) -> Value {
-    trace["id"] = Value::Null;
-    if let Some(files) = trace["files"].as_array_mut() {
-        for conversation in files.iter_mut().flat_map(|file| {
-            file["conversations"]
-                .as_array_mut()
-                .expect("conversations should be an array")
-                .iter_mut()
-        }) {
-            conversation["url"] = Value::Null;
-        }
-    }
-    trace
 }

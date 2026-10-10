@@ -14,7 +14,6 @@ use crate::services::agent_trace_db::{
     AgentTraceInsert, PostCommitPatchIntersectionInsert, RecentDiffTracePatches,
 };
 use crate::services::config;
-use crate::services::observability::traits::Logger;
 use crate::services::patch::{
     combine_patches as combine_patches_fn, intersect_patches as intersect_patches_fn,
     parse_patch as parse_patch_from_text, ParsedPatch,
@@ -42,10 +41,12 @@ pub(crate) fn run_pre_commit_subcommand(repository_root: &Path) -> Result<String
     ))
 }
 
-pub(crate) fn run_commit_msg_subcommand_in_repo(
+pub(crate) async fn run_commit_msg_subcommand_in_repo<
+    L: crate::services::observability::traits::Logger,
+>(
     repository_root: &Path,
     message_file: &Path,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> Result<String> {
     let metadata = fs::metadata(message_file).with_context(|| {
         format!(
@@ -71,7 +72,7 @@ pub(crate) fn run_commit_msg_subcommand_in_repo(
 
     let gate_passed = commit_msg_policy_gate_passed(&runtime);
     let ai_contribution_present = if gate_passed {
-        match staged_diff_has_ai_overlap(repository_root, logger) {
+        match staged_diff_has_ai_overlap(repository_root, logger).await {
             StagedDiffAiOverlapResult::Overlap => true,
             StagedDiffAiOverlapResult::NoOverlap | StagedDiffAiOverlapResult::Error => false,
         }
@@ -99,20 +100,24 @@ pub(crate) fn run_commit_msg_subcommand_in_repo(
     ))
 }
 
-pub(crate) fn run_commit_msg_subcommand_with_trace(
+pub(crate) async fn run_commit_msg_subcommand_with_trace<
+    L: crate::services::observability::traits::Logger,
+>(
     repository_root: &Path,
     _: &HookSubcommand,
     message_file: &Path,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> Result<String> {
-    run_commit_msg_subcommand_in_repo(repository_root, message_file, logger)
+    run_commit_msg_subcommand_in_repo(repository_root, message_file, logger).await
 }
 
-pub(crate) fn run_post_commit_subcommand(
+pub(crate) async fn run_post_commit_subcommand<
+    L: crate::services::observability::traits::Logger,
+>(
     repository_root: &Path,
     vcs_type: Option<AgentTraceVcsType>,
     remote_url: &str,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> Result<String> {
     run_post_commit_subcommand_with(
         repository_root,
@@ -130,36 +135,44 @@ pub(crate) fn run_post_commit_subcommand(
         run_post_commit_passive_checkpoint,
         logger,
     )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_post_commit_subcommand_with<F, B, C, L, K>(
+pub(crate) async fn run_post_commit_subcommand_with<
+    L: crate::services::observability::traits::Logger,
+    F,
+    B,
+    C,
+    Launch,
+    K,
+>(
     repository_root: &Path,
     vcs_type: Option<AgentTraceVcsType>,
     remote_url: &str,
     run_intersection_flow: F,
     run_agent_trace_flow: B,
     resolve_auto_sync: C,
-    launch_auto_sync: L,
+    launch_auto_sync: Launch,
     run_passive_checkpoint: K,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> Result<String>
 where
-    F: FnOnce(&Path) -> Result<PostCommitIntersectionFlowResult>,
-    B: FnOnce(
+    F: std::ops::AsyncFnOnce(&Path) -> Result<PostCommitIntersectionFlowResult>,
+    B: std::ops::AsyncFnOnce(
         &Path,
         &PostCommitIntersectionFlowResult,
         Option<AgentTraceVcsType>,
         &str,
     ) -> Result<AgentTrace>,
     C: FnOnce(&Path) -> Result<bool>,
-    L: FnOnce(&Path) -> Result<()>,
-    K: FnOnce(&Path) -> Result<()>,
+    Launch: FnOnce(&Path) -> Result<()>,
+    K: std::ops::AsyncFnOnce(&Path) -> Result<()>,
 {
-    let result = run_intersection_flow(repository_root)?;
-    let _agent_trace = run_agent_trace_flow(repository_root, &result, vcs_type, remote_url)?;
+    let result = run_intersection_flow(repository_root).await?;
+    let _agent_trace = run_agent_trace_flow(repository_root, &result, vcs_type, remote_url).await?;
 
-    if let Err(error) = run_passive_checkpoint(repository_root) {
+    if let Err(error) = run_passive_checkpoint(repository_root).await {
         if let Some(log) = logger {
             log.warn(
                 "sce.agent_trace_db.passive_checkpoint_failed",
@@ -181,25 +194,27 @@ where
     ))
 }
 
-pub(crate) fn run_post_commit_passive_checkpoint(repository_root: &Path) -> Result<()> {
+pub(crate) async fn run_post_commit_passive_checkpoint(repository_root: &Path) -> Result<()> {
     let db = open_agent_trace_db_for_hook_runtime(
         repository_root,
         "Failed to open Agent Trace DB for post-commit checkpoint.",
-    )?;
+    )
+    .await?;
 
-    db.passive_checkpoint()
+    db.passive_checkpoint().await
 }
 
-pub(crate) fn run_post_commit_agent_trace_flow(
+pub(crate) async fn run_post_commit_agent_trace_flow(
     repository_root: &Path,
     flow_result: &PostCommitIntersectionFlowResult,
     vcs_type: Option<AgentTraceVcsType>,
     remote_url: &str,
 ) -> Result<AgentTrace> {
-    let db = open_agent_trace_db_for_hook_runtime(
+    let mut db = open_agent_trace_db_for_hook_runtime(
         repository_root,
         "Failed to open Agent Trace DB for post-commit trace.",
-    )?;
+    )
+    .await?;
 
     let direct_intersection = intersect_patches_fn(
         &flow_result.combined_recent_patch,
@@ -208,10 +223,11 @@ pub(crate) fn run_post_commit_agent_trace_flow(
     let mutation_ai_patch =
         crate::services::mutation_trace::runtime::resolve_post_commit_mutation_ai_patch(
             repository_root,
-            &db,
+            &mut db,
             &direct_intersection,
             &flow_result.post_commit_data.parsed_patch,
-        );
+        )
+        .await;
 
     run_post_commit_agent_trace_flow_with(
         flow_result,
@@ -225,16 +241,18 @@ pub(crate) fn run_post_commit_agent_trace_flow(
 
             Ok(())
         },
-        |insert_input| {
+        async |insert_input| {
             db.insert_agent_trace(insert_input)
+                .await
                 .context("Failed to persist built post-commit Agent Trace payload.")?;
 
             Ok(())
         },
     )
+    .await
 }
 
-pub(crate) fn run_post_commit_agent_trace_flow_with<V, I>(
+pub(crate) async fn run_post_commit_agent_trace_flow_with<V, I>(
     flow_result: &PostCommitIntersectionFlowResult,
     vcs_type: Option<AgentTraceVcsType>,
     remote_url: &str,
@@ -244,7 +262,7 @@ pub(crate) fn run_post_commit_agent_trace_flow_with<V, I>(
 ) -> Result<AgentTrace>
 where
     V: FnOnce(&Value) -> Result<()>,
-    I: for<'a> FnOnce(AgentTraceInsert<'a>) -> Result<()>,
+    I: for<'a> std::ops::AsyncFnOnce(AgentTraceInsert<'a>) -> Result<()>,
 {
     let commit_timestamp =
         DateTime::<Utc>::from_timestamp_millis(flow_result.post_commit_data.commit_time_ms)
@@ -293,36 +311,42 @@ where
         url: &constructed_url,
         remote_url,
     };
-    persist_agent_trace(insert_input)?;
+    persist_agent_trace(insert_input).await?;
 
     Ok(agent_trace)
 }
 
 pub(crate) const RECENT_DAYS_MILLIS: i64 = 7 * 24 * 60 * 60 * 1000;
 
-pub(crate) fn run_post_commit_intersection_flow(
+pub(crate) async fn run_post_commit_intersection_flow(
     repository_root: &Path,
 ) -> Result<PostCommitIntersectionFlowResult> {
     let db = open_agent_trace_db_for_hook_runtime(
         repository_root,
         "Failed to open Agent Trace DB for post-commit intersection.",
-    )?;
+    )
+    .await?;
 
     run_post_commit_intersection_flow_with(
         repository_root,
         capture_post_commit_patch_from_git,
         current_unix_time_ms,
-        |cutoff_ms, end_ms| {
-            db.recent_diff_trace_patches(cutoff_ms, end_ms)
-                .context("Failed to query recent diff trace patches.")
+        async |cutoff_ms, end_ms| {
+            {
+                db.recent_diff_trace_patches(cutoff_ms, end_ms)
+                    .await
+                    .context("Failed to query recent diff trace patches.")
+            }
         },
-        |insert_input| {
+        async |insert_input| {
             db.insert_post_commit_patch_intersection(insert_input)
+                .await
                 .context("Failed to persist post-commit patch intersection.")?;
 
             Ok(())
         },
     )
+    .await
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -332,14 +356,17 @@ pub(crate) enum StagedDiffAiOverlapResult {
     Error,
 }
 
-pub(crate) fn staged_diff_has_ai_overlap(
+pub(crate) async fn staged_diff_has_ai_overlap<
+    L: crate::services::observability::traits::Logger,
+>(
     repository_root: &Path,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> StagedDiffAiOverlapResult {
     let db_open_result = open_agent_trace_db_for_hook_runtime(
         repository_root,
         "Failed to open Agent Trace DB for staged AI-overlap evidence check.",
-    );
+    )
+    .await;
 
     let db = match db_open_result {
         Ok(db) => db,
@@ -360,8 +387,9 @@ pub(crate) fn staged_diff_has_ai_overlap(
         repository_root,
         capture_staged_patch_from_git,
         current_unix_time_ms,
-        |cutoff_ms, end_ms| db.recent_diff_trace_patches(cutoff_ms, end_ms),
-    );
+        async |cutoff_ms, end_ms| db.recent_diff_trace_patches(cutoff_ms, end_ms).await,
+    )
+    .await;
 
     if result == StagedDiffAiOverlapResult::Error {
         if let Some(log) = logger {
@@ -377,7 +405,7 @@ pub(crate) fn staged_diff_has_ai_overlap(
     result
 }
 
-pub(crate) fn staged_diff_has_ai_overlap_with<C, N, Q>(
+pub(crate) async fn staged_diff_has_ai_overlap_with<C, N, Q>(
     repository_root: &Path,
     capture_staged_patch: C,
     now_ms: N,
@@ -386,7 +414,7 @@ pub(crate) fn staged_diff_has_ai_overlap_with<C, N, Q>(
 where
     C: FnOnce(&Path) -> Result<ParsedPatch>,
     N: FnOnce() -> Result<i64>,
-    Q: FnOnce(i64, i64) -> Result<RecentDiffTracePatches>,
+    Q: std::ops::AsyncFnOnce(i64, i64) -> Result<RecentDiffTracePatches>,
 {
     let Ok(staged_patch) = capture_staged_patch(repository_root) else {
         return StagedDiffAiOverlapResult::Error;
@@ -401,7 +429,7 @@ where
     };
     let cutoff_ms = now_ms - RECENT_DAYS_MILLIS;
 
-    let Ok(recent_patches) = query_recent_patches(cutoff_ms, now_ms) else {
+    let Ok(recent_patches) = query_recent_patches(cutoff_ms, now_ms).await else {
         return StagedDiffAiOverlapResult::Error;
     };
 
@@ -444,7 +472,7 @@ pub(crate) fn staged_patch_error(detail: &str, context: &str) -> String {
     format!("Staged patch capture error: {detail} ({context}).")
 }
 
-pub(crate) fn run_post_commit_intersection_flow_with<C, N, Q, P>(
+pub(crate) async fn run_post_commit_intersection_flow_with<C, N, Q, P>(
     repository_root: &Path,
     capture_post_commit_patch: C,
     now_ms: N,
@@ -454,15 +482,15 @@ pub(crate) fn run_post_commit_intersection_flow_with<C, N, Q, P>(
 where
     C: FnOnce(&Path) -> Result<PostCommitPatchData>,
     N: FnOnce() -> Result<i64>,
-    Q: FnOnce(i64, i64) -> Result<RecentDiffTracePatches>,
-    P: for<'a> FnOnce(PostCommitPatchIntersectionInsert<'a>) -> Result<()>,
+    Q: std::ops::AsyncFnOnce(i64, i64) -> Result<RecentDiffTracePatches>,
+    P: for<'a> std::ops::AsyncFnOnce(PostCommitPatchIntersectionInsert<'a>) -> Result<()>,
 {
     let post_commit_data = capture_post_commit_patch(repository_root)?;
 
     let now_ms = now_ms()?;
     let cutoff_ms = now_ms - RECENT_DAYS_MILLIS;
 
-    let recent_patches = query_recent_patches(cutoff_ms, now_ms)?;
+    let recent_patches = query_recent_patches(cutoff_ms, now_ms).await?;
 
     #[allow(clippy::cast_possible_wrap)]
     let loaded_count = recent_patches.loaded_count() as i64;
@@ -497,7 +525,7 @@ where
         intersection_patch: &serialized_intersection,
     };
 
-    persist_intersection(insert_input)?;
+    persist_intersection(insert_input).await?;
 
     Ok(PostCommitIntersectionFlowResult {
         combined_recent_patch,
@@ -507,11 +535,13 @@ where
     })
 }
 
-pub(crate) fn run_post_commit_subcommand_with_trace(
+pub(crate) async fn run_post_commit_subcommand_with_trace<
+    L: crate::services::observability::traits::Logger,
+>(
     repository_root: &Path,
     vcs_type: Option<AgentTraceVcsType>,
     remote_url: Option<&str>,
-    logger: Option<&dyn Logger>,
+    logger: Option<&L>,
 ) -> Result<String> {
     run_post_commit_subcommand(
         repository_root,
@@ -519,6 +549,7 @@ pub(crate) fn run_post_commit_subcommand_with_trace(
         remote_url.unwrap_or_default(),
         logger,
     )
+    .await
 }
 
 pub(crate) fn run_post_rewrite_subcommand(

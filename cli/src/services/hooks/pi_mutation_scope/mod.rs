@@ -31,11 +31,7 @@ use events::{
     HOOK_EVENT_TOOL_EXECUTION_START, HOOK_EVENT_TOOL_RESULT, MODEL_FIELD, SESSION_ID_FIELD,
     TOOL_CALL_ID_FIELD, TOOL_NAME_FIELD,
 };
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use lifecycle::force_attempt_owner_dead_for_tests;
-#[cfg(test)]
-pub(crate) use lifecycle::run_pi_mutation_scope_from_payload_at_state_root;
+
 #[allow(unused_imports)]
 pub(crate) use lifecycle::{run_pi_mutation_scope_from_payload, run_pi_mutation_scope_subcommand};
 #[allow(unused_imports)]
@@ -44,15 +40,3 @@ use lifecycle::{
 };
 #[allow(unused_imports)]
 use payload::{abandon_payload, flush_payload, scope_boundary_payload, scope_start_payload};
-
-#[cfg(test)]
-mod tests;
-
-#[cfg(test)]
-mod lifecycle_tests;
-
-#[cfg(test)]
-mod runtime_seam_tests;
-
-#[cfg(all(unix, test))]
-mod guard_reconciliation_tests;

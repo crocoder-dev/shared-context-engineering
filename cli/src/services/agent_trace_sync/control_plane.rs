@@ -6,6 +6,7 @@
 //! They perform no HTTP I/O and hold no cursor state themselves.
 
 use std::fmt;
+use std::future::Future;
 use std::sync::Arc;
 
 use anyhow::anyhow;
@@ -108,10 +109,7 @@ const STATE_PATH: &str = "agent-trace/ingestion/state";
 const BATCH_PATH: &str = "agent-trace/ingestion/batch";
 const ME_PATH: &str = "me";
 
-const STATE_RETRY_MAX_ATTEMPTS: u32 = 1;
-const STATE_RETRY_TIMEOUT_MS: u64 = 60_000;
-const STATE_RETRY_INITIAL_BACKOFF_MS: u64 = 250;
-const STATE_RETRY_MAX_BACKOFF_MS: u64 = 2_000;
+const STATE_RETRY_POLICY: RetryPolicy = RetryPolicy::builtin(1, 60_000, 250, 2_000);
 
 /// Typed failure classification for control-plane HTTP interactions, kept
 /// separate from `CliError` so the sync engine and CLI wiring can
@@ -221,24 +219,24 @@ enum StateAttempt {
     Terminal(ControlPlaneError),
 }
 
-/// Seam over `token_storage::{load_tokens, save_tokens}` so tests can assert
-/// exactly when a token is (or is not) saved without touching the real,
-/// process-wide encrypted auth database.
-pub trait CredentialStore: Send + Sync {
-    fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError>;
-    fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError>;
+pub trait CredentialStore: Send + Sync + 'static {
+    fn load(&self) -> impl Future<Output = Result<Option<StoredTokens>, ControlPlaneError>> + Send;
+    fn save(
+        &self,
+        token: &TokenResponse,
+    ) -> impl Future<Output = Result<StoredTokens, ControlPlaneError>> + Send;
 }
 
 /// Production `CredentialStore` backed by the real encrypted auth database.
 pub struct SystemCredentialStore;
 
 impl CredentialStore for SystemCredentialStore {
-    fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
-        Ok(token_storage::load_tokens()?)
+    async fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
+        Ok(token_storage::load_tokens().await?)
     }
 
-    fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
-        Ok(token_storage::save_tokens(token)?)
+    async fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
+        Ok(token_storage::save_tokens(token).await?)
     }
 }
 
@@ -247,12 +245,12 @@ impl CredentialStore for SystemCredentialStore {
 /// Loads/refreshes stored `WorkOS` credentials through the existing
 /// `auth`/`token_storage` primitives, injects the `Authorization: Bearer`
 /// header, and retries exactly once on an unexpected `401`.
-pub struct AuthenticatedControlPlaneClient {
+pub struct AuthenticatedControlPlaneClient<S = SystemCredentialStore> {
     http: reqwest::Client,
     base_url: String,
     workos_api_base_url: String,
     workos_client_id: String,
-    credential_store: Arc<dyn CredentialStore>,
+    credential_store: Arc<S>,
     refresh_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -301,25 +299,31 @@ impl AuthenticatedControlPlaneClient {
             base_url,
             workos_api_base_url,
             workos_client_id,
-            Box::new(SystemCredentialStore),
+            SystemCredentialStore,
         )
     }
+}
 
+impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
     pub fn with_credential_store(
         http: reqwest::Client,
         base_url: impl Into<String>,
         workos_api_base_url: impl Into<String>,
         workos_client_id: impl Into<String>,
-        credential_store: Box<dyn CredentialStore>,
+        credential_store: S,
     ) -> Self {
         Self {
             http,
             base_url: base_url.into(),
             workos_api_base_url: workos_api_base_url.into(),
             workos_client_id: workos_client_id.into(),
-            credential_store: Arc::from(credential_store),
+            credential_store: Arc::new(credential_store),
             refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    pub(crate) async fn wait_for_pending_refresh(&self) {
+        let _guard = self.refresh_lock.lock().await;
     }
 
     /// Calls `POST /agent-trace/ingestion/state` with a single attempt and a
@@ -330,12 +334,7 @@ impl AuthenticatedControlPlaneClient {
         request: &AgentTraceIngestionStateRequest,
     ) -> Result<AgentTraceIngestionStateResponse, ControlPlaneError> {
         let url = self.endpoint(STATE_PATH);
-        let policy = RetryPolicy {
-            max_attempts: STATE_RETRY_MAX_ATTEMPTS,
-            timeout_ms: STATE_RETRY_TIMEOUT_MS,
-            initial_backoff_ms: STATE_RETRY_INITIAL_BACKOFF_MS,
-            max_backoff_ms: STATE_RETRY_MAX_BACKOFF_MS,
-        };
+        let policy = STATE_RETRY_POLICY;
 
         let outcome = run_with_retry(
             policy,
@@ -461,10 +460,6 @@ impl AuthenticatedControlPlaneClient {
         Ok(retried)
     }
 
-    /// Loads the stored token, reusing it as-is when still valid and
-    /// refreshing (and saving) it only when expired. Makes exactly one
-    /// expiry decision, so a token cannot be refreshed without also being
-    /// persisted.
     async fn resolve_access_token(&self) -> Result<String, ControlPlaneError> {
         let stored = self
             .load_credentials()
@@ -475,7 +470,7 @@ impl AuthenticatedControlPlaneClient {
             return Ok(stored.access_token);
         }
 
-        let _refresh_guard = self.refresh_lock.lock().await;
+        let refresh_guard = Arc::clone(&self.refresh_lock).lock_owned().await;
         let stored = self
             .load_credentials()
             .await?
@@ -485,17 +480,14 @@ impl AuthenticatedControlPlaneClient {
             return Ok(stored.access_token);
         }
 
-        self.refresh_and_save(&stored).await
+        self.refresh_and_save(refresh_guard, stored).await
     }
 
-    /// Refreshes the stored token while holding the client-wide single-flight
-    /// guard. Callers that observed the same rejected token can reuse a token
-    /// saved by an earlier caller instead of issuing another refresh.
     async fn force_refresh_access_token(
         &self,
         rejected_access_token: &str,
     ) -> Result<String, ControlPlaneError> {
-        let _refresh_guard = self.refresh_lock.lock().await;
+        let refresh_guard = Arc::clone(&self.refresh_lock).lock_owned().await;
         let stored = self
             .load_credentials()
             .await?
@@ -505,45 +497,41 @@ impl AuthenticatedControlPlaneClient {
             return Ok(stored.access_token);
         }
 
-        self.refresh_and_save(&stored).await
+        self.refresh_and_save(refresh_guard, stored).await
     }
 
-    async fn refresh_and_save(&self, stored: &StoredTokens) -> Result<String, ControlPlaneError> {
-        let token = auth::renew_stored_token_from_refresh_token(
-            &self.http,
-            &self.workos_api_base_url,
-            &self.workos_client_id,
-            &stored.refresh_token,
-        )
-        .await?;
-        self.save_credentials(&token).await?;
-        Ok(token.access_token)
+    async fn refresh_and_save(
+        &self,
+        refresh_guard: tokio::sync::OwnedMutexGuard<()>,
+        stored: StoredTokens,
+    ) -> Result<String, ControlPlaneError> {
+        let http = self.http.clone();
+        let workos_api_base_url = self.workos_api_base_url.clone();
+        let workos_client_id = self.workos_client_id.clone();
+        let credential_store = Arc::clone(&self.credential_store);
+
+        tokio::spawn(async move {
+            let _refresh_guard = refresh_guard;
+            let token = auth::renew_stored_token_from_refresh_token(
+                &http,
+                &workos_api_base_url,
+                &workos_client_id,
+                &stored.refresh_token,
+            )
+            .await?;
+            credential_store.save(&token).await?;
+            Ok(token.access_token)
+        })
+        .await
+        .map_err(|error| {
+            ControlPlaneError::AuthenticationFailed(format!(
+                "credential refresh task did not complete: {error}"
+            ))
+        })?
     }
 
     async fn load_credentials(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
-        let credential_store = Arc::clone(&self.credential_store);
-        tokio::task::spawn_blocking(move || credential_store.load())
-            .await
-            .map_err(|error| {
-                ControlPlaneError::Storage(format!(
-                    "credential store worker failed while loading credentials: {error}"
-                ))
-            })?
-    }
-
-    async fn save_credentials(
-        &self,
-        token: &TokenResponse,
-    ) -> Result<StoredTokens, ControlPlaneError> {
-        let credential_store = Arc::clone(&self.credential_store);
-        let token = token.clone();
-        tokio::task::spawn_blocking(move || credential_store.save(&token))
-            .await
-            .map_err(|error| {
-                ControlPlaneError::Storage(format!(
-                    "credential store worker failed while saving credentials: {error}"
-                ))
-            })?
+        self.credential_store.load().await
     }
 
     fn endpoint(&self, path: &str) -> String {
@@ -636,806 +624,226 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Barrier, Mutex};
+    use std::sync::{Arc, Mutex};
     use std::thread;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::*;
-    use crate::services::agent_trace_db::MessageRole;
-    use crate::services::agent_trace_export::{
-        AgentTraceAgentTraceExportRow, AgentTraceDiffTraceExportRow, AgentTraceMessageExportRow,
-        AgentTracePartExportRow,
-    };
-    use crate::services::agent_trace_sync::test_http_server::{CannedResponse, TestHttpServer};
-    use serde_json::json;
+    use tokio::sync::{Notify, Semaphore};
 
-    #[test]
-    fn ingestion_stream_serializes_to_exact_snake_case_wire_values() {
-        assert_eq!(
-            serde_json::to_value(IngestionStream::Messages).unwrap(),
-            json!("messages")
-        );
-        assert_eq!(
-            serde_json::to_value(IngestionStream::Parts).unwrap(),
-            json!("parts")
-        );
-        assert_eq!(
-            serde_json::to_value(IngestionStream::DiffTraces).unwrap(),
-            json!("diff_traces")
-        );
-        assert_eq!(
-            serde_json::to_value(IngestionStream::AgentTraces).unwrap(),
-            json!("agent_traces")
-        );
+    use super::{AuthenticatedControlPlaneClient, ControlPlaneError, CredentialStore};
+    use crate::services::auth::TokenResponse;
+    use crate::services::token_storage::StoredTokens;
+
+    const REPLACEMENT_ACCESS_TOKEN: &str = "replacement-access";
+    const REPLACEMENT_REFRESH_TOKEN: &str = "replacement-refresh";
+
+    struct HeldSaveStore {
+        stored: Mutex<StoredTokens>,
+        saves: AtomicUsize,
+        save_started: Notify,
+        release_save: Semaphore,
     }
 
-    #[test]
-    fn state_request_serializes_to_camel_case_fields() {
-        let request = AgentTraceIngestionStateRequest {
-            repository_id: "acme-monorepo".to_string(),
-            source_instance_id: "src-123".to_string(),
-        };
-
-        assert_eq!(
-            serde_json::to_value(&request).unwrap(),
-            json!({
-                "repositoryId": "acme-monorepo",
-                "sourceInstanceId": "src-123",
-            })
-        );
-    }
-
-    #[test]
-    fn state_response_deserializes_camel_case_cursor_fields() {
-        let response: AgentTraceIngestionStateResponse = serde_json::from_value(json!({
-            "cursors": {
-                "messages": 10,
-                "parts": 20,
-                "diffTraces": 30,
-                "agentTraces": 40,
-            }
-        }))
-        .unwrap();
-
-        assert_eq!(
-            response.cursors,
-            AgentTraceCursors {
-                messages: 10,
-                parts: 20,
-                diff_traces: 30,
-                agent_traces: 40,
-            }
-        );
-    }
-
-    #[test]
-    fn agent_trace_cursors_accept_boundary_values() {
-        for boundary in [0_i64, 1_i64, agent_trace_export::JS_MAX_SAFE_INTEGER] {
-            let cursors = AgentTraceCursors {
-                messages: boundary,
-                parts: boundary,
-                diff_traces: boundary,
-                agent_traces: boundary,
-            };
-            assert!(
-                cursors.validate().is_ok(),
-                "boundary {boundary} should be valid"
-            );
-        }
-    }
-
-    #[test]
-    fn agent_trace_cursors_reject_out_of_range_value_in_each_field() {
-        let base = AgentTraceCursors {
-            messages: 0,
-            parts: 0,
-            diff_traces: 0,
-            agent_traces: 0,
-        };
-
-        for invalid in [-1_i64, agent_trace_export::JS_MAX_SAFE_INTEGER + 1] {
-            let cases = [
-                AgentTraceCursors {
-                    messages: invalid,
-                    ..base
-                },
-                AgentTraceCursors {
-                    parts: invalid,
-                    ..base
-                },
-                AgentTraceCursors {
-                    diff_traces: invalid,
-                    ..base
-                },
-                AgentTraceCursors {
-                    agent_traces: invalid,
-                    ..base
-                },
-            ];
-
-            for cursors in cases {
-                let error = cursors
-                    .validate()
-                    .expect_err(&format!("{invalid} should be rejected in {cursors:?}"));
-                assert!(matches!(error, ControlPlaneError::InvalidResponse(_)));
-            }
-        }
-    }
-
-    #[test]
-    fn batch_response_deserializes_accepted_and_cursor() {
-        let response: AgentTraceIngestionBatchResponse = serde_json::from_value(json!({
-            "accepted": 3,
-            "cursor": 13,
-        }))
-        .unwrap();
-
-        assert_eq!(
-            response,
-            AgentTraceIngestionBatchResponse {
-                accepted: 3,
-                cursor: 13,
-            }
-        );
-    }
-
-    #[test]
-    fn batch_request_composes_with_message_export_rows() {
-        let request = AgentTraceIngestionBatchRequest {
-            repository_id: "acme-monorepo".to_string(),
-            source_instance_id: "src-123".to_string(),
-            stream: IngestionStream::Messages,
-            expected_cursor: 10,
-            rows: vec![AgentTraceMessageExportRow {
-                source_row_id: 11,
-                session_id: "session-1".to_string(),
-                message_id: "message-1".to_string(),
-                role: MessageRole::User,
-                generated_at_unix_ms: 1_700_000_000_000,
-            }],
-        };
-
-        let value = serde_json::to_value(&request).unwrap();
-        assert_eq!(value["repositoryId"], json!("acme-monorepo"));
-        assert_eq!(value["sourceInstanceId"], json!("src-123"));
-        assert_eq!(value["stream"], json!("messages"));
-        assert_eq!(value["expectedCursor"], json!(10));
-        assert_eq!(value["rows"][0]["sourceRowId"], json!(11));
-    }
-
-    #[test]
-    fn batch_request_composes_with_part_export_rows() {
-        let request = AgentTraceIngestionBatchRequest {
-            repository_id: "acme-monorepo".to_string(),
-            source_instance_id: "src-123".to_string(),
-            stream: IngestionStream::Parts,
-            expected_cursor: 0,
-            rows: vec![AgentTracePartExportRow {
-                source_row_id: 1,
-                session_id: "session-1".to_string(),
-                message_id: "message-1".to_string(),
-                part_type: "text".to_string(),
-                text: "hello".to_string(),
-                generated_at_unix_ms: 1_700_000_000_000,
-            }],
-        };
-
-        let value = serde_json::to_value(&request).unwrap();
-        assert_eq!(value["stream"], json!("parts"));
-        assert_eq!(value["rows"][0]["type"], json!("text"));
-    }
-
-    #[test]
-    fn batch_request_composes_with_diff_trace_export_rows() {
-        let request = AgentTraceIngestionBatchRequest {
-            repository_id: "acme-monorepo".to_string(),
-            source_instance_id: "src-123".to_string(),
-            stream: IngestionStream::DiffTraces,
-            expected_cursor: 0,
-            rows: vec![AgentTraceDiffTraceExportRow {
-                source_row_id: 1,
-                session_id: "session-1".to_string(),
-                time_ms: 1_700_000_000_000,
-                patch: "diff --git a b".to_string(),
-                model_id: None,
-                tool_name: None,
-                tool_version: None,
-                payload_type: "patch".to_string(),
-            }],
-        };
-
-        let value = serde_json::to_value(&request).unwrap();
-        assert_eq!(value["stream"], json!("diff_traces"));
-        assert_eq!(value["rows"][0]["payloadType"], json!("patch"));
-    }
-
-    #[test]
-    fn batch_request_composes_with_agent_trace_export_rows() {
-        let request = AgentTraceIngestionBatchRequest {
-            repository_id: "acme-monorepo".to_string(),
-            source_instance_id: "src-123".to_string(),
-            stream: IngestionStream::AgentTraces,
-            expected_cursor: 0,
-            rows: vec![AgentTraceAgentTraceExportRow {
-                source_row_id: 1,
-                agent_trace_id: "agent-trace-1".to_string(),
-                commit_id: "abc123".to_string(),
-                commit_time_ms: 1_700_000_000_000,
-                trace_json: "{}".to_string(),
-                url: "https://example.com/trace".to_string(),
-                remote_url: None,
-            }],
-        };
-
-        let value = serde_json::to_value(&request).unwrap();
-        assert_eq!(value["stream"], json!("agent_traces"));
-        assert_eq!(value["rows"][0]["agentTraceId"], json!("agent-trace-1"));
-    }
-
-    fn block_on<F: std::future::Future>(future: F) -> F::Output {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_io()
-            .enable_time()
-            .build()
-            .expect("build test tokio runtime")
-            .block_on(future)
-    }
-
-    fn now_unix_seconds() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock before unix epoch")
-            .as_secs()
-    }
-
-    fn valid_stored_tokens(access_token: &str) -> StoredTokens {
-        StoredTokens {
-            access_token: access_token.to_string(),
-            token_type: "Bearer".to_string(),
-            expires_in: 3_600,
-            refresh_token: "refresh-token-1".to_string(),
-            scope: None,
-            stored_at_unix_seconds: now_unix_seconds(),
-        }
-    }
-
-    fn expired_stored_tokens(access_token: &str) -> StoredTokens {
-        StoredTokens {
-            access_token: access_token.to_string(),
-            token_type: "Bearer".to_string(),
-            expires_in: 1,
-            refresh_token: "refresh-token-1".to_string(),
-            scope: None,
-            stored_at_unix_seconds: 0,
-        }
-    }
-
-    fn token_response_json(access_token: &str) -> serde_json::Value {
-        json!({
-            "access_token": access_token,
-            "token_type": "Bearer",
-            "expires_in": 3_600,
-            "refresh_token": "refresh-token-2",
-        })
-    }
-
-    fn state_response_json() -> serde_json::Value {
-        json!({
-            "cursors": {
-                "messages": 0,
-                "parts": 0,
-                "diffTraces": 0,
-                "agentTraces": 0,
-            }
-        })
-    }
-
-    fn sample_state_request() -> AgentTraceIngestionStateRequest {
-        AgentTraceIngestionStateRequest {
-            repository_id: "acme-monorepo".to_string(),
-            source_instance_id: "src-123".to_string(),
-        }
-    }
-
-    fn sample_batch_request() -> AgentTraceIngestionBatchRequest<AgentTraceMessageExportRow> {
-        AgentTraceIngestionBatchRequest {
-            repository_id: "acme-monorepo".to_string(),
-            source_instance_id: "src-123".to_string(),
-            stream: IngestionStream::Messages,
-            expected_cursor: 0,
-            rows: vec![AgentTraceMessageExportRow {
-                source_row_id: 1,
-                session_id: "session-1".to_string(),
-                message_id: "message-1".to_string(),
-                role: MessageRole::User,
-                generated_at_unix_ms: 1_700_000_000_000,
-            }],
-        }
-    }
-
-    #[derive(Clone, Default)]
-    struct FakeCredentialStore {
-        tokens: Arc<Mutex<Option<StoredTokens>>>,
-        save_calls: Arc<Mutex<Vec<TokenResponse>>>,
-    }
-
-    impl FakeCredentialStore {
-        fn empty() -> Self {
-            Self::default()
+    impl CredentialStore for HeldSaveStore {
+        async fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
+            Ok(Some(self.stored.lock().expect("stored lock").clone()))
         }
 
-        fn with_tokens(tokens: StoredTokens) -> Self {
-            let store = Self::default();
-            *store.tokens.lock().unwrap() = Some(tokens);
-            store
-        }
-
-        fn save_call_count(&self) -> usize {
-            self.save_calls.lock().unwrap().len()
-        }
-    }
-
-    impl CredentialStore for FakeCredentialStore {
-        fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
-            Ok(self.tokens.lock().unwrap().clone())
-        }
-
-        fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
-            self.save_calls.lock().unwrap().push(token.clone());
-            let stored = StoredTokens {
+        async fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
+            self.save_started.notify_one();
+            self.release_save
+                .acquire()
+                .await
+                .expect("release semaphore open")
+                .forget();
+            let saved = StoredTokens {
                 access_token: token.access_token.clone(),
                 token_type: token.token_type.clone(),
                 expires_in: token.expires_in,
                 refresh_token: token.refresh_token.clone(),
                 scope: token.scope.clone(),
-                stored_at_unix_seconds: now_unix_seconds(),
+                stored_at_unix_seconds: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("clock after epoch")
+                    .as_secs(),
             };
-            *self.tokens.lock().unwrap() = Some(stored.clone());
-            Ok(stored)
+            *self.stored.lock().expect("stored lock") = saved.clone();
+            self.saves.fetch_add(1, Ordering::SeqCst);
+            Ok(saved)
         }
     }
 
-    #[derive(Clone)]
-    struct ConcurrentCredentialStore {
-        tokens: Arc<Mutex<Option<StoredTokens>>>,
-        initial_loads: Arc<AtomicUsize>,
-        initial_load_barrier: Arc<Barrier>,
-        save_calls: Arc<Mutex<Vec<TokenResponse>>>,
-    }
-
-    impl ConcurrentCredentialStore {
-        fn with_tokens(tokens: StoredTokens) -> Self {
-            Self {
-                tokens: Arc::new(Mutex::new(Some(tokens))),
-                initial_loads: Arc::new(AtomicUsize::new(0)),
-                initial_load_barrier: Arc::new(Barrier::new(4)),
-                save_calls: Arc::new(Mutex::new(Vec::new())),
+    fn start_refresh_server() -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind refresh server");
+        let base_url = format!("http://{}", listener.local_addr().expect("server addr"));
+        let hits = Arc::new(AtomicUsize::new(0));
+        let thread_hits = Arc::clone(&hits);
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else {
+                    continue;
+                };
+                let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    let line = line.trim_end_matches(['\r', '\n']);
+                    if line.is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            content_length = value.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut body);
+                thread_hits.fetch_add(1, Ordering::SeqCst);
+                let payload = format!(
+                    r#"{{"access_token":"{REPLACEMENT_ACCESS_TOKEN}","refresh_token":"{REPLACEMENT_REFRESH_TOKEN}","expires_in":3600}}"#
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                    payload.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
             }
-        }
-
-        fn save_call_count(&self) -> usize {
-            self.save_calls.lock().unwrap().len()
-        }
+        });
+        (base_url, hits)
     }
 
-    impl CredentialStore for ConcurrentCredentialStore {
-        fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
-            let load_number = self.initial_loads.fetch_add(1, Ordering::SeqCst);
-            if load_number < 4 {
-                thread::sleep(Duration::from_millis(10));
-                self.initial_load_barrier.wait();
-            }
-            Ok(self.tokens.lock().unwrap().clone())
-        }
-
-        fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
-            self.save_calls.lock().unwrap().push(token.clone());
-            let stored = StoredTokens {
-                access_token: token.access_token.clone(),
-                token_type: token.token_type.clone(),
-                expires_in: token.expires_in,
-                refresh_token: token.refresh_token.clone(),
-                scope: token.scope.clone(),
-                stored_at_unix_seconds: now_unix_seconds(),
-            };
-            *self.tokens.lock().unwrap() = Some(stored.clone());
-            Ok(stored)
-        }
-    }
-
-    struct RuntimeCheckingCredentialStore;
-
-    impl CredentialStore for RuntimeCheckingCredentialStore {
-        fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
-            // This would panic if the blocking credential operation ran on a
-            // Tokio runtime thread.
-            let runtime = tokio::runtime::Builder::new_current_thread()
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_caller_does_not_lose_rotated_refresh_token() {
+        let (workos_url, workos_hits) = start_refresh_server();
+        let store = HeldSaveStore {
+            stored: Mutex::new(StoredTokens {
+                access_token: "expired-access".to_string(),
+                token_type: "Bearer".to_string(),
+                expires_in: 0,
+                refresh_token: "original-refresh".to_string(),
+                scope: None,
+                stored_at_unix_seconds: 0,
+            }),
+            saves: AtomicUsize::new(0),
+            save_started: Notify::new(),
+            release_save: Semaphore::new(0),
+        };
+        let client = Arc::new(AuthenticatedControlPlaneClient::with_credential_store(
+            reqwest::Client::builder()
+                .tls_certs_only(Vec::new())
                 .build()
-                .expect("build nested test runtime");
-            runtime.block_on(async {});
-            Ok(Some(valid_stored_tokens("valid-access-token")))
-        }
-
-        fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .build()
-                .expect("build nested test runtime");
-            runtime.block_on(async {});
-            Ok(valid_stored_tokens(&token.access_token))
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn credential_store_operations_run_outside_the_async_runtime() {
-        let client = AuthenticatedControlPlaneClient::with_credential_store(
-            test_http_client(),
+                .expect("test http client"),
             "http://127.0.0.1:1",
-            "http://127.0.0.1:1",
-            "test-client-id",
-            Box::new(RuntimeCheckingCredentialStore),
-        );
+            workos_url,
+            "client",
+            store,
+        ));
 
-        let access_token = client
+        let first = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.resolve_access_token().await })
+        };
+        client.credential_store.save_started.notified().await;
+        let second = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.resolve_access_token().await })
+        };
+
+        first.abort();
+        assert!(first
+            .await
+            .expect_err("first caller cancelled")
+            .is_cancelled());
+        assert_eq!(client.credential_store.saves.load(Ordering::SeqCst), 0);
+
+        client.credential_store.release_save.add_permits(1);
+        let second_token = second
+            .await
+            .expect("second caller joined")
+            .expect("second caller resolved a token");
+        let third_token = client
             .resolve_access_token()
             .await
-            .expect("token should load");
+            .expect("third caller resolved a token");
 
-        assert_eq!(access_token, "valid-access-token");
-        let token: TokenResponse = serde_json::from_value(token_response_json("saved-token"))
-            .expect("fixture token should deserialize");
-        let saved = client
-            .save_credentials(&token)
-            .await
-            .expect("token should save");
-        assert_eq!(saved.access_token, "saved-token");
-    }
-
-    /// A plain-`http://` loopback test double never needs TLS root
-    /// certificates. Skip platform certificate verification so the test
-    /// suite also passes in sandboxes with no system CA store.
-    fn test_http_client() -> reqwest::Client {
-        reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .build()
-            .expect("build test reqwest client")
-    }
-
-    fn client_with(
-        server: &TestHttpServer,
-        credential_store: FakeCredentialStore,
-    ) -> AuthenticatedControlPlaneClient {
-        AuthenticatedControlPlaneClient::with_credential_store(
-            test_http_client(),
-            server.base_url.clone(),
-            server.base_url.clone(),
-            "test-client-id",
-            Box::new(credential_store),
-        )
-    }
-
-    #[test]
-    fn missing_credentials_fail_before_any_http_call() {
-        let server = TestHttpServer::start();
-        let client = client_with(&server, FakeCredentialStore::empty());
-
-        let error = block_on(client.ingestion_state(&sample_state_request())).unwrap_err();
-
-        assert!(matches!(error, ControlPlaneError::MissingCredentials));
-        assert!(error.to_string().contains("sce auth login"));
-        assert_eq!(server.call_count(), 0);
-    }
-
-    #[test]
-    fn valid_token_is_reused_without_resave() {
-        let server = TestHttpServer::start();
-        server.queue_response(CannedResponse::json(200, &state_response_json()));
-        let store = FakeCredentialStore::with_tokens(valid_stored_tokens("valid-access-token"));
-        let client = client_with(&server, store);
-
-        let response = block_on(client.ingestion_state(&sample_state_request())).unwrap();
-
-        assert_eq!(response.cursors.messages, 0);
-        assert_eq!(server.call_count(), 1);
-        let requests = server.captured_requests();
+        assert_eq!(second_token, REPLACEMENT_ACCESS_TOKEN);
+        assert_eq!(third_token, REPLACEMENT_ACCESS_TOKEN);
+        assert_eq!(client.credential_store.saves.load(Ordering::SeqCst), 1);
+        assert_eq!(workos_hits.load(Ordering::SeqCst), 1);
         assert_eq!(
-            requests[0].headers.get("authorization").map(String::as_str),
-            Some("Bearer valid-access-token")
+            client
+                .credential_store
+                .stored
+                .lock()
+                .expect("stored lock")
+                .refresh_token,
+            REPLACEMENT_REFRESH_TOKEN
         );
     }
 
-    #[test]
-    fn transient_state_failure_fails_after_one_http_attempt() {
-        let server = TestHttpServer::start();
-        server.queue_response(CannedResponse::json(503, &json!({"error": "unavailable"})));
-        let store = FakeCredentialStore::with_tokens(valid_stored_tokens("valid-access-token"));
-        let client = client_with(&server, store);
-
-        let error = block_on(client.ingestion_state(&sample_state_request())).unwrap_err();
-
-        assert!(matches!(error, ControlPlaneError::ServerError(_)));
-        assert_eq!(server.call_count(), 1);
-    }
-
-    #[test]
-    fn valid_token_is_not_resaved() {
-        let server = TestHttpServer::start();
-        server.queue_response(CannedResponse::json(200, &state_response_json()));
-        let store = FakeCredentialStore::with_tokens(valid_stored_tokens("valid-access-token"));
-        let store_handle = store.clone();
-        let client = client_with(&server, store);
-
-        block_on(client.ingestion_state(&sample_state_request())).unwrap();
-
-        assert_eq!(store_handle.save_call_count(), 0);
-    }
-
-    #[test]
-    fn expired_token_is_refreshed_and_saved() {
-        let server = TestHttpServer::start();
-        server.queue_response(CannedResponse::json(
-            200,
-            &token_response_json("refreshed-token"),
-        ));
-        server.queue_response(CannedResponse::json(200, &state_response_json()));
-        let store = FakeCredentialStore::with_tokens(expired_stored_tokens("stale-access-token"));
-        let store_handle = store.clone();
-        let client = client_with(&server, store);
-
-        let response = block_on(client.ingestion_state(&sample_state_request())).unwrap();
-
-        assert_eq!(response.cursors.messages, 0);
-        assert_eq!(server.call_count(), 2);
-        assert_eq!(store_handle.save_call_count(), 1);
-        let requests = server.captured_requests();
-        assert_eq!(
-            requests[1].headers.get("authorization").map(String::as_str),
-            Some("Bearer refreshed-token")
-        );
-    }
-
-    #[test]
-    fn concurrent_expired_tokens_share_one_refresh_and_save() {
-        let server = TestHttpServer::start();
-        server.queue_response(CannedResponse::json(
-            200,
-            &token_response_json("refreshed-token"),
-        ));
-        for _ in 0..4 {
-            server.queue_response(CannedResponse::json(200, &state_response_json()));
-        }
-        let store = ConcurrentCredentialStore::with_tokens(expired_stored_tokens("stale-token"));
-        let store_handle = store.clone();
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pending_refresh_drain_waits_for_cancelled_callers_save() {
+        let (workos_url, workos_hits) = start_refresh_server();
+        let store = HeldSaveStore {
+            stored: Mutex::new(StoredTokens {
+                access_token: "expired-access".to_string(),
+                token_type: "Bearer".to_string(),
+                expires_in: 0,
+                refresh_token: "original-refresh".to_string(),
+                scope: None,
+                stored_at_unix_seconds: 0,
+            }),
+            saves: AtomicUsize::new(0),
+            save_started: Notify::new(),
+            release_save: Semaphore::new(0),
+        };
         let client = Arc::new(AuthenticatedControlPlaneClient::with_credential_store(
-            test_http_client(),
-            server.base_url.clone(),
-            server.base_url.clone(),
-            "test-client-id",
-            Box::new(store),
+            reqwest::Client::builder()
+                .tls_certs_only(Vec::new())
+                .build()
+                .expect("test http client"),
+            "http://127.0.0.1:1",
+            workos_url,
+            "client",
+            store,
         ));
-        let results = block_on(async {
-            let handles = (0..4)
-                .map(|_| {
-                    let client = Arc::clone(&client);
-                    tokio::spawn(
-                        async move { client.ingestion_state(&sample_state_request()).await },
-                    )
-                })
-                .collect::<Vec<_>>();
-            let mut results = Vec::new();
-            for handle in handles {
-                results.push(handle.await.expect("concurrent state request task"));
-            }
-            results
-        });
 
-        assert!(results.iter().all(Result::is_ok));
-        assert_eq!(store_handle.save_call_count(), 1);
-        let requests = server.captured_requests();
-        assert_eq!(requests.len(), 5);
+        let caller = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.resolve_access_token().await })
+        };
+        client.credential_store.save_started.notified().await;
+        caller.abort();
+        assert!(caller.await.expect_err("caller cancelled").is_cancelled());
+
+        let mut drain = std::pin::pin!(client.wait_for_pending_refresh());
+        let probe =
+            tokio::time::timeout(std::time::Duration::from_millis(100), drain.as_mut()).await;
+        assert!(probe.is_err(), "drain returned before the save finished");
+        assert_eq!(client.credential_store.saves.load(Ordering::SeqCst), 0);
+
+        client.credential_store.release_save.add_permits(1);
+        tokio::time::timeout(std::time::Duration::from_secs(10), drain)
+            .await
+            .expect("drain completes after the save is released");
+
+        assert_eq!(client.credential_store.saves.load(Ordering::SeqCst), 1);
+        assert_eq!(workos_hits.load(Ordering::SeqCst), 1);
         assert_eq!(
-            requests
-                .iter()
-                .filter(|request| request.path == "/oauth2/token")
-                .count(),
-            1
+            client
+                .credential_store
+                .stored
+                .lock()
+                .expect("stored lock")
+                .refresh_token,
+            REPLACEMENT_REFRESH_TOKEN
         );
-        let state_requests = requests
-            .iter()
-            .filter(|request| request.path == "/agent-trace/ingestion/state")
-            .collect::<Vec<_>>();
-        assert_eq!(state_requests.len(), 4);
-        assert!(state_requests.iter().all(|request| {
-            request.headers.get("authorization").map(String::as_str)
-                == Some("Bearer refreshed-token")
-        }));
-    }
-
-    #[test]
-    fn unexpected_401_refreshes_once_and_retries_once_on_success() {
-        let server = TestHttpServer::start();
-        server.queue_response(CannedResponse::json(401, &json!({"error": "unauthorized"})));
-        server.queue_response(CannedResponse::json(
-            200,
-            &token_response_json("refreshed-token"),
-        ));
-        server.queue_response(CannedResponse::json(200, &state_response_json()));
-        let store = FakeCredentialStore::with_tokens(valid_stored_tokens("stale-but-unexpired"));
-        let store_handle = store.clone();
-        let client = client_with(&server, store);
-
-        let response = block_on(client.ingestion_state(&sample_state_request())).unwrap();
-
-        assert_eq!(response.cursors.messages, 0);
-        assert_eq!(server.call_count(), 3);
-        assert_eq!(store_handle.save_call_count(), 1);
-        let requests = server.captured_requests();
-        assert_eq!(
-            requests[2].headers.get("authorization").map(String::as_str),
-            Some("Bearer refreshed-token")
-        );
-    }
-
-    #[test]
-    fn unexpected_401_twice_fails_without_a_third_attempt() {
-        let server = TestHttpServer::start();
-        server.queue_response(CannedResponse::json(401, &json!({"error": "unauthorized"})));
-        server.queue_response(CannedResponse::json(
-            200,
-            &token_response_json("refreshed-token"),
-        ));
-        server.queue_response(CannedResponse::json(401, &json!({"error": "unauthorized"})));
-        let store = FakeCredentialStore::with_tokens(valid_stored_tokens("stale-but-unexpired"));
-        let client = client_with(&server, store);
-
-        let error = block_on(client.ingestion_state(&sample_state_request())).unwrap_err();
-
-        assert!(matches!(error, ControlPlaneError::AuthenticationFailed(_)));
-        assert_eq!(server.call_count(), 3);
-    }
-
-    #[test]
-    fn state_request_body_has_exact_shape_and_call_count() {
-        let server = TestHttpServer::start();
-        server.queue_response(CannedResponse::json(200, &state_response_json()));
-        let store = FakeCredentialStore::with_tokens(valid_stored_tokens("valid-access-token"));
-        let client = client_with(&server, store);
-
-        block_on(client.ingestion_state(&sample_state_request())).unwrap();
-
-        assert_eq!(server.call_count(), 1);
-        let requests = server.captured_requests();
-        assert_eq!(requests[0].path, "/agent-trace/ingestion/state");
-        let body: serde_json::Value = serde_json::from_str(&requests[0].body).unwrap();
-        assert_eq!(
-            body,
-            json!({
-                "repositoryId": "acme-monorepo",
-                "sourceInstanceId": "src-123",
-            })
-        );
-    }
-
-    #[test]
-    fn batch_classifies_400_as_bad_request() {
-        let server = TestHttpServer::start();
-        server.queue_response(CannedResponse::json(400, &json!({"error": "invalid"})));
-        let store = FakeCredentialStore::with_tokens(valid_stored_tokens("valid-access-token"));
-        let client = client_with(&server, store);
-
-        let error = block_on(client.ingest_messages(&sample_batch_request())).unwrap_err();
-
-        assert!(matches!(error, ControlPlaneError::BadRequest(_)));
-    }
-
-    #[test]
-    fn batch_classifies_403_as_forbidden() {
-        let server = TestHttpServer::start();
-        server.queue_response(CannedResponse::json(403, &json!({"error": "forbidden"})));
-        let store = FakeCredentialStore::with_tokens(valid_stored_tokens("valid-access-token"));
-        let client = client_with(&server, store);
-
-        let error = block_on(client.ingest_messages(&sample_batch_request())).unwrap_err();
-
-        assert!(matches!(error, ControlPlaneError::Forbidden(_)));
-    }
-
-    #[test]
-    fn batch_classifies_409_as_conflict() {
-        let server = TestHttpServer::start();
-        server.queue_response(CannedResponse::json(409, &json!({"error": "conflict"})));
-        let store = FakeCredentialStore::with_tokens(valid_stored_tokens("valid-access-token"));
-        let client = client_with(&server, store);
-
-        let error = block_on(client.ingest_messages(&sample_batch_request())).unwrap_err();
-
-        assert!(matches!(error, ControlPlaneError::Conflict(_)));
-    }
-
-    #[test]
-    fn batch_classifies_5xx_as_server_error() {
-        let server = TestHttpServer::start();
-        server.queue_response(CannedResponse::json(500, &json!({"error": "boom"})));
-        let store = FakeCredentialStore::with_tokens(valid_stored_tokens("valid-access-token"));
-        let client = client_with(&server, store);
-
-        let error = block_on(client.ingest_messages(&sample_batch_request())).unwrap_err();
-
-        assert!(matches!(error, ControlPlaneError::ServerError(_)));
-    }
-
-    #[test]
-    fn server_error_body_is_not_leaked() {
-        let server = TestHttpServer::start();
-        server.queue_response(CannedResponse::text(
-            500,
-            "SQLITE_ERROR: no such table: agent_trace_messages at /var/lib/sce/db.sqlite3",
-        ));
-        let store = FakeCredentialStore::with_tokens(valid_stored_tokens("valid-access-token"));
-        let client = client_with(&server, store);
-
-        let error = block_on(client.ingest_messages(&sample_batch_request())).unwrap_err();
-
-        let rendered = error.to_string();
-        assert!(matches!(error, ControlPlaneError::ServerError(_)));
-        assert!(!rendered.contains("SQLITE_ERROR"));
-        assert!(!rendered.contains("agent_trace_messages"));
-        assert!(!rendered.contains("/var/lib/sce"));
-        assert!(rendered.contains("control plane encountered an internal error"));
-    }
-
-    #[test]
-    fn known_safe_error_payload_is_surfaced() {
-        let server = TestHttpServer::start();
-        server.queue_response(CannedResponse::json(
-            400,
-            &json!({"message": "repositoryId is required"}),
-        ));
-        let store = FakeCredentialStore::with_tokens(valid_stored_tokens("valid-access-token"));
-        let client = client_with(&server, store);
-
-        let error = block_on(client.ingest_messages(&sample_batch_request())).unwrap_err();
-
-        match error {
-            ControlPlaneError::BadRequest(message) => {
-                assert_eq!(message, "repositoryId is required");
-            }
-            other => panic!("expected BadRequest, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn html_error_body_falls_back_to_generic_message() {
-        let server = TestHttpServer::start();
-        server.queue_response(CannedResponse::text(
-            500,
-            "<html><body><h1>500 Internal Server Error</h1></body></html>",
-        ));
-        let store = FakeCredentialStore::with_tokens(valid_stored_tokens("valid-access-token"));
-        let client = client_with(&server, store);
-
-        let error = block_on(client.ingest_messages(&sample_batch_request())).unwrap_err();
-
-        let rendered = error.to_string();
-        assert!(!rendered.contains("<html>"));
-        assert!(rendered.contains("control plane encountered an internal error"));
-    }
-
-    #[test]
-    fn batch_classifies_404_as_protocol_error() {
-        let server = TestHttpServer::start();
-        server.queue_response(CannedResponse::json(404, &json!({"error": "not found"})));
-        let store = FakeCredentialStore::with_tokens(valid_stored_tokens("valid-access-token"));
-        let client = client_with(&server, store);
-
-        let error = block_on(client.ingest_messages(&sample_batch_request())).unwrap_err();
-
-        match error {
-            ControlPlaneError::Protocol { status, message } => {
-                assert_eq!(status, StatusCode::NOT_FOUND);
-                assert_eq!(message, "not found");
-            }
-            other => panic!("expected Protocol, got {other:?}"),
-        }
     }
 }

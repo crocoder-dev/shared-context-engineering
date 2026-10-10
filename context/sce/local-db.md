@@ -10,7 +10,7 @@ pub type LocalDb = TursoDb<LocalDbSpec>;
 
 - `LocalDbSpec`: `DbSpec` implementation for the canonical per-user local database.
 - `LocalDb`: type alias for `TursoDb<LocalDbSpec>`.
-- `LocalDb::new()`, `execute()`, `query()`, and `query_map()`: inherited from `TursoDb<M>` with current hardcoded constructor and operation retry policies.
+- `LocalDb::new()`, `execute()`, `query()`, and `query_map()`: async operations inherited from `TursoDb<M>` with the configured constructor and operation retry policies.
 - `local_db/lifecycle.rs`: owns local DB health, parent-directory bootstrap, and setup initialization through `LocalDb::new()`.
 
 ## Database path
@@ -33,13 +33,13 @@ Agent Trace-specific persistence is split out of the neutral local DB baseline a
 ```rust
 use crate::services::local_db::LocalDb;
 
-let db = LocalDb::new()?;
-let affected = db.execute("VACUUM", ())?;
-let mut rows = db.query("PRAGMA database_list", ())?;
+let db = LocalDb::new().await?;
+let affected = db.execute("VACUUM", ()).await?;
+let mut rows = db.query("PRAGMA database_list", ()).await?;
 ```
 
 ## Error handling
 
-The shared `TursoDb` adapter returns `anyhow::Result` with service-name-qualified diagnostics for path resolution, parent-directory creation, runtime creation, database open/connect, migration execution, and SQL execution/query failures. Open/connect and `execute`/`query`/`query_map` transient failures are retry-wrapped by the shared adapter; migration execution and row-mapping failures are not retried.
+The shared `TursoDb` adapter returns `anyhow::Result` with service-name-qualified diagnostics for path resolution, parent-directory creation, database open/connect, migration execution, and SQL execution/query failures. Open/connect and `execute`/`query`/`query_map` transient failures are retry-wrapped by the shared async adapter; migration execution and row-mapping failures are not retried.
 
 See also: [shared-turso-db.md](shared-turso-db.md), [agent-trace-db.md](agent-trace-db.md), [overview.md](../overview.md), [glossary.md](../glossary.md), [context-map.md](../context-map.md)

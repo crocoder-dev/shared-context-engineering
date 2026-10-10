@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 mod app;
 mod cli_schema;
 mod command_surface;

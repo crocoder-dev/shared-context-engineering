@@ -129,7 +129,6 @@ fn claude_derivation_golden_tests() {
                     "patch mismatch for scenario {name}"
                 );
 
-                // model_id is omitted at the structured-patch layer; hunks should not carry it.
                 let all_hunks_empty_model_id = patch
                     .patch
                     .files

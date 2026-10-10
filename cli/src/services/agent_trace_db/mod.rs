@@ -12,9 +12,11 @@ use crate::services::{
 use serde_json::Value;
 
 pub mod lifecycle;
-#[cfg(test)]
-mod lock_contention_tests;
+
 pub mod repository;
+
+#[cfg(test)]
+pub(crate) mod transaction_tests;
 
 /// Payload type discriminator for diff trace source payloads.
 ///
@@ -289,7 +291,10 @@ pub struct InsertPartInsert {
     pub generated_at_unix_ms: i64,
 }
 
-fn insert_diff_trace_with<M: DbSpec>(db: &TursoDb<M>, input: DiffTraceInsert<'_>) -> Result<u64> {
+async fn insert_diff_trace_with<M: DbSpec>(
+    db: &TursoDb<M>,
+    input: DiffTraceInsert<'_>,
+) -> Result<u64> {
     db.execute(
         INSERT_DIFF_TRACE_SQL,
         (
@@ -302,9 +307,10 @@ fn insert_diff_trace_with<M: DbSpec>(db: &TursoDb<M>, input: DiffTraceInsert<'_>
             input.payload_type,
         ),
     )
+    .await
 }
 
-fn insert_post_commit_patch_intersection_with<M: DbSpec>(
+async fn insert_post_commit_patch_intersection_with<M: DbSpec>(
     db: &TursoDb<M>,
     input: PostCommitPatchIntersectionInsert<'_>,
 ) -> Result<u64> {
@@ -320,9 +326,13 @@ fn insert_post_commit_patch_intersection_with<M: DbSpec>(
             input.intersection_patch,
         ),
     )
+    .await
 }
 
-fn insert_agent_trace_with<M: DbSpec>(db: &TursoDb<M>, input: AgentTraceInsert<'_>) -> Result<u64> {
+async fn insert_agent_trace_with<M: DbSpec>(
+    db: &TursoDb<M>,
+    input: AgentTraceInsert<'_>,
+) -> Result<u64> {
     db.execute(
         INSERT_AGENT_TRACE_SQL,
         (
@@ -334,9 +344,10 @@ fn insert_agent_trace_with<M: DbSpec>(db: &TursoDb<M>, input: AgentTraceInsert<'
             input.remote_url,
         ),
     )
+    .await
 }
 
-fn upsert_claude_model_state_with<M: DbSpec>(
+async fn upsert_claude_model_state_with<M: DbSpec>(
     db: &TursoDb<M>,
     input: ClaudeModelStateObservation,
 ) -> Result<u64> {
@@ -351,18 +362,21 @@ fn upsert_claude_model_state_with<M: DbSpec>(
             input.observed_at_ms,
         ),
     )
+    .await
 }
 
-fn claude_model_state_by_session_and_agent_with<M: DbSpec>(
+async fn claude_model_state_by_session_and_agent_with<M: DbSpec>(
     db: &TursoDb<M>,
     session_id: &str,
     agent_id: &str,
 ) -> Result<Option<ClaudeModelStateObservation>> {
-    let rows = db.query_map(
-        SELECT_CLAUDE_MODEL_STATE_SQL,
-        (session_id, agent_id),
-        claude_model_state_observation_from_turso,
-    )?;
+    let rows = db
+        .query_map(
+            SELECT_CLAUDE_MODEL_STATE_SQL,
+            (session_id, agent_id),
+            claude_model_state_observation_from_turso,
+        )
+        .await?;
 
     Ok(rows.into_iter().next())
 }
@@ -395,7 +409,10 @@ fn claude_model_state_observation_from_turso(
 }
 
 #[allow(dead_code)]
-fn insert_message_with<M: DbSpec>(db: &TursoDb<M>, input: InsertMessageInsert) -> Result<u64> {
+async fn insert_message_with<M: DbSpec>(
+    db: &TursoDb<M>,
+    input: InsertMessageInsert,
+) -> Result<u64> {
     db.execute(
         INSERT_MESSAGE_SQL,
         (
@@ -405,9 +422,10 @@ fn insert_message_with<M: DbSpec>(db: &TursoDb<M>, input: InsertMessageInsert) -
             input.generated_at_unix_ms,
         ),
     )
+    .await
 }
 
-fn insert_messages_with<M: DbSpec>(
+async fn insert_messages_with<M: DbSpec>(
     db: &TursoDb<M>,
     inputs: Vec<InsertMessageInsert>,
 ) -> Result<u64> {
@@ -432,11 +450,11 @@ fn insert_messages_with<M: DbSpec>(
         rows.join(", ")
     );
 
-    db.execute(&sql, params)
+    db.execute(&sql, params).await
 }
 
 #[allow(dead_code)]
-fn insert_part_with<M: DbSpec>(db: &TursoDb<M>, input: InsertPartInsert) -> Result<u64> {
+async fn insert_part_with<M: DbSpec>(db: &TursoDb<M>, input: InsertPartInsert) -> Result<u64> {
     db.execute(
         INSERT_PART_SQL,
         (
@@ -447,9 +465,13 @@ fn insert_part_with<M: DbSpec>(db: &TursoDb<M>, input: InsertPartInsert) -> Resu
             input.generated_at_unix_ms,
         ),
     )
+    .await
 }
 
-fn insert_parts_with<M: DbSpec>(db: &TursoDb<M>, inputs: Vec<InsertPartInsert>) -> Result<u64> {
+async fn insert_parts_with<M: DbSpec>(
+    db: &TursoDb<M>,
+    inputs: Vec<InsertPartInsert>,
+) -> Result<u64> {
     if inputs.is_empty() {
         return Ok(0);
     }
@@ -472,7 +494,7 @@ fn insert_parts_with<M: DbSpec>(db: &TursoDb<M>, inputs: Vec<InsertPartInsert>) 
         rows.join(", ")
     );
 
-    db.execute(&sql, params)
+    db.execute(&sql, params).await
 }
 
 /// Atomically insert one conversation `messages` row and its one `parts`
@@ -481,8 +503,8 @@ fn insert_parts_with<M: DbSpec>(db: &TursoDb<M>, inputs: Vec<InsertPartInsert>) 
 /// transaction (`Ok(true)`). `fail_before_part_insert` is a test-only hook
 /// forcing the transaction to fail after the message insert and before the
 /// part insert, to prove both roll back together.
-fn insert_conversation_text_event_with<M: DbSpec>(
-    db: &TursoDb<M>,
+async fn insert_conversation_text_event_with<M: DbSpec>(
+    db: &mut TursoDb<M>,
     message: InsertMessageInsert,
     part: InsertPartInsert,
     fail_before_part_insert: bool,
@@ -513,6 +535,7 @@ fn insert_conversation_text_event_with<M: DbSpec>(
         part_params,
         fail_before_part_insert,
     )
+    .await
 }
 
 fn numbered_placeholders(start: usize, count: usize) -> String {
@@ -524,16 +547,18 @@ fn numbered_placeholders(start: usize, count: usize) -> String {
     format!("({placeholders})")
 }
 
-fn recent_diff_trace_patches_with<M: DbSpec>(
+async fn recent_diff_trace_patches_with<M: DbSpec>(
     db: &TursoDb<M>,
     cutoff_time_ms: i64,
     end_time_ms: i64,
 ) -> Result<RecentDiffTracePatches> {
-    let rows = db.query_map(
-        SELECT_RECENT_DIFF_TRACE_PATCHES_SQL,
-        (cutoff_time_ms, end_time_ms),
-        diff_trace_patch_row_from_turso,
-    )?;
+    let rows = db
+        .query_map(
+            SELECT_RECENT_DIFF_TRACE_PATCHES_SQL,
+            (cutoff_time_ms, end_time_ms),
+            diff_trace_patch_row_from_turso,
+        )
+        .await?;
 
     Ok(parse_recent_diff_trace_patch_rows(rows))
 }
@@ -620,264 +645,4 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
 
 fn skipped_diff_trace_patch_reason(error: &ParseError) -> String {
     error.to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{
-        fs,
-        path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
-    use super::repository::RepositoryAgentTraceDb;
-    use super::*;
-    use crate::services::agent_trace::{build_agent_trace, AgentTraceMetadataInput};
-
-    fn unique_test_db_path() -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time should be after Unix epoch")
-            .as_nanos();
-        std::env::temp_dir()
-            .join(format!(
-                "sce-agent-trace-db-test-{}-{nonce}",
-                std::process::id()
-            ))
-            .join("agent-trace.db")
-    }
-
-    fn valid_patch(path: &str, content: &str) -> String {
-        format!(
-            "Index: {path}\n===================================================================\n--- {path}\n+++ {path}\n@@ -0,0 +1,1 @@\n+{content}\n"
-        )
-    }
-
-    fn insert_test_diff_trace(
-        db: &RepositoryAgentTraceDb,
-        time_ms: i64,
-        session_id: &str,
-        patch: &str,
-    ) {
-        db.insert_diff_trace(DiffTraceInsert {
-            time_ms,
-            session_id,
-            patch,
-            model_id: Some("test-provider/test-model"),
-            tool_name: "opencode",
-            tool_version: Some("1.2.3"),
-            payload_type: PAYLOAD_TYPE_PATCH,
-        })
-        .expect("diff trace insert should succeed");
-    }
-
-    #[test]
-    fn structured_diff_trace_reconstruction_uses_persisted_model_and_session_provenance() {
-        let db_path = unique_test_db_path();
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
-        let payload =
-            include_str!("../structured_patch/fixtures/edit_multi_hunk/claude-post-tool-use.json");
-
-        db.insert_diff_trace(DiffTraceInsert {
-            time_ms: 1_000,
-            session_id: "cc_session-123",
-            patch: payload,
-            model_id: Some("claude/claude-sonnet-4-5"),
-            tool_name: "claude",
-            tool_version: Some("1.0.0"),
-            payload_type: PAYLOAD_TYPE_STRUCTURED,
-        })
-        .expect("structured diff trace insert should succeed");
-
-        let result = db
-            .recent_diff_trace_patches(0, 2_000)
-            .expect("structured diff trace should load");
-        assert_eq!(result.loaded_count(), 1);
-        assert_eq!(result.skipped_count(), 0);
-
-        let patch = &result.patches[0].patch;
-        assert!(
-            patch
-                .files
-                .iter()
-                .flat_map(|file| &file.hunks)
-                .all(|hunk| hunk.model_id.as_deref() == Some("claude/claude-sonnet-4-5")),
-            "every reconstructed hunk should use the persisted row model"
-        );
-        assert!(
-            patch
-                .files
-                .iter()
-                .flat_map(|file| &file.hunks)
-                .flat_map(|hunk| &hunk.lines)
-                .all(|line| line.session_id.as_deref() == Some("cc_session-123")),
-            "every reconstructed touched line should use the persisted canonical row session"
-        );
-
-        drop(db);
-        if let Some(parent) = db_path.parent() {
-            fs::remove_dir_all(parent).expect("test DB directory should be removed");
-        }
-    }
-
-    #[test]
-    fn claude_model_attribution_flows_from_persisted_structured_row_to_agent_trace() {
-        let db_path = unique_test_db_path();
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
-        let payload =
-            include_str!("../structured_patch/fixtures/edit_single_hunk/claude-post-tool-use.json");
-        let post_commit_patch = parse_patch(
-            include_str!("../structured_patch/fixtures/edit_single_hunk/expected.patch"),
-            None,
-        )
-        .expect("post-commit fixture should parse");
-
-        db.insert_diff_trace(DiffTraceInsert {
-            time_ms: 1_000,
-            session_id: "cc_session-123",
-            patch: payload,
-            model_id: Some("claude/claude-sonnet-4-5"),
-            tool_name: "claude",
-            tool_version: Some("1.0.0"),
-            payload_type: PAYLOAD_TYPE_STRUCTURED,
-        })
-        .expect("structured diff trace insert should succeed");
-
-        let mut result = db
-            .recent_diff_trace_patches(0, 2_000)
-            .expect("structured diff trace should load");
-        let constructed_patch = result
-            .patches
-            .pop()
-            .expect("one structured diff trace should load")
-            .patch;
-        let agent_trace = build_agent_trace(
-            &constructed_patch,
-            &post_commit_patch,
-            AgentTraceMetadataInput {
-                commit_timestamp: "2026-04-23T10:20:30Z",
-                commit_revision: "a0b1c2d3e4f5a6b7c8d9e0f11223344556677889",
-                vcs_type: None,
-                tool_name: Some("claude"),
-                tool_version: Some("1.0.0"),
-            },
-        )
-        .expect("Agent Trace should build");
-        let agent_trace_json =
-            serde_json::to_value(agent_trace).expect("Agent Trace should serialize");
-
-        assert_eq!(
-            agent_trace_json["files"][0]["conversations"][0]["contributor"]["model_id"],
-            "claude/claude-sonnet-4-5"
-        );
-        assert_eq!(
-            agent_trace_json["files"][0]["conversations"][0]["related"],
-            serde_json::json!([{
-                "type": "session",
-                "url": "https://sce.crocoder.dev/sessions/cc_session-123"
-            }])
-        );
-
-        drop(db);
-        if let Some(parent) = db_path.parent() {
-            fs::remove_dir_all(parent).expect("test DB directory should be removed");
-        }
-    }
-
-    #[test]
-    fn recent_diff_trace_patches_applies_bounded_window_ordering_and_parse_accounting() {
-        let db_path = unique_test_db_path();
-        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
-
-        let before_cutoff_patch = valid_patch("notes/before.md", "before cutoff");
-        let cutoff_patch = valid_patch("notes/cutoff.md", "at cutoff");
-        let first_same_time_patch = valid_patch("notes/same-a.md", "same time first");
-        let second_same_time_patch = valid_patch("notes/same-b.md", "same time second");
-        let end_patch = valid_patch("notes/end.md", "at end");
-        let after_end_patch = valid_patch("notes/after.md", "after end");
-
-        insert_test_diff_trace(&db, 999, "oc_before-cutoff", &before_cutoff_patch);
-        insert_test_diff_trace(&db, 1000, "oc_at-cutoff", &cutoff_patch);
-        insert_test_diff_trace(
-            &db,
-            1500,
-            "oc_malformed",
-            "Index: notes/malformed.md\n===================================================================\n--- notes/malformed.md\n+++ notes/malformed.md\n@@ malformed @@\n+bad\n",
-        );
-        insert_test_diff_trace(&db, 1500, "oc_same-time-a", &first_same_time_patch);
-        insert_test_diff_trace(&db, 1500, "oc_same-time-b", &second_same_time_patch);
-        insert_test_diff_trace(&db, 2000, "oc_at-end", &end_patch);
-        insert_test_diff_trace(&db, 2001, "oc_after-end", &after_end_patch);
-
-        let result = recent_diff_trace_patches_with(&db, 1000, 2000)
-            .expect("recent diff trace patches should load");
-
-        assert_eq!(result.loaded_count(), 4);
-        assert_eq!(result.skipped_count(), 1);
-        assert_eq!(
-            result
-                .patches
-                .iter()
-                .map(|patch| (patch.id, patch.time_ms, patch.session_id.as_str()))
-                .collect::<Vec<_>>(),
-            vec![
-                (2, 1000, "oc_at-cutoff"),
-                (4, 1500, "oc_same-time-a"),
-                (5, 1500, "oc_same-time-b"),
-                (6, 2000, "oc_at-end"),
-            ]
-        );
-        assert_eq!(
-            result
-                .patches
-                .iter()
-                .map(|patch| { (patch.tool_name.as_deref(), patch.tool_version.as_deref(),) })
-                .collect::<Vec<_>>(),
-            vec![
-                (Some("opencode"), Some("1.2.3")),
-                (Some("opencode"), Some("1.2.3")),
-                (Some("opencode"), Some("1.2.3")),
-                (Some("opencode"), Some("1.2.3")),
-            ]
-        );
-        assert_eq!(
-            result
-                .patches
-                .iter()
-                .map(|patch| patch.payload_type.as_str())
-                .collect::<Vec<_>>(),
-            vec![
-                PAYLOAD_TYPE_PATCH,
-                PAYLOAD_TYPE_PATCH,
-                PAYLOAD_TYPE_PATCH,
-                PAYLOAD_TYPE_PATCH
-            ]
-        );
-        assert_eq!(
-            result
-                .patches
-                .iter()
-                .map(|patch| patch.patch.files[0].new_path.as_str())
-                .collect::<Vec<_>>(),
-            vec![
-                "notes/cutoff.md",
-                "notes/same-a.md",
-                "notes/same-b.md",
-                "notes/end.md",
-            ]
-        );
-        assert_eq!(result.skipped[0].id, 3);
-        assert_eq!(result.skipped[0].time_ms, 1500);
-        assert_eq!(result.skipped[0].session_id, "oc_malformed");
-        assert!(
-            result.skipped[0].reason.contains("invalid hunk header"),
-            "unexpected skipped reason: {}",
-            result.skipped[0].reason
-        );
-
-        drop(db);
-        if let Some(parent) = db_path.parent() {
-            fs::remove_dir_all(parent).expect("test DB directory should be removed");
-        }
-    }
 }

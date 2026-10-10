@@ -4,8 +4,7 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
-#[cfg(test)]
-use crate::services::agent_trace_storage::resolve_agent_trace_storage_for_hook_runtime_at_state_root;
+
 use crate::services::agent_trace_storage::{
     resolve_agent_trace_storage_for_hook_runtime, AgentTraceStorageContext,
 };
@@ -51,7 +50,7 @@ pub(crate) fn prefixed_session_id(tool_name: &str, raw_session_id: &str) -> Stri
         format!("{prefix}{raw_session_id}")
     }
 }
-pub(crate) fn open_agent_trace_db_for_hook_runtime(
+pub(crate) async fn open_agent_trace_db_for_hook_runtime(
     repository_root: &Path,
     context_message: &'static str,
 ) -> Result<RepositoryAgentTraceDb> {
@@ -64,25 +63,7 @@ pub(crate) fn open_agent_trace_db_for_hook_runtime(
     };
 
     resolve_agent_trace_storage_for_hook_runtime(&storage_context)
-        .map(|storage| storage.db)
-        .context(context_message)
-}
-
-#[cfg(test)]
-pub(crate) fn open_agent_trace_db_for_hook_runtime_at_state_root(
-    repository_root: &Path,
-    state_root: &Path,
-    context_message: &'static str,
-) -> Result<RepositoryAgentTraceDb> {
-    let storage_config = config::resolve_agent_trace_storage_runtime_config(repository_root)
-        .context("Failed to resolve Agent Trace repository storage config.")?;
-    let storage_context = AgentTraceStorageContext {
-        repository_root,
-        explicit_repository_id: storage_config.repository_id.as_deref(),
-        repository_remote: &storage_config.repository_remote,
-    };
-
-    resolve_agent_trace_storage_for_hook_runtime_at_state_root(&storage_context, state_root)
+        .await
         .map(|storage| storage.db)
         .context(context_message)
 }

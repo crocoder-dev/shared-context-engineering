@@ -482,7 +482,9 @@ pub(crate) fn relinquish_recovery_flush_returns_only_the_claimed_generation_to_p
     assert_eq!(canonical_bytes::<A>(git_dir.path()), relinquished_bytes);
 }
 
-pub(crate) fn only_one_concurrent_caller_claims_the_flush_for_a_generation<A: StateConformance>() {
+pub(crate) async fn only_one_concurrent_caller_claims_the_flush_for_a_generation<
+    A: StateConformance,
+>() {
     let git_dir = ConformanceGitDir::create::<A>("one-flush-owner");
     seed::<A>(
         git_dir.path(),

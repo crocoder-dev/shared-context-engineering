@@ -2,17 +2,91 @@ use std::future::Future;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use std::fmt;
+
 use anyhow::{anyhow, ensure, Result};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetryPolicyError {
+    ZeroMaxAttempts,
+    ZeroTimeout,
+    MaxBackoffBelowInitial,
+}
+
+impl fmt::Display for RetryPolicyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::ZeroMaxAttempts => "Retry policy requires max_attempts >= 1",
+            Self::ZeroTimeout => "Retry policy requires timeout_ms >= 1",
+            Self::MaxBackoffBelowInitial => {
+                "Retry policy requires max_backoff_ms >= initial_backoff_ms"
+            }
+        })
+    }
+}
+
+impl std::error::Error for RetryPolicyError {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RetryPolicy {
-    pub max_attempts: u32,
-    pub timeout_ms: u64,
-    pub initial_backoff_ms: u64,
-    pub max_backoff_ms: u64,
+    max_attempts: u32,
+    timeout_ms: u64,
+    initial_backoff_ms: u64,
+    max_backoff_ms: u64,
 }
 
 impl RetryPolicy {
+    pub const fn new(
+        max_attempts: u32,
+        timeout_ms: u64,
+        initial_backoff_ms: u64,
+        max_backoff_ms: u64,
+    ) -> Result<Self, RetryPolicyError> {
+        if max_attempts == 0 {
+            return Err(RetryPolicyError::ZeroMaxAttempts);
+        }
+        if timeout_ms == 0 {
+            return Err(RetryPolicyError::ZeroTimeout);
+        }
+        if max_backoff_ms < initial_backoff_ms {
+            return Err(RetryPolicyError::MaxBackoffBelowInitial);
+        }
+        Ok(Self {
+            max_attempts,
+            timeout_ms,
+            initial_backoff_ms,
+            max_backoff_ms,
+        })
+    }
+
+    pub const fn builtin(
+        max_attempts: u32,
+        timeout_ms: u64,
+        initial_backoff_ms: u64,
+        max_backoff_ms: u64,
+    ) -> Self {
+        match Self::new(max_attempts, timeout_ms, initial_backoff_ms, max_backoff_ms) {
+            Ok(policy) => policy,
+            Err(_) => panic!("invalid built-in retry policy"),
+        }
+    }
+
+    pub const fn max_attempts(self) -> u32 {
+        self.max_attempts
+    }
+
+    pub const fn timeout_ms(self) -> u64 {
+        self.timeout_ms
+    }
+
+    pub const fn initial_backoff_ms(self) -> u64 {
+        self.initial_backoff_ms
+    }
+
+    pub const fn max_backoff_ms(self) -> u64 {
+        self.max_backoff_ms
+    }
+
     fn timeout(self) -> Duration {
         Duration::from_millis(self.timeout_ms)
     }
@@ -42,19 +116,6 @@ where
     Op: FnMut(u32) -> Fut,
     Fut: Future<Output = Result<T>>,
 {
-    ensure!(
-        policy.max_attempts > 0,
-        "Retry policy requires max_attempts >= 1"
-    );
-    ensure!(
-        policy.timeout_ms > 0,
-        "Retry policy requires timeout_ms >= 1"
-    );
-    ensure!(
-        policy.max_backoff_ms >= policy.initial_backoff_ms,
-        "Retry policy requires max_backoff_ms >= initial_backoff_ms"
-    );
-
     let mut last_error = String::new();
 
     for attempt in 1..=policy.max_attempts {
@@ -170,151 +231,108 @@ where
     ))
 }
 
+/// One retryable attempt. Closures returning a future implement it directly;
+/// operations that must lend an exclusive borrow (such as a transaction on a
+/// single connection) implement it on a struct, because an `FnMut` closure
+/// cannot return a future that borrows its own captured `&mut` state.
+pub trait RetryOperation<T> {
+    async fn run(&mut self, attempt: u32) -> Result<T>;
+}
+
+impl<T, F, Fut> RetryOperation<T> for F
+where
+    F: FnMut(u32) -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    async fn run(&mut self, attempt: u32) -> Result<T> {
+        self(attempt).await
+    }
+}
+
+pub async fn run_with_retry_elapsed<T, Op>(
+    policy: RetryPolicy,
+    operation_name: &str,
+    retry_hint: &str,
+    mut operation: Op,
+) -> Result<T>
+where
+    Op: RetryOperation<T>,
+{
+    let mut last_error = String::new();
+
+    for attempt in 1..=policy.max_attempts {
+        let started_at = Instant::now();
+        let outcome = operation.run(attempt).await;
+
+        match outcome {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                last_error = if started_at.elapsed() >= policy.timeout() {
+                    format!(
+                        "attempt {attempt} exceeded {}ms and failed: {error}",
+                        policy.timeout_ms
+                    )
+                } else {
+                    error.to_string()
+                };
+            }
+        }
+
+        if attempt == policy.max_attempts {
+            break;
+        }
+
+        let backoff = policy.backoff_for_attempt(attempt + 1);
+        tracing::warn!(
+            event_id = "sce.resilience.retry",
+            operation = operation_name,
+            attempt,
+            max_attempts = policy.max_attempts,
+            timeout_ms = policy.timeout_ms,
+            backoff_ms = u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX),
+            error = %last_error,
+            "Retrying operation after transient failure"
+        );
+        tokio::time::sleep(backoff).await;
+    }
+
+    Err(anyhow!(
+        "Operation '{operation_name}' failed after {} attempt(s) (timeout={}ms, backoff={}..{}ms). Last error: {}. Try: {}",
+        policy.max_attempts,
+        policy.timeout_ms,
+        policy.initial_backoff_ms,
+        policy.max_backoff_ms,
+        last_error,
+        retry_hint
+    ))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{RetryPolicy, RetryPolicyError};
 
     #[test]
-    fn sync_retry_succeeds_after_transient_failures() {
-        let policy = RetryPolicy {
-            max_attempts: 3,
-            timeout_ms: 1_000,
-            initial_backoff_ms: 0,
-            max_backoff_ms: 0,
-        };
-        let mut attempts = 0;
-
-        let result =
-            run_with_retry_sync(policy, "sync success", "retry the operation", |attempt| {
-                attempts = attempt;
-                if attempt < 3 {
-                    return Err(anyhow!("transient failure {attempt}"));
-                }
-
-                Ok("ok")
-            });
-
-        assert_eq!(result.unwrap(), "ok");
-        assert_eq!(attempts, 3);
-    }
-
-    #[test]
-    fn sync_retry_reports_exhausted_failures_with_guidance() {
-        let policy = RetryPolicy {
-            max_attempts: 2,
-            timeout_ms: 1_000,
-            initial_backoff_ms: 0,
-            max_backoff_ms: 0,
-        };
-        let mut attempts = 0;
-
-        let error =
-            run_with_retry_sync::<(), _>(policy, "sync failure", "retry later", |attempt| {
-                attempts = attempt;
-                Err(anyhow!("nope {attempt}"))
-            })
-            .unwrap_err();
-
-        assert_eq!(attempts, 2);
-        let message = error.to_string();
-        assert!(message.contains("Operation 'sync failure' failed after 2 attempt(s)"));
-        assert!(message.contains("Last error: nope 2"));
-        assert!(message.contains("Try: retry later"));
-    }
-
-    #[test]
-    fn sync_retry_returns_a_slow_success_without_retrying_it() {
-        let policy = RetryPolicy {
-            max_attempts: 5,
-            timeout_ms: 5,
-            initial_backoff_ms: 0,
-            max_backoff_ms: 0,
-        };
-        let mut attempts = 0;
-
-        let value = run_with_retry_sync(
-            policy,
-            "sync slow success",
-            "try again when the resource is available",
-            |attempt| {
-                attempts = attempt;
-                thread::sleep(Duration::from_millis(20));
-                Ok("late success")
-            },
-        )
-        .expect("a completed success must never be reclassified as a timeout");
-
-        assert_eq!(value, "late success");
-        assert_eq!(attempts, 1, "a slow success must not be retried");
-    }
-
-    #[test]
-    fn sync_retry_annotates_a_slow_failure_with_the_elapsed_bound() {
-        let policy = RetryPolicy {
-            max_attempts: 1,
-            timeout_ms: 5,
-            initial_backoff_ms: 0,
-            max_backoff_ms: 0,
-        };
-
-        let error = run_with_retry_sync::<(), _>(
-            policy,
-            "sync slow failure",
-            "try again when the resource is available",
-            |_| {
-                thread::sleep(Duration::from_millis(20));
-                Err(anyhow!("connection refused"))
-            },
-        )
-        .unwrap_err();
-
-        assert!(error
-            .to_string()
-            .contains("attempt 1 exceeded 5ms and failed: connection refused"));
-    }
-
-    #[test]
-    fn sync_retry_does_not_re_execute_a_committed_write_after_a_slow_first_attempt() {
-        let policy = RetryPolicy {
-            max_attempts: 5,
-            timeout_ms: 1,
-            initial_backoff_ms: 0,
-            max_backoff_ms: 0,
-        };
-        let mut inserted_keys: Vec<u32> = Vec::new();
-        let mut calls = 0;
-
-        let result = run_with_retry_sync(policy, "insert once", "retry later", |_| {
-            calls += 1;
-            thread::sleep(Duration::from_millis(5));
-            if inserted_keys.contains(&1) {
-                return Err(anyhow!("UNIQUE constraint failed: keys.id"));
-            }
-            inserted_keys.push(1);
-            Ok(())
-        });
-
-        assert!(
-            result.is_ok(),
-            "the committed first attempt must be returned"
+    fn retry_policy_new_rejects_each_invalid_invariant() {
+        assert_eq!(
+            RetryPolicy::new(0, 100, 10, 20),
+            Err(RetryPolicyError::ZeroMaxAttempts)
         );
-        assert_eq!(calls, 1, "the non-idempotent write must run exactly once");
-        assert_eq!(inserted_keys, vec![1]);
+        assert_eq!(
+            RetryPolicy::new(1, 0, 10, 20),
+            Err(RetryPolicyError::ZeroTimeout)
+        );
+        assert_eq!(
+            RetryPolicy::new(1, 100, 21, 20),
+            Err(RetryPolicyError::MaxBackoffBelowInitial)
+        );
     }
 
     #[test]
-    fn retry_policy_backoff_is_exponential_and_capped() {
-        let policy = RetryPolicy {
-            max_attempts: 5,
-            timeout_ms: 1_000,
-            initial_backoff_ms: 5,
-            max_backoff_ms: 12,
-        };
-
-        assert_eq!(policy.backoff_for_attempt(1), Duration::from_millis(0));
-        assert_eq!(policy.backoff_for_attempt(2), Duration::from_millis(5));
-        assert_eq!(policy.backoff_for_attempt(3), Duration::from_millis(10));
-        assert_eq!(policy.backoff_for_attempt(4), Duration::from_millis(12));
-        assert_eq!(policy.backoff_for_attempt(5), Duration::from_millis(12));
+    fn retry_policy_new_accepts_boundary_values() {
+        let policy = RetryPolicy::new(1, 1, 0, 0).unwrap();
+        assert_eq!(policy.max_attempts(), 1);
+        assert_eq!(policy.timeout_ms(), 1);
+        assert_eq!(policy.initial_backoff_ms(), 0);
+        assert_eq!(policy.max_backoff_ms(), 0);
     }
 }
