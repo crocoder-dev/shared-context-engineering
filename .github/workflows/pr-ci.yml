@@ -44,7 +44,10 @@ jobs:
         run: |
           time nix flake check --fallback --print-build-logs
 
+      # On macOS release validation builds the same native CLI dependency
+      # closure, so run its smoke test there rather than building it twice.
       - name: Build and smoke-test native CLI
+        if: matrix.os == 'ubuntu-latest'
         run: |
           time nix build .#sce --fallback --out-link result --print-build-logs
           ./result/bin/sce --help
@@ -79,3 +82,12 @@ jobs:
       - name: Build release package and audit portability
         run: |
           time nix build .#ci-checks --fallback --out-link result-ci-checks --print-build-logs
+
+      # On Darwin, .#sce-release is the native CLI with commit metadata.
+      # Smoke-test that exact binary, which is already built by .#ci-checks.
+      - name: Smoke-test macOS release CLI
+        if: matrix.os == 'macos-latest'
+        run: |
+          ./result-ci-checks/sce-release/bin/sce --help
+          ./result-ci-checks/sce-release/bin/sce version
+
