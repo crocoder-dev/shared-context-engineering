@@ -183,52 +183,47 @@ generate traces toward that boundary. The dedicated no-wrap regressions in
 `mutation-trace-revision-refinement.md` remain the sole targeted coverage for
 it; this harness's coverage is incidental, not a substitute.
 
-## CI: two Nix checks, both need Quint
+## CI: full flake check plus an opt-in focused runner
 
-`mutation_trace::mbt` is registered as an ordinary `#[cfg(test)] mod mbt;`
-(gated behind `#[cfg(test)]` in `mutation_trace/mod.rs`), so it is compiled
-and run by *any* `cargo test` over the CLI crate — including the pre-existing
-generic `checks.cli-tests` in `flake.nix`, not only a dedicated focused
-check:
+`mutation_trace::mbt` is an ordinary `#[cfg(test)] mod mbt;` module in
+`mutation_trace/mod.rs`. The full Rust check already exercises it, so the
+default flake check must not compile and run it again as a second derivation:
 
 ```text
 checks.cli-tests
-    -> full `cargo test`, including mutation_trace::mbt
-    -> needs the pinned Quint binary on PATH
+    -> full cargo test, including mutation_trace::mbt
+    -> pinned Quint on PATH
 
-checks.mutation-trace-quint-connect
-    -> focused `cargo test ... mutation_trace::mbt` only
-    -> needs the pinned Quint binary on PATH
+packages.mutation-trace-quint-connect (explicit invocation only)
+    -> focused cargo test ... mutation_trace::mbt
+    -> pinned Quint on PATH
 ```
 
-Both checks list the Nix `quint` package in `nativeCheckInputs`. Quint's
-presence alone is not sufficient, though: `quint run`/`quint test` resolve
-the spec by a path relative to the `cli/` crate root
-(`../spec/mutation_cursor.qnt`), and `craneLib.fileset.commonCargoSources`
-only covers each crate's own Cargo-referenced sources, not files outside any
-crate. `workspaceSrc`'s Nix fileset therefore lists the top-level `spec/`
-directory explicitly; without it, the spec never reaches either check's
-sandbox and every MBT test fails with an opaque `"Quint returned non-zero
-code."` (`quint-connect`'s error formatting is `Display`-only, so the
-underlying Quint stderr explaining *why* — file not found — never surfaces
-in the Rust test panic).
+Both runners use Crane's separate test-profile dependency artifacts, the same
+pinned Rust toolchain, and `nativeCheckInputs = [ pkgs.git pkgs.quint ]`.
+The test profile is unoptimized and uses line-table-only debug information;
+production binaries continue using their existing release-profile artifacts.
 
-`checks.mutation-trace-quint-connect` follows the same `craneLib.cargoTest`
-pattern as `cli-tests`/`cli-clippy`/`cli-fmt`, reusing the pinned
-`rustToolchain`/`cargoArtifacts`, scoped via `cargoTestExtraArgs`, printing
-`rustc`/`cargo`/`quint --version` in `preCheck`. Both checks are part of
-ordinary `nix flake check` (not Linux-only); `.github/workflows/quint.yml`
-additionally invokes the dedicated check directly (`nix build
-.#checks.x86_64-linux.mutation-trace-quint-connect`) for fast, targeted
-feedback without waiting on the full Nix CI matrix — the entire invocation
-comes from Nix, never a second, unpinned Rust toolchain stitched together
-with the runner's own Cargo. That workflow's change detector also watches
-`cli/src/services/mutation_trace/mbt/**`, `.../protocol.rs`, `.../types.rs`,
-`cli/Cargo.toml`, `cli/Cargo.lock` (`flake.nix`/`flake.lock` were already
-watched), so a Rust-only refinement/driver change triggers Quint CI without
-touching the spec. Its "Run Quint tests" step passes `--match '^test.*'` —
-omitting `--match` silently selects zero tests on this spec rather than
-running the named scenarios.
+Run all checks (including MBT **once**) with `nix flake check`. To run only
+the focused MBT suite, use:
+
+```sh
+nix build .#mutation-trace-quint-connect --print-build-logs
+```
+
+The focused package is intentionally absent from `checks`, but remains in
+`packages` so `.github/workflows/quint.yml` can run it on Quint-relevant
+changes without waiting for the full Nix CI matrix.
+
+Quint's presence alone is not sufficient: `quint run` and `quint test`
+resolve the model via `../spec/mutation_cursor.qnt` relative to the
+`cli/` crate root. Therefore `workspaceSrc` must explicitly include the
+top-level `spec/` tree (it is not part of Crane's common Cargo sources).
+
+Quint CI continues to pin both Rust and Quint via the flake and separately
+runs the named `test.*` scenarios, the typecheck, and the randomized safety
+check. The workflow uses `--match '^test.*'` because omitting `--match`
+silently selects zero named scenarios on this spec.
 
 ## Non-goals
 

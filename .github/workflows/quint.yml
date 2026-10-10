@@ -55,7 +55,7 @@ jobs:
     needs: detect
     if: needs.detect.outputs.quint == 'true'
     runs-on: ubuntu-latest
-    # The Quint Connect Nix check compiles the CLI crate, so this needs more
+    # The focused Quint Connect Nix package compiles the CLI crate, so this needs more
     # headroom than the pure-Quint steps alone required.
     timeout-minutes: 30
     steps:
@@ -96,11 +96,11 @@ jobs:
           --max-steps=20
 
       - name: Quint Connect model-based tests (Nix-pinned Rust + Quint)
-        # The entire MBT invocation goes through this Nix check rather than
+        # The entire MBT invocation goes through this opt-in Nix package rather than
         # `cargo test` on the runner's own Cargo, so both the Rust toolchain
         # and the Quint binary come from the repository's pinned flake
         # inputs, never a second, unpinned Rust installation.
-        run: nix build .#checks.x86_64-linux.mutation-trace-quint-connect --print-build-logs
+        run: nix build .#mutation-trace-quint-connect --print-build-logs
 
   gate:
     name: Quint gate
