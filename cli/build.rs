@@ -187,7 +187,7 @@ fn stage_generated_input(
 
     let output_root = out_dir.join(PKL_OUTPUT_DIR);
     remove_path_if_exists(&output_root)?;
-    copy_tree(&generated_input_root.join(PKL_OUTPUT_DIR), &output_root)?;
+    copy_tree(&generated_input_root.join(PKL_OUTPUT_DIR), &output_root, true)?;
 
     Ok(())
 }
@@ -257,7 +257,7 @@ fn stage_packaged_fallback(manifest_dir: &Path, out_dir: &Path) -> io::Result<()
         let source = fallback_root.join(directory);
         let destination = out_dir.join(directory);
         remove_path_if_exists(&destination)?;
-        copy_tree(&source, &destination)?;
+        copy_tree(&source, &destination, true)?;
     }
 
     Ok(())
@@ -342,14 +342,17 @@ fn stage_static_inputs(
     copy_tree(
         &manifest_dir.join("assets/hooks"),
         &static_root.join("hooks"),
+        true,
     )?;
     copy_tree(
         &manifest_dir.join(MIGRATIONS_ROOT),
         &static_root.join(MIGRATIONS_ROOT),
+        true,
     )?;
     copy_file(
         &repository_root.join("config/schema/agent-trace.schema.json"),
         &static_root.join("schema/agent-trace.schema.json"),
+        true,
     )
 }
 
@@ -366,33 +369,39 @@ fn stage_codex_target(out_dir: &Path) -> io::Result<()> {
     copy_tree(
         &pkl_output_root.join(CODEX_AGENTS_SOURCE_DIR),
         &destination_root.join(".agents"),
+        false,
     )?;
     copy_tree(
         &pkl_output_root.join(CODEX_HOOKS_SOURCE_DIR),
         &destination_root.join(".codex"),
+        false,
     )
 }
 
-fn copy_tree(source_root: &Path, destination_root: &Path) -> io::Result<()> {
-    println!("cargo:rerun-if-changed={}", source_root.display());
+fn copy_tree(source_root: &Path, destination_root: &Path, track_sources: bool) -> io::Result<()> {
+    if track_sources {
+        println!("cargo:rerun-if-changed={}", source_root.display());
+    }
 
     let mut files = Vec::new();
     collect_files(source_root, source_root, &mut files)?;
     files.sort_unstable_by(|left, right| left.relative_path.cmp(&right.relative_path));
 
     for file in files {
-        println!("cargo:rerun-if-changed={}", file.absolute_path.display());
         copy_file(
             &file.absolute_path,
             &destination_root.join(&file.relative_path),
+            track_sources,
         )?;
     }
 
     Ok(())
 }
 
-fn copy_file(source: &Path, destination: &Path) -> io::Result<()> {
-    println!("cargo:rerun-if-changed={}", source.display());
+fn copy_file(source: &Path, destination: &Path, track_source: bool) -> io::Result<()> {
+    if track_source {
+        println!("cargo:rerun-if-changed={}", source.display());
+    }
     let parent = destination
         .parent()
         .ok_or_else(|| invalid_data(&"staged file must have a parent directory"))?;
