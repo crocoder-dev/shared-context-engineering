@@ -665,10 +665,7 @@ fn write_contention_retry_may_sleep(
     elapsed: std::time::Duration,
     backoff: std::time::Duration,
 ) -> bool {
-    let Some(remaining) = policy.contention_deadline.checked_sub(elapsed) else {
-        return false;
-    };
-    !remaining.is_zero() && remaining >= backoff.saturating_add(policy.busy_timeout)
+    elapsed.saturating_add(backoff) < policy.contention_deadline
 }
 
 fn write_contention_retry_may_start_now(
@@ -1466,5 +1463,50 @@ mod database_kind_tests {
             busy_timeout_from_config::<RepositoryAgentTraceDbSpec>(None),
             Duration::from_secs(1)
         );
+    }
+}
+
+#[cfg(test)]
+mod write_contention_eligibility_tests {
+    use std::time::Duration;
+
+    use super::{
+        write_contention_retry_may_sleep, write_contention_retry_may_start_now,
+        WriteContentionPolicy,
+    };
+
+    #[test]
+    fn retry_eligibility_depends_only_on_backoff_ending_before_deadline() {
+        let policy = WriteContentionPolicy {
+            db_name: "agent_trace_db",
+            max_attempts: 3,
+            backoff_cap: Duration::from_millis(100),
+            busy_timeout: Duration::from_secs(1),
+            contention_deadline: Duration::from_millis(2250),
+        };
+
+        for (elapsed_ms, backoff_ms, expected) in [
+            (1185, 100, true),
+            (2200, 100, false),
+            (2250, 0, false),
+            (2249, 0, true),
+        ] {
+            let elapsed = Duration::from_millis(elapsed_ms);
+            let backoff = Duration::from_millis(backoff_ms);
+            assert_eq!(
+                write_contention_retry_may_sleep(policy, elapsed, backoff),
+                expected,
+                "elapsed={elapsed_ms}ms backoff={backoff_ms}ms"
+            );
+        }
+
+        assert!(write_contention_retry_may_start_now(
+            policy,
+            Duration::from_millis(2249)
+        ));
+        assert!(!write_contention_retry_may_start_now(
+            policy,
+            Duration::from_millis(2250)
+        ));
     }
 }
