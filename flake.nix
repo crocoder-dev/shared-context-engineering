@@ -1551,7 +1551,7 @@
 
         # The dedicated MBT runner is opt-in as a package, not a flake check:
         # cli-tests already executes the same mutation_trace::mbt test module.
-        # Quint CI still invokes this focused runner independently.
+        # The Quint workflow tests the spec separately, without rebuilding Rust MBT.
         mutationTraceQuintConnectCheck = craneLib.cargoTest (
           testCargoArgs
           // {
