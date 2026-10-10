@@ -400,10 +400,17 @@
           CARGO_PROFILE_TEST_DEBUG = "line-tables-only";
         };
 
+        # The deps-only derivation must also prepare test/dev-dependency artifacts.
+        # The usual cargo build is redundant here: the checked targets are followed
+        # by cargo test --no-run during the check phase.
         cargoArtifactsTest = craneLib.buildDepsOnly (
           cargoDepsArgs
           // testProfileArgs
-          // { pname = "sce-test-deps"; }
+          // {
+            pname = "sce-test-deps";
+            doCheck = true;
+            buildPhaseCargoCommand = "cargoWithProfile check --locked --all-targets";
+          }
         );
 
         testCargoArgs = commonCargoArgs // testProfileArgs // {
