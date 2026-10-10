@@ -7,7 +7,7 @@ use anyhow::Result;
 use crate::{
     generated_migrations,
     services::{
-        db::{DbSpec, EncryptedTursoDb},
+        db::{DatabaseKind, DbSpec, EncryptedTursoDb},
         default_paths::auth_db_path,
     },
 };
@@ -28,9 +28,7 @@ impl DbSpec for AuthDbSpec {
         generated_migrations::AUTH_MIGRATIONS
     }
 
-    fn db_config_key() -> &'static str {
-        "auth_db"
-    }
+    const KIND: DatabaseKind = DatabaseKind::Auth;
 }
 
 /// Encrypted auth Turso database adapter.

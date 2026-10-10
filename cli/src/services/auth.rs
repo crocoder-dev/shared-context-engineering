@@ -12,10 +12,7 @@ pub const REFRESH_TOKEN_GRANT_TYPE: &str = "refresh_token";
 pub const WORKOS_DEFAULT_BASE_URL: &str = "https://api.workos.com";
 pub const DEFAULT_DEVICE_POLL_INTERVAL_SECONDS: u64 = 5;
 const TOKEN_EXPIRY_SKEW_SECONDS: u64 = 30;
-const TOKEN_REFRESH_MAX_ATTEMPTS: u32 = 3;
-const TOKEN_REFRESH_TIMEOUT_MS: u64 = 10_000;
-const TOKEN_REFRESH_INITIAL_BACKOFF_MS: u64 = 250;
-const TOKEN_REFRESH_MAX_BACKOFF_MS: u64 = 2_000;
+const TOKEN_REFRESH_RETRY_POLICY: RetryPolicy = RetryPolicy::builtin(3, 10_000, 250, 2_000);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DeviceAuthorizationRequest {
@@ -356,12 +353,7 @@ async fn refresh_access_token(
         refresh_token: refresh_token.to_string(),
         client_id: client_id.to_string(),
     };
-    let retry_policy = RetryPolicy {
-        max_attempts: TOKEN_REFRESH_MAX_ATTEMPTS,
-        timeout_ms: TOKEN_REFRESH_TIMEOUT_MS,
-        initial_backoff_ms: TOKEN_REFRESH_INITIAL_BACKOFF_MS,
-        max_backoff_ms: TOKEN_REFRESH_MAX_BACKOFF_MS,
-    };
+    let retry_policy = TOKEN_REFRESH_RETRY_POLICY;
 
     let response = run_with_retry(
         retry_policy,

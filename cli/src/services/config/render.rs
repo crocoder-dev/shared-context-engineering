@@ -403,7 +403,10 @@ fn abbreviate_text_value(value: &str) -> String {
 fn retry_policy_display(policy: &crate::services::resilience::RetryPolicy) -> String {
     format!(
         "{} attempts, {}ms timeout, {}..{}ms backoff",
-        policy.max_attempts, policy.timeout_ms, policy.initial_backoff_ms, policy.max_backoff_ms
+        policy.max_attempts(),
+        policy.timeout_ms(),
+        policy.initial_backoff_ms(),
+        policy.max_backoff_ms()
     )
 }
 
@@ -491,10 +494,10 @@ fn format_per_db_retry_json(config: &super::types::PerDbRetryConfig) -> Value {
         obj.insert(
             "connection_open".to_string(),
             json!({
-                "max_attempts": policy.max_attempts,
-                "timeout_ms": policy.timeout_ms,
-                "initial_backoff_ms": policy.initial_backoff_ms,
-                "max_backoff_ms": policy.max_backoff_ms,
+                "max_attempts": policy.max_attempts(),
+                "timeout_ms": policy.timeout_ms(),
+                "initial_backoff_ms": policy.initial_backoff_ms(),
+                "max_backoff_ms": policy.max_backoff_ms(),
             }),
         );
     }
@@ -502,10 +505,10 @@ fn format_per_db_retry_json(config: &super::types::PerDbRetryConfig) -> Value {
         obj.insert(
             "query".to_string(),
             json!({
-                "max_attempts": policy.max_attempts,
-                "timeout_ms": policy.timeout_ms,
-                "initial_backoff_ms": policy.initial_backoff_ms,
-                "max_backoff_ms": policy.max_backoff_ms,
+                "max_attempts": policy.max_attempts(),
+                "timeout_ms": policy.timeout_ms(),
+                "initial_backoff_ms": policy.initial_backoff_ms(),
+                "max_backoff_ms": policy.max_backoff_ms(),
             }),
         );
     }
