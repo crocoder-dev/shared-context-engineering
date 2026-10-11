@@ -42,7 +42,6 @@ where
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub(crate) struct CodexHookEvent {
     pub(crate) hook_event_name: String,
     #[serde(default)]
@@ -59,8 +58,6 @@ pub(crate) struct CodexHookEvent {
     pub(crate) tool_use_id: Option<String>,
     #[serde(default)]
     pub(crate) tool_input: Option<Value>,
-    #[serde(default)]
-    pub(crate) tool_response: Option<Value>,
     #[serde(default)]
     pub(crate) prompt: Option<String>,
     #[serde(default, deserialize_with = "deserialize_nullable_field")]

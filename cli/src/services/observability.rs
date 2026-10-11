@@ -14,9 +14,7 @@ use chrono::{Local, NaiveDate, Utc};
 use serde_json::json;
 use tracing::Level;
 
-use crate::services::config::{
-    self, LogFormat, LogLevel, ENV_LOG_DIR, ENV_LOG_FORMAT, ENV_LOG_LEVEL,
-};
+use crate::services::config::{self, LogFormat, LogLevel, ENV_LOG_DIR};
 use crate::services::error::CliError;
 use crate::services::security::redact_sensitive_text;
 
@@ -74,34 +72,6 @@ impl Logger {
         })
     }
 
-    #[allow(dead_code)]
-    fn from_env_lookup<F>(lookup: F) -> Result<Self>
-    where
-        F: Fn(&str) -> Option<String>,
-    {
-        let mut config = ObservabilityConfig::default();
-
-        if let Some(raw) = lookup(ENV_LOG_LEVEL) {
-            config.level = LogLevel::parse_env(&raw, ENV_LOG_LEVEL)?;
-        }
-
-        if let Some(raw) = lookup(ENV_LOG_FORMAT) {
-            config.format = LogFormat::parse_env(&raw, ENV_LOG_FORMAT)?;
-        }
-
-        let mut log_dir = None;
-        if let Some(raw) = lookup(ENV_LOG_DIR) {
-            validate_log_dir(&raw)?;
-            log_dir = Some(PathBuf::from(raw));
-        }
-
-        Ok(Self {
-            config,
-            log_dir,
-            log_file_retention_limit: config::DEFAULT_LOG_FILE_RETENTION_LIMIT,
-        })
-    }
-
     pub fn info(
         &self,
         event_id: &str,
@@ -132,7 +102,6 @@ impl Logger {
         self.log_forced(LogLevel::Warn, event_id, message, fields, session_id);
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn error(
         &self,
         event_id: &str,
@@ -737,7 +706,10 @@ mod tests {
 
     #[test]
     fn observability_fields_for_user_error_without_source_omit_error_source() {
-        let error = CliError::user(UserError::NotAuthenticated);
+        let error = CliError::User {
+            error: UserError::NotAuthenticated,
+            source: None,
+        };
 
         let fields = cli_error_fields(&error);
 

@@ -19,7 +19,7 @@ flowchart LR
 `AgentTraceExportReader::new(&db)` takes a `&RepositoryAgentTraceDb` directly. The reader does not resolve storage, open a database, or generate identity itself. The existing storage resolver composes cleanly with it:
 
 ```rust
-let storage = resolve_agent_trace_storage_at_state_root(&context, &state_root).await?;
+let storage = resolve_agent_trace_storage(&context).await?;
 let reader = AgentTraceExportReader::new(&storage.db);
 let rows = reader.read_messages_after(cursor, limit).await?;
 ```
@@ -28,8 +28,6 @@ let rows = reader.read_messages_after(cursor, limit).await?;
 
 - `repository_id` / `source_instance_id` identify the *source* (the physical database).
 - Each stream's `table.id` (returned as `sourceRowId`) is the per-stream *progress marker* — the caller's cursor. It has no relationship to `source_instance_id` and is never used to derive or validate it.
-
-Test coverage: `cli/src/services/agent_trace_export/mod.rs::tests::source_instance_integration` resolves storage through `resolve_agent_trace_storage_at_state_root`, asserts both metadata fields are populated, and reads one stream through a reader built from `storage.db`.
 
 ## Reader contract
 

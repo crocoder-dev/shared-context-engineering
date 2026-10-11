@@ -42,16 +42,6 @@ impl LogLevel {
         }
     }
 
-    pub(crate) fn parse_env(raw: &str, key: &str) -> anyhow::Result<Self> {
-        match raw {
-            "error" => Ok(Self::Error),
-            "warn" => Ok(Self::Warn),
-            "info" => Ok(Self::Info),
-            "debug" => Ok(Self::Debug),
-            _ => anyhow::bail!("Invalid {key} '{raw}'. Valid values: error, warn, info, debug."),
-        }
-    }
-
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Error => "error",
@@ -85,14 +75,6 @@ impl LogFormat {
             _ => {
                 anyhow::bail!("Invalid log format '{raw}' from {source}. Valid values: text, json.")
             }
-        }
-    }
-
-    pub(crate) fn parse_env(raw: &str, key: &str) -> anyhow::Result<Self> {
-        match raw {
-            "text" => Ok(Self::Text),
-            "json" => Ok(Self::Json),
-            _ => anyhow::bail!("Invalid {key} '{raw}'. Valid values: text, json."),
         }
     }
 

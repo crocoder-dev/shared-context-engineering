@@ -348,14 +348,6 @@ pub(crate) async fn remove_attempt(git_dir: &Path, scope_id: &str) -> Result<()>
     .await
 }
 
-pub(crate) async fn mark_recovery_pending(git_dir: &Path) -> Result<()> {
-    with_locked_state(git_dir, |state| {
-        state.recovery_pending = true;
-        Ok(StateTransaction::Persist(()))
-    })
-    .await
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ClearRecoveryOutcome {
     Cleared,

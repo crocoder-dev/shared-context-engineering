@@ -19,6 +19,10 @@ const REF_NAMESPACE: &str = "refs/sce/mutation-cursor";
 /// target (empty for a direct ref). NUL-separated so no field can be split or
 /// trimmed ambiguously; the trailing symref field is always present (possibly
 /// empty), so every well-formed line has exactly four fields.
+#[allow(
+    dead_code,
+    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+)]
 const FOR_EACH_REF_PIN_FORMAT: &str =
     "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)";
 
@@ -160,6 +164,10 @@ impl GitSnapshotService {
     /// `git for-each-ref` execution or exit failure is
     /// [`PinInventoryError::Git`]; anything malformed inside the namespace is
     /// [`PinInventoryError::MalformedRef`], matchable separately.
+    #[allow(
+        dead_code,
+        reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+    )]
     pub async fn list_pins(
         &self,
         worktree_id: &WorktreeId,
@@ -199,6 +207,10 @@ impl GitSnapshotService {
     /// into a symbolic ref — this returns `Err` and deletes nothing, preferring
     /// failure over acting on unexpected namespace state. An empty slice is a
     /// successful no-op.
+    #[allow(
+        dead_code,
+        reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+    )]
     pub async fn delete_pins(&self, lease: WorktreeLockLease, pins: &[PinnedRef]) -> Result<()> {
         self.delete_pins_inner(lease, pins, || {}).await
     }
@@ -212,6 +224,10 @@ impl GitSnapshotService {
     /// preflight — is what aborts the batch. This is the only proof that the
     /// Git transaction itself is atomic; the preflight proves a different
     /// property (unexpected ref state before the transaction is even attempted).
+    #[allow(
+        dead_code,
+        reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+    )]
     async fn delete_pins_inner(
         &self,
         lease: WorktreeLockLease,
@@ -249,6 +265,10 @@ impl GitSnapshotService {
         Ok(())
     }
 
+    #[allow(
+        dead_code,
+        reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+    )]
     async fn run_ref_mutation(
         &self,
         lease: WorktreeLockLease,
@@ -285,6 +305,10 @@ impl GitSnapshotService {
     /// residual sub-transaction race is still contained by `--no-deref` plus
     /// the per-`delete` old-value condition, which together cannot follow a
     /// symbolic ref or mutate a ref the caller did not name.
+    #[allow(
+        dead_code,
+        reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+    )]
     async fn assert_pins_are_unchanged_direct_refs(&self, pins: &[PinnedRef]) -> Result<()> {
         let mut args: Vec<&str> = vec!["for-each-ref", FOR_EACH_REF_PIN_FORMAT];
         args.extend(pins.iter().map(|pin| pin.ref_name.as_str()));
@@ -405,6 +429,10 @@ impl GitSnapshotService {
 /// One SCE-owned snapshot pin: a ref under
 /// `refs/sce/mutation-cursor/<worktree-id>/` and the tree object it protects.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+)]
 pub struct PinnedRef {
     pub ref_name: String,
     pub tree: TreeId,
@@ -412,6 +440,10 @@ pub struct PinnedRef {
 
 /// Why a worktree's pin inventory could not be produced.
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+)]
 pub enum PinInventoryError {
     /// `git for-each-ref` itself failed to execute or exited non-zero.
     Git(anyhow::Error),
@@ -436,6 +468,10 @@ impl std::fmt::Display for PinInventoryError {
 
 impl std::error::Error for PinInventoryError {}
 
+#[allow(
+    dead_code,
+    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+)]
 fn parse_pin_line(line: &str, prefix: &str) -> std::result::Result<PinnedRef, PinInventoryError> {
     let fields: Vec<&str> = line.split('\0').collect();
     let [ref_name, object_name, object_type, symref] = fields.as_slice() else {
@@ -498,6 +534,10 @@ fn parse_pin_line(line: &str, prefix: &str) -> std::result::Result<PinnedRef, Pi
     })
 }
 
+#[allow(
+    dead_code,
+    reason = "ref reconciliation retained and unwired; see context/plans/mutation-cursor-ref-reconciliation.md"
+)]
 fn pin_ref_prefix(worktree_id: &WorktreeId) -> String {
     format!("{REF_NAMESPACE}/{}/", worktree_id.0)
 }

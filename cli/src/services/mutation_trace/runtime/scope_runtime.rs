@@ -60,6 +60,10 @@ pub enum AbandonScopeError {
     },
     MarkerClearAfterCompletion {
         source: anyhow::Error,
+        #[allow(
+            dead_code,
+            reason = "outcome payload carried but never read; suspected defect recorded in context/plans/cli-async-persistence-cleanup-pr3.md"
+        )]
         completed: Box<AbandonScopeOutcome>,
     },
     Other(anyhow::Error),

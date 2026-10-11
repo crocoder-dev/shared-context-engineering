@@ -15,7 +15,6 @@ const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(100);
 #[derive(Debug)]
 struct WorktreeLockInner {
     file: File,
-    path: PathBuf,
     unlock_on_drop: AtomicBool,
 }
 
@@ -55,10 +54,6 @@ impl std::fmt::Display for WorktreeLockError {
 impl std::error::Error for WorktreeLockError {}
 
 impl WorktreeLock {
-    pub fn acquire(git_dir: &Path, timeout: Duration) -> Result<WorktreeLock, WorktreeLockError> {
-        acquire_inner(git_dir, timeout, || {})
-    }
-
     pub async fn acquire_async(
         git_dir: &Path,
         timeout: Duration,
@@ -121,7 +116,6 @@ where
                 return Ok(WorktreeLock {
                     inner: Arc::new(WorktreeLockInner {
                         file,
-                        path: lock_path,
                         unlock_on_drop: AtomicBool::new(true),
                     }),
                 });

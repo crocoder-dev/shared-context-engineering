@@ -6,7 +6,7 @@ use crate::app::HasRepoRoot;
 use crate::services::default_paths::{resolve_sce_default_locations, RepoPaths};
 use crate::services::lifecycle::{
     HealthCategory, HealthFixability, HealthProblem, HealthProblemKind, HealthSeverity,
-    LifecycleProviderId, ServiceLifecycle, SetupOutcome,
+    ServiceLifecycle, SetupOutcome,
 };
 use crate::services::setup::bootstrap_repo_local_config;
 
@@ -16,10 +16,6 @@ use super::validate_config_file;
 pub struct ConfigLifecycle;
 
 impl ServiceLifecycle for ConfigLifecycle {
-    fn id(&self) -> LifecycleProviderId {
-        LifecycleProviderId::Config
-    }
-
     async fn diagnose<C: HasRepoRoot>(&self, ctx: &C) -> Vec<HealthProblem> {
         let repository_root = match ctx.repo_root() {
             Some(path) => path.to_path_buf(),

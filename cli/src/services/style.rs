@@ -259,9 +259,7 @@ fn is_help_placeholder(token: &str) -> bool {
 
 /// Gradient color endpoints for the ASCII art banner.
 /// Right side: cyan (0, 255, 255), Left side: magenta (255, 0, 255).
-#[allow(dead_code)]
 const GRADIENT_COLOR_RIGHT: (u8, u8, u8) = (0, 255, 255);
-#[allow(dead_code)]
 const GRADIENT_COLOR_LEFT: (u8, u8, u8) = (255, 0, 255);
 
 /// Applies a right-to-left color gradient to ASCII art banner lines.
@@ -270,7 +268,6 @@ const GRADIENT_COLOR_LEFT: (u8, u8, u8) = (255, 0, 255);
 /// column position using a cyan-to-magenta gradient (cyan on the right,
 /// magenta on the left). Spaces are left unstyled.
 /// When color is disabled, returns the plain ASCII art unchanged.
-#[allow(dead_code)]
 #[must_use]
 pub fn banner_with_gradient(lines: &[&str]) -> String {
     banner_with_gradient_with_color_policy(lines, supports_color())
@@ -278,7 +275,7 @@ pub fn banner_with_gradient(lines: &[&str]) -> String {
 
 /// Internal variant of [`banner_with_gradient`] that accepts an explicit
 /// color policy flag for testability.
-#[allow(dead_code, clippy::cast_precision_loss)]
+#[allow(clippy::cast_precision_loss)]
 #[must_use]
 pub(crate) fn banner_with_gradient_with_color_policy(
     lines: &[&str],
@@ -325,7 +322,7 @@ pub(crate) fn banner_with_gradient_with_color_policy(
 ///
 /// Returns `a + (b - a) * t`, clamped to the `u8` range by construction
 /// since `a`, `b` are `u8` and `t` is in `[0, 1]`.
-#[allow(dead_code, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn lerp_u8(a: u8, b: u8, t: f64) -> u8 {
     (f64::from(a) + (f64::from(b) - f64::from(a)) * t).round() as u8
 }

@@ -1,6 +1,6 @@
 use super::{
-    build_agent_trace, build_agent_trace_from_evidence, validate_agent_trace_value,
-    AgentTraceEvidence, AgentTraceMetadataInput, AgentTraceVcsType, AGENT_TRACE_VERSION,
+    build_agent_trace_from_evidence, validate_agent_trace_value, AgentTraceEvidence,
+    AgentTraceMetadataInput, AgentTraceVcsType, AGENT_TRACE_VERSION,
 };
 use crate::services::{
     agent_trace::agent_trace_conversation_url,
@@ -8,15 +8,15 @@ use crate::services::{
 };
 use serde_json::Value;
 
+const TEST_COMMIT_TIMESTAMP: &str = "2026-04-23T10:20:30Z";
+const TEST_COMMIT_REVISION: &str = "a0b1c2d3e4f5a6b7c8d9e0f11223344556677889";
+
 #[derive(Clone, Copy)]
 struct AgentTraceScenario {
     incremental: &'static [&'static str],
     post_commit: &'static str,
     golden: &'static str,
 }
-
-const TEST_COMMIT_TIMESTAMP: &str = "2026-04-23T10:20:30Z";
-const TEST_COMMIT_REVISION: &str = "a0b1c2d3e4f5a6b7c8d9e0f11223344556677889";
 
 fn parse_fixtures(fixtures: &[&str]) -> Vec<ParsedPatch> {
     fixtures
@@ -60,8 +60,12 @@ fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
         parse_patch(scenario.post_commit, None).expect("fixture patch should parse");
     let golden: Value = serde_json::from_str(scenario.golden).expect("golden json should load");
     validate_agent_trace_value(&golden).expect("golden json should validate against schema");
-    let actual = build_agent_trace(
-        &constructed_patch,
+    let empty_mutation_ai_patch = ParsedPatch { files: Vec::new() };
+    let actual = build_agent_trace_from_evidence(
+        AgentTraceEvidence {
+            direct_patch: &constructed_patch,
+            mutation_ai_patch: &empty_mutation_ai_patch,
+        },
         &post_commit_patch,
         AgentTraceMetadataInput {
             commit_timestamp: TEST_COMMIT_TIMESTAMP,

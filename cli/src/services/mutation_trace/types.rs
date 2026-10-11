@@ -152,12 +152,6 @@ pub fn is_live(status: ScopeStatus) -> bool {
     status == ScopeStatus::Active
 }
 
-/// A scope has ended and can never be reactivated. Refines `isTerminal`
-/// (`spec/mutation_cursor.qnt:169-170`).
-pub fn is_terminal(status: ScopeStatus) -> bool {
-    matches!(status, ScopeStatus::Closed | ScopeStatus::Abandoned)
-}
-
 impl ScopeState {
     /// The worktree this scope belongs to. Refines `scopeWorktree`
     /// (`spec/mutation_cursor.qnt:151-157`).
@@ -175,20 +169,9 @@ impl ScopeState {
         self.worktree_id.clone()
     }
 
-    /// The harness that owns this scope. Refines `scopeActor`
-    /// (`spec/mutation_cursor.qnt:159-165`).
-    pub fn scope_actor(&self) -> ActorKind {
-        self.actor_kind
-    }
-
     /// Refines `isLive` applied to this scope's status.
     pub fn is_live(&self) -> bool {
         is_live(self.status)
-    }
-
-    /// Refines `isTerminal` applied to this scope's status.
-    pub fn is_terminal(&self) -> bool {
-        is_terminal(self.status)
     }
 }
 

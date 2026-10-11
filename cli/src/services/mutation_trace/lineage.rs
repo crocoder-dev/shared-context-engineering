@@ -72,19 +72,11 @@ impl MutationLineage {
         }
     }
 
-    pub fn reset_file(&mut self, path: &str, content: Option<&str>) {
-        self.files.insert(path.to_owned(), unknown_lines(content));
-    }
-
     pub fn reset_all(&mut self, files: &BTreeMap<String, Option<String>>) {
         self.files = files
             .iter()
             .map(|(path, content)| (path.clone(), unknown_lines(content.as_deref())))
             .collect();
-    }
-
-    pub fn tracked_paths(&self) -> impl Iterator<Item = &String> {
-        self.files.keys()
     }
 
     pub fn apply(

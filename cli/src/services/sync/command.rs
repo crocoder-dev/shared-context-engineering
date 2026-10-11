@@ -43,15 +43,6 @@ fn classify_sync_error(err: TraceSyncError) -> CliError {
 }
 
 impl SyncCommand {
-    #[allow(dead_code)]
-    pub async fn execute<C>(&self, context: &C) -> Result<String, CliError>
-    where
-        C: ContextWithRepoRoot,
-    {
-        let mut stderr = std::io::sink();
-        self.execute_with_stderr(context, &mut stderr).await
-    }
-
     pub async fn execute_with_stderr<C, W>(
         &self,
         context: &C,

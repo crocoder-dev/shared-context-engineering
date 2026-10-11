@@ -1,16 +1,12 @@
 pub mod agent_trace;
 pub mod agent_trace_db;
-#[allow(dead_code)]
 pub mod agent_trace_export;
-#[allow(dead_code)]
 pub mod agent_trace_storage;
-#[allow(dead_code)]
 pub mod agent_trace_sync;
 pub mod app_support;
 pub mod auth;
 pub mod auth_command;
 pub mod auth_db;
-#[allow(dead_code)]
 pub mod bash_policy;
 pub mod capabilities;
 pub(crate) mod codex_hook_config;
@@ -27,13 +23,11 @@ pub mod help;
 pub mod hooks;
 pub mod lifecycle;
 pub mod local_db;
-#[allow(dead_code)]
 pub mod mutation_trace;
 pub mod observability;
 pub mod output_format;
 pub mod parse;
 pub mod patch;
-#[allow(dead_code)]
 pub mod repository_identity;
 pub mod resilience;
 pub mod security;

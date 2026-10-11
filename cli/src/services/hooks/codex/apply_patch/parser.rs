@@ -9,13 +9,11 @@ const END_OF_FILE_MARKER: &str = "*** End of File";
 const CHANGE_CONTEXT_MARKER: &str = "@@";
 const CHANGE_CONTEXT_MARKER_WITH_TEXT: &str = "@@ ";
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CodexPatch {
     pub(crate) operations: Vec<CodexFileOperation>,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CodexFileOperation {
     Add {
@@ -32,7 +30,6 @@ pub(crate) enum CodexFileOperation {
     },
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CodexHunk {
     pub(crate) context: Option<String>,
@@ -40,7 +37,6 @@ pub(crate) struct CodexHunk {
     pub(crate) is_end_of_file: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CodexHunkLine {
     Context(String),
@@ -48,7 +44,6 @@ pub(crate) enum CodexHunkLine {
     Removed(String),
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CodexPatchParseError {
     pub(crate) message: String,
@@ -68,7 +63,6 @@ fn error(message: impl Into<String>) -> CodexPatchParseError {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn normalize_outer_apply_patch_input(raw: &str) -> Result<String, CodexPatchParseError> {
     let trimmed = raw.trim();
     let lines: Vec<&str> = trimmed.lines().collect();
@@ -106,7 +100,6 @@ fn has_canonical_boundaries(lines: &[&str]) -> bool {
         && lines.last().map(|line| line.trim()) == Some(END_PATCH_MARKER)
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_codex_apply_patch(raw: &str) -> Result<CodexPatch, CodexPatchParseError> {
     let trimmed = raw.trim();
     let lines: Vec<&str> = trimmed.lines().collect();
