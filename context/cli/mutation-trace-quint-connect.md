@@ -212,17 +212,17 @@ nix build .#mutation-trace-quint-connect --print-build-logs
 ```
 
 The focused package is intentionally absent from `checks`, but remains in
-`packages` so `.github/workflows/quint.yml` can run it on Quint-relevant
-changes without waiting for the full Nix CI matrix.
+`packages` for explicit, targeted MBT validation. `.github/workflows/quint.yml`
+runs Quint spec checks only, while `cli-tests` performs Rust refinement testing
+on both Linux and macOS in the ordinary Nix CI matrix.
 
 Quint's presence alone is not sufficient: `quint run` and `quint test`
 resolve the model via `../spec/mutation_cursor.qnt` relative to the
 `cli/` crate root. Therefore `workspaceSrc` must explicitly include the
 top-level `spec/` tree (it is not part of Crane's common Cargo sources).
 
-Quint CI continues to pin both Rust and Quint via the flake and separately
-runs the named `test.*` scenarios, the typecheck, and the randomized safety
-check. The workflow uses `--match '^test.*'` because omitting `--match`
+Quint CI continues to pin Quint via the flake and separately runs the named
+`test.*` scenarios, the typecheck, and the randomized safety check. The workflow uses `--match '^test.*'` because omitting `--match`
 silently selects zero named scenarios on this spec.
 
 ## Non-goals
