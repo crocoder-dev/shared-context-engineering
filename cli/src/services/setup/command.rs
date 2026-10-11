@@ -34,23 +34,15 @@ impl SetupCommand {
                 mode,
                 &setup::InquireSetupTargetPrompter,
                 &optional_workflow_defaults,
+                &setup::persisted_integration_targets(&repository_root),
+                setup::persisted_setup_confirmations(&repository_root),
             )
             .map_err(unexpected_failure)?
             {
-                setup::SetupDispatch::Proceed {
-                    mode: resolved_mode,
-                    optional_workflows,
-                    agent_trace_auto_sync,
-                    attribution_hooks_enabled,
-                } => Some((
-                    resolved_mode,
-                    optional_workflows,
-                    agent_trace_auto_sync,
-                    attribution_hooks_enabled,
-                )),
                 setup::SetupDispatch::Cancelled => {
                     return Ok(setup::setup_cancelled_text());
                 }
+                dispatch @ setup::SetupDispatch::Proceed { .. } => Some(dispatch),
             }
         } else {
             None
@@ -82,20 +74,22 @@ impl SetupCommand {
             }
         }
 
-        if let Some((
-            resolved_mode,
-            prompted_optional_workflows,
+        if let Some(setup::SetupDispatch::Proceed {
+            targets,
+            target_persistence,
+            optional_workflows: prompted_optional_workflows,
             agent_trace_auto_sync,
             attribution_hooks_enabled,
-        )) = setup_dispatch
+        }) = setup_dispatch
         {
             let optional_workflows = prompted_optional_workflows
                 .as_deref()
                 .or(self.request.optional_workflows.as_deref());
 
-            let setup_message = setup::run_setup_for_mode(
+            let setup_message = setup::run_setup_for_targets(
                 &repository_root,
-                resolved_mode,
+                &targets,
+                target_persistence,
                 optional_workflows,
                 agent_trace_auto_sync,
                 attribution_hooks_enabled,

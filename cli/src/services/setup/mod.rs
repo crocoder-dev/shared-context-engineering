@@ -91,6 +91,25 @@ pub enum SetupTarget {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConcreteSetupTarget {
+    OpenCode,
+    Claude,
+    Pi,
+    Codex,
+}
+
+impl From<ConcreteSetupTarget> for SetupTarget {
+    fn from(target: ConcreteSetupTarget) -> Self {
+        match target {
+            ConcreteSetupTarget::OpenCode => Self::OpenCode,
+            ConcreteSetupTarget::Claude => Self::Claude,
+            ConcreteSetupTarget::Pi => Self::Pi,
+            ConcreteSetupTarget::Codex => Self::Codex,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EmbeddedAsset {
     pub relative_path: &'static str,
     pub bytes: &'static [u8],
@@ -113,15 +132,12 @@ pub fn iter_required_hook_assets() -> std::slice::Iter<'static, EmbeddedAsset> {
     HOOK_EMBEDDED_ASSETS.iter()
 }
 
-fn embedded_assets_for_concrete_target(target: SetupTarget) -> &'static [EmbeddedAsset] {
+fn embedded_assets_for_concrete_target(target: ConcreteSetupTarget) -> &'static [EmbeddedAsset] {
     match target {
-        SetupTarget::OpenCode => OPENCODE_EMBEDDED_ASSETS,
-        SetupTarget::Claude => CLAUDE_EMBEDDED_ASSETS,
-        SetupTarget::Pi => PI_EMBEDDED_ASSETS,
-        SetupTarget::Codex => CODEX_EMBEDDED_ASSETS,
-        SetupTarget::All => {
-            unreachable!("meta targets are expanded into concrete targets")
-        }
+        ConcreteSetupTarget::OpenCode => OPENCODE_EMBEDDED_ASSETS,
+        ConcreteSetupTarget::Claude => CLAUDE_EMBEDDED_ASSETS,
+        ConcreteSetupTarget::Pi => PI_EMBEDDED_ASSETS,
+        ConcreteSetupTarget::Codex => CODEX_EMBEDDED_ASSETS,
     }
 }
 
@@ -131,27 +147,24 @@ struct WorkflowAssetLayout {
     skills_dir: &'static str,
 }
 
-fn workflow_asset_layout(target: SetupTarget) -> WorkflowAssetLayout {
+fn workflow_asset_layout(target: ConcreteSetupTarget) -> WorkflowAssetLayout {
     match target {
-        SetupTarget::OpenCode => WorkflowAssetLayout {
+        ConcreteSetupTarget::OpenCode => WorkflowAssetLayout {
             command_dir: Some(default_paths::opencode_asset::OPENCODE_COMMAND_DIR),
             skills_dir: default_paths::opencode_asset::SKILLS_DIR,
         },
-        SetupTarget::Claude => WorkflowAssetLayout {
+        ConcreteSetupTarget::Claude => WorkflowAssetLayout {
             command_dir: Some(default_paths::claude_asset::COMMANDS_DIR),
             skills_dir: default_paths::claude_asset::SKILLS_DIR,
         },
-        SetupTarget::Pi => WorkflowAssetLayout {
+        ConcreteSetupTarget::Pi => WorkflowAssetLayout {
             command_dir: Some(default_paths::pi_asset::PROMPTS_DIR),
             skills_dir: default_paths::pi_asset::SKILLS_DIR,
         },
-        SetupTarget::Codex => WorkflowAssetLayout {
+        ConcreteSetupTarget::Codex => WorkflowAssetLayout {
             command_dir: None,
             skills_dir: default_paths::codex_asset::SKILLS_DIR,
         },
-        SetupTarget::All => {
-            unreachable!("meta targets are expanded into concrete targets")
-        }
     }
 }
 
@@ -169,7 +182,7 @@ fn asset_belongs_to_optional_workflow(
 }
 
 pub fn iter_embedded_assets_for_setup_target_with_selection(
-    target: SetupTarget,
+    target: ConcreteSetupTarget,
     selected_optional_workflows: &[impl AsRef<str>],
 ) -> std::vec::IntoIter<&'static EmbeddedAsset> {
     let unselected: Vec<&'static OptionalWorkflow> = OPTIONAL_WORKFLOWS
@@ -181,19 +194,15 @@ pub fn iter_embedded_assets_for_setup_target_with_selection(
         })
         .collect();
 
-    let mut assets: Vec<&'static EmbeddedAsset> = Vec::new();
-    for concrete in concrete_targets_for(target) {
-        let layout = workflow_asset_layout(*concrete);
-        assets.extend(
-            embedded_assets_for_concrete_target(*concrete)
-                .iter()
-                .filter(|asset| {
-                    !unselected.iter().any(|workflow| {
-                        asset_belongs_to_optional_workflow(asset.relative_path, workflow, layout)
-                    })
-                }),
-        );
-    }
+    let layout = workflow_asset_layout(target);
+    let assets: Vec<&'static EmbeddedAsset> = embedded_assets_for_concrete_target(target)
+        .iter()
+        .filter(|asset| {
+            !unselected.iter().any(|workflow| {
+                asset_belongs_to_optional_workflow(asset.relative_path, workflow, layout)
+            })
+        })
+        .collect();
 
     assets.into_iter()
 }
@@ -204,10 +213,17 @@ pub enum SetupMode {
     NonInteractive(SetupTarget),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TargetPersistence {
+    Merge,
+    Replace,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SetupDispatch {
     Proceed {
-        mode: SetupMode,
+        targets: Vec<ConcreteSetupTarget>,
+        target_persistence: TargetPersistence,
         optional_workflows: Option<Vec<String>>,
         agent_trace_auto_sync: Option<bool>,
         attribution_hooks_enabled: Option<bool>,
@@ -216,15 +232,9 @@ pub enum SetupDispatch {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-#[allow(clippy::struct_excessive_bools)]
 pub struct SetupCliOptions {
-    pub help: bool,
+    pub target: Option<SetupTarget>,
     pub non_interactive: bool,
-    pub opencode: bool,
-    pub claude: bool,
-    pub pi: bool,
-    pub codex: bool,
-    pub all: bool,
     pub hooks: bool,
     pub repo_path: Option<PathBuf>,
     pub bootstrap_context: bool,
@@ -263,11 +273,7 @@ pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
         }
 
         let has_other_setup_options = options.non_interactive
-            || options.opencode
-            || options.claude
-            || options.pi
-            || options.codex
-            || options.all
+            || options.target.is_some()
             || options.hooks
             || options.repo_path.is_some();
         if has_other_setup_options {
@@ -285,41 +291,13 @@ pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
         });
     }
 
-    let mut selected_targets = Vec::new();
-
-    if options.opencode {
-        selected_targets.push(SetupTarget::OpenCode);
-    }
-    if options.claude {
-        selected_targets.push(SetupTarget::Claude);
-    }
-    if options.pi {
-        selected_targets.push(SetupTarget::Pi);
-    }
-    if options.codex {
-        selected_targets.push(SetupTarget::Codex);
-    }
-    if options.all {
-        selected_targets.push(SetupTarget::All);
-    }
-
-    if selected_targets.len() > 1 {
-        bail!(
-            "Options '--opencode', '--claude', '--pi', '--codex', and '--all' are mutually exclusive. Try: choose exactly one target flag (for example 'sce setup --opencode --non-interactive') or omit all target flags for interactive mode."
-        );
-    }
-
-    if options.non_interactive && selected_targets.is_empty() && !options.hooks {
-        bail!(
+    let config_mode = match options.target {
+        Some(target) => Some(SetupMode::NonInteractive(target)),
+        None if options.non_interactive && !options.hooks => bail!(
             "Option '--non-interactive' requires a target flag. Try: 'sce setup --opencode --non-interactive', 'sce setup --claude --non-interactive', 'sce setup --pi --non-interactive', 'sce setup --codex --non-interactive', or 'sce setup --all --non-interactive'."
-        );
-    }
-
-    let config_mode = match selected_targets.as_slice() {
-        [target] => Some(SetupMode::NonInteractive(*target)),
-        [] if options.hooks => None,
-        [] => Some(SetupMode::Interactive),
-        _ => unreachable!("target count already validated"),
+        ),
+        None if options.hooks => None,
+        None => Some(SetupMode::Interactive),
     };
 
     if config_mode.is_none() && optional_workflows.is_some() {
@@ -374,37 +352,32 @@ fn available_optional_workflow_slugs() -> String {
         .join(", ")
 }
 
-pub fn run_setup_for_mode(
+pub fn run_setup_for_targets(
     repository_root: &Path,
-    mode: SetupMode,
+    targets: &[ConcreteSetupTarget],
+    target_persistence: TargetPersistence,
     optional_workflows: Option<&[String]>,
     agent_trace_auto_sync: Option<bool>,
     attribution_hooks_enabled: Option<bool>,
 ) -> Result<String> {
-    let target = match mode {
-        SetupMode::Interactive => {
-            bail!("Interactive setup mode must be resolved before installation")
-        }
-        SetupMode::NonInteractive(target) => target,
-    };
-
     let selected_optional_workflows = match optional_workflows {
         Some(selection) => selection.to_vec(),
         None => persisted_optional_workflows(repository_root),
     };
 
     let outcome =
-        install_embedded_setup_assets(repository_root, target, &selected_optional_workflows)
+        install_embedded_setup_assets(repository_root, targets, &selected_optional_workflows)
             .with_context(|| {
                 format!(
                     "Setup installation failed for {}",
-                    setup_target_label(target)
+                    setup_targets_label(targets)
                 )
             })?;
 
     persist_integration_targets(
         repository_root,
-        target,
+        targets,
+        target_persistence,
         &selected_optional_workflows,
         agent_trace_auto_sync,
         attribution_hooks_enabled,
@@ -412,33 +385,73 @@ pub fn run_setup_for_mode(
     .with_context(|| {
         format!(
             "Setup assets were installed for {} but failed to update repo-local config",
-            setup_target_label(target)
+            setup_targets_label(targets)
         )
     })?;
 
     Ok(format_setup_install_success_message(&outcome))
 }
 
-pub fn persisted_optional_workflows(repository_root: &Path) -> Vec<String> {
-    use crate::services::config::schema::parse_file_config;
-    use crate::services::config::ConfigPathSource;
+pub fn persisted_integration_targets(repository_root: &Path) -> Vec<ConcreteSetupTarget> {
+    use crate::services::config::IntegrationTargetId;
 
-    let config_path = RepoPaths::new(repository_root).sce_config_file();
-
-    let Ok(raw) = fs::read_to_string(&config_path) else {
-        return Vec::new();
-    };
-
-    let Ok(config) =
-        parse_file_config(&raw, &config_path, ConfigPathSource::DefaultDiscoveredLocal)
+    let Some(integrations) =
+        persisted_file_config(repository_root).and_then(|config| config.integrations)
     else {
         return Vec::new();
     };
 
-    config
-        .integrations
+    let mut targets = Vec::new();
+    for target in integrations.value.target {
+        let concrete = match target {
+            IntegrationTargetId::Opencode => ConcreteSetupTarget::OpenCode,
+            IntegrationTargetId::Claude => ConcreteSetupTarget::Claude,
+            IntegrationTargetId::Pi => ConcreteSetupTarget::Pi,
+            IntegrationTargetId::Codex => ConcreteSetupTarget::Codex,
+        };
+        if !targets.contains(&concrete) {
+            targets.push(concrete);
+        }
+    }
+    targets
+}
+
+pub fn persisted_optional_workflows(repository_root: &Path) -> Vec<String> {
+    persisted_file_config(repository_root)
+        .and_then(|config| config.integrations)
         .map(|integrations| integrations.value.optional_workflows)
         .unwrap_or_default()
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PersistedSetupConfirmations {
+    pub agent_trace_auto_sync: Option<bool>,
+    pub attribution_hooks_enabled: Option<bool>,
+}
+
+pub fn persisted_setup_confirmations(repository_root: &Path) -> PersistedSetupConfirmations {
+    let Some(config) = persisted_file_config(repository_root) else {
+        return PersistedSetupConfirmations::default();
+    };
+
+    PersistedSetupConfirmations {
+        agent_trace_auto_sync: config.agent_trace_auto_sync.map(|setting| setting.value),
+        attribution_hooks_enabled: config
+            .attribution_hooks_enabled
+            .map(|setting| setting.value),
+    }
+}
+
+fn persisted_file_config(
+    repository_root: &Path,
+) -> Option<crate::services::config::schema::FileConfig> {
+    use crate::services::config::schema::parse_file_config;
+    use crate::services::config::ConfigPathSource;
+
+    let config_path = RepoPaths::new(repository_root).sce_config_file();
+    let raw = fs::read_to_string(&config_path).ok()?;
+
+    parse_file_config(&raw, &config_path, ConfigPathSource::DefaultDiscoveredLocal).ok()
 }
 
 pub fn ensure_git_repository(directory: &Path) -> Result<PathBuf, GitRepositoryResolutionError> {
@@ -566,7 +579,7 @@ fn format_setup_install_success_message(outcome: &SetupInstallOutcome) -> String
     let selected_targets = outcome
         .target_results
         .iter()
-        .map(|result| setup_target_label(result.target))
+        .map(|result| setup_target_label(result.target.into()))
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -582,7 +595,7 @@ fn format_setup_install_success_message(outcome: &SetupInstallOutcome) -> String
     for result in &outcome.target_results {
         lines.push(format!(
             "- {}: {} {} {} '{}'",
-            label(&format!("{}:", setup_target_label(result.target))),
+            label(&format!("{}:", setup_target_label(result.target.into()))),
             success("installed"),
             value(&format!("{} file(s) to", result.installed_file_count)),
             value("'"),
@@ -646,6 +659,14 @@ fn required_hook_status_label(status: RequiredHookInstallStatus) -> &'static str
     }
 }
 
+fn setup_targets_label(targets: &[ConcreteSetupTarget]) -> String {
+    targets
+        .iter()
+        .map(|target| setup_target_label((*target).into()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn setup_target_label(target: SetupTarget) -> &'static str {
     match target {
         SetupTarget::OpenCode => "OpenCode",
@@ -658,7 +679,7 @@ fn setup_target_label(target: SetupTarget) -> &'static str {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SetupInstallTargetResult {
-    pub target: SetupTarget,
+    pub target: ConcreteSetupTarget,
     pub destination_root: PathBuf,
     pub installed_file_count: usize,
 }
@@ -697,27 +718,27 @@ pub fn install_required_git_hooks(repository_root: &Path) -> Result<RequiredHook
 
 pub fn install_embedded_setup_assets(
     repository_root: &Path,
-    target: SetupTarget,
+    targets: &[ConcreteSetupTarget],
     selected_optional_workflows: &[String],
 ) -> Result<SetupInstallOutcome> {
-    install::install_embedded_setup_assets(repository_root, target, selected_optional_workflows)
+    install::install_embedded_setup_assets(repository_root, targets, selected_optional_workflows)
 }
 
 pub(crate) fn repair_merge_target_asset(
     repository_root: &Path,
-    target: SetupTarget,
+    target: ConcreteSetupTarget,
     relative_path: &str,
 ) -> Result<()> {
     install::repair_merge_target_asset(repository_root, target, relative_path)
 }
 
 pub(crate) fn setup_install_recovery_guidance(
-    target: SetupTarget,
+    target: ConcreteSetupTarget,
     destination_root: &Path,
 ) -> String {
     format!(
         "Setup for {} does not create backups. Recover '{}' from version control if needed.",
-        setup_target_label(target),
+        setup_target_label(target.into()),
         destination_root.display()
     )
 }
@@ -745,36 +766,34 @@ pub(crate) fn cleanup_path_if_exists(path: &Path) {
     }
 }
 
-pub(crate) fn concrete_targets_for(target: SetupTarget) -> &'static [SetupTarget] {
+pub(crate) fn concrete_targets_for(target: SetupTarget) -> &'static [ConcreteSetupTarget] {
     match target {
-        SetupTarget::OpenCode => &[SetupTarget::OpenCode],
-        SetupTarget::Claude => &[SetupTarget::Claude],
-        SetupTarget::Pi => &[SetupTarget::Pi],
-        SetupTarget::Codex => &[SetupTarget::Codex],
+        SetupTarget::OpenCode => &[ConcreteSetupTarget::OpenCode],
+        SetupTarget::Claude => &[ConcreteSetupTarget::Claude],
+        SetupTarget::Pi => &[ConcreteSetupTarget::Pi],
+        SetupTarget::Codex => &[ConcreteSetupTarget::Codex],
         SetupTarget::All => &[
-            SetupTarget::OpenCode,
-            SetupTarget::Claude,
-            SetupTarget::Pi,
-            SetupTarget::Codex,
+            ConcreteSetupTarget::OpenCode,
+            ConcreteSetupTarget::Claude,
+            ConcreteSetupTarget::Pi,
+            ConcreteSetupTarget::Codex,
         ],
     }
 }
 
-fn integration_target_id_str(target: SetupTarget) -> &'static str {
+fn integration_target_id_str(target: ConcreteSetupTarget) -> &'static str {
     match target {
-        SetupTarget::OpenCode => "opencode",
-        SetupTarget::Claude => "claude",
-        SetupTarget::Pi => "pi",
-        SetupTarget::Codex => "codex",
-        SetupTarget::All => {
-            unreachable!("integration_target_id_str must not be called with meta targets")
-        }
+        ConcreteSetupTarget::OpenCode => "opencode",
+        ConcreteSetupTarget::Claude => "claude",
+        ConcreteSetupTarget::Pi => "pi",
+        ConcreteSetupTarget::Codex => "codex",
     }
 }
 
 pub fn persist_integration_targets(
     repository_root: &Path,
-    target: SetupTarget,
+    targets: &[ConcreteSetupTarget],
+    target_persistence: TargetPersistence,
     selected_optional_workflows: &[String],
     agent_trace_auto_sync: Option<bool>,
     attribution_hooks_enabled: Option<bool>,
@@ -810,19 +829,21 @@ pub fn persist_integration_targets(
         )
     })?;
 
-    let mut existing_targets: Vec<String> = config_obj
-        .get("integrations")
-        .and_then(|i| i.get("target"))
-        .and_then(|t| t.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut existing_targets: Vec<String> = match target_persistence {
+        TargetPersistence::Merge => config_obj
+            .get("integrations")
+            .and_then(|i| i.get("target"))
+            .and_then(|t| t.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        TargetPersistence::Replace => Vec::new(),
+    };
 
-    let new_targets = concrete_targets_for(target);
-    for concrete in new_targets {
+    for concrete in targets {
         let id_str = integration_target_id_str(*concrete);
         let id_owned = id_str.to_string();
         if !existing_targets.contains(&id_owned) {
@@ -885,7 +906,10 @@ pub fn persist_integration_targets(
 mod install;
 
 pub trait SetupTargetPrompter {
-    fn prompt_target(&self) -> Result<SetupDispatch>;
+    fn prompt_targets(
+        &self,
+        defaults: &[ConcreteSetupTarget],
+    ) -> Result<Option<Vec<ConcreteSetupTarget>>>;
     fn prompt_optional_workflows(&self, defaults: &[String]) -> Result<Option<Vec<String>>>;
     fn prompt_agent_trace_auto_sync(&self) -> Result<Option<bool>>;
     fn prompt_attribution_hooks_enabled(&self) -> Result<Option<bool>>;
@@ -895,8 +919,11 @@ pub trait SetupTargetPrompter {
 pub struct InquireSetupTargetPrompter;
 
 impl SetupTargetPrompter for InquireSetupTargetPrompter {
-    fn prompt_target(&self) -> Result<SetupDispatch> {
-        prompt::prompt_target()
+    fn prompt_targets(
+        &self,
+        defaults: &[ConcreteSetupTarget],
+    ) -> Result<Option<Vec<ConcreteSetupTarget>>> {
+        prompt::prompt_targets(defaults)
     }
 
     fn prompt_optional_workflows(&self, defaults: &[String]) -> Result<Option<Vec<String>>> {
@@ -913,13 +940,7 @@ impl SetupTargetPrompter for InquireSetupTargetPrompter {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SetupPromptTarget {
-    OpenCode,
-    Claude,
-    Pi,
-    Codex,
-    All,
-}
+struct SetupPromptTarget(ConcreteSetupTarget);
 
 impl std::fmt::Display for SetupPromptTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -937,14 +958,15 @@ pub fn resolve_setup_dispatch<P>(
     mode: SetupMode,
     prompter: &P,
     optional_workflow_defaults: &[String],
+    configured_targets: &[ConcreteSetupTarget],
+    persisted_confirmations: PersistedSetupConfirmations,
 ) -> Result<SetupDispatch>
 where
     P: SetupTargetPrompter,
 {
     match mode {
         SetupMode::Interactive => {
-            let target_dispatch = prompter.prompt_target()?;
-            let SetupDispatch::Proceed { mode, .. } = target_dispatch else {
+            let Some(targets) = prompter.prompt_targets(configured_targets)? else {
                 return Ok(SetupDispatch::Cancelled);
             };
 
@@ -954,24 +976,36 @@ where
                 return Ok(SetupDispatch::Cancelled);
             };
 
-            let Some(agent_trace_auto_sync) = prompter.prompt_agent_trace_auto_sync()? else {
+            let Some(agent_trace_auto_sync) =
+                persisted_confirmations.agent_trace_auto_sync.map_or_else(
+                    || prompter.prompt_agent_trace_auto_sync(),
+                    |value| Ok(Some(value)),
+                )?
+            else {
                 return Ok(SetupDispatch::Cancelled);
             };
 
-            let Some(attribution_hooks_enabled) = prompter.prompt_attribution_hooks_enabled()?
+            let Some(attribution_hooks_enabled) = persisted_confirmations
+                .attribution_hooks_enabled
+                .map_or_else(
+                    || prompter.prompt_attribution_hooks_enabled(),
+                    |value| Ok(Some(value)),
+                )?
             else {
                 return Ok(SetupDispatch::Cancelled);
             };
 
             Ok(SetupDispatch::Proceed {
-                mode,
+                targets,
+                target_persistence: TargetPersistence::Replace,
                 optional_workflows: Some(optional_workflows),
                 agent_trace_auto_sync: Some(agent_trace_auto_sync),
                 attribution_hooks_enabled: Some(attribution_hooks_enabled),
             })
         }
         SetupMode::NonInteractive(target) => Ok(SetupDispatch::Proceed {
-            mode: SetupMode::NonInteractive(target),
+            targets: concrete_targets_for(target).to_vec(),
+            target_persistence: TargetPersistence::Merge,
             optional_workflows: None,
             agent_trace_auto_sync: None,
             attribution_hooks_enabled: None,

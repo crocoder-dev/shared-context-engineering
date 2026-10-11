@@ -293,13 +293,16 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
             bootstrap_context,
             workflow,
         } => convert_setup_command(services::setup::SetupCliOptions {
-            help: false,
+            target: [
+                (opencode, services::setup::SetupTarget::OpenCode),
+                (claude, services::setup::SetupTarget::Claude),
+                (pi, services::setup::SetupTarget::Pi),
+                (codex, services::setup::SetupTarget::Codex),
+                (all, services::setup::SetupTarget::All),
+            ]
+            .into_iter()
+            .find_map(|(selected, target)| selected.then_some(target)),
             non_interactive,
-            opencode,
-            claude,
-            pi,
-            codex,
-            all,
             hooks,
             repo_path: repo,
             bootstrap_context,

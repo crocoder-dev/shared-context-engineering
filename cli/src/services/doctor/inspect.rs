@@ -28,7 +28,7 @@ use crate::services::repository_identity::resolve::{
 use crate::services::setup::{
     config_merge, hook_merge, iter_embedded_assets_for_setup_target_with_selection,
     iter_required_hook_assets, persisted_optional_workflows, repair_merge_target_asset,
-    EmbeddedAsset, SetupTarget,
+    ConcreteSetupTarget, EmbeddedAsset,
 };
 
 use super::render::integration_target_label;
@@ -902,7 +902,7 @@ pub(super) fn repair_merge_target_configs(
             collect_claude_integration_groups(repository_root, &selected_optional_workflows);
         if let Some(result) = repair_merge_target_if_mismatched(
             repository_root,
-            SetupTarget::Claude,
+            ConcreteSetupTarget::Claude,
             claude_asset::SETTINGS_FILE,
             &claude_groups,
         ) {
@@ -915,7 +915,7 @@ pub(super) fn repair_merge_target_configs(
             collect_opencode_integration_groups(repository_root, &selected_optional_workflows);
         if let Some(result) = repair_merge_target_if_mismatched(
             repository_root,
-            SetupTarget::OpenCode,
+            ConcreteSetupTarget::OpenCode,
             OPENCODE_CONFIG_RELATIVE_PATH,
             &opencode_groups,
         ) {
@@ -974,7 +974,7 @@ fn repair_codex_hooks_json_if_structurally_unhealthy(
     Some(
         match repair_merge_target_asset(
             repository_root,
-            SetupTarget::Codex,
+            ConcreteSetupTarget::Codex,
             CODEX_HOOKS_JSON_RELATIVE_PATH,
         ) {
             Ok(()) => DoctorFixResultRecord {
@@ -998,7 +998,7 @@ fn repair_codex_hooks_json_if_structurally_unhealthy(
 
 fn repair_merge_target_if_mismatched(
     repository_root: &Path,
-    target: SetupTarget,
+    target: ConcreteSetupTarget,
     relative_path: &str,
     groups: &[IntegrationGroupHealth],
 ) -> Option<DoctorFixResultRecord> {
@@ -1864,7 +1864,7 @@ fn collect_opencode_integration_groups(
     let opencode_root = repo_paths.opencode_dir();
     let manifest_path = repo_paths.opencode_manifest_file();
     let embedded_assets = iter_embedded_assets_for_setup_target_with_selection(
-        SetupTarget::OpenCode,
+        ConcreteSetupTarget::OpenCode,
         selected_optional_workflows,
     )
     .collect::<Vec<_>>();
@@ -1952,7 +1952,7 @@ fn collect_claude_integration_groups(
     let repo_paths = RepoPaths::new(repository_root);
     let claude_root = repo_paths.claude_dir();
     let embedded_assets = iter_embedded_assets_for_setup_target_with_selection(
-        SetupTarget::Claude,
+        ConcreteSetupTarget::Claude,
         selected_optional_workflows,
     )
     .collect::<Vec<_>>();
@@ -2014,7 +2014,7 @@ fn collect_pi_integration_groups(
     let repo_paths = RepoPaths::new(repository_root);
     let pi_root = repo_paths.pi_dir();
     let embedded_assets = iter_embedded_assets_for_setup_target_with_selection(
-        SetupTarget::Pi,
+        ConcreteSetupTarget::Pi,
         selected_optional_workflows,
     )
     .collect::<Vec<_>>();
@@ -2074,7 +2074,7 @@ fn collect_codex_integration_groups(
 ) -> Vec<IntegrationGroupHealth> {
     let codex_root = InstallTargetPaths::new(repository_root).codex_target_dir();
     let embedded_assets = iter_embedded_assets_for_setup_target_with_selection(
-        SetupTarget::Codex,
+        ConcreteSetupTarget::Codex,
         selected_optional_workflows,
     )
     .collect::<Vec<_>>();
