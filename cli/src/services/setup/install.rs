@@ -13,12 +13,12 @@ use crate::services::security::{ensure_directory_is_writable, redact_sensitive_t
 use super::config_merge;
 use super::hook_merge;
 use super::{
-    classify_git_exit, cleanup_path_if_exists, concrete_targets_for,
-    embedded_assets_for_concrete_target, hook_install_recovery_guidance,
-    iter_embedded_assets_for_setup_target_with_selection, iter_required_hook_assets,
-    setup_install_recovery_guidance, EmbeddedAsset, GitExitKind, GitRepositoryResolutionError,
-    RequiredHookInstallResult, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
-    SetupInstallOutcome, SetupInstallTargetResult, SetupTarget,
+    classify_git_exit, cleanup_path_if_exists, embedded_assets_for_concrete_target,
+    hook_install_recovery_guidance, iter_embedded_assets_for_setup_target_with_selection,
+    iter_required_hook_assets, setup_install_recovery_guidance, ConcreteSetupTarget, EmbeddedAsset,
+    GitExitKind, GitRepositoryResolutionError, RequiredHookInstallResult,
+    RequiredHookInstallStatus, RequiredHooksInstallOutcome, SetupInstallOutcome,
+    SetupInstallTargetResult,
 };
 use crate::services::default_paths;
 use crate::services::default_paths::claude_asset;
@@ -53,12 +53,12 @@ where
 
 pub(super) fn install_embedded_setup_assets(
     repository_root: &Path,
-    target: SetupTarget,
+    targets: &[ConcreteSetupTarget],
     selected_optional_workflows: &[String],
 ) -> Result<SetupInstallOutcome> {
     install_embedded_setup_assets_with_rename(
         repository_root,
-        target,
+        targets,
         selected_optional_workflows,
         |from, to| fs::rename(from, to),
     )
@@ -66,7 +66,7 @@ pub(super) fn install_embedded_setup_assets(
 
 pub(super) fn repair_merge_target_asset(
     repository_root: &Path,
-    target: SetupTarget,
+    target: ConcreteSetupTarget,
     relative_path: &str,
 ) -> Result<()> {
     let asset = embedded_assets_for_concrete_target(target)
@@ -76,18 +76,24 @@ pub(super) fn repair_merge_target_asset(
             format!("No embedded asset named '{relative_path}' for target {target:?}")
         })?;
 
-    let install_targets = InstallTargetPaths::new(repository_root);
-    let destination_root = match target {
-        SetupTarget::OpenCode => install_targets.opencode_target_dir(),
-        SetupTarget::Claude => install_targets.claude_target_dir(),
-        SetupTarget::Pi => install_targets.pi_target_dir(),
-        SetupTarget::Codex => install_targets.codex_target_dir(),
-        SetupTarget::All => unreachable!("meta targets are expanded into concrete targets"),
-    };
+    let destination_root = concrete_target_destination_root(repository_root, target);
 
     install_single_asset_with_rename(target, &destination_root, asset, &mut |from, to| {
         fs::rename(from, to)
     })
+}
+
+fn concrete_target_destination_root(
+    repository_root: &Path,
+    target: ConcreteSetupTarget,
+) -> PathBuf {
+    let install_targets = InstallTargetPaths::new(repository_root);
+    match target {
+        ConcreteSetupTarget::OpenCode => install_targets.opencode_target_dir(),
+        ConcreteSetupTarget::Claude => install_targets.claude_target_dir(),
+        ConcreteSetupTarget::Pi => install_targets.pi_target_dir(),
+        ConcreteSetupTarget::Codex => install_targets.codex_target_dir(),
+    }
 }
 
 fn install_required_git_hooks_in_resolved_repository<F>(
@@ -494,7 +500,7 @@ fn is_executable_file(path: &Path) -> Result<bool> {
 
 pub(super) fn install_embedded_setup_assets_with_rename<F>(
     repository_root: &Path,
-    target: SetupTarget,
+    targets: &[ConcreteSetupTarget],
     selected_optional_workflows: &[String],
     mut rename_fn: F,
 ) -> Result<SetupInstallOutcome>
@@ -505,7 +511,7 @@ where
 
     let mut target_results = Vec::new();
 
-    for concrete_target in concrete_targets_for(target) {
+    for concrete_target in targets {
         let concrete_target = *concrete_target;
         let assets: Vec<&'static EmbeddedAsset> =
             iter_embedded_assets_for_setup_target_with_selection(
@@ -527,23 +533,14 @@ where
 
 fn install_assets_for_concrete_target_with_rename<F>(
     repository_root: &Path,
-    target: SetupTarget,
+    target: ConcreteSetupTarget,
     assets: &[&'static EmbeddedAsset],
     rename_fn: &mut F,
 ) -> Result<SetupInstallTargetResult>
 where
     F: FnMut(&Path, &Path) -> io::Result<()>,
 {
-    let install_targets = InstallTargetPaths::new(repository_root);
-    let destination_root = match target {
-        SetupTarget::OpenCode => install_targets.opencode_target_dir(),
-        SetupTarget::Claude => install_targets.claude_target_dir(),
-        SetupTarget::Pi => install_targets.pi_target_dir(),
-        SetupTarget::Codex => install_targets.codex_target_dir(),
-        SetupTarget::All => {
-            unreachable!("meta targets are expanded into concrete targets")
-        }
-    };
+    let destination_root = concrete_target_destination_root(repository_root, target);
 
     for asset in assets {
         install_single_asset_with_rename(target, &destination_root, asset, rename_fn)?;
@@ -560,7 +557,7 @@ where
 
 fn prune_stale_assets_for_concrete_target(
     destination_root: &Path,
-    target: SetupTarget,
+    target: ConcreteSetupTarget,
     installed_assets: &[&'static EmbeddedAsset],
 ) -> Result<()> {
     let installed_paths: std::collections::HashSet<&'static str> = installed_assets
@@ -604,20 +601,21 @@ fn remove_empty_ancestor_directories(destination_root: &Path, removed_file: &Pat
     }
 }
 
-fn is_claude_settings_merge_target(target: SetupTarget, relative_path: &str) -> bool {
-    target == SetupTarget::Claude && relative_path == claude_asset::SETTINGS_FILE
+fn is_claude_settings_merge_target(target: ConcreteSetupTarget, relative_path: &str) -> bool {
+    target == ConcreteSetupTarget::Claude && relative_path == claude_asset::SETTINGS_FILE
 }
 
-fn is_opencode_config_merge_target(target: SetupTarget, relative_path: &str) -> bool {
-    target == SetupTarget::OpenCode && relative_path == default_paths::repo_file::OPENCODE_MANIFEST
+fn is_opencode_config_merge_target(target: ConcreteSetupTarget, relative_path: &str) -> bool {
+    target == ConcreteSetupTarget::OpenCode
+        && relative_path == default_paths::repo_file::OPENCODE_MANIFEST
 }
 
-fn is_codex_hooks_merge_target(target: SetupTarget, relative_path: &str) -> bool {
-    target == SetupTarget::Codex && relative_path == ".codex/hooks.json"
+fn is_codex_hooks_merge_target(target: ConcreteSetupTarget, relative_path: &str) -> bool {
+    target == ConcreteSetupTarget::Codex && relative_path == ".codex/hooks.json"
 }
 
 fn install_single_asset_with_rename<F>(
-    target: SetupTarget,
+    target: ConcreteSetupTarget,
     destination_root: &Path,
     asset: &'static EmbeddedAsset,
     rename_fn: &mut F,
