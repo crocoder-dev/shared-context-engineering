@@ -1,11 +1,12 @@
 use std::{
     cmp::Ordering,
-    collections::BTreeMap,
+    collections::hash_map::DefaultHasher,
     fmt::Write as FmtWrite,
     fs::{self, OpenOptions},
+    hash::{Hash, Hasher},
     io::{self, ErrorKind, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock},
+    sync::Mutex,
     time::SystemTime,
 };
 
@@ -339,23 +340,26 @@ where
             .with_context(|| format!("failed to create log directory '{}'", parent.display()))?;
     }
 
-    let lock = file_log_lock(path);
-    let _guard = lock.lock().map_err(|error| {
-        anyhow::anyhow!("failed to lock log file '{}': {error}", path.display())
-    })?;
+    let primary_error = {
+        let _guard = log_lock_stripe(path).lock().map_err(|error| {
+            anyhow::anyhow!("failed to lock log file '{}': {error}", path.display())
+        })?;
 
-    match persist_log_line(path, redacted_line) {
-        Ok(write_target) => {
-            run_log_retention_after_creation(path, write_target, cleanup);
-            Ok(())
+        match persist_log_line(path, redacted_line) {
+            Ok(write_target) => {
+                run_log_retention_after_creation(path, write_target, cleanup);
+                return Ok(());
+            }
+            Err(primary_error) => primary_error,
         }
-        Err(primary_error) => attempt_v2_log_fallback(
-            path,
-            redacted_line,
-            &primary_error,
-            |fallback_path, line| append_log_line_once_with_cleanup(fallback_path, line, cleanup),
-        ),
-    }
+    };
+
+    attempt_v2_log_fallback(
+        path,
+        redacted_line,
+        &primary_error,
+        |fallback_path, line| append_log_line_once_with_cleanup(fallback_path, line, cleanup),
+    )
 }
 
 fn attempt_v2_log_fallback<F>(
@@ -386,8 +390,7 @@ where
             .with_context(|| format!("failed to create log directory '{}'", parent.display()))?;
     }
 
-    let lock = file_log_lock(path);
-    let _guard = lock.lock().map_err(|error| {
+    let _guard = log_lock_stripe(path).lock().map_err(|error| {
         anyhow::anyhow!("failed to lock log file '{}': {error}", path.display())
     })?;
 
@@ -573,17 +576,19 @@ fn collect_managed_log_files(log_dir: &Path) -> Result<(Vec<ManagedLogFile>, Vec
     Ok((managed_files, errors))
 }
 
-fn file_log_lock(path: &Path) -> Arc<Mutex<()>> {
-    static FILE_LOG_LOCKS: OnceLock<Mutex<BTreeMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
-    let locks = FILE_LOG_LOCKS.get_or_init(|| Mutex::new(BTreeMap::new()));
-    let mut locks = locks
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    Arc::clone(
-        locks
-            .entry(path.to_path_buf())
-            .or_insert_with(|| Arc::new(Mutex::new(()))),
-    )
+const LOG_LOCK_STRIPES: usize = 64;
+
+static LOG_LOCKS: [Mutex<()>; LOG_LOCK_STRIPES] = [const { Mutex::new(()) }; LOG_LOCK_STRIPES];
+
+fn log_lock_stripe_index(path: &Path) -> usize {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    usize::try_from(hasher.finish() % LOG_LOCK_STRIPES as u64)
+        .expect("log lock stripe index must fit usize")
+}
+
+fn log_lock_stripe(path: &Path) -> &'static Mutex<()> {
+    &LOG_LOCKS[log_lock_stripe_index(path)]
 }
 
 #[cfg(unix)]
@@ -784,6 +789,388 @@ mod tests {
         logger.error("sce.test.error", "test error", &[], None);
 
         assert!(!log_dir.exists());
+    }
+
+    const CHILD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+    const CHILD_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+    const ENV_CHILD_PATH: &str = "SCE_LOG_LOCK_CHILD_PATH";
+    const SAME_STRIPE_SENTINEL: &str = "SAME_STRIPE_FALLBACK_OK";
+    const POISON_SENTINEL: &str = "POISONED_STRIPE_OK";
+
+    fn text_logger(log_dir: &Path) -> Logger {
+        Logger {
+            config: ObservabilityConfig {
+                level: LogLevel::Error,
+                format: LogFormat::Text,
+                log_to_file: true,
+            },
+            log_dir: Some(log_dir.to_path_buf()),
+            log_file_retention_limit: 10,
+        }
+    }
+
+    fn read_all_log_lines(log_dir: &Path) -> Vec<String> {
+        let mut lines = Vec::new();
+        for entry in fs::read_dir(log_dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path
+                .extension()
+                .is_some_and(|ext| ext == LOG_FILE_EXTENSION)
+            {
+                lines.extend(fs::read_to_string(path).unwrap().lines().map(String::from));
+            }
+        }
+        lines
+    }
+
+    fn run_bounded_child(test_name: &str, child_path: &Path) -> std::process::Output {
+        use std::io::Read;
+        use std::process::{Command, Stdio};
+
+        let sandbox = tempfile::tempdir().unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test_name, "--nocapture"])
+            .current_dir(sandbox.path())
+            .env(ENV_CHILD_PATH, child_path)
+            .env("HOME", sandbox.path())
+            .env("XDG_CONFIG_HOME", sandbox.path().join("config"))
+            .env("XDG_STATE_HOME", sandbox.path().join("state"))
+            .env("XDG_CACHE_HOME", sandbox.path().join("cache"))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let mut stdout_pipe = child.stdout.take().unwrap();
+        let mut stderr_pipe = child.stderr.take().unwrap();
+        let stdout_reader = std::thread::spawn(move || {
+            let mut buffer = Vec::new();
+            let _ = stdout_pipe.read_to_end(&mut buffer);
+            buffer
+        });
+        let stderr_reader = std::thread::spawn(move || {
+            let mut buffer = Vec::new();
+            let _ = stderr_pipe.read_to_end(&mut buffer);
+            buffer
+        });
+
+        let deadline = std::time::Instant::now() + CHILD_DEADLINE;
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                break None;
+            }
+            std::thread::sleep(CHILD_POLL_INTERVAL);
+        };
+
+        let stdout = stdout_reader.join().unwrap();
+        let stderr = stderr_reader.join().unwrap();
+        let Some(status) = status else {
+            panic!(
+                "child '{test_name}' exceeded {CHILD_DEADLINE:?} and was killed\nstdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr)
+            );
+        };
+
+        std::process::Output {
+            status,
+            stdout,
+            stderr,
+        }
+    }
+
+    fn assert_child_succeeded(output: &std::process::Output, sentinel: &str) {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains(sentinel),
+            "child failed: {:?}\nstdout: {stdout}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn blocked_primary_path(log_dir: &Path, stem: &str) -> PathBuf {
+        let primary = log_dir.join(format!("{stem}.log"));
+        fs::create_dir_all(&primary).unwrap();
+        primary
+    }
+
+    #[test]
+    fn concurrent_writers_to_one_path_produce_complete_unique_lines() {
+        const THREADS: usize = 8;
+        const LINES_PER_THREAD: usize = 50;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sce-concurrent.log");
+        let padding = "x".repeat(512);
+
+        std::thread::scope(|scope| {
+            for thread in 0..THREADS {
+                let path = &path;
+                let padding = &padding;
+                scope.spawn(move || {
+                    for index in 0..LINES_PER_THREAD {
+                        let line = format!("t{thread}-l{index}-{padding}-end");
+                        append_log_line_with_cleanup(path, &line, |_| Ok(())).unwrap();
+                    }
+                });
+            }
+        });
+
+        let contents = fs::read_to_string(&path).unwrap();
+        let mut seen = std::collections::BTreeSet::new();
+        for line in contents.lines() {
+            assert!(line.ends_with("-end"), "interleaved line: {line}");
+            assert!(seen.insert(line.to_string()), "duplicated line: {line}");
+        }
+        assert_eq!(seen.len(), THREADS * LINES_PER_THREAD);
+    }
+
+    #[test]
+    fn independent_logger_instances_serialize_writes_to_one_path() {
+        const INSTANCES: usize = 4;
+        const RECORDS_PER_INSTANCE: usize = 25;
+
+        let dir = tempfile::tempdir().unwrap();
+        let loggers: Vec<Logger> = (0..INSTANCES).map(|_| text_logger(dir.path())).collect();
+
+        std::thread::scope(|scope| {
+            for (instance, logger) in loggers.iter().enumerate() {
+                scope.spawn(move || {
+                    for index in 0..RECORDS_PER_INSTANCE {
+                        let event_id = format!("sce.test.i{instance}.r{index}");
+                        logger.error(&event_id, "concurrent record", &[], Some("shared"));
+                    }
+                });
+            }
+        });
+
+        let lines = read_all_log_lines(dir.path());
+        assert_eq!(lines.len(), INSTANCES * RECORDS_PER_INSTANCE);
+        for line in &lines {
+            assert!(line.starts_with("timestamp="), "malformed line: {line}");
+            assert!(
+                line.ends_with("message=concurrent record"),
+                "malformed line: {line}"
+            );
+        }
+        let unique: std::collections::BTreeSet<&String> = lines.iter().collect();
+        assert_eq!(unique.len(), lines.len());
+    }
+
+    #[test]
+    fn stripe_selection_is_stable_bounded_and_independent_of_path_count() {
+        assert_eq!(LOG_LOCKS.len(), LOG_LOCK_STRIPES);
+
+        let mut used = std::collections::BTreeSet::new();
+        for index in 0..5000 {
+            let path = PathBuf::from(format!("/tmp/sce-distinct/sce-{index}.log"));
+            let stripe = log_lock_stripe_index(&path);
+            assert!(stripe < LOG_LOCK_STRIPES);
+            assert_eq!(stripe, log_lock_stripe_index(&path));
+            assert!(std::ptr::eq(
+                log_lock_stripe(&path),
+                LOG_LOCKS.get(stripe).unwrap()
+            ));
+            used.insert(stripe);
+        }
+
+        assert!(used.len() > 1);
+        assert_eq!(LOG_LOCKS.len(), LOG_LOCK_STRIPES);
+    }
+
+    #[test]
+    fn fallback_on_a_different_stripe_writes_the_v2_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = (0..1000)
+            .map(|index| dir.path().join(format!("sce-diff-{index}.log")))
+            .find(|candidate| {
+                !std::ptr::eq(
+                    log_lock_stripe(candidate),
+                    log_lock_stripe(&v2_log_path(candidate)),
+                )
+            })
+            .unwrap();
+        fs::create_dir_all(&primary).unwrap();
+
+        append_log_line_with_cleanup(&primary, "fallback-line", |_| Ok(())).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(v2_log_path(&primary)).unwrap(),
+            "fallback-line\n"
+        );
+        assert!(primary.is_dir());
+    }
+
+    #[test]
+    fn fallback_failure_reports_combined_primary_and_v2_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = blocked_primary_path(dir.path(), "sce-both-fail");
+        let fallback = v2_log_path(&primary);
+        fs::create_dir_all(&fallback).unwrap();
+
+        let error = append_log_line_with_cleanup(&primary, "line", |_| Ok(()))
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            error.starts_with(&format!(
+                "primary log file persistence failed for '{}': ",
+                primary.display()
+            )),
+            "{error}"
+        );
+        assert!(
+            error.contains(&format!(
+                "; v2 fallback log file persistence failed for '{}': ",
+                fallback.display()
+            )),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn same_stripe_fallback_completes_in_bounded_child_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = (0..10_000)
+            .map(|index| dir.path().join(format!("sce-collide-{index}.log")))
+            .find(|candidate| {
+                std::ptr::eq(
+                    log_lock_stripe(candidate),
+                    log_lock_stripe(&v2_log_path(candidate)),
+                )
+            })
+            .expect("a primary path whose v2 path shares its stripe");
+        fs::create_dir_all(&primary).unwrap();
+
+        let output = run_bounded_child(
+            "services::observability::tests::isolated_same_stripe_fallback",
+            &primary,
+        );
+
+        assert_child_succeeded(&output, SAME_STRIPE_SENTINEL);
+        assert_eq!(
+            fs::read_to_string(v2_log_path(&primary)).unwrap(),
+            "same-stripe-line\n"
+        );
+        assert!(primary.is_dir());
+    }
+
+    #[test]
+    fn isolated_same_stripe_fallback() {
+        let Some(primary) = std::env::var_os(ENV_CHILD_PATH).map(PathBuf::from) else {
+            return;
+        };
+        assert!(std::ptr::eq(
+            log_lock_stripe(&primary),
+            log_lock_stripe(&v2_log_path(&primary))
+        ));
+
+        append_log_line_with_cleanup(&primary, "same-stripe-line", |_| Ok(())).unwrap();
+
+        println!("{SAME_STRIPE_SENTINEL}");
+    }
+
+    #[test]
+    fn poisoned_stripe_fails_lock_without_fallback_in_child_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sce-poison.log");
+
+        let output = run_bounded_child(
+            "services::observability::tests::isolated_poisoned_stripe",
+            &path,
+        );
+
+        assert_child_succeeded(&output, POISON_SENTINEL);
+        assert!(!v2_log_path(&path).exists());
+    }
+
+    #[test]
+    fn isolated_poisoned_stripe() {
+        let Some(path) = std::env::var_os(ENV_CHILD_PATH).map(PathBuf::from) else {
+            return;
+        };
+
+        let poisoned = std::panic::catch_unwind(|| {
+            let _ = append_log_line_with_cleanup(&path, "first", |_| panic!("poison the stripe"));
+        });
+        assert!(poisoned.is_err());
+
+        let error = append_log_line_with_cleanup(&path, "second", |_| Ok(()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with(&format!("failed to lock log file '{}': ", path.display())),
+            "{error}"
+        );
+        assert!(!v2_log_path(&path).exists());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "first\n");
+
+        println!("{POISON_SENTINEL}");
+    }
+
+    #[test]
+    fn retention_runs_once_for_concurrent_creation_of_one_path() {
+        const THREADS: usize = 8;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sce-retention.log");
+        let cleanups = std::sync::atomic::AtomicUsize::new(0);
+
+        std::thread::scope(|scope| {
+            for thread in 0..THREADS {
+                let path = &path;
+                let cleanups = &cleanups;
+                scope.spawn(move || {
+                    append_log_line_with_cleanup(path, &format!("line-{thread}"), |log_dir| {
+                        assert_eq!(log_dir, path.parent().unwrap());
+                        cleanups.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(())
+                    })
+                    .unwrap();
+                });
+            }
+        });
+
+        assert_eq!(cleanups.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), THREADS);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn created_log_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sce-perms.log");
+
+        append_log_line_with_cleanup(&path, "line", |_| Ok(())).unwrap();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn secrets_are_redacted_before_they_reach_the_log_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = text_logger(dir.path());
+
+        logger.error(
+            "sce.test.redaction",
+            "request failed",
+            &[("password", "hunter2-super-secret")],
+            None,
+        );
+
+        let lines = read_all_log_lines(dir.path());
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("[REDACTED]"));
+        assert!(!lines[0].contains("hunter2-super-secret"));
     }
 
     #[test]
