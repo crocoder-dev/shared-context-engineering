@@ -396,8 +396,10 @@
         # repeatedly optimizing the entire Rust test binary.
         testProfileArgs = {
           CARGO_PROFILE = "test";
-          # Preserve useful file/line backtraces without full DWARF debug info.
-          CARGO_PROFILE_TEST_DEBUG = "line-tables-only";
+          # Smaller dependency artifacts for test/Clippy derivations.
+          # This uses the measured J variant (debug info disabled for all
+          # test-profile crates); Rust panic locations remain available.
+          CARGO_PROFILE_TEST_DEBUG = "0";
         };
 
         # The deps-only derivation must also prepare test/dev-dependency artifacts.
