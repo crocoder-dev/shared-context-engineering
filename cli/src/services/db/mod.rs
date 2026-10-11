@@ -157,6 +157,12 @@ fn sentence_case(value: &str) -> String {
     first.to_uppercase().collect::<String>() + chars.as_str()
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OpenMode {
+    CreateIfMissing,
+    ExistingReadOnly,
+}
+
 fn ensure_db_parent_dir(db_name: &str, db_path: &Path) -> Result<()> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
@@ -659,10 +665,7 @@ fn write_contention_retry_may_sleep(
     elapsed: std::time::Duration,
     backoff: std::time::Duration,
 ) -> bool {
-    let Some(remaining) = policy.contention_deadline.checked_sub(elapsed) else {
-        return false;
-    };
-    !remaining.is_zero() && remaining >= backoff.saturating_add(policy.busy_timeout)
+    elapsed.saturating_add(backoff) < policy.contention_deadline
 }
 
 fn write_contention_retry_may_start_now(
@@ -840,17 +843,22 @@ impl<M: DbSpec> TursoDb<M> {
         Self::open_without_migrations_at(db_path).await
     }
 
-    /// Open or create the database at an explicit path without running embedded
-    /// migrations.
-    ///
-    /// Parent directories are created automatically and the connection-open
-    /// retry policy is preserved. Runtime callers that use this path are
-    /// responsible for verifying schema readiness before query/write work.
     pub async fn open_without_migrations_at(db_path: impl AsRef<Path>) -> Result<Self> {
-        let db_name = M::db_name();
-        let db_path = db_path.as_ref().to_path_buf();
+        Self::open_at_path(db_path.as_ref(), OpenMode::CreateIfMissing).await
+    }
 
-        ensure_db_parent_dir(db_name, &db_path)?;
+    pub async fn open_existing_without_migrations_at(db_path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_at_path(db_path.as_ref(), OpenMode::ExistingReadOnly).await
+    }
+
+    async fn open_at_path(db_path: &Path, mode: OpenMode) -> Result<Self> {
+        let db_name = M::db_name();
+        let db_path = db_path.to_path_buf();
+
+        if mode == OpenMode::CreateIfMissing {
+            ensure_db_parent_dir(db_name, &db_path)?;
+        }
+        let read_only = mode == OpenMode::ExistingReadOnly;
 
         let retry_policy = resolve_connection_open_retry_policy::<M>();
         let busy_timeout = resolve_busy_timeout::<M>();
@@ -867,6 +875,7 @@ impl<M: DbSpec> TursoDb<M> {
                     })?;
                     let db = turso::Builder::new_local(path_str)
                         .experimental_multiprocess_wal(true)
+                        .read_only(read_only)
                         .build()
                         .await
                         .map_err(|e| {
@@ -1454,5 +1463,50 @@ mod database_kind_tests {
             busy_timeout_from_config::<RepositoryAgentTraceDbSpec>(None),
             Duration::from_secs(1)
         );
+    }
+}
+
+#[cfg(test)]
+mod write_contention_eligibility_tests {
+    use std::time::Duration;
+
+    use super::{
+        write_contention_retry_may_sleep, write_contention_retry_may_start_now,
+        WriteContentionPolicy,
+    };
+
+    #[test]
+    fn retry_eligibility_depends_only_on_backoff_ending_before_deadline() {
+        let policy = WriteContentionPolicy {
+            db_name: "agent_trace_db",
+            max_attempts: 3,
+            backoff_cap: Duration::from_millis(100),
+            busy_timeout: Duration::from_secs(1),
+            contention_deadline: Duration::from_millis(2250),
+        };
+
+        for (elapsed_ms, backoff_ms, expected) in [
+            (1185, 100, true),
+            (2200, 100, false),
+            (2250, 0, false),
+            (2249, 0, true),
+        ] {
+            let elapsed = Duration::from_millis(elapsed_ms);
+            let backoff = Duration::from_millis(backoff_ms);
+            assert_eq!(
+                write_contention_retry_may_sleep(policy, elapsed, backoff),
+                expected,
+                "elapsed={elapsed_ms}ms backoff={backoff_ms}ms"
+            );
+        }
+
+        assert!(write_contention_retry_may_start_now(
+            policy,
+            Duration::from_millis(2249)
+        ));
+        assert!(!write_contention_retry_may_start_now(
+            policy,
+            Duration::from_millis(2250)
+        ));
     }
 }

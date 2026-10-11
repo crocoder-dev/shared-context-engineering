@@ -85,6 +85,53 @@ fn ensure_repository_id_matches(stored_repository_id: &str, repository_id: &str)
     Ok(())
 }
 
+#[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "maintenance wiring lands in later tasks of context/plans/mutation-cursor-ref-reconciliation-wiring.md"
+)]
+pub enum ExistingRepositoryDbError {
+    Missing { path: PathBuf },
+    Unreadable(anyhow::Error),
+    IncompatibleSchema(anyhow::Error),
+    MissingMetadata,
+    RepositoryMismatch { stored: String, resolved: String },
+}
+
+impl std::fmt::Display for ExistingRepositoryDbError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExistingRepositoryDbError::Missing { path } => write!(
+                f,
+                "repository Agent Trace DB does not exist at '{}'. \
+                 {REPOSITORY_AGENT_TRACE_SCHEMA_SETUP_GUIDANCE}",
+                path.display()
+            ),
+            ExistingRepositoryDbError::Unreadable(source) => {
+                write!(f, "repository Agent Trace DB is unreadable: {source}")
+            }
+            ExistingRepositoryDbError::IncompatibleSchema(source) => {
+                write!(
+                    f,
+                    "repository Agent Trace DB schema is incompatible: {source}"
+                )
+            }
+            ExistingRepositoryDbError::MissingMetadata => write!(
+                f,
+                "repository Agent Trace DB metadata is missing or has no valid source-instance ID. \
+                 {REPOSITORY_AGENT_TRACE_SCHEMA_SETUP_GUIDANCE}"
+            ),
+            ExistingRepositoryDbError::RepositoryMismatch { stored, resolved } => write!(
+                f,
+                "repository Agent Trace DB metadata mismatch: stored repository ID {stored} \
+                 does not match resolved repository ID {resolved}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ExistingRepositoryDbError {}
+
 /// Repository-scoped Agent Trace database configuration.
 pub struct RepositoryAgentTraceDbSpec;
 
@@ -118,6 +165,105 @@ impl RepositoryAgentTraceDb {
         path: impl AsRef<std::path::Path>,
     ) -> Result<Self> {
         TursoDb::<RepositoryAgentTraceDbSpec>::open_without_migrations_at(path).await
+    }
+
+    #[allow(
+        dead_code,
+        reason = "maintenance wiring lands in later tasks of context/plans/mutation-cursor-ref-reconciliation-wiring.md"
+    )]
+    pub async fn open_verified_existing_at(
+        path: impl AsRef<std::path::Path>,
+        repository_id: &str,
+    ) -> std::result::Result<(Self, RepositoryMetadata), ExistingRepositoryDbError> {
+        Self::open_verified_existing_with(path.as_ref(), repository_id, || {}, || {}).await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn open_verified_existing_at_with_hooks(
+        path: &std::path::Path,
+        repository_id: &str,
+        before_open: impl FnOnce(),
+        after_open: impl FnOnce(),
+    ) -> std::result::Result<(Self, RepositoryMetadata), ExistingRepositoryDbError> {
+        Self::open_verified_existing_with(path, repository_id, before_open, after_open).await
+    }
+
+    pub async fn open_existing_schema_ready_at(
+        path: &std::path::Path,
+        before_open: impl FnOnce(),
+    ) -> std::result::Result<Self, ExistingRepositoryDbError> {
+        Self::open_existing_schema_ready_with(path, before_open, || {}).await
+    }
+
+    async fn open_existing_schema_ready_with(
+        path: &std::path::Path,
+        before_open: impl FnOnce(),
+        after_open: impl FnOnce(),
+    ) -> std::result::Result<Self, ExistingRepositoryDbError> {
+        before_open();
+        let opened =
+            TursoDb::<RepositoryAgentTraceDbSpec>::open_existing_without_migrations_at(path).await;
+        after_open();
+        let db = match opened {
+            Ok(db) => db,
+            Err(source) => {
+                return Err(match std::fs::symlink_metadata(path) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        ExistingRepositoryDbError::Missing {
+                            path: path.to_path_buf(),
+                        }
+                    }
+                    Ok(_) | Err(_) => ExistingRepositoryDbError::Unreadable(source),
+                });
+            }
+        };
+        db.ensure_schema_ready_for_hooks()
+            .await
+            .map_err(ExistingRepositoryDbError::IncompatibleSchema)?;
+        Ok(db)
+    }
+
+    async fn open_verified_existing_with(
+        path: &std::path::Path,
+        repository_id: &str,
+        before_open: impl FnOnce(),
+        after_open: impl FnOnce(),
+    ) -> std::result::Result<(Self, RepositoryMetadata), ExistingRepositoryDbError> {
+        let db = Self::open_existing_schema_ready_with(path, before_open, after_open).await?;
+        let metadata = db
+            .verify_existing_repository_metadata(repository_id)
+            .await?;
+        Ok((db, metadata))
+    }
+
+    #[allow(
+        dead_code,
+        reason = "maintenance wiring lands in later tasks of context/plans/mutation-cursor-ref-reconciliation-wiring.md"
+    )]
+    pub async fn verify_existing_repository_metadata(
+        &self,
+        repository_id: &str,
+    ) -> std::result::Result<RepositoryMetadata, ExistingRepositoryDbError> {
+        let Some((stored_repository_id, source_instance_id)) = self
+            .select_repository_metadata_row()
+            .await
+            .map_err(ExistingRepositoryDbError::Unreadable)?
+        else {
+            return Err(ExistingRepositoryDbError::MissingMetadata);
+        };
+        if stored_repository_id != repository_id {
+            return Err(ExistingRepositoryDbError::RepositoryMismatch {
+                stored: stored_repository_id,
+                resolved: repository_id.to_string(),
+            });
+        }
+        if !is_valid_source_instance_id(&source_instance_id) {
+            return Err(ExistingRepositoryDbError::MissingMetadata);
+        }
+        Ok(RepositoryMetadata {
+            repository_id: stored_repository_id,
+            source_instance_id,
+        })
     }
 
     /// Verify that the repository-scoped schema baseline already exists.

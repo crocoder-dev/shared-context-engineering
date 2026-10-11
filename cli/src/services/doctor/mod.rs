@@ -10,6 +10,10 @@ use crate::services::lifecycle::{
     lifecycle_providers, FixOutcome, HealthCategory, HealthFixability, HealthProblem,
     HealthProblemKind, HealthSeverity, LifecycleProvider, LifecycleProviderId,
 };
+use crate::services::mutation_trace::runtime::{
+    inspect_reconciliation_recommendation, run_explicit_reconciliation, ReconciliationFix,
+    ReconciliationRecommendation,
+};
 use crate::services::output_format::OutputFormat;
 use crate::services::setup;
 
@@ -60,6 +64,8 @@ struct DoctorDependencies<'a, G, S, C, P> {
 struct DoctorExecution {
     report: HookDoctorReport,
     fix_results: Vec<DoctorFixResultRecord>,
+    ref_reconciliation: Option<ReconciliationRecommendation>,
+    ref_reconciliation_fix: Option<ReconciliationFix>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -85,6 +91,8 @@ where
         &repository_root,
         &scoped_context,
         &mutation_scope_repair_seam::<crate::services::observability::traits::NoopLogger>,
+        &run_explicit_reconciliation,
+        &inspect_reconciliation_recommendation,
     )
     .await;
     render_report(request, &execution)
@@ -99,6 +107,8 @@ async fn execute_doctor_with_context(
         &str,
         Option<&crate::services::observability::traits::NoopLogger>,
     ) -> anyhow::Result<String>,
+    reconcile_seam: &impl std::ops::AsyncFn(&Path) -> ReconciliationFix,
+    recommendation_seam: &impl Fn(&Path) -> Option<ReconciliationRecommendation>,
 ) -> DoctorExecution {
     execute_doctor_with_lifecycle_providers(
         request,
@@ -113,6 +123,8 @@ async fn execute_doctor_with_context(
             probe_codex_hook_policy: &codex_hook_policy::probe_default,
         },
         mutation_scope_seam,
+        reconcile_seam,
+        recommendation_seam,
     )
     .await
 }
@@ -133,10 +145,9 @@ async fn execute_doctor_with_lifecycle_providers(
         &str,
         Option<&crate::services::observability::traits::NoopLogger>,
     ) -> anyhow::Result<String>,
+    reconcile_seam: &impl std::ops::AsyncFn(&Path) -> ReconciliationFix,
+    recommendation_seam: &impl Fn(&Path) -> Option<ReconciliationRecommendation>,
 ) -> DoctorExecution {
-    // Probed exactly once per doctor invocation, then reused for every
-    // Codex integration inspection below (initial report, `--fix`, and final
-    // report alike) instead of once per registration or once per report.
     let policy_readiness = (dependencies.probe_codex_hook_policy)();
 
     let providers = lifecycle_providers(true);
@@ -158,6 +169,8 @@ async fn execute_doctor_with_lifecycle_providers(
         return DoctorExecution {
             report: initial_report,
             fix_results: Vec::new(),
+            ref_reconciliation: recommendation_seam(repository_root),
+            ref_reconciliation_fix: None,
         };
     }
 
@@ -190,9 +203,53 @@ async fn execute_doctor_with_lifecycle_providers(
         &mutation_scope_repairs,
     ));
 
+    let reconciliation_fix = reconcile_seam(repository_root).await;
+    fix_results.push(reconciliation_fix_result(&reconciliation_fix));
+
     DoctorExecution {
         report: final_report,
         fix_results,
+        ref_reconciliation: None,
+        ref_reconciliation_fix: Some(reconciliation_fix),
+    }
+}
+
+fn reconciliation_fix_result(fix: &ReconciliationFix) -> DoctorFixResultRecord {
+    let (outcome, detail) = match fix {
+        ReconciliationFix::Completed(counts) => (
+            FixResult::Fixed,
+            format!(
+                "Snapshot ref reconciliation completed: deleted {}, retained {}, locally required {}.",
+                counts.deleted, counts.retained, counts.local_required
+            ),
+        ),
+        ReconciliationFix::CompletedStatePersistFailed { counts, warning } => (
+            FixResult::Fixed,
+            format!(
+                "Snapshot ref reconciliation completed: deleted {}, retained {}, locally required {}. Warning: {warning}",
+                counts.deleted, counts.retained, counts.local_required
+            ),
+        ),
+        ReconciliationFix::Failed {
+            kind,
+            message,
+            state_warning,
+        } => {
+            let mut detail = format!("Snapshot ref reconciliation failed ({kind}): {message}");
+            if let Some(warning) = state_warning {
+                detail = format!("{detail} Warning: {warning}");
+            }
+            (FixResult::Failed, detail)
+        }
+        ReconciliationFix::Busy => (
+            FixResult::Skipped,
+            "Snapshot ref reconciliation skipped: another mutation boundary or maintenance pass holds the worktree lock. Retry `sce doctor --fix`.".to_string(),
+        ),
+    };
+    DoctorFixResultRecord {
+        category: ProblemCategory::MutationScopeHealth,
+        outcome,
+        detail,
     }
 }
 
@@ -496,4 +553,134 @@ fn is_executable(metadata: &fs::Metadata) -> bool {
 #[cfg(not(unix))]
 fn is_executable(metadata: &fs::Metadata) -> bool {
     metadata.is_file()
+}
+
+#[cfg(test)]
+mod reconciliation_fix_tests {
+    use super::{reconciliation_fix_result, FixResult, ReconciliationFix};
+    use crate::services::mutation_trace::runtime::{ReconciliationCounts, StateWarning};
+
+    const COUNTS: ReconciliationCounts = ReconciliationCounts {
+        deleted: 3,
+        retained: 2,
+        local_required: 1,
+    };
+
+    fn not_applied() -> StateWarning {
+        StateWarning::NotApplied {
+            phase: "rename",
+            cause: "disk full".to_string(),
+        }
+    }
+
+    fn durability_uncertain() -> StateWarning {
+        StateWarning::DurabilityUncertain {
+            phase: "sync_parent_directory",
+            cause: "io error".to_string(),
+        }
+    }
+
+    #[test]
+    fn reconciliation_fix_results_render_expected_text() {
+        struct Case {
+            label: &'static str,
+            fix: ReconciliationFix,
+            outcome: FixResult,
+            required: Vec<&'static str>,
+            forbidden: Vec<&'static str>,
+        }
+        let cases = [
+            Case {
+                label: "completed",
+                fix: ReconciliationFix::Completed(COUNTS),
+                outcome: FixResult::Fixed,
+                required: vec![
+                    "Snapshot ref reconciliation completed: deleted 3, retained 2, locally required 1.",
+                ],
+                forbidden: vec!["Warning", "failed"],
+            },
+            Case {
+                label: "pre-rename persistence failure",
+                fix: ReconciliationFix::CompletedStatePersistFailed {
+                    counts: COUNTS,
+                    warning: not_applied(),
+                },
+                outcome: FixResult::Fixed,
+                required: vec![
+                    "deleted 3",
+                    "Maintenance-state update was not applied.",
+                    "disk full",
+                ],
+                forbidden: vec!["were not recorded", "failed"],
+            },
+            Case {
+                label: "post-rename persistence failure",
+                fix: ReconciliationFix::CompletedStatePersistFailed {
+                    counts: COUNTS,
+                    warning: durability_uncertain(),
+                },
+                outcome: FixResult::Fixed,
+                required: vec![
+                    "deleted 3",
+                    "Maintenance-state durability could not be confirmed.",
+                    "io error",
+                ],
+                forbidden: vec!["not applied", "were not recorded", "failed"],
+            },
+            Case {
+                label: "unreadable previous state",
+                fix: ReconciliationFix::CompletedStatePersistFailed {
+                    counts: COUNTS,
+                    warning: StateWarning::PreviousStateUnreadable {
+                        cause: "permission denied".to_string(),
+                    },
+                },
+                outcome: FixResult::Fixed,
+                required: vec!["deleted 3", "could not be read", "permission denied"],
+                forbidden: vec!["were not recorded", "failed"],
+            },
+            Case {
+                label: "failed pass",
+                fix: ReconciliationFix::Failed {
+                    kind: "agent_trace_db_missing",
+                    message: "db missing".to_string(),
+                    state_warning: Some(not_applied()),
+                },
+                outcome: FixResult::Failed,
+                required: vec![
+                    "agent_trace_db_missing",
+                    "db missing",
+                    "Maintenance-state update was not applied.",
+                ],
+                forbidden: vec!["completed"],
+            },
+            Case {
+                label: "busy pass",
+                fix: ReconciliationFix::Busy,
+                outcome: FixResult::Skipped,
+                required: vec!["skipped"],
+                forbidden: vec!["completed", "deleted"],
+            },
+        ];
+        for case in cases {
+            let record = reconciliation_fix_result(&case.fix);
+            assert_eq!(record.outcome, case.outcome, "{}", case.label);
+            for fragment in case.required {
+                assert!(
+                    record.detail.contains(fragment),
+                    "{}: missing {fragment:?} in {:?}",
+                    case.label,
+                    record.detail
+                );
+            }
+            for fragment in case.forbidden {
+                assert!(
+                    !record.detail.contains(fragment),
+                    "{}: unexpected {fragment:?} in {:?}",
+                    case.label,
+                    record.detail
+                );
+            }
+        }
+    }
 }
