@@ -1,6 +1,6 @@
 .direnv/
 node_modules/
-cli/target/
+cli/target*/
 cli/package-fallback/
 integrations/**/target/
 result*
