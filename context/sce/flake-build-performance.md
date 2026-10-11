@@ -33,6 +33,31 @@ rebuilding dependency artifacts or formatting.
 The `cli-generated-input` flake check verifies the payload roots and both
 inventories independently of Cargo compilation.
 
+## Rust test profile and focused Quint MBT
+
+Crane defaults to the release profile, including for `cargoTest` and
+`cargoClippy`. To avoid repeatedly optimizing the test binary, the flake now
+has two isolated sets of dependency artifacts:
+
+- `cargoArtifacts` remains release-profile, reused by native and release
+  package builds where applicable. Release optimization and embedding are
+  unchanged.
+- `cargoArtifactsTest` uses `CARGO_PROFILE = "test"` and
+  `CARGO_PROFILE_TEST_DEBUG = "line-tables-only"`. The same artifacts are
+  passed to `cli-tests`, `cli-clippy`, and the optional focused Quint MBT
+  runner, preventing accidental test/release profile cache mixing.
+
+The existing `checks.cli-tests` already includes `mutation_trace::mbt`.
+Therefore `nix flake check` runs this suite once rather than also building a
+second focused MBT check. The focused runner is available independently at
+`nix build .#mutation-trace-quint-connect -L`, and the Quint workflow calls
+that package when targeted testing is useful.
+
+**Cold-cache trade-off:** test and release dependency profiles produce
+different Cargo artifacts, so the first build may compile both sets. Subsequent
+test and Clippy runs reuse the test-profile cache. Benchmark cold and warm runs
+on both Linux and macOS before claiming a measured speedup.
+
 ## Benchmark method
 
 Measurements were taken on x86_64-linux with 8 logical cores, Nix 2.34.8, and a
