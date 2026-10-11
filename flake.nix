@@ -388,7 +388,13 @@
           src = craneLib.cleanCargoSource ./cli;
         };
 
-        cargoArtifacts = craneLib.buildDepsOnly cargoDepsArgs;
+        # Release consumers only need compiled dependencies, not check artifacts.
+        cargoArtifacts = craneLib.buildDepsOnly (
+          cargoDepsArgs
+          // {
+            buildPhaseCargoCommand = "cargoWithProfile build --locked";
+          }
+        );
 
         # Keep production artifacts on Crane's release profile. The test and
         # Clippy derivations use the unoptimized Cargo test profile with a
@@ -481,12 +487,19 @@
             CARGO_BUILD_TARGET = muslTarget;
           };
 
-        cargoArtifactsMusl = craneLibMusl.buildDepsOnly cargoDepsArgsMusl;
+        cargoArtifactsMusl = craneLibMusl.buildDepsOnly (
+          cargoDepsArgsMusl
+          // {
+            buildPhaseCargoCommand = "cargoWithProfile build --locked";
+          }
+        );
 
         scePackageMusl = craneLibMusl.buildPackage (
           (commonCargoArgs // muslEnvVars // releaseCommitArgs)
           // {
-            inherit cargoArtifactsMusl;
+            # Crane expects cargoArtifacts rather than cargoArtifactsMusl.
+            # Reuse the separately prepared musl dependency artifacts.
+            cargoArtifacts = cargoArtifactsMusl;
             nativeBuildInputs = [
               rustToolchainMusl
               pkgs.cmake
