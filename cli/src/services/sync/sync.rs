@@ -538,6 +538,8 @@ fn cursor_for_stream(cursors: &AgentTraceCursors, stream: IngestionStream) -> i6
 mod tests {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use std::time::Duration;
 
     use tokio::sync::oneshot;
@@ -547,12 +549,15 @@ mod tests {
     use crate::services::agent_trace_export::AgentTraceMessageExportRow;
     use crate::services::agent_trace_sync::control_plane::{
         AgentTraceIngestionBatchResponse, AuthenticatedControlPlaneClient, ControlPlaneError,
-        IngestionStream,
+        CredentialStore, IngestionStream,
     };
     use crate::services::agent_trace_sync::StreamSyncError;
+    use crate::services::auth::TokenResponse;
     use crate::services::sync::progress::NoopProgressReporter;
+    use crate::services::token_storage::StoredTokens;
 
     const NOT_COMPLETED_PROBE: Duration = Duration::from_millis(50);
+    const BACKLOG_ROWS: i64 = 5;
 
     #[tokio::test]
     async fn sibling_failure_does_not_cancel_in_flight_credential_save() {
@@ -766,6 +771,215 @@ mod tests {
         ));
         assert!(terminated.get());
         assert_eq!(sibling_ingests.get(), 0);
+    }
+
+    fn unreachable_client() -> AuthenticatedControlPlaneClient {
+        AuthenticatedControlPlaneClient::new(
+            reqwest::Client::builder()
+                .tls_certs_only(Vec::new())
+                .build()
+                .expect("test http client"),
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:1",
+            "client",
+        )
+    }
+
+    #[tokio::test]
+    async fn first_terminal_error_wins_when_sibling_also_fails_and_third_stream_stops_backlog() {
+        let client = unreachable_client();
+        let mut reporter = NoopProgressReporter;
+        let progress = Rc::new(RefCell::new(&mut reporter));
+        let terminated = Cell::new(false);
+        let in_flight = Cell::new(0usize);
+        let second_reads = Cell::new(0usize);
+        let second_ingests = Cell::new(0usize);
+        let third_reads = Cell::new(0usize);
+        let third_ingests = Cell::new(0usize);
+
+        let failing = sync_one_stream(
+            &client,
+            "repo",
+            "source",
+            IngestionStream::Messages,
+            0,
+            "messages",
+            async |cursor, _limit| Ok(vec![message_row(cursor + 1)]),
+            async |_request| {
+                while in_flight.get() < 2 {
+                    tokio::task::yield_now().await;
+                }
+                Err(ControlPlaneError::Forbidden("denied".to_string()))
+            },
+            Rc::clone(&progress),
+            &terminated,
+        );
+        let second_failing = sync_one_stream(
+            &client,
+            "repo",
+            "source",
+            IngestionStream::Parts,
+            0,
+            "parts",
+            async |cursor, _limit| {
+                second_reads.set(second_reads.get() + 1);
+                Ok((cursor < BACKLOG_ROWS)
+                    .then(|| message_row(cursor + 1))
+                    .into_iter()
+                    .collect())
+            },
+            async |_request| {
+                second_ingests.set(second_ingests.get() + 1);
+                in_flight.set(in_flight.get() + 1);
+                while !terminated.get() {
+                    tokio::task::yield_now().await;
+                }
+                Err(ControlPlaneError::AuthenticationFailed(
+                    "expired".to_string(),
+                ))
+            },
+            Rc::clone(&progress),
+            &terminated,
+        );
+        let backlogged = sync_one_stream(
+            &client,
+            "repo",
+            "source",
+            IngestionStream::AgentTraces,
+            0,
+            "agent_traces",
+            async |cursor, _limit| {
+                third_reads.set(third_reads.get() + 1);
+                Ok((cursor < BACKLOG_ROWS)
+                    .then(|| message_row(cursor + 1))
+                    .into_iter()
+                    .collect())
+            },
+            async |request| {
+                third_ingests.set(third_ingests.get() + 1);
+                in_flight.set(in_flight.get() + 1);
+                while !terminated.get() {
+                    tokio::task::yield_now().await;
+                }
+                Ok(AgentTraceIngestionBatchResponse {
+                    accepted: request.rows.len(),
+                    cursor: request.rows[0].source_row_id,
+                })
+            },
+            Rc::clone(&progress),
+            &terminated,
+        );
+
+        let result = join_three_to_completion(failing, second_failing, backlogged).await;
+
+        assert!(matches!(
+            result,
+            Err(TraceSyncError::Stream {
+                stream: "messages",
+                source: StreamSyncError::Terminal(ControlPlaneError::Forbidden(_)),
+            })
+        ));
+        assert_eq!(second_reads.get(), 1);
+        assert_eq!(second_ingests.get(), 1);
+        assert_eq!(third_reads.get(), 1);
+        assert_eq!(third_ingests.get(), 1);
+    }
+
+    struct CountingEmptyCredentialStore {
+        loads: Arc<AtomicUsize>,
+    }
+
+    impl CredentialStore for CountingEmptyCredentialStore {
+        async fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
+            self.loads.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        }
+
+        async fn save(&self, _token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
+            unreachable!("no refresh token is ever loaded")
+        }
+    }
+
+    #[tokio::test]
+    async fn ambiguous_sibling_batch_after_termination_keeps_first_error_after_one_state_attempt() {
+        let loads = Arc::new(AtomicUsize::new(0));
+        let client = AuthenticatedControlPlaneClient::with_credential_store(
+            reqwest::Client::builder()
+                .tls_certs_only(Vec::new())
+                .build()
+                .expect("test http client"),
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:1",
+            "client",
+            CountingEmptyCredentialStore {
+                loads: Arc::clone(&loads),
+            },
+        );
+        let mut reporter = NoopProgressReporter;
+        let progress = Rc::new(RefCell::new(&mut reporter));
+        let terminated = Cell::new(false);
+        let sibling_ingest_started = Cell::new(false);
+        let sibling_reads = Cell::new(0usize);
+        let sibling_ingests = Cell::new(0usize);
+
+        let failing = sync_one_stream(
+            &client,
+            "repo",
+            "source",
+            IngestionStream::Messages,
+            0,
+            "messages",
+            async |cursor, _limit| Ok(vec![message_row(cursor + 1)]),
+            async |_request| {
+                while !sibling_ingest_started.get() {
+                    tokio::task::yield_now().await;
+                }
+                Err(ControlPlaneError::Forbidden("denied".to_string()))
+            },
+            Rc::clone(&progress),
+            &terminated,
+        );
+        let sibling = sync_one_stream(
+            &client,
+            "repo",
+            "source",
+            IngestionStream::Parts,
+            0,
+            "parts",
+            async |cursor, _limit| {
+                sibling_reads.set(sibling_reads.get() + 1);
+                Ok((cursor < BACKLOG_ROWS)
+                    .then(|| message_row(cursor + 1))
+                    .into_iter()
+                    .collect())
+            },
+            async |_request| {
+                sibling_ingests.set(sibling_ingests.get() + 1);
+                sibling_ingest_started.set(true);
+                while !terminated.get() {
+                    tokio::task::yield_now().await;
+                }
+                Err::<AgentTraceIngestionBatchResponse, _>(ControlPlaneError::ServerError(
+                    "unavailable".to_string(),
+                ))
+            },
+            Rc::clone(&progress),
+            &terminated,
+        );
+        let idle = async { Ok::<_, TraceSyncError>(()) };
+
+        let result = join_three_to_completion(failing, sibling, idle).await;
+
+        assert!(matches!(
+            result,
+            Err(TraceSyncError::Stream {
+                stream: "messages",
+                source: StreamSyncError::Terminal(ControlPlaneError::Forbidden(_)),
+            })
+        ));
+        assert_eq!(sibling_reads.get(), 1);
+        assert_eq!(sibling_ingests.get(), 1);
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
     }
 }
 
