@@ -49,6 +49,10 @@ impl ServiceLifecycle for AuthDbLifecycle {
     }
 
     async fn setup<C: HasRepoRoot>(&self, _ctx: &C) -> Result<SetupOutcome> {
+        if auth_db_path()?.exists() {
+            return Ok(SetupOutcome::default());
+        }
+
         AuthDb::new()
             .await
             .context("Auth DB lifecycle setup failed while initializing auth DB")?;
