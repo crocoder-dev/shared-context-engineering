@@ -537,19 +537,24 @@ fn cursor_for_stream(cursors: &AgentTraceCursors, stream: IngestionStream) -> i6
 #[cfg(test)]
 mod tests {
     use std::cell::{Cell, RefCell};
+    use std::collections::{HashMap, VecDeque};
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{TcpListener, TcpStream};
     use std::rc::Rc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-    use std::time::Duration;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use tokio::sync::oneshot;
+    use serde_json::{json, Value};
+    use tokio::sync::{oneshot, Notify};
 
-    use super::{join_three_to_completion, sync_one_stream, TraceSyncError};
+    use super::{join_three_to_completion, sync_one_stream, StreamSyncReport, TraceSyncError};
     use crate::services::agent_trace_db::MessageRole;
     use crate::services::agent_trace_export::AgentTraceMessageExportRow;
     use crate::services::agent_trace_sync::control_plane::{
-        AgentTraceIngestionBatchResponse, AuthenticatedControlPlaneClient, ControlPlaneError,
-        CredentialStore, IngestionStream,
+        AgentTraceIngestionBatchRequest, AgentTraceIngestionBatchResponse,
+        AuthenticatedControlPlaneClient, ControlPlaneError, CredentialStore, IngestionStream,
     };
     use crate::services::agent_trace_sync::StreamSyncError;
     use crate::services::auth::TokenResponse;
@@ -558,6 +563,9 @@ mod tests {
 
     const NOT_COMPLETED_PROBE: Duration = Duration::from_millis(50);
     const BACKLOG_ROWS: i64 = 5;
+    const TEST_BATCH_TIMEOUT: Duration = Duration::from_millis(500);
+    const TEST_DEADLINE: Duration = Duration::from_secs(10);
+    const STALL_SAFETY_BOUND: Duration = Duration::from_secs(10);
 
     #[tokio::test]
     async fn sibling_failure_does_not_cancel_in_flight_credential_save() {
@@ -621,86 +629,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_stream_failure_stops_sibling_after_its_in_flight_batch() {
-        let client = AuthenticatedControlPlaneClient::new(
-            reqwest::Client::builder()
-                .tls_certs_only(Vec::new())
-                .build()
-                .expect("test http client"),
-            "http://127.0.0.1:1",
-            "http://127.0.0.1:1",
-            "client",
-        );
-        let mut reporter = NoopProgressReporter;
-        let progress = Rc::new(RefCell::new(&mut reporter));
-        let terminated = Cell::new(false);
-        let sibling_ingest_started = Cell::new(false);
-        let terminal_observed = Cell::new(false);
-        let sibling_reads = Cell::new(0usize);
-        let sibling_ingests = Cell::new(0usize);
-        let sibling_ingest_completed = Cell::new(false);
-
-        let failing = sync_one_stream(
-            &client,
-            "repo",
-            "source",
-            IngestionStream::Messages,
-            0,
-            "messages",
-            async |cursor, _limit| Ok(vec![message_row(cursor + 1)]),
-            async |_request| {
-                while !sibling_ingest_started.get() {
-                    tokio::task::yield_now().await;
-                }
-                terminal_observed.set(true);
-                Err(ControlPlaneError::Forbidden("denied".to_string()))
-            },
-            Rc::clone(&progress),
-            &terminated,
-        );
-        let sibling = sync_one_stream(
-            &client,
-            "repo",
-            "source",
-            IngestionStream::Parts,
-            0,
-            "parts",
-            async |cursor, _limit| {
-                sibling_reads.set(sibling_reads.get() + 1);
-                Ok(vec![message_row(cursor + 1)])
-            },
-            async |request| {
-                sibling_ingests.set(sibling_ingests.get() + 1);
-                sibling_ingest_started.set(true);
-                while !terminal_observed.get() {
-                    tokio::task::yield_now().await;
-                }
-                sibling_ingest_completed.set(true);
-                Ok(AgentTraceIngestionBatchResponse {
-                    accepted: request.rows.len(),
-                    cursor: request.rows[0].source_row_id,
-                })
-            },
-            Rc::clone(&progress),
-            &terminated,
-        );
-        let idle = async { Ok::<_, TraceSyncError>(()) };
-
-        let result = join_three_to_completion(failing, sibling, idle).await;
-
-        assert!(matches!(
-            result,
-            Err(TraceSyncError::Stream {
-                stream: "messages",
-                source: StreamSyncError::Terminal(ControlPlaneError::Forbidden(_)),
-            })
-        ));
-        assert!(sibling_ingest_completed.get());
-        assert_eq!(sibling_ingests.get(), 1);
-        assert_eq!(sibling_reads.get(), 1);
-    }
-
-    #[tokio::test]
     async fn terminal_stream_failure_discards_sibling_rows_read_after_termination() {
         let client = AuthenticatedControlPlaneClient::new(
             reqwest::Client::builder()
@@ -746,7 +674,7 @@ mod tests {
                 while !terminated.get() {
                     tokio::task::yield_now().await;
                 }
-                Ok(vec![message_row(cursor + 1)])
+                Ok(backlog_after(cursor, BACKLOG_ROWS))
             },
             async |request| {
                 sibling_ingests.set(sibling_ingests.get() + 1);
@@ -760,7 +688,12 @@ mod tests {
         );
         let idle = async { Ok::<_, TraceSyncError>(()) };
 
-        let result = join_three_to_completion(failing, sibling, idle).await;
+        let result = tokio::time::timeout(
+            TEST_DEADLINE,
+            join_three_to_completion(failing, sibling, idle),
+        )
+        .await
+        .expect("sync finishes within the test deadline");
 
         assert!(matches!(
             result,
@@ -980,6 +913,387 @@ mod tests {
         assert_eq!(sibling_reads.get(), 1);
         assert_eq!(sibling_ingests.get(), 1);
         assert_eq!(loads.load(Ordering::SeqCst), 1);
+    }
+
+    struct FixedCredentialStore;
+
+    impl CredentialStore for FixedCredentialStore {
+        async fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
+            Ok(Some(StoredTokens {
+                access_token: "access".to_string(),
+                token_type: "Bearer".to_string(),
+                expires_in: 3600,
+                refresh_token: "refresh".to_string(),
+                scope: None,
+                stored_at_unix_seconds: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("clock after epoch")
+                    .as_secs(),
+            }))
+        }
+
+        async fn save(&self, _token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
+            unreachable!("fixed credentials never refresh")
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum BatchReply {
+        Accept,
+        Stall,
+        CommitThenStall,
+        HeadersThenStall,
+    }
+
+    #[derive(Default)]
+    struct ScriptedShared {
+        script: Mutex<VecDeque<BatchReply>>,
+        committed: Mutex<HashMap<String, i64>>,
+        batch_requests: Mutex<Vec<(String, i64)>>,
+        state_requests: AtomicUsize,
+        batch_stalled: Notify,
+    }
+
+    struct ScriptedControlPlane {
+        base_url: String,
+        shared: Arc<ScriptedShared>,
+    }
+
+    impl ScriptedControlPlane {
+        fn start(script: &[BatchReply]) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind scripted control plane");
+            let base_url = format!("http://{}", listener.local_addr().expect("server addr"));
+            let shared = Arc::new(ScriptedShared {
+                script: Mutex::new(script.iter().copied().collect()),
+                ..ScriptedShared::default()
+            });
+            let thread_shared = Arc::clone(&shared);
+            thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(stream) = stream else {
+                        continue;
+                    };
+                    let shared = Arc::clone(&thread_shared);
+                    thread::spawn(move || shared.handle(stream));
+                }
+            });
+            Self { base_url, shared }
+        }
+
+        fn client(&self) -> AuthenticatedControlPlaneClient<FixedCredentialStore> {
+            AuthenticatedControlPlaneClient::with_credential_store(
+                reqwest::Client::builder()
+                    .tls_certs_only(Vec::new())
+                    .build()
+                    .expect("test http client"),
+                self.base_url.clone(),
+                "http://127.0.0.1:1",
+                "client",
+                FixedCredentialStore,
+            )
+            .with_batch_timeout(TEST_BATCH_TIMEOUT)
+        }
+
+        fn expected_cursors(&self, stream: &str) -> Vec<i64> {
+            self.shared
+                .batch_requests
+                .lock()
+                .expect("batch requests lock")
+                .iter()
+                .filter(|(name, _)| name == stream)
+                .map(|(_, cursor)| *cursor)
+                .collect()
+        }
+
+        fn state_requests(&self) -> usize {
+            self.shared.state_requests.load(Ordering::SeqCst)
+        }
+    }
+
+    impl ScriptedShared {
+        fn handle(&self, mut stream: TcpStream) {
+            let Some((path, body)) = read_scripted_request(&stream) else {
+                return;
+            };
+
+            if path.ends_with("/state") {
+                self.state_requests.fetch_add(1, Ordering::SeqCst);
+                let payload = {
+                    let committed = self.committed.lock().expect("committed lock");
+                    let cursor = |name: &str| committed.get(name).copied().unwrap_or(0);
+                    json!({"cursors": {
+                        "messages": cursor("messages"),
+                        "parts": cursor("parts"),
+                        "diffTraces": 0,
+                        "agentTraces": cursor("agent_traces"),
+                    }})
+                };
+                write_scripted_response(&mut stream, 200, &payload);
+                return;
+            }
+
+            let stream_name = body["stream"].as_str().unwrap_or_default().to_string();
+            let rows = body["rows"].as_array().cloned().unwrap_or_default();
+            let last_row_id = rows
+                .last()
+                .and_then(|row| row["sourceRowId"].as_i64())
+                .unwrap_or(0);
+            self.batch_requests
+                .lock()
+                .expect("batch requests lock")
+                .push((
+                    stream_name.clone(),
+                    body["expectedCursor"].as_i64().unwrap_or(i64::MIN),
+                ));
+            let reply = self.script.lock().expect("script lock").pop_front();
+
+            match reply {
+                Some(BatchReply::Accept) => {
+                    self.commit(&stream_name, last_row_id);
+                    write_scripted_response(
+                        &mut stream,
+                        200,
+                        &json!({"accepted": rows.len(), "cursor": last_row_id}),
+                    );
+                }
+                Some(BatchReply::Stall) => self.stall(stream),
+                Some(BatchReply::CommitThenStall) => {
+                    self.commit(&stream_name, last_row_id);
+                    self.stall(stream);
+                }
+                Some(BatchReply::HeadersThenStall) => {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 64\r\n\r\n{",
+                    );
+                    let _ = stream.flush();
+                    self.stall(stream);
+                }
+                None => write_scripted_response(
+                    &mut stream,
+                    500,
+                    &json!({"error": "no scripted batch reply"}),
+                ),
+            }
+        }
+
+        fn commit(&self, stream: &str, cursor: i64) {
+            self.committed
+                .lock()
+                .expect("committed lock")
+                .insert(stream.to_string(), cursor);
+        }
+
+        fn stall(&self, mut stream: TcpStream) {
+            self.batch_stalled.notify_one();
+            let _ = stream.set_read_timeout(Some(STALL_SAFETY_BOUND));
+            let mut buffer = [0u8; 64];
+            while matches!(stream.read(&mut buffer), Ok(read) if read > 0) {}
+        }
+    }
+
+    fn read_scripted_request(stream: &TcpStream) -> Option<(String, Value)> {
+        let mut reader = BufReader::new(stream.try_clone().ok()?);
+        let mut request_line = String::new();
+        reader.read_line(&mut request_line).ok()?;
+        let path = request_line.split_whitespace().nth(1)?.to_string();
+        let mut content_length = 0usize;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            let line = line.trim_end_matches(['\r', '\n']);
+            if line.is_empty() {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':') {
+                if name.eq_ignore_ascii_case("content-length") {
+                    content_length = value.trim().parse().unwrap_or(0);
+                }
+            }
+        }
+        let mut body = vec![0u8; content_length];
+        reader.read_exact(&mut body).ok()?;
+        Some((path, serde_json::from_slice(&body).unwrap_or(Value::Null)))
+    }
+
+    fn write_scripted_response(stream: &mut TcpStream, status: u16, payload: &Value) {
+        let payload = payload.to_string();
+        let reason = if status == 200 {
+            "OK"
+        } else {
+            "Internal Server Error"
+        };
+        let response = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+            payload.len()
+        );
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+    }
+
+    fn backlog_after(cursor: i64, rows: i64) -> Vec<AgentTraceMessageExportRow> {
+        (cursor < rows)
+            .then(|| message_row(cursor + 1))
+            .into_iter()
+            .collect()
+    }
+
+    async fn ingest_single_message(
+        client: &AuthenticatedControlPlaneClient<FixedCredentialStore>,
+    ) -> Result<AgentTraceIngestionBatchResponse, ControlPlaneError> {
+        let request = AgentTraceIngestionBatchRequest {
+            repository_id: "repo".to_string(),
+            source_instance_id: "source".to_string(),
+            stream: IngestionStream::Messages,
+            expected_cursor: 0,
+            rows: vec![message_row(1)],
+        };
+        tokio::time::timeout(TEST_DEADLINE, client.ingest_messages(&request))
+            .await
+            .expect("batch request finishes within the test deadline")
+    }
+
+    async fn sync_messages_backlog(
+        client: &AuthenticatedControlPlaneClient<FixedCredentialStore>,
+        rows: i64,
+    ) -> Result<StreamSyncReport, TraceSyncError> {
+        let mut reporter = NoopProgressReporter;
+        let terminated = Cell::new(false);
+        let sync = sync_one_stream(
+            client,
+            "repo",
+            "source",
+            IngestionStream::Messages,
+            0,
+            "messages",
+            async |cursor, _limit| Ok(backlog_after(cursor, rows)),
+            async |request| client.ingest_messages(&request).await,
+            Rc::new(RefCell::new(&mut reporter)),
+            &terminated,
+        );
+        tokio::time::timeout(TEST_DEADLINE, sync)
+            .await
+            .expect("sync finishes within the test deadline")
+    }
+
+    #[tokio::test]
+    async fn stalled_batch_request_times_out_as_transport_error() {
+        let server = ScriptedControlPlane::start(&[BatchReply::Stall]);
+
+        let error = ingest_single_message(&server.client())
+            .await
+            .expect_err("stalled batch times out");
+
+        assert!(
+            matches!(error, ControlPlaneError::Transport(_)),
+            "{error:?}"
+        );
+        assert_eq!(server.expected_cursors("messages"), [0]);
+    }
+
+    #[tokio::test]
+    async fn stalled_batch_response_body_times_out_as_transport_error() {
+        let server = ScriptedControlPlane::start(&[BatchReply::HeadersThenStall]);
+
+        let error = ingest_single_message(&server.client())
+            .await
+            .expect_err("stalled batch body times out");
+
+        assert!(
+            matches!(error, ControlPlaneError::Transport(_)),
+            "{error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn timed_out_batch_committed_by_server_reconciles_without_resending() {
+        let server = ScriptedControlPlane::start(&[BatchReply::CommitThenStall]);
+
+        let report = sync_messages_backlog(&server.client(), 1)
+            .await
+            .expect("sync converges from /state");
+
+        assert_eq!(report.final_cursor, 1);
+        assert_eq!(report.uploaded, 0);
+        assert_eq!(report.batches, 0);
+        assert_eq!(server.expected_cursors("messages"), [0]);
+        assert_eq!(server.state_requests(), 1);
+    }
+
+    #[tokio::test]
+    async fn timed_out_batch_not_committed_by_server_is_retried() {
+        let server = ScriptedControlPlane::start(&[BatchReply::Stall, BatchReply::Accept]);
+
+        let report = sync_messages_backlog(&server.client(), 1)
+            .await
+            .expect("sync converges after retry");
+
+        assert_eq!(report.final_cursor, 1);
+        assert_eq!(report.uploaded, 1);
+        assert_eq!(report.batches, 1);
+        assert_eq!(server.expected_cursors("messages"), [0, 0]);
+        assert_eq!(server.state_requests(), 1);
+    }
+
+    #[tokio::test]
+    async fn terminal_failure_is_reported_after_sibling_batch_times_out() {
+        let server = ScriptedControlPlane::start(&[BatchReply::Stall]);
+        let client = server.client();
+        let mut reporter = NoopProgressReporter;
+        let progress = Rc::new(RefCell::new(&mut reporter));
+        let terminated = Cell::new(false);
+        let sibling_reads = Cell::new(0usize);
+
+        let failing = sync_one_stream(
+            &client,
+            "repo",
+            "source",
+            IngestionStream::Messages,
+            0,
+            "messages",
+            async |cursor, _limit| Ok(vec![message_row(cursor + 1)]),
+            async |_request| {
+                server.shared.batch_stalled.notified().await;
+                Err(ControlPlaneError::Forbidden("denied".to_string()))
+            },
+            Rc::clone(&progress),
+            &terminated,
+        );
+        let stalled = sync_one_stream(
+            &client,
+            "repo",
+            "source",
+            IngestionStream::Parts,
+            0,
+            "parts",
+            async |cursor, _limit| {
+                sibling_reads.set(sibling_reads.get() + 1);
+                Ok(backlog_after(cursor, BACKLOG_ROWS))
+            },
+            async |request| client.ingest_messages(&request).await,
+            Rc::clone(&progress),
+            &terminated,
+        );
+        let idle = async { Ok::<_, TraceSyncError>(()) };
+
+        let result = tokio::time::timeout(
+            TEST_DEADLINE,
+            join_three_to_completion(failing, stalled, idle),
+        )
+        .await
+        .expect("sync finishes within the test deadline");
+
+        assert!(matches!(
+            result,
+            Err(TraceSyncError::Stream {
+                stream: "messages",
+                source: StreamSyncError::Terminal(ControlPlaneError::Forbidden(_)),
+            })
+        ));
+        assert_eq!(sibling_reads.get(), 1);
+        assert_eq!(server.expected_cursors("parts"), [0]);
+        assert_eq!(server.state_requests(), 1);
     }
 }
 
