@@ -6,8 +6,8 @@
   "integrations": {
     "optional_workflows": [],
     "target": [
-      "claude",
       "opencode",
+      "claude",
       "pi",
       "codex"
     ]

@@ -1,39 +1,49 @@
 use anyhow::{bail, Result};
-use inquire::{Confirm, InquireError, MultiSelect, Select};
+use inquire::list_option::ListOption;
+use inquire::validator::Validation;
+use inquire::{Confirm, InquireError, MultiSelect};
 
 use crate::services::style::{prompt_label, prompt_value_with_color_policy};
 
-use super::{OptionalWorkflow, SetupDispatch, SetupMode, SetupPromptTarget, SetupTarget};
+use super::{ConcreteSetupTarget, OptionalWorkflow, SetupPromptTarget};
 
-fn proceed(target: SetupTarget) -> SetupDispatch {
-    SetupDispatch::Proceed {
-        mode: SetupMode::NonInteractive(target),
-        optional_workflows: None,
-        agent_trace_auto_sync: None,
-        attribution_hooks_enabled: None,
-    }
-}
+const SETUP_PROMPT_TARGETS: [ConcreteSetupTarget; 4] = [
+    ConcreteSetupTarget::OpenCode,
+    ConcreteSetupTarget::Claude,
+    ConcreteSetupTarget::Pi,
+    ConcreteSetupTarget::Codex,
+];
 
-pub(super) fn prompt_target() -> Result<SetupDispatch> {
-    let options = vec![
-        SetupPromptTarget::OpenCode,
-        SetupPromptTarget::Claude,
-        SetupPromptTarget::Pi,
-        SetupPromptTarget::Codex,
-        SetupPromptTarget::All,
-    ];
+const SETUP_TARGET_REQUIRED_MESSAGE: &str = "Select at least one setup target.";
 
-    let selection = Select::new(&setup_prompt_title(), options).prompt();
+pub(super) fn prompt_targets(
+    defaults: &[ConcreteSetupTarget],
+) -> Result<Option<Vec<ConcreteSetupTarget>>> {
+    let options: Vec<SetupPromptTarget> = SETUP_PROMPT_TARGETS
+        .iter()
+        .map(|target| SetupPromptTarget(*target))
+        .collect();
+    let default_indices: Vec<usize> = SETUP_PROMPT_TARGETS
+        .iter()
+        .enumerate()
+        .filter(|(_, target)| defaults.contains(target))
+        .map(|(index, _)| index)
+        .collect();
+
+    let selection = MultiSelect::new(&setup_prompt_title(), options)
+        .with_default(&default_indices)
+        .with_validator(|selected: &[ListOption<&SetupPromptTarget>]| {
+            if selected.is_empty() {
+                Ok(Validation::Invalid(SETUP_TARGET_REQUIRED_MESSAGE.into()))
+            } else {
+                Ok(Validation::Valid)
+            }
+        })
+        .prompt();
 
     match selection {
-        Ok(SetupPromptTarget::OpenCode) => Ok(proceed(SetupTarget::OpenCode)),
-        Ok(SetupPromptTarget::Claude) => Ok(proceed(SetupTarget::Claude)),
-        Ok(SetupPromptTarget::Pi) => Ok(proceed(SetupTarget::Pi)),
-        Ok(SetupPromptTarget::Codex) => Ok(proceed(SetupTarget::Codex)),
-        Ok(SetupPromptTarget::All) => Ok(proceed(SetupTarget::All)),
-        Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
-            Ok(SetupDispatch::Cancelled)
-        }
+        Ok(selected) => Ok(Some(selected.into_iter().map(|row| row.0).collect())),
+        Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => Ok(None),
         Err(InquireError::NotTTY) => bail!(
             "Interactive setup requires a TTY. Re-run with '--non-interactive' and one of '--opencode', '--claude', '--pi', '--codex', or '--all'."
         ),
@@ -159,7 +169,7 @@ pub(super) fn optional_workflow_row_label_with_color_policy(
 }
 
 pub(super) fn setup_prompt_title() -> String {
-    prompt_label("Select setup target")
+    prompt_label("Select setup targets")
 }
 
 pub(super) fn setup_prompt_target_label(target: SetupPromptTarget) -> String {
@@ -170,12 +180,11 @@ pub(super) fn setup_prompt_target_label_with_color_policy(
     target: SetupPromptTarget,
     color_enabled: bool,
 ) -> String {
-    let label = match target {
-        SetupPromptTarget::OpenCode => "OpenCode",
-        SetupPromptTarget::Claude => "Claude",
-        SetupPromptTarget::Pi => "Pi",
-        SetupPromptTarget::Codex => "Codex",
-        SetupPromptTarget::All => "All (OpenCode + Claude + Pi + Codex)",
+    let label = match target.0 {
+        ConcreteSetupTarget::OpenCode => "OpenCode",
+        ConcreteSetupTarget::Claude => "Claude",
+        ConcreteSetupTarget::Pi => "Pi",
+        ConcreteSetupTarget::Codex => "Codex",
     };
 
     prompt_value_with_color_policy(label, color_enabled)
