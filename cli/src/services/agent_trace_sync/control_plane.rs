@@ -8,6 +8,7 @@
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::anyhow;
 use reqwest::StatusCode;
@@ -108,6 +109,8 @@ pub struct AgentTraceIngestionBatchResponse {
 const STATE_PATH: &str = "agent-trace/ingestion/state";
 const BATCH_PATH: &str = "agent-trace/ingestion/batch";
 const ME_PATH: &str = "me";
+
+const BATCH_REQUEST_TIMEOUT: Duration = Duration::from_mins(1);
 
 const STATE_RETRY_POLICY: RetryPolicy = RetryPolicy::builtin(1, 60_000, 250, 2_000);
 
@@ -252,6 +255,7 @@ pub struct AuthenticatedControlPlaneClient<S = SystemCredentialStore> {
     workos_client_id: String,
     credential_store: Arc<S>,
     refresh_lock: Arc<tokio::sync::Mutex<()>>,
+    batch_timeout: Duration,
 }
 
 /// Response body for `GET /me`.
@@ -319,7 +323,14 @@ impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
             workos_client_id: workos_client_id.into(),
             credential_store: Arc::new(credential_store),
             refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
+            batch_timeout: BATCH_REQUEST_TIMEOUT,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_batch_timeout(mut self, batch_timeout: Duration) -> Self {
+        self.batch_timeout = batch_timeout;
+        self
     }
 
     pub(crate) async fn wait_for_pending_refresh(&self) {
@@ -411,7 +422,13 @@ impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
     {
         let url = self.endpoint(BATCH_PATH);
         let response = self
-            .execute_authenticated(|token| self.http.post(&url).bearer_auth(token).json(request))
+            .execute_authenticated(|token| {
+                self.http
+                    .post(&url)
+                    .bearer_auth(token)
+                    .timeout(self.batch_timeout)
+                    .json(request)
+            })
             .await?;
         classify_response(response).await
     }
@@ -582,10 +599,13 @@ where
 {
     let status = response.status();
     if status.is_success() {
-        return response
-            .json::<T>()
-            .await
-            .map_err(|error| ControlPlaneError::InvalidResponse(error.to_string()));
+        return response.json::<T>().await.map_err(|error| {
+            if error.is_timeout() {
+                ControlPlaneError::Transport(error.to_string())
+            } else {
+                ControlPlaneError::InvalidResponse(error.to_string())
+            }
+        });
     }
 
     let body = response
