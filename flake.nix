@@ -403,17 +403,50 @@
         # The deps-only derivation must also prepare test/dev-dependency artifacts.
         # The usual cargo build is redundant here: the checked targets are followed
         # by cargo test --no-run during the check phase.
+        # Only test/Clippy vendoring removes the Turso kits' C ABI outputs.
+        # Native and release Cargo vendoring remains untouched.
+        testCargoVendorDir = craneLib.vendorCargoDeps {
+          cargoLock = ./cli/Cargo.lock;
+          overrideVendorCargoPackage = package: drv:
+            if builtins.elem package.name [ "turso_sdk_kit" "turso_sync_sdk_kit" ] then
+              assert package.version == "0.8.1";
+              drv.overrideAttrs (old: {
+                postPatch = (old.postPatch or "") + ''
+                  ${pkgs.python3}/bin/python3 - <<'PY'
+                  from pathlib import Path
+                  import re
+
+                  manifest = Path("Cargo.toml")
+                  source = manifest.read_text()
+                  pattern = re.compile(r"(?m)^crate-type[ \t]*=[ \t]*\[[^\]]*\]")
+                  matches = list(pattern.finditer(source))
+                  if len(matches) != 1:
+                      raise SystemExit("Expected exactly one Turso crate-type declaration")
+                  match = matches[0]
+                  kinds = re.findall(r'"([^"]+)"', match.group())
+                  if sorted(kinds) != ["cdylib", "lib", "staticlib"]:
+                      raise SystemExit(f"Unexpected Turso crate types: {kinds}")
+                  manifest.write_text(source[:match.start()] + 'crate-type = ["lib"]' + source[match.end():])
+                  PY
+                '';
+              })
+            else
+              drv;
+        };
+
         cargoArtifactsTest = craneLib.buildDepsOnly (
           cargoDepsArgs
           // testProfileArgs
           // {
             pname = "sce-test-deps";
+            cargoVendorDir = testCargoVendorDir;
             doCheck = true;
             buildPhaseCargoCommand = "cargoWithProfile check --locked --all-targets";
           }
         );
 
         testCargoArgs = commonCargoArgs // testProfileArgs // {
+          cargoVendorDir = testCargoVendorDir;
           cargoArtifacts = cargoArtifactsTest;
         };
 
