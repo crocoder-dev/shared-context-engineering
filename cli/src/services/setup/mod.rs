@@ -8,6 +8,7 @@ use std::{
 use crate::services::style::{label, success, value};
 use crate::services::{default_paths, default_paths::RepoPaths};
 
+pub(crate) mod claude_telemetry;
 pub mod command;
 pub(crate) mod config_merge;
 pub(crate) mod hook_merge;
