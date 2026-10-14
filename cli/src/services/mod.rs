@@ -35,5 +35,6 @@ pub mod setup;
 pub mod structured_patch;
 pub mod style;
 pub mod sync;
+pub mod telemetry_credential_storage;
 pub mod token_storage;
 pub mod version;

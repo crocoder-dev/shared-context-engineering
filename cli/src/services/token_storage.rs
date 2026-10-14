@@ -15,7 +15,7 @@ const DEFAULT_TOKEN_ROW_ID: i64 = 1;
 /// Stores `Result` so initialization failures are preserved across calls.
 static AUTH_DB: OnceCell<Result<AuthDb, String>> = OnceCell::const_new();
 
-async fn get_auth_db() -> Result<&'static AuthDb, TokenStorageError> {
+pub(crate) async fn get_auth_db() -> Result<&'static AuthDb, TokenStorageError> {
     let result = AUTH_DB
         .get_or_init(async || AuthDb::new().await.map_err(|e| e.to_string()))
         .await;

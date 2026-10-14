@@ -13,6 +13,7 @@ The encrypted auth DB foundation provides a thin Rust wrapper, path and migratio
 - Ordered migrations generated from filename stems:
   - `001_create_auth_tokens.sql`
   - `002_create_auth_credentials_updated_at_trigger.sql`
+  - `003_create_telemetry_credentials.sql`
 
 ## Schema baseline
 
@@ -32,6 +33,17 @@ Current migration baseline:
 
 - `001_create_auth_tokens.sql` creates `auth_credentials` without `user_id`, with `updated_at`.
 - `002_create_auth_credentials_updated_at_trigger.sql` creates `auth_credentials_set_updated_at` trigger to auto-refresh `updated_at` on row updates.
+
+## Telemetry credential table
+
+`003_create_telemetry_credentials.sql` adds `telemetry_credentials`, independent of `auth_credentials`:
+
+- `id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1)` (one fixed row)
+- `token TEXT NOT NULL`, `accessor TEXT NOT NULL`
+- `expires_at_unix_seconds INTEGER NOT NULL`, `stored_at_unix_seconds INTEGER NOT NULL`
+- `created_at` / `updated_at` with the same defaults as `auth_credentials`, plus the `telemetry_credentials_set_updated_at` trigger
+
+Storage operations live in `cli/src/services/telemetry_credential_storage.rs`: `save_telemetry_credential` is a single-statement `INSERT OR REPLACE` of the fixed row (last complete writer wins), `load_telemetry_credential` returns the row only when token and accessor are non-empty, the expiry is non-negative, and it is in the future (it never mints or refreshes), and `delete_telemetry_credential` removes the row. `TelemetryCredential` has a redacted `Debug`, and storage errors use fixed messages without secret values. Saving or deleting never touches `auth_credentials`. The shared `AuthDb` singleton comes from `token_storage::get_auth_db`.
 
 ## Lifecycle integration
 
