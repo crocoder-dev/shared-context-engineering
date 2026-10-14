@@ -103,13 +103,18 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: important — managed trace export runtime, new OpenTelemetry dependencies, lifecycle ordering in app runtime.
   - Context synchronization: synced
 
-- [ ] T03: `Implement managed OTLP log export from the existing logger boundary` (status:todo)
+- [x] T03: `Implement managed OTLP log export from the existing logger boundary` (status:done)
   - Task ID: T03
   - Scope: In — add the OTLP logs provider/exporter for `/v1/logs`, bridge approved SCE logger events into OpenTelemetry log records, preserve local file/stderr rendering and stable event semantics, apply the shared security/allowlist boundary, attach the bearer token only to the canonical logs endpoint, and integrate logs with the bounded lifecycle from T02. Out — metrics export, changing local log formats, exporting unrestricted tracing events or technical error chains.
   - Dependencies: T02
   - Done when: Managed executions export approved SCE log records to the canonical logs endpoint with correct severity/resource/auth fields, while local logging and command output are unchanged and sensitive/unbounded fields never enter the remote payload.
   - Verify: Controlled loopback OTLP log receiver tests, secret/path/argument rejection tests, local-log parity tests, and focused `observability`/`telemetry` Rust tests.
-  - Context synchronization: pending
+  - Completed: 2026-10-14
+  - Files changed: `cli/Cargo.toml`, `cli/src/services/managed_telemetry.rs`, `cli/src/services/managed_telemetry/trace_export.rs`, `cli/src/services/managed_telemetry/log_export.rs`, `context/plans/managed-otel-export.md`
+  - Result: Added OTLP/HTTP protobuf log export to the canonical `/v1/logs` endpoint. A `LogBridgeLayer` converts `target: "sce"` logger events (already gated by the local log level) into OTel log records with severity, event ID, and a body limited to safe messages; only allowlisted field keys (`command`, `component`, `failure_class`, `error_code`, `error_class`, `error_surface`, `user_error`) with path/secret-free bounded values are attached. Logs share the pinned bearer client, redirect refusal, bounded batch queue, and bounded shutdown with traces; local logging is untouched.
+  - Verify results: `telemetry` tests passed (32, including loopback bearer/log mapping, secret/path/argument rejection, redirect, unreachable-collector); `observability` tests passed (20); `app::` tests passed (11); clippy `--all-targets -D warnings` clean; `cargo fmt` applied.
+  - Context impact: important — managed runtime now exports logs; observability contract must record logs scope and allowlist.
+  - Context synchronization: synced
 
 - [ ] T04: `Prove managed exporter security, failure isolation, and hook parity` (status:todo)
   - Task ID: T04
