@@ -199,35 +199,28 @@ pub(crate) fn opencode_config_fragment_is_current(
     Ok(merged == existing)
 }
 
-#[allow(dead_code)]
 const CLAUDE_OTEL_HEADERS_HELPER_COMMAND: &str = "sce auth telemetry-headers";
-#[allow(dead_code)]
 const CLAUDE_OTEL_HEADERS_HELPER_KEY: &str = "otelHeadersHelper";
-#[allow(dead_code)]
 const CLAUDE_OTEL_HEADERS_DEBOUNCE_MS: &str = "300000";
 
-#[allow(dead_code)]
 const CLAUDE_OTEL_ENDPOINT_KEYS: [&str; 4] = [
     "OTEL_EXPORTER_OTLP_ENDPOINT",
     "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
     "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
     "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
 ];
-#[allow(dead_code)]
 const CLAUDE_OTEL_HEADERS_KEYS: [&str; 4] = [
     "OTEL_EXPORTER_OTLP_HEADERS",
     "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
     "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
     "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
 ];
-#[allow(dead_code)]
 const CLAUDE_OTEL_PROTOCOL_KEYS: [&str; 4] = [
     "OTEL_EXPORTER_OTLP_PROTOCOL",
     "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
     "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
     "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
 ];
-#[allow(dead_code)]
 const CLAUDE_OTEL_EXPORTER_KEYS: [&str; 3] = [
     "OTEL_TRACES_EXPORTER",
     "OTEL_METRICS_EXPORTER",
@@ -235,7 +228,6 @@ const CLAUDE_OTEL_EXPORTER_KEYS: [&str; 3] = [
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub(crate) enum ClaudeTelemetrySkipReason {
     UserHelperPresent,
     ConflictingEndpoint,
@@ -246,14 +238,12 @@ pub(crate) enum ClaudeTelemetrySkipReason {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub(crate) enum ClaudeTelemetryMergeOutcome {
     Installed(Vec<u8>),
     AlreadyCurrent,
     Skipped(ClaudeTelemetrySkipReason),
 }
 
-#[allow(dead_code)]
 fn claude_telemetry_env_entries() -> Vec<(&'static str, &'static str)> {
     vec![
         ("CLAUDE_CODE_ENABLE_TELEMETRY", "1"),
@@ -270,7 +260,6 @@ fn claude_telemetry_env_entries() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-#[allow(dead_code)]
 fn claude_telemetry_conflict(settings: &Value) -> Option<ClaudeTelemetrySkipReason> {
     if let Some(helper) = settings.get(CLAUDE_OTEL_HEADERS_HELPER_KEY) {
         if helper.as_str() != Some(CLAUDE_OTEL_HEADERS_HELPER_COMMAND) {
@@ -304,7 +293,6 @@ fn claude_telemetry_conflict(settings: &Value) -> Option<ClaudeTelemetrySkipReas
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn merge_claude_telemetry_settings(
     existing_bytes: Option<&[u8]>,
     managed_bytes: Option<&[u8]>,

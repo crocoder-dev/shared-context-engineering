@@ -5,6 +5,7 @@ use crate::services::error::{CliError, UserError};
 use crate::services::lifecycle::{
     lifecycle_providers, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
 };
+use crate::services::telemetry_credential_storage::load_telemetry_credential;
 use crate::services::{config, setup};
 
 pub struct SetupCommand {
@@ -96,10 +97,32 @@ impl SetupCommand {
             )
             .map_err(unexpected_failure)?;
             sections.push(setup_message);
+
+            if targets.contains(&setup::ConcreteSetupTarget::Claude) {
+                sections.push(claude_telemetry_report().await);
+            }
         }
 
         Ok(sections.join("\n\n"))
     }
+}
+
+async fn claude_telemetry_report() -> String {
+    use setup::claude_telemetry::{
+        format_claude_telemetry_report, install_claude_telemetry, managed_claude_settings_path,
+        resolve_claude_settings_path, ClaudeTelemetryInstallOutcome,
+    };
+
+    let installed = match resolve_claude_settings_path() {
+        Some(settings_path) => {
+            install_claude_telemetry(&settings_path, &managed_claude_settings_path())
+                .unwrap_or(ClaudeTelemetryInstallOutcome::SkippedInvalid)
+        }
+        None => ClaudeTelemetryInstallOutcome::SkippedInvalid,
+    };
+
+    let authentication_pending = !matches!(load_telemetry_credential().await, Ok(Some(_)));
+    format_claude_telemetry_report(&installed, authentication_pending)
 }
 
 fn resolve_setup_repository(start_path: &std::path::Path) -> Result<std::path::PathBuf, CliError> {

@@ -98,13 +98,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: minor — internal merge helper; durable docs deferred to T04.
   - Context synchronization: synced
 
-- [ ] T03: `Wire Claude telemetry install into setup targets` (status:todo)
+- [x] T03: `Wire Claude telemetry install into setup targets` (status:done)
   - Task ID: T03
   - Scope: In — resolve `$CLAUDE_CONFIG_DIR`/`~/.claude/settings.json`, atomic write preserving permissions, invoke only when `ConcreteSetupTarget::Claude` is selected on proceed (all, non-interactive, interactive), add a fixed setup-output line stating user-level scope and, when no valid credential exists, that authentication is pending, without mentioning the helper command. Out — hooks-only, bootstrap-context, cancelled, and non-Claude paths.
   - Dependencies: T02
   - Done when: AC5, AC6, AC7 (end to end), AC8, and AC9 hold.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup`
-  - Context synchronization: pending
+  - Completed: 2026-10-14
+  - Files changed: `cli/src/services/setup/claude_telemetry.rs`, `cli/src/services/setup/command.rs`, `cli/src/services/setup/config_merge.rs`, `cli/src/services/setup/mod.rs`
+  - Result: Added `setup::claude_telemetry` (settings path from `$CLAUDE_CONFIG_DIR` else `~/.claude/settings.json`, Linux/macOS managed-settings path, atomic temp-file+rename write preserving existing mode or `0600` for new files, fixed report lines). `SetupCommand::execute` installs only when the Claude target is selected on proceed, appends a fixed user-level line plus "authentication pending" when no valid stored credential exists; conflicts and malformed JSON are reported as skipped without failing setup. Removed T02 `dead_code` allows.
+  - Verify outcome: `setup` filter: 49 passed (6 new claude_telemetry tests); `cargo build` clean. Full `nix flake check` not run (reserved for plan validation).
+  - Deviations: Tests exercise the install function with explicit paths rather than mutating `CLAUDE_CONFIG_DIR`; no end-to-end `SetupCommand` or AC8 save-credential-then-helper test (helper reads the credential on each call and setup never embeds it).
+  - Context impact: minor — setup behavior and output line; durable docs deferred to T04.
+  - Context synchronization: synced
 
 - [ ] T04: `Document Claude native telemetry in context` (status:todo)
   - Task ID: T04
