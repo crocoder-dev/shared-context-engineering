@@ -41,4 +41,18 @@ flowchart LR
 - Token and accessor never appear in errors, logs, or `Debug` output; `TelemetryCredential` and the issuance response redact them, client and storage errors use fixed messages, and auth login's best-effort provisioning warning contains no credential or raw server-response data.
 - Encryption reuses the auth DB key handling described in [auth-db.md](auth-db.md).
 
-See also: [auth-db.md](auth-db.md), [../context-map.md](../context-map.md)
+
+## Claude-native telemetry
+
+Claude Code's own OpenTelemetry export is separate from the SCE-CLI managed exporter above. `sce setup` configures it; the SCE CLI exporter is unchanged.
+
+- Install: when the Claude target is selected and setup proceeds (`--claude`, `--all`, interactive Claude/All, with or without `--non-interactive`), `cli/src/services/setup/claude_telemetry.rs` merges settings into Claude's user-level `settings.json` (`$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`). OpenCode/Codex/Pi-only, `--hooks`-only, `--bootstrap-context`, and cancelled runs leave it untouched. Scope is user-level, not repository-level.
+- Written keys: `otelHeadersHelper` set to `sce auth telemetry-headers`, plus an `env` block with `CLAUDE_CODE_ENABLE_TELEMETRY=1`, `OTEL_{TRACES,METRICS,LOGS}_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_PROTOCOL` / `OTEL_EXPORTER_OTLP_ENDPOINT` from `MANAGED_OTLP_PROTOCOL` / `MANAGED_OTLP_ENDPOINT`, `CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS=300000`, and `OTEL_METRICS_INCLUDE_REPOSITORY=true` (unconditional because the Claude Code version cannot be detected during setup; unknown variables are ignored).
+- Authentication: no token is ever written to settings, generated assets, or setup output, and `OTEL_EXPORTER_OTLP_HEADERS` is never set. Claude runs the hidden helper (see Hidden header helper) and uses its `Authorization` header.
+- Rotation: Claude re-runs the helper at most every five minutes (debounce 300000 ms), so a credential replaced by a later `sce auth login` is picked up without rewriting settings. `sce auth logout` deletes the stored credential, after which the helper fails and Claude export stops authenticating; local deletion does not revoke the OpenBao token.
+- Setup before login: setup succeeds and reports `authentication pending` when no valid stored credential exists; export begins once `sce auth login` stores one.
+- Failure handling: the helper's failure is nonzero with empty stdout and the fixed diagnostic `Telemetry credential is unavailable.`, and never affects other Claude behavior beyond missing telemetry auth.
+- Merge safety: repeated setup is byte-idempotent; unrelated settings, env, permissions, and hooks are preserved; writes are atomic via temp-file rename; an existing file's mode is kept and a new file uses `0600`; malformed JSON is never overwritten.
+- Conflicts and limits: a user-owned `otelHeadersHelper`, or a differing generic/per-signal OTLP endpoint, headers, protocol, or exporter in user settings or in the Linux/macOS managed-settings file (`/etc/claude-code/managed-settings.json`, `/Library/Application Support/ClaudeCode/managed-settings.json`), causes the telemetry install to be skipped and reported while repository setup still succeeds. Environment variables present in a future Claude launch cannot be detected by setup and can override user settings.
+
+See also: [auth-db.md](auth-db.md), [cli-observability-contract.md](cli-observability-contract.md), [../context-map.md](../context-map.md)
