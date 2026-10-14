@@ -49,6 +49,8 @@ impl SetupCommand {
             None
         };
 
+        let claude_telemetry_selected = dispatch_targets_claude(setup_dispatch.as_ref());
+
         let mut sections = Vec::new();
 
         let context_message =
@@ -98,7 +100,7 @@ impl SetupCommand {
             .map_err(unexpected_failure)?;
             sections.push(setup_message);
 
-            if targets.contains(&setup::ConcreteSetupTarget::Claude) {
+            if claude_telemetry_selected {
                 sections.push(claude_telemetry_report().await);
             }
         }
@@ -107,21 +109,38 @@ impl SetupCommand {
     }
 }
 
+fn dispatch_targets_claude(dispatch: Option<&setup::SetupDispatch>) -> bool {
+    matches!(
+        dispatch,
+        Some(setup::SetupDispatch::Proceed { targets, .. })
+            if targets.contains(&setup::ConcreteSetupTarget::Claude)
+    )
+}
+
 async fn claude_telemetry_report() -> String {
+    let authentication_pending = !matches!(load_telemetry_credential().await, Ok(Some(_)));
+    render_claude_telemetry_section(
+        setup::claude_telemetry::resolve_claude_settings_path().as_deref(),
+        &setup::claude_telemetry::managed_claude_settings_path(),
+        authentication_pending,
+    )
+}
+
+fn render_claude_telemetry_section(
+    settings_path: Option<&std::path::Path>,
+    managed_settings_path: &std::path::Path,
+    authentication_pending: bool,
+) -> String {
     use setup::claude_telemetry::{
-        format_claude_telemetry_report, install_claude_telemetry, managed_claude_settings_path,
-        resolve_claude_settings_path, ClaudeTelemetryInstallOutcome,
+        format_claude_telemetry_report, install_claude_telemetry, ClaudeTelemetryInstallOutcome,
     };
 
-    let installed = match resolve_claude_settings_path() {
-        Some(settings_path) => {
-            install_claude_telemetry(&settings_path, &managed_claude_settings_path())
-                .unwrap_or(ClaudeTelemetryInstallOutcome::SkippedInvalid)
-        }
+    let installed = match settings_path {
+        Some(settings_path) => install_claude_telemetry(settings_path, managed_settings_path)
+            .unwrap_or(ClaudeTelemetryInstallOutcome::SkippedInvalid),
         None => ClaudeTelemetryInstallOutcome::SkippedInvalid,
     };
 
-    let authentication_pending = !matches!(load_telemetry_credential().await, Ok(Some(_)));
     format_claude_telemetry_report(&installed, authentication_pending)
 }
 
@@ -177,5 +196,127 @@ fn setup_required_hooks_outcome_from_lifecycle(
                 unreachable_block_advisory: result.unreachable_block_advisory,
             })
             .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+
+    use anyhow::Result;
+    use serde_json::Value;
+
+    use super::*;
+    use crate::services::setup::{
+        resolve_setup_dispatch, resolve_setup_request, ConcreteSetupTarget,
+        PersistedSetupConfirmations, SetupCliOptions, SetupDispatch, SetupMode, SetupTarget,
+        SetupTargetPrompter,
+    };
+
+    struct FakePrompter {
+        targets: Option<Vec<ConcreteSetupTarget>>,
+    }
+
+    impl SetupTargetPrompter for FakePrompter {
+        fn prompt_targets(
+            &self,
+            _configured: &[ConcreteSetupTarget],
+        ) -> Result<Option<Vec<ConcreteSetupTarget>>> {
+            Ok(self.targets.clone())
+        }
+
+        fn prompt_optional_workflows(&self, _defaults: &[String]) -> Result<Option<Vec<String>>> {
+            Ok(Some(Vec::new()))
+        }
+
+        fn prompt_agent_trace_auto_sync(&self) -> Result<Option<bool>> {
+            Ok(Some(false))
+        }
+
+        fn prompt_attribution_hooks_enabled(&self) -> Result<Option<bool>> {
+            Ok(Some(false))
+        }
+    }
+
+    fn dispatch_for(mode: SetupMode, prompted: Option<Vec<ConcreteSetupTarget>>) -> SetupDispatch {
+        resolve_setup_dispatch(
+            mode,
+            &FakePrompter { targets: prompted },
+            &[],
+            &[],
+            PersistedSetupConfirmations::default(),
+        )
+        .expect("dispatch should resolve")
+    }
+
+    fn run_claude_telemetry_stage(dispatch: Option<&SetupDispatch>, root: &Path) -> Option<String> {
+        dispatch_targets_claude(dispatch).then(|| {
+            render_claude_telemetry_section(
+                Some(&root.join("settings.json")),
+                &root.join("managed.json"),
+                true,
+            )
+        })
+    }
+
+    fn assert_installed(root: &Path) {
+        let parsed: Value =
+            serde_json::from_slice(&fs::read(root.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(parsed["otelHeadersHelper"], "sce auth telemetry-headers");
+        assert!(parsed["env"].is_object());
+    }
+
+    fn assert_untouched(root: &Path) {
+        assert!(!root.join("settings.json").exists());
+    }
+
+    #[test]
+    fn setup_claude_telemetry_installs_when_claude_is_selected() {
+        let interactive = dispatch_for(
+            SetupMode::Interactive,
+            Some(vec![ConcreteSetupTarget::Claude]),
+        );
+        for dispatch in [
+            dispatch_for(SetupMode::NonInteractive(SetupTarget::Claude), None),
+            dispatch_for(SetupMode::NonInteractive(SetupTarget::All), None),
+            interactive,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+
+            assert!(run_claude_telemetry_stage(Some(&dispatch), dir.path()).is_some());
+            assert_installed(dir.path());
+        }
+    }
+
+    #[test]
+    fn setup_claude_telemetry_leaves_settings_untouched_when_claude_is_not_installed() {
+        let hooks_only = resolve_setup_request(SetupCliOptions {
+            hooks: true,
+            ..SetupCliOptions::default()
+        })
+        .unwrap();
+        let bootstrap = resolve_setup_request(SetupCliOptions {
+            bootstrap_context: true,
+            ..SetupCliOptions::default()
+        })
+        .unwrap();
+        assert_eq!(hooks_only.config_mode, None);
+        assert!(bootstrap.context_only);
+
+        let dispatches = [
+            Some(dispatch_for(
+                SetupMode::NonInteractive(SetupTarget::OpenCode),
+                None,
+            )),
+            Some(dispatch_for(SetupMode::Interactive, None)),
+            None,
+        ];
+        for dispatch in &dispatches {
+            let dir = tempfile::tempdir().unwrap();
+
+            assert!(run_claude_telemetry_stage(dispatch.as_ref(), dir.path()).is_none());
+            assert_untouched(dir.path());
+        }
     }
 }
