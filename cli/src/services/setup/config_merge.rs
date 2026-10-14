@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
 
+use crate::services::managed_telemetry::{MANAGED_OTLP_ENDPOINT, MANAGED_OTLP_PROTOCOL};
+
 const CLAUDE_SCE_HOOK_MARKER: &str = "run-sce-or-show-install-guidance.sh";
 const LEGACY_CLAUDE_AGENT_TRACE_PLUGIN: &str = ".claude/plugins/sce-agent-trace.ts";
 
@@ -197,10 +199,328 @@ pub(crate) fn opencode_config_fragment_is_current(
     Ok(merged == existing)
 }
 
+#[allow(dead_code)]
+const CLAUDE_OTEL_HEADERS_HELPER_COMMAND: &str = "sce auth telemetry-headers";
+#[allow(dead_code)]
+const CLAUDE_OTEL_HEADERS_HELPER_KEY: &str = "otelHeadersHelper";
+#[allow(dead_code)]
+const CLAUDE_OTEL_HEADERS_DEBOUNCE_MS: &str = "300000";
+
+#[allow(dead_code)]
+const CLAUDE_OTEL_ENDPOINT_KEYS: [&str; 4] = [
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+];
+#[allow(dead_code)]
+const CLAUDE_OTEL_HEADERS_KEYS: [&str; 4] = [
+    "OTEL_EXPORTER_OTLP_HEADERS",
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+    "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+];
+#[allow(dead_code)]
+const CLAUDE_OTEL_PROTOCOL_KEYS: [&str; 4] = [
+    "OTEL_EXPORTER_OTLP_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+];
+#[allow(dead_code)]
+const CLAUDE_OTEL_EXPORTER_KEYS: [&str; 3] = [
+    "OTEL_TRACES_EXPORTER",
+    "OTEL_METRICS_EXPORTER",
+    "OTEL_LOGS_EXPORTER",
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub(crate) enum ClaudeTelemetrySkipReason {
+    UserHelperPresent,
+    ConflictingEndpoint,
+    ConflictingHeaders,
+    ConflictingProtocol,
+    ConflictingExporter,
+    ManagedSettingsConflict,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub(crate) enum ClaudeTelemetryMergeOutcome {
+    Installed(Vec<u8>),
+    AlreadyCurrent,
+    Skipped(ClaudeTelemetrySkipReason),
+}
+
+#[allow(dead_code)]
+fn claude_telemetry_env_entries() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("CLAUDE_CODE_ENABLE_TELEMETRY", "1"),
+        ("OTEL_TRACES_EXPORTER", "otlp"),
+        ("OTEL_METRICS_EXPORTER", "otlp"),
+        ("OTEL_LOGS_EXPORTER", "otlp"),
+        ("OTEL_EXPORTER_OTLP_PROTOCOL", MANAGED_OTLP_PROTOCOL),
+        ("OTEL_EXPORTER_OTLP_ENDPOINT", MANAGED_OTLP_ENDPOINT),
+        (
+            "CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS",
+            CLAUDE_OTEL_HEADERS_DEBOUNCE_MS,
+        ),
+        ("OTEL_METRICS_INCLUDE_REPOSITORY", "true"),
+    ]
+}
+
+#[allow(dead_code)]
+fn claude_telemetry_conflict(settings: &Value) -> Option<ClaudeTelemetrySkipReason> {
+    if let Some(helper) = settings.get(CLAUDE_OTEL_HEADERS_HELPER_KEY) {
+        if helper.as_str() != Some(CLAUDE_OTEL_HEADERS_HELPER_COMMAND) {
+            return Some(ClaudeTelemetrySkipReason::UserHelperPresent);
+        }
+    }
+
+    let env = settings.get("env").and_then(Value::as_object)?;
+    let differs = |keys: &[&str]| {
+        keys.iter().any(|key| {
+            env.get(*key).is_some_and(|value| {
+                let ours = claude_telemetry_env_entries()
+                    .into_iter()
+                    .find(|(candidate, _)| candidate == key)
+                    .map(|(_, expected)| expected);
+                value.as_str() != ours
+            })
+        })
+    };
+
+    if differs(&CLAUDE_OTEL_ENDPOINT_KEYS) {
+        Some(ClaudeTelemetrySkipReason::ConflictingEndpoint)
+    } else if differs(&CLAUDE_OTEL_HEADERS_KEYS) {
+        Some(ClaudeTelemetrySkipReason::ConflictingHeaders)
+    } else if differs(&CLAUDE_OTEL_PROTOCOL_KEYS) {
+        Some(ClaudeTelemetrySkipReason::ConflictingProtocol)
+    } else if differs(&CLAUDE_OTEL_EXPORTER_KEYS) {
+        Some(ClaudeTelemetrySkipReason::ConflictingExporter)
+    } else {
+        None
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn merge_claude_telemetry_settings(
+    existing_bytes: Option<&[u8]>,
+    managed_bytes: Option<&[u8]>,
+    source_path: &str,
+) -> Result<ClaudeTelemetryMergeOutcome> {
+    if let Some(managed_bytes) = managed_bytes {
+        let managed: Value = serde_json::from_slice(managed_bytes)
+            .context("Managed Claude settings must contain valid JSON.")?;
+        if claude_telemetry_conflict(&managed).is_some() {
+            return Ok(ClaudeTelemetryMergeOutcome::Skipped(
+                ClaudeTelemetrySkipReason::ManagedSettingsConflict,
+            ));
+        }
+    }
+
+    let existing: Value = match existing_bytes {
+        Some(bytes) => serde_json::from_slice(bytes).with_context(|| {
+            format!("Existing config file '{source_path}' must contain valid JSON.")
+        })?,
+        None => Value::Object(serde_json::Map::new()),
+    };
+    let mut merged_obj = existing.as_object().cloned().with_context(|| {
+        format!("Existing config file '{source_path}' must contain a top-level JSON object.")
+    })?;
+
+    if let Some(reason) = claude_telemetry_conflict(&existing) {
+        return Ok(ClaudeTelemetryMergeOutcome::Skipped(reason));
+    }
+
+    let mut env = match merged_obj.get("env") {
+        Some(value) => value.as_object().cloned().with_context(|| {
+            format!("Existing config file '{source_path}' key 'env' must be a JSON object.")
+        })?,
+        None => serde_json::Map::new(),
+    };
+    for (key, value) in claude_telemetry_env_entries() {
+        env.insert(key.to_string(), Value::String(value.to_string()));
+    }
+    merged_obj.insert("env".to_string(), Value::Object(env));
+    merged_obj.insert(
+        CLAUDE_OTEL_HEADERS_HELPER_KEY.to_string(),
+        Value::String(CLAUDE_OTEL_HEADERS_HELPER_COMMAND.to_string()),
+    );
+
+    let merged = Value::Object(merged_obj);
+    if existing_bytes.is_some() && merged == existing {
+        return Ok(ClaudeTelemetryMergeOutcome::AlreadyCurrent);
+    }
+
+    let mut serialized = serde_json::to_string_pretty(&merged)
+        .context("Failed to serialize merged Claude telemetry settings")?;
+    serialized.push('\n');
+    Ok(ClaudeTelemetryMergeOutcome::Installed(
+        serialized.into_bytes(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn merge_telemetry(
+        existing: Option<Value>,
+        managed: Option<Value>,
+    ) -> ClaudeTelemetryMergeOutcome {
+        let existing = existing.map(|value| serde_json::to_vec(&value).unwrap());
+        let managed = managed.map(|value| serde_json::to_vec(&value).unwrap());
+        merge_claude_telemetry_settings(existing.as_deref(), managed.as_deref(), "settings.json")
+            .unwrap()
+    }
+
+    fn installed_value(outcome: ClaudeTelemetryMergeOutcome) -> Value {
+        match outcome {
+            ClaudeTelemetryMergeOutcome::Installed(bytes) => {
+                serde_json::from_slice(&bytes).unwrap()
+            }
+            other => panic!("expected Installed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn telemetry_merge_installs_env_and_helper_preserving_unrelated_keys() {
+        let existing = json!({
+            "permissions": {"allow": ["Bash(git *)"]},
+            "env": {"FOO": "bar"},
+            "hooks": {"Stop": [user_hook_entry()]}
+        });
+
+        let merged = installed_value(merge_telemetry(Some(existing), None));
+
+        assert_eq!(merged["permissions"]["allow"][0], "Bash(git *)");
+        assert_eq!(merged["env"]["FOO"], "bar");
+        assert_eq!(merged["hooks"]["Stop"][0], user_hook_entry());
+        assert_eq!(merged["otelHeadersHelper"], "sce auth telemetry-headers");
+        assert_eq!(merged["env"]["CLAUDE_CODE_ENABLE_TELEMETRY"], "1");
+        assert_eq!(
+            merged["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"],
+            MANAGED_OTLP_ENDPOINT
+        );
+        assert_eq!(
+            merged["env"]["OTEL_EXPORTER_OTLP_PROTOCOL"],
+            MANAGED_OTLP_PROTOCOL
+        );
+        assert_eq!(
+            merged["env"]["CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS"],
+            "300000"
+        );
+        assert_eq!(merged["env"]["OTEL_METRICS_INCLUDE_REPOSITORY"], "true");
+        assert!(merged["env"].get("OTEL_EXPORTER_OTLP_HEADERS").is_none());
+    }
+
+    #[test]
+    fn telemetry_merge_is_byte_idempotent_and_reports_already_current() {
+        let first = match merge_telemetry(None, None) {
+            ClaudeTelemetryMergeOutcome::Installed(bytes) => bytes,
+            other => panic!("expected Installed, got {other:?}"),
+        };
+
+        let second = merge_claude_telemetry_settings(Some(&first), None, "settings.json").unwrap();
+
+        assert_eq!(second, ClaudeTelemetryMergeOutcome::AlreadyCurrent);
+    }
+
+    #[test]
+    fn telemetry_merge_skips_user_owned_helper() {
+        let existing = json!({"otelHeadersHelper": "/usr/local/bin/my-helper"});
+
+        assert_eq!(
+            merge_telemetry(Some(existing), None),
+            ClaudeTelemetryMergeOutcome::Skipped(ClaudeTelemetrySkipReason::UserHelperPresent)
+        );
+    }
+
+    #[test]
+    fn telemetry_merge_skips_each_conflicting_env_class_in_user_settings() {
+        let cases = [
+            (
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+                "https://other.example",
+                ClaudeTelemetrySkipReason::ConflictingEndpoint,
+            ),
+            (
+                "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+                "https://other.example/v1/logs",
+                ClaudeTelemetrySkipReason::ConflictingEndpoint,
+            ),
+            (
+                "OTEL_EXPORTER_OTLP_HEADERS",
+                "x=y",
+                ClaudeTelemetrySkipReason::ConflictingHeaders,
+            ),
+            (
+                "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+                "x=y",
+                ClaudeTelemetrySkipReason::ConflictingHeaders,
+            ),
+            (
+                "OTEL_EXPORTER_OTLP_PROTOCOL",
+                "grpc",
+                ClaudeTelemetrySkipReason::ConflictingProtocol,
+            ),
+            (
+                "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+                "grpc",
+                ClaudeTelemetrySkipReason::ConflictingProtocol,
+            ),
+            (
+                "OTEL_METRICS_EXPORTER",
+                "prometheus",
+                ClaudeTelemetrySkipReason::ConflictingExporter,
+            ),
+        ];
+
+        for (key, value, reason) in cases {
+            let existing = json!({"env": {key: value}});
+            assert_eq!(
+                merge_telemetry(Some(existing), None),
+                ClaudeTelemetryMergeOutcome::Skipped(reason),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn telemetry_merge_skips_when_managed_settings_conflict() {
+        let managed = json!({"env": {"OTEL_EXPORTER_OTLP_ENDPOINT": "https://corp.example"}});
+
+        assert_eq!(
+            merge_telemetry(Some(json!({})), Some(managed)),
+            ClaudeTelemetryMergeOutcome::Skipped(
+                ClaudeTelemetrySkipReason::ManagedSettingsConflict
+            )
+        );
+    }
+
+    #[test]
+    fn telemetry_merge_rejects_malformed_existing_json_naming_the_path() {
+        let error = merge_claude_telemetry_settings(
+            Some(b"{ not valid json"),
+            None,
+            "~/.claude/settings.json",
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("~/.claude/settings.json"));
+    }
+
+    #[test]
+    fn telemetry_merge_output_contains_no_token_material() {
+        let merged = installed_value(merge_telemetry(None, None)).to_string();
+
+        assert!(!merged.contains("Bearer"));
+        assert!(!merged.contains("Authorization"));
+        assert!(!merged.contains("OTEL_EXPORTER_OTLP_HEADERS"));
+    }
 
     fn sce_hook_entry(command: &str) -> Value {
         json!({

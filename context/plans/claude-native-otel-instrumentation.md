@@ -84,13 +84,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: minor — hidden command and exporter bypass; durable docs deferred to T04.
   - Context synchronization: synced
 
-- [ ] T02: `Merge Claude native telemetry settings safely` (status:todo)
+- [x] T02: `Merge Claude native telemetry settings safely` (status:done)
   - Task ID: T02
   - Scope: In — a user-level Claude telemetry merge in `cli/src/services/setup/config_merge.rs` that builds the `env` block and `otelHeadersHelper` from `MANAGED_OTLP_*` constants, preserves unrelated keys, detects conflicting helper/endpoint/headers/protocol/exporter settings (generic and per-signal, user and managed settings), rejects malformed JSON, and yields installed / already-current / skipped-with-reason. Out — filesystem writes and setup wiring.
   - Dependencies: T01
   - Done when: AC6 (merge portion) and AC7 hold at the unit level with no tokens in output.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml config_merge`
-  - Context synchronization: pending
+  - Completed: 2026-10-14
+  - Files changed: `cli/src/services/setup/config_merge.rs`
+  - Result: Added `merge_claude_telemetry_settings` returning `Installed(bytes)` / `AlreadyCurrent` / `Skipped(reason)`; writes the Claude `env` block from `MANAGED_OTLP_*` plus `otelHeadersHelper`, preserves unrelated keys, skips on a user-owned helper or conflicting generic/per-signal endpoint/headers/protocol/exporter in user or managed settings, and errors on malformed JSON. Output carries no token material.
+  - Verify outcome: `config_merge` filter: 29 passed (7 new telemetry tests); `cargo build` clean under `-D warnings`. Full `nix flake check` not run (reserved for plan validation).
+  - Deviations: New items carry `#[allow(dead_code)]` until T03 wires them; T03 should remove it.
+  - Context impact: minor — internal merge helper; durable docs deferred to T04.
+  - Context synchronization: synced
 
 - [ ] T03: `Wire Claude telemetry install into setup targets` (status:todo)
   - Task ID: T03
