@@ -5,6 +5,7 @@ use std::process::ExitCode;
 use crate::services;
 use services::app_support::{self, RunOutcome};
 use services::error::CliError;
+use services::managed_telemetry::RuntimeTelemetry;
 use services::observability::traits::{
     Logger as LoggerTrait, NoopTelemetry, Telemetry as TelemetryTrait,
 };
@@ -19,7 +20,7 @@ struct StartupContext {
 
 struct AppRuntime {
     logger: services::observability::Logger,
-    telemetry: NoopTelemetry,
+    telemetry: RuntimeTelemetry,
     fs: services::capabilities::StdFsOps,
     git: services::capabilities::ProcessGitOps,
     registry: services::command_registry::CommandRegistry,
@@ -46,7 +47,7 @@ pub struct AppContext<
 type ProductionAppContext<'a> = AppContext<
     'a,
     services::observability::Logger,
-    NoopTelemetry,
+    RuntimeTelemetry,
     services::capabilities::StdFsOps,
     services::capabilities::ProcessGitOps,
 >;
@@ -236,43 +237,63 @@ where
     StdoutW: Write,
     StderrW: Write,
 {
-    app_support::render_run_outcome(
-        try_run_with_dependency_check(args, dependency_check, stderr).await,
-        stdout,
-        stderr,
-    )
+    let (outcome, telemetry) = try_run_with_dependency_check(args, dependency_check, stderr).await;
+    let exit_code = app_support::render_run_outcome(outcome, stdout, stderr);
+    if let Some(telemetry) = telemetry {
+        telemetry.shutdown().await;
+    }
+    exit_code
 }
 
 async fn try_run_with_dependency_check<I, F, StderrW>(
     args: I,
     dependency_check: F,
     stderr: &mut StderrW,
-) -> RunOutcome<services::observability::Logger>
+) -> (
+    RunOutcome<services::observability::Logger>,
+    Option<RuntimeTelemetry>,
+)
 where
     I: IntoIterator<Item = String>,
     F: FnOnce() -> anyhow::Result<()>,
     StderrW: Write,
 {
+    let args = args.into_iter().collect::<Vec<_>>();
+    let managed_allowed = !is_hook_invocation(&args);
     let result = perform_dependency_check(dependency_check)
         .and_then(|()| build_startup_context())
         .and_then(initialize_runtime);
 
     match result {
-        Ok(runtime) => {
+        Ok(mut runtime) => {
+            runtime.telemetry = RuntimeTelemetry::resolve(managed_allowed).await;
             let startup_diagnostic = runtime.startup_diagnostic.clone();
             let result = run_command_lifecycle(args, &runtime, stderr).await;
-            RunOutcome {
-                logger: Some(runtime.logger),
-                startup_diagnostic,
-                result,
-            }
+            (
+                RunOutcome {
+                    logger: Some(runtime.logger),
+                    startup_diagnostic,
+                    result,
+                },
+                Some(runtime.telemetry),
+            )
         }
-        Err(error) => RunOutcome {
-            result: Err(error),
-            logger: None,
-            startup_diagnostic: None,
-        },
+        Err(error) => (
+            RunOutcome {
+                result: Err(error),
+                logger: None,
+                startup_diagnostic: None,
+            },
+            None,
+        ),
     }
+}
+
+fn is_hook_invocation(args: &[String]) -> bool {
+    args.iter()
+        .skip(1)
+        .find(|arg| !arg.starts_with('-'))
+        .is_some_and(|arg| arg == services::hooks::NAME)
 }
 
 fn perform_dependency_check<F: FnOnce() -> anyhow::Result<()>>(
@@ -308,7 +329,7 @@ fn initialize_runtime(startup: StartupContext) -> Result<AppRuntime, CliError> {
     app_support::log_startup_configuration(&logger, &startup.observability_config);
     Ok(AppRuntime {
         logger,
-        telemetry: NoopTelemetry,
+        telemetry: RuntimeTelemetry::Noop(NoopTelemetry),
         fs: services::capabilities::StdFsOps,
         git: services::capabilities::ProcessGitOps,
         registry: services::command_registry::build_default_registry(),
@@ -360,6 +381,7 @@ where
                     )));
                 };
                 let command = parse_command_phase(command_args, registry, context)?;
+                services::managed_telemetry::trace_export::record_command_name(&command.name());
                 app_support::execute_command_phase(&command, context, stderr).await
             }
         })
