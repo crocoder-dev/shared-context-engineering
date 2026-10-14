@@ -100,3 +100,9 @@ Runtime observability consumes the shared resolved observability config from `cl
 - The exporter uses a bounded batch queue on a dedicated thread. Shutdown runs after command output is rendered in `run_with_dependency_check_and_streams`, bounded to about 4s, and failures never change command results or exit codes.
 - Logs: `managed_telemetry/log_export.rs` bridges `target: "sce"` tracing events (emitted by `Logger` only when the local level is enabled) to OTLP/HTTP protobuf log records at the hardcoded `/v1/logs`, using the same pinned bearer client, batch bounds, and shutdown as traces. Records carry severity, `sce.event_id`, a body limited to path- and secret-free messages (falling back to the event ID), and only allowlisted fields (`command`, `component`, `failure_class`, `error_code`, `error_class`, `error_surface`, `user_error`) with bounded, redacted values; `error_source`, arguments, paths, and hook payloads are never exported. Local file/stderr logging is unchanged.
 - Metrics are not exported; the `/v1/metrics` default is reserved.
+
+## Claude-native telemetry vs SCE-CLI telemetry
+
+- The managed exporter above covers only the Rust `sce` process. Claude Code's native OpenTelemetry export is a separate pipeline configured in Claude's user-level `settings.json` by `sce setup` for Claude targets; SCE does not proxy, wrap, or cache it.
+- Both pipelines target the same managed OTLP endpoint and authenticate with the same stored telemetry credential, but Claude obtains the bearer by running the hidden `sce auth telemetry-headers` helper (re-run every five minutes), which never initializes managed exporter telemetry.
+- Setup skips the Claude install on conflicting user-owned or managed settings and never writes a token. Details, rotation, logout, failure handling, and override limits: [telemetry-credential.md](telemetry-credential.md).

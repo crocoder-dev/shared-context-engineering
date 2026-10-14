@@ -104,9 +104,8 @@ async fn run_telemetry_headers() -> Result<String, CliError> {
 fn render_telemetry_headers(
     loaded: Result<Option<telemetry_credential_storage::TelemetryCredential>, TokenStorageError>,
 ) -> Result<String, CliError> {
-    let credential = match loaded {
-        Ok(Some(credential)) => credential,
-        Ok(None) | Err(_) => return Err(telemetry_headers_unavailable()),
+    let Ok(Some(credential)) = loaded else {
+        return Err(telemetry_headers_unavailable());
     };
 
     serde_json::to_string(&json!({

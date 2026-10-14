@@ -112,13 +112,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: minor — setup behavior and output line; durable docs deferred to T04.
   - Context synchronization: synced
 
-- [ ] T04: `Document Claude native telemetry in context` (status:todo)
+- [x] T04: `Document Claude native telemetry in context` (status:done)
   - Task ID: T04
   - Scope: In — update the context files listed under Context sync for Claude-native vs CLI telemetry, helper auth, rotation, logout, five-minute refresh, user-level scope, failure handling, and security boundaries, plus managed-settings/env override limitations. Out — public command reference listing of the hidden command.
   - Dependencies: T03
   - Done when: AC10 holds.
   - Verify: inspection; `nix flake check`.
-  - Context synchronization: pending
+  - Completed: 2026-10-14
+  - Files changed: `context/sce/telemetry-credential.md`, `context/sce/cli-observability-contract.md`, `context/cli/cli-command-surface.md`, `context/context-map.md`, `cli/src/services/auth_command/mod.rs`
+  - Result: Documented Claude-native vs SCE-CLI telemetry, helper auth, five-minute rotation, logout, user-level scope, failure handling, merge safety, and managed-settings/env override limits; setup behavior added to the command surface without listing `telemetry-headers` publicly (grep count 0 in `cli-command-surface.md`); context map entry updated.
+  - Verify outcome: inspection confirmed; `nix flake check` passed after the clippy fix below.
+  - Deviations: `nix flake check` initially failed on a T01 `clippy::manual_let_else` lint in `cli/src/services/auth_command/mod.rs`; fixed with an equivalent `let ... else` (no behavior change).
+  - Context impact: minor — documentation only.
+  - Context synchronization: synced
 
 ## Open questions
 
