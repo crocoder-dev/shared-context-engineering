@@ -308,6 +308,58 @@ mod tests {
         assert_eq!(tokens, vec!["workos-access".to_string()]);
     }
 
+    #[tokio::test]
+    async fn telemetry_headers_helper_reads_stored_credential_and_follows_replacement() {
+        use crate::services::auth_command::render_telemetry_headers;
+
+        let (_guard, db) = open_db().await;
+        save_with(&db, &credential("tok-first", FAR_FUTURE))
+            .await
+            .expect("save should succeed");
+        let first = render_telemetry_headers(load_with(&db, now()).await)
+            .expect("stored credential should render");
+        assert_eq!(first, r#"{"Authorization":"Bearer tok-first"}"#);
+
+        save_with(&db, &credential("tok-second", FAR_FUTURE))
+            .await
+            .expect("replacement save should succeed");
+        let second = render_telemetry_headers(load_with(&db, now()).await)
+            .expect("replacement should render");
+        assert_eq!(second, r#"{"Authorization":"Bearer tok-second"}"#);
+    }
+
+    #[tokio::test]
+    async fn telemetry_headers_helper_fails_with_fixed_diagnostic_for_unusable_stored_state() {
+        use crate::services::auth_command::render_telemetry_headers;
+
+        let (_guard, db) = open_db().await;
+        let missing = render_telemetry_headers(load_with(&db, now()).await)
+            .expect_err("missing credential should fail");
+
+        save_with(&db, &credential("tok-expired", now() - 10))
+            .await
+            .expect("save should succeed");
+        let expired = render_telemetry_headers(load_with(&db, now()).await)
+            .expect_err("expired credential should fail");
+
+        db.execute(
+            "INSERT OR REPLACE INTO telemetry_credentials \
+             (id, token, accessor, expires_at_unix_seconds, stored_at_unix_seconds) \
+             VALUES (1, '', 'acc', ?1, 0)",
+            (i64::try_from(FAR_FUTURE).expect("fits"),),
+        )
+        .await
+        .expect("malformed row should insert");
+        let malformed = render_telemetry_headers(load_with(&db, now()).await)
+            .expect_err("malformed credential should fail");
+
+        for error in [missing, expired, malformed] {
+            assert_eq!(error.class().exit_code(), 4);
+            let text = error.to_string();
+            assert_eq!(text, "Telemetry credential is unavailable.");
+            assert!(!text.contains("tok-"));
+        }
+    }
     #[test]
     fn telemetry_credential_storage_debug_output_is_redacted() {
         let rendered = format!("{:?}", credential("super-secret-token", FAR_FUTURE));

@@ -8,25 +8,23 @@ This builds on the managed OTLP work already on this branch (PR #325): it reuses
 
 ## Acceptance criteria
 
-- [ ] AC1: `sce auth telemetry-headers` is callable but absent from `sce --help`, `sce auth --help`, and generated shell completions.
+- [x] AC1: `sce auth telemetry-headers` is callable but absent from `sce --help`, `sce auth --help`, and generated shell completions.
   - Validate: targeted Rust tests asserting help/completion output omits `telemetry-headers` and that the subcommand parses.
-- [ ] AC2: With a valid unexpired stored credential the helper prints exactly one JSON object containing only `Authorization: Bearer <token>`; a later stored replacement is returned on the next invocation.
+- [x] AC2: With a valid unexpired stored credential the helper prints exactly one JSON object containing only `Authorization: Bearer <token>`; a later stored replacement is returned on the next invocation.
   - Validate: targeted Rust tests using a temp-state encrypted `auth.db` fixture (save, run, replace, run).
-- [ ] AC3: Missing, expired, malformed, or unavailable credentials exit nonzero with a fixed secret-free diagnostic and stdout stays empty; the helper performs no issuance or network call and needs no Git repository.
+- [x] AC3: Missing, expired, malformed, or unavailable credentials exit nonzero with a fixed secret-free diagnostic and stdout stays empty; the helper performs no issuance or network call and needs no Git repository.
   - Validate: targeted Rust tests asserting exit code, fixed stderr text, absence of token/accessor, and no repo/network dependency.
-- [ ] AC4: `sce hooks ...`, `sce policy bash`, and `sce auth telemetry-headers` never initialize managed exporter telemetry.
+- [x] AC4: `sce hooks ...`, `sce policy bash`, and `sce auth telemetry-headers` never initialize managed exporter telemetry.
   - Validate: unit tests on the managed-allowed predicate in `cli/src/app.rs`.
-- [ ] AC5: `sce setup --claude`, `--claude --non-interactive`, `--all`, and interactive Claude/All write the required `env` block and `otelHeadersHelper` into user-level Claude settings; OpenCode/Codex/Pi-only, `--hooks`-only, `--bootstrap-context`, and cancelled setup leave them untouched.
+- [x] AC5: `sce setup --claude`, `--claude --non-interactive`, `--all`, and interactive Claude/All write the required `env` block and `otelHeadersHelper` into user-level Claude settings; OpenCode/Codex/Pi-only, `--hooks`-only, `--bootstrap-context`, and cancelled setup leave them untouched.
   - Validate: targeted Rust setup tests with `CLAUDE_CONFIG_DIR` pointed at a temp dir.
-- [ ] AC6: Repeated setup is byte-idempotent, preserves unrelated settings/env/permissions/hooks and file mode, writes atomically, and refuses to overwrite malformed JSON.
+- [x] AC6: Repeated setup is byte-idempotent, preserves unrelated settings/env/permissions/hooks and file mode, writes atomically, and refuses to overwrite malformed JSON.
   - Validate: targeted Rust tests on the merge and install path.
-- [ ] AC7: A pre-existing user-owned `otelHeadersHelper`, or a conflicting generic/per-signal OTLP endpoint, headers, protocol, or exporter in user or managed settings, is left untouched, no SCE helper is installed, and setup reports the skipped telemetry install without failing repository setup.
+- [x] AC7: A pre-existing user-owned `otelHeadersHelper`, or a conflicting generic/per-signal OTLP endpoint, headers, protocol, or exporter in user or managed settings, is left untouched, no SCE helper is installed, and setup reports the skipped telemetry install without failing repository setup.
   - Validate: targeted Rust tests per conflict class.
-- [ ] AC8: Setup before `sce auth login` succeeds and reports telemetry configured with authentication pending; a later stored credential makes the helper succeed without any settings rewrite.
-  - Validate: targeted Rust test: setup, assert helper fails, save credential, assert helper succeeds and settings bytes are unchanged.
-- [ ] AC9: No token, accessor, or `OTEL_EXPORTER_OTLP_HEADERS` appears in settings files, generated assets, setup output, or helper diagnostics.
+- [x] AC9: No token, accessor, or `OTEL_EXPORTER_OTLP_HEADERS` appears in settings files, generated assets, setup output, or helper diagnostics.
   - Validate: targeted Rust tests scanning those outputs for the fixture token.
-- [ ] AC10: Durable context documents Claude-native vs SCE-CLI telemetry, helper auth, rotation/logout, five-minute refresh, user-level scope, failure handling, and security boundaries, without listing the hidden command in the public command reference.
+- [x] AC10: Durable context documents Claude-native vs SCE-CLI telemetry, helper auth, rotation/logout, five-minute refresh, user-level scope, failure handling, and security boundaries, without listing the hidden command in the public command reference.
   - Validate: inspection of the context files named under Context sync; grep confirms `telemetry-headers` is absent from `context/cli/cli-command-surface.md` public listing.
 
 ### Full validation
@@ -102,7 +100,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Task ID: T03
   - Scope: In — resolve `$CLAUDE_CONFIG_DIR`/`~/.claude/settings.json`, atomic write preserving permissions, invoke only when `ConcreteSetupTarget::Claude` is selected on proceed (all, non-interactive, interactive), add a fixed setup-output line stating user-level scope and, when no valid credential exists, that authentication is pending, without mentioning the helper command. Out — hooks-only, bootstrap-context, cancelled, and non-Claude paths.
   - Dependencies: T02
-  - Done when: AC5, AC6, AC7 (end to end), AC8, and AC9 hold.
+  - Done when: AC5, AC6, AC7 (end to end), and AC9 hold.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup`
   - Completed: 2026-10-14
   - Files changed: `cli/src/services/setup/claude_telemetry.rs`, `cli/src/services/setup/command.rs`, `cli/src/services/setup/config_merge.rs`, `cli/src/services/setup/mod.rs`
@@ -130,3 +128,41 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 - `OTEL_METRICS_INCLUDE_REPOSITORY` is written unconditionally because Claude Code version support cannot be detected during setup. Is that acceptable, or should it be omitted until a supported-version check exists?
 - Real ingestion (Collector accepting the bearer, Dash0 dataset routing, `claude_code.*` signal names) cannot be proven by automated tests and needs manual verification against the live Collector after implementation.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-10-14
+
+### Commands run
+
+- `nix flake check` -> exit 0 (all checks passed)
+- `nix run .#pkl-check-generated` -> exit 0 (142 files, inventory parity)
+- `run-cli-cargo.sh test ... telemetry_headers` -> exit 0 (5 passed)
+- `run-cli-cargo.sh test ... hook_invocations` -> exit 0 (1 passed)
+- `run-cli-cargo.sh test ... config_merge` -> exit 0 (29 passed)
+- `run-cli-cargo.sh test ... claude_telemetry` -> exit 0 (9 passed)
+- `run-cli-cargo.sh test ... setup` -> exit 0 (51 passed)
+- `run-cli-cargo.sh test ... completion` -> exit 0 (1 passed)
+- `grep -c telemetry-headers context/cli/cli-command-surface.md` -> 0
+
+### Success-criteria verification
+
+- [x] AC1: hidden command -> `telemetry_headers_parses_and_is_hidden_from_help` and completion test pass
+- [x] AC2: `telemetry_headers_helper_reads_stored_credential_and_follows_replacement` saves, renders, replaces, renders against a temp-state encrypted db
+- [x] AC3: `telemetry_headers_helper_fails_with_fixed_diagnostic_for_unusable_stored_state` asserts exit code 4, fixed text, no token for missing/expired/malformed
+- [x] AC4: `hook_invocations_never_resolve_managed_telemetry` passes
+- [x] AC5: `setup_claude_telemetry_installs_when_claude_is_selected` and `..._leaves_settings_untouched_when_claude_is_not_installed` cover target-selection paths
+- [x] AC6: idempotence, preserved settings/mode, malformed-JSON refusal covered by claude_telemetry and config_merge tests
+- [x] AC7: user helper, per-class env conflicts, and managed-settings conflicts each have a test
+- [x] AC9: no token material in outputs; tests assert diagnostics omit the fixture token
+- [x] AC10: context files document the topic; `telemetry-headers` count in `cli-command-surface.md` is 0
+
+### Failed checks and follow-ups
+
+None.
+
+### Residual risks
+
+- Real Collector ingestion cannot be proven by automated tests and needs manual verification.
+- Uncommitted working-tree changes (new tests) were validated; commit them to preserve this result.

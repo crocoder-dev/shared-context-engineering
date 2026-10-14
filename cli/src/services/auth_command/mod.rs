@@ -101,7 +101,7 @@ async fn run_telemetry_headers() -> Result<String, CliError> {
     render_telemetry_headers(telemetry_credential_storage::load_telemetry_credential().await)
 }
 
-fn render_telemetry_headers(
+pub(crate) fn render_telemetry_headers(
     loaded: Result<Option<telemetry_credential_storage::TelemetryCredential>, TokenStorageError>,
 ) -> Result<String, CliError> {
     let Ok(Some(credential)) = loaded else {
