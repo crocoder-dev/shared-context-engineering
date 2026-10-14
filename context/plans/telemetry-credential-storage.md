@@ -71,13 +71,18 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: minor — new auth.db table and storage module; documented in T03.
   - Context synchronization: synced
 
-- [ ] T02: `Add typed telemetry credential client and save-on-issue` (status:todo)
+- [x] T02: `Add typed telemetry credential client and save-on-issue` (status:done)
   - Task ID: T02
   - Scope: In — `issue_telemetry_credential` on `AuthenticatedControlPlaneClient` via `execute_authenticated`, response type with redacted `Debug`, validation (non-empty token/accessor, parseable `expiresAt`), sanitized error classification, one function that issues and saves; tests against `TestHttpServer`. Out — CLI command surface, refresh.
   - Dependencies: T01
   - Done when: request has bearer, POST, no body; success persists the credential; each failure class maps to a fixed message and leaves prior stored state intact; no secret appears in error `Display` or `Debug`.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_credential_client`
-  - Context synchronization: pending
+  - Completed: 2026-10-14
+  - Files changed: `cli/src/services/agent_trace_sync/control_plane.rs`
+  - Result: Added `issue_telemetry_credential` (POST `auth/telemetry/credential`, WorkOS bearer, no body) with a redacted-Debug response type, validation of non-empty token/accessor and future RFC3339 `expiresAt`, fixed-message error classification, and `issue_and_save_telemetry_credential` which persists only after successful issuance. Comments stripped from the file per user request.
+  - Verify outcome: `telemetry_credential` tests passed (9: 3 new client tests covering request shape, 403/503/500/401/malformed, transport sanitization; 6 storage). The save-on-issue path against the real auth DB is not exercised by a test; failure leaves state intact because issuance errors return before save. `nix flake check` not run.
+  - Context impact: minor — new client method; documented in T03.
+  - Context synchronization: synced
 
 - [ ] T03: `Delete telemetry credential on logout and document lifecycle` (status:todo)
   - Task ID: T03

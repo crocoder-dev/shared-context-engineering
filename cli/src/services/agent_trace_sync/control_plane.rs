@@ -1,10 +1,3 @@
-//! Wire-contract DTOs for the control-plane Agent Trace ingestion API.
-//!
-//! These types define the request/response shapes for
-//! `GET /me`, `POST /agent-trace/ingestion/state`, and
-//! `POST /agent-trace/ingestion/batch`.
-//! They perform no HTTP I/O and hold no cursor state themselves.
-
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
@@ -20,13 +13,9 @@ use crate::services::agent_trace_export::{
 };
 use crate::services::auth::{self, AuthError, TokenResponse};
 use crate::services::resilience::{run_with_retry, RetryPolicy};
+use crate::services::telemetry_credential_storage::{self, TelemetryCredential};
 use crate::services::token_storage::{self, StoredTokens, TokenStorageError};
 
-/// One of the four independent Agent Trace capture streams, identified by its
-/// literal wire value. These values are always the `snake_case` stream
-/// identifiers (`messages`, `parts`, `diff_traces`, `agent_traces`), distinct
-/// from the `camelCase` field names (`diffTraces`, `agentTraces`) used in
-/// [`AgentTraceCursors`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IngestionStream {
@@ -36,7 +25,6 @@ pub enum IngestionStream {
     AgentTraces,
 }
 
-/// Request body for `POST /agent-trace/ingestion/state`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTraceIngestionStateRequest {
@@ -44,9 +32,6 @@ pub struct AgentTraceIngestionStateRequest {
     pub source_instance_id: String,
 }
 
-/// Authoritative server-side cursor for each of the four capture streams, as
-/// returned by `/state`. Each cursor is the last `source_row_id` the control
-/// plane has accepted for that stream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTraceCursors {
@@ -57,12 +42,6 @@ pub struct AgentTraceCursors {
 }
 
 impl AgentTraceCursors {
-    /// Rejects any field outside `0..=JS_MAX_SAFE_INTEGER`, the range an
-    /// exportable cursor must stay within to survive JSON round-trip without
-    /// truncation or casting. The control plane is the authoritative source
-    /// of cursor progress, but a syntactically valid `/state` response can
-    /// still carry a value the wire contract cannot represent; this rejects
-    /// it before it reaches any export reader or the sync engine.
     fn validate(&self) -> Result<(), ControlPlaneError> {
         for (name, value) in [
             ("messages", self.messages),
@@ -79,15 +58,12 @@ impl AgentTraceCursors {
     }
 }
 
-/// Response body for `POST /agent-trace/ingestion/state`.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTraceIngestionStateResponse {
     pub cursors: AgentTraceCursors,
 }
 
-/// Request body for `POST /agent-trace/ingestion/batch`, generic over the
-/// PR #198 export row type carried by the stream being uploaded.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTraceIngestionBatchRequest<T> {
@@ -98,7 +74,6 @@ pub struct AgentTraceIngestionBatchRequest<T> {
     pub rows: Vec<T>,
 }
 
-/// Response body for `POST /agent-trace/ingestion/batch`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTraceIngestionBatchResponse {
@@ -109,14 +84,23 @@ pub struct AgentTraceIngestionBatchResponse {
 const STATE_PATH: &str = "agent-trace/ingestion/state";
 const BATCH_PATH: &str = "agent-trace/ingestion/batch";
 const ME_PATH: &str = "me";
+const TELEMETRY_CREDENTIAL_PATH: &str = "auth/telemetry/credential";
+
+const TELEMETRY_FORBIDDEN_MESSAGE: &str = "telemetry credential issuance was denied";
+const TELEMETRY_UNAVAILABLE_MESSAGE: &str = "telemetry credential issuance is unavailable";
+const TELEMETRY_SERVER_MESSAGE: &str = "telemetry credential issuance failed on the server";
+const TELEMETRY_PROTOCOL_MESSAGE: &str = "telemetry credential request was rejected";
+const TELEMETRY_INVALID_RESPONSE_MESSAGE: &str =
+    "telemetry credential response was malformed or invalid";
+const TELEMETRY_TRANSPORT_MESSAGE: &str = "telemetry credential request failed to complete";
+const TELEMETRY_STORAGE_MESSAGE: &str = "failed to save telemetry credential";
+const TELEMETRY_REDACTED: &str = "<redacted>";
 
 const BATCH_REQUEST_TIMEOUT: Duration = Duration::from_mins(1);
+const TELEMETRY_CREDENTIAL_TIMEOUT: Duration = Duration::from_mins(1);
 
 const STATE_RETRY_POLICY: RetryPolicy = RetryPolicy::builtin(1, 60_000, 250, 2_000);
 
-/// Typed failure classification for control-plane HTTP interactions, kept
-/// separate from `CliError` so the sync engine and CLI wiring can
-/// react to each case before deciding how to surface it.
 #[derive(Debug)]
 pub enum ControlPlaneError {
     MissingCredentials,
@@ -128,13 +112,7 @@ pub enum ControlPlaneError {
     ServerError(String),
     InvalidResponse(String),
     Storage(String),
-    /// A terminal protocol/API mismatch during a control-plane request (e.g.
-    /// `404`/`405`/`415`/`422`), distinct from `InvalidResponse` which is
-    /// reserved for a syntactically successful (`2xx`) but undecodable body.
-    Protocol {
-        status: StatusCode,
-        message: String,
-    },
+    Protocol { status: StatusCode, message: String },
 }
 
 impl fmt::Display for ControlPlaneError {
@@ -174,11 +152,6 @@ impl fmt::Display for ControlPlaneError {
 impl std::error::Error for ControlPlaneError {}
 
 impl ControlPlaneError {
-    /// True only for the two variants that mean the caller has no usable
-    /// `WorkOS` credentials: no stored token, or a token the control plane
-    /// rejected as invalid/expired. Every other variant is a different kind
-    /// of failure (request shape, ownership, transport, server-side) and
-    /// must not be classified as an authentication failure.
     pub fn is_authentication_failure(&self) -> bool {
         matches!(
             self,
@@ -186,8 +159,6 @@ impl ControlPlaneError {
         )
     }
 
-    /// True when the failure came from loading or saving local authentication
-    /// credentials, rather than from the control-plane request itself.
     pub fn is_storage_failure(&self) -> bool {
         matches!(self, Self::Storage(_))
     }
@@ -230,7 +201,6 @@ pub trait CredentialStore: Send + Sync + 'static {
     ) -> impl Future<Output = Result<StoredTokens, ControlPlaneError>> + Send;
 }
 
-/// Production `CredentialStore` backed by the real encrypted auth database.
 pub struct SystemCredentialStore;
 
 impl CredentialStore for SystemCredentialStore {
@@ -243,11 +213,6 @@ impl CredentialStore for SystemCredentialStore {
     }
 }
 
-/// Authenticated HTTP client for the control-plane Agent Trace ingestion API.
-///
-/// Loads/refreshes stored `WorkOS` credentials through the existing
-/// `auth`/`token_storage` primitives, injects the `Authorization: Bearer`
-/// header, and retries exactly once on an unexpected `401`.
 pub struct AuthenticatedControlPlaneClient<S = SystemCredentialStore> {
     http: reqwest::Client,
     base_url: String,
@@ -256,9 +221,9 @@ pub struct AuthenticatedControlPlaneClient<S = SystemCredentialStore> {
     credential_store: Arc<S>,
     refresh_lock: Arc<tokio::sync::Mutex<()>>,
     batch_timeout: Duration,
+    telemetry_timeout: Duration,
 }
 
-/// Response body for `GET /me`.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeResponse {
@@ -267,7 +232,6 @@ pub struct MeResponse {
     pub workspace: Option<MeWorkspace>,
 }
 
-/// User profile returned by the Control Plane's `/me` endpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeUser {
@@ -276,7 +240,6 @@ pub struct MeUser {
     pub last_name: Option<String>,
 }
 
-/// Authorization information returned by the Control Plane's `/me` endpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeAuthorization {
@@ -284,11 +247,53 @@ pub struct MeAuthorization {
     pub role: Option<String>,
 }
 
-/// Current workspace returned by the Control Plane's `/me` endpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeWorkspace {
     pub name: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryCredentialResponse {
+    token: String,
+    accessor: String,
+    expires_at: String,
+}
+
+impl fmt::Debug for TelemetryCredentialResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TelemetryCredentialResponse")
+            .field("token", &TELEMETRY_REDACTED)
+            .field("accessor", &TELEMETRY_REDACTED)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+impl TelemetryCredentialResponse {
+    fn into_credential(
+        self,
+        now_unix_seconds: u64,
+    ) -> Result<TelemetryCredential, ControlPlaneError> {
+        let invalid =
+            || ControlPlaneError::InvalidResponse(TELEMETRY_INVALID_RESPONSE_MESSAGE.to_string());
+        if self.token.trim().is_empty() || self.accessor.trim().is_empty() {
+            return Err(invalid());
+        }
+        let expires_at = chrono::DateTime::parse_from_rfc3339(&self.expires_at)
+            .map_err(|_| invalid())?
+            .timestamp();
+        let expires_at_unix_seconds = u64::try_from(expires_at).map_err(|_| invalid())?;
+        if expires_at_unix_seconds <= now_unix_seconds {
+            return Err(invalid());
+        }
+        Ok(TelemetryCredential {
+            token: self.token,
+            accessor: self.accessor,
+            expires_at_unix_seconds,
+        })
+    }
 }
 
 impl AuthenticatedControlPlaneClient {
@@ -324,7 +329,14 @@ impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
             credential_store: Arc::new(credential_store),
             refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
             batch_timeout: BATCH_REQUEST_TIMEOUT,
+            telemetry_timeout: TELEMETRY_CREDENTIAL_TIMEOUT,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_telemetry_timeout(mut self, telemetry_timeout: Duration) -> Self {
+        self.telemetry_timeout = telemetry_timeout;
+        self
     }
 
     #[cfg(test)]
@@ -337,9 +349,6 @@ impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
         let _guard = self.refresh_lock.lock().await;
     }
 
-    /// Calls `POST /agent-trace/ingestion/state` with a single attempt and a
-    /// 60-second timeout. `400`/`403`/post-refresh-`401` are terminal and never
-    /// retried.
     pub async fn ingestion_state(
         &self,
         request: &AgentTraceIngestionStateRequest,
@@ -371,14 +380,65 @@ impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
         }
     }
 
-    /// Calls `GET /me` to retrieve the current authenticated user's profile,
-    /// authorization, and optional workspace from the Control Plane.
     pub async fn me(&self) -> Result<MeResponse, ControlPlaneError> {
         let url = self.endpoint(ME_PATH);
         let response = self
             .execute_authenticated(|token| self.http.get(&url).bearer_auth(token))
             .await?;
         classify_response(response).await
+    }
+
+    pub async fn issue_telemetry_credential(
+        &self,
+    ) -> Result<TelemetryCredential, ControlPlaneError> {
+        tokio::time::timeout(self.telemetry_timeout, self.request_telemetry_credential())
+            .await
+            .unwrap_or_else(|_| {
+                Err(ControlPlaneError::Transport(
+                    TELEMETRY_TRANSPORT_MESSAGE.to_string(),
+                ))
+            })
+    }
+
+    async fn request_telemetry_credential(&self) -> Result<TelemetryCredential, ControlPlaneError> {
+        let url = self.endpoint(TELEMETRY_CREDENTIAL_PATH);
+        let response = self
+            .execute_authenticated(|token| self.http.post(&url).bearer_auth(token))
+            .await
+            .map_err(sanitize_telemetry_error)?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(classify_telemetry_status(status));
+        }
+        let body: TelemetryCredentialResponse = response.json().await.map_err(|_| {
+            ControlPlaneError::InvalidResponse(TELEMETRY_INVALID_RESPONSE_MESSAGE.to_string())
+        })?;
+        body.into_credential(current_unix_seconds())
+    }
+
+    #[allow(dead_code, reason = "provisioning command surface is out of scope")]
+    pub async fn issue_and_save_telemetry_credential(
+        &self,
+    ) -> Result<TelemetryCredential, ControlPlaneError> {
+        self.issue_and_save_with(|credential| async move {
+            telemetry_credential_storage::save_telemetry_credential(&credential).await
+        })
+        .await
+    }
+
+    async fn issue_and_save_with<F, Fut>(
+        &self,
+        save: F,
+    ) -> Result<TelemetryCredential, ControlPlaneError>
+    where
+        F: FnOnce(TelemetryCredential) -> Fut,
+        Fut: Future<Output = Result<(), TokenStorageError>>,
+    {
+        let credential = self.issue_telemetry_credential().await?;
+        save(credential.clone())
+            .await
+            .map_err(|_| ControlPlaneError::Storage(TELEMETRY_STORAGE_MESSAGE.to_string()))?;
+        Ok(credential)
     }
 
     pub async fn ingest_messages(
@@ -446,9 +506,6 @@ impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
         Ok(state)
     }
 
-    /// Sends one authenticated request, retrying exactly once on an
-    /// unexpected `401` (refresh, save, retry). A `401` after the retry is
-    /// terminal.
     async fn execute_authenticated<F>(
         &self,
         build: F,
@@ -560,20 +617,42 @@ impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
     }
 }
 
-/// Maximum accepted length, in bytes, of a `message`/`error` field extracted
-/// from a control-plane error body. Anything longer is treated as
-/// untrustworthy and discarded in favor of a generic fallback.
+fn current_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+fn sanitize_telemetry_error(error: ControlPlaneError) -> ControlPlaneError {
+    match error {
+        ControlPlaneError::Transport(_) => {
+            ControlPlaneError::Transport(TELEMETRY_TRANSPORT_MESSAGE.to_string())
+        }
+        other => other,
+    }
+}
+
+fn classify_telemetry_status(status: StatusCode) -> ControlPlaneError {
+    match status {
+        StatusCode::FORBIDDEN => {
+            ControlPlaneError::Forbidden(TELEMETRY_FORBIDDEN_MESSAGE.to_string())
+        }
+        StatusCode::SERVICE_UNAVAILABLE => {
+            ControlPlaneError::ServerError(TELEMETRY_UNAVAILABLE_MESSAGE.to_string())
+        }
+        status if status.is_server_error() => {
+            ControlPlaneError::ServerError(TELEMETRY_SERVER_MESSAGE.to_string())
+        }
+        status if status.is_client_error() => ControlPlaneError::Protocol {
+            status,
+            message: TELEMETRY_PROTOCOL_MESSAGE.to_string(),
+        },
+        status => ControlPlaneError::InvalidResponse(format!("unexpected status {status}")),
+    }
+}
+
 const MAX_SAFE_ERROR_MESSAGE_LEN: usize = 500;
 
-/// Extracts a narrow, safe error message from a raw HTTP error response body.
-///
-/// Accepts only a top-level JSON object with a `message` or `error` string
-/// field (checked in that order) no longer than
-/// [`MAX_SAFE_ERROR_MESSAGE_LEN`]. Returns `None` for malformed JSON, HTML,
-/// non-object top-level values, a missing/non-string field, or a field that
-/// exceeds the length bound — so an arbitrary server-side implementation
-/// detail (a SQL error, a stack trace, an HTML error page) can never reach
-/// the CLI's user-visible error text.
 fn extract_safe_error_message(body: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
     let object = value.as_object()?;
@@ -932,6 +1011,422 @@ mod tests {
             }
         });
         base_url
+    }
+
+    fn start_capture_server(status_line: &str, payload: &str) -> (String, Arc<Mutex<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind capture server");
+        let base_url = format!("http://{}", listener.local_addr().expect("server addr"));
+        let captured = Arc::new(Mutex::new(String::new()));
+        let thread_captured = Arc::clone(&captured);
+        let status_line = status_line.to_string();
+        let payload = payload.to_string();
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else {
+                    continue;
+                };
+                let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+                let mut head = String::new();
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    head.push_str(&line);
+                    let trimmed = line.trim_end_matches(['\r', '\n']);
+                    if trimmed.is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = trimmed.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            content_length = value.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut body);
+                *thread_captured.lock().expect("capture lock") = head;
+                let response = format!(
+                    "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                    payload.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        (base_url, captured)
+    }
+
+    async fn request_telemetry_credential(
+        status_line: &str,
+        payload: &str,
+    ) -> (
+        Result<
+            crate::services::telemetry_credential_storage::TelemetryCredential,
+            ControlPlaneError,
+        >,
+        Arc<Mutex<String>>,
+    ) {
+        let (base_url, captured) = start_capture_server(status_line, payload);
+        let client = AuthenticatedControlPlaneClient::with_credential_store(
+            reqwest::Client::builder()
+                .tls_certs_only(Vec::new())
+                .build()
+                .expect("test http client"),
+            base_url,
+            "http://127.0.0.1:1",
+            "client",
+            FixedStore,
+        );
+        (client.issue_telemetry_credential().await, captured)
+    }
+
+    const TELEMETRY_SECRET_TOKEN: &str = "hvs.secret-token-value";
+    const TELEMETRY_SECRET_ACCESSOR: &str = "secret-accessor-value";
+
+    fn telemetry_success_payload(expires_at: &str) -> String {
+        format!(
+            r#"{{"token":"{TELEMETRY_SECRET_TOKEN}","accessor":"{TELEMETRY_SECRET_ACCESSOR}","expiresAt":"{expires_at}"}}"#
+        )
+    }
+
+    fn assert_no_telemetry_secret(error: &ControlPlaneError) {
+        let rendered = format!("{error} {error:?}");
+        assert!(!rendered.contains(TELEMETRY_SECRET_TOKEN), "{rendered}");
+        assert!(!rendered.contains(TELEMETRY_SECRET_ACCESSOR), "{rendered}");
+        assert!(!rendered.contains("Bearer"), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn telemetry_credential_client_posts_with_bearer_and_no_body() {
+        let (result, captured) = request_telemetry_credential(
+            "200 OK",
+            &telemetry_success_payload("2999-01-01T00:00:00Z"),
+        )
+        .await;
+
+        let credential = result.expect("valid credential");
+        assert_eq!(credential.token, TELEMETRY_SECRET_TOKEN);
+        assert_eq!(credential.accessor, TELEMETRY_SECRET_ACCESSOR);
+        assert_eq!(credential.expires_at_unix_seconds, 32_472_144_000);
+
+        let head = captured.lock().expect("capture lock").to_lowercase();
+        assert!(
+            head.starts_with("post /auth/telemetry/credential "),
+            "{head}"
+        );
+        assert!(head.contains("authorization: bearer access"), "{head}");
+        assert!(
+            !head.contains("content-type: application/json"),
+            "request must carry no JSON body: {head}"
+        );
+        let rendered = format!("{credential:?}");
+        assert!(!rendered.contains(TELEMETRY_SECRET_TOKEN));
+        assert!(!rendered.contains(TELEMETRY_SECRET_ACCESSOR));
+    }
+
+    #[tokio::test]
+    async fn telemetry_credential_client_maps_failures_to_sanitized_errors() {
+        let leaky = format!(
+            r#"{{"message":"{TELEMETRY_SECRET_TOKEN} {TELEMETRY_SECRET_ACCESSOR} Bearer x"}}"#
+        );
+
+        let (forbidden, _) = request_telemetry_credential("403 Forbidden", &leaky).await;
+        let forbidden = forbidden.expect_err("403");
+        assert!(
+            matches!(&forbidden, ControlPlaneError::Forbidden(_)),
+            "{forbidden:?}"
+        );
+        assert_no_telemetry_secret(&forbidden);
+
+        let (unavailable, _) =
+            request_telemetry_credential("503 Service Unavailable", &leaky).await;
+        let unavailable = unavailable.expect_err("503");
+        assert!(
+            matches!(&unavailable, ControlPlaneError::ServerError(_)),
+            "{unavailable:?}"
+        );
+        assert_no_telemetry_secret(&unavailable);
+
+        let (server, _) = request_telemetry_credential("500 Internal Server Error", &leaky).await;
+        let server = server.expect_err("500");
+        assert!(
+            matches!(&server, ControlPlaneError::ServerError(_)),
+            "{server:?}"
+        );
+        assert_no_telemetry_secret(&server);
+
+        let (unauthorized, _) = request_telemetry_credential("401 Unauthorized", &leaky).await;
+        let unauthorized = unauthorized.expect_err("401");
+        assert!(
+            matches!(
+                &unauthorized,
+                ControlPlaneError::AuthenticationFailed(_)
+                    | ControlPlaneError::Transport(_)
+                    | ControlPlaneError::Storage(_)
+            ),
+            "{unauthorized:?}"
+        );
+        assert_no_telemetry_secret(&unauthorized);
+
+        for malformed in [
+            leaky.as_str(),
+            r#"{"token":"","accessor":"a","expiresAt":"2999-01-01T00:00:00Z"}"#,
+            r#"{"token":"t","accessor":"","expiresAt":"2999-01-01T00:00:00Z"}"#,
+            r#"{"token":"t","accessor":"a","expiresAt":"not-a-date"}"#,
+            r#"{"token":"t","accessor":"a","expiresAt":"2000-01-01T00:00:00Z"}"#,
+        ] {
+            let (result, _) = request_telemetry_credential("200 OK", malformed).await;
+            let error = result.expect_err("malformed");
+            assert!(
+                matches!(&error, ControlPlaneError::InvalidResponse(_)),
+                "{error:?}"
+            );
+            assert_no_telemetry_secret(&error);
+        }
+    }
+
+    #[tokio::test]
+    async fn telemetry_credential_client_transport_failure_is_sanitized() {
+        let client = AuthenticatedControlPlaneClient::with_credential_store(
+            reqwest::Client::builder()
+                .tls_certs_only(Vec::new())
+                .build()
+                .expect("test http client"),
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:1",
+            "client",
+            FixedStore,
+        );
+        let error = client
+            .issue_telemetry_credential()
+            .await
+            .expect_err("transport failure");
+        assert!(
+            matches!(&error, ControlPlaneError::Transport(_)),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "Control-plane request failed: telemetry credential request failed to complete"
+        );
+    }
+
+    fn start_stall_server(
+        status_line: &'static str,
+        headers_then_stall: bool,
+        per_request_unauthorized_first: bool,
+    ) -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind stall server");
+        let base_url = format!("http://{}", listener.local_addr().expect("server addr"));
+        let hits = Arc::new(AtomicUsize::new(0));
+        let thread_hits = Arc::clone(&hits);
+        thread::spawn(move || {
+            let mut open_connections = Vec::new();
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else {
+                    continue;
+                };
+                let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    if line.trim_end_matches(['\r', '\n']).is_empty() {
+                        break;
+                    }
+                }
+                let attempt = thread_hits.fetch_add(1, Ordering::SeqCst);
+                if per_request_unauthorized_first && attempt == 0 {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                    continue;
+                }
+                if headers_then_stall {
+                    let partial_response = format!(
+                        "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n{{\"token\":\"{TELEMETRY_SECRET_TOKEN}"
+                    );
+                    let _ = stream.write_all(partial_response.as_bytes());
+                    let _ = stream.flush();
+                }
+                open_connections.push((stream, reader));
+            }
+        });
+        (base_url, hits)
+    }
+
+    fn telemetry_client_with_timeout<S: CredentialStore>(
+        base_url: String,
+        workos_url: &str,
+        store: S,
+        timeout: std::time::Duration,
+    ) -> AuthenticatedControlPlaneClient<S> {
+        AuthenticatedControlPlaneClient::with_credential_store(
+            reqwest::Client::builder()
+                .tls_certs_only(Vec::new())
+                .build()
+                .expect("test http client"),
+            base_url,
+            workos_url,
+            "client",
+            store,
+        )
+        .with_telemetry_timeout(timeout)
+    }
+
+    const SHORT_TELEMETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(300);
+    const TELEMETRY_TEST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+    fn assert_sanitized_transport_timeout(error: &ControlPlaneError) {
+        assert!(
+            matches!(error, ControlPlaneError::Transport(_)),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "Control-plane request failed: telemetry credential request failed to complete"
+        );
+        assert_no_telemetry_secret(error);
+    }
+
+    #[tokio::test]
+    async fn telemetry_credential_times_out_when_server_never_responds() {
+        let (base_url, hits) = start_stall_server("200 OK", false, false);
+        let client = telemetry_client_with_timeout(
+            base_url,
+            "http://127.0.0.1:1",
+            FixedStore,
+            SHORT_TELEMETRY_TIMEOUT,
+        );
+        let error =
+            tokio::time::timeout(TELEMETRY_TEST_DEADLINE, client.issue_telemetry_credential())
+                .await
+                .expect("issuance bounded by its own timeout")
+                .expect_err("stalled server");
+        assert_sanitized_transport_timeout(&error);
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn telemetry_credential_times_out_when_body_stalls() {
+        let (base_url, _) = start_stall_server("200 OK", true, false);
+        let client = telemetry_client_with_timeout(
+            base_url,
+            "http://127.0.0.1:1",
+            FixedStore,
+            SHORT_TELEMETRY_TIMEOUT,
+        );
+        let error =
+            tokio::time::timeout(TELEMETRY_TEST_DEADLINE, client.issue_telemetry_credential())
+                .await
+                .expect("issuance bounded by its own timeout")
+                .expect_err("stalled body");
+        assert_sanitized_transport_timeout(&error);
+    }
+
+    #[tokio::test]
+    async fn telemetry_credential_times_out_when_retry_after_401_stalls() {
+        let (workos_url, workos_hits) = start_refresh_server();
+        let (base_url, hits) = start_stall_server("200 OK", false, true);
+        let client = telemetry_client_with_timeout(
+            base_url,
+            &workos_url,
+            RefreshableStore::new(),
+            SHORT_TELEMETRY_TIMEOUT,
+        );
+        let error =
+            tokio::time::timeout(TELEMETRY_TEST_DEADLINE, client.issue_telemetry_credential())
+                .await
+                .expect("issuance bounded by its own timeout")
+                .expect_err("stalled retry");
+        assert_sanitized_transport_timeout(&error);
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        assert_eq!(workos_hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn telemetry_credential_succeeds_within_deadline() {
+        let (base_url, _) =
+            start_capture_server("200 OK", &telemetry_success_payload("2999-01-01T00:00:00Z"));
+        let client = telemetry_client_with_timeout(
+            base_url,
+            "http://127.0.0.1:1",
+            FixedStore,
+            TELEMETRY_TEST_DEADLINE,
+        );
+        let credential = client
+            .issue_telemetry_credential()
+            .await
+            .expect("credential within deadline");
+        assert_eq!(credential.token, TELEMETRY_SECRET_TOKEN);
+    }
+
+    #[tokio::test]
+    async fn telemetry_credential_timeout_does_not_invoke_storage_save() {
+        let (base_url, _) = start_stall_server("200 OK", false, false);
+        let client = telemetry_client_with_timeout(
+            base_url,
+            "http://127.0.0.1:1",
+            FixedStore,
+            SHORT_TELEMETRY_TIMEOUT,
+        );
+        let saves = Arc::new(AtomicUsize::new(0));
+        let save_counter = Arc::clone(&saves);
+        let error = client
+            .issue_and_save_with(|_| async move {
+                save_counter.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .await
+            .expect_err("timeout");
+        assert_sanitized_transport_timeout(&error);
+        assert_eq!(saves.load(Ordering::SeqCst), 0);
+    }
+
+    struct RefreshableStore {
+        stored: Mutex<StoredTokens>,
+    }
+
+    impl RefreshableStore {
+        fn new() -> Self {
+            Self {
+                stored: Mutex::new(StoredTokens {
+                    access_token: "access".to_string(),
+                    token_type: "Bearer".to_string(),
+                    expires_in: 3600,
+                    refresh_token: "refresh".to_string(),
+                    scope: None,
+                    stored_at_unix_seconds: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("clock after epoch")
+                        .as_secs(),
+                }),
+            }
+        }
+    }
+
+    impl CredentialStore for RefreshableStore {
+        async fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
+            Ok(Some(self.stored.lock().expect("stored lock").clone()))
+        }
+
+        async fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
+            let saved = StoredTokens {
+                access_token: token.access_token.clone(),
+                token_type: token.token_type.clone(),
+                expires_in: token.expires_in,
+                refresh_token: token.refresh_token.clone(),
+                scope: token.scope.clone(),
+                stored_at_unix_seconds: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("clock after epoch")
+                    .as_secs(),
+            };
+            *self.stored.lock().expect("stored lock") = saved.clone();
+            Ok(saved)
+        }
     }
 
     async fn request_state(
