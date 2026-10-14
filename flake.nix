@@ -7,11 +7,6 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
     crane.url = "github:ipetkov/crane";
-    turso.url = "github:tursodatabase/turso/8549c16595d2faf1bdd6ee24aee0be8bfabb3d4a";
-    turso.inputs.nixpkgs.follows = "nixpkgs";
-    turso.inputs.flake-utils.follows = "flake-utils";
-    turso.inputs.crane.follows = "crane";
-    turso.inputs.rust-overlay.follows = "rust-overlay";
     flatpak-builder-tools.url = "github:flatpak/flatpak-builder-tools";
     flatpak-builder-tools.flake = false;
   };
@@ -23,7 +18,6 @@
       flake-utils,
       rust-overlay,
       crane,
-      turso,
       flatpak-builder-tools,
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -100,10 +94,6 @@
           ];
         };
 
-        tursoToolchain = (pkgs.rust-bin.fromRustupToolchainFile "${turso}/rust-toolchain.toml").override {
-          targets = [ "wasm32-unknown-unknown" ];
-        };
-
         craneLib = (crane.mkLib pkgs).overrideToolchain (_: rustToolchain);
 
         # Rust target triple for fully static musl Linux builds.
@@ -159,8 +149,6 @@
         };
 
         craneLibMusl = (crane.mkLib pkgs).overrideToolchain (_: rustToolchainMusl);
-
-        tursoCraneLib = (crane.mkLib pkgs).overrideToolchain (_: tursoToolchain);
 
         workspaceRoot = ./.;
         cliBuildInputFileset = pkgs.lib.fileset.unions [
@@ -552,45 +540,8 @@
         # /nix/store runtime references), native-with-commit on macOS.
         sceReleasePackage = if pkgs.stdenv.isLinux then scePackageMusl else sceReleasePackageNative;
 
-        tursoCargoArgs = {
-          pname = "turso";
-          version = "0.8.1";
-          src = turso;
-          strictDeps = true;
-
-          nativeBuildInputs = with pkgs; [
-            pkg-config
-            python3
-          ];
-
-          buildInputs = [ pkgs.openssl ];
-        };
-
-        tursoCargoArtifacts = tursoCraneLib.buildDepsOnly tursoCargoArgs;
-
-        tursoUpstreamPackage = tursoCraneLib.buildPackage (
-          tursoCargoArgs
-          // {
-            cargoArtifacts = tursoCargoArtifacts;
-            cargoExtraArgs = "--package turso_cli";
-            doCheck = false;
-          }
-        );
-
-        tursoPackage = pkgs.symlinkJoin {
-          name = "turso-${tursoUpstreamPackage.version}";
-          paths = [ tursoUpstreamPackage ];
-          postBuild = ''
-            ln -s "$out/bin/tursodb" "$out/bin/turso"
-          '';
-          meta = tursoUpstreamPackage.meta // {
-            mainProgram = "turso";
-          };
-        };
-
         # Shared development tooling for the default shell. Excludes `scePackage`
-        # and `tursoPackage` so `nix develop` does not compile either CLI;
-        # opt-in shells layer them back on when needed.
+        # so `nix develop` does not compile the CLI; opt-in shells layer it back on.
         defaultDevShellPackages =
           (with pkgs; [
             biome
@@ -1647,7 +1598,6 @@
           quint = pkgs.quint;
           mutation-trace-quint-connect = mutationTraceQuintConnectCheck;
           quint-language-server = quintLanguageServerPackage;
-          turso = tursoPackage;
           default = scePackage;
         };
 
@@ -1846,17 +1796,6 @@
           shellHook = ''
             ${defaultDevShellHook}
             echo "- sce: $(sce version)"
-          '';
-        };
-
-        # Opt-in shell layering the Turso CLI on top of the default tools, so
-        # database work can pull Turso in explicitly via `nix develop .#database`.
-        devShells.database = pkgs.mkShell {
-          packages = defaultDevShellPackages ++ [ tursoPackage ];
-
-          shellHook = ''
-            ${defaultDevShellHook}
-            echo "- turso: $(version_of turso)"
           '';
         };
       }
