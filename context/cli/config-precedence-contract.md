@@ -82,7 +82,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - Startup/runtime config resolution degrades gracefully for default-discovered files across ordinary startup, setup, and Agent Trace storage: invalid discovered files are skipped and reported via collected `validation_errors`, while explicit `--config` / `SCE_CONFIG_FILE` targets still fail immediately on the same parse or validation errors.
 
 - Config file content must be valid JSON with a top-level object.
-- Allowed keys: `$schema`, `log_level`, `log_format`, `log_to_file`, `log_dir`, `log_file_retention_limit`, `workos_client_id`, `control_plane_base_url`, `agent_trace`, `policies`, `integrations`.
+- Allowed keys: `$schema`, `log_level`, `log_format`, `log_to_file`, `log_dir`, `log_file_retention_limit`, `workos_client_id`, `control_plane_base_url`, `agent_trace`, `otel`, `policies`, `integrations`.
 - Unknown keys fail validation.
 - `log_to_file` must be a boolean when present and defaults to `true`; it is independent of `log_dir`.
 - `log_level` must be one of `error|warn|info|debug`.
@@ -97,6 +97,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `agent_trace.repository_remote` must be a non-empty string when present; omitted values resolve to `origin`.
 - `agent_trace.auto_sync` must be a boolean when present; omitted values resolve to `false`. A newly created repo-local config from `sce setup` contains an explicit `true` value.
 
+- `otel` must be an object when present and allows optional `endpoint`, `protocol`, `traces_endpoint`, `metrics_endpoint`, and `logs_endpoint`; `protocol` accepts only `http/protobuf` and the endpoint fields are non-empty strings. The block and each field are config-file only (global-before-local per-key merge) and omission never removes the code-owned managed OTLP defaults in `cli/src/services/managed_telemetry.rs` (`https://otel.crocoderlab.dev`, `http/protobuf`, and `/v1/traces`, `/v1/metrics`, `/v1/logs` paths); `show` reports each as `otel.<field>` with `source: default` when unset. The metrics endpoint is reserved for a later pipeline.
 - `integrations` must be an object when present and currently allows `target` and `optional_workflows`; either key alone yields a parsed `IntegrationsConfig` with the other defaulting to empty.
 - `integrations.target` must be an array of unique canonical target IDs when present.
 - Supported target ID values: `opencode`, `claude`, `pi`, `codex`.

@@ -23,6 +23,7 @@ pub mod help;
 pub mod hooks;
 pub mod lifecycle;
 pub mod local_db;
+pub mod managed_telemetry;
 pub mod mutation_trace;
 pub mod observability;
 pub mod output_format;
