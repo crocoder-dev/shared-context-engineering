@@ -2,7 +2,7 @@ pub mod command;
 
 use std::future::Future;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::json;
@@ -14,7 +14,7 @@ use crate::services::auth::{self, AuthError, DeviceAuthFlowResult};
 use crate::services::config;
 use crate::services::error::{CliError, UserError};
 use crate::services::managed_telemetry::claude_helper::{
-    endpoints_are_pinned, repository_opted_in, CLAUDE_PROJECT_DIR_ENV,
+    repository_id_for, visible_destination_conflict,
 };
 use crate::services::managed_telemetry::{run_with_deadline, CREDENTIAL_LOOKUP_DEADLINE};
 use crate::services::output_format::OutputFormat;
@@ -103,25 +103,24 @@ where
 }
 
 async fn run_telemetry_headers() -> Result<String, CliError> {
-    let project_dir = std::env::var_os(CLAUDE_PROJECT_DIR_ENV)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_dir().ok());
-    let endpoints_pinned = endpoints_are_pinned(|key| std::env::var(key).ok());
     telemetry_headers_with(
-        project_dir,
-        endpoints_pinned,
-        telemetry_credential_storage::load_telemetry_credential(),
+        std::env::current_dir().ok(),
+        visible_destination_conflict(|key| std::env::var(key).ok()),
+        repository_id_for,
+        telemetry_credential_storage::load_repository_telemetry_credential,
     )
     .await
 }
 
-pub(crate) async fn telemetry_headers_with<Fut>(
-    project_dir: Option<PathBuf>,
-    endpoints_pinned: bool,
-    lookup: Fut,
+pub(crate) async fn telemetry_headers_with<R, L, Fut>(
+    working_dir: Option<PathBuf>,
+    destination_conflict: bool,
+    resolve_repository: R,
+    lookup: L,
 ) -> Result<String, CliError>
 where
+    R: FnOnce(&Path) -> Option<String> + Send + 'static,
+    L: FnOnce(String) -> Fut + Send + 'static,
     Fut: Future<
             Output = Result<
                 Option<telemetry_credential_storage::TelemetryCredential>,
@@ -130,14 +129,12 @@ where
         > + Send
         + 'static,
 {
-    let Some(project_dir) = project_dir.filter(|_| endpoints_pinned) else {
+    let Some(working_dir) = working_dir.filter(|_| !destination_conflict) else {
         return Err(telemetry_headers_unavailable());
     };
     let credential = run_with_deadline(CREDENTIAL_LOOKUP_DEADLINE, async move {
-        if !repository_opted_in(&project_dir) {
-            return None;
-        }
-        lookup.await.ok().flatten()
+        let repository_id = resolve_repository(&working_dir)?;
+        lookup(repository_id).await.ok().flatten()
     })
     .await
     .flatten();
@@ -325,9 +322,26 @@ async fn provision_telemetry_credential(
     client: &AuthenticatedControlPlaneClient,
 ) -> TelemetryProvisioningResult {
     match client.issue_and_save_telemetry_credential().await {
-        Ok(_) => TelemetryProvisioningResult::Issued,
+        Ok(_) => {
+            enroll_current_repository_if_unbound().await;
+            TelemetryProvisioningResult::Issued
+        }
         Err(_) => TelemetryProvisioningResult::Unavailable,
     }
+}
+
+async fn enroll_current_repository_if_unbound() {
+    let Some(repository_id) = std::env::current_dir()
+        .ok()
+        .and_then(|working_dir| repository_id_for(&working_dir))
+    else {
+        return;
+    };
+    let _ = telemetry_credential_storage::bind_repository_telemetry(
+        repository_id,
+        telemetry_credential_storage::RepositoryBindingMode::EnrollIfUnbound,
+    )
+    .await;
 }
 
 async fn run_text_login(
@@ -667,6 +681,10 @@ mod tests {
             token: token.to_string(),
             accessor: "fixture-accessor".to_string(),
             expires_at_unix_seconds: 4_000_000_000,
+            identity: telemetry_credential_storage::TelemetryIdentity {
+                user_id: "user_a".to_string(),
+                workspace_id: "workspace_a".to_string(),
+            },
         }
     }
 
@@ -711,32 +729,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn telemetry_headers_reject_unpinned_endpoint_and_unattributed_repository() {
-        let unrelated = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(unrelated.path().join(".git")).unwrap();
-        let credential = || async { Ok(Some(telemetry_credential("tok-scoped"))) };
+    async fn telemetry_headers_fail_closed_before_lookup_without_repository_or_on_conflict() {
+        let lookup_called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let lookup = |called: std::sync::Arc<std::sync::atomic::AtomicBool>| {
+            move |_repository_id: String| async move {
+                called.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(Some(telemetry_credential("tok-scoped")))
+            }
+        };
+        let working_dir = Some(PathBuf::from("/workspace/repo"));
 
-        for (project_dir, pinned) in [
-            (Some(unrelated.path().to_path_buf()), true),
-            (Some(unrelated.path().to_path_buf()), false),
-            (None, true),
+        for (dir, conflict, repository) in [
+            (working_dir.clone(), true, Some("repo-a")),
+            (None, false, Some("repo-a")),
+            (working_dir.clone(), false, None),
         ] {
-            let error = telemetry_headers_with(project_dir, pinned, credential())
-                .await
-                .expect_err("helper must fail closed");
+            let error = telemetry_headers_with(
+                dir,
+                conflict,
+                move |_: &Path| repository.map(str::to_string),
+                lookup(std::sync::Arc::clone(&lookup_called)),
+            )
+            .await
+            .expect_err("helper must fail closed");
             assert_eq!(error.to_string(), TELEMETRY_HEADERS_UNAVAILABLE);
         }
+        assert!(!lookup_called.load(std::sync::atomic::Ordering::SeqCst));
 
-        std::fs::create_dir_all(unrelated.path().join(".claude")).unwrap();
-        std::fs::write(
-            unrelated.path().join(".claude").join("settings.json"),
-            crate::services::setup::config_merge::CLAUDE_SCE_HOOK_MARKER,
+        let headers = telemetry_headers_with(
+            working_dir,
+            false,
+            |dir: &Path| (dir == Path::new("/workspace/repo")).then(|| "repo-a".to_string()),
+            |repository_id: String| async move {
+                assert_eq!(repository_id, "repo-a");
+                Ok(Some(telemetry_credential("tok-scoped")))
+            },
         )
-        .unwrap();
-        let headers =
-            telemetry_headers_with(Some(unrelated.path().to_path_buf()), true, credential())
-                .await
-                .expect("opted-in repository should render");
+        .await
+        .expect("authorized repository should render");
         assert_eq!(headers, r#"{"Authorization":"Bearer tok-scoped"}"#);
     }
 

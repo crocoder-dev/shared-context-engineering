@@ -947,18 +947,12 @@ pub(crate) mod tests {
             return;
         }
         let repo = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(repo.path().join(".git")).unwrap();
-        std::fs::create_dir_all(repo.path().join(".claude")).unwrap();
-        std::fs::write(
-            repo.path().join(".claude").join("settings.json"),
-            services::setup::config_merge::CLAUDE_SCE_HOOK_MARKER,
-        )
-        .unwrap();
         let runtime = build_runtime().unwrap();
         let result = runtime.block_on(services::auth_command::telemetry_headers_with(
             Some(repo.path().to_path_buf()),
-            true,
-            stalled_keychain_lookup(),
+            false,
+            |_: &std::path::Path| Some("repository-a".to_string()),
+            |_: String| stalled_keychain_lookup(),
         ));
         finish_runtime(runtime);
         let mut stdout = Vec::new();

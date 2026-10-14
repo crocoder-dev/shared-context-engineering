@@ -13,7 +13,7 @@ use crate::services::agent_trace_export::{
 };
 use crate::services::auth::{self, AuthError, TokenResponse};
 use crate::services::resilience::{run_with_retry, RetryPolicy};
-use crate::services::telemetry_credential_storage::{self, TelemetryCredential};
+use crate::services::telemetry_credential_storage::{self, TelemetryCredential, TelemetryIdentity};
 use crate::services::token_storage::{self, StoredTokens, TokenStorageError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,6 +274,7 @@ impl fmt::Debug for TelemetryCredentialResponse {
 impl TelemetryCredentialResponse {
     fn into_credential(
         self,
+        identity: TelemetryIdentity,
         now_unix_seconds: u64,
     ) -> Result<TelemetryCredential, ControlPlaneError> {
         let invalid =
@@ -292,6 +293,7 @@ impl TelemetryCredentialResponse {
             token: self.token,
             accessor: self.accessor,
             expires_at_unix_seconds,
+            identity,
         })
     }
 }
@@ -402,18 +404,31 @@ impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
 
     async fn request_telemetry_credential(&self) -> Result<TelemetryCredential, ControlPlaneError> {
         let url = self.endpoint(TELEMETRY_CREDENTIAL_PATH);
+        let issuing_token = std::sync::Mutex::new(None::<String>);
         let response = self
-            .execute_authenticated(|token| self.http.post(&url).bearer_auth(token))
+            .execute_authenticated(|token| {
+                if let Ok(mut slot) = issuing_token.lock() {
+                    *slot = Some(token.to_string());
+                }
+                self.http.post(&url).bearer_auth(token)
+            })
             .await
             .map_err(sanitize_telemetry_error)?;
         let status = response.status();
         if !status.is_success() {
             return Err(classify_telemetry_status(status));
         }
-        let body: TelemetryCredentialResponse = response.json().await.map_err(|_| {
-            ControlPlaneError::InvalidResponse(TELEMETRY_INVALID_RESPONSE_MESSAGE.to_string())
-        })?;
-        body.into_credential(current_unix_seconds())
+        let invalid =
+            || ControlPlaneError::InvalidResponse(TELEMETRY_INVALID_RESPONSE_MESSAGE.to_string());
+        let identity = issuing_token
+            .into_inner()
+            .ok()
+            .flatten()
+            .as_deref()
+            .and_then(TelemetryIdentity::from_access_token)
+            .ok_or_else(invalid)?;
+        let body: TelemetryCredentialResponse = response.json().await.map_err(|_| invalid())?;
+        body.into_credential(identity, current_unix_seconds())
     }
 
     pub async fn issue_and_save_telemetry_credential(
@@ -1056,6 +1071,51 @@ mod tests {
         (base_url, captured)
     }
 
+    struct IdentityStore(String);
+
+    impl CredentialStore for IdentityStore {
+        async fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
+            Ok(Some(StoredTokens {
+                access_token: self.0.clone(),
+                token_type: "Bearer".to_string(),
+                expires_in: 3600,
+                refresh_token: "refresh".to_string(),
+                scope: None,
+                stored_at_unix_seconds: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("clock after epoch")
+                    .as_secs(),
+            }))
+        }
+
+        async fn save(&self, _token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
+            unreachable!("fixed credentials never refresh")
+        }
+    }
+
+    fn telemetry_client(
+        base_url: String,
+        access_token: String,
+    ) -> AuthenticatedControlPlaneClient<IdentityStore> {
+        AuthenticatedControlPlaneClient::with_credential_store(
+            reqwest::Client::builder()
+                .tls_certs_only(Vec::new())
+                .build()
+                .expect("test http client"),
+            base_url,
+            "http://127.0.0.1:1",
+            "client",
+            IdentityStore(access_token),
+        )
+    }
+
+    fn workspace_access_token() -> String {
+        crate::services::telemetry_credential_storage::test_access_token(
+            "user_a",
+            Some("workspace_a"),
+        )
+    }
+
     async fn request_telemetry_credential(
         status_line: &str,
         payload: &str,
@@ -1067,16 +1127,7 @@ mod tests {
         Arc<Mutex<String>>,
     ) {
         let (base_url, captured) = start_capture_server(status_line, payload);
-        let client = AuthenticatedControlPlaneClient::with_credential_store(
-            reqwest::Client::builder()
-                .tls_certs_only(Vec::new())
-                .build()
-                .expect("test http client"),
-            base_url,
-            "http://127.0.0.1:1",
-            "client",
-            FixedStore,
-        );
+        let client = telemetry_client(base_url, workspace_access_token());
         (client.issue_telemetry_credential().await, captured)
     }
 
@@ -1108,13 +1159,25 @@ mod tests {
         assert_eq!(credential.token, TELEMETRY_SECRET_TOKEN);
         assert_eq!(credential.accessor, TELEMETRY_SECRET_ACCESSOR);
         assert_eq!(credential.expires_at_unix_seconds, 32_472_144_000);
+        assert_eq!(
+            credential.identity,
+            crate::services::telemetry_credential_storage::TelemetryIdentity {
+                user_id: "user_a".to_string(),
+                workspace_id: "workspace_a".to_string(),
+            }
+        );
 
         let head = captured.lock().expect("capture lock").to_lowercase();
         assert!(
             head.starts_with("post /auth/telemetry/credential "),
             "{head}"
         );
-        assert!(head.contains("authorization: bearer access"), "{head}");
+        assert!(
+            head.contains(
+                &format!("authorization: bearer {}", workspace_access_token()).to_lowercase()
+            ),
+            "{head}"
+        );
         assert!(
             !head.contains("content-type: application/json"),
             "request must carry no JSON body: {head}"
@@ -1128,16 +1191,7 @@ mod tests {
     async fn telemetry_credential_issue_and_save_replaces_cached_credential() {
         let (base_url, _) =
             start_capture_server("200 OK", &telemetry_success_payload("2999-01-01T00:00:00Z"));
-        let client = AuthenticatedControlPlaneClient::with_credential_store(
-            reqwest::Client::builder()
-                .tls_certs_only(Vec::new())
-                .build()
-                .expect("test http client"),
-            base_url,
-            "http://127.0.0.1:1",
-            "client",
-            FixedStore,
-        );
+        let client = telemetry_client(base_url, workspace_access_token());
         let saved = Arc::new(Mutex::new(None));
         let saved_credential = Arc::clone(&saved);
 
@@ -1153,6 +1207,33 @@ mod tests {
             saved.lock().expect("saved credential lock").as_ref(),
             Some(&result)
         );
+    }
+
+    #[tokio::test]
+    async fn telemetry_credential_without_workspace_identity_is_rejected_and_not_saved() {
+        for access_token in [
+            crate::services::telemetry_credential_storage::test_access_token("user_a", None),
+            "opaque-access-token".to_string(),
+        ] {
+            let (base_url, _) =
+                start_capture_server("200 OK", &telemetry_success_payload("2999-01-01T00:00:00Z"));
+            let client = telemetry_client(base_url, access_token);
+            let saved = Arc::new(Mutex::new(false));
+            let saved_flag = Arc::clone(&saved);
+            let error = client
+                .issue_and_save_with(|_| async move {
+                    *saved_flag.lock().expect("saved flag lock") = true;
+                    Ok(())
+                })
+                .await
+                .expect_err("credential without workspace identity must be rejected");
+            assert!(
+                matches!(&error, ControlPlaneError::InvalidResponse(_)),
+                "{error:?}"
+            );
+            assert_no_telemetry_secret(&error);
+            assert!(!*saved.lock().expect("saved flag lock"));
+        }
     }
 
     #[tokio::test]
@@ -1327,7 +1408,7 @@ mod tests {
         let client = telemetry_client_with_timeout(
             base_url,
             "http://127.0.0.1:1",
-            FixedStore,
+            IdentityStore(workspace_access_token()),
             SHORT_TELEMETRY_TIMEOUT,
         );
         let error =
@@ -1345,7 +1426,7 @@ mod tests {
         let client = telemetry_client_with_timeout(
             base_url,
             "http://127.0.0.1:1",
-            FixedStore,
+            IdentityStore(workspace_access_token()),
             SHORT_TELEMETRY_TIMEOUT,
         );
         let error =
@@ -1383,7 +1464,7 @@ mod tests {
         let client = telemetry_client_with_timeout(
             base_url,
             "http://127.0.0.1:1",
-            FixedStore,
+            IdentityStore(workspace_access_token()),
             TELEMETRY_TEST_DEADLINE,
         );
         let credential = client

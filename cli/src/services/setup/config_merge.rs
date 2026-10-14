@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::services::managed_telemetry::{MANAGED_OTLP_ENDPOINT, MANAGED_OTLP_PROTOCOL};
 
-pub(crate) const CLAUDE_SCE_HOOK_MARKER: &str = "run-sce-or-show-install-guidance.sh";
+const CLAUDE_SCE_HOOK_MARKER: &str = "run-sce-or-show-install-guidance.sh";
 const LEGACY_CLAUDE_AGENT_TRACE_PLUGIN: &str = ".claude/plugins/sce-agent-trace.ts";
 
 const OPENCODE_SCE_PLUGIN_PREFIX: &str = "./plugins/sce-";

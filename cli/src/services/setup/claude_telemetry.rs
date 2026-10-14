@@ -21,7 +21,7 @@ const TEMP_SUFFIX: &str = ".sce-tmp";
 const CONFIGURED_LINE: &str =
     "Claude telemetry: configured in user-level Claude settings for native OpenTelemetry export.";
 const AUTH_PENDING_LINE: &str =
-    "Claude telemetry: authentication pending; run 'sce auth login' to start exporting.";
+    "Claude telemetry: authentication pending for this repository; run 'sce auth login' in this repository to start exporting.";
 const SKIPPED_HELPER_LINE: &str =
     "Claude telemetry: skipped; existing Claude settings define a different otelHeadersHelper.";
 const SKIPPED_DISABLED_LINE: &str =

@@ -1,15 +1,15 @@
-use std::fs;
 use std::path::Path;
 
 use super::{
     MANAGED_OTLP_ENDPOINT, MANAGED_OTLP_LOGS_ENDPOINT, MANAGED_OTLP_METRICS_ENDPOINT,
     MANAGED_OTLP_TRACES_ENDPOINT,
 };
-use crate::services::setup::config_merge::CLAUDE_SCE_HOOK_MARKER;
+use crate::services::config;
+use crate::services::repository_identity::resolve::resolve_repository_identity;
 
-pub const CLAUDE_PROJECT_DIR_ENV: &str = "CLAUDE_PROJECT_DIR";
-const BASE_ENDPOINT_ENV: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
-const SIGNAL_ENDPOINT_ENVS: [(&str, &str); 3] = [
+const GIT_DIR_NAME: &str = ".git";
+const DESTINATION_ENVS: [(&str, &str); 5] = [
+    ("OTEL_EXPORTER_OTLP_ENDPOINT", MANAGED_OTLP_ENDPOINT),
     (
         "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
         MANAGED_OTLP_TRACES_ENDPOINT,
@@ -22,41 +22,42 @@ const SIGNAL_ENDPOINT_ENVS: [(&str, &str); 3] = [
         "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
         MANAGED_OTLP_LOGS_ENDPOINT,
     ),
+    ("BETA_TRACING_ENDPOINT", MANAGED_OTLP_ENDPOINT),
 ];
-const GIT_DIR_NAME: &str = ".git";
-const CLAUDE_DIR_NAME: &str = ".claude";
-const CLAUDE_SETTINGS_FILE_NAME: &str = "settings.json";
 
 fn normalized(value: &str) -> &str {
     value.trim().trim_end_matches('/')
 }
 
-pub fn endpoints_are_pinned<F>(lookup: F) -> bool
+pub fn visible_destination_conflict<F>(lookup: F) -> bool
 where
     F: Fn(&str) -> Option<String>,
 {
-    let base_matches =
-        lookup(BASE_ENDPOINT_ENV).is_some_and(|value| normalized(&value) == MANAGED_OTLP_ENDPOINT);
-    base_matches
-        && SIGNAL_ENDPOINT_ENVS
-            .iter()
-            .all(|(key, expected)| lookup(key).is_none_or(|value| normalized(&value) == *expected))
+    DESTINATION_ENVS
+        .iter()
+        .any(|(key, expected)| lookup(key).is_some_and(|value| normalized(&value) != *expected))
 }
 
-pub fn repository_opted_in(project_dir: &Path) -> bool {
-    let Some(root) = project_dir
+pub fn repository_id_for(working_dir: &Path) -> Option<String> {
+    let root = working_dir
         .ancestors()
-        .find(|dir| dir.join(GIT_DIR_NAME).exists())
-    else {
-        return false;
-    };
-    fs::read_to_string(root.join(CLAUDE_DIR_NAME).join(CLAUDE_SETTINGS_FILE_NAME))
-        .is_ok_and(|settings| settings.contains(CLAUDE_SCE_HOOK_MARKER))
+        .find(|dir| dir.join(GIT_DIR_NAME).exists())?;
+    let storage_config = config::resolve_agent_trace_storage_runtime_config(root).ok()?;
+    resolve_repository_identity(
+        root,
+        storage_config.repository_id.as_deref(),
+        &storage_config.repository_remote,
+    )
+    .ok()
+    .map(|resolved| resolved.identity.repository_id)
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::HashMap;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::process::Command;
 
     use super::*;
 
@@ -68,60 +69,87 @@ mod tests {
         move |key| map.get(key).cloned()
     }
 
+    pub(crate) fn git_repository_with_remote(parent: &Path, name: &str, remote: &str) -> PathBuf {
+        let root = parent.join(name);
+        fs::create_dir_all(root.join("src").join("module")).unwrap();
+        for args in [
+            vec!["init", "--quiet"],
+            vec!["remote", "add", "origin", remote],
+        ] {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        root
+    }
+
     #[test]
-    fn helper_requires_managed_base_endpoint_and_matching_signal_overrides() {
-        assert!(endpoints_are_pinned(lookup_from(&[(
-            BASE_ENDPOINT_ENV,
-            "https://otel.crocoderlab.dev/"
-        )])));
-        assert!(endpoints_are_pinned(lookup_from(&[
-            (BASE_ENDPOINT_ENV, MANAGED_OTLP_ENDPOINT),
+    fn helper_without_any_visible_otel_variables_is_not_a_conflict() {
+        assert!(!visible_destination_conflict(lookup_from(&[])));
+        assert!(!visible_destination_conflict(lookup_from(&[
+            (
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+                "https://otel.crocoderlab.dev/"
+            ),
             (
                 "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
                 MANAGED_OTLP_TRACES_ENDPOINT
             ),
+            ("BETA_TRACING_ENDPOINT", MANAGED_OTLP_ENDPOINT),
         ])));
-        for rejected in [
-            lookup_from(&[]),
-            lookup_from(&[(BASE_ENDPOINT_ENV, "http://localhost:4318")]),
-            lookup_from(&[
-                (BASE_ENDPOINT_ENV, MANAGED_OTLP_ENDPOINT),
-                (
-                    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
-                    "https://other.example/v1/logs",
-                ),
-            ]),
-            lookup_from(&[
-                (BASE_ENDPOINT_ENV, MANAGED_OTLP_ENDPOINT),
-                ("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", ""),
-            ]),
+    }
+
+    #[test]
+    fn helper_refuses_visible_conflicting_destinations() {
+        for (key, value) in [
+            ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318"),
+            (
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                "https://other.example/v1/traces",
+            ),
+            (
+                "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+                MANAGED_OTLP_LOGS_ENDPOINT,
+            ),
+            ("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", ""),
+            ("BETA_TRACING_ENDPOINT", "https://collector.example"),
         ] {
-            assert!(!endpoints_are_pinned(rejected));
+            assert!(
+                visible_destination_conflict(lookup_from(&[(key, value)])),
+                "{key}={value}"
+            );
         }
     }
 
     #[test]
-    fn helper_attributes_only_repositories_with_sce_claude_integration() {
+    fn helper_resolves_repository_identity_from_nested_launch_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let opted_in = dir.path().join("opted-in");
-        let nested = opted_in.join("src").join("module");
-        fs::create_dir_all(&nested).unwrap();
-        fs::create_dir_all(opted_in.join(".git")).unwrap();
-        fs::create_dir_all(opted_in.join(".claude")).unwrap();
-        fs::write(
-            opted_in.join(".claude").join("settings.json"),
-            format!(r#"{{"hooks":{{"Stop":[{{"command":"bash {CLAUDE_SCE_HOOK_MARKER}"}}]}}}}"#),
-        )
-        .unwrap();
+        let first =
+            git_repository_with_remote(dir.path(), "first", "git@github.com:acme/first.git");
+        let second =
+            git_repository_with_remote(dir.path(), "second", "https://github.com/acme/second");
 
-        let unrelated = dir.path().join("unrelated");
-        fs::create_dir_all(unrelated.join(".git")).unwrap();
-        fs::create_dir_all(unrelated.join(".claude")).unwrap();
-        fs::write(unrelated.join(".claude").join("settings.json"), "{}").unwrap();
+        let root_id = repository_id_for(&first).expect("repository identity");
+        assert_eq!(
+            repository_id_for(&first.join("src").join("module")),
+            Some(root_id.clone())
+        );
+        assert_ne!(repository_id_for(&second), Some(root_id));
+        assert_eq!(repository_id_for(&dir.path().join("not-a-repo")), None);
 
-        assert!(repository_opted_in(&opted_in));
-        assert!(repository_opted_in(&nested));
-        assert!(!repository_opted_in(&unrelated));
-        assert!(!repository_opted_in(&dir.path().join("not-a-repo")));
+        let without_remote = dir.path().join("no-remote");
+        fs::create_dir_all(&without_remote).unwrap();
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&without_remote)
+            .args(["init", "--quiet"])
+            .status()
+            .unwrap()
+            .success());
+        assert_eq!(repository_id_for(&without_remote), None);
     }
 }
