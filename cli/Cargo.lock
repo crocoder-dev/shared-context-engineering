@@ -3813,6 +3813,7 @@ dependencies = [
  "anyhow",
  "apple-native-keyring-store",
  "async-trait",
+ "base64",
  "chrono",
  "clap",
  "clap_complete",

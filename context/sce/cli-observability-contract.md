@@ -105,5 +105,5 @@ Runtime observability consumes the shared resolved observability config from `cl
 ## Claude-native telemetry vs SCE-CLI telemetry
 
 - The managed exporter above covers only the Rust `sce` process. Claude Code's native OpenTelemetry export is a separate pipeline configured in Claude's user-level `settings.json` by `sce setup` for Claude targets; SCE does not proxy, wrap, or cache it.
-- Both pipelines target the same managed OTLP endpoint and authenticate with the same stored telemetry credential, but Claude obtains the bearer by running the hidden `sce auth telemetry-headers` helper (re-run every five minutes), which never initializes managed exporter telemetry.
+- Both pipelines target the same managed OTLP endpoint and authenticate with the same stored telemetry credential, but Claude obtains the bearer by running the hidden `sce auth telemetry-headers` helper (re-run every five minutes), which never initializes managed exporter telemetry and returns the bearer only for a repository enrolled under the credential's workspace. The helper cannot observe Claude's effective exporter endpoint, so endpoint pinning is not claimed.
 - Setup skips the Claude install on conflicting user-owned or managed settings and never writes a token. Details, rotation, logout, failure handling, and override limits: [telemetry-credential.md](telemetry-credential.md).

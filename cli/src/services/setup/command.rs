@@ -7,9 +7,10 @@ use crate::services::error::{CliError, UserError};
 use crate::services::lifecycle::{
     lifecycle_providers, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
 };
-use crate::services::managed_telemetry::load_credential_within_deadline;
+use crate::services::managed_telemetry::claude_helper::repository_id_for;
+use crate::services::managed_telemetry::{run_with_deadline, CREDENTIAL_LOOKUP_DEADLINE};
 use crate::services::telemetry_credential_storage::{
-    load_telemetry_credential, TelemetryCredential,
+    bind_repository_telemetry, RepositoryBindingMode,
 };
 use crate::services::token_storage::TokenStorageError;
 use crate::services::{config, setup};
@@ -107,7 +108,7 @@ impl SetupCommand {
             sections.push(setup_message);
 
             if claude_telemetry_selected {
-                sections.push(claude_telemetry_report().await);
+                sections.push(claude_telemetry_report(&repository_root).await);
             }
         }
 
@@ -123,11 +124,19 @@ fn dispatch_targets_claude(dispatch: Option<&setup::SetupDispatch>) -> bool {
     )
 }
 
-async fn claude_telemetry_report() -> String {
+async fn claude_telemetry_report(repository_root: &std::path::Path) -> String {
+    let repository_id = repository_id_for(repository_root);
     render_claude_telemetry_section(
         setup::claude_telemetry::resolve_claude_settings_path().as_deref(),
         &setup::claude_telemetry::managed_claude_settings_path(),
-        load_telemetry_credential(),
+        async move {
+            match repository_id {
+                Some(repository_id) => {
+                    bind_repository_telemetry(repository_id, RepositoryBindingMode::Enroll).await
+                }
+                None => Ok(false),
+            }
+        },
     )
     .await
 }
@@ -135,10 +144,10 @@ async fn claude_telemetry_report() -> String {
 async fn render_claude_telemetry_section<Fut>(
     settings_path: Option<&std::path::Path>,
     managed_settings_path: &std::path::Path,
-    credential_lookup: Fut,
+    repository_enrollment: Fut,
 ) -> String
 where
-    Fut: Future<Output = Result<Option<TelemetryCredential>, TokenStorageError>> + Send + 'static,
+    Fut: Future<Output = Result<bool, TokenStorageError>> + Send + 'static,
 {
     use setup::claude_telemetry::{
         format_claude_telemetry_report, install_claude_telemetry, ClaudeTelemetryInstallOutcome,
@@ -150,9 +159,10 @@ where
         None => ClaudeTelemetryInstallOutcome::SkippedInvalid,
     };
     let authentication_pending = installed == ClaudeTelemetryInstallOutcome::Configured
-        && load_credential_within_deadline(credential_lookup)
+        && !run_with_deadline(CREDENTIAL_LOOKUP_DEADLINE, repository_enrollment)
             .await
-            .is_none();
+            .and_then(Result::ok)
+            .unwrap_or(false);
 
     format_claude_telemetry_report(&installed, authentication_pending)
 }
@@ -268,7 +278,7 @@ mod tests {
             block_on_current_thread(render_claude_telemetry_section(
                 Some(&root.join("settings.json")),
                 &root.join("managed.json"),
-                std::future::ready(Ok(None)),
+                std::future::ready(Ok(false)),
             ))
         })
     }
@@ -282,7 +292,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn setup_claude_telemetry_skips_credential_lookup_when_install_is_skipped() {
+    async fn setup_claude_telemetry_skips_repository_enrollment_when_install_is_skipped() {
         let dir = tempfile::tempdir().unwrap();
         let settings = dir.path().join("settings.json");
         fs::write(&settings, r#"{"otelHeadersHelper":"my-helper"}"#).unwrap();
@@ -294,7 +304,7 @@ mod tests {
             &dir.path().join("managed.json"),
             async move {
                 flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                Ok(None)
+                Ok(false)
             },
         )
         .await;
@@ -304,7 +314,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn setup_claude_telemetry_reports_pending_when_credential_lookup_stalls() {
+    async fn setup_claude_telemetry_reports_pending_when_repository_enrollment_stalls() {
         let dir = tempfile::tempdir().unwrap();
         let started = std::time::Instant::now();
 
@@ -317,6 +327,28 @@ mod tests {
 
         assert!(report.contains("authentication pending"));
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn setup_claude_telemetry_reports_ready_only_when_repository_is_enrolled() {
+        for (enrolled, pending) in [(Ok(true), false), (Ok(false), true), (Err(storage()), true)] {
+            let dir = tempfile::tempdir().unwrap();
+            let report = render_claude_telemetry_section(
+                Some(&dir.path().join("settings.json")),
+                &dir.path().join("managed.json"),
+                std::future::ready(enrolled),
+            )
+            .await;
+            assert_eq!(
+                report.contains("authentication pending"),
+                pending,
+                "{report}"
+            );
+        }
+    }
+
+    fn storage() -> TokenStorageError {
+        TokenStorageError::Database("unavailable".to_string())
     }
 
     fn assert_installed(root: &Path) {

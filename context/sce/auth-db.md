@@ -14,6 +14,7 @@ The encrypted auth DB foundation provides a thin Rust wrapper, path and migratio
   - `001_create_auth_tokens.sql`
   - `002_create_auth_credentials_updated_at_trigger.sql`
   - `003_create_telemetry_credentials.sql`
+  - `004_bind_telemetry_credentials.sql`
 
 ## Schema baseline
 
@@ -43,7 +44,9 @@ Current migration baseline:
 - `expires_at_unix_seconds INTEGER NOT NULL`, `stored_at_unix_seconds INTEGER NOT NULL`
 - `created_at` / `updated_at` with the same defaults as `auth_credentials`, plus the `telemetry_credentials_set_updated_at` trigger
 
-Storage operations live in `cli/src/services/telemetry_credential_storage.rs`: `save_telemetry_credential` is a single-statement `INSERT OR REPLACE` of the fixed row (last complete writer wins), `load_telemetry_credential` returns the row only when token and accessor are non-empty, the expiry is non-negative, and it is in the future (it never mints or refreshes), and `delete_telemetry_credential` removes the row. `TelemetryCredential` has a redacted `Debug`, and storage errors use fixed messages without secret values. Saving or deleting never touches `auth_credentials`. Managed OTLP export reads this row at CLI startup through `load_telemetry_credential` and uses only the token as bearer. The shared `AuthDb` singleton comes from `token_storage::get_auth_db`. `sce auth logout` deletes both the `auth_credentials` row and the telemetry row; see [telemetry-credential.md](telemetry-credential.md) for lifecycle and security boundaries.
+`004_bind_telemetry_credentials.sql` adds `user_id` and `workspace_id` (`TEXT NOT NULL DEFAULT ''`) to `telemetry_credentials` and creates `telemetry_repository_bindings` (`repository_id TEXT PRIMARY KEY`, `user_id`, `workspace_id`, `bound_at_unix_seconds`). Rows predating `004` keep empty identity values and are never returned.
+
+Storage operations live in `cli/src/services/telemetry_credential_storage.rs`: `save_telemetry_credential` is a single-statement `INSERT OR REPLACE` of the fixed row (last complete writer wins), `load_telemetry_credential` returns the row only when token, accessor, and identity are non-empty, the expiry is non-negative and in the future, and the stored WorkOS session's access-token `(sub, workspace_id)` claims equal the row's identity (it never mints or refreshes), `load_repository_telemetry_credential` additionally requires a matching repository binding, `bind_repository_telemetry` records a binding for the current credential identity, and `delete_telemetry_credential` removes the row. `TelemetryCredential` has a redacted `Debug`, and storage errors use fixed messages without secret values. Saving or deleting never touches `auth_credentials`. Managed OTLP export reads this row at CLI startup through `load_telemetry_credential` and uses only the token as bearer. The shared `AuthDb` singleton comes from `token_storage::get_auth_db`. `sce auth logout` deletes both the `auth_credentials` row and the telemetry row; see [telemetry-credential.md](telemetry-credential.md) for lifecycle and security boundaries.
 
 ## Lifecycle integration
 

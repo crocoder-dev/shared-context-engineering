@@ -341,6 +341,10 @@ pub(crate) mod tests {
                     token: token.to_string(),
                     accessor: "local-accessor-secret".to_string(),
                     expires_at_unix_seconds: u64::MAX,
+                    identity: crate::services::telemetry_credential_storage::TelemetryIdentity {
+                        user_id: "user_a".to_string(),
+                        workspace_id: "workspace_a".to_string(),
+                    },
                 },
             ),
             0,
