@@ -2,6 +2,7 @@ use std::fmt;
 use std::future::Future;
 use std::time::Duration;
 
+pub mod log_export;
 pub mod trace_export;
 
 use crate::services::error::CliError;

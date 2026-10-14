@@ -1,20 +1,24 @@
 use std::future::Future;
 use std::time::Duration;
 
+use opentelemetry::logs::LoggerProvider as _;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry::KeyValue;
 use opentelemetry_http::{Bytes, HttpClient, HttpError, Request, Response};
-use opentelemetry_otlp::{SpanExporter, WithExportConfig, WithHttpConfig};
+use opentelemetry_otlp::{LogExporter, SpanExporter, WithExportConfig, WithHttpConfig};
+use opentelemetry_sdk::logs::{
+    BatchConfigBuilder as LogBatchConfigBuilder, BatchLogProcessor, SdkLoggerProvider,
+};
 use opentelemetry_sdk::trace::{BatchConfigBuilder, BatchSpanProcessor, SdkTracerProvider};
 use opentelemetry_sdk::Resource;
 use reqwest::header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use tracing::instrument::WithSubscriber;
 use tracing::{field, Dispatch, Instrument, Span};
-use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::filter::filter_fn;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{Layer, Registry};
 
+use super::log_export::{is_exportable_event, LogBridgeLayer};
 use super::{ManagedBearerToken, ManagedOtlpEndpoints};
 use crate::services::error::CliError;
 use crate::services::observability::traits::Telemetry;
@@ -65,12 +69,6 @@ impl HttpClient for PinnedBearerClient {
     }
 }
 
-type CommandLayer = tracing_subscriber::filter::Filtered<
-    OpenTelemetryLayer<Registry, opentelemetry_sdk::trace::SdkTracer>,
-    tracing_subscriber::filter::FilterFn<fn(&tracing::Metadata<'_>) -> bool>,
-    Registry,
->;
-
 fn is_command_span(metadata: &tracing::Metadata<'_>) -> bool {
     metadata.is_span() && metadata.target() == COMMAND_SPAN_TARGET
 }
@@ -78,6 +76,7 @@ fn is_command_span(metadata: &tracing::Metadata<'_>) -> bool {
 #[derive(Debug)]
 pub struct ManagedTraceTelemetry {
     provider: SdkTracerProvider,
+    log_provider: SdkLoggerProvider,
     dispatch: Dispatch,
 }
 
@@ -94,9 +93,15 @@ impl ManagedTraceTelemetry {
             .timeout(REQUEST_TIMEOUT)
             .build()?;
         let http_client = PinnedBearerClient {
+            client: client.clone(),
+            runtime: runtime.clone(),
+            endpoint: endpoints.traces_endpoint,
+            authorization: authorization.clone(),
+        };
+        let log_http_client = PinnedBearerClient {
             client,
             runtime,
-            endpoint: endpoints.traces_endpoint,
+            endpoint: endpoints.logs_endpoint,
             authorization,
         };
         let exporter = SpanExporter::builder()
@@ -119,23 +124,52 @@ impl ManagedTraceTelemetry {
                 KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
             ])
             .build();
+        let resource_for_logs = resource.clone();
         let provider = SdkTracerProvider::builder()
             .with_resource(resource)
             .with_span_processor(processor)
             .build();
-        let layer: CommandLayer = tracing_opentelemetry::layer()
+        let log_exporter = LogExporter::builder()
+            .with_http()
+            .with_http_client(log_http_client)
+            .with_endpoint(endpoints.logs_endpoint)
+            .with_timeout(EXPORT_TIMEOUT)
+            .build()?;
+        let log_batch_config = LogBatchConfigBuilder::default()
+            .with_max_queue_size(BATCH_QUEUE_SIZE)
+            .with_max_export_batch_size(BATCH_EXPORT_SIZE)
+            .with_scheduled_delay(SCHEDULED_DELAY)
+            .build();
+        let log_provider = SdkLoggerProvider::builder()
+            .with_resource(resource_for_logs)
+            .with_log_processor(
+                BatchLogProcessor::builder(log_exporter)
+                    .with_batch_config(log_batch_config)
+                    .build(),
+            )
+            .build();
+        let span_layer = tracing_opentelemetry::layer()
             .with_tracer(provider.tracer(TRACER_NAME))
             .with_filter(filter_fn(
                 is_command_span as fn(&tracing::Metadata<'_>) -> bool,
             ));
-        let dispatch = Dispatch::new(Registry::default().with(layer));
-        Ok(Self { provider, dispatch })
+        let log_layer = LogBridgeLayer::new(log_provider.logger(TRACER_NAME)).with_filter(
+            filter_fn(is_exportable_event as fn(&tracing::Metadata<'_>) -> bool),
+        );
+        let dispatch = Dispatch::new(Registry::default().with(span_layer).with(log_layer));
+        Ok(Self {
+            provider,
+            log_provider,
+            dispatch,
+        })
     }
 
     pub async fn shutdown(self) {
         let provider = self.provider;
+        let log_provider = self.log_provider;
         let task = tokio::task::spawn_blocking(move || {
             let _ = provider.shutdown_with_timeout(SHUTDOWN_TIMEOUT);
+            let _ = log_provider.shutdown_with_timeout(SHUTDOWN_TIMEOUT);
         });
         let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT + Duration::from_secs(1), task).await;
     }
@@ -195,8 +229,27 @@ mod tests {
         body: Vec<u8>,
     }
 
-    async fn capture_one_request(
+    async fn capture_requests(
         listener: TcpListener,
+        status_line: &'static str,
+        expected: usize,
+    ) -> Vec<CapturedRequest> {
+        let mut captured = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while captured.len() < expected {
+            let Ok(request) =
+                tokio::time::timeout_at(deadline, capture_one_request(&listener, status_line))
+                    .await
+            else {
+                break;
+            };
+            captured.push(request);
+        }
+        captured
+    }
+
+    async fn capture_one_request(
+        listener: &TcpListener,
         status_line: &'static str,
     ) -> CapturedRequest {
         let (mut stream, _) = listener.accept().await.expect("accept");
@@ -239,8 +292,11 @@ mod tests {
     fn loopback_telemetry(address: std::net::SocketAddr, token: &str) -> ManagedTraceTelemetry {
         let traces_endpoint: &'static str =
             Box::leak(format!("http://{address}/v1/traces").into_boxed_str());
+        let logs_endpoint: &'static str =
+            Box::leak(format!("http://{address}/v1/logs").into_boxed_str());
         let endpoints = ManagedOtlpEndpoints {
             traces_endpoint,
+            logs_endpoint,
             ..MANAGED_OTLP_DEFAULTS
         };
         let mode = crate::services::managed_telemetry::select_mode(
@@ -264,13 +320,14 @@ mod tests {
     async fn managed_trace_export_posts_allowlisted_span_with_bearer_only() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let address = listener.local_addr().expect("addr");
-        let receiver = tokio::spawn(capture_one_request(listener, "HTTP/1.1 200 OK"));
+        let receiver = tokio::spawn(capture_requests(listener, "HTTP/1.1 200 OK", 2));
         let telemetry = loopback_telemetry(address, "bao-token-value");
 
         let result = telemetry
             .with_default_subscriber(&mut || async {
                 record_command_name("config");
-                tracing::info!(target: "sce", event_id = "sce.test", fields = "leaky-raw-field");
+                let fields_json = r#"{"command":"config","argv":"--token secret-arg","repo":"/home/u/repo","error_source":"Bearer leak-value"}"#;
+                tracing::info!(target: "sce", event_id = "sce.test.event", event_message = "Starting command", fields = %fields_json);
                 tokio::task::yield_now().await;
                 Ok("payload".to_string())
             })
@@ -278,16 +335,59 @@ mod tests {
         assert_eq!(result.expect("command result"), "payload");
         telemetry.shutdown().await;
 
-        let captured = tokio::time::timeout(Duration::from_secs(5), receiver)
-            .await
-            .expect("receiver timeout")
-            .expect("receiver join");
-        let head = captured.head.to_ascii_lowercase();
-        assert!(head.starts_with("post /v1/traces "));
-        assert!(head.contains("authorization: bearer bao-token-value"));
-        assert!(head.contains("application/x-protobuf"));
-        assert!(!head.contains("local-accessor-secret"));
-        let body = String::from_utf8_lossy(&captured.body).to_string();
+        let requests = receiver.await.expect("receiver join");
+        assert_eq!(
+            requests.len(),
+            2,
+            "{:?}",
+            requests
+                .iter()
+                .map(|r| r.head.lines().next().unwrap_or_default().to_string())
+                .collect::<Vec<_>>()
+        );
+        for request in &requests {
+            let head = request.head.to_ascii_lowercase();
+            assert!(head.contains("authorization: bearer bao-token-value"));
+            assert!(head.contains("application/x-protobuf"));
+            assert!(!head.contains("local-accessor-secret"));
+        }
+        let trace = requests
+            .iter()
+            .find(|request| {
+                request
+                    .head
+                    .to_ascii_lowercase()
+                    .starts_with("post /v1/traces ")
+            })
+            .expect("trace request");
+        let log = requests
+            .iter()
+            .find(|request| {
+                request
+                    .head
+                    .to_ascii_lowercase()
+                    .starts_with("post /v1/logs ")
+            })
+            .expect("log request");
+        let log_body = String::from_utf8_lossy(&log.body).to_string();
+        for expected in [
+            "sce.test.event",
+            "Starting command",
+            "config",
+            "service.name",
+        ] {
+            assert!(log_body.contains(expected), "missing log {expected}");
+        }
+        for leaked in [
+            "secret-arg",
+            "/home/u/repo",
+            "leak-value",
+            "bao-token-value",
+            "local-accessor-secret",
+        ] {
+            assert!(!log_body.contains(leaked), "leaked {leaked}");
+        }
+        let body = String::from_utf8_lossy(&trace.body).to_string();
         for expected in [
             "sce.command",
             "sce.command.name",
@@ -297,7 +397,6 @@ mod tests {
         ] {
             assert!(body.contains(expected), "missing {expected}");
         }
-        assert!(!body.contains("leaky-raw-field"));
         assert!(!body.contains("local-accessor-secret"));
         assert!(!body.contains("bao-token-value"));
     }
@@ -306,9 +405,10 @@ mod tests {
     async fn managed_trace_export_does_not_follow_redirects_or_alter_results() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let address = listener.local_addr().expect("addr");
-        let receiver = tokio::spawn(capture_one_request(
+        let receiver = tokio::spawn(capture_requests(
             listener,
             "HTTP/1.1 307 Temporary Redirect\r\nlocation: http://127.0.0.1:1/steal",
+            1,
         ));
         let telemetry = loopback_telemetry(address, "bao-token-value");
 
@@ -320,14 +420,12 @@ mod tests {
         assert!(result.is_err());
         telemetry.shutdown().await;
 
-        let captured = tokio::time::timeout(Duration::from_secs(5), receiver)
-            .await
-            .expect("receiver timeout")
-            .expect("receiver join");
-        assert!(captured
-            .head
-            .to_ascii_lowercase()
-            .starts_with("post /v1/traces "));
+        let requests = receiver.await.expect("receiver join");
+        assert!(!requests.is_empty());
+        for request in &requests {
+            let head = request.head.to_ascii_lowercase();
+            assert!(head.starts_with("post /v1/traces ") || head.starts_with("post /v1/logs "));
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

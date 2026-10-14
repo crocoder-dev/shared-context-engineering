@@ -1965,6 +1965,19 @@
     {
         "type": "archive",
         "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/futures-executor/futures-executor-0.3.32.crate",
+        "sha256": "baf29c38818342a3b26b5b923639e7b1f4a61fc5e76102d4b1981c6dc7a7579d",
+        "dest": "cargo/vendor/futures-executor-0.3.32"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"baf29c38818342a3b26b5b923639e7b1f4a61fc5e76102d4b1981c6dc7a7579d\", \"files\": {}}",
+        "dest": "cargo/vendor/futures-executor-0.3.32",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
         "url": "https://static.crates.io/crates/futures-io/futures-io-0.3.32.crate",
         "sha256": "cecba35d7ad927e23624b22ad55235f2239cfa44fd10428eecbeba6d6a717718",
         "dest": "cargo/vendor/futures-io-0.3.32"
@@ -2376,6 +2389,19 @@
         "type": "inline",
         "contents": "{\"package\": \"6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87\", \"files\": {}}",
         "dest": "cargo/vendor/httparse-1.10.1",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/httpdate/httpdate-1.0.3.crate",
+        "sha256": "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9",
+        "dest": "cargo/vendor/httpdate-1.0.3"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9\", \"files\": {}}",
+        "dest": "cargo/vendor/httpdate-1.0.3",
         "dest-filename": ".cargo-checksum.json"
     },
     {
@@ -3689,6 +3715,71 @@
         "type": "inline",
         "contents": "{\"package\": \"7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe\", \"files\": {}}",
         "dest": "cargo/vendor/openssl-probe-0.2.1",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/opentelemetry/opentelemetry-0.33.1.crate",
+        "sha256": "8c1f1a6ac9c875a4941e4c7c085b61e8f4daa326de03b4701768c3491a6ad9ee",
+        "dest": "cargo/vendor/opentelemetry-0.33.1"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"8c1f1a6ac9c875a4941e4c7c085b61e8f4daa326de03b4701768c3491a6ad9ee\", \"files\": {}}",
+        "dest": "cargo/vendor/opentelemetry-0.33.1",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/opentelemetry-http/opentelemetry-http-0.33.1.crate",
+        "sha256": "302249bd8ee804789faaa7b5b2cbf79bc61cb864714079c644e3828af5b7e811",
+        "dest": "cargo/vendor/opentelemetry-http-0.33.1"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"302249bd8ee804789faaa7b5b2cbf79bc61cb864714079c644e3828af5b7e811\", \"files\": {}}",
+        "dest": "cargo/vendor/opentelemetry-http-0.33.1",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/opentelemetry-otlp/opentelemetry-otlp-0.33.1.crate",
+        "sha256": "0756af24841e367128ef31c831999937b8b5c5197d47914590d8f4e2e88c2e1a",
+        "dest": "cargo/vendor/opentelemetry-otlp-0.33.1"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"0756af24841e367128ef31c831999937b8b5c5197d47914590d8f4e2e88c2e1a\", \"files\": {}}",
+        "dest": "cargo/vendor/opentelemetry-otlp-0.33.1",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/opentelemetry-proto/opentelemetry-proto-0.33.1.crate",
+        "sha256": "d576f5dddc3299341bcd85a04be17b2564844c0c9563214f02d85f2524d1afae",
+        "dest": "cargo/vendor/opentelemetry-proto-0.33.1"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"d576f5dddc3299341bcd85a04be17b2564844c0c9563214f02d85f2524d1afae\", \"files\": {}}",
+        "dest": "cargo/vendor/opentelemetry-proto-0.33.1",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/opentelemetry_sdk/opentelemetry_sdk-0.33.1.crate",
+        "sha256": "372a912db2974d1990207006fd0e3aa0ef3fd4ad3be43c65cfaadf2206866061",
+        "dest": "cargo/vendor/opentelemetry_sdk-0.33.1"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"372a912db2974d1990207006fd0e3aa0ef3fd4ad3be43c65cfaadf2206866061\", \"files\": {}}",
+        "dest": "cargo/vendor/opentelemetry_sdk-0.33.1",
         "dest-filename": ".cargo-checksum.json"
     },
     {
@@ -5821,6 +5912,19 @@
         "type": "inline",
         "contents": "{\"package\": \"ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3\", \"files\": {}}",
         "dest": "cargo/vendor/tracing-log-0.2.0",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/tracing-opentelemetry/tracing-opentelemetry-0.34.0.crate",
+        "sha256": "0a904802a1b902f43638b677ff2a650847e3b4404101b6c586d648e8c1e3e8fe",
+        "dest": "cargo/vendor/tracing-opentelemetry-0.34.0"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"0a904802a1b902f43638b677ff2a650847e3b4404101b6c586d648e8c1e3e8fe\", \"files\": {}}",
+        "dest": "cargo/vendor/tracing-opentelemetry-0.34.0",
         "dest-filename": ".cargo-checksum.json"
     },
     {
